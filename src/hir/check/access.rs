@@ -376,12 +376,15 @@ impl<'a> TypeChecker<'a> {
 
                 match lookup_res {
                     Some((ty, top)) => {
-                        // Enforce Topology Boundaries!
-                        let is_valid = self.transfer_cost_graph.is_type_accessible(
-                            &self.active_topology,
-                            &top,
-                            &ty,
-                        );
+                        // Enforce Topology Boundaries! A reference to a placed tensor is only a
+                        // pointer, so naming it reads nothing; indexing and `print` check the
+                        // tensor's placement where the data is read.
+                        let is_valid = matches!(&ty, Type::Borrow { inner, .. } if inner.placement().is_some())
+                            || self.transfer_cost_graph.is_type_accessible(
+                                &self.active_topology,
+                                &top,
+                                &ty,
+                            );
 
                         if !is_valid {
                             let is_pinned_on_host = matches!(ty, Type::Pinned(_, _))
@@ -1058,7 +1061,14 @@ impl<'a> TypeChecker<'a> {
                 is_mut,
                 span,
             }) => {
+                // Taking a reference to a placed tensor reads nothing. The reference keeps the
+                // placement in its type, so each read through it is checked where it happens.
+                let borrows_placed = Self::extract_base_and_path(inner).is_some()
+                    && self.check_expr_type_probe(inner).placement().is_some();
+                let old_allow = self.allow_cross_topology;
+                self.allow_cross_topology |= borrows_placed;
                 let inner_ty = self.check_expr_type_flag(inner, false);
+                self.allow_cross_topology = old_allow;
                 if *is_mut {
                     if let Some(root) = self.read_only_root(inner) {
                         self.report_read_only(&root, "it cannot be borrowed `&mut`", span);

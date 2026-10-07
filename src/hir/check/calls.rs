@@ -1840,6 +1840,11 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         let Some(ty) = ty else { return };
+        // A reference to a placed tensor is read where the tensor is.
+        let ty = match ty {
+            Type::Borrow { inner, .. } => inner.as_ref(),
+            other => other,
+        };
         let Some(p) = ty.placement() else { return };
         let owner = self.transfer_cost_graph.placement_topology(p);
         let src = self.transfer_cost_graph.placement_space(p);

@@ -1,0 +1,68 @@
+//===- references_to_device_tensors_are_checked_where_used.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Passing a reference to a placed tensor is allowed anywhere, but each read or write of the
+// data is checked where it happens. Each function below uses memory on the wrong side (GPU
+// memory on the host, or host memory inside a GPU region), and each is refused.
+//
+// `Device` is a small GPU-like machine declared below, with its own memory `HBM`. The
+// second RUN checks that only those five uses are reported, and never the bare name of a
+// reference, since passing a reference on reads nothing.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=ONLY
+// ONLY-NOT: 'o' lives
+// ONLY-NOT: 'out' lives
+// ONLY-NOT: 'a' lives
+// ONLY: 5 error(s) emitted
+
+Topology Device {
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 10 GB/s,
+  transfer Memory::HBM -> Memory::CPU_DRAM : 10 GB/s
+}
+
+// CHECK: Error[E6003] at 32:3: `print` reads its argument on CPU, which sees only [CPU_DRAM, NPU_HBM], but the value lives in HBM
+fn print_through_a_reference(o : &Tensor<f32, [4, 1], Memory::HBM>) -> void {
+  print(o);
+  return;
+}
+
+// CHECK: Error[E6003] at 38:13: 'o[0]' lives in HBM but CPU sees only
+fn read_on_the_host(o : &Tensor<f32, [4, 1], Memory::HBM>) -> void {
+  print(o[0][0]);
+  return;
+}
+
+// CHECK: Error[E6003] at 44:7: 'o[0]' lives in HBM but CPU sees only
+fn write_on_the_host(o : &mut Tensor<f32, [4, 1], Memory::HBM>) -> void {
+  o[0][0] = 1.0;
+  return;
+}
+
+// CHECK: Error[E6003] at 51:21: 'a[0]' lives in CPU_DRAM but Device sees only
+fn host_memory_read_on_the_gpu(out : &mut Tensor<f32, [4, 1], Memory::HBM>, a : &Tensor<f32, [4, 1], Memory::CPU_DRAM>) -> void {
+  spawn on(Topology::Device) {
+    out[0][0] = a[0][0];
+  }
+  return;
+}
+
+// CHECK: Error[E6003] at 60:14: 'x' lives in CPU_DRAM but Device sees only
+fn host_scalar_borrowed_on_the_gpu(out : &mut Tensor<f32, [4, 1], Memory::HBM>) -> void {
+  let x : f32 = 1.5;
+  spawn on(Topology::Device) {
+    let p = &x;
+    out[0][0] = *p;
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
