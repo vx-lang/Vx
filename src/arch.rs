@@ -540,11 +540,19 @@ pub fn topology_address_space(
     if matches!(top, Topology::Current) {
         return Some(AddressSpace::Host);
     }
-    // The topology's default memory space determines its address space. Built-ins are known
-    // statically; a *declared* topology names its memory (`Topology SmemDev { memory:
-    // Memory::SMEM }`), so consult its descriptor before falling back to the like-named
-    // convention (`Memory::Foo <-> Topology::Foo`) for an undeclared one.
-    let space = builtin_descriptors()
+    let space = topology_default_space(top, topologies);
+    declared_address_space(&space, decls.get(&space))
+}
+
+/// The memory a topology holds by default. Built-ins are known statically; a *declared*
+/// topology names its memory (`Topology SmemDev { memory: Memory::SMEM }`), so its descriptor is
+/// consulted before falling back to the like-named convention (`Memory::Foo <-> Topology::Foo`)
+/// for an undeclared one.
+pub fn topology_default_space(
+    top: &Topology,
+    topologies: &std::collections::HashMap<crate::symbol::Symbol, TopologyDescriptor>,
+) -> MemorySpace {
+    builtin_descriptors()
         .get(&top.kind())
         .map(|d| d.default_space.clone())
         .or_else(|| match top {
@@ -554,8 +562,7 @@ pub fn topology_address_space(
         .unwrap_or_else(|| match top {
             Topology::Custom(name) => MemorySpace::from_name(name.as_ref()),
             _ => MemorySpace::CPUDRAM,
-        });
-    declared_address_space(&space, decls.get(&space))
+        })
 }
 
 /// The space a topology kind holds, from the built-in table alone.

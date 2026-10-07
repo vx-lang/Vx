@@ -115,7 +115,7 @@ impl FnEmit<'_> {
         let ret_slot_ty = callee
             .ret_tensor
             .as_ref()
-            .filter(|mt| !mt.contains(DYN_DIM))
+            .filter(|mt| !mt.contains(DYN_DIM) && !callee.ret_placed)
             .cloned();
         if let Some(slot_ty) = &ret_slot_ty {
             let slot = format!("%rs{idx}");

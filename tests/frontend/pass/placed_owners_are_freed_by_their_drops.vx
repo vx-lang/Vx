@@ -1,0 +1,63 @@
+//===- placed_owners_are_freed_by_their_drops.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+//
+// A tensor placed in GPU memory is freed by the drop of whoever owns it last, through the
+// plugin that allocated it (`vx.free` on its topology, 500 for the GPU):
+//
+// - `place` returns the tensor it placed, so it frees nothing, and its result is marked placed;
+// - `main` gives both placed tensors to `sum`, so it frees neither;
+// - `sum` owns its placed parameter and frees it.
+
+// CHECK-LABEL: func.func @main
+// CHECK: %[[GIVEN:.*]] = call @place(
+// CHECK-NEXT: call @sum(%[[GIVEN]])
+// CHECK-NOT: vx.free
+// CHECK: %[[KEPT:.*]] = "vx.transfer"
+// CHECK-NOT: vx.free
+// CHECK: call @sum(%[[KEPT]])
+// CHECK-NOT: vx.free
+// CHECK: return
+
+// CHECK-LABEL: func.func @sum(%arg0: memref<4xf32> {vx.placed = 500 : i32})
+// CHECK: vx.free %arg0 {topology = 500 : i32}
+
+// CHECK-LABEL: func.func @place(%arg0: memref<4xf32> {vx.owned}) -> (memref<4xf32> {vx.placed = 500 : i32})
+// CHECK-NOT: vx.free
+// CHECK: return
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+
+fn place(t : Tensor<f32, [4]>) -> Tensor<f32, [4], Memory::GPU_HBM> {
+  return transfer(t, Memory::GPU_HBM);
+}
+
+fn sum(d : Tensor<f32, [4], Memory::GPU_HBM>) -> f32 {
+  let h = transfer(d, Memory::CPU_DRAM);
+  return h[0] + h[1] + h[2] + h[3];
+}
+
+fn main() -> i32 {
+  let mut h = Tensor<f32, [4]>::uninit();
+  for i in 0..4 {
+    h[i] = i as f32;
+  }
+  let given = place(h);
+  print(sum(given));
+  print!(" ");
+  let mut h2 = Tensor<f32, [4]>::uninit();
+  for i in 0..4 {
+    h2[i] = 1.5;
+  }
+  let kept = transfer(h2, Memory::GPU_HBM);
+  print(sum(kept));
+  return 0;
+}

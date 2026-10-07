@@ -1323,17 +1323,24 @@ impl<'c> MeliorGenerator<'c> {
             ),
         ];
         // A tensor taken by value belongs to the function, which frees it. One placed in
-        // another memory is not freed by its drop yet.
-        let mut per_arg = vec!["{}"; slot_args];
+        // another memory names the topology its plugin frees it on, and so does a placed
+        // result, which the caller then frees.
+        let mut per_arg: Vec<String> = vec!["{}".to_string(); slot_args];
         per_arg.extend(func.params.iter().map(|(_, ty)| match ty {
-            syntax::Type::Tensor(_, _, None) => "{vx.owned}",
-            syntax::Type::Tensor(_, _, Some(_)) => "{vx.placed}",
-            _ => "{}",
+            syntax::Type::Tensor(_, _, None) => "{vx.owned}".to_string(),
+            syntax::Type::Tensor(_, _, Some(p)) => self.placed_attr(p),
+            _ => "{}".to_string(),
         }));
         let text = format!("[{}]", per_arg.join(", "));
         let attr = melior::ir::Attribute::parse(self.context, &text)
             .ok_or_else(|| LowerError::from(format!("bad argument attributes {text}")))?;
         func_attributes.push((melior::ir::Identifier::new(self.context, "arg_attrs"), attr));
+        if let syntax::Type::Tensor(_, _, Some(p)) = &func.return_type {
+            let text = format!("[{}]", self.placed_attr(p));
+            let attr = melior::ir::Attribute::parse(self.context, &text)
+                .ok_or_else(|| LowerError::from(format!("bad result attributes {text}")))?;
+            func_attributes.push((melior::ir::Identifier::new(self.context, "res_attrs"), attr));
+        }
 
         // `main` deliberately carries no `llvm.emit_c_interface`.
         //
@@ -1873,6 +1880,24 @@ impl<'c> MeliorGenerator<'c> {
     }
 
     /// An instantiated generic enum (its name holds `<...>`): a tag and the payload slot.
+    /// The `vx.placed` mark of a placed parameter or result. A placement written as a device
+    /// holds that device's memory; on-chip memory, by the address space its type is given, is
+    /// scratch nothing frees.
+    fn placed_attr(&self, p: &syntax::Placement) -> String {
+        let on_chip = on_chip(crate::arch::topology_address_space(
+            &p.topology,
+            &self.memories,
+            &self.topologies,
+        ));
+        let space = match p.written() {
+            syntax::Written::Device => {
+                crate::arch::topology_default_space(&p.topology, &self.topologies)
+            }
+            syntax::Written::Space => p.space.clone(),
+        };
+        placed_attr(&space, on_chip)
+    }
+
     pub(crate) fn enum_payload_type_str(&self, name: &str) -> Option<String> {
         let enum_def = self.enums.get(name)?;
         if !enum_has_payload(enum_def) {
@@ -2513,4 +2538,25 @@ pub(crate) fn enum_has_payload(
     enum_def
         .iter()
         .any(|(_, p)| p.as_ref().is_some_and(|p| !p.is_empty()))
+}
+
+/// `{vx.placed = 500 : i32}`: a placed parameter or result, and the topology the plugin that
+/// allocated it frees it on, the number a transfer to that memory carries. On-chip memory, shared
+/// or per-thread, is scratch nothing frees: it is `{vx.placed}` with no topology.
+pub(crate) fn placed_attr(space: &syntax::MemorySpace, on_chip: bool) -> String {
+    if on_chip {
+        return "{vx.placed}".to_string();
+    }
+    format!(
+        "{{vx.placed = {} : i32}}",
+        crate::arch::memory_space_dispatch_id(space)
+    )
+}
+
+/// Whether an address space is on-chip scratch: shared memory or per-thread memory.
+pub(crate) fn on_chip(space: Option<crate::arch::AddressSpace>) -> bool {
+    matches!(
+        space,
+        Some(crate::arch::AddressSpace::Workgroup | crate::arch::AddressSpace::Private)
+    )
 }
