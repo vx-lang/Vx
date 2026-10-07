@@ -6,9 +6,10 @@
 # Downloads a prebuilt Vx toolchain, checks it against its published SHA-256, and unpacks it
 # under ~/.vx. Nothing is installed outside that directory and no command needs root.
 #
-# The toolchain needs LLVM 22 and the z3 binary present on the system. This script does not
-# install them for you -- a script piped into a shell should not be quietly running a package
-# manager. It checks for them, and if they are missing it prints the exact command to run.
+# The Linux toolchains carry the LLVM they need. On macOS the toolchain needs LLVM 22 on the
+# system, and every platform needs the z3 binary for --verify-seams. This script does not install
+# them for you -- a script piped into a shell should not be quietly running a package manager. It
+# checks for them, and if they are missing it prints the exact command to run.
 #
 # Environment:
 #   VX_VERSION     version to install (default: the latest published release)
@@ -108,7 +109,7 @@ detect_platform() {
 
 # ------------------------------------------------------------ prerequisites --
 
-# The package-manager line for this platform, so a missing dependency comes with its cure.
+# The package-manager line for this platform, so a missing LLVM comes with its cure.
 deps_hint() {
     case "$TARGET" in
         aarch64-apple-darwin)
@@ -119,6 +120,26 @@ deps_hint() {
             say "    sudo apt-get install -y libmlir-${LLVM_MAJOR}-dev mlir-${LLVM_MAJOR}-tools z3 libffi8"
             ;;
     esac
+}
+
+z3_hint() {
+    case "$TARGET" in
+        aarch64-apple-darwin) say "    brew install z3" ;;
+        *)                    say "    sudo apt-get install -y z3" ;;
+    esac
+}
+
+# Tell the user that LLVM is missing, and how to install it.
+llvm_missing() {
+    err "LLVM ${LLVM_MAJOR} was not found."
+    say ""
+    say "  Vx lowers through MLIR and runs mlir-translate, opt, llc and clang from LLVM"
+    say "  ${LLVM_MAJOR} at compile time. A different major version will not work: the MLIR C API"
+    say "  changes between releases."
+    say ""
+    say "  Install it with:"
+    deps_hint
+    say ""
 }
 
 # Locate an LLVM $LLVM_MAJOR installation and set LLVM_BIN to its bin directory.
@@ -156,20 +177,18 @@ check_prereqs() {
 
     missing=0
 
-    if find_llvm; then
-        say "    ${GRN}ok${R}  LLVM ${LLVM_FOUND_VERSION}  ${DIM}${LLVM_BIN}${R}"
-    else
-        err "LLVM ${LLVM_MAJOR} was not found."
-        say ""
-        say "  Vx lowers through MLIR and runs mlir-translate, opt, llc and clang from LLVM"
-        say "  ${LLVM_MAJOR} at compile time. A different major version will not work: the MLIR C API"
-        say "  changes between releases."
-        say ""
-        say "  Install it with:"
-        deps_hint
-        say ""
-        missing=1
-    fi
+    # The Linux toolchains carry their own LLVM, so LLVM is checked here only on macOS. An older
+    # Linux release without one is caught after unpacking, in do_install.
+    case "$TARGET" in
+        aarch64-apple-darwin)
+            if find_llvm; then
+                say "    ${GRN}ok${R}  LLVM ${LLVM_FOUND_VERSION}  ${DIM}${LLVM_BIN}${R}"
+            else
+                llvm_missing
+                missing=1
+            fi
+            ;;
+    esac
 
     # The z3 *binary* is executed, not linked. Installing libz3-dev alone is the usual mistake.
     #
@@ -294,6 +313,24 @@ do_install() {
     mkdir -p "$DEST"
     tar -xzf "$TMP/$ARCHIVE" -C "$DEST" --strip-components=1
 
+    # The toolchain wrapper uses the LLVM in llvm/ when the toolchain has one. Otherwise it reads
+    # etc/llvm-env.sh, written here because the location is a property of this machine, not of
+    # the release.
+    if [ -x "${DEST}/llvm/bin/llvm-config" ]; then
+        say "    ${GRN}ok${R}  LLVM $("${DEST}/llvm/bin/llvm-config" --version) comes with the toolchain"
+    else
+        if [ -z "${LLVM_BIN:-}" ] && ! find_llvm; then
+            rm -rf "$DEST"
+            llvm_missing
+            die "Vx ${VERSION} does not include LLVM. Install it as above, then run this script again"
+        fi
+        mkdir -p "${DEST}/etc"
+        cat > "${DEST}/etc/llvm-env.sh" <<EOF
+# Written by the Vx installer. The LLVM ${LLVM_MAJOR} installation found on this machine.
+VX_LLVM_BIN="${LLVM_BIN}"
+EOF
+    fi
+
     ln -sfn "$DEST" "${VX_HOME}/current"
 
     mkdir -p "${VX_HOME}/bin"
@@ -301,14 +338,6 @@ do_install() {
         [ -e "${DEST}/bin/${tool}" ] || continue
         ln -sfn "${VX_HOME}/current/bin/${tool}" "${VX_HOME}/bin/${tool}"
     done
-
-    # The toolchain wrapper reads this to find the LLVM tools it shells out to. Written at
-    # install time because the location is a property of this machine, not of the release.
-    mkdir -p "${DEST}/etc"
-    cat > "${DEST}/etc/llvm-env.sh" <<EOF
-# Written by the Vx installer. The LLVM ${LLVM_MAJOR} installation found on this machine.
-VX_LLVM_BIN="${LLVM_BIN}"
-EOF
 }
 
 verify_install() {
@@ -365,7 +394,7 @@ print_next_steps() {
         say ""
         say "  ${YLW}Note:${R} z3 was not found, so ${B}--verify-seams${R} is unavailable."
         say "  Everything else works. To enable it later:"
-        deps_hint
+        z3_hint
     fi
 
     say ""

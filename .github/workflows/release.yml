@@ -70,19 +70,22 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # mlir-sys remembers where LLVM was when it was built, so a new LLVM needs a new cache.
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: llvm-${{ hashFiles('scripts/provision/build_llvm.sh') }}
 
-      - name: Install LLVM 22 and z3 (Linux)
+      # On Linux, Vx is built against its own LLVM, and the toolchain ships it. This runner is
+      # older than the one CI uses, so it has its own entry in the cache.
+      - name: Build LLVM if the cache does not have it (Linux)
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/build-own-llvm
+
+      - name: Install z3 and patchelf (Linux)
         if: runner.os == 'Linux'
         run: |
-          set -euo pipefail
-          wget https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh 22
-          sudo apt-get install -y \
-            llvm-22-dev libmlir-22-dev mlir-22-tools libpolly-22-dev libclang-22-dev \
-            ninja-build cmake z3 lld libffi-dev patchelf
-          echo "/usr/lib/llvm-22/bin" >> "$GITHUB_PATH"
+          sudo apt-get install -y z3 patchelf
+          echo "$GITHUB_WORKSPACE/toolchain/install/bin" >> "$GITHUB_PATH"
 
       - name: Install LLVM 22 and z3 (macOS)
         if: runner.os == 'macOS'
@@ -142,6 +145,9 @@ jobs:
           # The suffix is passed rather than detected, so the artifact is named by the job that
           # built it and not by whatever happens to be installed on the runner.
           export VX_TARGET_SUFFIX="${{ matrix.cuda && '-cuda' || '' }}"
+          if [ "$(uname -s)" = "Linux" ]; then
+            export VX_BUNDLE_LLVM="$GITHUB_WORKSPACE/toolchain/install"
+          fi
           VX_SKIP_BUILD=1 ./scripts/release/package.sh "${{ steps.version.outputs.version }}"
 
       # A tarball that has never been unpacked anywhere but its build directory is not evidence
@@ -185,9 +191,19 @@ jobs:
             echo "No shipped library records a build-machine path."
           fi
 
-          mkdir -p "$prefix/etc"
-          printf 'VX_LLVM_BIN="%s"\n' "$(dirname "$(command -v llvm-config)")" \
-            > "$prefix/etc/llvm-env.sh"
+          # The Linux toolchain carries its own LLVM. The copy it was built from is moved out of
+          # reach, so a file missing from the tarball fails here instead of being found there.
+          if [ "$(uname -s)" = "Linux" ]; then
+            [ -x "$prefix/llvm/bin/llvm-config" ] || {
+              echo "error: the Linux toolchain does not carry LLVM in llvm/." >&2
+              exit 1
+            }
+            mv "$GITHUB_WORKSPACE/toolchain" "$GITHUB_WORKSPACE/toolchain.moved-away"
+          else
+            mkdir -p "$prefix/etc"
+            printf 'VX_LLVM_BIN="%s"\n' "$(dirname "$(command -v llvm-config)")" \
+              > "$prefix/etc/llvm-env.sh"
+          fi
 
           mkdir -p /tmp/vx-work
           cd /tmp/vx-work
@@ -352,8 +368,9 @@ jobs:
             curl -fsSL https://vxlang.org/install.sh | sh
             ```
 
-            Requires LLVM 22 and, for `--verify-seams`, the `z3` binary. The installer checks for
-            both and prints the command to install them if they are missing. See
+            The Linux toolchains include the LLVM they need. On macOS, Vx requires LLVM 22. For
+            `--verify-seams`, every platform needs the `z3` binary. The installer checks for what
+            is missing and prints the command to install it. See
             [the install guide](https://vxlang.org/docs/getting-started.html).
 
             ## Platforms

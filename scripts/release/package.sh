@@ -5,10 +5,10 @@
 #
 # Produces  dist/vx-<version>-<target>.tar.gz  and its .sha256.
 #
-# The tarball is "slim": it carries the Vx compiler, its runtime library, the standard library
-# and the machine files, but NOT LLVM. The user supplies LLVM 22 through their own package
-# manager, and the installer records where it found it. That keeps the download near 300 MB
-# instead of over a gigabyte, at the cost of one prerequisite.
+# The tarball carries the Vx compiler, its runtime library, the standard library and the machine
+# files. With VX_BUNDLE_LLVM it also carries the LLVM tools vxc runs, built by
+# scripts/provision/build_llvm.sh. Without it, the user supplies LLVM 22 through their own package
+# manager, and the installer records where it found it.
 #
 # Layout produced:
 #
@@ -19,6 +19,7 @@
 #     stdlib/         the standard library, as Vx source
 #     fleet/          machine files for real parts
 #     examples/       runnable programs
+#     llvm/           the LLVM tools and libraries, only with VX_BUNDLE_LLVM
 #     etc/            written at install time, not here
 #
 # Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -164,6 +165,37 @@ cp LICENSE "$STAGE/LICENSE"
 cp README.md "$STAGE/README.md"
 echo "$VERSION" > "$STAGE/VERSION"
 
+# ------------------------------------------------------------------- LLVM --
+
+# With VX_BUNDLE_LLVM set to the install from scripts/provision/build_llvm.sh, the toolchain
+# carries the part of LLVM that vxc runs, in llvm/, and the user needs no LLVM of their own. The
+# compiler itself already has MLIR and LLVM linked in; these are the tools it shells out to, the
+# libraries a compiled program loads, and Enzyme.
+if [ -n "${VX_BUNDLE_LLVM:-}" ]; then
+    echo "==> Staging LLVM from $VX_BUNDLE_LLVM"
+    mkdir -p "$STAGE/llvm/bin" "$STAGE/llvm/lib"
+    for tool in llvm-config mlir-translate opt llc clang-22 clang; do
+        [ -e "$VX_BUNDLE_LLVM/bin/$tool" ] || {
+            echo "error: $VX_BUNDLE_LLVM/bin/$tool is missing." >&2
+            exit 1
+        }
+        # -P keeps clang a link to clang-22 rather than a second copy.
+        cp -P "$VX_BUNDLE_LLVM/bin/$tool" "$STAGE/llvm/bin/"
+    done
+    for lib in mlir_c_runner_utils mlir_runner_utils mlir_float16_utils; do
+        set -- "$VX_BUNDLE_LLVM/lib/lib$lib.$DLL"*
+        [ -e "$1" ] || {
+            echo "error: $VX_BUNDLE_LLVM/lib/lib$lib.$DLL is missing." >&2
+            exit 1
+        }
+        cp -P "$@" "$STAGE/llvm/lib/"
+    done
+    # clang's own headers and its runtime library directory.
+    cp -R "$VX_BUNDLE_LLVM/lib/clang" "$STAGE/llvm/lib/"
+    cp -R "$VX_BUNDLE_LLVM/lib/enzyme" "$STAGE/llvm/lib/"
+    du -sh "$STAGE/llvm"
+fi
+
 # ---------------------------------------------------- relocate the libraries --
 
 # The compiler links a couple of libraries from the build machine's package manager. Left alone,
@@ -234,8 +266,16 @@ while [ -L "\$self" ]; do
 done
 PREFIX=\$(CDPATH= cd -- "\$(dirname -- "\$self")/.." && pwd)
 
-# Where the installer found LLVM on this machine.
-if [ -f "\$PREFIX/etc/llvm-env.sh" ]; then
+# The LLVM this toolchain carries, if it has one; otherwise the one the installer found on this
+# machine.
+if [ -x "\$PREFIX/llvm/bin/llvm-config" ]; then
+    VX_LLVM_BIN="\$PREFIX/llvm/bin"
+    for candidate in "\$PREFIX"/llvm/lib/enzyme/LLVMEnzyme-*; do
+        if [ -f "\$candidate" ]; then
+            export ENZYME_LIB="\${ENZYME_LIB:-\$candidate}"
+        fi
+    done
+elif [ -f "\$PREFIX/etc/llvm-env.sh" ]; then
     . "\$PREFIX/etc/llvm-env.sh"
 fi
 
@@ -297,6 +337,8 @@ echo "    dist/$ARCHIVE.sha256"
 echo ""
 echo "Smoke-test it somewhere that is not this checkout:"
 echo "    tar -xzf dist/$ARCHIVE -C /tmp"
-echo "    printf 'VX_LLVM_BIN=\"%s\"\\n' \"\$(dirname \"\$(command -v llvm-config)\")\" \\"
-echo "        > /tmp/vx-${VERSION}-${TARGET}/etc/llvm-env.sh"
+if [ -z "${VX_BUNDLE_LLVM:-}" ]; then
+    echo "    printf 'VX_LLVM_BIN=\"%s\"\\n' \"\$(dirname \"\$(command -v llvm-config)\")\" \\"
+    echo "        > /tmp/vx-${VERSION}-${TARGET}/etc/llvm-env.sh"
+fi
 echo "    cd /tmp && /tmp/vx-${VERSION}-${TARGET}/bin/vxc --run <a .vx file>"

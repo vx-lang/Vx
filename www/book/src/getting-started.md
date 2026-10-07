@@ -28,21 +28,22 @@ Add that line to `~/.zshrc` or `~/.bashrc` to make it permanent.
 
 ## Prerequisites
 
-The installer checks for these and stops with the exact command to run if either is missing. It
+The installer checks for these and stops with the exact command to run if one is missing. It
 does **not** install them for you: a script piped into a shell should not quietly run your package
 manager.
 
-### LLVM 22
+### LLVM 22 (macOS, and Linux before v0.0.3)
 
 Vx lowers through MLIR, and shells out to `mlir-translate`, `opt`, `llc` and `clang` from LLVM 22
-when it compiles. The version matters — the MLIR C API changes between major releases, so LLVM 21
-or 23 will not work.
+when it compiles. From v0.0.3, the Linux toolchains include these, so there is nothing to install
+on Linux. On macOS you install LLVM 22 yourself. The version matters — the MLIR C API changes
+between major releases, so LLVM 21 or 23 will not work.
 
 ```bash
 # macOS
 brew install llvm@22
 
-# Ubuntu / Debian
+# Ubuntu / Debian, only for a release before v0.0.3
 wget https://apt.llvm.org/llvm.sh && chmod +x llvm.sh && sudo ./llvm.sh 22
 sudo apt-get install -y libmlir-22-dev mlir-22-tools
 ```
