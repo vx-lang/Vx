@@ -60,8 +60,12 @@ fn main() -> i32 {
       print!("Fallible read did not report the written byte");
       return 1;
     }
-    if failed_write_status <= 0 || failed_write_status > 12 || failed_write_count != 0 || failed_write_native_code == 0 || !failed_write_has_native_code {
-      print!("Write through a read-only file did not report a native error");
+    if failed_write_status != 12 {
+      print!("Write through a read-only file did not report Other");
+      return 1;
+    }
+    if failed_write_count != 0 || failed_write_native_code == 0 || !failed_write_has_native_code {
+      print!("Write through a read-only file did not report native error details");
       return 1;
     }
   }
