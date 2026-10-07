@@ -174,7 +174,22 @@ impl<'a> TypeChecker<'a> {
             {
                 return Type::Tensor(dst_el.clone(), dims.clone(), top.clone());
             }
-            (Type::Scalar(_), Type::Scalar(_)) => {
+            (Type::Scalar(_), Type::Scalar(dst)) => {
+                // Only a number known while compiling: a narrowing of a variable is what `as`
+                // is for, and warning on every one would bury the casts that lose a value.
+                if let Some(crate::hir::env::Value::Int(v)) =
+                    self.eval_expr(&expr.expr, &std::collections::HashMap::new())
+                {
+                    if dst.accepts_integer_literal(&v.to_string()) == Some(false)
+                        && !self.speculating
+                    {
+                        self.errors.warn(
+                            crate::diagnostic::DiagnosticCode::W1014,
+                            format!("{v} does not fit in {dst}, so `as` changes its value"),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
+                        );
+                    }
+                }
                 return target_ty;
             }
             // `&mut x as *mut T`: the same conversion `let p : *mut T = &mut x` makes, spelled as

@@ -52,33 +52,38 @@ pub enum DiagnosticCode {
     // --- Warnings (W1xxx) ---
     /// Unused variable binding
     W1001,
-    /// Unused function definition
+    /// A function in the program's own file that nothing calls, directly or through other
+    /// functions, starting from `main`.
     W1002,
     /// Unreachable code after return, break, or continue
     W1003,
-    /// Unnecessary mutable binding (`let mut x` where x is never reassigned)
+    /// `let mut x` where `x` never changes: it is never assigned, never borrowed `&mut`, and no
+    /// method that changes it is called on it. The `mut` can go.
     W1004,
-    /// Shadowed variable in same scope
+    /// A `let` that reuses a name already declared in the same block, so the first value can
+    /// no longer be named.
     W1005,
-    /// Redundant borrow (`&&x`)
+    /// `&&x`, a borrow of a borrow, where `&x` was probably meant.
     W1006,
-    /// Implicit type widening in `as` cast
+    /// An `as` cast that widens, such as `x as i64` when `x` is an `i32`. It cannot lose a value,
+    /// and `i64::from(x)` says so.
     W1007,
-    /// Empty match arm body
+    /// A match arm whose body is empty, such as `1 => {}`.
     W1008,
     /// Unused function parameter
     W1009,
-    /// Unnecessary unsafe block (no unsafe ops inside)
+    /// An `unsafe` block with nothing inside it that needs `unsafe`.
     W1010,
-    /// Redundant `as` cast to same type
+    /// An `as` cast to the type the value already has, such as `x as i32` when `x` is an `i32`.
     W1013,
-    /// Narrowing cast loses precision
+    /// An `as` cast of a number known while compiling that does not fit the target type, such
+    /// as `100000 as i8`, which gives -96.
     W1014,
-    /// Immediately dereferenced borrow (`*&x`)
+    /// `*&x`, a borrow that is dereferenced at once. It is the same as `x`.
     W1020,
-    /// Transfer to same memory space (no-op)
+    /// A `transfer` into the memory the value is already in. It only makes a copy.
     W1022,
-    /// Spawn on Topology::Current (no-op)
+    /// `spawn on(Topology::Current)`: the region runs where the code around it already runs.
     W1023,
     /// Implicit cross-topology transfer inserted via a `Relocatable` impl (a real data
     /// movement happens silently at the use site; write the transfer explicitly to
