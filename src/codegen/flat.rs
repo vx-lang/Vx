@@ -215,6 +215,11 @@ fn tensor_memref_of_type(ty: &Type) -> Option<String> {
 /// agree: every fixture runs on both back ends against one set of CHECK lines, and a caller on one
 /// path can link a body compiled by the other.
 pub(crate) fn returns_through_slot(ty: &Type) -> Option<String> {
+    // A placed tensor stays where it was placed: the callee hands back its buffer, which the
+    // caller frees through its plugin, rather than copying it into a slot on the caller's stack.
+    if matches!(ty, Type::Tensor(_, _, Some(_))) {
+        return None;
+    }
     let memty = tensor_memref_of_type(ty)?;
     crate::codegen::generator::returns_through_slot(&memty).then_some(memty)
 }
@@ -265,20 +270,29 @@ fn is_ptr_ty(ty: &Type) -> bool {
 /// it rests on the borrow checker's soundness rather than on a runtime oracle — hence the deliberately
 /// conservative choice above (exactly what rustc emits for `&mut`/`&`). Rendered with a leading space
 /// for direct concatenation after the param type, or `""` for none.
-fn param_alias_attrs(ty: &Type) -> &'static str {
+/// The `vx.placed` mark of a placed parameter or result. On-chip memory, by its built-in kind or
+/// its declared scope, is scratch nothing frees.
+fn placed_attr(p: &crate::syntax::Placement, ctx: &EmitCtx) -> String {
+    let id = crate::arch::memory_space_dispatch_id(&p.space) as u64;
+    let declared_scratch = ctx
+        .subspaces
+        .get(&id)
+        .and_then(|s| s.scope.as_deref())
+        .is_some_and(|s| matches!(s, "sm" | "cta" | "thread"));
+    let on_chip = declared_scratch
+        || crate::codegen::generator::on_chip(crate::arch::builtin_address_space(&p.space));
+    crate::codegen::generator::placed_attr(&p.space, on_chip)
+}
+
+fn param_alias_attrs(ty: &Type, ctx: &EmitCtx) -> String {
     match ty {
-        Type::Borrow { is_mut: true, .. } => " {llvm.noalias}",
-        Type::Borrow { is_mut: false, .. } => " {llvm.readonly}",
+        Type::Borrow { is_mut: true, .. } => " {llvm.noalias}".to_string(),
+        Type::Borrow { is_mut: false, .. } => " {llvm.readonly}".to_string(),
         // A tensor taken by value belongs to the function, which frees it. One placed in
-        // another memory is not freed by its drop yet.
-        Type::Tensor(_, _, placement) => {
-            if placement.is_some() {
-                " {vx.placed}"
-            } else {
-                " {vx.owned}"
-            }
-        }
-        _ => "",
+        // another memory names the topology its plugin frees it on.
+        Type::Tensor(_, _, Some(p)) => format!(" {}", placed_attr(p, ctx)),
+        Type::Tensor(_, _, None) => " {vx.owned}".to_string(),
+        _ => String::new(),
     }
 }
 
@@ -451,6 +465,9 @@ pub struct Callee {
     /// The memref spelling when the callee returns a statically shaped tensor (wrappers peeled) --
     /// the call's result is then a memref value tracked in `mem_of`.
     pub ret_tensor: Option<String>,
+    /// Whether the returned tensor is placed in another memory. Such a result is handed back
+    /// as a buffer, never through a slot on the caller's stack.
+    pub ret_placed: bool,
     /// The memref spelling of each tensor parameter, by value or by reference; `None` for any
     /// other parameter. A row passed in is a strided view, and is cast to this at the call.
     pub param_tensors: Vec<Option<String>>,
@@ -574,6 +591,7 @@ pub fn build_callee_map(
                 },
                 ret_void: is_void_ty(&sig.ret_ty),
                 ret_tensor: tensor_memref_of_type(&sig.ret_ty),
+                ret_placed: matches!(sig.ret_ty, Type::Tensor(_, _, Some(_))),
                 param_tensors: sig
                     .params
                     .iter()
@@ -2076,7 +2094,7 @@ pub fn emit_function_mlir(
         // fn-pointer), tensor memref, or by-value aggregate `!llvm.struct`; else the function declines.
         let pty = ty_mlir(ty, ctx)?;
         let n = i as u32 + arg_offset;
-        params.push(format!("%arg{n}: {pty}{}", param_alias_attrs(ty)));
+        params.push(format!("%arg{n}: {pty}{}", param_alias_attrs(ty, ctx)));
     }
     // A `Pinned<i32, ..>` return is the scalar it wraps, as at a call site.
     let ret_elem = match peel_wrappers(&func.return_type) {
@@ -2211,7 +2229,13 @@ pub fn emit_function_mlir(
         }
     }
 
+    // A placed result the callee hands back names the topology the caller frees it on.
+    let ret_attr = match &func.return_type {
+        Type::Tensor(_, _, Some(p)) => format!(" {}", placed_attr(p, ctx)),
+        _ => String::new(),
+    };
     let mut ret_sig = match &ret_mlir {
+        Some(t) if !ret_attr.is_empty() => format!(" -> ({t}{ret_attr})"),
         Some(t) => format!(" -> {t}"),
         None => String::new(),
     };

@@ -1,0 +1,44 @@
+//===- placed_tensor_given_to_a_function.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor placed in GPU memory is freed once, by whoever owns it last, as a tensor in host
+// memory is. `place` makes one and returns it, so `main` owns it; `main` gives it to `sum`,
+// which owns it then and frees it when it returns. `kept` is made in `main` and given to `sum`
+// too. `sum` copies its tensor back to the host to add it up: 0 + 1 + 2 + 3, then 4 times 1.5.
+//
+// EXPECT: 6 6
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+
+fn place(t : Tensor<f32, [4]>) -> Tensor<f32, [4], Memory::GPU_HBM> {
+  return transfer(t, Memory::GPU_HBM);
+}
+
+fn sum(d : Tensor<f32, [4], Memory::GPU_HBM>) -> f32 {
+  let h = transfer(d, Memory::CPU_DRAM);
+  return h[0] + h[1] + h[2] + h[3];
+}
+
+fn main() -> i32 {
+  let mut h = Tensor<f32, [4]>::uninit();
+  for i in 0..4 {
+    h[i] = i as f32;
+  }
+  let given = place(h);
+  print(sum(given));
+  print!(" ");
+  let mut h2 = Tensor<f32, [4]>::uninit();
+  for i in 0..4 {
+    h2[i] = 1.5;
+  }
+  let kept = transfer(h2, Memory::GPU_HBM);
+  print(sum(kept));
+  return 0;
+}

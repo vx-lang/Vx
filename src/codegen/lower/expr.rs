@@ -3017,12 +3017,9 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                         arg_val =
                             retype_tensor_reference(gen, &current_b, arg_val, expr_ty, field_ty)?;
                     } else if gen.is_memref(&expr_ty) && gen.is_memref(&field_ty) {
-                        let cast_op = OperationBuilder::new("memref.cast", gen.loc())
-                            .add_operands(&[arg_val])
-                            .add_results(&[field_ty])
-                            .build()
-                            .unwrap();
-                        arg_val = current_b.append_operation(cast_op).result(0)?.into();
+                        arg_val = crate::codegen::lower::cast_memref(
+                            gen, &current_b, arg_val, expr_ty, field_ty,
+                        )?;
                     } else if let Some(adapted) =
                         gen.adapt_closure_to_nominal(&current_b, arg_val, expr_ty, field_ty)?
                     {

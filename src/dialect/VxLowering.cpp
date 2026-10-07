@@ -1126,6 +1126,13 @@ static bool collectAliases(Value buffer, SmallVectorImpl<Value> &aliases) {
   }
   return true;
 }
+// The topology a function marks a placed parameter or result with,
+// `{vx.placed = 500 : i32}`.
+static std::optional<int32_t> placedTopology(Attribute attr) {
+  if (auto value = dyn_cast_or_null<IntegerAttr>(attr))
+    return static_cast<int32_t>(value.getInt());
+  return std::nullopt;
+}
 
 // Put a `vx.free` where the buffer made by `transfer` dies.
 //
@@ -1139,6 +1146,21 @@ static void placeTransferFree(vx::TransferOp transfer) {
   SmallVector<Value> aliases;
   if (!collectAliases(buffer, aliases))
     return;
+  // An owner's drop frees it, or a function it is passed to by value does.
+  // What is left is a temporary nothing names, `print(transfer(..))`.
+  for (Value alias : aliases)
+    for (OpOperand &use : alias.getUses()) {
+      if (isa<vx::DropOp>(use.getOwner()))
+        return;
+      auto call = dyn_cast<func::CallOp>(use.getOwner());
+      if (!call)
+        continue;
+      auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+          call, call.getCalleeAttr());
+      if (callee &&
+          placedTopology(callee.getArgAttr(use.getOperandNumber(), "vx.placed")))
+        return;
+    }
 
   Operation *scope =
       transfer->getParentWithTrait<OpTrait::IsIsolatedFromAbove>();
@@ -1243,12 +1265,12 @@ static LogicalResult lowerHostFrees(ModuleOp module) {
   SmallVector<vx::FreeOp> frees;
   module.walk([&](vx::FreeOp f) { frees.push_back(f); });
   for (vx::FreeOp f : frees) {
+    // A transfer's buffer, or a placed one this function was given or a call
+    // returned, is freed through the plugin at the LLVM stage.
     Operation *def = f.getBuffer().getDefiningOp();
-    if (isa_and_nonnull<vx::TransferOp>(def))
-      continue;
     auto alloc = dyn_cast_or_null<memref::AllocOp>(def);
     if (!alloc)
-      return f.emitError("vx.free of a buffer that no transfer allocated");
+      continue;
     OpBuilder builder(f);
     // Memory space 0, so memref-to-llvm can call the standard `free`.
     MemRefType type = alloc.getType();
@@ -1438,19 +1460,46 @@ enum class BufferOrigin {
   // A heap buffer this function owns: a `memref.alloc`, a tensor a call
   // returned, or a parameter taken by value (`vx.owned`).
   Heap,
-  // Storage a drop does not free: a stack slot, a global, a transfer's copy
-  // (placeTransferFrees frees it), or a parameter placed in another memory.
+  // A buffer in another memory, freed through the plugin that allocated it: a
+  // transfer's copy, a placed parameter taken by value, or a call's placed
+  // result. Its topology says which device.
+  Placed,
+  // Storage a drop does not free: a stack slot, a global, or a shared-memory
+  // tile.
   NotFreed,
   // A view of another buffer, or a parameter taken by reference.
   Borrowed,
   Unknown,
 };
 
+// Free a placed buffer through the plugin that allocated it. The legacy code
+// generator gives a placed tensor its memory space in the type; the free
+// takes the plain memref, as the transfer handed it out.
+static void freePlaced(OpBuilder &builder, Location loc, Value buffer,
+                       int32_t topology) {
+  auto type = cast<MemRefType>(buffer.getType());
+  if (type.getMemorySpace()) {
+    auto plain = MemRefType::get(type.getShape(), type.getElementType(),
+                                 type.getLayout());
+    buffer = builder.create<memref::MemorySpaceCastOp>(loc, plain, buffer);
+  }
+  builder.create<vx::FreeOp>(loc, buffer, topology);
+}
+
+
 // Whether parameter `i` of the function `call` reaches is taken by value.
 static bool takesOwnership(func::CallOp call, unsigned i) {
   auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
       call, call.getCalleeAttr());
   return callee && callee.getArgAttr(i, "vx.owned");
+}
+
+// Whether parameter `i` of the function `call` reaches takes a placed tensor
+// by value, which that function then frees through its plugin.
+static bool takesPlaced(func::CallOp call, unsigned i) {
+  auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+      call, call.getCalleeAttr());
+  return callee && placedTopology(callee.getArgAttr(i, "vx.placed"));
 }
 
 // The buffer behind `v`: through a `memref.cast`, and through the
@@ -1472,25 +1521,32 @@ static Value castSource(Value v) {
   }
 }
 
-static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen);
+static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
+                             std::optional<int32_t> &topology);
+
 
 // The origin of every value in `values`, when they all have the same one.
 static BufferOrigin commonOrigin(ArrayRef<Value> values,
-                                 llvm::SmallPtrSetImpl<void *> &seen) {
+                                 llvm::SmallPtrSetImpl<void *> &seen,
+                                 std::optional<int32_t> &topology) {
   std::optional<BufferOrigin> common;
   for (Value v : values) {
     // A value already being looked at, round a loop: the other paths decide.
     if (seen.contains(v.getAsOpaquePointer()))
       continue;
-    BufferOrigin o = originOf(v, seen);
-    if (common && *common != o)
+    std::optional<int32_t> here;
+    BufferOrigin o = originOf(v, seen, here);
+    if ((common && *common != o) || (topology && here && *topology != *here))
       return BufferOrigin::Unknown;
     common = o;
+    if (here)
+      topology = here;
   }
   return common.value_or(BufferOrigin::Unknown);
 }
 
-static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen) {
+static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
+                             std::optional<int32_t> &topology) {
   v = castSource(v);
   seen.insert(v.getAsOpaquePointer());
   // The legacy code generator keeps a `let mut` tensor in a cell, a memref of
@@ -1515,7 +1571,7 @@ static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen) {
         return BufferOrigin::Unknown; // the cell itself escapes
       }
     }
-    return commonOrigin(stored, seen);
+    return commonOrigin(stored, seen, topology);
   }
   if (auto arg = dyn_cast<BlockArgument>(v)) {
     Block *block = arg.getOwner();
@@ -1533,20 +1589,43 @@ static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen) {
           return BufferOrigin::Unknown;
         incoming.push_back(forwarded[arg.getArgNumber()]);
       }
-      return commonOrigin(incoming, seen);
+      return commonOrigin(incoming, seen, topology);
     }
     if (!func)
       return BufferOrigin::Unknown;
     if (func.getArgAttr(arg.getArgNumber(), "vx.owned"))
       return BufferOrigin::Heap;
-    if (func.getArgAttr(arg.getArgNumber(), "vx.placed"))
-      return BufferOrigin::NotFreed;
+    if (Attribute placed = func.getArgAttr(arg.getArgNumber(), "vx.placed")) {
+      topology = placedTopology(placed);
+      return topology ? BufferOrigin::Placed : BufferOrigin::NotFreed;
+    }
     return BufferOrigin::Borrowed;
   }
   Operation *def = v.getDefiningOp();
-  if (isa<memref::AllocOp, func::CallOp>(def))
+  if (auto transfer = dyn_cast_or_null<vx::TransferOp>(def)) {
+    // A shared-memory tile is scratch on the stack.
+    auto scope = transfer->getAttrOfType<StringAttr>("scope");
+    if (scope && scope.getValue() == "sm")
+      return BufferOrigin::NotFreed;
+    topology = transfer.getTargetTopology();
+    return BufferOrigin::Placed;
+  }
+  if (auto call = dyn_cast_or_null<func::CallOp>(def)) {
+    auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+        call, call.getCalleeAttr());
+    if (callee) {
+      unsigned i = cast<OpResult>(v).getResultNumber();
+      if (std::optional<int32_t> placed =
+              placedTopology(callee.getResultAttr(i, "vx.placed"))) {
+        topology = placed;
+        return BufferOrigin::Placed;
+      }
+    }
     return BufferOrigin::Heap;
-  if (isa<memref::AllocaOp, memref::GetGlobalOp, vx::TransferOp>(def))
+  }
+  if (isa<memref::AllocOp>(def))
+    return BufferOrigin::Heap;
+  if (isa<memref::AllocaOp, memref::GetGlobalOp>(def))
     return BufferOrigin::NotFreed;
   // A view, also one built over memory from elsewhere (`tensor_view_2d`) or
   // read out of a struct field, both of which reach a memref through a cast.
@@ -1555,9 +1634,14 @@ static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen) {
   return BufferOrigin::Unknown;
 }
 
-static BufferOrigin originOf(Value v) {
+static BufferOrigin originOf(Value v, std::optional<int32_t> &topology) {
   llvm::SmallPtrSet<void *, 8> seen;
-  return originOf(v, seen);
+  return originOf(v, seen, topology);
+}
+
+static BufferOrigin originOf(Value v) {
+  std::optional<int32_t> topology;
+  return originOf(v, topology);
 }
 
 // A statically shaped result comes back in a stack slot the caller allocates
@@ -1651,7 +1735,8 @@ static LogicalResult returnOwnedBuffers(ModuleOp module) {
       if (!type || type.getMemorySpace())
         continue;
       BufferOrigin origin = originOf(operand.get());
-      if (origin == BufferOrigin::Heap)
+      // A placed buffer goes to the caller, which frees it on its device.
+      if (origin == BufferOrigin::Heap || origin == BufferOrigin::Placed)
         continue;
       if (origin == BufferOrigin::Unknown) {
         ret.emitError("returns a buffer whose origin is not known");
@@ -1688,19 +1773,23 @@ static LogicalResult lowerDrops(ModuleOp module) {
   for (vx::DropOp d : drops) {
     // A struct owns its tensor fields, and every buffer stored into one is on
     // the heap (see giveMovedResultsHeapSlots).
+    std::optional<int32_t> topology;
     BufferOrigin origin =
-        d.getField() ? BufferOrigin::Heap : originOf(d.getBuffer());
-    if (d.getOwnedOnly() && origin != BufferOrigin::Heap)
+        d.getField() ? BufferOrigin::Heap : originOf(d.getBuffer(), topology);
+    if (d.getOwnedOnly() && origin != BufferOrigin::Heap &&
+        origin != BufferOrigin::Placed)
       origin = BufferOrigin::NotFreed;
     if (origin == BufferOrigin::Unknown)
       return d.emitError("vx.drop of a buffer whose origin is not known");
     if (origin == BufferOrigin::Borrowed)
       return d.emitError("vx.drop of a buffer this function does not own");
-    // Placed memory is not freed by drops yet. A drop inside a device region
-    // frees a tensor the region made, so it becomes a `dealloc` that goes into
-    // the kernel with the rest of the region.
+    // A placed buffer is freed through its plugin. A drop inside a device
+    // region frees a tensor the region made, so it becomes a `dealloc` that
+    // goes into the kernel with the rest of the region.
     auto type = dyn_cast<MemRefType>(d.getBuffer().getType());
-    if (origin != BufferOrigin::Heap || !type || type.getMemorySpace()) {
+    const bool placed = origin == BufferOrigin::Placed && topology;
+    if ((origin != BufferOrigin::Heap && !placed) || !type ||
+        (!placed && type.getMemorySpace())) {
       d.erase();
       continue;
     }
@@ -1712,7 +1801,11 @@ static LogicalResult lowerDrops(ModuleOp module) {
       auto ifOp = scf::IfOp::create(builder, loc, notMoved);
       builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
     }
-    memref::DeallocOp::create(builder, loc, d.getBuffer());
+    // Placed memory goes back to the plugin that allocated it.
+    if (placed)
+      freePlaced(builder, loc, d.getBuffer(), *topology);
+    else
+      memref::DeallocOp::create(builder, loc, d.getBuffer());
     d.erase();
   }
   return success();
@@ -1771,7 +1864,8 @@ static void freeTemporaries(ModuleOp module) {
           if (!keep)
             aliases.push_back(cell);
         } else if (auto call = dyn_cast<func::CallOp>(user)) {
-          keep = takesOwnership(call, use.getOperandNumber());
+          keep = takesOwnership(call, use.getOperandNumber()) ||
+                 takesPlaced(call, use.getOperandNumber());
         } else if (isa<func::ReturnOp, BranchOpInterface,
                        RegionBranchTerminatorOpInterface,
                        memref::ExtractAlignedPointerAsIndexOp,
@@ -1790,7 +1884,12 @@ static void freeTemporaries(ModuleOp module) {
       continue;
     OpBuilder builder(last->getContext());
     builder.setInsertionPointAfter(last);
-    memref::DeallocOp::create(builder, last->getLoc(), buffer);
+    // A call's placed result goes back to the plugin that allocated it.
+    std::optional<int32_t> topology;
+    if (originOf(buffer, topology) == BufferOrigin::Placed && topology)
+      freePlaced(builder, last->getLoc(), buffer, *topology);
+    else
+      memref::DeallocOp::create(builder, last->getLoc(), buffer);
   }
 }
 

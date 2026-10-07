@@ -1593,6 +1593,67 @@ pub(crate) fn lower_raw_primitive<'c>(
     }
 }
 
+/// The memory space a memref type's text ends with, `1` in `memref<4xf32, 1>`; `None` for host
+/// memory, which carries none.
+fn memref_space(ty: &str) -> Option<&str> {
+    let body = ty.strip_prefix("memref<")?.strip_suffix('>')?;
+    let last = body.rsplit(", ").next()?;
+    (last != body && last.chars().all(|c| c.is_ascii_digit())).then_some(last)
+}
+
+/// `memref.cast` from `from` to `to`, through a `memref.memory_space_cast` when the two are in
+/// different memory spaces: a placed tensor in a type with its address space, and the same
+/// buffer where a plain memref is wanted. A plain cast cannot change the space.
+pub(crate) fn cast_memref<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    val: melior::ir::Value<'c, 'c>,
+    from: melior::ir::Type<'c>,
+    to: melior::ir::Type<'c>,
+) -> Result<melior::ir::Value<'c, 'c>, LowerError> {
+    let (from_s, to_s) = (from.to_string(), to.to_string());
+    let mut val = val;
+    let mut current = from;
+    if memref_space(&from_s) != memref_space(&to_s) {
+        let body = from_s
+            .strip_prefix("memref<")
+            .and_then(|b| b.strip_suffix('>'))
+            .ok_or_else(|| LowerError::from(format!("not a memref: {from_s}")))?;
+        let body = match memref_space(&from_s) {
+            Some(space) => &body[..body.len() - space.len() - 2],
+            None => body,
+        };
+        let spaced = match memref_space(&to_s) {
+            Some(space) => format!("memref<{body}, {space}>"),
+            None => format!("memref<{body}>"),
+        };
+        let spaced_ty = melior::ir::Type::parse(gen.context, &spaced)
+            .ok_or_else(|| LowerError::ParseType(spaced.clone()))?;
+        val = block
+            .append_operation(
+                OperationBuilder::new("memref.memory_space_cast", gen.loc())
+                    .add_operands(&[val])
+                    .add_results(&[spaced_ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        current = spaced_ty;
+    }
+    if current != to {
+        val = block
+            .append_operation(
+                OperationBuilder::new("memref.cast", gen.loc())
+                    .add_operands(&[val])
+                    .add_results(&[to])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+    }
+    Ok(val)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

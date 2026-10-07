@@ -307,11 +307,7 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         let mut src_val = src_val;
         if let Some(t) = static_target {
             if src_ty != t {
-                let cast = OperationBuilder::new("memref.cast", location)
-                    .add_operands(&[src_val])
-                    .add_results(&[t])
-                    .build()?;
-                src_val = block.append_operation(cast).result(0)?.into();
+                src_val = crate::codegen::lower::cast_memref(gen, &block, src_val, src_ty, t)?;
             }
         }
 

@@ -14,6 +14,11 @@
 // Address spaces are consumed by the AST codegen path; the flat path does not
 // model them in types yet, so this pins the AST path explicitly.
 //
+// A placed parameter's `vx.placed` mark names the topology its drop frees it on,
+// the number a transfer into that memory carries: 383899283 for L2, 500 for the
+// GPU. On-chip memory, SMEM and AccCore's, is scratch nothing frees, so its mark
+// names none.
+//
 // RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
 
 Memory SMEM {
@@ -76,9 +81,9 @@ fn main() -> i32 {
 }
 
 // CHECK-DAG: func.func @f_smem(%arg0: memref<4x4xf32, 3> {vx.placed})
-// CHECK-DAG: func.func @f_l2(%arg0: memref<4x4xf32, 1> {vx.placed})
-// CHECK-DAG: func.func @f_gpu(%arg0: memref<4x4xf32, 1> {vx.placed})
+// CHECK-DAG: func.func @f_l2(%arg0: memref<4x4xf32, 1> {vx.placed = 383899283 : i32})
+// CHECK-DAG: func.func @f_gpu(%arg0: memref<4x4xf32, 1> {vx.placed = 500 : i32})
 // CHECK-DAG: func.func @f_acc(%arg0: memref<4x4xf32, 3> {vx.placed})
 // CHECK-DAG: func.func @f_smem_by_space(%arg0: memref<4x4xf32, 3> {vx.placed})
-// CHECK-DAG: func.func @f_l2_by_space(%arg0: memref<4x4xf32, 1> {vx.placed})
-// CHECK-DAG: func.func @f_gpu_by_space(%arg0: memref<4x4xf32, 1> {vx.placed})
+// CHECK-DAG: func.func @f_l2_by_space(%arg0: memref<4x4xf32, 1> {vx.placed = 383899283 : i32})
+// CHECK-DAG: func.func @f_gpu_by_space(%arg0: memref<4x4xf32, 1> {vx.placed = 500 : i32})
