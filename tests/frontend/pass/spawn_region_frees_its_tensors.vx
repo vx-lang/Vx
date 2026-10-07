@@ -1,0 +1,53 @@
+//===- spawn_region_frees_its_tensors.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+//
+// A tensor a `spawn` region makes is dropped inside the region, so the kernel the region
+// becomes frees it. `scratch`, whose size is only known when the program runs, is freed at
+// the end of each pass of the loop that made it. `row`, with a fixed size and made before
+// the loop, becomes a stack slot of the kernel, which needs no free.
+
+// CHECK-LABEL: vx.kernel @vx_npu_kernel_0
+// CHECK: memref.alloca() : memref<4xf32>
+// CHECK: %[[SCRATCH:.*]] = memref.alloc(%{{.*}}) : memref<?xf32>
+// CHECK: memref.dealloc %[[SCRATCH]] : memref<?xf32>
+// CHECK-NOT: memref.dealloc
+// CHECK: gpu.module
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+
+fn main() -> i32 {
+  let mut o_h = Tensor<f32, [4, 4]>::uninit();
+  for i in 0..4 {
+    for j in 0..4 {
+      o_h[i][j] = 0.0;
+    }
+  }
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+  let n = 4;
+  spawn on(Topology::GPU) {
+    let mut row = Tensor<f32, [4]>::uninit();
+    for j in 0..4 {
+      row[j] = 1.0;
+    }
+    for i in 0..4 {
+      let mut scratch = Tensor<f32>([n]);
+      for j in 0..4 {
+        scratch[j] = (i + j) as f32;
+      }
+      for j in 0..4 {
+        o[i][j] = scratch[j] + row[j];
+      }
+    }
+  }
+  print(o);
+  return 0;
+}

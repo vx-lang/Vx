@@ -543,11 +543,11 @@ static void useDeviceMathIn(Region &kernel, ModuleOp module,
 // 64-byte scratch buffer. Nothing frees it either, so on the host path it leaks
 // once per dispatch.
 //
-// Only allocations in the entry block, with a static shape, and with no
-// `dealloc` of their own. An `alloca` inside a loop grows the stack every
-// iteration, which is a worse bug than the one being fixed; a dynamic extent is
-// not a stack slot on a device at all; and something that is explicitly freed
-// is not scratch whose lifetime this may shorten.
+// Only allocations in the entry block and with a static shape. An `alloca`
+// inside a loop grows the stack every iteration, which is a worse bug than the
+// one being fixed, and a dynamic extent is not a stack slot on a device at all.
+// A `dealloc` of one, which a drop writes, goes with it: the stack slot lives
+// until the kernel returns, which is no earlier than the `dealloc` was.
 static void useStackScratchIn(Region &kernel, PatternRewriter &rewriter) {
   if (kernel.empty())
     return;
@@ -560,9 +560,12 @@ static void useStackScratchIn(Region &kernel, PatternRewriter &rewriter) {
     MemRefType ty = alloc.getType();
     if (!ty.hasStaticShape() || !alloc.getDynamicSizes().empty())
       continue;
-    if (llvm::any_of(alloc->getUsers(),
-                     [](Operation *u) { return isa<memref::DeallocOp>(u); }))
-      continue;
+    SmallVector<Operation *> deallocs;
+    for (Operation *u : alloc->getUsers())
+      if (isa<memref::DeallocOp>(u))
+        deallocs.push_back(u);
+    for (Operation *dealloc : deallocs)
+      rewriter.eraseOp(dealloc);
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPoint(alloc);
     auto stack = rewriter.create<memref::AllocaOp>(alloc.getLoc(), ty);
@@ -1693,10 +1696,11 @@ static LogicalResult lowerDrops(ModuleOp module) {
       return d.emitError("vx.drop of a buffer whose origin is not known");
     if (origin == BufferOrigin::Borrowed)
       return d.emitError("vx.drop of a buffer this function does not own");
-    // Placed memory and device regions are not freed by drops yet.
+    // Placed memory is not freed by drops yet. A drop inside a device region
+    // frees a tensor the region made, so it becomes a `dealloc` that goes into
+    // the kernel with the rest of the region.
     auto type = dyn_cast<MemRefType>(d.getBuffer().getType());
-    if (origin != BufferOrigin::Heap || d->getParentOfType<vx::SpawnOp>() ||
-        !type || type.getMemorySpace()) {
+    if (origin != BufferOrigin::Heap || !type || type.getMemorySpace()) {
       d.erase();
       continue;
     }
