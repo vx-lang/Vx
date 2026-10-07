@@ -17,7 +17,7 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1031` (23 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3045` (44 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3046` (45 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4012` (12 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6029` (29 codes)
@@ -138,6 +138,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3043`](/errors/E3043/) | A `for` loop over a reference to a type with no method to iterate it by. The loop calls `iter()` for `for x in &c` and `iter_mut()` for `for x in &mut c`, as Rust's collections do, so the type needs the one the loop asks for. |
 | [`E3044`](/errors/E3044/) | A top-level `const` whose value is not known while compiling, or does not fit its declared type. A `const` holds a number or a `bool`: a literal, or arithmetic on literals and other `const`s. A `const` table holds a list of number literals, and is read one number at a time, as `TABLE[i]`. |
 | [`E3045`](/errors/E3045/) | A number literal that does not fit `usize`, which holds 0 up to the largest `i64`. |
+| [`E3046`](/errors/E3046/) | A `for` loop over a tensor that is not a variable or a flat array literal, such as one a function call returns, or a nested array literal. The loop reads the tensor by index, so it needs a name: bind the tensor with `let` first. |
 
 ## Borrow/Ownership Errors
 
@@ -229,4 +230,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-140 diagnostics.
+141 diagnostics.

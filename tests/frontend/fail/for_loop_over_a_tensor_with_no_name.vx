@@ -1,0 +1,29 @@
+//===- for_loop_over_a_tensor_with_no_name.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `for` loop reads a tensor by index, so it needs the tensor in a variable or a flat array
+// literal. A tensor a function returns, and a nested array literal, get E3046.
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK-DAG: Error[E3046] at 22:12: a `for` loop over a tensor reads it by index
+// CHECK-DAG: Error[E3046] at 25:3: a `for` loop cannot go over a nested array literal
+
+fn make() -> Tensor<i32, [3]> {
+  let t = Tensor<i32, [3]>::new();
+  return t;
+}
+
+fn main() -> i32 {
+  let mut s = 0;
+  for x in make() {
+    s = s + x;
+  }
+  for r in [[1, 2], [3, 4]] {
+    s = s + r[1];
+  }
+  return s;
+}

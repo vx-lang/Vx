@@ -131,6 +131,7 @@ impl<'a> TypeChecker<'a> {
     /// This allows the Non-Lexical Lifetimes (NLL) borrow checker to query its `is_variable_used_after`
     /// in O(1) time instead of performing an O(N^2) AST tree-walk!
     pub(crate) fn check_block(&mut self, body: &mut Vec<Statement>, return_type: &Type) {
+        Self::name_loop_literals(body);
         let mut terminated = false;
 
         // 1. Liveness Analysis Pass
@@ -429,6 +430,37 @@ impl<'a> TypeChecker<'a> {
         })
     }
 
+    /// `for x in [1, 2, 3]` loops over the tensor the literal makes. The literal is bound to a
+    /// variable first, so the loop reads it by index as it does a tensor variable.
+    pub(crate) fn name_loop_literals(stmts: &mut Vec<Statement>) {
+        let mut i = 0;
+        while i < stmts.len() {
+            if let Statement::ForLoop(f) = &mut stmts[i] {
+                if matches!(&*f.iterable, Expr::Array(a)
+                    if !a.elements.iter().any(|el| matches!(el, Expr::Array(_))))
+                {
+                    let name = format!("$for_items_{}_{}", f.span.line, f.span.column);
+                    let span = f.span;
+                    let literal = std::mem::replace(
+                        &mut *f.iterable,
+                        Expr::Identifier(syntax::expr::IdentifierExpr {
+                            name: name.as_str().into(),
+                            span,
+                        }),
+                    );
+                    stmts.insert(
+                        i,
+                        Statement::LetDecl(syntax::stmt::LetDeclStmt::new(
+                            name, false, None, literal, span,
+                        )),
+                    );
+                    i += 1;
+                }
+            }
+            i += 1;
+        }
+    }
+
     fn check_for_loop_stmt(&mut self, floop: &mut ForLoopStmt, consume: bool, return_type: &Type) {
         let ForLoopStmt {
             iter,
@@ -439,6 +471,66 @@ impl<'a> TypeChecker<'a> {
             next_fn,
         } = floop;
         let loop_span = *loop_span;
+        // `for x in t` over a tensor reads it by index: `for $i in 0..t.len() { let x = t[$i]; .. }`.
+        // A tensor of rank 2 or more gives its rows.
+        if matches!(&**iterable, Expr::Array(_))
+            || matches!(self.check_expr_type_probe(iterable), Type::Tensor(..))
+        {
+            if let Expr::Identifier(id) = &**iterable {
+                let index = format!("$for_index_{}_{}", loop_span.line, loop_span.column);
+                let name = |n: &str| {
+                    Expr::Identifier(syntax::expr::IdentifierExpr {
+                        name: n.into(),
+                        span: loop_span,
+                    })
+                };
+                let item = Expr::IndexAccess(syntax::expr::IndexAccessExpr::new(
+                    Box::new(Expr::Identifier(id.clone())),
+                    Box::new(name(&index)),
+                    loop_span,
+                ));
+                let len = Self::method_call_on(Expr::Identifier(id.clone()), "len", loop_span);
+                body.insert(
+                    0,
+                    Statement::LetDecl(syntax::stmt::LetDeclStmt::new(
+                        iter.clone(),
+                        false,
+                        None,
+                        item,
+                        loop_span,
+                    )),
+                );
+                **iterable = Expr::Range(syntax::expr::RangeExpr::new(
+                    Box::new(Expr::Number(syntax::expr::NumberExpr::new(
+                        "0".to_string(),
+                        Some(ElementType::I32),
+                        loop_span,
+                    ))),
+                    Box::new(len),
+                    loop_span,
+                ));
+                *iter = index;
+            } else if !self.speculating {
+                let message = if matches!(&**iterable, Expr::Array(_)) {
+                    "a `for` loop cannot go over a nested array literal; make it with \
+                     `Tensor<T>([[..], [..]])` and bind it with `let` first"
+                } else {
+                    "a `for` loop over a tensor reads it by index, so the tensor needs a name: \
+                     bind it with `let` first"
+                };
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3046,
+                    message.to_string(),
+                    // An array literal has no position of its own; the loop has.
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(
+                        &match &**iterable {
+                            Expr::Array(_) => loop_span,
+                            other => other.span(),
+                        },
+                    )),
+                );
+            }
+        }
         // `for x in it` consumes `it`, as Rust's does: the loop drives a copy of the
         // iterator to exhaustion, so letting the name live on would hand back a value
         // that had not moved.

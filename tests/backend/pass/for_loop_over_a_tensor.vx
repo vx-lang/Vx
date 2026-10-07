@@ -1,0 +1,54 @@
+//===- for_loop_over_a_tensor.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `for x in ..` goes over the items of a tensor, in order:
+//
+// - an array literal: 1 + 2 + 3 = 6;
+// - an array literal in a variable: 10 + 20 = 30;
+// - a tensor of run-time size: 0.5 + 1.5 + 2.0 = 4;
+// - a 2-D tensor gives its rows: 7 + 9 = 16, the last item of each row.
+//
+// EXPECT: 6 30 4 16
+
+fn main() -> i32 {
+  let mut a = 0;
+  for x in [1, 2, 3] {
+    a = a + x;
+  }
+  print(a);
+  print!(" ");
+
+  let tens = [10, 20];
+  let mut b = 0;
+  for x in tens {
+    b = b + x;
+  }
+  print(b);
+  print!(" ");
+
+  let n = 3;
+  let mut d = Tensor<f32>([n]);
+  d[0] = 0.5;
+  d[1] = 1.5;
+  d[2] = 2.0;
+  let mut c = 0.0;
+  for v in d {
+    c = c + v;
+  }
+  print(c);
+  print!(" ");
+
+  let mut m = Tensor<i32, [2, 3]>::new();
+  m[0][2] = 7;
+  m[1][2] = 9;
+  let mut e = 0;
+  for row in m {
+    e = e + row[2];
+  }
+  print(e);
+  return 0;
+}

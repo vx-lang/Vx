@@ -335,6 +335,10 @@ pub enum DiagnosticCode {
     E3044,
     /// A number literal that does not fit `usize`, which holds 0 up to the largest `i64`.
     E3045,
+    /// A `for` loop over a tensor that is not a variable or a flat array literal, such as one a
+    /// function call returns, or a nested array literal. The loop reads the tensor by index, so
+    /// it needs a name: bind the tensor with `let` first.
+    E3046,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
