@@ -736,7 +736,48 @@ impl<'a> TypeChecker<'a> {
             Expr::Closure(c) => {
                 Self::extract_uses_expr(&c.body, uses);
             }
-            _ => {}
+            Expr::EnumVariant(v) => {
+                for e in v.payload.iter().flatten() {
+                    Self::extract_uses_expr(e, uses);
+                }
+            }
+            Expr::IndirectCall(c) => {
+                Self::extract_uses_expr(&c.callee, uses);
+                for a in &c.args {
+                    Self::extract_uses_expr(a, uses);
+                }
+            }
+            Expr::VecMacro(v) => {
+                for e in &v.elements {
+                    Self::extract_uses_expr(e, uses);
+                }
+            }
+            Expr::InlineMlir(m) => {
+                for (_, e, _) in &m.inputs {
+                    Self::extract_uses_expr(e, uses);
+                }
+                for e in &m.clobbers {
+                    Self::extract_uses_expr(e, uses);
+                }
+            }
+            Expr::Jvp(j) => {
+                for a in &j.args {
+                    Self::extract_uses_expr(a, uses);
+                }
+                Self::extract_uses_expr(&j.tangent, uses);
+            }
+            Expr::Vjp(v) => {
+                for a in &v.args {
+                    Self::extract_uses_expr(a, uses);
+                }
+                Self::extract_uses_expr(&v.cotangent, uses);
+            }
+            // No names inside. A macro call is expanded before the checker runs.
+            Expr::Number(_)
+            | Expr::StringLiteral(_)
+            | Expr::MemorySpace(_)
+            | Expr::SizeOf(_)
+            | Expr::MacroCall(_) => {}
         }
     }
 

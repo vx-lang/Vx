@@ -1,0 +1,47 @@
+//===- borrow_used_only_inside_a_call_form.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `a` is borrowed mutably as `r` and then shared as `b` while `r` is still used. Each function
+// uses `r` only inside one kind of expression, and the checker must see that use to report the
+// second borrow.
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK-DAG: Error[E4004] at 24:11: Cannot borrow 'a'
+// CHECK-DAG: Error[E4004] at 32:11: Cannot borrow 'a'
+// CHECK-DAG: Error[E4004] at 40:11: Cannot borrow 'a'
+
+fn sq(x : f32) -> f32 {
+  return x * x;
+}
+
+fn in_jvp() -> f32 {
+  let mut a : f32 = 3.0;
+  let r = &mut a;
+  let b = &a;
+  let j : f32 = jvp(sq, *r, 1.0);
+  return j + *b;
+}
+
+fn in_vjp() -> f32 {
+  let mut a : f32 = 3.0;
+  let r = &mut a;
+  let b = &a;
+  let g : f32 = vjp(sq, *r, 1.0);
+  return g + *b;
+}
+
+fn in_a_call_through_a_value() -> f32 {
+  let mut a : f32 = 3.0;
+  let r = &mut a;
+  let b = &a;
+  let f = sq;
+  return (f)(*r) + *b;
+}
+
+fn main() -> i32 {
+  return 0;
+}
