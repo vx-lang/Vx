@@ -1,0 +1,22 @@
+//===- void_value_used_twice.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `void` value holds nothing, so using it twice is not a move: `a` can be read by both
+// `b` and `c`.
+//
+// EXPECT: done
+
+fn nothing() -> void {
+}
+
+fn main() -> i32 {
+  let a = nothing();
+  let b = a;
+  let c = a;
+  print("done");
+  return 0;
+}

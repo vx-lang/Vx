@@ -821,8 +821,9 @@ impl Type {
             | Type::Matrix
             | Type::Verified(_)
             | Type::Pinned(_, _)
-            | Type::Struct(_, _)
             | Type::Enum(_, _) => true,
+            // `void` is spelled as a struct, but there is nothing in it to move.
+            Type::Struct(..) => !is_void_ty(self),
             // `Option<Noisy>` or `W<i32>` moves as `Noisy` and `W` do.
             Type::GenericInstance(base, _) => base.is_linear(),
             _ => false,
