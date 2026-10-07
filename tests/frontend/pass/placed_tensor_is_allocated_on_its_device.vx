@@ -1,0 +1,75 @@
+//===- placed_tensor_is_allocated_on_its_device.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+// RUN: vxc --legacy-codegen %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=HOST
+// RUN: vxc --legacy-codegen %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=HOST
+// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=LLVM
+//
+// Where a placed tensor is allocated, on both code generators:
+//
+// - `uninit_on_gpu`: in GPU memory (topology 500) with `vx.alloc`, and freed there;
+// - `new_on_gpu`: zeroed on the host, copied to the GPU, and the host copy freed;
+// - `uninit_on_host`: in host memory, a plain allocation freed on the host.
+//
+// In the LLVM IR, `vx.alloc` asks the plugin for memory with a null source, so nothing is copied.
+
+// CHECK-LABEL: func.func @uninit_on_gpu
+// CHECK: vx.alloc({{.*}}) {target_topology = 500 : i32}
+// CHECK: vx.free %{{.*}} {topology = 500 : i32}
+
+// CHECK-LABEL: func.func @new_on_gpu
+// CHECK: %[[ZEROED:.*]] = memref.alloc(
+// CHECK-NEXT: linalg.fill {{.*}} outs(%[[ZEROED]] :
+// CHECK-NEXT: %[[DEV:.*]] = "vx.transfer"(%[[ZEROED]]) <{target_topology = 500 : i32}>
+// CHECK-NEXT: memref.dealloc %[[ZEROED]]
+// CHECK: vx.free %[[DEV]] {topology = 500 : i32}
+
+// HOST-LABEL: func.func @uninit_on_host
+// HOST-NOT: vx.alloc
+// HOST: %[[C:.*]] = memref.alloc(
+// HOST-NOT: vx.free
+// HOST: memref.dealloc %[[C]]
+
+// LLVM-LABEL: llvm.func @uninit_on_gpu
+// LLVM: %[[NULL:.*]] = llvm.mlir.zero : !llvm.ptr
+// LLVM: llvm.call @vx_plugin_alloc_and_transfer(%{{.*}}, %[[NULL]], %{{.*}}, %{{.*}})
+
+fn uninit_on_gpu() -> f32 {
+  let mut r = Tensor<f32, [4], Memory::GPU_HBM>::uninit();
+  spawn on(Topology::GPU) {
+    for i in 0..4 {
+      r[i] = i as f32;
+    }
+  }
+  let h = transfer(r, Memory::CPU_DRAM);
+  return h[0] + h[1] + h[2] + h[3];
+}
+
+fn new_on_gpu() -> f32 {
+  let z = Tensor<f32, [4], Memory::GPU_HBM>::new();
+  let h = transfer(z, Memory::CPU_DRAM);
+  return h[0] + h[1] + h[2] + h[3];
+}
+
+fn uninit_on_host() -> f32 {
+  let mut c = Tensor<f32, [4], Memory::CPU_DRAM>::uninit();
+  for i in 0..4 {
+    c[i] = 2.0;
+  }
+  return c[0] + c[1] + c[2] + c[3];
+}
+
+fn main() -> i32 {
+  print(uninit_on_gpu());
+  print!(" ");
+  print(new_on_gpu());
+  print!(" ");
+  print(uninit_on_host());
+  return 0;
+}

@@ -2703,15 +2703,40 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
             })?;
 
-            let alloc_op = OperationBuilder::new("memref.alloc", gen.loc())
-                .add_operands(&dynamic_sizes)
-                .add_attributes(&[(
-                    Identifier::new(gen.context, "operandSegmentSizes"),
-                    DenseI32ArrayAttribute::new(gen.context, &[dynamic_sizes.len() as i32, 0])
-                        .into(),
-                )])
-                .add_results(&[tensor_ty])
-                .build()?;
+            // A tensor placed in a device's memory. `uninit()` is allocated there; one that is
+            // filled is filled on the host and copied there, since the host cannot write it.
+            let device = match written {
+                Some(syntax::Type::Tensor(_, _, Some(p))) => {
+                    gen.placed_topology(p).filter(|t| *t != 0)
+                }
+                _ => None,
+            };
+            let (context, i32_ty) = (gen.context, gen.i32_ty);
+            let top_attr = move |t: i32| {
+                (
+                    Identifier::new(context, "target_topology"),
+                    IntegerAttribute::new(i32_ty, t as i64).into(),
+                )
+            };
+            let alloc_op = match device {
+                Some(t) if name.as_ref().ends_with("::uninit") => {
+                    OperationBuilder::new("vx.alloc", gen.loc())
+                        .add_operands(&dynamic_sizes)
+                        .add_attributes(&[top_attr(t)])
+                        .add_results(&[tensor_ty])
+                        .build()?
+                }
+                _ => OperationBuilder::new("memref.alloc", gen.loc())
+                    .add_operands(&dynamic_sizes)
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "operandSegmentSizes"),
+                        DenseI32ArrayAttribute::new(gen.context, &[dynamic_sizes.len() as i32, 0])
+                            .into(),
+                    )])
+                    .add_results(&[tensor_ty])
+                    .build()?,
+            };
+            let copy_to_device = device.filter(|_| !name.as_ref().ends_with("::uninit"));
             // A size can end the block it started in (`[if c { 3 } else { 2 }]` lands in the
             // `if`'s merge block), so what follows goes where the sizes left off.
             let block = current_b;
@@ -2722,10 +2747,21 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             if name.as_ref().ends_with("::new") {
                 emit_zero_fill(gen, &block, alloc_val, &mlir_ty_str)?;
             }
-            if let Some(fe) = &fill_expr {
+            let block = if let Some(fe) = &fill_expr {
                 let (fill_val, _fill_ty, block) = gen.generate_expr(fe, block)?;
                 emit_value_fill(gen, &block, alloc_val, fill_val, &mlir_ty_str)?;
-                return Ok((alloc_val, tensor_ty, block));
+                block
+            } else {
+                block
+            };
+            if let Some(t) = copy_to_device {
+                let transfer = OperationBuilder::new("vx.transfer", gen.loc())
+                    .add_operands(&[alloc_val])
+                    .add_attributes(&[top_attr(t)])
+                    .add_results(&[tensor_ty])
+                    .build()?;
+                let placed: Value = block.append_operation(transfer).result(0)?.into();
+                return Ok((placed, tensor_ty, block));
             }
             return Ok((alloc_val, tensor_ty, block));
         }

@@ -525,6 +525,12 @@ pub enum DiagnosticCode {
     /// are different types, and the C library or kernel behind the parameter reads the memory the
     /// declaration names, so the spaces must match exactly.
     E6029,
+    /// A `spawn` region on a device hands out a tensor it makes, which the host could not free.
+    /// The compiler makes such a tensor before the region instead, in the device's memory, when
+    /// the region hands it out as a variable created with `Tensor<..>(..)`, `::new()` or
+    /// `::uninit()`, with no type annotation, a size that uses nothing the region computes, and
+    /// a name nothing outside the region already uses.
+    E6030,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

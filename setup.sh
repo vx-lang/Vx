@@ -22,7 +22,11 @@ echo "Locating LLVM installation..."
 # llvm` can print its conventional path even when the unversioned formula is not
 # installed, which otherwise produces a broken config.local.
 LLVM_PATH=""
-if command -v brew >/dev/null 2>&1; then
+# The LLVM that scripts/provision/build_llvm.sh builds in this checkout comes before any other.
+OWN_LLVM="$PROJECT_DIR/toolchain/install"
+if [ -x "$OWN_LLVM/bin/llvm-config" ]; then
+    LLVM_PATH="$OWN_LLVM/bin"
+elif command -v brew >/dev/null 2>&1; then
     for LLVM_FORMULA in "llvm@${LLVM_VERSION}" llvm; do
         LLVM_PREFIX="$(brew --prefix "$LLVM_FORMULA" 2>/dev/null || true)"
         if [ -n "$LLVM_PREFIX" ] && [ -x "$LLVM_PREFIX/bin/llvm-config" ]; then
@@ -33,7 +37,7 @@ if command -v brew >/dev/null 2>&1; then
 fi
 
 if [ -n "$LLVM_PATH" ]; then
-    : # Homebrew LLVM found above.
+    : # Our own LLVM or Homebrew's, found above.
 elif command -v "llvm-config-${LLVM_VERSION}" >/dev/null 2>&1; then
     # --bindir, not dirname: /usr/bin/llvm-config-22 is a shim, and the directory that holds the
     # UNSUFFIXED clang++/mlir-translate is /usr/lib/llvm-22/bin. config.template puts this first on
@@ -47,6 +51,7 @@ elif [ -d "/opt/homebrew/opt/llvm/bin" ]; then
     LLVM_PATH="/opt/homebrew/opt/llvm/bin"
 else
     echo "Could not automatically locate LLVM ${LLVM_VERSION}."
+    echo "  To build our own: ./scripts/provision/build_llvm.sh"
     echo "  macOS: brew install llvm@${LLVM_VERSION}"
     echo "  Linux: ./scripts/provision/setup_linux.sh"
     echo "Or create config.local by hand from config.template."
@@ -132,5 +137,20 @@ sed -e "s|{{PROJECT_DIR}}|$PROJECT_DIR|g" \
     -e "s|{{LLVM_PATH}}|$LLVM_PATH|g" \
     -e "s|{{LINK_PATH_EXPORT}}|$LINK_PATH_EXPORT|g" \
     config.template > config.local
+
+# With our own LLVM, tell mlir-sys and tblgen its location directly rather than leaving them to
+# find an llvm-config, and use the Enzyme built against it.
+if [ "$LLVM_PATH" = "$OWN_LLVM/bin" ]; then
+    {
+        echo ""
+        echo "# The LLVM built by scripts/provision/build_llvm.sh, and the Enzyme built against it."
+        echo "export MLIR_SYS_220_PREFIX=\"$OWN_LLVM\""
+        echo "export TABLEGEN_220_PREFIX=\"$OWN_LLVM\""
+        echo "export ENZYME_LIB=\"$(ls "$OWN_LLVM"/lib/enzyme/LLVMEnzyme-22.* 2>/dev/null | head -n 1)\""
+    } >> config.local
+    # mlir-sys does not notice that LLVM moved, so a build made before keeps the old LLVM.
+    echo "Using the LLVM in $OWN_LLVM. If this checkout was built against another LLVM, run"
+    echo "'cargo clean' first."
+fi
 
 echo "config.local successfully generated! You can now source config.local to load the toolchain environment."

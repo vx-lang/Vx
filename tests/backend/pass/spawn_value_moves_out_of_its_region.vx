@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 // A `spawn` region's last value moves to the function around it, as a return does.
 //
-// - `made`: the region makes `x` and hands it out, so the region does not drop it, and `main`
-//   copies 0, 1, 2 and 3 back from it;
+// - `made`: the region creates `x` and hands it out, so `x` is created in GPU memory before
+//   the region, and `main` copies 0, 1, 2 and 3 back from it;
 // - `given`: the region hands out `a`, made before it, so `a` moves to `t`, and `main` copies
 //   2.5 four times back from `t` without dropping `a` first.
 //

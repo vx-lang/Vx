@@ -135,6 +135,20 @@ warns if the version it found does not match the pin.
 
 Reference build: **1m48s** on 36 vCPU, release profile, warm crate cache.
 
+### Our own LLVM
+
+Instead of a system LLVM, Vx can use one built in the checkout, which is where Vx is heading:
+
+```bash
+./scripts/provision/build_llvm.sh   # LLVM, MLIR, clang, FileCheck and Enzyme, into toolchain/
+./setup.sh                          # finds toolchain/install before any other LLVM
+```
+
+The script pins the LLVM and Enzyme commits and builds only what Vx runs: 28 minutes on 14 cores,
+about 12 GB on disk. When `toolchain/install` exists, `setup.sh` uses it and sets `ENZYME_LIB` to
+the Enzyme built there. A build made against another LLVM keeps using it, so run `cargo clean`
+after switching.
+
 ______________________________________________________________________
 
 ## Verify the install

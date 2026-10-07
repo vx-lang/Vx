@@ -1,0 +1,110 @@
+//===- kernel_takes_references_to_device_tensors.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `scale` takes references to two tensors in GPU memory and reads and writes them inside a
+// GPU region. `main` passes `&mut o` and `&a`, and `scale_twice` passes its references on;
+// neither reads the data on the host, so both are allowed. Inside the region each reference
+// lives in GPU memory, as its type says.
+//
+// `Device` is a small GPU-like machine declared below, with its own memory `HBM`.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+Topology Device {
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 10 GB/s,
+  transfer Memory::HBM -> Memory::CPU_DRAM : 10 GB/s
+}
+
+fn scale<const R : i32>(out : &mut Tensor<f32, [R, 1], Memory::HBM>, a : &Tensor<f32, [R, 1], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..R {
+      out[r][0] = a[r][0] * 2.0;
+    }
+  }
+  return;
+}
+
+fn scale_twice(out : &mut Tensor<f32, [1024, 1], Memory::HBM>, a : &Tensor<f32, [1024, 1], Memory::HBM>) -> void {
+  scale<1024>(out, a);
+  scale<1024>(out, a);
+  return;
+}
+
+fn main() -> i32 {
+  let ha = Tensor<f32, [1024, 1]>::uninit();
+  let a = transfer(ha, Memory::HBM);
+  let ho = Tensor<f32, [1024, 1]>::uninit();
+  let mut o = transfer(ho, Memory::HBM);
+  scale_twice(&mut o, &a);
+  return 0;
+}
+
+// CHECK: module attributes {vx.drops} {
+// CHECK:   func.func private @vx_init_signals()
+// CHECK:   func.func @main() -> i32 {
+// CHECK:     call @vx_init_signals() : () -> ()
+// CHECK:     %alloc = memref.alloc() : memref<1024x1xf32>
+// CHECK:     %0 = "vx.transfer"(%alloc) <{target_topology = 1855308478 : i32}> : (memref<1024x1xf32>) -> memref<1024x1xf32>
+// CHECK:     vx.drop %alloc : memref<1024x1xf32>
+// CHECK:     %alloc_0 = memref.alloc() : memref<1024x1xf32>
+// CHECK:     %1 = "vx.transfer"(%alloc_0) <{target_topology = 1855308478 : i32}> : (memref<1024x1xf32>) -> memref<1024x1xf32>
+// CHECK:     vx.drop %alloc_0 : memref<1024x1xf32>
+// CHECK:     call @scale_twice(%1, %0) : (memref<1024x1xf32>, memref<1024x1xf32>) -> ()
+// CHECK:     vx.drop %1 : memref<1024x1xf32>
+// CHECK:     vx.drop %0 : memref<1024x1xf32>
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK:   func.func @scale_twice(%arg0: memref<1024x1xf32> {llvm.noalias}, %arg1: memref<1024x1xf32> {llvm.readonly}) {
+// CHECK:     call @scale$const$Number_NumberExpr___value___1024___ty__None__span__Span___line__0__column__0__length__0_____(%arg0, %arg1) : (memref<1024x1xf32>, memref<1024x1xf32>) -> ()
+// CHECK:     call @scale$const$Number_NumberExpr___value___1024___ty__None__span__Span___line__0__column__0__length__0_____(%arg0, %arg1) : (memref<1024x1xf32>, memref<1024x1xf32>) -> ()
+// CHECK:     return
+// CHECK:   }
+// CHECK:   func.func @scale$const$Number_NumberExpr___value___1024___ty__None__span__Span___line__0__column__0__length__0_____(%arg0: memref<1024x1xf32> {llvm.noalias}, %arg1: memref<1024x1xf32> {llvm.readonly}) {
+// CHECK:     vx.spawn topology(1036766083) {
+// CHECK:       %c0_i32 = arith.constant 0 : i32
+// CHECK:       %c1024_i32 = arith.constant 1024 : i32
+// CHECK:       %alloca = memref.alloca() : memref<i32>
+// CHECK:       memref.store %c0_i32, %alloca[] {vx.parallel_init} : memref<i32>
+// CHECK:       %alloca_0 = memref.alloca() : memref<i32>
+// CHECK:       memref.store %c1024_i32, %alloca_0[] {vx.parallel_bound} : memref<i32>
+// CHECK:       cf.br ^bb1
+// CHECK:     ^bb1:  // 2 preds: ^bb0, ^bb3
+// CHECK:       %0 = memref.load %alloca[] : memref<i32>
+// CHECK:       %1 = memref.load %alloca_0[] : memref<i32>
+// CHECK:       %2 = arith.cmpi slt, %0, %1 : i32
+// CHECK:       cf.cond_br %2, ^bb2, ^bb4
+// CHECK:     ^bb2:  // pred: ^bb1
+// CHECK:       %3 = memref.load %alloca[] : memref<i32>
+// CHECK:       %4 = arith.index_cast %3 : i32 to index
+// CHECK:       %reinterpret_cast = memref.reinterpret_cast %arg0 to offset: [%4], sizes: [1], strides: [1] : memref<1024x1xf32> to memref<1xf32, strided<[1], offset: ?>>
+// CHECK:       %c0_i32_1 = arith.constant 0 : i32
+// CHECK:       %5 = arith.index_cast %c0_i32_1 : i32 to index
+// CHECK:       %6 = memref.load %alloca[] : memref<i32>
+// CHECK:       %7 = arith.index_cast %6 : i32 to index
+// CHECK:       %reinterpret_cast_2 = memref.reinterpret_cast %arg1 to offset: [%7], sizes: [1], strides: [1] : memref<1024x1xf32> to memref<1xf32, strided<[1], offset: ?>>
+// CHECK:       %c0_i32_3 = arith.constant 0 : i32
+// CHECK:       %8 = arith.index_cast %c0_i32_3 : i32 to index
+// CHECK:       %9 = memref.load %reinterpret_cast_2[%8] : memref<1xf32, strided<[1], offset: ?>>
+// CHECK:       %cst = arith.constant 2.000000e+00 : f32
+// CHECK:       %10 = arith.mulf %9, %cst : f32
+// CHECK:       memref.store %10, %reinterpret_cast[%5] : memref<1xf32, strided<[1], offset: ?>>
+// CHECK:       cf.br ^bb3
+// CHECK:     ^bb3:  // pred: ^bb2
+// CHECK:       %11 = memref.load %alloca[] : memref<i32>
+// CHECK:       %c1_i32 = arith.constant 1 : i32
+// CHECK:       %12 = arith.addi %11, %c1_i32 {vx.parallel_step} : i32
+// CHECK:       memref.store %12, %alloca[] : memref<i32>
+// CHECK:       cf.br ^bb1
+// CHECK:     ^bb4:  // pred: ^bb1
+// CHECK:       vx.yield
+// CHECK:     } {vx_parallel_trip = 1024 : i64}
+// CHECK:     return
+// CHECK:   }
+// CHECK: }

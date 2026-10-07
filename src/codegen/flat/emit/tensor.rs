@@ -294,11 +294,38 @@ impl FnEmit<'_> {
             self.names[idx] = n;
             self.mem_of[idx] = Some(smty);
         } else {
-            self.body += &format!("  {n} = memref.alloc({sizes}) : {memty}\n");
+            // A tensor placed on a device is allocated there. One that is filled is filled on
+            // the host and copied there, since the host cannot write the device's memory.
+            match super::super::placed_device(ins.operand2.0 as u64, self.ctx) {
+                Some(device) if !self.filled.contains(&idx) => {
+                    self.body += &format!(
+                        "  {n} = vx.alloc({sizes}) {{target_topology = {device} : i32}} : {memty}\n"
+                    );
+                }
+                device => {
+                    if let Some(device) = device {
+                        self.copy_after_fill.insert(idx, device);
+                    }
+                    self.body += &format!("  {n} = memref.alloc({sizes}) : {memty}\n");
+                }
+            }
             self.names[idx] = n;
             self.mem_of[idx] = Some(memty);
         }
         Ok(())
+    }
+
+    /// After the fill of a tensor placed on a device: copy it there, and let the copy stand for it.
+    fn copy_filled_to_device(&mut self, reg: usize, memty: &str) {
+        let Some(device) = self.copy_after_fill.remove(&reg) else {
+            return;
+        };
+        let host = self.names[reg].clone();
+        let placed = format!("{host}_placed");
+        self.body += &format!(
+            "  {placed} = \"vx.transfer\"({host}) <{{target_topology = {device} : i32}}> : ({memty}) -> {memty}\n"
+        );
+        self.names[reg] = placed;
     }
 
     /// A rank-2 view over memory the caller owns (`tensor_view_2d(ptr, rows, cols)`): the memref
@@ -682,6 +709,7 @@ impl FnEmit<'_> {
         };
         self.body += &format!("  %z{idx} = arith.constant {zero} : {et}\n");
         self.body += &format!("  linalg.fill ins(%z{idx} : {et}) outs({t} : {memty})\n");
+        self.copy_filled_to_device(ins.operand1.0 as usize, &memty);
         Ok(())
     }
 
@@ -706,6 +734,7 @@ impl FnEmit<'_> {
             .ok_or(crate::emitter_gap!())?
             .clone();
         self.body += &format!("  linalg.fill ins({v} : {et}) outs({t} : {memty})\n");
+        self.copy_filled_to_device(ins.operand1.0 as usize, &memty);
         Ok(())
     }
 

@@ -76,9 +76,10 @@ A `loop` can carry an `invariant`: a condition that must hold on every turn. The
 
 ```rust
 fn main() -> i32 {
+    let limit : i32 = 3;
     let mut i : i32 = 0;
-    loop invariant(i >= 0) {
-        if i >= 3 {
+    loop invariant(limit > 0) {
+        if i >= limit {
             break;
         }
         i = i + 1;

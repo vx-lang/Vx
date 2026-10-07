@@ -1,0 +1,57 @@
+//===- verified_and_pinned_tensors_are_dropped.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=CALLEE
+// RUN: vxc --legacy-codegen %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=CALLEE
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=CALLER
+// RUN: vxc --legacy-codegen %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=CALLER
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s --check-prefix=DROPS
+//
+// `Verified<..>` and `Pinned<..>` add a proof or a location to a tensor, and are dropped like
+// it, on both code generators:
+//
+// - `double` takes a `Pinned` tensor on the NPU (topology 100) by value, so it frees it there,
+//   and returns a `Verified` NPU tensor, marked placed;
+// - `main` frees that result on the NPU.
+//
+// DROPS lists where the checker drops each one.
+
+// CALLEE-LABEL: func.func @double(%arg0: memref<4xf32> {vx.placed = 100 : i32})
+// CALLEE-SAME: {vx.placed = 100 : i32})
+// CALLEE: vx.free %arg0 {topology = 100 : i32}
+
+// CALLER-LABEL: func.func @main
+// CALLER: call @double(
+// CALLER: vx.free %{{.*}} {topology = 100 : i32}
+// CALLER: return
+
+// DROPS-LABEL: Function: double
+// DROPS: Drop a
+// DROPS-LABEL: Function: main
+// DROPS: Let result =
+// DROPS: Drop result
+
+fn double(a : Pinned<Tensor<f32, [4]>, Topology::NPU[0]>) -> Verified<Tensor<f32, [4], Memory::NPU_HBM>> {
+  let mut r = Tensor<f32, [4], Memory::NPU_HBM>::uninit();
+  spawn on(Topology::NPU[0]) {
+    for i in 0..4 {
+      r[i] = a[i] * 2.0;
+    }
+  }
+  return Verified(r);
+}
+
+fn main() -> i32 {
+  let mut h = Tensor<f32, [4]>::uninit();
+  for i in 0..4 {
+    h[i] = i as f32;
+  }
+  let a = transfer(h, Memory::NPU_HBM);
+  let result = double(a);
+  print(&result);
+  return 0;
+}

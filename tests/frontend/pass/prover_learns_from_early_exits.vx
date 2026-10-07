@@ -1,0 +1,91 @@
+//===- prover_learns_from_early_exits.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The prover follows each path. After `if x <= 0 { <ends> }`, the code that follows runs only when
+// `x > 0`, whether the branch ends in `return`, `panic` or `todo()`; an `else` branch knows the
+// condition is false; and when the `else` ends early, what the `then` branch knew carries on. Each
+// `ensures` is checked at each `return`, from what is known there. Code after an `if` or a `match`
+// whose every branch returns is never reached, so anything holds there.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E8001
+// CHECK: func.func @main
+import core::panic;
+
+fn after_return(x : i32) -> i32
+ensures return > 0 {
+  if x <= 0 {
+    return 1;
+  }
+  return x;
+}
+
+fn after_panic(x : i32) -> i32
+ensures return > 0 {
+  if x <= 0 {
+    panic("not positive");
+  }
+  return x;
+}
+
+fn after_todo(x : i32) -> i32
+ensures return > 0 {
+  if x <= 0 {
+    todo();
+  }
+  return x;
+}
+
+fn in_else(x : i32) -> i32
+ensures return > 0 {
+  if x > 0 {
+    return x;
+  } else {
+    return 0 - x + 1;
+  }
+}
+
+fn else_ends(x : i32) -> i32
+ensures return > 10 {
+  if x > 10 {
+    assert(x > 11, "x is above 11");
+  } else {
+    return 20;
+  }
+  return x;
+}
+
+fn only_panics() -> i32
+ensures return > 100 {
+  panic("never");
+}
+
+fn after_both_return(x : i32) -> i32
+ensures return > 0 {
+  if x > 0 {
+    return x;
+  } else {
+    return 1;
+  }
+  return 0 - 5;
+}
+
+fn after_every_arm_returns(x : i32) -> i32
+ensures return > 0 {
+  match x {
+    0 => {
+      return 1;
+    }, _ => {
+      return 2;
+    }
+  }
+  return 0 - 5;
+}
+
+fn main() -> i32 {
+  return 0;
+}

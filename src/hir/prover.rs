@@ -314,3 +314,30 @@ fn kind_name(e: &Expr) -> String {
         .unwrap_or("an")
         .to_string()
 }
+
+/// `!e`.
+pub fn negate(e: &Expr) -> Expr {
+    Expr::UnaryOp(UnaryOpExpr {
+        op: UnaryOp::Not,
+        expr: Box::new(e.clone()),
+        span: Span::default(),
+    })
+}
+
+/// A fact that is never true, `0 == 1`: what is known where control cannot reach.
+pub fn unreachable_fact() -> Expr {
+    let number = |v: &str| {
+        Box::new(Expr::Number(NumberExpr::new(
+            v.to_string(),
+            None,
+            Span::default(),
+        )))
+    };
+    Expr::RelationalOp(RelationalOpExpr {
+        lhs: number("0"),
+        op: RelationalOp::Eq,
+        rhs: number("1"),
+        span: Span::default(),
+        operand_ty: None,
+    })
+}

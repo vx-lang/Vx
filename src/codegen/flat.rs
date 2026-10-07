@@ -217,7 +217,7 @@ fn tensor_memref_of_type(ty: &Type) -> Option<String> {
 pub(crate) fn returns_through_slot(ty: &Type) -> Option<String> {
     // A placed tensor stays where it was placed: the callee hands back its buffer, which the
     // caller frees through its plugin, rather than copying it into a slot on the caller's stack.
-    if matches!(ty, Type::Tensor(_, _, Some(_))) {
+    if crate::codegen::generator::written_placement(ty).is_some() {
         return None;
     }
     let memty = tensor_memref_of_type(ty)?;
@@ -274,14 +274,32 @@ fn is_ptr_ty(ty: &Type) -> bool {
 /// its declared scope, is scratch nothing frees.
 fn placed_attr(p: &crate::syntax::Placement, ctx: &EmitCtx) -> String {
     let id = crate::arch::memory_space_dispatch_id(&p.space) as u64;
-    let declared_scratch = ctx
-        .subspaces
-        .get(&id)
-        .and_then(|s| s.scope.as_deref())
-        .is_some_and(|s| matches!(s, "sm" | "cta" | "thread"));
-    let on_chip = declared_scratch
+    let on_chip = declared_scratch(id, ctx)
         || crate::codegen::generator::on_chip(crate::arch::builtin_address_space(&p.space));
     crate::codegen::generator::placed_attr(&p.space, on_chip)
+}
+
+/// A declared memory space that is on-chip scratch: shared or per-thread memory.
+fn declared_scratch(id: u64, ctx: &EmitCtx) -> bool {
+    ctx.subspaces
+        .get(&id)
+        .and_then(|s| s.scope.as_deref())
+        .is_some_and(|s| matches!(s, "sm" | "cta" | "thread"))
+}
+
+/// The device whose memory a tensor placed in the space with dispatch id `id` is allocated
+/// in, or `None` for host memory and on-chip scratch.
+pub(crate) fn placed_device(id: u64, ctx: &EmitCtx) -> Option<i32> {
+    let host_or_on_chip = [
+        crate::syntax::MemorySpace::LocalSRAM,
+        crate::syntax::MemorySpace::CPUDRAM,
+    ]
+    .iter()
+    .any(|m| crate::arch::memory_space_dispatch_id(m) as u64 == id);
+    if id == 0 || host_or_on_chip || declared_scratch(id, ctx) {
+        return None;
+    }
+    Some(id as i32)
 }
 
 fn param_alias_attrs(ty: &Type, ctx: &EmitCtx) -> String {
@@ -290,9 +308,11 @@ fn param_alias_attrs(ty: &Type, ctx: &EmitCtx) -> String {
         Type::Borrow { is_mut: false, .. } => " {llvm.readonly}".to_string(),
         // A tensor taken by value belongs to the function, which frees it. One placed in
         // another memory names the topology its plugin frees it on.
-        Type::Tensor(_, _, Some(p)) => format!(" {}", placed_attr(p, ctx)),
-        Type::Tensor(_, _, None) => " {vx.owned}".to_string(),
-        _ => String::new(),
+        _ => match crate::codegen::generator::owned_tensor(ty) {
+            Some(Some(p)) => format!(" {}", placed_attr(&p, ctx)),
+            Some(None) => " {vx.owned}".to_string(),
+            None => String::new(),
+        },
     }
 }
 
@@ -591,7 +611,7 @@ pub fn build_callee_map(
                 },
                 ret_void: is_void_ty(&sig.ret_ty),
                 ret_tensor: tensor_memref_of_type(&sig.ret_ty),
-                ret_placed: matches!(sig.ret_ty, Type::Tensor(_, _, Some(_))),
+                ret_placed: crate::codegen::generator::written_placement(&sig.ret_ty).is_some(),
                 param_tensors: sig
                     .params
                     .iter()
@@ -1816,6 +1836,10 @@ pub(crate) struct FnEmit<'a> {
     /// claims the next granule-rounded `offset` and advances the cursor, so both paths assign
     /// identical offsets. Reset per function, as in the AST codegen.
     pub(crate) subspace_offsets: HashMap<u64, u64>,
+    /// The tensors a `::new()` or `::fill(v)` writes right after they are allocated.
+    pub(crate) filled: std::collections::HashSet<usize>,
+    /// A filled tensor placed on a device: filled on the host, then copied to this topology.
+    pub(crate) copy_after_fill: HashMap<usize, i32>,
 }
 
 impl<'a> FnEmit<'a> {
@@ -2203,6 +2227,12 @@ pub fn emit_function_mlir(
         pending_args: Vec::new(),
         spawn_stack: Vec::new(),
         subspace_offsets: HashMap::new(),
+        filled: hir
+            .iter()
+            .filter(|i| matches!(i.opcode, Opcode::TensorZero | Opcode::TensorFill))
+            .map(|i| i.operand1.0 as usize)
+            .collect(),
+        copy_after_fill: HashMap::new(),
     };
     // `main` installs the runtime crash handler first, exactly as the AST codegen does (`is_main` ->
     // `func.call @vx_init_signals`), so a wild memory access is caught + backtraced rather than exiting
@@ -2230,8 +2260,10 @@ pub fn emit_function_mlir(
     }
 
     // A placed result the callee hands back names the topology the caller frees it on.
-    let ret_attr = match &func.return_type {
-        Type::Tensor(_, _, Some(p)) => format!(" {}", placed_attr(p, ctx)),
+    let ret_attr = match crate::codegen::generator::owned_tensor(&func.return_type) {
+        Some(Some(p)) if returns_through_slot(&func.return_type).is_none() => {
+            format!(" {}", placed_attr(&p, ctx))
+        }
         _ => String::new(),
     };
     let mut ret_sig = match &ret_mlir {

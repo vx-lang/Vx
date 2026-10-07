@@ -1875,6 +1875,97 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Does the topology have memory of its own, so the host cannot free what it allocates?
+    fn is_device_topology(&self, top: &Topology) -> bool {
+        let top = if *top == Topology::Current {
+            &self.active_topology
+        } else {
+            top
+        };
+        *top != Topology::Current
+            && self.transfer_cost_graph.default_memory_for(top)
+                != self.transfer_cost_graph.default_memory_for(&Topology::CPU)
+    }
+
+    /// `let t = spawn on(Topology::GPU) { let mut x = Tensor<f32>([n]); ..; x };` makes a
+    /// tensor on the device and hands it out, and the host cannot free what a device allocates.
+    /// So `x` is made before the region instead, in the device's memory, and the region writes
+    /// into it. The function then owns it like any placed tensor and frees it on the device.
+    /// A region this cannot rewrite gets E6030.
+    pub(crate) fn hoist_spawn_allocations(&self, stmts: &mut Vec<Statement>) {
+        let mut i = 0;
+        while i < stmts.len() {
+            let declared_before = stmts[..i].iter().any(|s| {
+                matches!(s, Statement::LetDecl(l) if self.spawn_yields_name(&stmts[i], l.name.as_ref()))
+            });
+            if !declared_before {
+                if let Some(made) = self.spawn_allocation(&mut stmts[i]) {
+                    stmts.insert(i, made);
+                    i += 1;
+                }
+            }
+            i += 1;
+        }
+    }
+
+    fn spawn_yields_name(&self, stmt: &Statement, name: &str) -> bool {
+        matches!(stmt, Statement::LetDecl(l) if matches!(&l.expr, Expr::SpawnOn(s)
+            if matches!(s.ret.as_deref(), Some(Expr::Identifier(id)) if id.name.as_ref() == name)))
+    }
+
+    /// Takes the tensor out of the region `stmt` binds, as a `let` placing it in the
+    /// region's memory, when the region hands it out and nothing stops the move.
+    fn spawn_allocation(&self, stmt: &mut Statement) -> Option<Statement> {
+        let Statement::LetDecl(l) = stmt else {
+            return None;
+        };
+        let Expr::SpawnOn(spawn) = &mut l.expr else {
+            return None;
+        };
+        let Some(Expr::Identifier(id)) = spawn.ret.as_deref() else {
+            return None;
+        };
+        let name = id.name.to_string();
+        if !self.is_device_topology(&spawn.top) || self.lookup(&name).is_some() {
+            return None;
+        }
+        let declares =
+            |s: &Statement| matches!(s, Statement::LetDecl(d) if d.name.as_ref() == name);
+        if spawn.stmts.iter().filter(|s| declares(s)).count() != 1 {
+            return None;
+        }
+        let at = spawn.stmts.iter().position(declares)?;
+        let Statement::LetDecl(made) = &spawn.stmts[at] else {
+            return None;
+        };
+        let is_constructor = matches!(&made.expr, Expr::FunctionCall(c)
+            if c.name.as_ref() == "Tensor" || c.name.as_ref().starts_with("Tensor::"));
+        // The size must not use anything the region computes before it.
+        let uses_region_value = spawn.stmts[..at].iter().any(|s| {
+            matches!(s, Statement::LetDecl(d)
+                if crate::hir::check::raw::expr_mentions(&made.expr, d.name.as_ref()))
+        });
+        if !is_constructor || made.ty_ann.is_some() || uses_region_value {
+            return None;
+        }
+        let top = if spawn.top == Topology::Current {
+            self.active_topology.clone()
+        } else {
+            spawn.top.clone()
+        };
+        let memory = self.transfer_cost_graph.default_memory_for(&top);
+        let Statement::LetDecl(mut made) = spawn.stmts.remove(at) else {
+            unreachable!("checked above");
+        };
+        let span = made.span;
+        made.expr = Expr::Transfer(crate::syntax::expr::TransferExpr::new(
+            Box::new(made.expr),
+            memory,
+            span,
+        ));
+        Some(Statement::LetDecl(made))
+    }
+
     pub(crate) fn check_spawnon_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::SpawnOn(SpawnOnExpr {
@@ -1979,11 +2070,13 @@ impl<'a> TypeChecker<'a> {
                 // The region's value goes to the enclosing function, as a return does. A
                 // variable the region made is moved into a `$value` inside it, so the region
                 // does not drop it; see `check_unsafeblock_expr` for the same rewrite.
+                let mut kept_inside = false;
                 if let Some(Expr::Identifier(id)) = ret.as_deref() {
                     let made_here = stmts.iter().any(|st| {
                         matches!(st, crate::syntax::Statement::LetDecl(l) if l.name == id.name)
                     });
                     if made_here {
+                        kept_inside = true;
                         let value =
                             crate::syntax::Statement::LetDecl(crate::syntax::stmt::LetDeclStmt {
                                 name: "$value".into(),
@@ -2013,6 +2106,29 @@ impl<'a> TypeChecker<'a> {
                 let has_ret = ret.is_some();
                 if let Some(r) = ret {
                     ret_ty = self.check_expr_type_flag(r, consume);
+                }
+                // A variable from outside the region is handed out as the same buffer.
+                let hands_out_outside =
+                    !kept_inside && matches!(ret.as_deref(), Some(Expr::Identifier(_)));
+                // A device cannot hand the host a tensor it allocated; see
+                // `hoist_spawn_allocations` for the ones the compiler makes before the region.
+                if !hands_out_outside
+                    && matches!(ret_ty, Type::Tensor(..))
+                    && self.is_device_topology(top)
+                    && !self.speculating
+                {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6030,
+                        "this `spawn` region makes a tensor on the device and hands it out, but \
+                         the compiler cannot make it before the region; hand out a variable, \
+                         create it with \
+                         `Tensor<..>(..)`, `::new()` or `::uninit()`, without a type \
+                         annotation, with a size known before the region and a name not already \
+                         in use, or make it before the region yourself"
+                            .to_string(),
+                        ret.as_deref()
+                            .map(|r| crate::diagnostic::SourceSpan::from_ast_span(&r.span())),
+                    );
                 }
 
                 // What this region moves, counted from its own accesses (#353). Here,
@@ -2049,7 +2165,12 @@ impl<'a> TypeChecker<'a> {
                 // rule (visibility or an explicit transfer) instead of being silently treated
                 // as host-local. A void spawn (no result) has nothing to locate; a result the
                 // body already produced as `Pinned<..>` is already located, so don't re-wrap.
-                if has_ret && !matches!(ret_ty, Type::Pinned(..)) {
+                // Nor a tensor from outside the region: it is where it was, and keeps its type
+                // so the variable it moves to owns it and drops it.
+                if has_ret
+                    && !matches!(ret_ty, Type::Pinned(..))
+                    && !(hands_out_outside && matches!(ret_ty, Type::Tensor(..)))
+                {
                     Type::Pinned(Box::new(ret_ty), (*top).clone())
                 } else {
                     ret_ty

@@ -41,6 +41,18 @@ def Vx_TransferOp : Vx_Op<"transfer", [MemoryEffects<[MemWrite]>]> {
                             [MemAlloc]>:$dst);
 }
 
+// Allocates a tensor in a device's memory, with nothing copied into it: a
+// placed `Tensor<..>::uninit()`. Like a transfer's copy, it is freed through the
+// plugin that allocated it. Inside a `vx.spawn` region, or for host memory, it
+// is a plain `memref.alloc`.
+def Vx_AllocOp : Vx_Op<"alloc"> {
+    let summary = "Allocates a tensor on a target topology.";
+    let arguments = (ins Variadic<Index>:$dynamicSizes,
+                         I32Attr:$target_topology);
+    let results = (outs Res<AnyMemRef, "the new buffer", [MemAlloc]>:$dst);
+    let assemblyFormat = "`(` $dynamicSizes `)` attr-dict `:` type($dst)";
+}
+
 // Frees the buffer a transfer allocated, after its last use. On the host it
 // becomes `memref.dealloc`; on a device it becomes `vx_plugin_free`, which must
 // run after the work already given to that device.
