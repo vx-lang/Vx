@@ -193,3 +193,112 @@ impl SmtProver {
         }
     }
 }
+
+/// Whether the prover can model `e`: names, numbers, `+`, `-`, `*`, comparisons, `&&`, `||`, `!`,
+/// negation, and field and element reads of those.
+pub fn is_modelled(e: &Expr) -> bool {
+    match e {
+        Expr::Number(_) | Expr::Identifier(_) => true,
+        Expr::BinaryOp(b) => {
+            matches!(b.op, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul)
+                && is_modelled(&b.lhs)
+                && is_modelled(&b.rhs)
+        }
+        Expr::RelationalOp(r) => is_modelled(&r.lhs) && is_modelled(&r.rhs),
+        Expr::LogicalOp(l) => is_modelled(&l.lhs) && is_modelled(&l.rhs),
+        Expr::UnaryOp(u) => is_modelled(&u.expr),
+        Expr::MemberAccess(m) => is_modelled(&m.base),
+        Expr::IndexAccess(i) => is_modelled(&i.base) && is_modelled(&i.index),
+        _ => false,
+    }
+}
+
+/// `e` with each name in `names` replaced by its expression: a callee's `requires` with the call's
+/// arguments in place of the parameters. Only the kinds of expression `is_modelled` accepts are
+/// walked; anything else is left as it is.
+pub fn substitute_names(
+    e: &Expr,
+    names: &std::collections::HashMap<crate::symbol::Symbol, Expr>,
+) -> Expr {
+    let sub = |x: &Expr| Box::new(substitute_names(x, names));
+    match e {
+        Expr::Identifier(id) => names.get(&id.name).cloned().unwrap_or_else(|| e.clone()),
+        Expr::BinaryOp(b) => {
+            let mut b = b.clone();
+            b.lhs = sub(&b.lhs);
+            b.rhs = sub(&b.rhs);
+            Expr::BinaryOp(b)
+        }
+        Expr::RelationalOp(r) => {
+            let mut r = r.clone();
+            r.lhs = sub(&r.lhs);
+            r.rhs = sub(&r.rhs);
+            Expr::RelationalOp(r)
+        }
+        Expr::LogicalOp(l) => {
+            let mut l = l.clone();
+            l.lhs = sub(&l.lhs);
+            l.rhs = sub(&l.rhs);
+            Expr::LogicalOp(l)
+        }
+        Expr::UnaryOp(u) => {
+            let mut u = u.clone();
+            u.expr = sub(&u.expr);
+            Expr::UnaryOp(u)
+        }
+        Expr::MemberAccess(m) => {
+            let mut m = m.clone();
+            m.base = sub(&m.base);
+            Expr::MemberAccess(m)
+        }
+        Expr::IndexAccess(i) => {
+            let mut i = i.clone();
+            i.base = sub(&i.base);
+            i.index = sub(&i.index);
+            Expr::IndexAccess(i)
+        }
+        _ => e.clone(),
+    }
+}
+
+/// `e` as Vx source, for the kinds of expression `is_modelled` accepts, or `None` for any other.
+pub fn to_source(e: &Expr) -> Option<String> {
+    Some(match e {
+        Expr::Number(n) => n.value.to_string(),
+        Expr::Identifier(id) => id.name.to_string(),
+        Expr::BinaryOp(b) => {
+            let op = match b.op {
+                BinaryOp::Add => "+",
+                BinaryOp::Sub => "-",
+                BinaryOp::Mul => "*",
+                _ => return None,
+            };
+            format!("{} {op} {}", to_source(&b.lhs)?, to_source(&b.rhs)?)
+        }
+        Expr::RelationalOp(r) => {
+            let op = match r.op {
+                RelationalOp::Eq => "==",
+                RelationalOp::NotEq => "!=",
+                RelationalOp::Lt => "<",
+                RelationalOp::Le => "<=",
+                RelationalOp::Gt => ">",
+                RelationalOp::Ge => ">=",
+            };
+            format!("{} {op} {}", to_source(&r.lhs)?, to_source(&r.rhs)?)
+        }
+        Expr::LogicalOp(l) => {
+            let op = match l.op {
+                LogicalOp::And => "&&",
+                LogicalOp::Or => "||",
+            };
+            format!("({}) {op} ({})", to_source(&l.lhs)?, to_source(&l.rhs)?)
+        }
+        Expr::UnaryOp(u) => match u.op {
+            UnaryOp::Not => format!("!({})", to_source(&u.expr)?),
+            UnaryOp::Neg => format!("-{}", to_source(&u.expr)?),
+        },
+        Expr::MemberAccess(m) => format!("{}.{}", to_source(&m.base)?, m.member),
+        Expr::IndexAccess(i) => format!("{}[{}]", to_source(&i.base)?, to_source(&i.index)?),
+        _ => return None,
+    })
+}

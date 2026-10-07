@@ -544,6 +544,8 @@ pub enum DiagnosticCode {
     /// Compile-time evaluation ran more loop iterations than the budget allows. A loop whose
     /// end condition is never reached is the usual cause; without this it hung the compiler.
     E8005,
+    /// A call does not meet the called function's precondition (`requires`)
+    E8006,
 }
 
 impl std::fmt::Display for DiagnosticCode {

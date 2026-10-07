@@ -1,0 +1,47 @@
+//===- call_meets_requires.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A call must meet the called function's `requires`, from what is known where it is made. Each
+// call here does: the argument is a literal, a local holding one, a value the caller's own
+// `requires` bounds, or a value an `assert` checked. `above_one`'s precondition is arithmetic on
+// its parameter.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E8006
+// CHECK: func.func @main
+fn halve(x : i32) -> i32
+requires x > 0 {
+  return x;
+}
+
+fn above_one(x : i32) -> i32
+requires x - 1 > 0 {
+  return x;
+}
+
+fn literal() -> i32 {
+  return halve(5);
+}
+
+fn local() -> i32 {
+  let a = 4;
+  return halve(a);
+}
+
+fn from_own_requires(y : i32) -> i32
+requires y > 2 {
+  return halve(y - 1);
+}
+
+fn after_assert(y : i32) -> i32 {
+  assert(y > 0, "y must be positive");
+  return halve(y);
+}
+
+fn main() -> i32 {
+  return literal() + local() + from_own_requires(3) + after_assert(1) + above_one(2);
+}

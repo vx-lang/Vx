@@ -22,7 +22,7 @@ the test suite has one, a program that triggers it.
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6029` (29 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
-- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8005` (5 codes)
+- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8006` (6 codes)
 
 ## Warnings
 
@@ -225,7 +225,8 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | [`E8003`](/errors/E8003/) | Compile-time index out of range |
 | [`E8004`](/errors/E8004/) | Compile-time evaluation exceeded the call-depth limit |
 | [`E8005`](/errors/E8005/) | Compile-time evaluation ran more loop iterations than the budget allows. A loop whose end condition is never reached is the usual cause; without this it hung the compiler. |
+| [`E8006`](/errors/E8006/) | A call does not meet the called function's precondition (`requires`) |
 
 ______________________________________________________________________
 
-139 diagnostics.
+140 diagnostics.

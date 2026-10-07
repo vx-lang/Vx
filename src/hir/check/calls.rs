@@ -547,6 +547,49 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// E8006: a call must meet the called function's `requires`. Each one, with the call's
+    /// arguments in place of the parameters, must follow from what the prover knows at the call.
+    /// An argument the prover cannot model, such as another call, is an unknown value.
+    fn check_call_requires(&mut self, name: &str, args: &[Expr], span: &crate::syntax::Span) {
+        if self.speculating {
+            return;
+        }
+        let Some(func) = self.env.syntax_functions.get(name) else {
+            return;
+        };
+        if func.requires.is_empty() {
+            return;
+        }
+        let mut names = HashMap::new();
+        for (i, ((param, _), arg)) in func.params.iter().zip(args).enumerate() {
+            let value = if crate::hir::prover::is_modelled(arg) {
+                arg.clone()
+            } else {
+                Expr::Identifier(IdentifierExpr {
+                    name: format!("$arg_{}_{}_{i}", span.line, span.column).into(),
+                    span: *span,
+                })
+            };
+            names.insert(param.clone(), value);
+        }
+        for req in &func.requires {
+            let at_call = crate::hir::prover::substitute_names(req, &names);
+            if !self.prove_expr(&at_call) {
+                let condition = crate::hir::prover::to_source(req)
+                    .map(|c| format!(" `{c}`"))
+                    .unwrap_or_default();
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E8006,
+                    format!(
+                        "this call to '{name}' may not meet its precondition{condition}: \
+                         the compiler cannot prove it from what is known here"
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            }
+        }
+    }
+
     pub(crate) fn check_functioncall_expr(&mut self, expr: &mut Expr) -> Type {
         // `core::mem::needs_drop<T>()` answers whether dropping a `T` runs anything, which only
         // the checker knows, so the call becomes `true` or `false` here.
@@ -805,6 +848,7 @@ impl<'a> TypeChecker<'a> {
                         &arg_types,
                         span,
                     );
+                    self.check_call_requires(resolved_name.as_ref(), args, span);
                     ret_ty.clone()
                 } else if let Some((mono_topology, param_types, mono_ret)) = self
                     .mono

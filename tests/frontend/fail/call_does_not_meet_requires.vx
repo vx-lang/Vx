@@ -1,0 +1,51 @@
+//===- call_does_not_meet_requires.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A call that the compiler cannot show meets the called function's `requires` is an error
+// (E8006): a literal that breaks it, a parameter nothing bounds, the result of another call,
+// whose value the compiler does not know, and a literal that breaks a precondition written with
+// arithmetic.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK-DAG: E8006] at 25:10: this call to 'halve' may not meet its precondition `x > 0`
+// CHECK-DAG: E8006] at 29:10: this call to 'halve' may not meet its precondition `x > 0`
+// CHECK-DAG: E8006] at 37:10: this call to 'halve' may not meet its precondition `x > 0`
+// CHECK-DAG: E8006] at 46:10: this call to 'above_one' may not meet its precondition `x - 1 > 0`
+// CHECK: 4 error(s) emitted
+fn halve(x : i32) -> i32
+requires x > 0 {
+  return x;
+}
+
+fn bad_literal() -> i32 {
+  return halve(-3);
+}
+
+fn unbounded(y : i32) -> i32 {
+  return halve(y);
+}
+
+fn five() -> i32 {
+  return 5;
+}
+
+fn from_a_call() -> i32 {
+  return halve(five());
+}
+
+fn above_one(x : i32) -> i32
+requires x - 1 > 0 {
+  return x;
+}
+
+fn one() -> i32 {
+  return above_one(1);
+}
+
+fn main() -> i32 {
+  return 0;
+}
