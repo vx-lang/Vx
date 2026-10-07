@@ -66,7 +66,7 @@ fn test_pipeline_architecture_hooks() -> Result<(), String> {
 
         fn run_module_b(t: Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
             let mut result = t;
-            let mut result2 = Tensor<f32>();
+            let mut result2 = Tensor<f32>([2, 2]);
             compute_heavy(&result, &result, &result, &result, &result, &result, &result, &result, &result, &result, &mut result2);
             return result;
         }

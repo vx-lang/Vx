@@ -725,8 +725,9 @@ impl<'a> TypeChecker<'a> {
                             .push(format!("Module '{}' does not export '{}'", path, member));
                     }
                 } else if member.as_ref() == "$extent" {
-                    // The form `t.extent(i)` is rewritten to; no source spells this member.
-                    return Type::Tensor(ElementType::I32, vec![], None);
+                    // The form `t.extent(i)` is rewritten to; no source spells this member. It
+                    // is the list of the tensor's extents, indexed by axis.
+                    return Type::Tensor(ElementType::I32, vec![crate::syntax::Dim::Dyn], None);
                 } else if member.as_ref() == "shape" && Self::tensor_operand_elem(&obj_ty).is_some()
                 {
                     self.errors.error_with_code(
