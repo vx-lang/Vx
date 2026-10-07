@@ -164,7 +164,7 @@ fn file_error_without_a_native_code_keeps_the_code_absent() -> Result<(), String
 fn fallible_file_calls_clear_every_available_output_on_invalid_arguments() -> Result<(), String> {
     let file = tempfile::tempfile().map_err(|error| format!("create file: {error}"))?;
     let file = into_ffi_file(file);
-    let mut byte = [b'X'];
+    let mut byte = *b"X";
     for is_write in [false, true] {
         let mut call = |count: *mut u64, native_code: *mut i32, has_native_code: *mut bool| {
             // The handle and buffer are valid; non-null outputs are distinct locals.
@@ -221,7 +221,7 @@ fn fallible_file_calls_reject_null_handles_and_nonempty_null_buffers() -> Result
         .try_clone()
         .map_err(|error| format!("clone file: {error}"))?;
     let file = into_ffi_file(file);
-    let mut byte = [b'X'];
+    let mut byte = *b"X";
     for is_write in [false, true] {
         let (mut count, mut code, mut has_code) = (99, 99, true);
         let null_handle_status = if is_write {
