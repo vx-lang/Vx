@@ -52,33 +52,16 @@ pub enum DiagnosticCode {
     // --- Warnings (W1xxx) ---
     /// Unused variable binding
     W1001,
-    /// Unused function definition
-    W1002,
     /// Unreachable code after return, break, or continue
     W1003,
-    /// Unnecessary mutable binding (`let mut x` where x is never reassigned)
-    W1004,
-    /// Shadowed variable in same scope
-    W1005,
-    /// Redundant borrow (`&&x`)
-    W1006,
-    /// Implicit type widening in `as` cast
-    W1007,
-    /// Empty match arm body
-    W1008,
     /// Unused function parameter
     W1009,
-    /// Unnecessary unsafe block (no unsafe ops inside)
-    W1010,
-    /// Redundant `as` cast to same type
-    W1013,
-    /// Narrowing cast loses precision
+    /// An `as` cast of a number known while compiling that does not fit the target type, such
+    /// as `100000 as i8`, which gives -96.
     W1014,
-    /// Immediately dereferenced borrow (`*&x`)
-    W1020,
-    /// Transfer to same memory space (no-op)
+    /// A `transfer` into the memory the value is already in. It only makes a copy.
     W1022,
-    /// Spawn on Topology::Current (no-op)
+    /// `spawn on(Topology::Current)`: the region runs where the code around it already runs.
     W1023,
     /// Implicit cross-topology transfer inserted via a `Relocatable` impl (a real data
     /// movement happens silently at the use site; write the transfer explicitly to
@@ -1005,12 +988,12 @@ mod tests {
 
     #[test]
     fn test_diagnostic_with_fix_it_remove_display() {
-        let d = Diagnostic::warning("unnecessary `mut`")
-            .with_code(DiagnosticCode::W1004)
-            .with_fix_it("remove `mut`", SourceSpan::new(2, 9, 4), "");
+        let d = Diagnostic::warning("unused parameter 'n'")
+            .with_code(DiagnosticCode::W1009)
+            .with_fix_it("remove `n`", SourceSpan::new(2, 9, 4), "");
         assert_eq!(
             d.to_string(),
-            "Warning[W1004]: unnecessary `mut`\n  help: remove `mut` -- remove"
+            "Warning[W1009]: unused parameter 'n'\n  help: remove `n` -- remove"
         );
     }
 

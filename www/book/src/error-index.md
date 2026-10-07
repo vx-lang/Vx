@@ -14,7 +14,7 @@ the test suite has one, a program that triggers it.
 
 ## Contents
 
-- [Warnings](#warnings) — `W1001`–`W1031` (23 codes)
+- [Warnings](#warnings) — `W1001`–`W1031` (14 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3046` (45 codes)
@@ -31,20 +31,11 @@ Reported without stopping the compile. A warning means the program is accepted b
 | Code | Meaning |
 | --- | --- |
 | [`W1001`](/errors/W1001/) | Unused variable binding |
-| [`W1002`](/errors/W1002/) | Unused function definition |
 | [`W1003`](/errors/W1003/) | Unreachable code after return, break, or continue |
-| [`W1004`](/errors/W1004/) | Unnecessary mutable binding (`let mut x` where x is never reassigned) |
-| [`W1005`](/errors/W1005/) | Shadowed variable in same scope |
-| [`W1006`](/errors/W1006/) | Redundant borrow (`&&x`) |
-| [`W1007`](/errors/W1007/) | Implicit type widening in `as` cast |
-| [`W1008`](/errors/W1008/) | Empty match arm body |
 | [`W1009`](/errors/W1009/) | Unused function parameter |
-| [`W1010`](/errors/W1010/) | Unnecessary unsafe block (no unsafe ops inside) |
-| [`W1013`](/errors/W1013/) | Redundant `as` cast to same type |
-| [`W1014`](/errors/W1014/) | Narrowing cast loses precision |
-| [`W1020`](/errors/W1020/) | Immediately dereferenced borrow (`*&x`) |
-| [`W1022`](/errors/W1022/) | Transfer to same memory space (no-op) |
-| [`W1023`](/errors/W1023/) | Spawn on Topology::Current (no-op) |
+| [`W1014`](/errors/W1014/) | An `as` cast of a number known while compiling that does not fit the target type, such as `100000 as i8`, which gives -96. |
+| [`W1022`](/errors/W1022/) | A `transfer` into the memory the value is already in. It only makes a copy. |
+| [`W1023`](/errors/W1023/) | `spawn on(Topology::Current)`: the region runs where the code around it already runs. |
 | [`W1024`](/errors/W1024/) | Implicit cross-topology transfer inserted via a `Relocatable` impl (a real data movement happens silently at the use site; write the transfer explicitly to silence). `Relocatable` answers "may this value move implicitly?" and is keyed on a user type. That is a different question from "what code moves bytes across this hardware edge?", which is `impl Transfer<Memory::A, Memory::B> for Topology::X`. Both were called `Transfer` before Vx#353. |
 | [`W1025`](/errors/W1025/) | Use of a user-defined topology with no registered descriptor (not declared via `Topology <Name> { ... }` and not registered by a plugin). Often a typo of a built-in; defaults to host-like placement. |
 | [`W1026`](/errors/W1026/) | A user-defined topology's memory is unreachable from the host (no transfer path), so data can never be moved to it. See the topology coherence check. |
@@ -231,4 +222,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-142 diagnostics.
+133 diagnostics.

@@ -922,7 +922,11 @@ impl<'a> Parser<'a> {
                     space: mem,
                     cost: None,
                     lowering: None,
-                    span: Span::default(),
+                    span: Span {
+                        line: peeked_token.line,
+                        column: peeked_token.column,
+                        length: peeked_token.length,
+                    },
                 })
             }
             TokenType::LeftBracket => {
@@ -1245,7 +1249,11 @@ impl<'a> Parser<'a> {
                             top,
                             stmts,
                             ret: ret_expr,
-                            span: Span::default(),
+                            span: Span {
+                                line: token.line,
+                                column: token.column,
+                                length: token.length,
+                            },
                         })
                     }
                     _ => {
@@ -1342,13 +1350,19 @@ impl<'a> Parser<'a> {
                     index: Box::new(index),
                     span: ix_span,
                 });
-            } else if self.match_token(&TokenType::As) {
+            } else if self.check(&TokenType::As) {
+                let as_span = Span {
+                    line: self.peek().line,
+                    column: self.peek().column,
+                    length: self.peek().length,
+                };
+                self.advance();
                 let target_ty = self.parse_type()?;
                 expr = Expr::AsCast(AsCastExpr {
                     expr: Box::new(expr),
                     target_ty,
                     source_ty: None,
-                    span: Span::default(),
+                    span: as_span,
                 });
             } else {
                 break;
