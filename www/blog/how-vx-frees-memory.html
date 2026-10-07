@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How Vx frees memory</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="Vx frees memory in four ways, and the type checker decides almost all of it. A tensor is freed after its last use, a value with a Drop impl at the end of its block as in Rust, a tensor in GPU memory through the plugin that allocated it. With the code, the drop points the compiler prints, and the gaps left.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="How Vx frees memory">
+<meta property="og:description" content="Four ways, one decider: the type checker writes the drops. A tensor is freed after its last use, a value with a Drop impl at the end of its block, and GPU memory through the plugin that allocated it.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-10-07T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/how-vx-frees-memory.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-how-vx-frees-memory.png">
+<meta property="og:image:alt" content="How Vx frees memory: the type checker decides when each value is freed.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-how-vx-frees-memory.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>How Vx frees memory</h1>
+<p class="post-meta">Aditya Kumar &middot; 7 October 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — Vx frees memory in four ways, and the type
+checker decides almost all of it. A tensor is freed right after its last use. A value whose type
+implements <code>Drop</code> is dropped at the end of its block, in reverse order, as in Rust.
+A tensor in GPU memory is freed through the plugin that allocated it. Raw memory from
+<code>malloc</code> is freed by hand. A week ago the compiler instead rebuilt ownership from its
+intermediate code, and most bugs in that approach were fixed by skipping code and leaking.</blockquote>
+
+<p class="lede">A compiler that already tracks who owns each value, to stop you using one after it
+moved, knows everything it needs to free it. Until this month Vx did not use that knowledge.</p>
+
+<p>Vx used to free heap memory in three unrelated ways: a compiler pass over its intermediate
+code (MLIR) that freed the tensors the compiler allocated, a second pass for the buffers that <code>transfer</code> makes, and a <code>free()</code>
+you called by hand on <code>Vec</code>, <code>Box</code> and <code>String</code>. None of them used
+the ownership the checker tracks. The first rebuilt it from the MLIR, which has lost it, so a
+tensor in a struct field was leaked on purpose, and a program that placed data in GPU memory was
+skipped and leaked whole.</p>
+
+<p>Now the checker writes each drop into the program, and both of Vx's code generators turn it
+into a call that frees the memory. This post
+walks through the four ways memory is freed today, with the drop points the compiler prints. Every
+example was compiled and run on both of Vx's code generators, from commit e602443b on
+<code>main</code>.</p>
+
+<table>
+<tr><th>Way</th><th>What it frees</th><th>When</th></tr>
+<tr><td>Drops the checker writes</td><td>Every tensor a function owns, including one in GPU memory</td><td>After its last use</td></tr>
+<tr><td>The <code>Drop</code> trait</td><td>Structs, enum payloads, <code>Vec</code>, <code>Box</code>, <code>String</code>, files and sockets</td><td>At the end of its block</td></tr>
+<tr><td>Transfer frees</td><td>A <code>transfer</code> result nothing names</td><td>After its last use</td></tr>
+<tr><td>By hand</td><td><code>malloc</code>'d and <code>mmap</code>'d memory</td><td>When you call <code>free</code> or <code>munmap</code></td></tr>
+</table>
+
+<h2>Tensors: freed after their last use</h2>
+
+<pre><code><span class="n"> 1</span>  <span class="k">fn</span> <span class="f">total</span>(t : <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>]&gt;) -&gt; <span class="t">f32</span> {
+<span class="n"> 2</span>    <span class="k">return</span> t[<span class="n">0</span>] + t[<span class="n">1</span>];
+<span class="n"> 3</span>  }
+<span class="n"> 4</span>
+<span class="n"> 5</span>  <span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+<span class="n"> 6</span>    <span class="k">let</span> a = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>]&gt;::<span class="f">fill</span>(<span class="n">1.0</span>);
+<span class="n"> 7</span>    <span class="k">let</span> b = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>]&gt;::<span class="f">fill</span>(<span class="n">2.0</span>);
+<span class="n"> 8</span>    <span class="f">print</span>(a[<span class="n">0</span>]);
+<span class="n"> 9</span>    <span class="k">let</span> s = <span class="f">total</span>(b);
+<span class="n">10</span>    <span class="k">let</span> c = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>]&gt;::<span class="f">fill</span>(<span class="n">3.0</span>);
+<span class="n">11</span>    <span class="k">if</span> s &gt; <span class="n">1.0</span> {
+<span class="n">12</span>      <span class="k">let</span> d = c;
+<span class="n">13</span>      <span class="f">print</span>(d[<span class="n">0</span>]);
+<span class="n">14</span>    }
+<span class="n">15</span>    <span class="f">print</span>(s);
+<span class="n">16</span>    <span class="k">return</span> <span class="n">0</span>;
+<span class="n">17</span>  }</code></pre>
+
+<p>With <code>VX_PRINT_DROPS=1</code> the compiler prints where it put each drop:</p>
+
+<pre><code>drop in total: t, before the return on line 2
+drop in main: d, after the statement on line 13
+drop in main: c if it was not moved, after the statement on line 11
+drop in main: a, after the statement on line 8</code></pre>
+
+<p>Each one follows a rule you could check by hand:</p>
+
+<ul>
+<li><strong><code>a</code></strong> is read for the last time on line 8, so it is freed right after
+that line, while <code>main</code> keeps running. The checker finds that line with a liveness
+analysis: for each block, it works out the last statement that uses each value.</li>
+<li><strong><code>b</code></strong> is passed by value to <code>total</code>, so it belongs to
+<code>total</code> now, and <code>total</code> frees it before it returns. <code>main</code> never
+frees it.</li>
+<li><strong><code>c</code></strong> is moved into <code>d</code>, but only when the
+<code>if</code> is taken. Whether it still needs freeing is only known at run time, so the
+compiler keeps a hidden <code>bool</code> that the move sets, and the drop after the
+<code>if</code> frees <code>c</code> only if <code>c</code> was not moved.</li>
+<li><strong><code>d</code></strong> owns what <code>c</code> did, and is freed after its last use
+on line 13.</li>
+</ul>
+
+<p>The program prints <code>134</code> on both code generators. A view of a tensor, such as a row
+<code>q[i]</code> or a field read, owns nothing and is never freed. It borrows its owner instead,
+so the owner is not freed before the view's last use.</p>
+
+<h2>Values with a <code>Drop</code> impl: freed at the end of their block</h2>
+
+<p>Freeing a tensor changes nothing a program can see, so the earlier the better. A
+<code>Drop</code> impl is different: it can print, unlock, or close a file, and when it runs is
+part of what the program means. So a value whose drop runs a <code>Drop</code> impl waits for the
+end of its block, and values are dropped in reverse order of declaration, as in Rust.</p>
+
+<pre><code><span class="k">import</span> std::vec;
+
+<span class="k">struct</span> <span class="t">Noisy</span> { id : <span class="t">i32</span> }
+
+<span class="k">impl</span> <span class="t">Drop</span> <span class="k">for</span> <span class="t">Noisy</span> {
+  <span class="k">fn</span> <span class="f">drop</span>(self : &amp;<span class="k">mut</span> <span class="t">Noisy</span>) -&gt; <span class="t">void</span> {
+    <span class="f">print</span>(self.id);
+    <span class="f">print!</span>(<span class="n">" "</span>);
+    <span class="k">return</span>;
+  }
+}
+
+<span class="k">struct</span> <span class="t">Pair</span> { left : <span class="t">Noisy</span>, right : <span class="t">Noisy</span> }
+
+<span class="k">enum</span> <span class="t">Slot</span> { <span class="t">Full</span>(<span class="t">Noisy</span>), <span class="t">Empty</span> }
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> p = <span class="t">Pair</span> { left : <span class="t">Noisy</span> { id : <span class="n">1</span> }, right : <span class="t">Noisy</span> { id : <span class="n">2</span> } };
+  <span class="k">let mut</span> v : <span class="t">Vec</span>&lt;<span class="t">Noisy</span>&gt; = <span class="t">Vec</span>::<span class="f">new</span>();
+  v.<span class="f">push</span>(<span class="t">Noisy</span> { id : <span class="n">3</span> });
+  v.<span class="f">push</span>(<span class="t">Noisy</span> { id : <span class="n">4</span> });
+  <span class="k">let</span> s = <span class="t">Slot</span>::<span class="t">Full</span>(<span class="t">Noisy</span> { id : <span class="n">5</span> });
+  <span class="f">print!</span>(<span class="n">"end "</span>);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<pre><code>end 5 3 4 1 2</code></pre>
+
+<p>That is the line the same program prints in Rust, on both of Vx's code generators. Nothing is
+dropped before <code>end</code>, though <code>p</code>, <code>v</code> and <code>s</code> are never
+used again after they are made. Then <code>s</code>, declared last, goes first and drops the
+payload of its variant (5). <code>v</code> drops its elements first to last (3 4) and then frees
+its buffer. <code>p</code> drops its fields in the order they are declared (1 2).</p>
+
+<p><code>Vec</code>, <code>Box</code>, <code>String</code>, <code>File</code>,
+<code>TcpStream</code>, <code>UdpSocket</code> and <code>TcpListener</code> all implement
+<code>Drop</code>, so the <code>free()</code> they used to need is gone. A struct with no
+<code>Drop</code> impl that only holds tensors has nothing visible to do when it is dropped, so it
+is freed after its last use, like a tensor. <code>core::mem::drop(x)</code> drops a value early, and
+<code>core::mem::forget(x)</code> never drops it.</p>
+
+<h2>Tensors in GPU memory</h2>
+
+<p>A tensor you <code>transfer</code> to another memory is freed by its drop too, through the
+allocator it came from: memory from <code>cudaMalloc</code> must go back through
+<code>cudaFree</code>. Here <code>Device</code> is a small GPU-like machine, declared in the
+program with its own memory, <code>HBM</code>:</p>
+
+<pre><code><span class="n"> 1</span>  <span class="t">Topology</span> <span class="t">Device</span> {
+<span class="n"> 2</span>    memory: <span class="t">Memory</span>::<span class="t">HBM</span>,
+<span class="n"> 3</span>    visible: [<span class="t">Memory</span>::<span class="t">HBM</span>],
+<span class="n"> 4</span>    <span class="k">transfer</span> <span class="t">Memory</span>::<span class="t">CPU_DRAM</span> -&gt; <span class="t">Memory</span>::<span class="t">HBM</span> : <span class="n">10</span> GB/s,
+<span class="n"> 5</span>    <span class="k">transfer</span> <span class="t">Memory</span>::<span class="t">HBM</span> -&gt; <span class="t">Memory</span>::<span class="t">CPU_DRAM</span> : <span class="n">10</span> GB/s
+<span class="n"> 6</span>  }
+<span class="n"> 7</span>
+<span class="n"> 8</span>  <span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+<span class="n"> 9</span>    <span class="k">let</span> host = <span class="t">Tensor</span>&lt;<span class="t">f32</span>&gt;([<span class="n">1024</span>]);
+<span class="n">10</span>    <span class="k">let mut</span> dev = <span class="f">transfer</span>(host, <span class="t">Memory</span>::<span class="t">HBM</span>);
+<span class="n">11</span>    <span class="k">spawn on</span>(<span class="t">Topology</span>::<span class="t">Device</span>) {
+<span class="n">12</span>      <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">1024</span> {
+<span class="n">13</span>        dev[i] = <span class="n">2.0</span>;
+<span class="n">14</span>      }
+<span class="n">15</span>    }
+<span class="n">16</span>    <span class="k">let</span> back = <span class="f">transfer</span>(dev, <span class="t">Memory</span>::<span class="t">CPU_DRAM</span>);
+<span class="n">17</span>    <span class="f">print</span>(back[<span class="n">0</span>]);
+<span class="n">18</span>    <span class="k">return</span> <span class="n">0</span>;
+<span class="n">19</span>  }</code></pre>
+
+<pre><code>drop in main: host, after the statement on line 10
+drop in main: dev, after the statement on line 16
+drop in main: back, after the statement on line 17</code></pre>
+
+<p>The same rule as before: each tensor goes after its last use. What differs is the call each
+drop becomes. In the generated code (MLIR's LLVM dialect), <code>host</code>'s drop is a call to
+<code>free</code>, while the drops of <code>dev</code> and <code>back</code> are calls to
+<code>vx_plugin_free</code> with the memory's topology:</p>
+
+<pre><code>llvm.call @free(%18)
+llvm.call @vx_plugin_free(%20, %13)
+llvm.call @vx_plugin_free(%32, %4)</code></pre>
+
+<p><code>vx_plugin_free</code> asks the runtime for that topology. It calls <code>cudaFree</code>
+for GPU memory and <code>free</code> for host memory, or, when the buffer lives on a remote worker,
+sends that worker a FREE message. The program prints <code>2</code>.</p>
+
+<p>One kind of buffer has no owner to drop: a transfer whose result is never named, as in
+<code>print(transfer(dev, Memory::CPU_DRAM)[0])</code>. An older compiler pass, written
+before drops existed, frees a transfer's result after its last use, and it still handles exactly
+that case.</p>
+
+<h2>By hand</h2>
+
+<p>Memory you take from C stays yours to give back. <code>std::alloc</code> exposes
+<code>malloc</code>, <code>realloc</code> and <code>free</code>, and <code>std::mmap</code> exposes
+<code>mmap</code> and <code>munmap</code>, all <code>unsafe</code>, and nothing frees them for
+you:</p>
+
+<pre><code><span class="k">import</span> std::alloc;
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">unsafe</span> {
+    <span class="k">let</span> p = <span class="f">malloc</span>(<span class="n">16</span>);
+    *p = <span class="n">7i8</span>;
+    <span class="f">print</span>(*p);
+    <span class="f">free</span>(p);
+  }
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<h2>Memory that needs no free</h2>
+
+<ul>
+<li><strong>A kernel's stack.</strong> A small fixed-size tensor made at the start of a
+<code>spawn</code> region becomes a stack slot in the kernel, and a GPU shared-memory tile lives
+only as long as the kernel. Both are gone when the kernel returns. Any other tensor a region makes
+is freed by its drop, inside the kernel.</li>
+<li><strong>The runtime's staging pool.</strong> When the runtime copies a tensor to a GPU for one
+kernel launch, that copy belongs to the runtime, and goes back to a pool when the launch ends.
+The pool keeps the memory for the next launch, and calls <code>cudaFree</code> only when keeping
+it would take the pool past its limit.</li>
+</ul>
+
+<h2>How we check it</h2>
+
+<p>Vx's differential fuzzer writes random programs together with a Rust copy of each, and checks
+that both print the same thing. It can also preload a small library that counts the blocks a
+compiled program allocates and frees, and report a program that leaves any behind. The commit
+that added that counter reports 3,000 programs from the generator that moves tensors through
+calls, branches and loops, each printing what its Rust copy prints and each freeing everything it
+allocates on the default code generator. The commit that made placed tensors drop checked its
+new test, a GPU tensor returned from one function and given to another, the same way on both code
+generators.</p>
+
+<h2>What is left</h2>
+
+<p>Writing this post turned up one bug, and the drop work lists three more:</p>
+
+<ul>
+<li><strong>A <code>match</code> on a variant whose name another enum also uses</strong> picks the
+wrong variant on the legacy code generator, at random. A drop of an enum is written as a
+<code>match</code>, so a <code>Drop</code> impl on the payload ran in only 2 of 8 compiles of the
+same program (<a href="https://github.com/vx-lang/Vx/issues/1342">#1342</a>).</li>
+<li>An enum with a number and a struct at the same payload position is never dropped
+(<a href="https://github.com/vx-lang/Vx/issues/1343">#1343</a>).</li>
+<li><code>String::as_c_str</code> leaks a copy on every call
+(<a href="https://github.com/vx-lang/Vx/issues/723">#723</a>).</li>
+<li>The legacy code generator leaks a placed tensor returned inside <code>Verified&lt;..&gt;</code>
+(<a href="https://github.com/vx-lang/Vx/issues/1335">#1335</a>).</li>
+</ul>
+
+<p class="post-foot">The design is in
+<code>docs/implementation_plans/drop_semantics.md</code>, and the work is tracked in
+<a href="https://github.com/vx-lang/Vx/issues/1041">#1041</a>. Vx is Apache 2.0 with the LLVM
+exception — <a href="/docs/getting-started.html">install it</a> and run any program with
+<code>VX_PRINT_DROPS=1</code> to see where its values are freed.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+</body>
+</html>

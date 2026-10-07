@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-10-05T18:00:00Z</updated>
+  <updated>2026-10-07T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>How Vx frees memory</title>
+    <link href="https://vxlang.org/blog/how-vx-frees-memory.html"/>
+    <id>https://vxlang.org/blog/how-vx-frees-memory.html</id>
+    <updated>2026-10-07T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Vx frees memory in four ways, and the type checker decides almost all of it. The checker writes a drop for every tensor a function owns, right after its last use, which a liveness analysis finds. A value whose type implements Drop is dropped at the end of its block, in reverse order, and prints the same as the Rust version of the program. A tensor in GPU memory is freed through the plugin that allocated it, and raw memory from malloc is freed by hand. The post shows the drop points the compiler prints, the calls each drop becomes, and the gaps that are left, including a bug found while writing it.</summary>
+  </entry>
 
   <entry>
     <title>Proving tensor indices at compile time</title>
