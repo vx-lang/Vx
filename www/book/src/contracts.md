@@ -50,9 +50,10 @@ An `invariant` on a loop states something that is true on every turn.
 
 ```rust
 fn main() -> i32 {
+    let limit : i32 = 3;
     let mut i : i32 = 0;
-    loop invariant(i >= 0) {
-        if i >= 3 {
+    loop invariant(limit > 0) {
+        if i >= limit {
             break;
         }
         i = i + 1;
@@ -62,7 +63,8 @@ fn main() -> i32 {
 ```
 
 Like `requires` and `ensures`, an invariant may be written bare or in parentheses:
-`invariant i >= 0` and `invariant(i >= 0)` are equivalent.
+`invariant limit > 0` and `invariant(limit > 0)` are equivalent. An invariant about `i` itself, such
+as `i >= 0`, cannot be proven yet: see "Not yet" below.
 
 ## What checks these
 
@@ -77,6 +79,84 @@ This means two things worth understanding:
 - **The prover can fail to prove something true.** A condition it cannot discharge is reported, not
   assumed. If you hit that, the usual fix is to state an intermediate fact the prover needs, rather
   than to remove the contract.
+
+## What the prover knows
+
+The prover checks each function on its own, from the facts it has at each point in the body.
+
+**Where facts come from:**
+
+- the function's own `requires`;
+- `let x = e;`, which gives `x == e` (a `let mut` gives nothing, since `x` may change);
+- `assert(c, ..)`, which gives `c` after the `assert`;
+- the condition of an `if`: the `then` branch knows it is true, the `else` branch knows it is false;
+- a loop's `invariant`, inside the loop, and `a <= i && i < b` inside `for i in a..b`;
+- what a called function promises in its `ensures` (see below).
+
+**Facts follow the paths.** What a branch learns ends with the branch. When a branch ends early, by
+`return`, `break`, `continue`, `panic`, `abort` or a call to a function that never returns
+(`-> !`), the code after the `if` is reached only through the other branch, so it keeps what that
+branch knew:
+
+```rust
+fn positive(x : i32) -> i32
+    ensures return > 0
+{
+    if x <= 0 {
+        return 1;
+    }
+    return x;
+}
+
+fn main() -> i32 {
+    return positive(3) - 3;
+}
+```
+
+At `return x`, the prover knows `x > 0`, because the only way there is past the `if`.
+
+**`ensures` is checked at each `return`,** from what is known there, with `return` standing for that
+value. An error (`E8001`) points at the `return` that fails.
+
+**Calls.** At a call, each `requires` of the called function must follow from what is known there,
+with the call's arguments in place of its parameters. If it does not, the call is an error
+(`E8006`). The call's result is then known through the called function's `ensures`:
+
+```rust
+fn halve(x : i32) -> i32
+    requires x > 0
+    ensures return > 0
+{
+    return x;
+}
+
+fn twice_halved(x : i32) -> i32
+    requires x > 0
+    ensures return > 0
+{
+    return halve(halve(x));
+}
+
+fn main() -> i32 {
+    return twice_halved(4) - 4;
+}
+```
+
+The inner `halve(x)` meets `x > 0` from `twice_halved`'s own `requires`. The outer call meets it
+from the inner call's `ensures`. A function with no `ensures` promises nothing, so the prover knows
+nothing about what it returns.
+
+**What it can reason about:** whole numbers with `+`, `-` and `*`, comparisons, `&&`, `||` and `!`,
+fields and elements of those, and calls. A condition that uses anything else, such as division, is
+ignored, and the compiler warns that it was: "the prover ignores a condition here".
+
+**Not yet:**
+
+- A `match` arm does not know which pattern matched
+  ([Vx#1352](https://github.com/vx-lang/Vx/issues/1352)).
+- After a loop, nothing is known about what happened in it: not its `invariant`, and not the
+  condition that ended it. And since a `let mut` gives no fact, an `invariant` about a loop counter
+  cannot be proven when the loop starts ([Vx#1353](https://github.com/vx-lang/Vx/issues/1353)).
 
 ## assert
 
