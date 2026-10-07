@@ -104,7 +104,7 @@ impl SmtProver {
                     BinaryOp::Add => "+",
                     BinaryOp::Sub => "-",
                     BinaryOp::Mul => "*",
-                    _ => return Err(format!("Unsupported binary op in SMT solver: {:?}", b.op)),
+                    _ => return Err(format!("the `{:?}` operator", b.op)),
                 };
                 Ok(format!("({} {} {})", op, lhs, rhs))
             }
@@ -189,16 +189,18 @@ impl SmtProver {
                 self.declarations.insert(name.clone());
                 Ok(name)
             }
-            _ => Err(format!("Unsupported expression in SMT solver: {:?}", expr)),
+            _ => Err(format!("a `{}` expression", kind_name(expr))),
         }
     }
 }
 
 /// Whether the prover can model `e`: names, numbers, `+`, `-`, `*`, comparisons, `&&`, `||`, `!`,
-/// negation, and field and element reads of those.
+/// negation, field and element reads of those, and calls with such arguments, whose results are
+/// known through the callee's `ensures`.
 pub fn is_modelled(e: &Expr) -> bool {
     match e {
         Expr::Number(_) | Expr::Identifier(_) => true,
+        Expr::FunctionCall(c) => c.args.iter().all(is_modelled),
         Expr::BinaryOp(b) => {
             matches!(b.op, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul)
                 && is_modelled(&b.lhs)
@@ -301,4 +303,14 @@ pub fn to_source(e: &Expr) -> Option<String> {
         Expr::IndexAccess(i) => format!("{}[{}]", to_source(&i.base)?, to_source(&i.index)?),
         _ => return None,
     })
+}
+
+/// The kind of expression `e` is, as its name in the syntax tree: `Grad`, `IndirectCall`.
+fn kind_name(e: &Expr) -> String {
+    let debug = format!("{e:?}");
+    debug
+        .split(['(', ' ', '{'])
+        .next()
+        .unwrap_or("an")
+        .to_string()
 }

@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 // A call that the compiler cannot show meets the called function's `requires` is an error
-// (E8006): a literal that breaks it, a parameter nothing bounds, the result of another call,
-// whose value the compiler does not know, and a literal that breaks a precondition written with
-// arithmetic.
+// (E8006): a literal that breaks it, a parameter nothing bounds, the result of a call to a
+// function with no `ensures`, which promises nothing about its value, and a literal that breaks
+// a precondition written with arithmetic.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK-DAG: E8006] at 25:10: this call to 'halve' may not meet its precondition `x > 0`

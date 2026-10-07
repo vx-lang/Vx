@@ -1336,27 +1336,90 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `e` with each call replaced by a fresh name, `$call_N`. For a callee that declares
+    /// `ensures`, each one is pushed onto `facts` with the call's arguments in place of the
+    /// parameters and the fresh name in place of `return`.
+    fn abstract_calls(&self, e: &Expr, calls: &mut usize, facts: &mut Vec<Expr>) -> Expr {
+        let mut sub = |x: &Expr| Box::new(self.abstract_calls(x, calls, facts));
+        match e {
+            Expr::FunctionCall(c) => {
+                let args: Vec<Expr> = c.args.iter().map(|a| *sub(a)).collect();
+                let result = Expr::Identifier(IdentifierExpr {
+                    name: format!("$call_{}", *calls).into(),
+                    span: c.span,
+                });
+                *calls += 1;
+                if let Some(func) = self.env.syntax_functions.get(c.name.as_ref()) {
+                    let mut names: HashMap<crate::symbol::Symbol, Expr> = func
+                        .params
+                        .iter()
+                        .map(|(p, _)| p.clone())
+                        .zip(args)
+                        .collect();
+                    names.insert("return".into(), result.clone());
+                    for ens in &func.ensures {
+                        facts.push(hir::prover::substitute_names(ens, &names));
+                    }
+                }
+                result
+            }
+            Expr::BinaryOp(b) => {
+                let mut b = b.clone();
+                b.lhs = sub(&b.lhs);
+                b.rhs = sub(&b.rhs);
+                Expr::BinaryOp(b)
+            }
+            Expr::RelationalOp(r) => {
+                let mut r = r.clone();
+                r.lhs = sub(&r.lhs);
+                r.rhs = sub(&r.rhs);
+                Expr::RelationalOp(r)
+            }
+            Expr::LogicalOp(l) => {
+                let mut l = l.clone();
+                l.lhs = sub(&l.lhs);
+                l.rhs = sub(&l.rhs);
+                Expr::LogicalOp(l)
+            }
+            Expr::UnaryOp(u) => {
+                let mut u = u.clone();
+                u.expr = sub(&u.expr);
+                Expr::UnaryOp(u)
+            }
+            _ => e.clone(),
+        }
+    }
+
     pub(crate) fn prove_expr(&mut self, expr: &Expr) -> bool {
         let mut prover = hir::prover::SmtProver::new();
-        for constraint in &self.consteval.constraints {
-            if let Err(e) = prover.add_constraint(constraint) {
-                // If we can't lower a constraint, we log a warning
-                self.errors
-                    .push_warning(format!("Could not add constraint to SMT solver: {}", e));
+        // Each call becomes a fresh name, and the callee's `ensures` become facts about it.
+        let mut calls = 0;
+        let mut facts = Vec::new();
+        let constraints: Vec<Expr> = self
+            .consteval
+            .constraints
+            .iter()
+            .map(|c| self.abstract_calls(c, &mut calls, &mut facts))
+            .collect();
+        let goal = self.abstract_calls(expr, &mut calls, &mut facts);
+        // A fact the prover cannot express is left out, so it knows less and proves less. Say so,
+        // or a later "cannot prove" has no visible cause.
+        for constraint in constraints.iter().chain(&facts) {
+            if let Err(what) = prover.add_constraint(constraint) {
+                self.errors.push_warning(format!(
+                    "the prover ignores a condition here: it cannot reason about {what}"
+                ));
             }
         }
 
-        // To prove `expr` holds under `constraints`, we assert `!expr` and check for unsatisfiability.
+        // To prove `goal` holds under the facts, assert `!goal` and check for unsatisfiability.
         let negated_expr = Expr::UnaryOp(UnaryOpExpr {
             op: UnaryOp::Not,
-            expr: Box::new(expr.clone()),
+            expr: Box::new(goal),
             span: Span::default(),
         });
-
-        if let Err(e) = prover.add_constraint(&negated_expr) {
-            self.errors
-                .push_warning(format!("Could not lower expression to SMT solver: {}", e));
-            return false; // Can't prove
+        if prover.add_constraint(&negated_expr).is_err() {
+            return false;
         }
 
         match prover.prove() {

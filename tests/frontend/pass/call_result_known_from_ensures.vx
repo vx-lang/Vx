@@ -1,0 +1,59 @@
+//===- call_result_known_from_ensures.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// What a call returns is known from the called function's `ensures`: `halve` promises a positive
+// result, `five` promises 5, and `same` promises its argument back. That proves `caller`'s and `through_let`'s own `ensures`, and
+// `halve`'s precondition where its argument is another call. The prover prints no warning about
+// the calls.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E8001
+// CHECK-NOT: E8006
+// CHECK-NOT: Could not
+// CHECK: func.func @main
+fn halve(x : i32) -> i32
+requires x > 0
+ensures return > 0 {
+  return x;
+}
+
+fn five() -> i32
+ensures return == 5 {
+  return 5;
+}
+
+fn same(x : i32) -> i32
+ensures return == x {
+  return x;
+}
+
+fn passed_through() -> i32 {
+  return halve(same(3));
+}
+
+fn caller() -> i32
+ensures return > 0 {
+  return halve(5);
+}
+
+fn through_let() -> i32
+ensures return > 0 {
+  let r = halve(3);
+  return r;
+}
+
+fn nested() -> i32 {
+  return halve(five());
+}
+
+fn chained() -> i32 {
+  return halve(halve(2));
+}
+
+fn main() -> i32 {
+  return caller() + through_let() + nested() + chained() + passed_through();
+}

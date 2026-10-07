@@ -1,5 +1,9 @@
 // RUN: vxc %s 2>&1 | FileCheck %s
-// CHECK: Unsupported
+// A condition the prover cannot reason about is ignored, with a warning that says so. A call it
+// knows nothing about, `cos(1)` or `abs(-5)`, is an unknown value, which it can reason about; a
+// gradient it cannot.
+// CHECK: Warning: the prover ignores a condition here: it cannot reason about a `Grad` expression
+// CHECK-NOT: cannot reason about
 
 fn test_group2_2(X : i32) -> i32
 requires cos
