@@ -1,0 +1,39 @@
+name: Use our own LLVM
+description: >
+  Restore the LLVM that the `llvm` job of ci.yml built with scripts/provision/build_llvm.sh, and
+  put it on PATH for the rest of the job. Fails if it is not in the cache.
+
+inputs:
+  key:
+    description: The cache key the `llvm` job reported.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Restore LLVM
+      uses: actions/cache/restore@v4
+      with:
+        path: toolchain/install
+        key: ${{ inputs.key }}
+        fail-on-cache-miss: true
+
+    # z3 is the prover's solver, and lld links the compiler (see RUSTFLAGS). Neither comes from LLVM.
+    - name: Install z3 and lld
+      shell: bash
+      run: sudo apt-get install -y z3 lld
+
+    # The same settings setup.sh writes into config.local for this LLVM. The tools are found on
+    # PATH by their plain names (llvm-config, opt, clang, FileCheck, ...).
+    - name: Put LLVM on PATH
+      shell: bash
+      run: |
+        install="$GITHUB_WORKSPACE/toolchain/install"
+        enzyme=$(ls "$install"/lib/enzyme/LLVMEnzyme-22.*)
+        echo "$install/bin" >> "$GITHUB_PATH"
+        {
+          echo "MLIR_SYS_220_PREFIX=$install"
+          echo "TABLEGEN_220_PREFIX=$install"
+          echo "ENZYME_LIB=$enzyme"
+        } >> "$GITHUB_ENV"
+        "$install/bin/llvm-config" --version
