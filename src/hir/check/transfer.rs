@@ -1776,6 +1776,16 @@ impl<'a> TypeChecker<'a> {
             return Type::Unknown;
         };
 
+        if edge.source_mem == edge.target_mem && !self.speculating {
+            self.errors.warn(
+                crate::diagnostic::DiagnosticCode::W1022,
+                format!(
+                    "the value is already in {}; this transfer only makes a copy",
+                    edge.target_mem.name()
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&t.span)),
+            );
+        }
         if edge.path.len() > 2 {
             return self.stage_multi_hop(expr, edge, relaxed, consume);
         }
@@ -1977,6 +1987,15 @@ impl<'a> TypeChecker<'a> {
                 let spawn_span = *span;
                 let mut actual_top = top.clone();
                 if actual_top == Topology::Current {
+                    if !self.speculating {
+                        self.errors.warn(
+                            crate::diagnostic::DiagnosticCode::W1023,
+                            "`spawn on(Topology::Current)` runs the region where the code \
+                             around it already runs, so the `spawn` changes nothing"
+                                .to_string(),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&spawn_span)),
+                        );
+                    }
                     actual_top = self.active_topology.clone();
                 }
 
