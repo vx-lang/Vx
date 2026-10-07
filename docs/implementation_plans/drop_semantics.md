@@ -1,10 +1,15 @@
 # Drop semantics: freeing what a program owns when its owner goes away
 
-**Status:** phases 0 to 4 done, 2026-10-06: every program frees its tensors at their drops, on
-both code generators, and `vx-free-heap-buffers` is gone. Structs and enums are dropped through
-the `Drop` trait, and `Vec`, `Box`, `String`, `File` and the sockets implement it. Placed
-tensors and `spawn` regions (phase 5) remain, and a `Vec` does not drop its elements yet
-(Vx#1252). Proposed 2026-10-03. Tracking issue: Vx#1041, one issue per phase (Vx#1049, then Vx#1042 to Vx#1046). Decides Vx#495.
+**Status:** 2026-10-07: every program frees its tensors at drops the checker writes, on both
+code generators, and `vx-free-heap-buffers` is gone. Structs and enums are dropped through the
+`Drop` trait, and `Vec` (with its elements), `Box`, `String`, `File` and the sockets implement
+it. Phase 5's three items have landed: a `spawn` region frees the tensors it makes, a value it
+yields moves to the function around it, and a placed tensor is freed by the drop of its last
+owner, through the plugin that allocated it. The transfer frees now cover only transfers nothing
+owns, such as `print(transfer(..))`. A tensor is dropped after the last statement of its block
+that uses it, as the frontend's liveness analysis decides, rather than at the end of the block
+(§2.2 describes the original rule). Proposed 2026-10-03. Tracking issue: Vx#1041, one issue per
+phase (Vx#1049, then Vx#1042 to Vx#1046). Decides Vx#495.
 
 ______________________________________________________________________
 
