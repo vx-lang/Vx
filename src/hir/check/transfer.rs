@@ -1976,15 +1976,44 @@ impl<'a> TypeChecker<'a> {
                 // the region silently reports no traffic. Probed and reproduced.
                 let placed_outer = self.placed_names_snapshot();
 
+                // The region's value goes to the enclosing function, as a return does. A
+                // variable the region made is moved into a `$value` inside it, so the region
+                // does not drop it; see `check_unsafeblock_expr` for the same rewrite.
+                if let Some(Expr::Identifier(id)) = ret.as_deref() {
+                    let made_here = stmts.iter().any(|st| {
+                        matches!(st, crate::syntax::Statement::LetDecl(l) if l.name == id.name)
+                    });
+                    if made_here {
+                        let value =
+                            crate::syntax::Statement::LetDecl(crate::syntax::stmt::LetDeclStmt {
+                                name: "$value".into(),
+                                is_mut: false,
+                                ty_ann: None,
+                                expr: Expr::Identifier(id.clone()),
+                                span: id.span,
+                            });
+                        let span = id.span;
+                        stmts.push(value);
+                        *ret = Some(Box::new(Expr::Identifier(
+                            crate::syntax::expr::IdentifierExpr {
+                                name: "$value".into(),
+                                span,
+                            },
+                        )));
+                    }
+                }
+
                 self.drops_enter_spawn();
                 self.check_expr_block(stmts, consume);
+                // Checked once the region's own frame is closed, so a variable from outside that
+                // the region hands out moves in the enclosing function.
+                self.drops_exit_spawn();
 
                 let mut ret_ty = Type::Struct("void".into(), None); // default void-like type
                 let has_ret = ret.is_some();
                 if let Some(r) = ret {
                     ret_ty = self.check_expr_type_flag(r, consume);
                 }
-                self.drops_exit_spawn();
 
                 // What this region moves, counted from its own accesses (#353). Here,
                 // BEFORE the scope pops, because the body's free names -- the placed tensors

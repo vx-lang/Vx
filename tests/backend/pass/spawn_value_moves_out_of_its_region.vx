@@ -1,0 +1,47 @@
+//===- spawn_value_moves_out_of_its_region.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn` region's last value moves to the function around it, as a return does.
+//
+// - `made`: the region makes `x` and hands it out, so the region does not drop it, and `main`
+//   copies 0, 1, 2 and 3 back from it;
+// - `given`: the region hands out `a`, made before it, so `a` moves to `t`, and `main` copies
+//   2.5 four times back from `t` without dropping `a` first.
+//
+// EXPECT: 6 | 10
+
+fn made() -> f32 {
+  let n = 4;
+  let t = spawn on(Topology::GPU) {
+    let mut x = Tensor<f32>([n]);
+    for i in 0..4 {
+      x[i] = i as f32;
+    }
+    x
+  };
+  let h = transfer(t, Memory::CPU_DRAM);
+  return h[0] + h[1] + h[2] + h[3];
+}
+
+fn given() -> f32 {
+  let mut a = Tensor<f32, [4]>::uninit();
+  for i in 0..4 {
+    a[i] = 2.5;
+  }
+  let t = spawn on(Topology::GPU) {
+    a
+  };
+  let h = transfer(t, Memory::CPU_DRAM);
+  return h[0] + h[1] + h[2] + h[3];
+}
+
+fn main() -> i32 {
+  print(made());
+  print!(" | ");
+  print(given());
+  return 0;
+}
