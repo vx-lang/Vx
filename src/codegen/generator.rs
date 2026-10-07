@@ -1884,18 +1884,29 @@ impl<'c> MeliorGenerator<'c> {
     /// holds that device's memory; on-chip memory, by the address space its type is given, is
     /// scratch nothing frees.
     fn placed_attr(&self, p: &syntax::Placement) -> String {
-        let on_chip = on_chip(crate::arch::topology_address_space(
+        match self.placed_topology(p) {
+            Some(topology) => format!("{{vx.placed = {topology} : i32}}"),
+            None => "{vx.placed}".to_string(),
+        }
+    }
+
+    /// The topology a placed tensor's memory belongs to, which frees it; `None` for on-chip
+    /// scratch, which nothing frees.
+    pub(crate) fn placed_topology(&self, p: &syntax::Placement) -> Option<i32> {
+        if on_chip(crate::arch::topology_address_space(
             &p.topology,
             &self.memories,
             &self.topologies,
-        ));
+        )) {
+            return None;
+        }
         let space = match p.written() {
             syntax::Written::Device => {
                 crate::arch::topology_default_space(&p.topology, &self.topologies)
             }
             syntax::Written::Space => p.space.clone(),
         };
-        placed_attr(&space, on_chip)
+        Some(crate::arch::memory_space_dispatch_id(&space))
     }
 
     pub(crate) fn enum_payload_type_str(&self, name: &str) -> Option<String> {

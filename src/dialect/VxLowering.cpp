@@ -1625,6 +1625,10 @@ static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
       return BufferOrigin::Unknown;
     return originOf(yielded, seen, topology);
   }
+  if (auto alloc = dyn_cast_or_null<vx::AllocOp>(def)) {
+    topology = alloc.getTargetTopology();
+    return BufferOrigin::Placed;
+  }
   if (auto transfer = dyn_cast_or_null<vx::TransferOp>(def)) {
     // A shared-memory tile is scratch on the stack.
     auto scope = transfer->getAttrOfType<StringAttr>("scope");
@@ -1844,7 +1848,7 @@ static void freeTemporaries(ModuleOp module) {
     if (!op->getParentOfType<func::FuncOp>() ||
         op->getParentOfType<vx::SpawnOp>())
       return;
-    if (isa<memref::AllocOp>(op) || isa<func::CallOp>(op))
+    if (isa<memref::AllocOp, vx::AllocOp, func::CallOp>(op))
       for (Value r : op->getResults())
         if (auto type = dyn_cast<MemRefType>(r.getType());
             type && !type.getMemorySpace())
@@ -1915,6 +1919,24 @@ static void freeTemporaries(ModuleOp module) {
       freePlaced(builder, last->getLoc(), buffer, *topology);
     else
       memref::DeallocOp::create(builder, last->getLoc(), buffer);
+  }
+}
+
+// A `vx.alloc` of host memory, or one inside a `vx.spawn` region, where the
+// device allocates from its own memory, is a plain allocation.
+static void lowerHostAllocs(ModuleOp module) {
+  SmallVector<vx::AllocOp> allocs;
+  module.walk([&](vx::AllocOp alloc) {
+    if (alloc.getTargetTopology() == 0 || alloc->getParentOfType<vx::SpawnOp>())
+      allocs.push_back(alloc);
+  });
+  for (vx::AllocOp alloc : allocs) {
+    OpBuilder builder(alloc);
+    auto plain = memref::AllocOp::create(builder, alloc.getLoc(),
+                                         cast<MemRefType>(alloc.getType()),
+                                         alloc.getDynamicSizes());
+    alloc.replaceAllUsesWith(plain.getResult());
+    alloc.erase();
   }
 }
 
@@ -2378,6 +2400,7 @@ struct ConvertVxToStandardPass
       return;
     }
 
+    lowerHostAllocs(getOperation());
     placeTransferFrees(getOperation());
     promoteBufferCells(getOperation());
     // After the cells are promoted, so that most buffers a drop names are
@@ -2677,6 +2700,93 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
     // The `vx.free` placeTransferFrees put after its last use becomes a
     // `vx_plugin_free` in FreeOpLowering.
     rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
+// A placed `uninit()`: the plugin allocates the buffer on its device and
+// copies nothing, which is what a null source means to it.
+struct AllocOpLowering : public OpRewritePattern<vx::AllocOp> {
+  const LLVMTypeConverter &typeConverter;
+
+  AllocOpLowering(const LLVMTypeConverter &typeConverter, MLIRContext *context)
+      : OpRewritePattern<vx::AllocOp>(context), typeConverter(typeConverter) {}
+
+  LogicalResult matchAndRewrite(vx::AllocOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto type = cast<MemRefType>(op.getType());
+    if (!type.getLayout().isIdentity())
+      return op.emitError("vx.alloc of a buffer with a strided layout");
+    Type descType = typeConverter.convertType(type);
+    if (!descType)
+      return failure();
+    auto ptrType = LLVM::LLVMPointerType::get(getContext());
+    auto i64Type = IntegerType::get(getContext(), 64);
+    auto i32Type = IntegerType::get(getContext(), 32);
+    auto constant = [&](int64_t v) -> Value {
+      return rewriter.create<LLVM::ConstantOp>(loc, i64Type,
+                                               rewriter.getI64IntegerAttr(v));
+    };
+
+    // The extents: the type's, or the operands' for a `?`.
+    SmallVector<Value> sizes;
+    auto dynamic = op.getDynamicSizes().begin();
+    for (int64_t dim : type.getShape()) {
+      if (!ShapedType::isDynamic(dim)) {
+        sizes.push_back(constant(dim));
+        continue;
+      }
+      sizes.push_back(
+          rewriter.create<UnrealizedConversionCastOp>(loc, i64Type, *dynamic++)
+              .getResult(0));
+    }
+    unsigned elemBits = type.getElementType().getIntOrFloatBitWidth();
+    Value bytes = constant((elemBits + 7) / 8);
+    for (Value size : sizes)
+      bytes = rewriter.create<LLVM::MulOp>(loc, bytes, size);
+
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    StringRef allocName = "vx_plugin_alloc_and_transfer";
+    if (!module.lookupSymbol<LLVM::LLVMFuncOp>(allocName)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      auto fnTy = LLVM::LLVMFunctionType::get(
+          ptrType, {i64Type, ptrType, i32Type, i32Type}, false);
+      rewriter.create<LLVM::LLVMFuncOp>(loc, allocName, fnTy);
+    }
+    Value nullSrc = rewriter.create<LLVM::ZeroOp>(loc, ptrType);
+    Value topology = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Type, rewriter.getI32IntegerAttr(op.getTargetTopology()));
+    // Device memory the host cannot read, as `vx_space_access` says.
+    Value access = rewriter.create<LLVM::ConstantOp>(
+        loc, i32Type, rewriter.getI32IntegerAttr(1));
+    Value ptr = rewriter
+                    .create<LLVM::CallOp>(
+                        loc, TypeRange{ptrType},
+                        SymbolRefAttr::get(rewriter.getContext(), allocName),
+                        ValueRange{bytes, nullSrc, topology, access})
+                    .getResult();
+
+    // A row-major descriptor over the new buffer.
+    Value desc = rewriter.create<LLVM::UndefOp>(loc, descType);
+    desc = rewriter.create<LLVM::InsertValueOp>(loc, desc, ptr,
+                                                ArrayRef<int64_t>{0});
+    desc = rewriter.create<LLVM::InsertValueOp>(loc, desc, ptr,
+                                                ArrayRef<int64_t>{1});
+    desc = rewriter.create<LLVM::InsertValueOp>(loc, desc, constant(0),
+                                                ArrayRef<int64_t>{2});
+    Value stride = constant(1);
+    for (int64_t d = type.getRank() - 1; d >= 0; --d) {
+      desc = rewriter.create<LLVM::InsertValueOp>(loc, desc, sizes[d],
+                                                  ArrayRef<int64_t>{3, d});
+      desc = rewriter.create<LLVM::InsertValueOp>(loc, desc, stride,
+                                                  ArrayRef<int64_t>{4, d});
+      stride = rewriter.create<LLVM::MulOp>(loc, stride, sizes[d]);
+    }
+    rewriter.replaceOp(
+        op, rewriter.create<UnrealizedConversionCastOp>(loc, type, desc)
+                .getResult(0));
     return success();
   }
 };
@@ -3462,6 +3572,7 @@ struct ConvertVxToLLVMPass
     // transfers were already lowered there, so none should be left.
     target.addIllegalOp<vx::TransferOp>();
     target.addIllegalOp<vx::FreeOp>();
+    target.addIllegalOp<vx::AllocOp>();
     target.addIllegalOp<vx::LaunchOp>();
     target.addIllegalOp<vx::KernelOp>();
     target.addIllegalOp<vx::ReturnOp>();
@@ -3476,6 +3587,7 @@ struct ConvertVxToLLVMPass
     patterns.add<LaunchOpLowering>(typeConverter, &getContext(), &deviceImages);
     patterns.add<TransferToPluginLowering>(typeConverter, &getContext());
     patterns.add<FreeOpLowering>(typeConverter, &getContext());
+    patterns.add<AllocOpLowering>(typeConverter, &getContext());
     patterns.add<KernelOpLowering>(&getContext());
     patterns.add<ReturnOpLowering>(&getContext());
     patterns.add<BarrierOpLowering>(&getContext());

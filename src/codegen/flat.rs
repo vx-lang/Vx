@@ -274,14 +274,32 @@ fn is_ptr_ty(ty: &Type) -> bool {
 /// its declared scope, is scratch nothing frees.
 fn placed_attr(p: &crate::syntax::Placement, ctx: &EmitCtx) -> String {
     let id = crate::arch::memory_space_dispatch_id(&p.space) as u64;
-    let declared_scratch = ctx
-        .subspaces
-        .get(&id)
-        .and_then(|s| s.scope.as_deref())
-        .is_some_and(|s| matches!(s, "sm" | "cta" | "thread"));
-    let on_chip = declared_scratch
+    let on_chip = declared_scratch(id, ctx)
         || crate::codegen::generator::on_chip(crate::arch::builtin_address_space(&p.space));
     crate::codegen::generator::placed_attr(&p.space, on_chip)
+}
+
+/// A declared memory space that is on-chip scratch: shared or per-thread memory.
+fn declared_scratch(id: u64, ctx: &EmitCtx) -> bool {
+    ctx.subspaces
+        .get(&id)
+        .and_then(|s| s.scope.as_deref())
+        .is_some_and(|s| matches!(s, "sm" | "cta" | "thread"))
+}
+
+/// The device whose memory a tensor placed in the space with dispatch id `id` is allocated
+/// in, or `None` for host memory and on-chip scratch.
+pub(crate) fn placed_device(id: u64, ctx: &EmitCtx) -> Option<i32> {
+    let host_or_on_chip = [
+        crate::syntax::MemorySpace::LocalSRAM,
+        crate::syntax::MemorySpace::CPUDRAM,
+    ]
+    .iter()
+    .any(|m| crate::arch::memory_space_dispatch_id(m) as u64 == id);
+    if id == 0 || host_or_on_chip || declared_scratch(id, ctx) {
+        return None;
+    }
+    Some(id as i32)
 }
 
 fn param_alias_attrs(ty: &Type, ctx: &EmitCtx) -> String {
@@ -1816,6 +1834,10 @@ pub(crate) struct FnEmit<'a> {
     /// claims the next granule-rounded `offset` and advances the cursor, so both paths assign
     /// identical offsets. Reset per function, as in the AST codegen.
     pub(crate) subspace_offsets: HashMap<u64, u64>,
+    /// The tensors a `::new()` or `::fill(v)` writes right after they are allocated.
+    pub(crate) filled: std::collections::HashSet<usize>,
+    /// A filled tensor placed on a device: filled on the host, then copied to this topology.
+    pub(crate) copy_after_fill: HashMap<usize, i32>,
 }
 
 impl<'a> FnEmit<'a> {
@@ -2203,6 +2225,12 @@ pub fn emit_function_mlir(
         pending_args: Vec::new(),
         spawn_stack: Vec::new(),
         subspace_offsets: HashMap::new(),
+        filled: hir
+            .iter()
+            .filter(|i| matches!(i.opcode, Opcode::TensorZero | Opcode::TensorFill))
+            .map(|i| i.operand1.0 as usize)
+            .collect(),
+        copy_after_fill: HashMap::new(),
     };
     // `main` installs the runtime crash handler first, exactly as the AST codegen does (`is_main` ->
     // `func.call @vx_init_signals`), so a wild memory access is caught + backtraced rather than exiting

@@ -1,0 +1,46 @@
+//===- placed_tensors_are_allocated_on_their_device.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor placed in GPU memory with `uninit()` is allocated there, a zeroed one is copied
+// there, and one placed in host memory stays a plain allocation. Each reads back what was
+// written into it.
+//
+// EXPECT: 6 0 8
+
+fn uninit_on_gpu() -> f32 {
+  let mut r = Tensor<f32, [4], Memory::GPU_HBM>::uninit();
+  spawn on(Topology::GPU) {
+    for i in 0..4 {
+      r[i] = i as f32;
+    }
+  }
+  let h = transfer(r, Memory::CPU_DRAM);
+  return h[0] + h[1] + h[2] + h[3];
+}
+
+fn new_on_gpu() -> f32 {
+  let z = Tensor<f32, [4], Memory::GPU_HBM>::new();
+  let h = transfer(z, Memory::CPU_DRAM);
+  return h[0] + h[1] + h[2] + h[3];
+}
+
+fn uninit_on_host() -> f32 {
+  let mut c = Tensor<f32, [4], Memory::CPU_DRAM>::uninit();
+  for i in 0..4 {
+    c[i] = 2.0;
+  }
+  return c[0] + c[1] + c[2] + c[3];
+}
+
+fn main() -> i32 {
+  print(uninit_on_gpu());
+  print!(" ");
+  print(new_on_gpu());
+  print!(" ");
+  print(uninit_on_host());
+  return 0;
+}
