@@ -404,6 +404,38 @@ macro_rules! instantiate_file_ffi {
             vx_file_error_kind(error.kind())
         }
 
+        /// # Safety
+        /// The handle, buffer, and output pointers must meet the calling function's
+        /// safety requirements. `transfer` may use the buffer only during this call.
+        unsafe fn vx_file_try_transfer(
+            ptr: *mut std::ffi::c_void,
+            buffer: *const u8,
+            len: u64,
+            count: *mut u64,
+            native_code: *mut i32,
+            has_native_code: *mut bool,
+            transfer: impl FnOnce(&mut std::fs::File) -> std::io::Result<usize>,
+        ) -> i32 {
+            unsafe { vx_file_clear_transfer_outputs(count, native_code, has_native_code) };
+            if count.is_null() || native_code.is_null() || has_native_code.is_null() {
+                return VX_FILE_STATUS_INVALID_ARGUMENT;
+            }
+            if ptr.is_null() || len > isize::MAX as u64 || (len != 0 && buffer.is_null()) {
+                return VX_FILE_STATUS_INVALID_ARGUMENT;
+            }
+            if len == 0 {
+                return VX_FILE_STATUS_OK;
+            }
+            let file = unsafe { &mut *(ptr as *mut std::fs::File) };
+            match transfer(file) {
+                Ok(transferred) => {
+                    unsafe { *count = transferred as u64 };
+                    VX_FILE_STATUS_OK
+                }
+                Err(error) => unsafe { vx_file_store_error(&error, native_code, has_native_code) },
+            }
+        }
+
         #[no_mangle]
         pub extern "C" fn vx_file_open(
             c_path: *const std::ffi::c_char,
@@ -501,24 +533,19 @@ macro_rules! instantiate_file_ffi {
             native_code: *mut i32,
             has_native_code: *mut bool,
         ) -> i32 {
-            unsafe { vx_file_clear_transfer_outputs(count, native_code, has_native_code) };
-            if count.is_null() || native_code.is_null() || has_native_code.is_null() {
-                return VX_FILE_STATUS_INVALID_ARGUMENT;
-            }
-            if ptr.is_null() || len > isize::MAX as u64 || (len != 0 && buffer.is_null()) {
-                return VX_FILE_STATUS_INVALID_ARGUMENT;
-            }
-            if len == 0 {
-                return VX_FILE_STATUS_OK;
-            }
-            let file = unsafe { &mut *(ptr as *mut std::fs::File) };
-            let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len as usize) };
-            match file.read(buf_slice) {
-                Ok(read_count) => {
-                    unsafe { *count = read_count as u64 };
-                    VX_FILE_STATUS_OK
-                }
-                Err(error) => unsafe { vx_file_store_error(&error, native_code, has_native_code) },
+            unsafe {
+                vx_file_try_transfer(
+                    ptr,
+                    buffer,
+                    len,
+                    count,
+                    native_code,
+                    has_native_code,
+                    |file| {
+                        let bytes = std::slice::from_raw_parts_mut(buffer, len as usize);
+                        file.read(bytes)
+                    },
+                )
             }
         }
 
@@ -541,24 +568,19 @@ macro_rules! instantiate_file_ffi {
             native_code: *mut i32,
             has_native_code: *mut bool,
         ) -> i32 {
-            unsafe { vx_file_clear_transfer_outputs(count, native_code, has_native_code) };
-            if count.is_null() || native_code.is_null() || has_native_code.is_null() {
-                return VX_FILE_STATUS_INVALID_ARGUMENT;
-            }
-            if ptr.is_null() || len > isize::MAX as u64 || (len != 0 && buffer.is_null()) {
-                return VX_FILE_STATUS_INVALID_ARGUMENT;
-            }
-            if len == 0 {
-                return VX_FILE_STATUS_OK;
-            }
-            let file = unsafe { &mut *(ptr as *mut std::fs::File) };
-            let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
-            match file.write(buf_slice) {
-                Ok(written_count) => {
-                    unsafe { *count = written_count as u64 };
-                    VX_FILE_STATUS_OK
-                }
-                Err(error) => unsafe { vx_file_store_error(&error, native_code, has_native_code) },
+            unsafe {
+                vx_file_try_transfer(
+                    ptr,
+                    buffer,
+                    len,
+                    count,
+                    native_code,
+                    has_native_code,
+                    |file| {
+                        let bytes = std::slice::from_raw_parts(buffer, len as usize);
+                        file.write(bytes)
+                    },
+                )
             }
         }
 

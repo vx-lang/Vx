@@ -20,6 +20,11 @@ fn main() -> i32 {
     let missing_path = vx_get_temp_file("file_open_modes_missing.txt");
     remove(missing_path);
 
+    // Reading a missing file must leave the path absent.
+    let missing_reader = File::open(missing_path, OpenMode::Read());
+    drop(missing_reader);
+    let remove_after_read = remove(missing_path);
+
     // Seed content that a read-only or read-write open must preserve.
     let original : u8 = 65;
     let replacement : u8 = 66;
@@ -67,6 +72,10 @@ fn main() -> i32 {
     vx_free_temp_file(existing_path);
     vx_free_temp_file(missing_path);
 
+    if remove_after_read != -1 {
+      print!("Read created a missing file");
+      return 1;
+    }
     if seeded != 1 || read_count != 1 || first_read != original {
       print!("Read did not preserve existing content");
       return 1;

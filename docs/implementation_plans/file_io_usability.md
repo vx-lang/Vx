@@ -6,14 +6,14 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 # File I/O usability in the Vx standard library
 
-**Status:** partial implementation. The proposed `std::io::Error` was removed until file operations can return it. The existing `std::fs::File` can open, read, write, seek, and close a host file through Rust FFI. This document records what a Vx caller must do to read a file today and the work needed to make ordinary file reading safe and convenient.
+**Status:** partial implementation. The proposed `std::io::Error` is deferred until file operations can return it. The existing `std::fs::File` can open, read, write, seek, and close a host file through Rust FFI. This document records what a Vx caller must do to read a file today and the work needed to make ordinary file reading safe and convenient.
 
 File I/O belongs in host `std`, not device-portable `core`. The purity rule in [the core library plan](core_library.md) forbids `extern` in `core`; host `std::fs` may call the operating system. The intended end state is for Vx to own the file API and its implementation above those operating-system calls, without the Rust file bridge. The [roadmap](../../ROADMAP.md) marks native file I/O complete, but that checkmark describes the basic host path, not an end-user file API.
 
 ## Current implementation status
 
 - `std::io` currently exposes raw standard-stream calls. The [error contract](io_error_contract.md) records the proposed portable category, operation, optional native code, and deferred message; those public types are not implemented.
-- The Vx test of manually constructed I/O errors was removed with the unused types. Rust bridge tests cover every supported error-kind mapping, unknown-code fallback, a real nonblocking `WouldBlock` read, native-code preservation, and a synthetic error with no native code through the shared error conversion path. There is no fallible open call or public Vx error test yet; add those when the file API returns the proposed type.
+- There is no public Vx I/O error type or public error test yet. Rust bridge tests cover every supported error-kind mapping, unknown-code fallback, a real nonblocking `WouldBlock` read, native-code preservation, and a synthetic error with no native code through the shared error conversion path. Add a public Vx error test when the file API returns the proposed type.
 - `File::open` accepts `OpenMode::Read`, `OpenMode::Write`, or `OpenMode::ReadWriteCreate`. The raw bridge reports an unknown mode integer and aborts, because a null return would look like an ordinary open failure. These choices keep the existing three opening behaviors; combinations such as append and exclusive create are still unspecified.
 - The Rust bridge has separate fallible byte-transfer calls. They return a byte count on success and capture the native code and portable category on failure. Rust tests cover short reads and writes, EOF, empty requests, failed reads and writes, invalid pointers and lengths, and preservation of the native code. A Vx backend test calls both bridge functions directly to check their status and output types across success and failure. `std::fs::File` does not expose these calls yet: Vx currently fails to generate valid code for `Result<u64, std::io::Error>`, whose variants carry differently shaped values. Keep that compiler work separate from the file API.
 - `std::fs::File` still has raw-pointer methods and returns a `File` or a byte count, rather than a fallible result. `File` now implements `Drop`, so its handle is released automatically. The Rust file bridge still handles host calls and can turn a read failure into a zero byte count.
@@ -92,7 +92,7 @@ For this plan, assume three prerequisite fixes have merged: `vx_file_drop` has t
 
 ### Define the byte I/O contract
 
-- [x] Document the proposed `std::io::Error` contract: portable category, operation, optional native error code, and message on request. The unused public types were removed pending Vx#570 and file API integration.
+- [x] Document the proposed `std::io::Error` contract: portable category, operation, optional native error code, and message on request. Public types remain deferred pending Vx#570 and file API integration.
 - [x] Define the current three open modes as named choices in Vx. Reject an unknown integer passed directly to the Rust bridge instead of treating it as read/write/create. Richer open options remain future work.
 - [x] Specify byte-transfer results: success returns a count from zero through the requested length; a short positive transfer succeeds. Zero means EOF for a nonempty regular-file read or success for an empty request. An error returns no count and carries a portable category and optional native code. The bridge follows this contract; the Vx `File` methods do not yet expose it.
 - [ ] Expose the fallible result through `File` once Vx can generate code for `Result<u64, std::io::Error>`. Preserve the old unsafe count-only methods until callers can migrate.
