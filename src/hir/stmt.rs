@@ -1270,7 +1270,8 @@ impl<'a> TypeChecker<'a> {
             );
         }
 
-        // Bind 'return' to this expression in the constraints so `ensures` clauses can use it
+        // Each `ensures` must hold here, from what is known on this path, with `return` standing
+        // for this value.
         let return_ident = Expr::Identifier(IdentifierExpr {
             name: "return".to_string().into(),
             span: *span,
@@ -1282,7 +1283,23 @@ impl<'a> TypeChecker<'a> {
             span: *span,
             operand_ty: None,
         });
-        self.consteval.return_constraints.push(return_eq);
+        let ensures = self.consteval.current_ensures.clone();
+        if !ensures.is_empty() && !self.speculating {
+            self.consteval.constraints.push(return_eq);
+            for ens in &ensures {
+                if !self.prove_expr(ens) {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E8001,
+                        format!(
+                            "Function '{}' cannot prove postcondition (ensures) at compile time",
+                            self.current_function
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                }
+            }
+            self.consteval.constraints.pop();
+        }
         crate::syntax::is_never_ty(&ty)
     }
 

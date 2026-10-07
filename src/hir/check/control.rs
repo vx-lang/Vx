@@ -320,6 +320,23 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
+    /// Whether control never reaches the end of `stmts`: it returns, breaks, continues, panics,
+    /// aborts or calls a function declared `-> !` on every path.
+    fn branch_ends_early(&self, stmts: &[Statement]) -> bool {
+        let functions = &self.env.functions;
+        let never = |name: &str| {
+            functions
+                .get(name)
+                .is_some_and(|f| crate::syntax::is_never_ty(&f.0))
+        };
+        stmts.iter().any(|s| {
+            matches!(
+                s,
+                Statement::Return(_) | Statement::Break(_) | Statement::Continue(_)
+            ) || crate::syntax::expr::statement_always_exits(s, &never)
+        })
+    }
+
     pub(crate) fn check_if_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let unused = std::mem::replace(&mut self.value_unused, false);
         let if_expr = match expr {
@@ -351,6 +368,14 @@ impl<'a> TypeChecker<'a> {
         // moved if a branch that reaches the code after the `if` moved it; a branch that
         // returns or breaks does not count.
         let marks_before = self.moved_snapshot();
+        // The prover's facts follow the paths: the `then` branch knows the condition and the
+        // `else` branch its negation, and what a branch learns ends with it.
+        let facts_before = self.consteval.constraints.len();
+        let cond_fact = (!if_expr.is_comptime && crate::hir::prover::is_modelled(&if_expr.cond))
+            .then(|| (*if_expr.cond).clone());
+        if let Some(c) = &cond_fact {
+            self.consteval.constraints.push(c.clone());
+        }
         self.push_releasing_scope();
         let mut then_ty = Type::Struct("void".into(), None);
         if !self.speculating && !if_expr.then_block.is_empty() {
@@ -358,6 +383,12 @@ impl<'a> TypeChecker<'a> {
             then_ty = self.check_expr_block(&mut if_expr.then_block, consume);
         }
         self.pop_scope();
+        let then_facts = self.consteval.constraints.split_off(facts_before);
+        if let Some(c) = &cond_fact {
+            self.consteval
+                .constraints
+                .push(crate::hir::prover::negate(c));
+        }
         let marks_after_then = self.branch_end(&if_expr.then_block);
         self.restore_moved(marks_before.clone());
         let mut marks_after_else = Some(marks_before.clone());
@@ -393,6 +424,23 @@ impl<'a> TypeChecker<'a> {
         } else if !if_expr.is_comptime {
             // Without else block, it evaluates to unit (represented as dummy Tensor)
             then_ty = Type::Struct("void".into(), None);
+        }
+        let else_facts = self.consteval.constraints.split_off(facts_before);
+        // When one branch ends early, the code after the `if` is reached only through the other,
+        // so what that branch knew at its end still holds. When both end early, it is not reached.
+        let then_ends = self.branch_ends_early(&if_expr.then_block);
+        let else_ends = if_expr
+            .else_block
+            .as_ref()
+            .is_some_and(|b| self.branch_ends_early(b));
+        match (then_ends, else_ends) {
+            (true, false) => self.consteval.constraints.extend(else_facts),
+            (false, true) => self.consteval.constraints.extend(then_facts),
+            (true, true) => self
+                .consteval
+                .constraints
+                .push(crate::hir::prover::unreachable_fact()),
+            (false, false) => {}
         }
         let joined = match (marks_after_then, marks_after_else) {
             (Some(a), Some(b)) => Self::union_moved(a, b),
@@ -646,7 +694,12 @@ impl<'a> TypeChecker<'a> {
                 // variable is moved if an arm that reaches the following code moved it.
                 let marks_before = self.moved_snapshot();
                 let mut joined: Option<Vec<std::collections::HashSet<String>>> = None;
+                // What an arm learns ends with it: the prover does not model the patterns, so
+                // it cannot say which arm the code after the `match` came through.
+                let facts_before = self.consteval.constraints.len();
+                let mut every_arm_ends = !arms.is_empty();
                 for arm in arms {
+                    self.consteval.constraints.truncate(facts_before);
                     self.restore_moved(marks_before.clone());
                     match &arm.pattern {
                         Pattern::Wildcard | Pattern::Identifier(_) => has_wildcard = true,
@@ -671,6 +724,7 @@ impl<'a> TypeChecker<'a> {
                         Type::Struct("void".into(), None)
                     };
                     self.pop_scope();
+                    every_arm_ends &= self.branch_ends_early(&arm.body);
                     if let Some(after) = self.branch_end(&arm.body) {
                         joined = Some(match joined.take() {
                             Some(j) => Self::union_moved(j, after),
@@ -696,6 +750,12 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 self.restore_moved(joined.unwrap_or(marks_before));
+                self.consteval.constraints.truncate(facts_before);
+                if every_arm_ends {
+                    self.consteval
+                        .constraints
+                        .push(crate::hir::prover::unreachable_fact());
+                }
 
                 // Coverage. An enum scrutinee can be enumerated, so a missing variant is a fact
                 // about the match wherever it sits: the uncovered value falls through, and if

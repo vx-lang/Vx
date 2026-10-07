@@ -36,8 +36,8 @@ pub struct ConstEvalState {
     pub env: Vec<HashMap<Symbol, Value>>,
     /// Constraints collected while checking the current function.
     pub constraints: Vec<Expr>,
-    /// Constraints a `return` must satisfy.
-    pub return_constraints: Vec<Expr>,
+    /// The current function's `ensures`, which each `return` must satisfy.
+    pub current_ensures: Vec<Expr>,
     /// How many calls deep the evaluator currently is. A `Cell` because evaluation runs
     /// behind `&self`, and the count has to rise and fall as it descends.
     pub call_depth: std::cell::Cell<u32>,
@@ -560,7 +560,7 @@ impl Default for ConstEvalState {
             // would start with none, and the first `let` would have nowhere to bind.
             env: vec![HashMap::new()],
             constraints: Vec::new(),
-            return_constraints: Vec::new(),
+            current_ensures: Vec::new(),
             call_depth: std::cell::Cell::new(0),
             depth_exceeded: std::cell::Cell::new(false),
             unsupported_stmt: std::cell::Cell::new(false),

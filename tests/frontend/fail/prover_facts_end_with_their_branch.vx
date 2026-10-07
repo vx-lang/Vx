@@ -1,0 +1,82 @@
+//===- prover_facts_end_with_their_branch.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// What the prover learns inside a branch ends with the branch. `branch_fact` used to be accepted,
+// though `branch_fact(-4)` returns -4: the `assert` inside the `if` was still "known" at the
+// `return`; `else_fact` and `then_fact_in_else` are the same for an `else` branch, and for the
+// `then` branch seen from its `else`. An `ensures` is checked at each `return`, so `early` fails at
+// its first one. A fact
+// from a `match` arm ends with the arm too: it is not known after the `match`, nor in a later arm.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK-DAG: E8001] at 28:3: Function 'branch_fact' cannot prove postcondition (ensures)
+// CHECK-DAG: E8001] at 53:5: Function 'early' cannot prove postcondition (ensures)
+// CHECK-DAG: E8001] at 65:3: Function 'arm_fact' cannot prove postcondition (ensures)
+// CHECK-DAG: E8001] at 75:7: Function 'later_arm' cannot prove postcondition (ensures)
+// CHECK-DAG: E8001] at 37:3: Function 'else_fact' cannot prove postcondition (ensures)
+// CHECK-DAG: E8001] at 45:5: Function 'then_fact_in_else' cannot prove postcondition (ensures)
+// CHECK: 6 error(s) emitted
+fn branch_fact(x : i32) -> i32
+ensures return > 0 {
+  if x > 0 {
+    assert(x > 5, "big");
+  }
+  return x;
+}
+
+fn else_fact(x : i32, y : i32) -> i32
+ensures return > 3 {
+  if x > 0 {
+  } else {
+    assert(y > 3, "big");
+  }
+  return y;
+}
+
+fn then_fact_in_else(x : i32, y : i32) -> i32
+ensures return > 3 {
+  if x > 0 {
+    assert(y > 3, "big");
+  } else {
+    return y;
+  }
+  return 4;
+}
+
+fn early(x : i32) -> i32
+ensures return > 0 {
+  if x <= 0 {
+    return x;
+  }
+  return 1;
+}
+
+fn arm_fact(x : i32, y : i32) -> i32
+ensures return > 3 {
+  match x {
+    0 => {}, _ => {
+      assert(y > 3, "big");
+    }
+  }
+  return y;
+}
+
+fn later_arm(x : i32, y : i32) -> i32
+ensures return > 3 {
+  match x {
+    0 => {
+      assert(y > 3, "big");
+      return y;
+    }, _ => {
+      return y;
+    }
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}
