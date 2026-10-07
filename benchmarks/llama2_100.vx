@@ -255,7 +255,9 @@ w : &TransformerWeights) -> *mut f32 {
         let mul : i32 = div * 2;
         let rem : i32 = i - mul;
         if rem == 0 {
-          let fcr : f32 = vx_get_rope_freq(pos, i, head_size);
+          // The frequency depends on the index within the head.
+          let head_dim : i32 = i - (i / head_size) * head_size;
+          let fcr : f32 = vx_get_rope_freq(pos, head_dim, head_size);
           let fci : f32 = fcr.cos();
           let fsi : f32 = fcr.sin();
 
