@@ -7,18 +7,52 @@ instantiate_file_ffi!();
 
 #[test]
 fn file_open_rejects_unknown_modes() -> Result<(), String> {
+    if let Ok(mode) = std::env::var("VX_TEST_INVALID_OPEN_MODE") {
+        let path = std::env::var_os("VX_TEST_OPEN_PATH")
+            .ok_or_else(|| "missing test file path".to_string())?;
+        let c_path = std::ffi::CString::new(path.to_string_lossy().as_bytes())
+            .map_err(|error| format!("path contains a NUL byte: {error}"))?;
+        let file = vx_file_open(
+            c_path.as_ptr(),
+            mode.parse()
+                .map_err(|error| format!("invalid test mode: {error}"))?,
+        );
+        if !file.is_null() {
+            vx_file_drop(file);
+        }
+        std::process::exit(0);
+    }
+
     let dir = tempfile::tempdir().map_err(|error| format!("create test directory: {error}"))?;
     let path = dir.path().join("existing_file");
     std::fs::write(&path, b"keep").map_err(|error| format!("create test file: {error}"))?;
-    let c_path = std::ffi::CString::new(path.to_string_lossy().as_bytes())
-        .map_err(|error| format!("path contains a NUL byte: {error}"))?;
 
     for mode in [-1, 3] {
-        let file = vx_file_open(c_path.as_ptr(), mode);
-        if !file.is_null() {
-            vx_file_drop(file);
-            return Err(format!("vx_file_open accepted unknown mode {mode}"));
+        let output =
+            std::process::Command::new(std::env::current_exe().map_err(|error| error.to_string())?)
+                .args(["--exact", "file_open_rejects_unknown_modes", "--nocapture"])
+                .env("VX_TEST_INVALID_OPEN_MODE", mode.to_string())
+                .env("VX_TEST_OPEN_PATH", &path)
+                .env("RUST_BACKTRACE", "0")
+                .output()
+                .map_err(|error| format!("run invalid mode test: {error}"))?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if output.status.success()
+            || !stderr.contains(&format!("vx_file_open received unknown mode {mode}"))
+        {
+            return Err(format!(
+                "unknown mode {mode} did not abort with a clear message: {stderr}"
+            ));
         }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            if output.status.signal().is_none() {
+                return Err(format!("unknown mode {mode} did not stop the process"));
+            }
+        }
+        let contents = std::fs::read(&path).map_err(|error| format!("read test file: {error}"))?;
+        expect_equal(contents, b"keep".to_vec(), "file after unknown mode")?;
     }
     Ok(())
 }

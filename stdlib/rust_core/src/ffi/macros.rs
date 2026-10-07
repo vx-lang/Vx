@@ -409,6 +409,24 @@ macro_rules! instantiate_file_ffi {
             c_path: *const std::ffi::c_char,
             mode: i32,
         ) -> *mut std::ffi::c_void {
+            // The Vx OpenMode variants map to these three values.
+            let mut opts = std::fs::OpenOptions::new();
+            match mode {
+                0 => {
+                    opts.read(true);
+                }
+                1 => {
+                    opts.write(true).create(true).truncate(true);
+                }
+                2 => {
+                    opts.read(true).write(true).create(true);
+                }
+                _ => {
+                    eprintln!("vx_file_open received unknown mode {mode}");
+                    std::process::abort();
+                }
+            }
+
             if c_path.is_null() {
                 return std::ptr::null_mut();
             }
@@ -423,22 +441,6 @@ macro_rules! instantiate_file_ffi {
                 Ok(path) => path,
                 Err(_) => return std::ptr::null_mut(),
             };
-
-            // The Vx OpenMode variants map to these three values. Reject any
-            // other integer passed by a direct FFI caller.
-            let mut opts = std::fs::OpenOptions::new();
-            match mode {
-                0 => {
-                    opts.read(true);
-                }
-                1 => {
-                    opts.write(true).create(true).truncate(true);
-                }
-                2 => {
-                    opts.read(true).write(true).create(true);
-                }
-                _ => return std::ptr::null_mut(),
-            }
 
             if let Ok(file) = opts.open(path) {
                 let boxed: Box<std::fs::File> = Box::new(file);
