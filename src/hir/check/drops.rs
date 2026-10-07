@@ -346,6 +346,8 @@ impl<'a> TypeChecker<'a> {
                 call: None,
                 payload: None,
             }],
+            // The same value as the type inside, with a proof or a location attached.
+            Type::Verified(inner) | Type::Pinned(inner, _) => self.drops_glue_at(inner, depth),
             // A type is often written as a struct before anything knows it names an enum, so
             // the declarations decide.
             _ if self.drops_enum_decl(ty).is_some() => self.drops_enum_glue(ty, depth),

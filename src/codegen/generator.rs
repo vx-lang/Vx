@@ -1326,17 +1326,17 @@ impl<'c> MeliorGenerator<'c> {
         // another memory names the topology its plugin frees it on, and so does a placed
         // result, which the caller then frees.
         let mut per_arg: Vec<String> = vec!["{}".to_string(); slot_args];
-        per_arg.extend(func.params.iter().map(|(_, ty)| match ty {
-            syntax::Type::Tensor(_, _, None) => "{vx.owned}".to_string(),
-            syntax::Type::Tensor(_, _, Some(p)) => self.placed_attr(p),
-            _ => "{}".to_string(),
+        per_arg.extend(func.params.iter().map(|(_, ty)| match owned_tensor(ty) {
+            Some(None) => "{vx.owned}".to_string(),
+            Some(Some(p)) => self.placed_attr(&p),
+            None => "{}".to_string(),
         }));
         let text = format!("[{}]", per_arg.join(", "));
         let attr = melior::ir::Attribute::parse(self.context, &text)
             .ok_or_else(|| LowerError::from(format!("bad argument attributes {text}")))?;
         func_attributes.push((melior::ir::Identifier::new(self.context, "arg_attrs"), attr));
-        if let syntax::Type::Tensor(_, _, Some(p)) = &func.return_type {
-            let text = format!("[{}]", self.placed_attr(p));
+        if let (0, Some(Some(p))) = (slot_args, owned_tensor(&func.return_type)) {
+            let text = format!("[{}]", self.placed_attr(&p));
             let attr = melior::ir::Attribute::parse(self.context, &text)
                 .ok_or_else(|| LowerError::from(format!("bad result attributes {text}")))?;
             func_attributes.push((melior::ir::Identifier::new(self.context, "res_attrs"), attr));
@@ -2562,6 +2562,34 @@ pub(crate) fn placed_attr(space: &syntax::MemorySpace, on_chip: bool) -> String 
         "{{vx.placed = {} : i32}}",
         crate::arch::memory_space_dispatch_id(space)
     )
+}
+
+/// The tensor a value of type `ty` is, seen through `Verified<..>` and `Pinned<..>`, which add a
+/// proof or a location to the same buffer: `Some(None)` for host memory, `Some(Some(p))` for one
+/// placed by `p`, `None` for a type that is not a tensor.
+pub(crate) fn owned_tensor(ty: &syntax::Type) -> Option<Option<syntax::Placement>> {
+    match ty {
+        syntax::Type::Tensor(_, _, placement) => Some(placement.clone()),
+        syntax::Type::Verified(inner) => owned_tensor(inner),
+        syntax::Type::Pinned(inner, top) => match owned_tensor(inner)? {
+            Some(p) => Some(Some(p)),
+            None => {
+                let p = syntax::Placement::on(top.clone());
+                Some((p.space != syntax::MemorySpace::CPUDRAM).then_some(p))
+            }
+        },
+        _ => None,
+    }
+}
+
+/// The placement written in a tensor type, seen through `Verified<..>` and `Pinned<..>`. Only
+/// this one gives the tensor's memref a memory space, which keeps it out of a return slot.
+pub(crate) fn written_placement(ty: &syntax::Type) -> Option<&syntax::Placement> {
+    match ty {
+        syntax::Type::Tensor(_, _, placement) => placement.as_ref(),
+        syntax::Type::Verified(inner) | syntax::Type::Pinned(inner, _) => written_placement(inner),
+        _ => None,
+    }
 }
 
 /// Whether an address space is on-chip scratch: shared memory or per-thread memory.

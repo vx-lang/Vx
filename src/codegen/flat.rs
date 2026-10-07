@@ -217,7 +217,7 @@ fn tensor_memref_of_type(ty: &Type) -> Option<String> {
 pub(crate) fn returns_through_slot(ty: &Type) -> Option<String> {
     // A placed tensor stays where it was placed: the callee hands back its buffer, which the
     // caller frees through its plugin, rather than copying it into a slot on the caller's stack.
-    if matches!(ty, Type::Tensor(_, _, Some(_))) {
+    if crate::codegen::generator::written_placement(ty).is_some() {
         return None;
     }
     let memty = tensor_memref_of_type(ty)?;
@@ -308,9 +308,11 @@ fn param_alias_attrs(ty: &Type, ctx: &EmitCtx) -> String {
         Type::Borrow { is_mut: false, .. } => " {llvm.readonly}".to_string(),
         // A tensor taken by value belongs to the function, which frees it. One placed in
         // another memory names the topology its plugin frees it on.
-        Type::Tensor(_, _, Some(p)) => format!(" {}", placed_attr(p, ctx)),
-        Type::Tensor(_, _, None) => " {vx.owned}".to_string(),
-        _ => String::new(),
+        _ => match crate::codegen::generator::owned_tensor(ty) {
+            Some(Some(p)) => format!(" {}", placed_attr(&p, ctx)),
+            Some(None) => " {vx.owned}".to_string(),
+            None => String::new(),
+        },
     }
 }
 
@@ -609,7 +611,7 @@ pub fn build_callee_map(
                 },
                 ret_void: is_void_ty(&sig.ret_ty),
                 ret_tensor: tensor_memref_of_type(&sig.ret_ty),
-                ret_placed: matches!(sig.ret_ty, Type::Tensor(_, _, Some(_))),
+                ret_placed: crate::codegen::generator::written_placement(&sig.ret_ty).is_some(),
                 param_tensors: sig
                     .params
                     .iter()
@@ -2258,8 +2260,10 @@ pub fn emit_function_mlir(
     }
 
     // A placed result the callee hands back names the topology the caller frees it on.
-    let ret_attr = match &func.return_type {
-        Type::Tensor(_, _, Some(p)) => format!(" {}", placed_attr(p, ctx)),
+    let ret_attr = match crate::codegen::generator::owned_tensor(&func.return_type) {
+        Some(Some(p)) if returns_through_slot(&func.return_type).is_none() => {
+            format!(" {}", placed_attr(&p, ctx))
+        }
         _ => String::new(),
     };
     let mut ret_sig = match &ret_mlir {
