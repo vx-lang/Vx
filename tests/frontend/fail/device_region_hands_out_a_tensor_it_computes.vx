@@ -1,0 +1,64 @@
+//===- device_region_hands_out_a_tensor_it_computes.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn` region on the GPU that hands out a tensor it creates normally has that tensor
+// created before the region, in GPU memory, so the function can free it. Each region below
+// stops that, and gets E6030:
+//
+// - `annotated`: the tensor has a type annotation;
+// - `sized_inside`: its size is computed inside the region;
+// - `name_in_use`: a variable named `x` already exists outside the region;
+// - `computed`: the region hands out a tensor that is not in a variable.
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=COUNT
+// CHECK-DAG: Error[E6030] at 29:5:
+// CHECK-DAG: Error[E6030] at 39:5:
+// CHECK-DAG: Error[E6030] at 48:5:
+// CHECK-DAG: Error[E6030] at 56:5:
+// COUNT-COUNT-4: Error[E6030]
+// COUNT-NOT: Error[
+
+fn annotated() -> i32 {
+  let t = spawn on(Topology::GPU) {
+    let x : Tensor<f32, [4]> = Tensor<f32, [4]>::new();
+    x
+  };
+  let h = transfer(t, Memory::CPU_DRAM);
+  return h[0] as i32;
+}
+
+fn sized_inside(n : i32) -> i32 {
+  let t = spawn on(Topology::GPU) {
+    let m = n * 2;
+    let x = Tensor<f32>([m]);
+    x
+  };
+  let h = transfer(t, Memory::CPU_DRAM);
+  return h[0] as i32;
+}
+
+fn name_in_use(x : i32) -> i32 {
+  let t = spawn on(Topology::GPU) {
+    let x = Tensor<f32, [4]>::new();
+    x
+  };
+  let h = transfer(t, Memory::CPU_DRAM);
+  return h[0] as i32;
+}
+
+fn computed() -> i32 {
+  let t = spawn on(Topology::GPU) {
+    Tensor<f32, [4]>::new()
+  };
+  let h = transfer(t, Memory::CPU_DRAM);
+  return h[0] as i32;
+}
+
+fn main() -> i32 {
+  return annotated() + sized_inside(2) + name_in_use(1) + computed();
+}

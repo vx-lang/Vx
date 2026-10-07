@@ -134,6 +134,7 @@ impl<'a> TypeChecker<'a> {
         let mut terminated = false;
 
         // 1. Liveness Analysis Pass
+        self.hoist_spawn_allocations(body);
         let last_use = Self::compute_block_liveness(body);
 
         self.borrow.enter_block(last_use);

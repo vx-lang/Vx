@@ -25,6 +25,10 @@ A Vx program means what it says, in the order it says it. `spawn on` follows tha
    caller's scope.
 1. The result is a value that lives on `τ`, typed `Pinned<T, τ>`. There is no handle type and
    no future type.
+1. A tensor the region hands out moves to the function around it, which frees it. A variable
+   from outside the region keeps its own type. A region on a device that creates the tensor it
+   hands out has it created before the region, in `τ`'s memory, since the host cannot free what
+   a device allocates; when that is not possible, the region gets E6030.
 1. Every statement after the spawn sees `B` as finished. If `B` wrote a tensor the host can
    see, the host reads the written value. Reading the result on another topology needs the
    same visibility or `transfer` as any other placed value.

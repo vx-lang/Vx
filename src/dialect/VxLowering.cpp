@@ -1602,6 +1602,29 @@ static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
     return BufferOrigin::Borrowed;
   }
   Operation *def = v.getDefiningOp();
+  // A spawn region's value: a buffer made outside the region and handed out.
+  if (auto spawn = dyn_cast_or_null<vx::SpawnOp>(def)) {
+    unsigned i = cast<OpResult>(v).getResultNumber();
+    Value yielded;
+    for (Block &block : spawn.getBody()) {
+      auto yield = dyn_cast<vx::YieldOp>(block.getTerminator());
+      if (!yield)
+        continue;
+      Value value = castSource(yield.getOperand(i));
+      if (yielded && value != yielded)
+        return BufferOrigin::Unknown;
+      yielded = value;
+    }
+    if (!yielded)
+      return BufferOrigin::Unknown;
+    // Made outside the region, or read from a cell made outside it.
+    Value outside = yielded;
+    if (auto load = yielded.getDefiningOp<memref::LoadOp>())
+      outside = load.getMemRef();
+    if (spawn->isAncestor(outside.getParentRegion()->getParentOp()))
+      return BufferOrigin::Unknown;
+    return originOf(yielded, seen, topology);
+  }
   if (auto transfer = dyn_cast_or_null<vx::TransferOp>(def)) {
     // A shared-memory tile is scratch on the stack.
     auto scope = transfer->getAttrOfType<StringAttr>("scope");
@@ -1866,6 +1889,8 @@ static void freeTemporaries(ModuleOp module) {
         } else if (auto call = dyn_cast<func::CallOp>(user)) {
           keep = takesOwnership(call, use.getOperandNumber()) ||
                  takesPlaced(call, use.getOperandNumber());
+        } else if (isa<vx::TransferOp>(user)) {
+          // A transfer copies the buffer, so it is only a read.
         } else if (isa<func::ReturnOp, BranchOpInterface,
                        RegionBranchTerminatorOpInterface,
                        memref::ExtractAlignedPointerAsIndexOp,
