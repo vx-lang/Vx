@@ -1411,6 +1411,8 @@ impl<'a> TypeChecker<'a> {
         }
 
         let prev_constraints = self.consteval.constraints.clone();
+        let prev_ensures =
+            std::mem::replace(&mut self.consteval.current_ensures, func.ensures.clone());
         let prev_ret_ty = self.current_return_type.clone();
         let prev_fn = std::mem::replace(&mut self.current_function, func.name.as_ref().to_string());
         self.current_return_type = Some(func.return_type.clone());
@@ -1487,34 +1489,23 @@ impl<'a> TypeChecker<'a> {
 
         self.seam.contracts = prev_contracts;
 
-        // Combine return constraints into a single OR constraint
-        if !self.consteval.return_constraints.is_empty() {
-            let mut combined = self.consteval.return_constraints[0].clone();
-            for rc in self.consteval.return_constraints.iter().skip(1) {
-                combined = Expr::LogicalOp(LogicalOpExpr {
-                    lhs: Box::new(combined),
-                    op: LogicalOp::Or,
-                    rhs: Box::new(rc.clone()),
-                    span: crate::syntax::Span::default(),
-                });
-            }
-            self.consteval.constraints.push(combined);
-            self.consteval.return_constraints.clear();
-        }
-
-        // Verify postconditions (ensures)
-        for ens in &func.ensures {
-            if !self.prove_expr(ens) {
-                self.errors.error_with_code(
-                    crate::diagnostic::DiagnosticCode::E8001,
-                    format!(
-                        "Function '{}' cannot prove postcondition (ensures) at compile time",
-                        func.name
-                    ),
-                    None,
-                );
+        // Each `return` checked the `ensures` where it stood. A body that can also reach its end
+        // without one is checked here, from what is known at the end.
+        if !exits && !self.speculating {
+            for ens in &func.ensures {
+                if !self.prove_expr(ens) {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E8001,
+                        format!(
+                            "Function '{}' cannot prove postcondition (ensures) at compile time",
+                            func.name
+                        ),
+                        None,
+                    );
+                }
             }
         }
+        self.consteval.current_ensures = prev_ensures;
 
         // W1009: Unused function parameters
         for (param_name, _) in &func.params {
