@@ -67,17 +67,16 @@ impl File {
   ///
   /// Unsafe because nothing checks that `path` points at a NUL-terminated string.
   unsafe fn open(path : *const i8, mode : OpenMode) -> File {
-    let mode_code : i32 = match mode {
-      OpenMode::Read() => {
-        0
-      },
+    let mut mode_code : i32 = 0;
+    match mode {
+      OpenMode::Read() => {},
       OpenMode::Write() => {
-        1
-      },
-      OpenMode::ReadWriteCreate() => {
-        2
+        mode_code = 1;
       }
-    };
+      OpenMode::ReadWriteCreate() => {
+        mode_code = 2;
+      }
+    }
     let ptr = unsafe { vx_file_open(path, mode_code) };
     File {
       ptr: ptr
