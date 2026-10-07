@@ -47,7 +47,7 @@ The Rust entry points are `unsafe extern "C"`. A non-null handle must remain a l
 | `7` | `UnexpectedEof` | `UnexpectedEof` |
 | `8` | `WriteZero` | `WriteZero` |
 | `9` | `OutOfMemory` | `OutOfMemory` |
-| `10` | `LimitExceeded` | Rust's `FileTooLarge` |
+| `10` | `LimitExceeded` | Rust's `StorageFull`, `QuotaExceeded`, or `FileTooLarge` |
 | `11` | `Unsupported` | `Unsupported` |
 | `12` | `Other` | Every remaining or unknown Rust error kind |
 

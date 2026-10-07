@@ -360,7 +360,9 @@ macro_rules! instantiate_file_ffi {
                 std::io::ErrorKind::UnexpectedEof => VX_FILE_ERROR_UNEXPECTED_EOF,
                 std::io::ErrorKind::WriteZero => VX_FILE_ERROR_WRITE_ZERO,
                 std::io::ErrorKind::OutOfMemory => VX_FILE_ERROR_OUT_OF_MEMORY,
-                std::io::ErrorKind::FileTooLarge => VX_FILE_ERROR_LIMIT_EXCEEDED,
+                std::io::ErrorKind::StorageFull
+                | std::io::ErrorKind::QuotaExceeded
+                | std::io::ErrorKind::FileTooLarge => VX_FILE_ERROR_LIMIT_EXCEEDED,
                 std::io::ErrorKind::Unsupported => VX_FILE_ERROR_UNSUPPORTED,
                 _ => VX_FILE_ERROR_OTHER,
             }

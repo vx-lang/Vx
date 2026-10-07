@@ -132,6 +132,8 @@ fn file_error_classifier_maps_every_supported_kind_and_unknown_codes() -> Result
         (ErrorKind::UnexpectedEof, 7),
         (ErrorKind::WriteZero, 8),
         (ErrorKind::OutOfMemory, 9),
+        (ErrorKind::StorageFull, 10),
+        (ErrorKind::QuotaExceeded, 10),
         (ErrorKind::FileTooLarge, 10),
         (ErrorKind::Unsupported, 11),
     ];
