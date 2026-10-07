@@ -1,0 +1,68 @@
+//===- assert_in_a_transfer_lowering_stays_in_it.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --emit-mlir --emit-seam-certs 2>&1 | FileCheck %s
+//
+// `move_tile` asserts `e > 5` about its own `e`, which is 1000. Its body is copied into the
+// first region. The second region has a different `e`, which is 3, so the assert must not
+// become an assumption there: `assume(3 > 5)` is `assume(false)`, and the optimizer may then
+// treat that region as never running.
+
+// CHECK: arith.cmpi sgt, %c1000_i32, %c5_i32
+// CHECK-NOT: llvm.intr.assume
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
+}
+
+impl Transfer<Memory::GPU_HBM, Memory::SMEM> for Topology::Dev {
+  fn move_tile(src: &Tensor<f32, [2, 2]>, dst: &mut Tensor<f32, [2, 2]>) -> i32 {
+    let e = 1000;
+    assert(e > 5);
+    for i in 0..4 {
+      raw::store(dst, i, raw::load(src, i));
+    }
+    raw::barrier();
+    return 0;
+  }
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32, [2, 2]>::uninit();
+  let mut o = Tensor<f32, [2, 2]>::uninit();
+  for i in 0..2 {
+    for d in 0..2 {
+      a[i][d] = 1.0;
+      o[i][d] = 0.0;
+    }
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    let tile = transfer(ad, Memory::SMEM);
+    od[0][0] = tile[0][0];
+  }
+  let e = 3;
+  spawn on(Topology::Dev) {
+    od[0][1] = (e as f32);
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

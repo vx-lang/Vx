@@ -460,6 +460,8 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             let saved_ast_env = gen.ast_env.clone();
             let saved_allocs = gen.allocs.clone();
             let saved_returned = gen.has_returned;
+            // An `assert` in the body is a fact about the body, not about the rest of the caller.
+            let saved_facts = gen.assert_facts.len();
 
             let src_sym = body_fn.params[0].0.clone();
             let dst_sym = body_fn.params[1].0.clone();
@@ -492,6 +494,7 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             gen.ast_env = saved_ast_env;
             gen.allocs = saved_allocs;
             gen.has_returned = saved_returned;
+            gen.assert_facts.truncate(saved_facts);
         }
 
         Ok((result_val, target_ty, block))
