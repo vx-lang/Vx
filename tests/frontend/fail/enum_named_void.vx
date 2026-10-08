@@ -1,0 +1,20 @@
+//===- enum_named_void.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `void` is the built-in type with one value, so a program cannot declare an
+// enum with that name.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Error at 14:6: `void` is a built-in type and cannot be declared
+
+enum void {
+  A,
+}
+
+fn main() -> i32 {
+  return 0;
+}

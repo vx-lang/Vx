@@ -795,10 +795,24 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// The name of a declared struct, enum or trait. `void` is the built-in type with one
+    /// value, and the compiler recognizes it by name, so a program cannot declare its own.
+    fn expect_type_name(&mut self, msg: &str) -> ParseResult<'a, String> {
+        let token = self.peek().clone();
+        let name = self.expect_identifier(msg)?;
+        if name == "void" {
+            return Err(self.error_at(
+                &token,
+                "`void` is a built-in type and cannot be declared; choose another name",
+            ));
+        }
+        Ok(name)
+    }
+
     pub(crate) fn parse_struct_decl(&mut self) -> ParseResult<'a, StructDecl> {
         self.consume(&TokenType::Struct, "Expected 'struct'")?;
 
-        let name = self.expect_identifier("Expected struct name")?;
+        let name = self.expect_type_name("Expected struct name")?;
 
         let generics = self.parse_generic_params()?;
 
@@ -832,7 +846,7 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse_enum_decl(&mut self) -> ParseResult<'a, EnumDecl> {
         self.consume(&TokenType::Enum, "Expected 'enum'")?;
 
-        let name = self.expect_identifier("Expected enum name")?;
+        let name = self.expect_type_name("Expected enum name")?;
 
         let generics = self.parse_generic_params()?;
 
@@ -945,7 +959,7 @@ impl<'a> Parser<'a> {
 
     pub(crate) fn parse_trait_decl(&mut self) -> ParseResult<'a, TraitDecl> {
         self.consume(&TokenType::Trait, "Expected 'trait'")?;
-        let name = self.expect_identifier("Expected trait name")?;
+        let name = self.expect_type_name("Expected trait name")?;
         let generics = self.parse_generic_params()?;
         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
 
