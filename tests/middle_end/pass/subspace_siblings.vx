@@ -22,6 +22,7 @@
 // twice (these staged tiles are not linear).
 //
 // RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+// XFAIL-LOWER: the transfers into shared memory are in `main`, which the lowering refuses (#360); this test checks only the metadata on them
 
 Memory GPU_HBM {
   capacity: 40 GiB, bandwidth: 3 TB/s

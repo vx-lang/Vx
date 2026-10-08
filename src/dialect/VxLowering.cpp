@@ -1310,6 +1310,31 @@ static LogicalResult lowerHostFrees(ModuleOp module) {
 /// question is whether this *program* can execute as written, and one asking
 /// for a kernel the compiler cannot emit for the device it named cannot, on any
 /// machine. Answering it differently per build box is how the fault hid.
+/// A transfer into shared memory written outside a `spawn on` region. Shared
+/// memory belongs to the threads of one block on the device, and the host has
+/// none: the transfer's `gpu.barrier` would otherwise reach LLVM translation in
+/// a host function, with an error that names the op rather than the mistake.
+static LogicalResult diagnoseHostSharedMemoryTransfers(Operation *root) {
+  bool failed = false;
+  root->walk([&](vx::TransferOp transfer) {
+    auto scope = transfer->getAttrOfType<StringAttr>("scope");
+    if (!scope || scope.getValue() != "sm" ||
+        transfer->getParentOfType<vx::SpawnOp>() ||
+        transfer->getParentOfType<vx::KernelOp>())
+      return;
+    StringRef space = "shared memory";
+    if (auto s = transfer->getAttrOfType<StringAttr>("space"))
+      space = s.getValue();
+    transfer.emitError()
+        << "a transfer into " << space
+        << " must be inside a `spawn on` region: it is shared memory, which "
+           "belongs to the threads of one block on the device, and the host "
+           "has none";
+    failed = true;
+  });
+  return failure(failed);
+}
+
 static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
   bool failed = false;
   root->walk([&](vx::SpawnOp spawn) {
@@ -2395,7 +2420,8 @@ struct ConvertVxToStandardPass
 
     // Before anything is rewritten, so the diagnostic describes the program as
     // written rather than a partially converted version of it.
-    if (::mlir::failed(diagnoseUnrunnableSpawns(getOperation()))) {
+    if (::mlir::failed(diagnoseUnrunnableSpawns(getOperation())) ||
+        ::mlir::failed(diagnoseHostSharedMemoryTransfers(getOperation()))) {
       signalPassFailure();
       return;
     }

@@ -1863,6 +1863,8 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Type::Pinned(base, _) => Type::Pinned(base, Self::pinned_topology_for(target_mem)),
+            // An error already reported made this value's type unknown.
+            Type::Unknown => Type::Unknown,
             _ => {
                 if !self.speculating {
                     self.errors.push(format!(

@@ -1,0 +1,44 @@
+//===- shared_memory_transfer_outside_a_region.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Shared memory belongs to the threads of one block on the device. A transfer into it in
+// `main` stops the compile with a message saying so; the same transfer inside a `spawn on`
+// region is accepted.
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// CHECK-COUNT-1: a transfer into SMEM must be inside a `spawn on` region
+// CHECK-NOT: a transfer into SMEM must be inside
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32, [2, 2]>::uninit();
+  a[0][0] = 1.0;
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(Tensor<f32, [2, 2]>::new(), Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    let inside = transfer(ad, Memory::SMEM);
+    od[0][0] = inside[0][0];
+  }
+  let outside = transfer(ad, Memory::SMEM);
+  return 0;
+}
