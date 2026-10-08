@@ -24,6 +24,31 @@ fn holds_a_reference(gen: &MeliorGenerator<'_>, name: &crate::symbol::Symbol) ->
     )
 }
 
+/// The one value of a rank-0 tensor, for an operation on scalars; any other value as it is.
+fn load_rank_zero<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    ty: Type<'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>), LowerError> {
+    if !gen.is_scalar_memref(&ty) {
+        return Ok((val, ty));
+    }
+    let text = ty.to_string();
+    let elem = Type::parse(gen.context, &text[7..text.len() - 1])
+        .ok_or_else(|| LowerError::ParseType(text.clone()))?;
+    let load = OperationBuilder::new("memref.load", gen.loc())
+        .add_operands(&[val])
+        .add_results(&[elem])
+        .build()?;
+    Ok((block.append_operation(load).result(0)?.into(), elem))
+}
+
+/// A `Tensor<T, []>` local: its `memref<T>` is the tensor, not a cell holding a scalar.
+fn is_rank_zero_tensor(gen: &MeliorGenerator<'_>, name: &crate::symbol::Symbol) -> bool {
+    matches!(gen.ast_env.get(name), Some(syntax::Type::Tensor(_, dims, _)) if dims.is_empty())
+}
+
 impl<'c> LowerToMelior<'c> for IdentifierExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
@@ -92,6 +117,7 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
             } else if ty_str.starts_with("memref<")
                 && !ty_str.contains("x")
                 && !holds_a_reference(gen, name)
+                && !is_rank_zero_tensor(gen, name)
             {
                 let inner_ty_str = &ty_str[7..ty_str.len() - 1];
                 let inner_ty = Type::parse(gen.context, inner_ty_str).ok_or_else(|| {
@@ -1495,9 +1521,11 @@ impl<'c> LowerToMelior<'c> for RelationalOpExpr {
             operand_ty,
         } = self;
         let (lhs_val, lhs_ty, block) = gen.generate_expr(lhs, block)?;
+        let (lhs_val, lhs_ty) = load_rank_zero(gen, &block, lhs_val, lhs_ty)?;
         let prev_expected = gen.expected_type;
         gen.expected_type = Some(lhs_ty);
-        let (mut rhs_val, rhs_ty, block) = gen.generate_expr(rhs, block)?;
+        let (rhs_val, rhs_ty, block) = gen.generate_expr(rhs, block)?;
+        let (mut rhs_val, rhs_ty) = load_rank_zero(gen, &block, rhs_val, rhs_ty)?;
         gen.expected_type = prev_expected;
 
         let _lhs_ty_str = lhs_ty.to_string();
