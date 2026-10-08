@@ -16,7 +16,7 @@
 // in the frontend tier covers that.
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: E3001{{.*}}'t_device' is declared Tensor<f32, [?, ?]> but its initializer is Tensor<f32, [1, 1], NPU, NPU_HBM>
+// CHECK: E3001{{.*}}'t_device' is declared Tensor<f32, [?, ?]> but its initializer is Tensor<f32, [1, 1], Memory::NPU_HBM>
 
 fn strip_pin_and_deref(t : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
   unsafe { let ptr : *const f32 = t.as_ptr(); let val : f32 = *ptr; }

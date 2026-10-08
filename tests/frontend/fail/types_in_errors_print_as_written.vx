@@ -1,0 +1,30 @@
+//===- types_in_errors_print_as_written.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A type error prints each type the way a program writes it, so the reader can
+// copy it back into the source: a rank 0 tensor as `Tensor<f32, []>`, and a
+// device as `Topology::NPU[0]`.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E3001{{.*}}'scalar' is declared Tensor<f32, []> but its initializer is Tensor<f32, [4, 4]>
+// CHECK: E3003{{.*}}Expected Pinned<Tensor<i64, [4, 4]>, Topology::NPU[0]>, got Tensor<i64, [4, 4], Memory::GPU_HBM>
+
+fn rank_zero() -> i32 {
+  let a = Tensor<f32, [4, 4]>::new();
+  let scalar : Tensor<f32, []> = a;
+  return 0;
+}
+
+fn on_npu(x : Pinned<Tensor<i64, [4, 4]>, Topology::NPU[0]>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  let a = Tensor<i64, [4, 4]>::new();
+  let g = transfer(a, Memory::GPU_HBM);
+  return on_npu(g);
+}

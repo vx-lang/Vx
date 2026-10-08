@@ -446,6 +446,37 @@ impl std::fmt::Display for TopologyKind {
     }
 }
 
+/// A device index as the program wrote it: a number or a name. Anything longer prints as `..`.
+fn write_index(f: &mut std::fmt::Formatter<'_>, e: &Expr) -> std::fmt::Result {
+    match e {
+        Expr::Number(n) => f.write_str(&n.value),
+        Expr::Identifier(id) => write!(f, "{}", id.name),
+        _ => f.write_str(".."),
+    }
+}
+
+/// The topology as the program writes it, `Topology::NPU[0]`, for diagnostics.
+impl std::fmt::Display for Topology {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Topology::")?;
+        match self {
+            Topology::NPU(e) | Topology::AccCore(e) | Topology::GPU(e) => {
+                write!(f, "{}[", self.kind())?;
+                write_index(f, e)?;
+                write!(f, "]")
+            }
+            Topology::Slice(base, start, end) => {
+                write!(f, "{}[", base.kind())?;
+                write_index(f, start)?;
+                write!(f, "..")?;
+                write_index(f, end)?;
+                write!(f, "]")
+            }
+            _ => write!(f, "{}", self.kind()),
+        }
+    }
+}
+
 impl Topology {
     /// `Topology::gpu(0)[index]`.
     ///
@@ -1299,32 +1330,28 @@ impl std::fmt::Display for Type {
             }
             // Without this a tensor reached the `{:?}` fallback, so a type error naming one
             // printed the whole dims AST -- `NumberExpr { value: "4", span: .. }` per extent.
+            // An empty shape is rank 0 and prints as `[]`: `Tensor<f32>` does not parse.
             Type::Tensor(el, dims, top) => {
-                write!(f, "Tensor<{}", el)?;
-                if !dims.is_empty() {
-                    write!(f, ", [")?;
-                    for (i, d) in dims.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        match d {
-                            Dim::Static(syntax::expr::Expr::Number(n)) => write!(f, "{}", n.value)?,
-                            // A named extent prints its name, so a message about a `const N`
-                            // parameter says `N` instead of an anonymous placeholder.
-                            Dim::Static(syntax::expr::Expr::Identifier(id)) => {
-                                write!(f, "{}", id.name)?
-                            }
-                            Dim::Static(_) => write!(f, "{{..}}")?,
-                            Dim::Dyn => write!(f, "?")?,
-                        }
+                write!(f, "Tensor<{}, [", el)?;
+                for (i, d) in dims.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
                     }
-                    write!(f, "]")?;
+                    match d {
+                        Dim::Static(syntax::expr::Expr::Number(n)) => write!(f, "{}", n.value)?,
+                        // A named extent prints its name, so a message about a `const N`
+                        // parameter says `N` instead of an anonymous placeholder.
+                        Dim::Static(syntax::expr::Expr::Identifier(id)) => {
+                            write!(f, "{}", id.name)?
+                        }
+                        Dim::Static(_) => write!(f, "{{..}}")?,
+                        Dim::Dyn => write!(f, "?")?,
+                    }
                 }
-                // The kind and space, not the whole `Placement`: printing the struct put a
-                // `NumberExpr { .. }` for the device index into every message naming a placed
-                // tensor. The index is not what a placement mismatch is ever about.
+                write!(f, "]")?;
+                // The placement as the program writes it in a tensor type, `Memory::GPU_HBM`.
                 if let Some(p) = top {
-                    write!(f, ", {}, {}", p.topology.kind(), p.space.name())?;
+                    write!(f, ", {}", p.as_written())?;
                 }
                 write!(f, ">")
             }
@@ -1354,8 +1381,8 @@ impl std::fmt::Display for Type {
                 write!(f, "| -> {}", ret)
             }
             Type::Verified(inner) => write!(f, "Verified<{inner}>"),
-            Type::Ref(inner, space) => write!(f, "Ref<{inner}, {space:?}>"),
-            Type::Pinned(inner, topo) => write!(f, "Pinned<{inner}, {topo:?}>"),
+            Type::Ref(inner, space) => write!(f, "Ref<{inner}, Memory::{}>", space.name()),
+            Type::Pinned(inner, topo) => write!(f, "Pinned<{inner}, {topo}>"),
             Type::Matrix => write!(f, "Matrix"),
             Type::Module(path, _) => write!(f, "module {path}"),
         }
