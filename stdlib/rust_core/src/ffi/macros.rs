@@ -557,13 +557,9 @@ macro_rules! instantiate_file_ffi {
         /// Uses the same status and output contract as `vx_file_try_read`.
         ///
         /// # Safety
-        /// A null `ptr` or `buffer` is accepted and reports invalid arguments. A
-        /// non-null `ptr` must point to a live bridge-owned `std::fs::File`, with no
-        /// concurrent access or drop. When `ptr` and `buffer` are non-null and
-        /// `0 < len <= isize::MAX`, `buffer` must point to `len` initialized,
-        /// readable bytes. Every non-null output pointer must be aligned and
-        /// writable, even if another argument is invalid. The file, buffer,
-        /// and outputs must not overlap for the duration of the call.
+        /// The handle, outputs, null arguments, and non-overlap rules are the same
+        /// as for `vx_file_try_read`. For a valid positive length, `buffer` must
+        /// point to `len` initialized, readable bytes instead of writable bytes.
         #[no_mangle]
         pub unsafe extern "C" fn vx_file_try_write(
             ptr: *mut std::ffi::c_void,

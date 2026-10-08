@@ -67,6 +67,7 @@ impl File {
   ///
   /// Unsafe because nothing checks that `path` points at a NUL-terminated string.
   unsafe fn open(path : *const i8, mode : OpenMode) -> File {
+    // Read uses code 0; the other modes replace it below.
     let mut mode_code : i32 = 0;
     match mode {
       OpenMode::Read() => {},

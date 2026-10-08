@@ -32,8 +32,6 @@ Here `2` is only an example of a host's missing-file code. A real backend must u
 
 `vx_file_try_read` and `vx_file_try_write` return an `i32` status and write to `count : *mut u64`, `native_code : *mut i32`, and `has_native_code : *mut bool`. These integers are a private bridge ABI, not enum ordinals or native OS codes. Both calls use the same mapping:
 
-The Rust entry points are `unsafe extern "C"`. A non-null handle must remain a live, exclusively accessed bridge-owned `File` for the call. A non-null read buffer used with a valid positive length must hold that many writable bytes; they need not be initialized. A write buffer must hold that many initialized, readable bytes. Every non-null output pointer must be aligned and writable, including on an invalid-argument path; the file, buffer, and outputs must not overlap. Null handle and buffer pointers are accepted as invalid arguments, but null checks cannot validate other pointer properties. The future Vx wrapper must keep these requirements inside its unsafe boundary.
-
 | Status | Meaning | Rust source |
 | ---: | --- | --- |
 | `0` | Success | Successful read/write, including EOF and an empty request |
@@ -50,6 +48,8 @@ The Rust entry points are `unsafe extern "C"`. A non-null handle must remain a l
 | `10` | `LimitExceeded` | Rust's `StorageFull`, `QuotaExceeded`, or `FileTooLarge` |
 | `11` | `Unsupported` | `Unsupported` |
 | `12` | `Other` | Every remaining or unknown Rust error kind |
+
+The Rust entry points are `unsafe extern "C"`. A non-null handle must remain a live, exclusively accessed bridge-owned `File` for the call. A non-null read buffer used with a valid positive length must hold that many writable bytes; they need not be initialized. A write buffer must hold that many initialized, readable bytes. Every non-null output pointer must be aligned and writable, including on an invalid-argument path; the file, buffer, and outputs must not overlap. Null handle and buffer pointers are accepted as invalid arguments, but null checks cannot validate other pointer properties. The future Vx wrapper must keep these requirements inside its unsafe boundary.
 
 A read-only filesystem is a permission restriction and maps to `PermissionDenied`. A write through a read-only file handle fails with a bad-handle error on Unix and maps to `Other`; its native code remains available to callers.
 
