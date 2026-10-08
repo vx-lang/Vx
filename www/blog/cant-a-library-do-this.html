@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Can a library describe the memory hierarchy?</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="A Rust library can put the memory space in a tensor's type, and the Rust compiler then rejects a host read of GPU memory. It cannot add up how much memory a call path uses, compute shapes on stable Rust, or check the code that runs on the device. That is the part Vx puts in the compiler.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Can a library describe the memory hierarchy?">
+<meta property="og:description" content="A Rust library can put the memory space in the type. What it cannot do is the rest of the hierarchy: memory budgets across calls, computed shapes, and the code that runs on the device.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-10-08T20:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/cant-a-library-do-this.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-cant-a-library-do-this.png">
+<meta property="og:image:alt" content="Can a library describe the memory hierarchy? What Rust's types can check, and where they stop.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-cant-a-library-do-this.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Can a library describe the memory hierarchy?</h1>
+<p class="post-meta">Aditya Kumar &middot; 8 October 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — A question we keep getting: why make memory
+placement part of the language, when a library can encode it? Part of it can. A Rust library can
+put the memory space in a tensor's type, and the Rust compiler will then reject a host read of GPU
+memory. What a library cannot do is the rest of the hierarchy: add up how much memory a call path
+uses, compute shapes from other shapes on stable Rust, or check the code that runs on the device.
+That is the part Vx puts in the compiler.</blockquote>
+
+<p class="lede">An earlier post, <a href="/blog/two-allocators-one-type.html">float * fails to
+distinguish host DRAM from GPU HBM</a>, argued that the memory space belongs in the type. This
+one asks whether that type has to come from the language.</p>
+
+<h2>The question</h2>
+
+<p>The usual example is a Rust tensor library such as Burn. Its <code>Tensor&lt;B, 2&gt;</code>
+carries the backend and the rank in its type. The shape and the device are values, checked when
+the program runs: multiply a <code>[4, 4]</code> tensor by a <code>[4, 3]</code> one the wrong way
+round, or mix tensors from two devices, and you find out at run time.</p>
+
+<p>That is a choice Burn made, not a limit of Rust. A library can move both checks to compile
+time.</p>
+
+<h2>The Rust version</h2>
+
+<p>One empty type per memory space, a trait for "the CPU can read this", and const generics for
+the shape:</p>
+
+<!-- vx-doctest: skip: Rust, the library version -->
+<pre><code>use std::marker::PhantomData;
+
+struct CpuDram;
+struct GpuHbm;
+
+trait HostVisible {}
+impl HostVisible for CpuDram {}
+
+struct Tensor&lt;const R: usize, const C: usize, M&gt; {
+    data: Vec&lt;f32&gt;,
+    space: PhantomData&lt;M&gt;,
+}
+
+fn sum_on_host&lt;const R: usize, const C: usize, M: HostVisible&gt;(t: &amp;Tensor&lt;R, C, M&gt;) -&gt; f32 {
+    t.data.iter().sum()
+}
+
+fn matmul&lt;const M: usize, const K: usize, const N: usize, S&gt;(
+    a: &amp;Tensor&lt;M, K, S&gt;,
+    b: &amp;Tensor&lt;K, N, S&gt;,
+) -&gt; Tensor&lt;M, N, S&gt; { /* ... */ }</code></pre>
+
+<p>With rustc 1.98, a host read of a <code>Tensor&lt;4, 4, GpuHbm&gt;</code> fails with
+<code>error[E0277]: the trait bound `GpuHbm: HostVisible` is not satisfied</code>, and a
+<code>matmul</code> of a <code>[4, 3]</code> tensor by a <code>[4, 4]</code> one fails with
+<code>error[E0308]: mismatched types</code>. Tensors in two different spaces cannot be multiplied
+either, because <code>S</code> must be the same type for both.</p>
+
+<p>So for "this tensor lives in GPU memory and the CPU cannot read it", the critic is right: a
+library does it. Vx does not need to be a language for that part alone.</p>
+
+<h2>Where the library stops</h2>
+
+<p><strong>Shapes computed from other shapes.</strong> <code>matmul</code> works because its
+result only reuses its inputs' sizes. A <code>concat</code> whose result has <code>A + B</code>
+rows does not:</p>
+
+<!-- vx-doctest: skip: Rust -->
+<pre><code>fn concat&lt;const A: usize, const B: usize, M&gt;(
+    x: Tensor&lt;A, 1, M&gt;,
+    y: Tensor&lt;B, 1, M&gt;,
+) -&gt; Tensor&lt;{ A + B }, 1, M&gt;</code></pre>
+
+<pre><code>error: generic parameters may not be used in const operations</code></pre>
+
+<p>Arithmetic on const generics needs the <code>generic_const_exprs</code> feature, which is still
+unstable. Reshape, concat, split and padding all need it. Vx's compiler does the arithmetic
+itself: <code>t.reshape([15])</code> on a <code>[4, 4]</code> tensor is refused with
+<code>reshape arithmetic mismatch: source has 16 elements, target has 15</code>.</p>
+
+<p><strong>How much memory a call path uses.</strong> A GPU's shared memory is 228 KB per
+multiprocessor on an H100. Whether a kernel's tiles fit depends on what each function holds while
+it calls the next one. Here each function fits in a 4 MiB space by itself, and together they do
+not:</p>
+
+<pre><code>Memory CPU_DRAM {}
+Memory SMEM {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::SMEM,
+  visible: [Memory::SMEM],
+  transfer Memory::CPU_DRAM -&gt; Memory::SMEM : 10
+  transfer Memory::SMEM -&gt; Memory::CPU_DRAM : 10
+}
+
+fn inner() -&gt; i32 {
+  let y = Tensor&lt;f32, [1024, 768]&gt;::uninit();
+  let _tile = transfer(y, Memory::SMEM);
+  return 1;
+}
+
+fn outer() -&gt; i32 {
+  let x = Tensor&lt;f32, [1024, 768]&gt;::uninit();
+  let tile = transfer(x, Memory::SMEM);
+  let r = inner();
+  let _back = transfer(tile, Memory::CPU_DRAM);
+  return r;
+}
+
+fn main() -&gt; i32 {
+  return outer();
+}</code></pre>
+
+<pre><code>Error[E6027] at 22:11: the working set along call path 'outer -&gt; inner' in memory space
+  'SMEM' peaks at 6291456 bytes, over its 4194304 byte capacity: 'outer' holds 3145728 bytes
+  across its call, 'inner' itself peaks at 3145728 bytes</code></pre>
+
+<p>Rust's types check each function on its own. To get this error from a library, every function
+would have to state its peak memory in its signature, and every caller would have to add its own
+by hand. No one would write that. The Vx compiler sees every function and adds them up.</p>
+
+<p><strong>The machine.</strong> In the Rust version, the hardware is the list of
+<code>impl HostVisible</code> lines. They say who can read what, and nothing more. The first
+lines of the Vx example above are a machine description: what each memory holds, which
+processors see it, and what a transfer between two spaces costs. The compiler reads it from a
+<a href="/docs/machine-files.html">machine file</a>, so describing a new chip means writing a new
+file, not a new set of types.</p>
+
+<p><strong>The code that runs on the device.</strong> Rust compiles a crate for one target. GPU
+code lives in a separate crate built for the GPU (rust-gpu, or the <code>nvptx64</code> target),
+or in a smaller language inside macros, which is what Burn's CubeCL does. The host's types do not
+reach inside it. In Vx a <code>spawn on</code> block is in the same function as the code around
+it, and the compiler checks it as code for the device it runs on:</p>
+
+<pre><code>fn main() -&gt; i32 {
+  let host = Tensor&lt;f32, [4]&gt;::new();
+  let gpu = transfer(host, Memory::GPU_HBM);
+  let _p = spawn on(Topology::NPU[0]) {
+    let _x = gpu[0];
+  };
+  return 0;
+}</code></pre>
+
+<pre><code>Error[E6003] at 5:14: 'gpu' lives in GPU_HBM but NPU[0] sees only [NPU_HBM];
+  insert an explicit transfer to NPU_HBM (cost 100 on the declared path)</code></pre>
+
+<p>Transfer to <code>NPU_HBM</code> instead, as the error says, and the program compiles and
+runs.</p>
+
+<h2>So which is it?</h2>
+
+<p>Putting a memory space in a type is a library feature, and Rust does it well. A memory
+hierarchy is more than that: sizes that add up across calls, shape arithmetic, costs
+read from a description of the machine, and device code checked against what the device can see.
+Each of those needs the compiler to see the whole program and the machine together. A library
+gets one function's types at a time.</p>
+
+<p class="post-foot">The <a href="/docs/heterogeneous.html">heterogeneous model</a> covers
+placement and transfer, and <a href="/errors/E6027/">E6027</a> and
+<a href="/errors/E6003/">E6003</a> have their own pages. The Rust examples were checked with
+rustc 1.98.1 on stable.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+</body>
+</html>
