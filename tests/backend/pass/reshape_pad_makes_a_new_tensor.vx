@@ -71,6 +71,18 @@ fn main() -> i32 {
   let r = padded();
   show(&r);
 
+  // A tensor of one axis.
+  // CHECK-NEXT: 7800
+  let mut row = Tensor<i32, [2]>::new();
+  row[0] = 7;
+  row[1] = 8;
+  let longer = row.reshape([4], PadMode::Pad);
+  for i in 0..4 {
+    print(longer[i]);
+  }
+  print("
+");
+
   // A padded tensor made in each iteration of a loop.
   // CHECK-NEXT: 20
   let mut sum = 0;

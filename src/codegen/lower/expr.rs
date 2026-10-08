@@ -3003,31 +3003,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let tgt_ty =
                 Type::parse(gen.context, &format!("memref<{}>", dims_str(&tgt_dims))).unwrap();
             if args.get(2).is_some_and(crate::syntax::is_pad_mode_pad) {
-                // A new buffer filled with zeros, with the source copied into its first
-                // elements. Both are seen as flat, so the copy keeps row order.
-                let n: i64 = src_dims.iter().product();
-                assert!(
-                    n <= tgt_dims.iter().product(),
-                    "the checker refuses PadMode::Pad to a smaller shape"
-                );
-                let alloc = OperationBuilder::new("memref.alloc", gen.loc())
-                    .add_attributes(&[(
-                        Identifier::new(gen.context, "operandSegmentSizes"),
-                        DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
-                    )])
-                    .add_results(&[tgt_ty])
-                    .build()?;
-                let dst_val = block.append_operation(alloc).result(0)?.into();
-                let flat_ty =
-                    Type::parse(gen.context, &format!("memref<{}>", dims_str(&[n]))).unwrap();
-                let src_flat = reinterpret(arg_val, &[n], &[1], flat_ty, block);
-                let dst_prefix = reinterpret(dst_val, &[n], &[1], flat_ty, block);
-                emit_zero_fill(gen, &block, dst_val, el_ty_str)?;
-                let copy = OperationBuilder::new("memref.copy", gen.loc())
-                    .add_operands(&[src_flat, dst_prefix])
-                    .build()?;
-                block.append_operation(copy);
-                return Ok((dst_val, tgt_ty, block));
+                return lower_padded_copy(gen, block, arg_val, &expr_ty_str, &tgt_dims);
             }
             let out_val = reinterpret(arg_val, &tgt_dims, &tgt_strides, tgt_ty, block);
             return Ok((out_val, tgt_ty, block));
@@ -4600,6 +4576,211 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
 
 /// `t.clone()`: a new buffer of `t`'s shape and a `memref.copy` into it. The copy reads `t`
 /// through its own layout, so cloning a row copies that row.
+/// One size of a tensor: known while compiling, or read at run time.
+#[derive(Clone, Copy)]
+enum Size<'c> {
+    Known(i64),
+    AtRunTime(Value<'c, 'c>),
+}
+
+fn index_const<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    v: i64,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let index_ty = Type::index(gen.context);
+    let op = OperationBuilder::new("arith.constant", gen.loc())
+        .add_results(&[index_ty])
+        .add_attributes(&[(
+            Identifier::new(gen.context, "value"),
+            IntegerAttribute::new(index_ty, v).into(),
+        )])
+        .build()?;
+    Ok(block.append_operation(op).result(0)?.into())
+}
+
+/// The sizes and element type of the tensor `src`, whose type is `src_str`
+/// ("memref<2x?xf32, ..>"). Each `?` is read with `memref.dim`.
+fn tensor_sizes<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    src: Value<'c, 'c>,
+    src_str: &str,
+) -> Result<(Vec<Size<'c>>, String), LowerError> {
+    let inner = src_str
+        .strip_prefix("memref<")
+        .and_then(|s| s.split([',', '>']).next())
+        .ok_or_else(|| format!("sizes of something that is not a tensor: {src_str}"))?;
+    let mut parts: Vec<&str> = inner.split('x').collect();
+    let elem = parts
+        .pop()
+        .ok_or_else(|| format!("a tensor with no element type: {src_str}"))?
+        .to_string();
+    let mut sizes = Vec::new();
+    for (k, d) in parts.iter().enumerate() {
+        if *d == "?" {
+            let c = index_const(gen, block, k as i64)?;
+            let dim = OperationBuilder::new("memref.dim", gen.loc())
+                .add_operands(&[src, c])
+                .add_results(&[Type::index(gen.context)])
+                .build()?;
+            sizes.push(Size::AtRunTime(
+                block.append_operation(dim).result(0)?.into(),
+            ));
+        } else {
+            let n = d
+                .parse()
+                .map_err(|_| format!("a tensor size that is not a number: {src_str}"))?;
+            sizes.push(Size::Known(n));
+        }
+    }
+    Ok((sizes, elem))
+}
+
+/// The number of elements of a tensor with these sizes.
+fn element_count<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    sizes: &[Size<'c>],
+) -> Result<Size<'c>, LowerError> {
+    let mut known = 1i64;
+    let mut at_run_time: Option<Value<'c, 'c>> = None;
+    for s in sizes {
+        match s {
+            Size::Known(n) => known *= n,
+            Size::AtRunTime(v) => {
+                at_run_time = Some(match at_run_time {
+                    None => *v,
+                    Some(acc) => {
+                        let mul = OperationBuilder::new("arith.muli", gen.loc())
+                            .add_operands(&[acc, *v])
+                            .add_results(&[Type::index(gen.context)])
+                            .build()?;
+                        block.append_operation(mul).result(0)?.into()
+                    }
+                });
+            }
+        }
+    }
+    let Some(v) = at_run_time else {
+        return Ok(Size::Known(known));
+    };
+    let c = index_const(gen, block, known)?;
+    let mul = OperationBuilder::new("arith.muli", gen.loc())
+        .add_operands(&[v, c])
+        .add_results(&[Type::index(gen.context)])
+        .build()?;
+    Ok(Size::AtRunTime(
+        block.append_operation(mul).result(0)?.into(),
+    ))
+}
+
+/// `memref.reinterpret_cast` of `src` at offset 0 with these sizes and strides. A size read
+/// at run time is an operand, and a `?` in the result type.
+fn reinterpret_with_sizes<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    src: Value<'c, 'c>,
+    sizes: &[Size<'c>],
+    strides: &[i64],
+    elem: &str,
+) -> Result<(Value<'c, 'c>, Type<'c>), LowerError> {
+    let dims: Vec<String> = sizes
+        .iter()
+        .map(|s| match s {
+            Size::Known(n) => n.to_string(),
+            Size::AtRunTime(_) => "?".to_string(),
+        })
+        .collect();
+    let contiguous = sizes.len() == 1 && strides == [1];
+    let layout = if contiguous {
+        String::new()
+    } else {
+        let s: Vec<String> = strides.iter().map(|x| x.to_string()).collect();
+        format!(", strided<[{}], offset: 0>", s.join(", "))
+    };
+    let ty_str = format!("memref<{}x{elem}{layout}>", dims.join("x"));
+    let ty = Type::parse(gen.context, &ty_str).ok_or(LowerError::ParseType(ty_str))?;
+    let dynamic: Vec<Value> = sizes
+        .iter()
+        .filter_map(|s| match s {
+            Size::AtRunTime(v) => Some(*v),
+            Size::Known(_) => None,
+        })
+        .collect();
+    let static_sizes: Vec<i64> = sizes
+        .iter()
+        .map(|s| match s {
+            Size::Known(n) => *n,
+            Size::AtRunTime(_) => i64::MIN,
+        })
+        .collect();
+    let mut operands = vec![src];
+    operands.extend(&dynamic);
+    let op = OperationBuilder::new("memref.reinterpret_cast", gen.loc())
+        .add_operands(&operands)
+        .add_attributes(&[
+            (
+                Identifier::new(gen.context, "operandSegmentSizes"),
+                DenseI32ArrayAttribute::new(gen.context, &[1, 0, dynamic.len() as i32, 0]).into(),
+            ),
+            (
+                Identifier::new(gen.context, "static_offsets"),
+                DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
+            ),
+            (
+                Identifier::new(gen.context, "static_sizes"),
+                DenseI64ArrayAttribute::new(gen.context, &static_sizes).into(),
+            ),
+            (
+                Identifier::new(gen.context, "static_strides"),
+                DenseI64ArrayAttribute::new(gen.context, strides).into(),
+            ),
+        ])
+        .add_results(&[ty])
+        .build()?;
+    Ok((block.append_operation(op).result(0)?.into(), ty))
+}
+
+/// `t.reshape(shape, PadMode::Pad)`: a new buffer of `tgt_dims` filled with zeros, with the
+/// source copied into its first elements. Both are seen as flat, so the copy keeps row order.
+/// A source size known only at run time is read with `memref.dim`.
+fn lower_padded_copy<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    src: Value<'c, 'c>,
+    src_str: &str,
+    tgt_dims: &[i64],
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let (src_sizes, elem) = tensor_sizes(gen, &block, src, src_str)?;
+    let dims: Vec<String> = tgt_dims.iter().map(|d| d.to_string()).collect();
+    let tgt_str = format!("memref<{}x{elem}>", dims.join("x"));
+    let tgt_ty = Type::parse(gen.context, &tgt_str).ok_or(LowerError::ParseType(tgt_str))?;
+    let alloc = OperationBuilder::new("memref.alloc", gen.loc())
+        .add_attributes(&[(
+            Identifier::new(gen.context, "operandSegmentSizes"),
+            DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
+        )])
+        .add_results(&[tgt_ty])
+        .build()?;
+    let dst: Value = block.append_operation(alloc).result(0)?.into();
+    let n = element_count(gen, &block, &src_sizes)?;
+    if let Size::Known(n) = n {
+        assert!(
+            n <= tgt_dims.iter().product(),
+            "the checker refuses PadMode::Pad to a smaller shape"
+        );
+    }
+    let (src_flat, _) = reinterpret_with_sizes(gen, &block, src, &[n], &[1], &elem)?;
+    let (dst_prefix, _) = reinterpret_with_sizes(gen, &block, dst, &[n], &[1], &elem)?;
+    emit_zero_fill(gen, &block, dst, &elem)?;
+    let copy = OperationBuilder::new("memref.copy", gen.loc())
+        .add_operands(&[src_flat, dst_prefix])
+        .build()?;
+    block.append_operation(copy);
+    Ok((dst, tgt_ty, block))
+}
+
 fn lower_clone_call<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
