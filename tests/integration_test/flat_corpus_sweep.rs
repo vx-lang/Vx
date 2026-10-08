@@ -35,12 +35,12 @@ const KNOWN_DECLINES: &[&str] = &[
     // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
     // ("an aggregate slot with no struct type").
     "backend/pass/tensor_views_end_at_their_last_use.vx",
-    // `Result<void, i32>`: the flat path has no layout for a `void` payload ("an enum payload
-    // type that is not modelled").
-    "backend/pass/result_of_void.vx",
     // `Duration`'s `+` and `-` go through `Option<Duration>`, and the flat path declines its
     // `unwrap` ("a non-scalar default return").
     "backend/pass/operators_on_user_types.vx",
+    // `Result<void, i32>`: the flat path has no layout for a `void` payload ("an enum payload
+    // type that is not modelled").
+    "backend/pass/result_of_void.vx",
     // `t = pass(t)` inside an `if`: on the flat path a tensor local is one register, so the
     // new value cannot leave the branch. The flat path used to read the wrong tensor after it.
     "frontend/pass/tensor_drops_written_into_the_program.vx",
