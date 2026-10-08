@@ -825,7 +825,14 @@ impl<'a> Parser<'a> {
                 ret,
                 span: Span::default(),
             }));
-        } else if self.match_token(&TokenType::If) {
+        } else if self.check(&TokenType::If) {
+            // The `if` token, so a diagnostic about the `if` points at it.
+            let if_span = crate::syntax::Span {
+                line: self.peek().line,
+                column: self.peek().column,
+                length: self.peek().length,
+            };
+            self.advance();
             let is_comptime = self.match_token(&TokenType::Comptime);
             let cond = self.parse_expr()?;
             self.consume(&TokenType::LeftBrace, "Expected '{'")?;
@@ -860,7 +867,7 @@ impl<'a> Parser<'a> {
                 cond: Box::new(cond),
                 then_block,
                 else_block,
-                span: Span::default(),
+                span: if_span,
             }));
         } else if self.match_token(&TokenType::Match) {
             let at_statement = std::mem::take(&mut self.match_is_statement);

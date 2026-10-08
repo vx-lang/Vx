@@ -422,8 +422,19 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         } else if !if_expr.is_comptime {
-            // Without else block, it evaluates to unit (represented as dummy Tensor)
-            then_ty = Type::Struct("void".into(), None);
+            // After the error the `if` keeps its `then` branch's type, so that one mistake
+            // gives one error.
+            if !unused {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3048,
+                    "this `if` has no `else`, so it has no value when its condition is false; \
+                     add an `else`, or use the `if` as a statement"
+                        .to_string(),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&if_expr.span)),
+                );
+            } else {
+                then_ty = Type::Struct("void".into(), None);
+            }
         }
         let else_facts = self.consteval.constraints.split_off(facts_before);
         // When one branch ends early, the code after the `if` is reached only through the other,

@@ -1,20 +1,17 @@
-//===- if_with_no_value_bound_by_let.vx - Vx Compiler ------------*- Vx -*-===//
+//===- if_else_with_no_value_bound_by_let.vx - Vx Compiler --------*- Vx -*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// An `if` whose branches end with `;` has type `void`, and a `let` can still
-// bind it. Each `if` runs its branch once.
+// An `if`/`else` whose branches end with `;` has type `void`, and a `let` can
+// still bind it. The `if` runs its branch once.
 //
-// EXPECT: big small end
+// EXPECT: small end
 
 fn main() -> i32 {
   let x : i32 = 3;
-  let _u = if x > 2 {
-    print("big ");
-  };
   let _v = if x > 5 {
     print("huge ");
   } else {

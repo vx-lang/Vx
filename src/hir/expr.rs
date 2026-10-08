@@ -224,7 +224,10 @@ impl<'a> TypeChecker<'a> {
                 self.value_unused = value_unused;
                 self.check_comptimeblock_expr(expr, consume)
             }
-            Expr::SpawnOn(..) => self.check_spawnon_expr(expr, consume),
+            Expr::SpawnOn(..) => {
+                self.value_unused = value_unused;
+                self.check_spawnon_expr(expr, consume)
+            }
             Expr::If(..) => {
                 self.value_unused = value_unused;
                 self.check_if_expr(expr, consume)

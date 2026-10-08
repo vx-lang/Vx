@@ -344,6 +344,10 @@ pub enum DiagnosticCode {
     /// while compiling, or the arguments are not a shape such as `[4, 4]` and an optional
     /// `PadMode`.
     E3047,
+    /// An `if` with no `else` whose value is used, as in `let u = if c { .. };`. When the
+    /// condition is false there is no branch to give a value. Add an `else`, or use the `if`
+    /// as a statement.
+    E3048,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

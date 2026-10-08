@@ -17,7 +17,7 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1031` (23 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3047` (46 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3048` (47 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4012` (12 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6030` (30 codes)
@@ -140,6 +140,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3045`](/errors/E3045/) | A number literal that does not fit `usize`, which holds 0 up to the largest `i64`. |
 | [`E3046`](/errors/E3046/) | A `for` loop over a tensor that is not a variable or a flat array literal, such as one a function call returns, or a nested array literal. The loop reads the tensor by index, so it needs a name: bind the tensor with `let` first. |
 | [`E3047`](/errors/E3047/) | A `reshape` call the compiler cannot check: the new shape has a different number of elements than the tensor (without `PadMode::Pad` or `PadMode::Trim`), a size is not known while compiling, or the arguments are not a shape such as `[4, 4]` and an optional `PadMode`. |
+| [`E3048`](/errors/E3048/) | An `if` with no `else` whose value is used, as in `let u = if c { .. };`. When the condition is false there is no branch to give a value. Add an `else`, or use the `if` as a statement. |
 
 ## Borrow/Ownership Errors
 
@@ -232,4 +233,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-143 diagnostics.
+144 diagnostics.
