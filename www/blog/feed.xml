@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-10-07T18:00:00Z</updated>
+  <updated>2026-10-08T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Why void is a value in Vx</title>
+    <link href="https://vxlang.org/blog/void-is-a-value.html"/>
+    <id>https://vxlang.org/blog/void-is-a-value.html</id>
+    <updated>2026-10-08T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>In Vx, void is an ordinary type with exactly one value. A function that returns nothing returns that value, as with () in Rust, and unlike void in C, which C++ has had to work around ever since. Generic code, such as spawn on with a block that returns nothing, then needs no special case. A bug treated a void value as something that could be moved, so using it twice was an error. The post explains the fix, and four gaps found while writing it: a user struct named void escapes the move rules, Result&lt;void, E&gt; is rejected, and two programs fail in code generation.</summary>
+  </entry>
 
   <entry>
     <title>How Vx frees memory</title>

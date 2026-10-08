@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why void is a value in Vx</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="In Vx, void is an ordinary type with exactly one value, as () is in Rust and unlike void in C. That keeps generic code free of special cases. A bug treated that value as something that could be moved; this post explains the fix and four gaps found while writing it.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Why void is a value in Vx">
+<meta property="og:description" content="void is a type with exactly one value, so generic code never needs a special case for functions that return nothing. A bug, its fix, and four gaps found while writing this.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-10-08T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/void-is-a-value.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-void-is-a-value.png">
+<meta property="og:image:alt" content="Why void is a value in Vx: a type with exactly one value.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-void-is-a-value.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Why void is a value in Vx</h1>
+<p class="post-meta">Aditya Kumar &middot; 8 October 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — In Vx, <code>void</code> is an ordinary type
+with exactly one value. A function that "returns nothing" returns that value. Rust does the same
+with <code>()</code>; C does not, and C++ has paid for it ever since. Until this week the Vx
+checker treated a <code>void</code> value as something that could be moved, so using it twice was
+an error. That is fixed. Writing this post turned up four more gaps.</blockquote>
+
+<p class="lede">"Returns nothing" can be a hole in the type system, or it can be a type like any
+other. Vx picks the second, because generic code then works without special cases.</p>
+
+<h2>Where a void value pays off</h2>
+
+<p>Anywhere code is generic over a type <code>T</code>, someone will eventually pick
+<code>T = void</code>. If <code>void</code> is a real type with one value, everything written for
+<code>T</code> still works. If it is not, each of those places needs its own exception.</p>
+
+<ul>
+<li><strong><code>spawn on</code></strong>. <code>spawn on(τ) { ... }</code> runs a block on a
+device and gives back its result as <code>Pinned&lt;T, τ&gt;</code>: a value of type
+<code>T</code> that lives on <code>τ</code>. A block that only writes to a tensor has no result,
+so <code>T</code> is <code>void</code> and the result is <code>Pinned&lt;void, τ&gt;</code>. The
+placement rules apply to it unchanged. This program runs today:
+<pre><code>fn main() -&gt; i32 {
+  let mut c = Tensor&lt;f32, [4], Memory::NPU_HBM&gt;::uninit();
+  let p = spawn on(Topology::NPU[0]) {
+    c[0] = 1.0;
+  };
+  let q = p;
+  let r = p;
+  print("done");
+  return 0;
+}</code></pre></li>
+<li><strong>Generic types and functions</strong>: a <code>Result&lt;void, E&gt;</code> for an
+operation that can fail but has nothing to return, or a generic
+<code>fn apply&lt;T&gt;(f : fn() -&gt; T) -&gt; T</code> called with a function that returns
+nothing.</li>
+<li><strong>Expressions</strong>: a block or an <code>if</code> with no value at the end still
+has a type, <code>void</code>, so the checker never needs a "this expression has no type"
+case.</li>
+</ul>
+
+<h2>C and Rust</h2>
+
+<p>In C, <code>void</code> is not a value type: you cannot declare a <code>void</code> variable.
+C++ inherited that, and had to add special versions of its generic library types for it, such as
+<code>std::future&lt;void&gt;</code> and <code>std::promise&lt;void&gt;</code>. The "regular void"
+proposal (P0146) tries to undo this. Rust went the other way: <code>()</code> is a real type of
+size zero that implements <code>Copy</code>, and generic code never notices it. Vx is on the Rust
+side.</p>
+
+<p><code>void</code> is not the same as the never type <code>!</code>, which Vx added this month
+(<a href="https://github.com/vx-lang/Vx/issues/1273">#1273</a>). <code>void</code> has exactly
+one value: the function returns, and the value tells you nothing. <code>!</code> has no values
+at all: the function never returns.</p>
+
+<h2>The bug</h2>
+
+<p>A value of a type with only one possible value carries no information, so "moving" it means
+nothing. Reading it twice cannot be a use after a move. Vx got this wrong
+(<a href="https://github.com/vx-lang/Vx/issues/402">#402</a>):</p>
+
+<pre><code>fn nothing() -&gt; void { }
+
+fn main() -&gt; i32 {
+  let z = nothing();
+  let a = z;
+  let b = z;
+  return 0;
+}</code></pre>
+
+<pre><code>Error[E4001] at 5:11: Use of moved or consumed linear variable: z</code></pre>
+
+<p>Inside the compiler, <code>void</code> is written as a struct named <code>void</code>, and
+by default a struct is <em>linear</em>: it moves when you use it, so the old variable cannot be used
+again. <code>void</code> picked that rule up by accident. The fix
+(<a href="https://github.com/vx-lang/Vx/pull/1381">#1381</a>) makes the check skip
+<code>void</code>. The test <code>tests/backend/pass/void_value_used_twice.vx</code> reads a
+<code>void</code> value twice and runs on both code generators.</p>
+
+<h2>What is still wrong</h2>
+
+<p>The fix is an exception added to a general rule, and it finds <code>void</code> by its name.
+So a struct you declare yourself and name <code>void</code> gets the exception too:</p>
+
+<pre><code>struct void {
+  x : i32,
+}
+
+fn main() -&gt; i32 {
+  let a = void { x: 5 };
+  let b = a;
+  let c = a;
+  print(c.x);
+  return 0;
+}</code></pre>
+
+<p>This compiles and prints <code>5</code>. Rename the struct to <code>Plain</code> and the
+compiler reports E4001, as it should. The better fix is to make <code>void</code> a built-in
+type that no program can declare, and have the check ask whether a type is plain data that can
+be copied freely, rather than compare names. Then <code>void</code> and the next built-in type
+of that kind are copyable for the same reason, with no list of exceptions.</p>
+
+<p>Trying the examples above for this post found three more problems:</p>
+
+<ul>
+<li><code>Result&lt;void, i32&gt;</code> is rejected with a message that contradicts itself:
+<code>Type mismatch on return. Expected Result&lt;void, i32&gt;, got Result&lt;void,
+i32&gt;</code>. The standard library already works around this: <code>core::fmt</code> returns
+<code>Result&lt;i32, Error&gt;</code> with <code>Ok(0)</code> where it means
+<code>Result&lt;void, Error&gt;</code>.</li>
+<li><code>apply&lt;T&gt;</code> above, called with a function returning <code>void</code>, passes
+the checker but fails when the compiler checks the MLIR it generated.</li>
+<li><code>let u = if x &gt; 2 { print("big"); };</code> passes the checker and then crashes the
+code generator.</li>
+</ul>
+
+<p>Each of these is a place where generic code meets <code>T = void</code> and needs a special
+case it does not have, which is the problem this post started with.</p>
+
+<p class="post-foot">Vx is Apache 2.0 with the LLVM exception &mdash;
+<a href="/docs/getting-started.html">install it</a> and try the examples.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+</body>
+</html>
