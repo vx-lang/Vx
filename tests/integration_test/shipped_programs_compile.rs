@@ -262,3 +262,59 @@ fn core_depends_on_no_host_symbols() {
         offenders.join("\n")
     );
 }
+
+/// Runs one program, on the default code generator or the legacy one. Returns the combined
+/// output when it did not succeed.
+fn run_failure(root: &Path, file: &Path, legacy: bool) -> Option<String> {
+    let mut args = vec![file.to_str().unwrap()];
+    if legacy {
+        args.push("--legacy-codegen");
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
+        .current_dir(root)
+        .args(&args)
+        .output()
+        .expect("failed to run vxc");
+    (!out.status.success()).then(|| {
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    })
+}
+
+/// A standard-library package's own tests, its `tests.vx`, run and pass on both code
+/// generators. They check results with `expect_eq`, which aborts the program on a mismatch.
+#[test]
+fn every_stdlib_test_program_passes() {
+    let root = repo_root();
+    let mut files = Vec::new();
+    vx_files(&root.join("stdlib"), &mut files);
+    files.retain(|f| f.file_name().is_some_and(|n| n == "tests.vx"));
+    assert!(
+        !files.is_empty(),
+        "expected to find stdlib/graph/tests.vx at least -- has the walk broken?"
+    );
+
+    let mut failures = Vec::new();
+    for file in &files {
+        let rel = file
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        for legacy in [false, true] {
+            if let Some(log) = run_failure(&root, file, legacy) {
+                let which = if legacy { "legacy" } else { "default" };
+                let last = log.lines().last().unwrap_or("(no output)");
+                failures.push(format!("  {rel} ({which} code generator)\n      {last}"));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "standard-library test programs that fail:\n{}",
+        failures.join("\n")
+    );
+}

@@ -1,0 +1,107 @@
+//===- cloud_fleet_routing.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A cloud GPU fleet as a graph, and the questions a fleet scheduler asks of it.
+//
+// Four datacenters (DC0 to DC3). Each has a spine switch and 4 racks; each rack has a
+// top-of-rack switch and 8 GPU nodes: 148 nodes in all. A link's weight is the time in
+// milliseconds to move 1 GiB over it, about 1000 / (its GB/s):
+//
+//   GPU node <-> rack switch      InfiniBand NDR, 50 GB/s   20
+//   rack switch <-> spine          100 GB/s                  10
+//   spine <-> next datacenter      25 GB/s                   40  (DC0-DC1-DC2-DC3-DC0)
+//   DC0 spine <-> DC2 spine        12.5 GB/s                 80
+//
+// What it prints, in order:
+//
+// - moving a checkpoint shard from a GPU in DC0 to one in DC2 costs 20 + 10 + 80 + 10 + 20 =
+//   140 (the slow direct link ties with going round through DC1), and to one in DC3 100;
+//   Dijkstra, Bellman-Ford and Floyd-Warshall agree;
+// - broadcasting new weights to every GPU along the cheapest tree costs 128 x 20 + 16 x 10 +
+//   3 x 40 = 2840, and every one of the 148 nodes is reached;
+// - when DC1's spine fails, the fleet splits into 6 parts (the other three datacenters, DC1's
+//   4 racks, and the spine itself); 111 nodes are still reachable from DC0; a GPU in DC1
+//   can no longer be reached (1000000000 means no route); the route to DC2 still costs 140;
+//   and the broadcast tree over what is left costs 96 x 20 + 12 x 10 + 2 x 40 = 2120.
+//
+// EXPECT: 140 140 140 100 | 2840 1 148 | 6 111 1000000000 140 2120
+
+import std::vec;
+import graph::core;
+import graph::traversal;
+import graph::shortest_path;
+import graph::analysis;
+
+fn spine(dc : i32) -> i32 {
+  return dc * 37;
+}
+
+fn rack_switch(dc : i32, rack : i32) -> i32 {
+  return dc * 37 + 1 + rack * 9;
+}
+
+fn gpu(dc : i32, rack : i32, k : i32) -> i32 {
+  return rack_switch(dc, rack) + 1 + k;
+}
+
+fn build_fleet() -> Graph {
+  let mut g : Graph = Graph::new(148);
+  for dc in 0..4 {
+    for rack in 0..4 {
+      g.add_undirected_edge(spine(dc), rack_switch(dc, rack), 10);
+      for k in 0..8 {
+        g.add_undirected_edge(rack_switch(dc, rack), gpu(dc, rack, k), 20);
+      }
+    }
+  }
+  g.add_undirected_edge(spine(0), spine(1), 40);
+  g.add_undirected_edge(spine(1), spine(2), 40);
+  g.add_undirected_edge(spine(2), spine(3), 40);
+  g.add_undirected_edge(spine(3), spine(0), 40);
+  g.add_undirected_edge(spine(0), spine(2), 80);
+  return g;
+}
+
+// A failed switch has no links left.
+fn fail_spine(g : &mut Graph, dc : i32) -> i32 {
+  for v in 0..148 {
+    g.add_undirected_edge(spine(dc), v, 0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut fleet : Graph = build_fleet();
+  let from = gpu(0, 0, 0);
+  let to_dc2 = gpu(2, 3, 7);
+  print(dijkstra(&fleet, from, to_dc2));
+  print!(" ");
+  print(bellman_ford(&fleet, from, to_dc2));
+  print!(" ");
+  print(floyd_warshall(&fleet, from, to_dc2));
+  print!(" ");
+  print(dijkstra(&fleet, from, gpu(3, 1, 4)));
+  print!(" | ");
+  print(prim_mst_weight(&fleet));
+  print!(" ");
+  print(connected_components(&fleet));
+  print!(" ");
+  print(bfs_reachable(&fleet, from));
+  print!(" | ");
+
+  fail_spine(&mut fleet, 1);
+  print(connected_components(&fleet));
+  print!(" ");
+  print(bfs_reachable(&fleet, from));
+  print!(" ");
+  print(dijkstra(&fleet, from, gpu(1, 2, 5)));
+  print!(" ");
+  print(dijkstra(&fleet, from, to_dc2));
+  print!(" ");
+  print(prim_mst_weight(&fleet));
+  return 0;
+}

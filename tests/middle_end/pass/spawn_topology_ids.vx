@@ -35,6 +35,6 @@ fn on_npu() -> i32 {
 // CHECK: vx.spawn topology(500)
 // CHECK: vx.yield
 // CHECK: func.func @on_npu
-// CHECK: "vx.transfer"
+// CHECK: "vx.transfer"{{.*}}: (memref<f32>) -> memref<f32>
 // CHECK: vx.spawn topology(100)
 // CHECK: vx.yield

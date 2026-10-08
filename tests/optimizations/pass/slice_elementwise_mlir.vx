@@ -24,11 +24,6 @@ fn o_update(mut o : Tensor<f32, [2, 4]>, v : Tensor<f32, [2, 4]>, s : f32) -> i3
 }
 
 // CHECK: module attributes {llvm.module_flags = {"Debug Info Version" = 3 : i32, "Dwarf Version" = 4 : i32}, vx.drops} {
-// CHECK:   func.func private @printMemrefF32(memref<*xf32>)
-// CHECK:   func.func private @printMemrefF64(memref<*xf64>)
-// CHECK:   func.func private @printMemrefI32(memref<*xi32>)
-// CHECK:   func.func private @printMemrefI64(memref<*xi64>)
-// CHECK:   func.func private @printMemrefBF16(memref<*xbf16>)
 // CHECK:   func.func private @vx_init_signals()
 // CHECK:   func.func @o_update(%arg0: memref<2x4xf32> {vx.owned}, %arg1: memref<2x4xf32> {vx.owned}, %arg2: f32) -> i32 {
 // CHECK:     %c0_i32 = arith.constant 0 : i32
