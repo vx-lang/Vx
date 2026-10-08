@@ -40,6 +40,8 @@ pub struct MeliorGenerator<'c> {
     /// Locals bound to a tensor the compiler allocated, as against a view over memory it does
     /// not control. Only these can be filled in place by `c = a @ b` (Vx#391).
     pub(crate) owned_tensors: std::collections::HashSet<crate::symbol::Symbol>,
+    /// The `printMemref*` helpers declared so far; each is declared on its first use.
+    pub(crate) declared_tensor_prints: std::collections::HashSet<&'static str>,
     /// Locals whose element pointer the function takes: a view through it can share their memory.
     pub(crate) pointer_taken: std::collections::HashSet<crate::symbol::Symbol>,
     /// Declared memory spaces, keyed by space, so a `transfer` can emit the sub-space descriptor
@@ -160,6 +162,56 @@ pub(crate) fn strip_memref_space(s: &str) -> Option<String> {
     let (head, tail) = inner.rsplit_once(',')?;
     tail.trim().parse::<u32>().ok()?;
     Some(format!("memref<{head}>"))
+}
+
+/// The functions in `operations` without the imported ones (the first `imported`) that nothing
+/// reaches: an imported module's function is emitted only when the program calls it, directly
+/// or through another function it calls. A function is reached by any `@name` in a reached
+/// function's code. Also returns every name the kept functions refer to.
+fn keep_reached_functions<'c>(
+    operations: Vec<melior::ir::Operation<'c>>,
+    imported: usize,
+) -> (
+    Vec<melior::ir::Operation<'c>>,
+    std::collections::HashSet<String>,
+) {
+    use melior::ir::operation::OperationLike;
+    let symbol = regex::Regex::new(r#"@(?:"((?:[^"\\]|\\.)*)"|([A-Za-z0-9_$.]+))"#)
+        .expect("a valid pattern");
+    let texts: Vec<String> = operations.iter().map(|op| op.to_string()).collect();
+    let names: HashMap<String, usize> = operations
+        .iter()
+        .enumerate()
+        .filter_map(|(i, op)| {
+            let name = op.attribute("sym_name").ok()?;
+            let name = melior::ir::attribute::StringAttribute::try_from(name).ok()?;
+            Some((name.value().to_string(), i))
+        })
+        .collect();
+    let mut reached: Vec<bool> = (0..operations.len()).map(|i| i >= imported).collect();
+    let mut pending: Vec<usize> = (imported..operations.len()).collect();
+    let mut referenced = std::collections::HashSet::new();
+    while let Some(i) = pending.pop() {
+        for found in symbol.captures_iter(&texts[i]) {
+            let name = found
+                .get(1)
+                .or_else(|| found.get(2))
+                .map_or("", |m| m.as_str());
+            referenced.insert(name.to_string());
+            if let Some(&j) = names.get(name) {
+                if !reached[j] {
+                    reached[j] = true;
+                    pending.push(j);
+                }
+            }
+        }
+    }
+    let kept = operations
+        .into_iter()
+        .zip(reached)
+        .filter_map(|(op, keep)| keep.then_some(op))
+        .collect();
+    (kept, referenced)
 }
 
 /// Whether a lowered return type travels through a buffer the caller allocated, rather than
@@ -741,6 +793,7 @@ impl<'c> MeliorGenerator<'c> {
             env: HashMap::new(),
             ast_env: HashMap::new(),
             owned_tensors: std::collections::HashSet::new(),
+            declared_tensor_prints: std::collections::HashSet::new(),
             pointer_taken: std::collections::HashSet::new(),
             memories: HashMap::new(),
             transfer_impls: HashMap::new(),
@@ -980,38 +1033,6 @@ impl<'c> MeliorGenerator<'c> {
             self.functions.insert(ext.name.clone(), (ret_ty, arg_tys));
         }
 
-        // Declare printMemref functions
-        for ty_str in &["f32", "f64", "i32", "i64", "bf16"] {
-            let func_name = format!("printMemref{}", ty_str.to_uppercase());
-            let unranked_memref_ty =
-                Type::parse(self.context, &format!("memref<*x{}>", ty_str)).unwrap();
-
-            let func_ty = melior::ir::attribute::TypeAttribute::new(
-                Type::parse(self.context, &format!("({unranked_memref_ty}) -> ()")).unwrap(),
-            );
-
-            let decl = melior::ir::operation::OperationBuilder::new("func.func", self.loc())
-                .add_attributes(&[
-                    (
-                        melior::ir::Identifier::new(self.context, "sym_name"),
-                        melior::ir::attribute::StringAttribute::new(self.context, &func_name)
-                            .into(),
-                    ),
-                    (
-                        melior::ir::Identifier::new(self.context, "function_type"),
-                        func_ty.into(),
-                    ),
-                    (
-                        melior::ir::Identifier::new(self.context, "sym_visibility"),
-                        melior::ir::attribute::StringAttribute::new(self.context, "private").into(),
-                    ),
-                ])
-                .add_regions([melior::ir::Region::new()])
-                .build()?;
-
-            self.module.body().append_operation(decl);
-        }
-
         // Declare vx_init_signals
         let sig_init_ty = melior::ir::r#type::FunctionType::new(self.context, &[], &[]);
         let sig_init_decl = melior::ir::operation::OperationBuilder::new("func.func", self.loc())
@@ -1088,10 +1109,12 @@ impl<'c> MeliorGenerator<'c> {
                 operations.push(self.generate_function(func)?);
             }
         }
+        let imported = operations.len();
 
         for func in &program.functions {
             operations.push(self.generate_function(func)?);
         }
+        let (operations, referenced) = keep_reached_functions(operations, imported);
 
         let body = self.module.body();
 
@@ -1112,6 +1135,11 @@ impl<'c> MeliorGenerator<'c> {
         for ext in &unique_externs {
             let name = &ext.name;
             if name.as_ref() == "printf" || **name == *"vx_internal_printf" {
+                continue;
+            }
+            // An imported module's extern is declared only when a function calls it.
+            let own = program.externs.iter().any(|e| e.name == *name);
+            if !own && !referenced.contains(name.as_ref()) {
                 continue;
             }
             let (ret_ty, arg_tys) = self.functions.get(name).ok_or_else(|| {

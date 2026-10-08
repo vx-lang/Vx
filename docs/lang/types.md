@@ -329,6 +329,42 @@ When verifying `let target: TargetType = source_expression;`, the compiler permi
 
 If the types pass the `is_assignable` constraint matrix, the Semantic Analyzer accepts the program. Advanced lifecycle validation (like borrow constraints) operates entirely independently of this type-compatibility pass.
 
+### Tensor shapes
+
+A tensor value fits a tensor type when all of these hold:
+
+- **The element type is the same.** There is no numeric coercion between tensors: a
+  `Tensor<f32, [4]>` does not fit `Tensor<f64, [4]>`.
+- **The rank is the same.** No assignment changes the number of dimensions; use `reshape` for that.
+- **Each dimension fits.** A `?` in the target accepts any extent. A number in the target accepts
+  only the same number, and does not accept a `?`. So a known extent widens to `?`, but a `?` does
+  not narrow back to a known extent.
+- **The placement fits.** A type with no `Memory::` accepts a tensor in `CPU_DRAM`, and refuses one
+  in any other space.
+
+`Tensor<T, []>` has rank 0: it is a single value, not "any shape". `Tensor<f32>` with no shape at all
+does not parse.
+
+```vx
+fn main() -> i32 {
+  let a = Tensor<f32, [512, 8]>::new();
+  let b : Tensor<f32, [512, 8]> = a;  // same type
+  let c : Tensor<f32, [?, 8]> = b;    // 512 widens to ?
+  let d : Tensor<f32, [?, ?]> = c;    // any extent fits ?
+  return 0;
+}
+```
+
+Each of these is refused with E3001:
+
+| Assignment | Why |
+| --- | --- |
+| `let x : Tensor<f32, [512, 8]> = c;` with `c : Tensor<f32, [?, 8]>` | `?` does not narrow to `512` |
+| `let x : Tensor<f32, [4, 3]> = t;` with `t : Tensor<f32, [4, 4]>` | the extents differ |
+| `let x : Tensor<f32, [16]> = t;` with `t : Tensor<f32, [4, 4]>` | the ranks differ |
+| `let x : Tensor<f32, []> = t;` with `t : Tensor<f32, [4, 4]>` | rank 0 is not rank 2 |
+| `let x : Tensor<f64, [4]> = t;` with `t : Tensor<f32, [4]>` | the element types differ |
+
 ## 8. Primitive Types and Arrays
 
 Vx provides a comprehensive set of primitive types:

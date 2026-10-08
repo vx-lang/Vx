@@ -1,0 +1,49 @@
+//===- rows_of_tensors_with_run_time_extents.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Taking part of a tensor whose extents are known only when the program runs, on both code
+// generators. `a` is 2 x 4 and `b` is 2 x 3 x 4, with b[i][j][k] = 100i + 10j + k:
+//
+// - the rows a[0] (all 1) and a[1] (all 2) have a dot product of 8;
+// - the plane b[1] holds b[1][2][3] = 123;
+// - the row b[1][2] holds b[1][2][1] = 121;
+// - the row b[0][1] sums to 10 + 11 + 12 + 13 = 46.
+//
+// EXPECT: 8 123 121 46
+
+import std::tensor;
+
+fn main() -> i32 {
+  let n = 3;
+  let mut a : Tensor<f32, [?, ?]> = Tensor<f32>([2, 4]);
+  for j in 0..4 {
+    a[0][j] = 1.0;
+    a[1][j] = 2.0;
+  }
+  let r0 = a[0];
+  let r1 = a[1];
+  print(r0.dot(&r1));
+  print!(" ");
+
+  let mut b : Tensor<f32, [?, ?, ?]> = Tensor<f32>([2, n, 4]);
+  for i in 0..2 {
+    for j in 0..3 {
+      for k in 0..4 {
+        b[i][j][k] = (i * 100 + j * 10 + k) as f32;
+      }
+    }
+  }
+  let plane = b[1];
+  print(plane[2][3]);
+  print!(" ");
+  let row = b[1][2];
+  print(row[1]);
+  print!(" ");
+  let r = b[0][1];
+  print(r.sum());
+  return 0;
+}

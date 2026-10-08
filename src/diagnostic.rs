@@ -339,6 +339,11 @@ pub enum DiagnosticCode {
     /// function call returns, or a nested array literal. The loop reads the tensor by index, so
     /// it needs a name: bind the tensor with `let` first.
     E3046,
+    /// A `reshape` call the compiler cannot check: the new shape has a different number of
+    /// elements than the tensor (without `PadMode::Pad` or `PadMode::Trim`), a size is not known
+    /// while compiling, or the arguments are not a shape such as `[4, 4]` and an optional
+    /// `PadMode`.
+    E3047,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

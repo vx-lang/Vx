@@ -21,8 +21,8 @@
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: E3004
-// CHECK-SAME: Tensor<f32, [4], GPU, GPU_HBM>
-// CHECK-SAME: Tensor<f32, [4], SMEM, SMEM>
+// CHECK-SAME: Tensor<f32, [4], Memory::GPU_HBM>
+// CHECK-SAME: Tensor<f32, [4], Memory::SMEM>
 
 Memory CPU_DRAM {}
 Memory GPU_HBM {

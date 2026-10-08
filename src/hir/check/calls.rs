@@ -2705,7 +2705,7 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
                 if let Some((ty, replace_with_obj)) =
-                    self.resolve_intrinsic_method(&base_ty, _method, args)
+                    self.resolve_intrinsic_method(&base_ty, _method, args, &method_span)
                 {
                     if replace_with_obj {
                         *expr = *obj.clone();
@@ -3044,16 +3044,116 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
+    /// `t.reshape([d0, d1, ..])`, optionally with `PadMode::Pad` or `PadMode::Trim`. Every
+    /// error here is E3047. After one, the call's type is the shape it asked for when that is
+    /// known, and `Unknown` otherwise, so a `let` that names the same shape does not report a
+    /// second mismatch.
+    fn check_reshape(&mut self, base_ty: &Type, args: &[Expr], span: &crate::syntax::Span) -> Type {
+        let Type::Tensor(el_ty, dims, top) = base_ty else {
+            unreachable!("reshape is only checked on a tensor");
+        };
+        let error = |s: &mut Self, msg: String| {
+            s.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3047,
+                msg,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        };
+        if args.is_empty() || args.len() > 2 {
+            error(
+                self,
+                "reshape takes the new shape, and optionally PadMode::Pad or PadMode::Trim"
+                    .to_string(),
+            );
+            return Type::Unknown;
+        }
+
+        let mut is_exact = true;
+        if let Some(mode) = args.get(1) {
+            match mode {
+                Expr::EnumVariant(EnumVariantExpr {
+                    enum_name,
+                    variant_name,
+                    ..
+                }) if enum_name.as_ref() == "PadMode"
+                    && matches!(variant_name.as_ref(), "Pad" | "Trim") =>
+                {
+                    is_exact = false
+                }
+                _ => error(
+                    self,
+                    "the second argument of reshape must be PadMode::Pad or PadMode::Trim"
+                        .to_string(),
+                ),
+            }
+        }
+
+        let Expr::Array(ArrayExpr {
+            elements: new_dims, ..
+        }) = &args[0]
+        else {
+            error(
+                self,
+                "reshape takes the new shape as an array of sizes, such as [4, 4]".to_string(),
+            );
+            return Type::Unknown;
+        };
+        let target = Type::Tensor(
+            el_ty.clone(),
+            new_dims.iter().cloned().map(Dim::Static).collect(),
+            top.clone(),
+        );
+
+        let empty_env = HashMap::new();
+        let count = |s: &mut Self, sizes: Vec<Option<&Expr>>| -> Option<f64> {
+            let mut n = 1.0;
+            for e in sizes {
+                n *= e
+                    .and_then(|e| s.eval_expr(e, &empty_env))
+                    .and_then(|v| v.as_f64())?;
+            }
+            Some(n)
+        };
+        let Some(src_elements) = count(self, dims.iter().map(|d| d.as_static()).collect()) else {
+            error(
+                self,
+                format!(
+                    "reshape needs a tensor whose sizes are known while compiling, not {base_ty}"
+                ),
+            );
+            return target;
+        };
+        let Some(target_elements) = count(self, new_dims.iter().map(Some).collect()) else {
+            error(
+                self,
+                "reshape needs a new shape whose sizes are known while compiling".to_string(),
+            );
+            return Type::Unknown;
+        };
+
+        if is_exact && (src_elements - target_elements).abs() > 1e-6 {
+            error(
+                self,
+                format!(
+                    "reshape cannot change the number of elements: {base_ty} has {src_elements}, \
+                     the new shape has {target_elements}"
+                ),
+            );
+        }
+        target
+    }
+
     pub(crate) fn resolve_intrinsic_method(
         &mut self,
         base_ty: &Type,
         _method: &str,
         args: &mut [Expr],
+        span: &crate::syntax::Span,
     ) -> Option<(Type, bool)> {
         // `a.reduce(..)` with `a : &Tensor<..>` reads the tensor it points to.
         if let Type::Borrow { inner, .. } = base_ty {
             if _method == "reduce" && args.len() == 2 && matches!(**inner, Type::Tensor(..)) {
-                return self.resolve_intrinsic_method(inner, _method, args);
+                return self.resolve_intrinsic_method(inner, _method, args, span);
             }
         }
         if let Type::Pinned(_inner, _top) = base_ty {
@@ -3082,95 +3182,7 @@ impl<'a> TypeChecker<'a> {
                     false,
                 ));
             } else if _method == "reshape" {
-                if args.is_empty() || args.len() > 3 {
-                    self.errors
-                        .push("reshape requires 1 to 3 arguments".to_string());
-                    return Some((base_ty.clone(), false));
-                }
-
-                let mut is_exact = true;
-                if args.len() >= 2 {
-                    if let Expr::EnumVariant(EnumVariantExpr {
-                        enum_name,
-                        variant_name: variant,
-                        payload: _,
-                        span: _,
-                    }) = &args[1]
-                    {
-                        if enum_name.as_ref() == "PadMode"
-                            && (variant.as_ref() == "Pad" || variant.as_ref() == "Trim")
-                        {
-                            is_exact = false;
-                        } else {
-                            self.errors.push(
-                                "reshape mode must be PadMode::Pad or PadMode::Trim".to_string(),
-                            );
-                        }
-                    } else {
-                        self.errors.push(
-                            "reshape mode must be an enum variant (e.g. PadMode::Pad)".to_string(),
-                        );
-                    }
-                }
-
-                if let Expr::Array(ArrayExpr {
-                    elements: new_dims,
-                    span: _,
-                }) = &args[0]
-                {
-                    let empty_env = HashMap::new();
-                    let mut src_elements = 1.0;
-                    for d in dims {
-                        if let Some(v) = d
-                            .as_static()
-                            .and_then(|e| self.eval_expr(e, &empty_env))
-                            .and_then(|v| v.as_f64())
-                        {
-                            src_elements *= v;
-                        } else {
-                            self.errors.push(
-                                "Cannot statically evaluate source dimension for reshape"
-                                    .to_string(),
-                            );
-                            return Some((base_ty.clone(), false));
-                        }
-                    }
-
-                    let mut target_elements = 1.0;
-                    for d in new_dims {
-                        if let Some(v) = self.eval_expr(d, &empty_env).and_then(|v| v.as_f64()) {
-                            target_elements *= v;
-                        } else {
-                            self.errors.push(
-                                "Cannot statically evaluate target dimension for reshape"
-                                    .to_string(),
-                            );
-                            return Some((base_ty.clone(), false));
-                        }
-                    }
-
-                    if is_exact && (src_elements - target_elements).abs() > 1e-6 {
-                        self.errors.push(format!(
-                            "reshape arithmetic mismatch: source has {} elements, target has {}",
-                            src_elements, target_elements
-                        ));
-                        return Some((base_ty.clone(), false));
-                    }
-
-                    return Some((
-                        Type::Tensor(
-                            el_ty.clone(),
-                            new_dims.iter().cloned().map(Dim::Static).collect(),
-                            top.clone(),
-                        ),
-                        false,
-                    ));
-                } else {
-                    self.errors.push(
-                        "reshape requires an array of dimensions as the first argument".to_string(),
-                    );
-                    return Some((base_ty.clone(), false));
-                }
+                return Some((self.check_reshape(base_ty, args, span), false));
             } else if _method == "iter" {
                 if !args.is_empty() {
                     self.errors.push("iter requires 0 arguments".to_string());

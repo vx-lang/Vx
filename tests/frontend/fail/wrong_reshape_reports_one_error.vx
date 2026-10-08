@@ -1,0 +1,47 @@
+//===- wrong_reshape_reports_one_error.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each wrong `reshape` gives one E3047 with its line. The `let` in
+// `wrong_count` names the shape the reshape asked for, so the type check of the
+// `let` has nothing more to report.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK-NOT: E3001
+// CHECK: Error[E3047] at 23:37: reshape cannot change the number of elements: Tensor<f32, [4, 4]> has 16, the new shape has 15
+// CHECK-NOT: E3001
+// CHECK: Error[E3047] at 29:14: reshape takes the new shape, and optionally PadMode::Pad or PadMode::Trim
+// CHECK: Error[E3047] at 35:14: reshape takes the new shape as an array of sizes, such as [4, 4]
+// CHECK: Error[E3047] at 41:14: reshape needs a new shape whose sizes are known while compiling
+// CHECK: 4 error(s) emitted
+
+fn wrong_count() -> i32 {
+  let t = Tensor<f32, [4, 4]>::new();
+  let _flat : Tensor<f32, [15]> = t.reshape([15]);
+  return 0;
+}
+
+fn no_shape() -> i32 {
+  let t = Tensor<f32, [4, 4]>::new();
+  let _x = t.reshape();
+  return 0;
+}
+
+fn shape_not_an_array() -> i32 {
+  let t = Tensor<f32, [4, 4]>::new();
+  let _x = t.reshape(16);
+  return 0;
+}
+
+fn size_known_only_at_run_time(n : i32) -> i32 {
+  let t = Tensor<f32, [4, 4]>::new();
+  let _x = t.reshape([n]);
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

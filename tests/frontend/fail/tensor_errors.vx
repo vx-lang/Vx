@@ -2,7 +2,7 @@
 // CHECK: E3001{{.*}}'t_host' is declared Tensor<f32, [?, ?]> but its initializer is bool
 // CHECK: Missing generic argument for Tensor initialization.
 // CHECK: Generic argument to Tensor must be a scalar type.
-// CHECK: reshape arithmetic mismatch: source has 16384 elements, target has 256
+// CHECK: E3047{{.*}}reshape cannot change the number of elements: Tensor<f32, [128, 128]> has 16384, the new shape has 256
 // CHECK: transpose permutation map must not contain duplicates
 // CHECK: Type mismatch in argument 1 for function 'requires_specific_layout'.
 //

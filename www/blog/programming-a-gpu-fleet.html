@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Programming a GPU fleet as one program</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="In Vx the machine is part of the program: its memories, their capacities and the links between them are declarations the compiler reads. So a serving plan that does not fit a GPU is refused when it is compiled, every move between GPUs and machines has a price before it runs, and one program text is checked against every machine in a fleet. With the code, the numbers the compiler prints, and what it cannot do yet.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Programming a GPU fleet as one program">
+<meta property="og:description" content="The machine is part of the program. A plan that does not fit a GPU is refused when it is compiled, and every move between GPUs and machines has a price before it runs.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-10-08T20:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/programming-a-gpu-fleet.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-programming-a-gpu-fleet.png">
+<meta property="og:image:alt" content="Programming a GPU fleet as one program: the compiler knows the machine.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-programming-a-gpu-fleet.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Programming a GPU fleet as one program</h1>
+<p class="post-meta">Aditya Kumar &middot; 8 October 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — In Vx the machine is part of the program. Its
+memories, how big they are, and how fast the links between them run are declarations the compiler
+reads. So a serving plan that does not fit a GPU is refused when it is compiled, with the bytes it
+needs and the bytes there are. Every move of data between GPUs or machines has a price before
+anything runs. And one program text is checked against every kind of machine in a fleet by
+changing one flag. Most languages learn these things at run time, from an out-of-memory error or
+a profile.</blockquote>
+
+<p class="lede">A GPU fleet is not one computer. It is a few thousand memories of different sizes,
+joined by links whose speeds differ by a factor of fifty, and the cost of a program is mostly the
+cost of moving data between them. The language you write it in usually knows none of that.</p>
+
+<h2>What other languages know about the machine</h2>
+
+<p>In PyTorch, a tensor's device is a run-time property. Whether a model fits a GPU is found out
+by loading it: the answer is a <code>CUDA out of memory</code> error, after the weights have been
+read from storage and the job has been scheduled. How long it takes to send a KV cache to another
+machine is found out by sending one and timing it.</p>
+
+<p>In CUDA C++, a pointer to GPU memory and a pointer to host memory have the same type. Which
+memory a pointer points into can be asked at run time (<code>cudaPointerGetAttributes</code>),
+and freeing it with the wrong function is a crash, not a compile error.</p>
+
+<p>The closest thing to what follows is in XLA: a compiled JAX function can report how much
+device memory it will use. That is real and useful, but it answers for the one device the
+function was compiled for, and it does not know what is on the other end of the network.</p>
+
+<p>None of this is a criticism of those tools. They describe the computation; the machine is
+whatever the computation happens to run on. Vx makes the opposite choice.</p>
+
+<h2>The machine is a declaration</h2>
+
+<p>This is part of <code>fleet/node-8gpu.vx</code>, the model of an 8-GPU H100 node that ships
+in the repository. Each figure comes from a vendor datasheet, cited in the file:</p>
+
+<pre><code>Memory HBM {
+  capacity: 80 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
+}
+// The other seven GPUs' memory, reached over NVLink.
+Memory PEER_HBM {
+  capacity: 560 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
+}
+
+Topology Node {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::PEER_HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,       // PCIe Gen5
+  transfer Memory::HBM -> Memory::PEER_HBM : 450 GB/s,      // NVLink 4
+  transfer Memory::HBM -> Memory::NIC_RAM : 63 GB/s,        // PCIe, to the network card
+  transfer Memory::NIC_RAM -> Memory::Remote_HBM : 50 GB/s  // InfiniBand NDR, one port
+}</code></pre>
+
+<p>A memory has a capacity and a bandwidth. A topology says which memories its code can see and
+which links connect them. That is the whole vocabulary, and it is enough to describe a GPU, a
+node, or a datacenter. The program does not include this file; it is passed when compiling:
+<code>vxc --machine fleet/node-8gpu.vx serve.vx</code>.</p>
+
+<h2>Placement is in the type</h2>
+
+<p>In the program, where a tensor lives is part of its type. <code>transfer</code> moves a
+tensor and gives back one whose type names its new memory:</p>
+
+<pre><code>let w : Tensor&lt;f16, [12 * LAYERS * HEADS * HDIM / TP, HEADS * HDIM]&gt; = ...;
+let weights = transfer(w, Memory::HBM);   // Tensor&lt;f16, [..], Memory::HBM&gt;</code></pre>
+
+<p>Because the type carries the memory, the compiler can refuse what the hardware cannot do.
+Host code that reads GPU memory directly is a type error that says to bring the data home first.
+A copy into a GPU's shared memory written outside a kernel is refused before it reaches LLVM. A
+tensor in GPU memory is freed by its owner's drop through the driver that allocated it, rather
+than by the host's <code>free</code>, because the type says which one that is.</p>
+
+<p>The sizes are arithmetic on the model's shape. The compiler works that arithmetic out, so the
+check that follows is against real numbers rather than "unknown".</p>
+
+<h2>One plan, two shardings, one verdict each</h2>
+
+<p>Here is a serving plan for a 70B-class model (80 layers, 64 query heads, 8 KV heads of 128) at
+32k context and batch 8, in f16. Each GPU holds its share of the weights, its share of the KV
+cache, and the activations, all at once. Then it shares the weights and activations with the
+other GPUs over NVLink, and moves its KV cache to another machine, as when a node is drained for
+maintenance:</p>
+
+<pre><code>fn serve&lt;const LAYERS : i32, const HEADS : i32, const KVHEADS : i32, const HDIM : i32,
+         const CTX : i32, const BATCH : i32, const TP : i32&gt;() -&gt; i32 {
+  let weights = transfer(w, Memory::HBM);
+  let kv_cache = transfer(kv, Memory::HBM);
+  let activations = transfer(a, Memory::HBM);
+  let _on_peers = transfer(weights, Memory::PEER_HBM);
+  let _migrated = transfer(kv_cache, Memory::Remote_HBM);
+  let _shared = transfer(activations, Memory::PEER_HBM);
+  return 0;
+}
+
+fn main() -&gt; i32 {
+  let eight_way = serve&lt;80, 64, 8, 128, 32768, 8, 8&gt;();
+  let two_way = serve&lt;80, 64, 8, 128, 32768, 8, 2&gt;();
+  return eight_way + two_way;
+}</code></pre>
+
+<p>Compiled against the node, the 8-way plan is accepted: each GPU holds about 31 GB. The 2-way
+plan is not:</p>
+
+<pre><code>Error[E6010]: the working set placed in memory space 'HBM' (3 tiles) sums to 111669149696 bytes,
+over its 85899345920 byte capacity; place fewer/smaller tiles or declare it `overcommit`</code></pre>
+
+<p>That is 111.7 GB of weights, cache and activations against an 80 GiB card. Note what the
+check had to know to say this. No single tensor is too big: the weights are 64.4 GB and the
+cache 42.9 GB, and each fits. It is the three together that do not, and the compiler knows they
+are together because the step reads all three after the last one is placed. A tensor counts
+against a memory from where it is placed until it is last used, and the check takes the peak.</p>
+
+<p>The same works across machine types. <code>fleet/admit.vx</code> is a reference admission
+program that is never edited to change machines. For a 70B model with no sharding, compiled with
+<code>--machine fleet/h100-sxm.vx</code> it is refused, because the weights alone need
+128,849,018,880 bytes against the H100's 85,899,345,920. With <code>--machine fleet/b200.vx</code>
+it is accepted. Same text; only the flag differs. A table of model configurations against
+machine types is a loop over compiles, each well under a second, with no GPU rented.</p>
+
+<h2>Every move has a price</h2>
+
+<p>With <code>--diagnostics-json</code>, the compiler also reports every route it chose and what
+it costs, worked out from the declared link rates. For the 8-way plan:</p>
+
+<pre><code>{"path": ["HBM", "PEER_HBM"],   "bytes": 16106127360, "derived_cost": 35791394134,  "derived_unit": "ps"}
+{"path": ["HBM", "NIC_RAM"],    "bytes": 10737418240, "derived_cost": 170435210159, "derived_unit": "ps"}
+{"path": ["NIC_RAM", "Remote_HBM"], "bytes": 10737418240, "derived_cost": 214748364800, "derived_unit": "ps"}</code></pre>
+
+<p>In milliseconds: the 16.1 GB weight shard reaches the other GPUs over NVLink in 35.8 ms. The
+10.7 GB KV cache takes 170.4 ms to cross PCIe to the network card and 214.7 ms to cross
+InfiniBand, about 385 ms in all. A remote memory is two hops away, and the compiler found the
+route through the network card itself; nobody wrote it.</p>
+
+<p>Those numbers are what a scheduler needs to decide whether to move a request's cache to
+another machine or recompute it there, and here they exist before the request does. They are
+predictions from datasheet rates, not measurements, and the files say which rates have not been
+checked on real hardware yet.</p>
+
+<h2>The fleet as data</h2>
+
+<p>Above one node, a fleet is a graph, and Vx ships a graph library. The repository's test
+<code>cloud_fleet_routing.vx</code> builds a fleet of four datacenters, each with a spine switch
+and four racks of eight GPU nodes, 148 nodes in all, with each link weighted by the milliseconds
+it takes to move 1 GiB: 20 from a GPU to its rack's InfiniBand switch, 10 from rack to spine, 40
+between neighbouring datacenters and 80 on a slower diagonal. Then it asks a scheduler's
+questions:</p>
+
+<ul>
+<li>Moving a checkpoint shard from a GPU in one datacenter to a GPU two datacenters away costs
+140: the slow direct link ties with going round through the next datacenter. Dijkstra,
+Bellman-Ford and Floyd-Warshall agree.</li>
+<li>Broadcasting new weights to all 128 GPUs along the cheapest tree costs 2840.</li>
+<li>When one datacenter's spine fails, the fleet splits into 6 parts, 111 of the 148 nodes are
+still reachable, the failed datacenter's GPUs cannot be reached at all, and broadcasting to what
+is left costs 2120.</li>
+</ul>
+
+<p>On its own, that is an ordinary program, and it could be written in any language. What is
+not ordinary is that it is the same language, and the same compiler, as the serving plan above:
+the scheduler's view of the fleet and the per-GPU view of memory are one program, not a Python
+script feeding a C++ kernel through a YAML file.</p>
+
+<h2>What it does not do yet</h2>
+
+<p>The fleet models have gaps, and writing this post found them:</p>
+
+<ul>
+<li><strong>The other GPUs are one memory.</strong> <code>PEER_HBM</code> is the seven peers'
+memory added together, 560 GiB. A tensor sharded across peers is checked against that total, so
+a plan that no single peer could hold can still be accepted. The compiler has no per-device
+accounting yet.</li>
+<li><strong>Some routes are missing.</strong> Five of the nine GPU machine files, including
+<code>h200.vx</code>, <code>mi300x.vx</code> and all three node files, declare no route from a
+GPU's memory back to the host, so <code>admit.vx</code> fails on them for a reason that has
+nothing to do with capacity. The H200 and the MI300X, the two machines whose answer is most
+interesting, get no verdict at all. <code>node-8gpu.vx</code> also has no route back from another
+machine. Real hardware has those links; the files do not say so yet
+(<a href="https://github.com/vx-lang/Vx/issues/1403">#1403</a>).</li>
+<li><strong>A remote DMA has no semantics yet.</strong> A copy started from outside a device,
+such as a network card writing into a GPU's memory, is either refused or treated like a copy the
+device makes itself. <a href="https://github.com/vx-lang/Vx/issues/1391">#1391</a> proposes
+treating it like a C++ <code>friend</code>: the memory names who may write into it from outside.</li>
+</ul>
+
+<p>The checks are also static. A tensor whose size is only known at run time is not counted, and
+the costs are what the declared rates predict, not what a busy fabric delivers.</p>
+
+<h2>Try it</h2>
+
+<pre><code>vxc --host default --machine fleet/h100-sxm.vx fleet/admit.vx --action emit-mlir -o /dev/null
+vxc --host default --machine fleet/b200.vx fleet/admit.vx --action emit-mlir -o /dev/null
+vxc --host default --machine fleet/node-8gpu.vx \
+    tests/frontend/fail/fleet_serving_plan_on_an_8gpu_node.vx \
+    --action emit-mlir -o /dev/null --diagnostics-json
+vxc tests/backend/pass/cloud_fleet_routing.vx</code></pre>
+
+<p>The first refuses the 70B model on an H100; the second admits it on a B200; the third prints
+the verdict and every priced route for the serving plan; the last runs the fleet graph and prints
+<code>140 140 140 100 | 2840 1 148 | 6 111 1000000000 140 2120</code>.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+</body>
+</html>

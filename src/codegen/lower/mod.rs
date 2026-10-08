@@ -1179,6 +1179,29 @@ pub(crate) fn lower_print_call<'c>(
 
     let unranked_memref_ty = Type::parse(gen.context, &format!("memref<*x{}>", el_ty_str))
         .ok_or_else(|| LowerError::ParseType(format!("memref<*x{}>", el_ty_str)))?;
+    // Declared the first time a tensor of this element type is printed.
+    if gen.declared_tensor_prints.insert(print_fn_name) {
+        let func_ty = Type::parse(gen.context, &format!("({unranked_memref_ty}) -> ()"))
+            .ok_or_else(|| LowerError::ParseType(format!("({unranked_memref_ty}) -> ()")))?;
+        let decl = OperationBuilder::new("func.func", gen.loc())
+            .add_attributes(&[
+                (
+                    Identifier::new(gen.context, "sym_name"),
+                    StringAttribute::new(gen.context, print_fn_name).into(),
+                ),
+                (
+                    Identifier::new(gen.context, "function_type"),
+                    TypeAttribute::new(func_ty).into(),
+                ),
+                (
+                    Identifier::new(gen.context, "sym_visibility"),
+                    StringAttribute::new(gen.context, "private").into(),
+                ),
+            ])
+            .add_regions([melior::ir::Region::new()])
+            .build()?;
+        gen.module.body().append_operation(decl);
+    }
     let cast_op = block.append_operation(
         OperationBuilder::new("memref.cast", gen.loc())
             .add_operands(&[arg_val])
