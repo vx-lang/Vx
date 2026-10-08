@@ -40,6 +40,8 @@ pub struct MeliorGenerator<'c> {
     /// Locals bound to a tensor the compiler allocated, as against a view over memory it does
     /// not control. Only these can be filled in place by `c = a @ b` (Vx#391).
     pub(crate) owned_tensors: std::collections::HashSet<crate::symbol::Symbol>,
+    /// Locals whose element pointer the function takes: a view through it can share their memory.
+    pub(crate) pointer_taken: std::collections::HashSet<crate::symbol::Symbol>,
     /// Declared memory spaces, keyed by space, so a `transfer` can emit the sub-space descriptor
     /// (granule/capacity/scope/parent) as IR metadata for later passes (see subspace_scheduling.md).
     pub(crate) memories: HashMap<syntax::MemorySpace, syntax::MemoryDecl>,
@@ -739,6 +741,7 @@ impl<'c> MeliorGenerator<'c> {
             env: HashMap::new(),
             ast_env: HashMap::new(),
             owned_tensors: std::collections::HashSet::new(),
+            pointer_taken: std::collections::HashSet::new(),
             memories: HashMap::new(),
             transfer_impls: HashMap::new(),
             topologies: HashMap::new(),
@@ -1172,6 +1175,7 @@ impl<'c> MeliorGenerator<'c> {
         self.env.clear();
         self.allocs.clear();
         self.subspace_offsets.clear(); // per-function sub-space bump allocator (SS2)
+        self.pointer_taken = syntax::locals_with_pointer_taken(&func.body);
         let is_main = func.name.as_ref() == "main";
         let true_ret_ty = self.lower_type(&func.return_type)?;
         let ret_ty = if is_main { self.i32_ty } else { true_ret_ty };

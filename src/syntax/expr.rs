@@ -1019,6 +1019,165 @@ pub fn matmul_operand_root(e: &Expr) -> Option<&Symbol> {
     }
 }
 
+/// The locals in `stmts` whose element pointer is taken with `as_ptr()` or `as_mut_ptr()`.
+/// Through that pointer a view can share the tensor's memory under another name.
+pub fn locals_with_pointer_taken(stmts: &[Statement]) -> std::collections::HashSet<Symbol> {
+    let mut names = std::collections::HashSet::new();
+    visit_exprs(stmts, &mut |e| {
+        if let Expr::MethodCall(m) = e {
+            if matches!(m.method_name.as_ref(), "as_ptr" | "as_mut_ptr") {
+                if let Some(root) = matmul_operand_root(&m.base) {
+                    names.insert(root.clone());
+                }
+            }
+        }
+    });
+    names
+}
+
+/// Calls `f` on every expression in `stmts`, each one before the expressions inside it. The
+/// tokens of a macro that was not expanded are not expressions, and are not visited.
+pub fn visit_exprs(stmts: &[Statement], f: &mut dyn FnMut(&Expr)) {
+    for stmt in stmts {
+        match stmt {
+            Statement::LetDecl(l) => visit_expr(&l.expr, f),
+            Statement::Return(r) => {
+                if let Some(e) = &r.expr {
+                    visit_expr(e, f);
+                }
+            }
+            Statement::ExprStmt(e) => visit_expr(&e.expr, f),
+            Statement::ForLoop(l) => {
+                visit_expr(&l.iterable, f);
+                l.invariants.iter().for_each(|e| visit_expr(e, f));
+                visit_exprs(&l.body, f);
+            }
+            Statement::Assign(a) => {
+                visit_expr(&a.lhs, f);
+                visit_expr(&a.rhs, f);
+            }
+            Statement::CompoundAssign(a) => {
+                visit_expr(&a.lhs, f);
+                visit_expr(&a.rhs, f);
+            }
+            Statement::Assert(a) => visit_expr(&a.expr, f),
+            Statement::Loop(l) => {
+                l.invariants.iter().for_each(|e| visit_expr(e, f));
+                visit_exprs(&l.body, f);
+            }
+            Statement::Break(_)
+            | Statement::Continue(_)
+            | Statement::MacroCall(_)
+            | Statement::Drop(_)
+            | Statement::Error(_) => {}
+        }
+    }
+}
+
+/// Calls `f` on `e` and then on every expression inside it; see [`visit_exprs`].
+pub fn visit_expr(e: &Expr, f: &mut dyn FnMut(&Expr)) {
+    f(e);
+    let all = |es: &[Expr], f: &mut dyn FnMut(&Expr)| es.iter().for_each(|e| visit_expr(e, f));
+    match e {
+        Expr::Identifier(_)
+        | Expr::Number(_)
+        | Expr::StringLiteral(_)
+        | Expr::TransferPredicate(_)
+        | Expr::MemorySpace(_)
+        | Expr::Topology(_)
+        | Expr::MacroCall(_)
+        | Expr::SizeOf(_) => {}
+        Expr::EnumVariant(v) => {
+            if let Some(payload) = &v.payload {
+                all(payload, f);
+            }
+        }
+        Expr::Transfer(t) => visit_expr(&t.expr, f),
+        Expr::FunctionCall(c) => all(&c.args, f),
+        Expr::IndirectCall(c) => {
+            visit_expr(&c.callee, f);
+            all(&c.args, f);
+        }
+        Expr::Array(a) => all(&a.elements, f),
+        Expr::MemberAccess(m) => visit_expr(&m.base, f),
+        Expr::IndexAccess(i) => {
+            visit_expr(&i.base, f);
+            visit_expr(&i.index, f);
+        }
+        Expr::MethodCall(m) => {
+            visit_expr(&m.base, f);
+            all(&m.args, f);
+        }
+        Expr::BinaryOp(b) => {
+            visit_expr(&b.lhs, f);
+            visit_expr(&b.rhs, f);
+        }
+        Expr::RelationalOp(r) => {
+            visit_expr(&r.lhs, f);
+            visit_expr(&r.rhs, f);
+        }
+        Expr::LogicalOp(l) => {
+            visit_expr(&l.lhs, f);
+            visit_expr(&l.rhs, f);
+        }
+        Expr::UnaryOp(u) => visit_expr(&u.expr, f),
+        Expr::Borrow(b) => visit_expr(&b.expr, f),
+        Expr::Dereference(d) => visit_expr(&d.expr, f),
+        Expr::UnsafeBlock(b) => {
+            visit_exprs(&b.stmts, f);
+            if let Some(r) = &b.ret {
+                visit_expr(r, f);
+            }
+        }
+        Expr::ComptimeBlock(b) => {
+            visit_exprs(&b.stmts, f);
+            if let Some(r) = &b.ret {
+                visit_expr(r, f);
+            }
+        }
+        Expr::SpawnOn(b) => {
+            visit_exprs(&b.stmts, f);
+            if let Some(r) = &b.ret {
+                visit_expr(r, f);
+            }
+        }
+        Expr::StructInit(s) => s.fields.iter().for_each(|(_, e)| visit_expr(e, f)),
+        Expr::If(i) => {
+            visit_expr(&i.cond, f);
+            visit_exprs(&i.then_block, f);
+            if let Some(b) = &i.else_block {
+                visit_exprs(b, f);
+            }
+        }
+        Expr::Range(r) => {
+            visit_expr(&r.start, f);
+            visit_expr(&r.end, f);
+        }
+        Expr::Match(m) => {
+            visit_expr(&m.expr, f);
+            m.arms.iter().for_each(|arm| visit_exprs(&arm.body, f));
+        }
+        Expr::Grad(g) => all(&g.args, f),
+        Expr::Vjp(v) => {
+            all(&v.args, f);
+            visit_expr(&v.cotangent, f);
+        }
+        Expr::Jvp(j) => {
+            all(&j.args, f);
+            visit_expr(&j.tangent, f);
+        }
+        Expr::VecMacro(v) => all(&v.elements, f),
+        Expr::Closure(c) => visit_expr(&c.body, f),
+        Expr::AsCast(c) => visit_expr(&c.expr, f),
+        Expr::Print(p) => all(&p.args, f),
+        Expr::Println(p) => all(&p.args, f),
+        Expr::InlineMlir(m) => {
+            m.inputs.iter().for_each(|(_, e, _)| visit_expr(e, f));
+            all(&m.clobbers, f);
+        }
+    }
+}
+
 impl Expr {
     pub fn span(&self) -> Span {
         delegate_expr!(self, span)

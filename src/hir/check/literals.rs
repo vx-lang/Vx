@@ -510,19 +510,29 @@ impl<'a> TypeChecker<'a> {
                         self.check_expr_expecting(el, Some(Type::Scalar(elem_ty.clone())), true);
                     }
                 }
-                // A flat literal knows its length, so `[1, 2, 3]` is `Tensor<i32, [3]>`.
-                let flat = !elements.iter().any(|el| matches!(el, Expr::Array(_)));
-                let dims = if flat {
-                    vec![crate::syntax::Dim::Static(Expr::Number(
-                        crate::syntax::expr::NumberExpr::new(
-                            elements.len().to_string(),
-                            Some(ElementType::I32),
-                            span,
-                        ),
-                    ))]
+                // A literal knows its shape: `[1, 2, 3]` is `Tensor<i32, [3]>`, and
+                // `[[1, 2], [3, 4]]` is `Tensor<i32, [2, 2]>`.
+                let nested = elements.iter().any(|el| matches!(el, Expr::Array(_)));
+                let shape = if nested {
+                    ArrayExpr::new(elements.clone(), span).initializer_shape()
                 } else {
-                    vec![]
+                    Some(vec![elements.len()])
                 };
+                let Some(shape) = shape else {
+                    return Type::Unknown;
+                };
+                let dims = shape
+                    .iter()
+                    .map(|n| {
+                        crate::syntax::Dim::Static(Expr::Number(
+                            crate::syntax::expr::NumberExpr::new(
+                                n.to_string(),
+                                Some(ElementType::I32),
+                                span,
+                            ),
+                        ))
+                    })
+                    .collect();
                 Type::Tensor(elem_ty, dims, None)
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),

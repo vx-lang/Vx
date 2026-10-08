@@ -492,25 +492,23 @@ impl<'a> TypeChecker<'a> {
                 // Rank is static and no cast changes it. Per dimension, a `?` in the target
                 // accepts any extent and a static extent accepts only itself: `[512, 8]` widens
                 // to `[?, 8]`, and `[?, 8]` does not narrow to `[512, 8]` without saying so.
-                if !dims_target.is_empty() && !dims_source.is_empty() {
-                    if dims_target.len() != dims_source.len() {
+                if dims_target.len() != dims_source.len() {
+                    return false;
+                }
+                let empty_env = std::collections::HashMap::new();
+                for (dt, ds) in dims_target.iter().zip(dims_source.iter()) {
+                    let Some(et) = dt.as_static() else { continue };
+                    let Some(es) = ds.as_static() else {
                         return false;
-                    }
-                    let empty_env = std::collections::HashMap::new();
-                    for (dt, ds) in dims_target.iter().zip(dims_source.iter()) {
-                        let Some(et) = dt.as_static() else { continue };
-                        let Some(es) = ds.as_static() else {
-                            return false;
-                        };
-                        let vt = self.eval_expr(et, &empty_env);
-                        let vs = self.eval_expr(es, &empty_env);
-                        if vt.is_some() && vs.is_some() {
-                            if vt != vs {
-                                return false;
-                            }
-                        } else if et != es {
+                    };
+                    let vt = self.eval_expr(et, &empty_env);
+                    let vs = self.eval_expr(es, &empty_env);
+                    if vt.is_some() && vs.is_some() {
+                        if vt != vs {
                             return false;
                         }
+                    } else if et != es {
+                        return false;
                     }
                 }
                 return true;

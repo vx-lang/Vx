@@ -394,6 +394,8 @@ struct Lowerer<'r> {
     /// Locals bound to a tensor the compiler allocated, as against a view over memory it does
     /// not control. Only these can be filled in place by `c = a @ b` (Vx#391).
     owned_tensors: std::collections::HashSet<Symbol>,
+    /// Locals whose element pointer the function takes: a view through it can share their memory.
+    pointer_taken: std::collections::HashSet<Symbol>,
     /// Synthetic aggregate layouts for monomorphized data-carrying enum instances (`Option<i32>` ->
     /// `{ i32 tag, i32 payload }`), keyed by a per-instance GID: `(gid, field offsets, field MLIR
     /// types)`. Such a layout is instance-dependent (the by-value payload varies with `T`), so it
@@ -496,6 +498,7 @@ impl<'r> Lowerer<'r> {
             ast_types: HashMap::new(),
             block_frames: Vec::new(),
             owned_tensors: std::collections::HashSet::new(),
+            pointer_taken: std::collections::HashSet::new(),
             agg_layouts: Vec::new(),
             inline_blocks: Vec::new(),
             instance_layouts: HashMap::new(),
@@ -4395,6 +4398,7 @@ impl<'r> Lowerer<'r> {
     /// names the same buffer reads zeros. Each of the three has to be a local declared a tensor
     /// -- a name bound to a borrow denotes whatever it points at, and following that is the
     /// analysis this check exists to avoid.
+    /// A destination whose pointer is taken can be read under another name, through a view.
     fn matmul_assign_is_disjoint(&self, dst: &Expr, a: &Expr, b: &Expr) -> bool {
         let root = |e: &Expr| -> Option<crate::symbol::Symbol> {
             let root = crate::syntax::matmul_operand_root(e)?;
@@ -4408,7 +4412,7 @@ impl<'r> Lowerer<'r> {
         let (Some(d), Some(l), Some(r)) = (root(dst), root(a), root(b)) else {
             return false;
         };
-        self.owned_tensors.contains(&d) && d != l && d != r
+        self.owned_tensors.contains(&d) && !self.pointer_taken.contains(&d) && d != l && d != r
     }
 
     /// Lower `c = a @ b` into `c`'s own buffer.
@@ -5166,6 +5170,7 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Lowe
     // (`&x`) and those reassigned (`x = ..`), so `bind_local` can slot exactly the locals that need it.
     // Must run before params bind, since a param can be address-taken or reassigned too.
     let uses = analyze_local_uses(&func.body);
+    lw.pointer_taken = crate::syntax::locals_with_pointer_taken(&func.body);
     lw.materialized = uses.materialized;
     lw.mutated = uses.mutated;
     lw.place_bindings = uses.place_bindings;

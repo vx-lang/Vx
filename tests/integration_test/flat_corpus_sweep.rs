@@ -25,7 +25,10 @@ const KNOWN_DECLINES: &[&str] = &[
     // copies into the caller.
     "backend/pass/custom_topology_user_lowering.vx",
     "frontend/pass/assert_in_a_transfer_lowering_stays_in_it.vx",
+    // `c = a @ b` where `c` may be read by an operand (the same name, or a view through its
+    // pointer): the flat path only fills the destination in place, and declines the rest.
     "backend/pass/matmul_assign_alias.vx",
+    "backend/pass/matmul_into_a_tensor_read_through_a_view.vx",
     // A tuple holding an `Option<i32>`: the flat path has no layout for a generic struct holding
     // an enum ("a struct with no GID"), and it also declines a `match` used as a value.
     "backend/pass/tuple_match_with_enum_variants_as_a_value.vx",

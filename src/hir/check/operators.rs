@@ -463,21 +463,17 @@ impl<'a> TypeChecker<'a> {
                         }
                         let l_len = dims_l.len();
                         let r_len = dims_r.len();
-                        if (l_len != 2 && l_len != 0) || (r_len != 2 && r_len != 0) {
+                        if l_len != 2 || r_len != 2 {
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E7001,
                                 format!("Tensor multiplication (matmul) requires 2D tensors, got {}D and {}D", l_len, r_len),
                                 Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                             );
-                            return Type::Tensor(el_ty_l.clone(), vec![], top_l.clone());
+                            return Type::Unknown;
                         }
                         // `[m, k] @ [k, n]` is `[m, n]`, and the two `k`s must agree. Computing
-                        // the shape here is what lets a declaration be checked at all: a
-                        // dims-less result made `is_assignable` skip the comparison, so any
-                        // annotation was accepted (Vx#397). A dims-less operand is the dynamic
-                        // spelling and keeps the dims-less answer -- nothing to compute or
-                        // compare until it carries a shape.
-                        if l_len == 2 && r_len == 2 {
+                        // the shape here is what lets a declaration be checked at all.
+                        {
                             let empty_env = std::collections::HashMap::new();
                             let dim_of =
                                 |v: Option<crate::hir::env::Value>| v.and_then(|v| v.as_f64());
@@ -501,7 +497,7 @@ impl<'a> TypeChecker<'a> {
                                         ),
                                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                                     );
-                                    return Type::Tensor(el_ty_l.clone(), vec![], top_l.clone());
+                                    return Type::Unknown;
                                 }
                             }
                             return Type::Tensor(
@@ -510,7 +506,6 @@ impl<'a> TypeChecker<'a> {
                                 top_l.clone(),
                             );
                         }
-                        return Type::Tensor(el_ty_l.clone(), vec![], top_l.clone());
                     }
                 }
 

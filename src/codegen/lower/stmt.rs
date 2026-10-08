@@ -343,6 +343,7 @@ fn matmul_assign_shapes_agree(gen: &MeliorGenerator<'_>, dst: &Expr, a: &Expr, b
     // naming the same buffer would read zeros. Each of the three has to be a local declared a
     // tensor -- a name bound to a borrow denotes whatever it points at, and following that is
     // the analysis this check exists to avoid.
+    // A destination whose pointer is taken can be read under another name, through a view.
     let root = |e: &Expr| -> Option<crate::symbol::Symbol> {
         let r = syntax::matmul_operand_root(e)?;
         let named = Expr::Identifier(IdentifierExpr {
@@ -359,7 +360,7 @@ fn matmul_assign_shapes_agree(gen: &MeliorGenerator<'_>, dst: &Expr, a: &Expr, b
     let (Some(d), Some(l), Some(r)) = (root(dst), root(a), root(b)) else {
         return false;
     };
-    if !gen.owned_tensors.contains(&d) || d == l || d == r {
+    if !gen.owned_tensors.contains(&d) || gen.pointer_taken.contains(&d) || d == l || d == r {
         return false;
     }
 
