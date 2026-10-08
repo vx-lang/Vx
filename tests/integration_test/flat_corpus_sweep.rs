@@ -35,6 +35,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
     // ("an aggregate slot with no struct type").
     "backend/pass/tensor_views_end_at_their_last_use.vx",
+    // `let u = if c { ..; };`: the flat path declines a `let` of a `void` value, with or
+    // without `: void` ("a let with no type annotation"). The file is about the AST path.
+    "backend/pass/if_with_no_value_bound_by_let.vx",
     // `Duration`'s `+` and `-` go through `Option<Duration>`, and the flat path declines its
     // `unwrap` ("a non-scalar default return").
     "backend/pass/operators_on_user_types.vx",
