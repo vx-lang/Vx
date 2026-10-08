@@ -1,0 +1,38 @@
+//===- reshape_trim_keeps_the_first_elements.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// `reshape` with `PadMode::Trim` keeps the first elements of the tensor, in row order.
+// CHECK: 10 11 12 20 end
+
+enum PadMode {
+  Pad,
+  Trim
+}
+
+fn main() -> i32 {
+  let mut t = Tensor<i32, [2, 3]>::new();
+  t[0][0] = 10;
+  t[0][1] = 11;
+  t[0][2] = 12;
+  t[1][0] = 20;
+  t[1][1] = 21;
+  t[1][2] = 22;
+  let first = t.reshape([4], PadMode::Trim);
+  print(first[0]);
+  print(" ");
+  print(first[1]);
+  print(" ");
+  print(first[2]);
+  print(" ");
+  print(first[3]);
+  print(" ");
+  print("end");
+  return 0;
+}

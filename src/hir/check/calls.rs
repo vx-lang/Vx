@@ -3068,7 +3068,8 @@ impl<'a> TypeChecker<'a> {
             return Type::Unknown;
         }
 
-        let mut is_exact = true;
+        // `None` is an exact reshape; otherwise "Pad" or "Trim".
+        let mut mode_name = None;
         if let Some(mode) = args.get(1) {
             match mode {
                 Expr::EnumVariant(EnumVariantExpr {
@@ -3078,7 +3079,7 @@ impl<'a> TypeChecker<'a> {
                 }) if enum_name.as_ref() == "PadMode"
                     && matches!(variant_name.as_ref(), "Pad" | "Trim") =>
                 {
-                    is_exact = false
+                    mode_name = Some(variant_name.as_ref().to_string())
                 }
                 _ => error(
                     self,
@@ -3131,14 +3132,33 @@ impl<'a> TypeChecker<'a> {
             return Type::Unknown;
         };
 
-        if is_exact && (src_elements - target_elements).abs() > 1e-6 {
-            error(
-                self,
-                format!(
-                    "reshape cannot change the number of elements: {base_ty} has {src_elements}, \
-                     the new shape has {target_elements}"
-                ),
-            );
+        // A reshape is a view of the source's buffer, so it can keep fewer elements but never
+        // add any: padding needs a new buffer filled with zeros, which is not implemented.
+        let counts = format!("{base_ty} has {src_elements}, the new shape has {target_elements}");
+        let msg = if (src_elements - target_elements).abs() <= 1e-6 {
+            None
+        } else {
+            match (mode_name.as_deref(), target_elements > src_elements) {
+                (None, _) => Some(format!(
+                    "reshape cannot change the number of elements: {counts}"
+                )),
+                (Some("Trim"), true) => Some(format!(
+                    "PadMode::Trim keeps the first elements, so it cannot make a larger tensor: \
+                     {counts}"
+                )),
+                (Some("Pad"), false) => Some(format!(
+                    "PadMode::Pad cannot make a smaller tensor: {counts}; use PadMode::Trim to \
+                     keep the first elements"
+                )),
+                (Some("Pad"), true) => Some(format!(
+                    "PadMode::Pad to a larger tensor is not supported yet: {counts}"
+                )),
+                (Some("Trim"), false) => None,
+                (Some(other), _) => unreachable!("reshape mode {other} was refused above"),
+            }
+        };
+        if let Some(msg) = msg {
+            error(self, msg);
         }
         target
     }
