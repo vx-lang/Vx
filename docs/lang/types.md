@@ -115,6 +115,39 @@ fn matmul(A: Tensor<f32, [M, K]>, B: Tensor<f32, [K, N]>) -> Tensor<f32, [M, N]>
 
 If dimensions are statically evaluated to mismatch, the compiler will refuse to compile, effectively removing zero-day out-of-bounds runtime errors for standard tensor operations.
 
+### Changing a tensor's shape
+
+For `t : Tensor<f32, [2, 2]>` holding `a b / c d`:
+
+| Call | Result | A view of `t`? |
+| --- | --- | --- |
+| `t.reshape([4])` | `a b c d` | yes |
+| `t.reshape([3], PadMode::Trim)` | `a b c` | yes |
+| `t.reshape([3, 3], PadMode::Pad)` | `a b c / d 0 0 / 0 0 0` | no, a new tensor |
+| `t.pad([3, 3])` | `a b 0 / c d 0 / 0 0 0` | no, a new tensor |
+
+- `reshape` reads the elements in row order. Without a mode, the new shape has the same number
+  of elements.
+- `PadMode::Trim` keeps the first elements. `PadMode::Pad` keeps them all and adds zeros at the
+  end. `PadMode` is declared in `std::tensor`.
+- `pad` keeps each element at its index, `big[i][j] == t[i][j]`, and adds zeros at the end of
+  every axis. The new shape has the same number of axes, and no axis is smaller.
+- A view borrows `t`. A new tensor does not, so `t` can change or move while it lives.
+- All sizes must be known while compiling. `PadMode::Pad` and `pad` of a tensor placed in a
+  memory space are not supported yet.
+
+```rust
+import std::tensor;
+
+fn shapes(t : Tensor<f32, [2, 2]>) -> f32 {
+  let flat : Tensor<f32, [4]> = t.reshape([4]);
+  let first : Tensor<f32, [3]> = t.reshape([3], PadMode::Trim);
+  let longer : Tensor<f32, [3, 3]> = t.reshape([3, 3], PadMode::Pad);
+  let bigger : Tensor<f32, [3, 3]> = t.pad([3, 3]);
+  return flat[0] + first[0] + longer[2][2] + bigger[2][2];
+}
+```
+
 ## 3. Hardware-Aware Typestates
 
 Vx models the non-deterministic nature of distributed, heterogeneous execution using typestates. Computations and tasks are typed based on their topological binding and availability.

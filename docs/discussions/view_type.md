@@ -174,11 +174,10 @@ type. A handful of tests do this today, for example `second_row` in
 
 ### 9. `reshape`
 
-A reshape that keeps the element count, or reduces it, reads a window of the source's storage and
-is a view, whatever its mode: `t.reshape([..])` has type `&Tensor<T, [new dims]>` and borrows
-`t`. A reshape with `PadMode::Pad` to more elements needs storage the source does not have, so it
-is an owning tensor made by a copy. Today it is lowered as a view and reads past the source buffer
-(#1183). Since the element counts are known from the types, the checker can tell the two apart.
+A reshape without a mode, or with `PadMode::Trim`, reads a window of the source's storage and is a
+view: `t.reshape([..])` has type `&Tensor<T, [new dims]>` and borrows `t`. A reshape with
+`PadMode::Pad` is an owning tensor made by a copy, whatever its size, and so is `t.pad([..])`; both
+are built that way already (#1183).
 
 ### 10. What happens to the provenance test
 
