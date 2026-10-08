@@ -1034,6 +1034,64 @@ impl Type {
     }
 }
 
+/// The value of a const generic argument written with numbers and `+ - * /`, as text: `3.14`,
+/// `-2`, or `3` for `1 + 2`. `None` for anything else.
+fn const_value_text(e: &crate::syntax::Expr) -> Option<String> {
+    use crate::syntax::expr::{BinaryOp, UnaryOp};
+    use crate::syntax::Expr;
+    #[derive(Clone, Copy)]
+    enum Num {
+        Int(i128),
+        Float(f64),
+    }
+    fn eval(e: &Expr) -> Option<Num> {
+        match e {
+            Expr::Number(n) => {
+                let t = n.value.as_ref();
+                if t.contains(['.', 'e', 'E']) {
+                    t.parse::<f64>().ok().map(Num::Float)
+                } else {
+                    t.parse::<i128>().ok().map(Num::Int)
+                }
+            }
+            Expr::UnaryOp(u) if u.op == UnaryOp::Neg => match eval(&u.expr)? {
+                Num::Int(i) => i.checked_neg().map(Num::Int),
+                Num::Float(f) => Some(Num::Float(-f)),
+            },
+            Expr::BinaryOp(b) => match (eval(&b.lhs)?, eval(&b.rhs)?) {
+                (Num::Int(l), Num::Int(r)) => match b.op {
+                    BinaryOp::Add => l.checked_add(r),
+                    BinaryOp::Sub => l.checked_sub(r),
+                    BinaryOp::Mul => l.checked_mul(r),
+                    BinaryOp::Div if r != 0 => l.checked_div(r),
+                    _ => None,
+                }
+                .map(Num::Int),
+                (l, r) => {
+                    let float = |n| match n {
+                        Num::Int(i) => i as f64,
+                        Num::Float(f) => f,
+                    };
+                    let (l, r) = (float(l), float(r));
+                    match b.op {
+                        BinaryOp::Add => Some(l + r),
+                        BinaryOp::Sub => Some(l - r),
+                        BinaryOp::Mul => Some(l * r),
+                        BinaryOp::Div if r != 0.0 => Some(l / r),
+                        _ => None,
+                    }
+                    .map(Num::Float)
+                }
+            },
+            _ => None,
+        }
+    }
+    Some(match eval(e)? {
+        Num::Int(i) => i.to_string(),
+        Num::Float(f) => format!("{f:?}"),
+    })
+}
+
 impl ElementType {
     /// The width in bits of an integer element type. `None` for a float or anything that
     /// is not an integer.
@@ -1373,8 +1431,10 @@ impl Mangle for Type {
                 inner.mangle_to(w)
             }
             Type::Const(expr) => {
-                let debug_str = format!("{:?}", expr);
-                let sanitized: String = debug_str
+                // Named by its value, so `3.14` and `3.140`, or `3` and `1 + 2`, are one
+                // function. An argument that does not fold keeps its syntax as the name.
+                let text = const_value_text(expr).unwrap_or_else(|| format!("{:?}", expr));
+                let sanitized: String = text
                     .chars()
                     .map(|c| if c.is_alphanumeric() { c } else { '_' })
                     .collect();

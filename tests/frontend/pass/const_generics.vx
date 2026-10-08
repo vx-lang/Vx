@@ -3,8 +3,8 @@
 // the declaration with `N` bound, the construction stores into it, and the value is returned
 // whole. The const argument reaches the emitted symbol, which carries it by value.
 // CHECK-LABEL: func.func @test_const_generics()
-// CHECK: call @initialize$const${{.*}}value___10{{.*}}() : () -> !llvm.struct<(f32)>
-// CHECK-LABEL: func.func @initialize$const${{.*}}value___10{{.*}}() -> !llvm.struct<(f32)>
+// CHECK: call @initialize$const$10() : () -> !llvm.struct<(f32)>
+// CHECK-LABEL: func.func @initialize$const$10() -> !llvm.struct<(f32)>
 // CHECK: %[[S:.*]] = llvm.alloca %{{.*}} x !llvm.struct<(f32)> : (i32) -> !llvm.ptr
 // CHECK: llvm.getelementptr %[[S]][0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(f32)>
 // CHECK: arith.addi %c10_i32, %c1_i32 : i32

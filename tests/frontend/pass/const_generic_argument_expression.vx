@@ -36,11 +36,11 @@ fn main() -> i32 {
 }
 
 // `3 + 4` reached the instance named 7, and its body returns that number.
-// CHECK: func.func @pick$const${{.*}}value___7
+// CHECK: func.func @pick$const$7(
 // CHECK: arith.constant 7 : i32
 
 // One instance per step down to the base case, and none past it.
-// CHECK-DAG: func.func @countdown$const${{.*}}value___3
-// CHECK-DAG: func.func @countdown$const${{.*}}value___2
-// CHECK-DAG: func.func @countdown$const${{.*}}value___1
-// CHECK-DAG: func.func @countdown$const${{.*}}value___0
+// CHECK-DAG: func.func @countdown$const$3(
+// CHECK-DAG: func.func @countdown$const$2(
+// CHECK-DAG: func.func @countdown$const$1(
+// CHECK-DAG: func.func @countdown$const$0(

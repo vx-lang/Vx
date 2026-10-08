@@ -62,11 +62,11 @@ fn main() -> i32 {
 // CHECK:     return %c0_i32 : i32
 // CHECK:   }
 // CHECK:   func.func @scale_twice(%arg0: memref<1024x1xf32> {llvm.noalias}, %arg1: memref<1024x1xf32> {llvm.readonly}) {
-// CHECK:     call @scale$const$Number_NumberExpr___value___1024___ty__None__span__Span___line__0__column__0__length__0_____(%arg0, %arg1) : (memref<1024x1xf32>, memref<1024x1xf32>) -> ()
-// CHECK:     call @scale$const$Number_NumberExpr___value___1024___ty__None__span__Span___line__0__column__0__length__0_____(%arg0, %arg1) : (memref<1024x1xf32>, memref<1024x1xf32>) -> ()
+// CHECK:     call @scale$const$1024(%arg0, %arg1) : (memref<1024x1xf32>, memref<1024x1xf32>) -> ()
+// CHECK:     call @scale$const$1024(%arg0, %arg1) : (memref<1024x1xf32>, memref<1024x1xf32>) -> ()
 // CHECK:     return
 // CHECK:   }
-// CHECK:   func.func @scale$const$Number_NumberExpr___value___1024___ty__None__span__Span___line__0__column__0__length__0_____(%arg0: memref<1024x1xf32> {llvm.noalias}, %arg1: memref<1024x1xf32> {llvm.readonly}) {
+// CHECK:   func.func @scale$const$1024(%arg0: memref<1024x1xf32> {llvm.noalias}, %arg1: memref<1024x1xf32> {llvm.readonly}) {
 // CHECK:     vx.spawn topology(1036766083) {
 // CHECK:       %c0_i32 = arith.constant 0 : i32
 // CHECK:       %c1024_i32 = arith.constant 1024 : i32

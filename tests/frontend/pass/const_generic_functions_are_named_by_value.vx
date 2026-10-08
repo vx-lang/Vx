@@ -1,0 +1,39 @@
+//===- const_generic_functions_are_named_by_value.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s --check-prefix=THREE
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s --check-prefix=FOUR
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s --check-prefix=SCALE
+//
+// A function with a const parameter is generated once per value: `pick<3>` twice and
+// `pick<1 + 2>` are one function, `pick<4>` is another, and `scale<2.5>` and `scale<2.50>` are
+// one.
+
+// THREE-COUNT-1: func.func @pick$const$3(
+// THREE-NOT: func.func @pick$const$3(
+// FOUR: func.func @pick$const$4(
+// SCALE-COUNT-1: func.func @scale$const$2_5(
+// SCALE-NOT: func.func @scale$const$
+
+fn pick<const N : i32>() -> i32 {
+  return N;
+}
+
+fn scale<const S : f32>() -> f32 {
+  return S;
+}
+
+fn main() -> i32 {
+  let a = pick<3>();
+  let b = pick<3>();
+  let c = pick<1 + 2>();
+  let d = pick<4>();
+  let e = scale<2.5>() + scale<2.50>();
+  print(a + b + c + d);
+  print(e);
+  return 0;
+}
