@@ -1681,6 +1681,12 @@ impl<'r> Lowerer<'r> {
             Expr::MethodCall(mc) if matches!(mc.method_name.as_ref(), "reshape" | "transpose") => {
                 self.lower_tensor_reshape(mc)
             }
+            Expr::MethodCall(mc)
+                if mc.method_name.as_ref() == "pad"
+                    && matches!(mc.args.as_slice(), [Expr::Array(_)]) =>
+            {
+                self.lower_tensor_reshape(mc)
+            }
             Expr::MethodCall(mc) if mc.method_name.as_ref() == "clone" && mc.args.is_empty() => {
                 self.lower_tensor_clone(mc)
             }
@@ -3553,7 +3559,8 @@ impl<'r> Lowerer<'r> {
     /// `t.reshape([dims..])` and `t.transpose([perm..])` on a statically shaped tensor: a view
     /// with the new sizes over the same buffer, or the axes permuted, which the emitter copies
     /// into a fresh contiguous buffer, as the oracle does. The extents and the permutation are
-    /// literals. `PadMode::Trim` is a view like any reshape; `PadMode::Pad` makes a new tensor.
+    /// literals. `PadMode::Trim` is a view like any reshape; `PadMode::Pad` and `t.pad([dims..])`
+    /// make a new tensor.
     fn lower_tensor_reshape(&mut self, mc: &crate::syntax::MethodCallExpr) -> Lowered<Val> {
         let src = self.lower_expr(&mc.base)?;
         let LoweredTy::Tensor { elem, shape } = &src.ty else {
@@ -3588,6 +3595,22 @@ impl<'r> Lowerer<'r> {
             );
         }
         let (elem, shape) = (elem.clone(), shape.clone());
+        if mc.method_name.as_ref() == "pad" {
+            if vals.len() != shape.len() {
+                return Err(Decline::TypeNotModelled {
+                    what: "a pad that changes the number of axes",
+                });
+            }
+            let shape = vals.iter().map(|v| v.to_string()).collect();
+            let ty = LoweredTy::Tensor { elem, shape };
+            return Ok(self.emit_typed(
+                Opcode::TensorPad,
+                src.reg,
+                Register(0),
+                ty,
+                crate::bytecode::TENSOR_PAD_EACH_AXIS,
+            ));
+        }
         if mc.method_name.as_ref() != "transpose" {
             let shape = vals.iter().map(|v| v.to_string()).collect();
             let ty = LoweredTy::Tensor { elem, shape };

@@ -1,0 +1,67 @@
+//===- tensor_pad_errors.vx - Vx Compiler -------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `t.pad(shape)` keeps the number of axes and cannot make an axis smaller. The new shape is
+// an array of sizes known while compiling. `pad` of a tensor placed in a memory space is not
+// supported yet.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Error[E3047] at 23:14: pad keeps the number of axes: Tensor<f32, [2, 2]> has 2, the new shape has 1
+// CHECK: Error[E3047] at 29:14: pad cannot make an axis smaller: axis 1 of Tensor<f32, [2, 3]> has 3, the new shape has 2
+// CHECK: Error[E3047] at 35:14: pad takes the new shape as an array of sizes, such as [4, 4]
+// CHECK: Error[E3047] at 41:14: pad needs a new shape whose sizes are known while compiling
+// CHECK-NOT: Error
+// CHECK: Error[E3047] at 60:21: pad of a tensor placed in a memory space is not supported yet: Tensor<f32, [2, 2]
+// CHECK: 5 error(s) emitted
+
+fn fewer_axes() -> i32 {
+  let t = Tensor<f32, [2, 2]>::new();
+  let _x = t.pad([8]);
+  return 0;
+}
+
+fn smaller_axis() -> i32 {
+  let t = Tensor<f32, [2, 3]>::new();
+  let _x = t.pad([4, 2]);
+  return 0;
+}
+
+fn shape_not_an_array() -> i32 {
+  let t = Tensor<f32, [2, 2]>::new();
+  let _x = t.pad(4);
+  return 0;
+}
+
+fn size_known_only_at_run_time(n : i32) -> i32 {
+  let t = Tensor<f32, [2, 2]>::new();
+  let _x = t.pad([n, 4]);
+  return 0;
+}
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  capacity: 40 GiB, bandwidth: 1555 GB/s, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [ Memory::GPU_HBM ],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 10,
+  transfer Memory::GPU_HBM -> Memory::CPU_DRAM : 10
+}
+
+fn pad_on_the_gpu() -> i32 {
+  let on_gpu = transfer(Tensor<f32, [2, 2]>::fill(1.0), Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    let _x = on_gpu.pad([4, 4]);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -3165,6 +3165,88 @@ impl<'a> TypeChecker<'a> {
         target
     }
 
+    /// `t.pad([d0, d1, ..])`: a new tensor of that shape, with `t` at the start of every axis
+    /// and zeros after it. Every error here is E3047, like `reshape`'s.
+    fn check_pad(&mut self, base_ty: &Type, args: &[Expr], span: &crate::syntax::Span) -> Type {
+        let Type::Tensor(el_ty, dims, top) = base_ty else {
+            unreachable!("pad is only checked on a tensor");
+        };
+        let error = |s: &mut Self, msg: String| {
+            s.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3047,
+                msg,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        };
+        let [Expr::Array(ArrayExpr {
+            elements: new_dims, ..
+        })] = args
+        else {
+            error(
+                self,
+                "pad takes the new shape as an array of sizes, such as [4, 4]".to_string(),
+            );
+            return Type::Unknown;
+        };
+        let target = Type::Tensor(
+            el_ty.clone(),
+            new_dims.iter().cloned().map(Dim::Static).collect(),
+            top.clone(),
+        );
+        if top.is_some() {
+            error(
+                self,
+                format!("pad of a tensor placed in a memory space is not supported yet: {base_ty}"),
+            );
+            return target;
+        }
+        if new_dims.len() != dims.len() {
+            error(
+                self,
+                format!(
+                    "pad keeps the number of axes: {base_ty} has {}, the new shape has {}",
+                    dims.len(),
+                    new_dims.len()
+                ),
+            );
+            return target;
+        }
+        let empty_env = HashMap::new();
+        for (axis, (old, new)) in dims.iter().zip(new_dims).enumerate() {
+            let old = old
+                .as_static()
+                .and_then(|e| self.eval_expr(e, &empty_env))
+                .and_then(|v| v.as_f64());
+            let new = self.eval_expr(new, &empty_env).and_then(|v| v.as_f64());
+            let Some(old) = old else {
+                error(
+                    self,
+                    format!(
+                        "pad needs a tensor whose sizes are known while compiling, not {base_ty}"
+                    ),
+                );
+                return target;
+            };
+            let Some(new) = new else {
+                error(
+                    self,
+                    "pad needs a new shape whose sizes are known while compiling".to_string(),
+                );
+                return target;
+            };
+            if new < old {
+                error(
+                    self,
+                    format!(
+                        "pad cannot make an axis smaller: axis {axis} of {base_ty} has {old}, \
+                         the new shape has {new}"
+                    ),
+                );
+            }
+        }
+        target
+    }
+
     pub(crate) fn resolve_intrinsic_method(
         &mut self,
         base_ty: &Type,
@@ -3205,6 +3287,8 @@ impl<'a> TypeChecker<'a> {
                 ));
             } else if _method == "reshape" {
                 return Some((self.check_reshape(base_ty, args, span), false));
+            } else if _method == "pad" {
+                return Some((self.check_pad(base_ty, args, span), false));
             } else if _method == "iter" {
                 if !args.is_empty() {
                     self.errors.push("iter requires 0 arguments".to_string());

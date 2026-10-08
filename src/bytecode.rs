@@ -280,9 +280,13 @@ pub enum Opcode {
     /// is true once the tensor was moved, and then nothing is freed.
     TensorDrop = 62,
     /// `t.reshape(shape, PadMode::Pad)`: a new tensor of the result type, holding `operand1`'s
-    /// elements in row order and then zeros.
+    /// elements in row order and then zeros. With `TENSOR_PAD_EACH_AXIS` in `imm` it is
+    /// `t.pad(shape)` instead: each element keeps its index, and the zeros follow on every axis.
     TensorPad = 63,
 }
+
+/// `Opcode::TensorPad`'s `imm`: pad each axis (`t.pad(shape)`), not the flat row order.
+pub const TENSOR_PAD_EACH_AXIS: u64 = 1;
 
 /// `Opcode::TensorDrop`'s `imm`: `operand2` is the moved flag.
 pub const TENSOR_DROP_FLAG: u64 = 1;

@@ -2867,7 +2867,10 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return Ok((alloc_val, tensor_ty, block));
         }
 
-        if name.as_ref() == "reshape" || **name == *"transpose" {
+        if name.as_ref() == "reshape"
+            || **name == *"transpose"
+            || (**name == *"pad" && args.len() == 2 && matches!(args[1], Expr::Array(_)))
+        {
             // `memref.cast` cannot reshape or permute data (it only changes
             // static/dynamic/ranked info), so model these as buffer views:
             //   - reshape: reinterpret the contiguous source as the target shape
@@ -2997,13 +3000,17 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 return Ok((dst_val, dst_ty, block));
             }
 
+            if **name == *"pad" {
+                return lower_padded_copy(gen, block, arg_val, &expr_ty_str, &idx_vals, true);
+            }
+
             // reshape
             let tgt_dims = idx_vals;
             let tgt_strides = contiguous(&tgt_dims);
             let tgt_ty =
                 Type::parse(gen.context, &format!("memref<{}>", dims_str(&tgt_dims))).unwrap();
             if args.get(2).is_some_and(crate::syntax::is_pad_mode_pad) {
-                return lower_padded_copy(gen, block, arg_val, &expr_ty_str, &tgt_dims);
+                return lower_padded_copy(gen, block, arg_val, &expr_ty_str, &tgt_dims, false);
             }
             let out_val = reinterpret(arg_val, &tgt_dims, &tgt_strides, tgt_ty, block);
             return Ok((out_val, tgt_ty, block));
@@ -4742,8 +4749,12 @@ fn reinterpret_with_sizes<'c>(
     Ok((block.append_operation(op).result(0)?.into(), ty))
 }
 
-/// `t.reshape(shape, PadMode::Pad)`: a new buffer of `tgt_dims` filled with zeros, with the
-/// source copied into its first elements. Both are seen as flat, so the copy keeps row order.
+/// A new buffer of `tgt_dims` filled with zeros, with the source copied into it.
+/// - `t.reshape(shape, PadMode::Pad)`: into its first elements, both seen as flat, so the copy
+///   keeps row order.
+/// - `t.pad(shape)` (`each_axis`): into a view of the new buffer with the source's sizes and
+///   the new buffer's strides, so element [i][j] stays at [i][j].
+///
 /// A source size known only at run time is read with `memref.dim`.
 fn lower_padded_copy<'c>(
     gen: &mut MeliorGenerator<'c>,
@@ -4751,6 +4762,7 @@ fn lower_padded_copy<'c>(
     src: Value<'c, 'c>,
     src_str: &str,
     tgt_dims: &[i64],
+    each_axis: bool,
 ) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
     let (src_sizes, elem) = tensor_sizes(gen, &block, src, src_str)?;
     let dims: Vec<String> = tgt_dims.iter().map(|d| d.to_string()).collect();
@@ -4764,6 +4776,24 @@ fn lower_padded_copy<'c>(
         .add_results(&[tgt_ty])
         .build()?;
     let dst: Value = block.append_operation(alloc).result(0)?.into();
+    if each_axis {
+        assert_eq!(
+            src_sizes.len(),
+            tgt_dims.len(),
+            "the checker keeps pad's number of axes"
+        );
+        let mut strides = vec![1i64; tgt_dims.len()];
+        for i in (0..tgt_dims.len().saturating_sub(1)).rev() {
+            strides[i] = strides[i + 1] * tgt_dims[i + 1];
+        }
+        let (corner, _) = reinterpret_with_sizes(gen, &block, dst, &src_sizes, &strides, &elem)?;
+        emit_zero_fill(gen, &block, dst, &elem)?;
+        let copy = OperationBuilder::new("memref.copy", gen.loc())
+            .add_operands(&[src, corner])
+            .build()?;
+        block.append_operation(copy);
+        return Ok((dst, tgt_ty, block));
+    }
     let n = element_count(gen, &block, &src_sizes)?;
     if let Size::Known(n) = n {
         assert!(

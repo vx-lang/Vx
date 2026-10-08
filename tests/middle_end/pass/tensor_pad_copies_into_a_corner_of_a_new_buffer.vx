@@ -1,0 +1,30 @@
+//===- tensor_pad_copies_into_a_corner_of_a_new_buffer.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// `t.pad([3, 4])` allocates the new shape and fills it with zeros. A view of it with `t`'s
+// sizes and the new buffer's strides is its top-left corner, and `t` is copied there. The
+// result does not borrow `t`, so `t` is dropped right after the copy.
+
+// CHECK-LABEL: func.func @corner
+// CHECK-SAME: (%[[T:.*]]: memref<2x3xf32> {vx.owned})
+// CHECK: %[[BIG:.*]] = memref.alloc() : memref<3x4xf32>
+// CHECK: %[[CORNER:.*]] = memref.reinterpret_cast %[[BIG]] to offset: [0], sizes: [2, 3], strides: [4, 1] : memref<3x4xf32> to memref<2x3xf32, strided<[4, 1]>>
+// CHECK: linalg.fill ins(%{{.*}} : f32) outs(%[[BIG]] : memref<3x4xf32>)
+// CHECK-NEXT: memref.copy %[[T]], %[[CORNER]] : memref<2x3xf32> to memref<2x3xf32, strided<[4, 1]>>
+// CHECK-NEXT: vx.drop %[[T]] : memref<2x3xf32>
+// CHECK: vx.drop %[[BIG]] : memref<3x4xf32>
+// CHECK-NEXT: return
+fn corner(t : Tensor<f32, [2, 3]>) -> f32 {
+  let big = t.pad([3, 4]);
+  return big[2][3];
+}
+
+fn main() -> i32 {
+  return 0;
+}
