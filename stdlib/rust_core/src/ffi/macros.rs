@@ -352,7 +352,9 @@ macro_rules! instantiate_file_ffi {
         fn vx_file_error_kind(kind: std::io::ErrorKind) -> i32 {
             match kind {
                 std::io::ErrorKind::NotFound => VX_FILE_ERROR_NOT_FOUND,
-                std::io::ErrorKind::PermissionDenied => VX_FILE_ERROR_PERMISSION_DENIED,
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
+                    VX_FILE_ERROR_PERMISSION_DENIED
+                }
                 std::io::ErrorKind::AlreadyExists => VX_FILE_ERROR_ALREADY_EXISTS,
                 std::io::ErrorKind::InvalidInput => VX_FILE_ERROR_INVALID_INPUT,
                 std::io::ErrorKind::Interrupted => VX_FILE_ERROR_INTERRUPTED,
@@ -520,10 +522,10 @@ macro_rules! instantiate_file_ffi {
         /// A null `ptr` or `buffer` is accepted and reports invalid arguments. A
         /// non-null `ptr` must point to a live bridge-owned `std::fs::File`, with no
         /// concurrent access or drop. When `ptr` and `buffer` are non-null and
-        /// `0 < len <= isize::MAX`, `buffer` must point to `len` initialized,
-        /// writable bytes. Every non-null output pointer must be aligned and
-        /// writable, even if another argument is invalid. The file, buffer,
-        /// and outputs must not overlap for the duration of the call.
+        /// `0 < len <= isize::MAX`, `buffer` must point to `len` writable
+        /// bytes. They need not be initialized. Every non-null output pointer
+        /// must be aligned and writable, even if another argument is invalid.
+        /// The file, buffer, and outputs must not overlap during the call.
         #[no_mangle]
         pub unsafe extern "C" fn vx_file_try_read(
             ptr: *mut std::ffi::c_void,
@@ -542,6 +544,9 @@ macro_rules! instantiate_file_ffi {
                     native_code,
                     has_native_code,
                     |file| {
+                        // Read::read requires an initialized slice, even when the
+                        // caller provides writable memory without initial values.
+                        std::ptr::write_bytes(buffer, 0, len as usize);
                         let bytes = std::slice::from_raw_parts_mut(buffer, len as usize);
                         file.read(bytes)
                     },

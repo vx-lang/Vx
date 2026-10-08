@@ -27,6 +27,7 @@ fn file_error_classifier_maps_every_supported_kind_and_unknown_codes() -> Result
     let cases = [
         (ErrorKind::NotFound, 1),
         (ErrorKind::PermissionDenied, 2),
+        (ErrorKind::ReadOnlyFilesystem, 2),
         (ErrorKind::AlreadyExists, 3),
         (ErrorKind::InvalidInput, 4),
         (ErrorKind::Interrupted, 5),
@@ -356,6 +357,36 @@ fn fallible_file_transfer_reports_successful_byte_counts() -> Result<(), String>
         return Err(format!("read returned position {position}, status {read}, count {count}, bytes {byte:?}, native code {has_code}"));
     }
     Ok(())
+}
+
+#[test]
+fn fallible_file_read_accepts_uninitialized_writable_memory() -> Result<(), String> {
+    let mut file = tempfile::tempfile().map_err(|error| format!("create file: {error}"))?;
+    file.write_all(b"R")
+        .map_err(|error| format!("seed file: {error}"))?;
+    file.rewind()
+        .map_err(|error| format!("rewind file: {error}"))?;
+    let file = into_ffi_file(file);
+    let mut byte = std::mem::MaybeUninit::<u8>::uninit();
+    let (mut count, mut code, mut has_code) = (99, 99, true);
+    let status = unsafe {
+        vx_file_try_read(
+            file,
+            byte.as_mut_ptr(),
+            1,
+            &mut count,
+            &mut code,
+            &mut has_code,
+        )
+    };
+    vx_file_drop(file);
+    if (status, count, code, has_code) != (0, 1, 0, false) {
+        return Err(format!(
+            "read into writable memory returned {status}/{count}/{code}/{has_code}"
+        ));
+    }
+    let byte = unsafe { byte.assume_init() };
+    expect_equal(byte, b'R', "byte read into writable memory")
 }
 
 #[test]

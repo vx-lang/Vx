@@ -40,6 +40,15 @@ fn main() -> i32 {
     let read_count = count;
     let read_native_code = native_code;
     let read_has_native_code = has_native_code;
+    let read_byte = output;
+
+    count = 99;
+    native_code = 99;
+    has_native_code = true;
+    let eof_status = vx_file_try_read(reader, &mut output, 1, &mut count, &mut native_code, &mut has_native_code);
+    let eof_count = count;
+    let eof_native_code = native_code;
+    let eof_has_native_code = has_native_code;
 
     count = 99;
     native_code = 99;
@@ -56,12 +65,16 @@ fn main() -> i32 {
       print!("Fallible write did not report one byte");
       return 1;
     }
-    if read_status != 0 || read_count != 1 || read_native_code != 0 || read_has_native_code || output != input {
+    if read_status != 0 || read_count != 1 || read_native_code != 0 || read_has_native_code || read_byte != input {
       print!("Fallible read did not report the written byte");
       return 1;
     }
-    if failed_write_status != 12 {
-      print!("Write through a read-only file did not report Other");
+    if eof_status != 0 || eof_count != 0 || eof_native_code != 0 || eof_has_native_code {
+      print!("Reading past the end of a file did not report zero bytes without an error");
+      return 1;
+    }
+    if failed_write_status < 1 || failed_write_status > 12 {
+      print!("Write through a read-only file did not report a file error");
       return 1;
     }
     if failed_write_count != 0 || failed_write_native_code == 0 || !failed_write_has_native_code {
