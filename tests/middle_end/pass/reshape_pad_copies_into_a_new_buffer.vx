@@ -1,0 +1,34 @@
+//===- reshape_pad_copies_into_a_new_buffer.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// `reshape` with `PadMode::Pad` allocates the new shape, fills it with zeros and copies the
+// source into its first elements, both seen as flat. The result does not borrow `t`, so `t` is
+// dropped right after the copy, and the new buffer is dropped after its last use.
+
+import std::tensor;
+
+// CHECK-LABEL: func.func @first_padded
+// CHECK-SAME: (%[[T:.*]]: memref<2x2xf32> {vx.owned})
+// CHECK: %[[BIG:.*]] = memref.alloc() : memref<3x3xf32>
+// CHECK: %[[SRC:.*]] = memref.reinterpret_cast %[[T]] to offset: [0], sizes: [4], strides: [1] : memref<2x2xf32> to memref<4xf32>
+// CHECK: %[[PREFIX:.*]] = memref.reinterpret_cast %[[BIG]] to offset: [0], sizes: [4], strides: [1] : memref<3x3xf32> to memref<4xf32>
+// CHECK: linalg.fill ins(%{{.*}} : f32) outs(%[[BIG]] : memref<3x3xf32>)
+// CHECK-NEXT: memref.copy %[[SRC]], %[[PREFIX]] : memref<4xf32> to memref<4xf32>
+// CHECK-NEXT: vx.drop %[[T]] : memref<2x2xf32>
+// CHECK: memref.load %[[BIG]]
+// CHECK-NEXT: vx.drop %[[BIG]] : memref<3x3xf32>
+// CHECK-NEXT: return
+fn first_padded(t : Tensor<f32, [2, 2]>) -> f32 {
+  let big = t.reshape([3, 3], PadMode::Pad);
+  return big[0][0];
+}
+
+fn main() -> i32 {
+  return 0;
+}

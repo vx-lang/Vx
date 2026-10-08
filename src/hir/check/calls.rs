@@ -3132,10 +3132,15 @@ impl<'a> TypeChecker<'a> {
             return Type::Unknown;
         };
 
-        // A reshape is a view of the source's buffer, so it can keep fewer elements but never
-        // add any: padding needs a new buffer filled with zeros, which is not implemented.
+        // Without `Pad` a reshape is a view of the source's buffer, so it can keep fewer elements
+        // but never add any. `Pad` copies into a new buffer, which can be larger.
         let counts = format!("{base_ty} has {src_elements}, the new shape has {target_elements}");
-        let msg = if (src_elements - target_elements).abs() <= 1e-6 {
+        let msg = if mode_name.as_deref() == Some("Pad") && top.is_some() {
+            Some(format!(
+                "PadMode::Pad of a tensor placed in a memory space is not supported yet: \
+                 {base_ty}"
+            ))
+        } else if (src_elements - target_elements).abs() <= 1e-6 {
             None
         } else {
             match (mode_name.as_deref(), target_elements > src_elements) {
@@ -3150,10 +3155,7 @@ impl<'a> TypeChecker<'a> {
                     "PadMode::Pad cannot make a smaller tensor: {counts}; use PadMode::Trim to \
                      keep the first elements"
                 )),
-                (Some("Pad"), true) => Some(format!(
-                    "PadMode::Pad to a larger tensor is not supported yet: {counts}"
-                )),
-                (Some("Trim"), false) => None,
+                (Some("Pad"), true) | (Some("Trim"), false) => None,
                 (Some(other), _) => unreachable!("reshape mode {other} was refused above"),
             }
         };

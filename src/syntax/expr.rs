@@ -318,6 +318,17 @@ impl MethodCallExpr {
             span,
         }
     }
+
+    /// `t.reshape(shape, PadMode::Pad)`: a reshape that makes a new tensor rather than a view.
+    pub fn is_padding_reshape(&self) -> bool {
+        self.method_name.as_ref() == "reshape" && self.args.get(1).is_some_and(is_pad_mode_pad)
+    }
+}
+
+/// Whether `e` is `PadMode::Pad`.
+pub fn is_pad_mode_pad(e: &Expr) -> bool {
+    matches!(e, Expr::EnumVariant(v)
+        if v.enum_name.as_ref() == "PadMode" && v.variant_name.as_ref() == "Pad")
 }
 
 pub trait BinaryOperator {

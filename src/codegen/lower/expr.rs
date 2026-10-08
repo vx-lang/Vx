@@ -3002,6 +3002,33 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let tgt_strides = contiguous(&tgt_dims);
             let tgt_ty =
                 Type::parse(gen.context, &format!("memref<{}>", dims_str(&tgt_dims))).unwrap();
+            if args.get(2).is_some_and(crate::syntax::is_pad_mode_pad) {
+                // A new buffer filled with zeros, with the source copied into its first
+                // elements. Both are seen as flat, so the copy keeps row order.
+                let n: i64 = src_dims.iter().product();
+                assert!(
+                    n <= tgt_dims.iter().product(),
+                    "the checker refuses PadMode::Pad to a smaller shape"
+                );
+                let alloc = OperationBuilder::new("memref.alloc", gen.loc())
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "operandSegmentSizes"),
+                        DenseI32ArrayAttribute::new(gen.context, &[0, 0]).into(),
+                    )])
+                    .add_results(&[tgt_ty])
+                    .build()?;
+                let dst_val = block.append_operation(alloc).result(0)?.into();
+                let flat_ty =
+                    Type::parse(gen.context, &format!("memref<{}>", dims_str(&[n]))).unwrap();
+                let src_flat = reinterpret(arg_val, &[n], &[1], flat_ty, block);
+                let dst_prefix = reinterpret(dst_val, &[n], &[1], flat_ty, block);
+                emit_zero_fill(gen, &block, dst_val, el_ty_str)?;
+                let copy = OperationBuilder::new("memref.copy", gen.loc())
+                    .add_operands(&[src_flat, dst_prefix])
+                    .build()?;
+                block.append_operation(copy);
+                return Ok((dst_val, tgt_ty, block));
+            }
             let out_val = reinterpret(arg_val, &tgt_dims, &tgt_strides, tgt_ty, block);
             return Ok((out_val, tgt_ty, block));
         }

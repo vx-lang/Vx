@@ -3553,8 +3553,14 @@ impl<'r> Lowerer<'r> {
     /// `t.reshape([dims..])` and `t.transpose([perm..])` on a statically shaped tensor: a view
     /// with the new sizes over the same buffer, or the axes permuted, which the emitter copies
     /// into a fresh contiguous buffer, as the oracle does. The extents and the permutation are
-    /// literals; a `PadMode` argument is accepted and unused, as the oracle treats it.
+    /// literals. `PadMode::Trim` is a view like any reshape; `PadMode::Pad` makes a new tensor,
+    /// which this path does not lower yet.
     fn lower_tensor_reshape(&mut self, mc: &crate::syntax::MethodCallExpr) -> Lowered<Val> {
+        if mc.is_padding_reshape() {
+            return Err(Decline::TypeNotModelled {
+                what: "a reshape with PadMode::Pad",
+            });
+        }
         let src = self.lower_expr(&mc.base)?;
         let LoweredTy::Tensor { elem, shape } = &src.ty else {
             return Err(Decline::TypeNotModelled {

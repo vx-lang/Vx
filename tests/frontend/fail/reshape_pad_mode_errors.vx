@@ -1,0 +1,55 @@
+//===- reshape_pad_mode_errors.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `PadMode::Trim` keeps the first elements, so it cannot add any, and `PadMode::Pad` copies
+// all of them, so it cannot drop any. `Pad` of a tensor placed in a memory space is not
+// supported yet.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Error[E3047] at 23:14: PadMode::Trim keeps the first elements, so it cannot make a larger tensor: Tensor<f32, [2, 2]> has 4, the new shape has 8
+// CHECK: Error[E3047] at 29:14: PadMode::Pad cannot make a smaller tensor: Tensor<f32, [4, 4]> has 16, the new shape has 8; use PadMode::Trim to keep the first elements
+// CHECK-NOT: Error
+// CHECK: Error[E3047] at 48:21: PadMode::Pad of a tensor placed in a memory space is not supported yet: Tensor<f32, [2, 2]
+// CHECK: 3 error(s) emitted
+
+import std::tensor;
+
+fn trim_to_more() -> i32 {
+  let t = Tensor<f32, [2, 2]>::new();
+  let _x = t.reshape([8], PadMode::Trim);
+  return 0;
+}
+
+fn pad_to_fewer() -> i32 {
+  let t = Tensor<f32, [4, 4]>::new();
+  let _x = t.reshape([8], PadMode::Pad);
+  return 0;
+}
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  capacity: 40 GiB, bandwidth: 1555 GB/s, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [ Memory::GPU_HBM ],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 10,
+  transfer Memory::GPU_HBM -> Memory::CPU_DRAM : 10
+}
+
+fn pad_on_the_gpu() -> i32 {
+  let on_gpu = transfer(Tensor<f32, [2, 2]>::fill(1.0), Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    let _x = on_gpu.reshape([8], PadMode::Pad);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

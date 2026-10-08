@@ -29,6 +29,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // pointer): the flat path only fills the destination in place, and declines the rest.
     "backend/pass/matmul_assign_alias.vx",
     "backend/pass/matmul_into_a_tensor_read_through_a_view.vx",
+    // `reshape` with `PadMode::Pad` makes a new tensor, which the flat path does not lower yet.
+    "backend/pass/reshape_pad_makes_a_new_tensor.vx",
+    "middle_end/pass/reshape_pad_copies_into_a_new_buffer.vx",
     // A tuple holding an `Option<i32>`: the flat path has no layout for a generic struct holding
     // an enum ("a struct with no GID"), and it also declines a `match` used as a value.
     "backend/pass/tuple_match_with_enum_variants_as_a_value.vx",

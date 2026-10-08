@@ -1,0 +1,84 @@
+//===- reshape_pad_makes_a_new_tensor.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// `reshape` with `PadMode::Pad` makes a new tensor: the source's elements in row order, then
+// zeros. It does not borrow the source, which can then change or move.
+
+import std::tensor;
+
+fn two_by_two() -> Tensor<i32, [2, 2]> {
+  let mut t = Tensor<i32, [2, 2]>::new();
+  t[0][0] = 1;
+  t[0][1] = 2;
+  t[1][0] = 3;
+  t[1][1] = 4;
+  return t;
+}
+
+fn show(big : &Tensor<i32, [3, 3]>) -> i32 {
+  for i in 0..3 {
+    for j in 0..3 {
+      print(big[i][j]);
+    }
+    print(" ");
+  }
+  print("
+");
+  return 0;
+}
+
+fn take(t : Tensor<i32, [2, 2]>) -> i32 {
+  return t[0][0];
+}
+
+fn padded() -> Tensor<i32, [3, 3]> {
+  let t = two_by_two();
+  return t.reshape([3, 3], PadMode::Pad);
+}
+
+fn main() -> i32 {
+  // CHECK: 123 400 000
+  let mut t = two_by_two();
+  let big = t.reshape([3, 3], PadMode::Pad);
+  show(&big);
+
+  // CHECK-NEXT: 1234 0 0 0 0 0
+  let flat = t.reshape([9], PadMode::Pad);
+  for i in 0..9 {
+    print(flat[i]);
+    if i >= 3 {
+      print(" ");
+    }
+  }
+  print("
+");
+
+  // The source changes and then moves; the padded copy keeps its values.
+  // CHECK-NEXT: 5 123 400 000
+  t[0][0] = 5;
+  print(take(t));
+  print(" ");
+  show(&big);
+
+  // CHECK-NEXT: 123 400 000
+  let r = padded();
+  show(&r);
+
+  // A padded tensor made in each iteration of a loop.
+  // CHECK-NEXT: 20
+  let mut sum = 0;
+  for k in 0..5 {
+    let s = two_by_two();
+    let p = s.reshape([8], PadMode::Pad);
+    sum = sum + p[3] + p[7];
+  }
+  print(sum);
+  return 0;
+}
