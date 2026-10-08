@@ -207,17 +207,20 @@ script feeding a C++ kernel through a YAML file.</p>
 
 <h2>What it does not do yet</h2>
 
-<p>The fleet models have gaps, and writing this post found three of them:</p>
+<p>The fleet models have gaps, and writing this post found them:</p>
 
 <ul>
 <li><strong>The other GPUs are one memory.</strong> <code>PEER_HBM</code> is the seven peers'
 memory added together, 560 GiB. A tensor sharded across peers is checked against that total, so
 a plan that no single peer could hold can still be accepted. The compiler has no per-device
 accounting yet.</li>
-<li><strong>Some routes are missing.</strong> <code>node-8gpu.vx</code> declares no route from a
-GPU's memory back to the host, or back from another machine, and <code>h200.vx</code> declares no
-route from GPU memory to the host, so <code>admit.vx</code> fails on an H200 for a reason that has
-nothing to do with capacity. Real hardware has those links; the files do not say so yet.</li>
+<li><strong>Some routes are missing.</strong> Five of the nine GPU machine files, including
+<code>h200.vx</code>, <code>mi300x.vx</code> and all three node files, declare no route from a
+GPU's memory back to the host, so <code>admit.vx</code> fails on them for a reason that has
+nothing to do with capacity. The H200 and the MI300X, the two machines whose answer is most
+interesting, get no verdict at all. <code>node-8gpu.vx</code> also has no route back from another
+machine. Real hardware has those links; the files do not say so yet
+(<a href="https://github.com/vx-lang/Vx/issues/1403">#1403</a>).</li>
 <li><strong>A remote DMA has no semantics yet.</strong> A copy started from outside a device,
 such as a network card writing into a GPU's memory, is either refused or treated like a copy the
 device makes itself. <a href="https://github.com/vx-lang/Vx/issues/1391">#1391</a> proposes
