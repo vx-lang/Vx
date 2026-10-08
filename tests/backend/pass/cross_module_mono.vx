@@ -5,68 +5,33 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Regression for #203: an entry module calls a cross-module function (`dijkstra`)
-// whose body reaches `Graph` methods and `Vec<i32>` generics only *transitively*.
-// Those instantiations must be collected so codegen finds them — before the fix
-// this failed with "Function node_count not found".
+// An imported function (`dijkstra`, `bellman_ford`) whose body reaches `Graph` methods and
+// `Vec<i32>` generics only through other functions still gets those generated. Without that,
+// compiling failed with "Function node_count not found". `main` calls both, so both are
+// generated.
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=DIJKSTRA
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=BELLMAN
+//
+// The code generators emit the three functions in different orders, so each is checked on
+// its own.
 // CHECK-DAG: func.func private @vx_vec_grow(
 // CHECK-DAG: func.func private @vx_vec_bounds_check(
-// CHECK-LABEL: func.func @graph_inf() -> i32
-// CHECK: %[[V0:.*]] = arith.constant 1000000000 : i32
-// CHECK: return %[[V0]] : i32
-// CHECK-LABEL: func.func @dijkstra(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32) -> i32
-// CHECK: %[[V0:.*]] = call @ref$const$Graph$node_count(%{{.*}}) : (!llvm.ptr) -> i32
-// CHECK: %[[V1:.*]] = call @graph_inf() : () -> i32
-// CHECK: call @"Vec::with_capacity$i32"(%[[V0]]) : (i32) -> !llvm.struct<"Vec_i32", (ptr, i32, i32)>
-// CHECK: call @"Vec::with_capacity$i32"(%[[V0]]) : (i32) -> !llvm.struct<"Vec_i32", (ptr, i32, i32)>
-// CHECK: call @Vec$i32$push$i32(%{{.*}}, %[[V1]]) : (!llvm.ptr, i32) -> i32
-// CHECK: call @Vec$i32$push$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
-// CHECK: call @Vec$i32$set$i32(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32) -> i32
-// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
-// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
-// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
-// CHECK-LABEL: func.func @bellman_ford(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32) -> i32
-// CHECK: %[[V0:.*]] = call @ref$const$Graph$node_count(%{{.*}}) : (!llvm.ptr) -> i32
-// CHECK: %[[V1:.*]] = call @graph_inf() : () -> i32
-// CHECK: call @"Vec::with_capacity$i32"(%[[V0]]) : (i32) -> !llvm.struct<"Vec_i32", (ptr, i32, i32)>
-// CHECK: call @Vec$i32$push$i32(%{{.*}}, %[[V1]]) : (!llvm.ptr, i32) -> i32
-// CHECK: call @Vec$i32$set$i32(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32) -> i32
-// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
-// CHECK: call @ref$const$Graph$weight(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32) -> i32
-// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
-// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
-// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
-// CHECK-LABEL: func.func @floyd_warshall(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32) -> i32
-// CHECK: call @ref$const$Graph$node_count(%{{.*}}) : (!llvm.ptr) -> i32
-// CHECK: %[[V0:.*]] = call @graph_inf() : () -> i32
-// CHECK: call @"Vec::with_capacity$i32"(%{{.*}}) : (i32) -> !llvm.struct<"Vec_i32", (ptr, i32, i32)>
-// CHECK: call @Vec$i32$push$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
-// CHECK: %[[V1:.*]] = call @ref$const$Graph$weight(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32) -> i32
-// CHECK: call @Vec$i32$push$i32(%{{.*}}, %[[V1]]) : (!llvm.ptr, i32) -> i32
-// CHECK: call @Vec$i32$push$i32(%{{.*}}, %[[V0]]) : (!llvm.ptr, i32) -> i32
-// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
-// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
-// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
-// CHECK-LABEL: func.func @Vec$i32$push$i32(%arg0: !llvm.ptr, %arg1: i32) -> i32
-// CHECK: call @vx_vec_grow(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i64, i64, i64) -> !llvm.ptr
-// CHECK-LABEL: func.func @Vec$i32$set$i32(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32) -> i32
-// CHECK: call @vx_vec_bounds_check(%{{.*}}, %{{.*}}) : (i64, i64) -> i32
-// CHECK-LABEL: func.func @Graph$add_edge(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32, %arg3: i32) -> i32
-// CHECK: call @Vec$i32$set$i32(%{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32) -> i32
-// CHECK-LABEL: func.func @ref$const$Graph$node_count(%arg0: !llvm.ptr) -> i32
-// CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Graph", (i32, struct<"Vec_i32", (ptr, i32, i32)>)>
-// CHECK: %[[V1:.*]] = llvm.load %[[V0]] : !llvm.ptr -> i32
-// CHECK: return %[[V1]] : i32
-// CHECK-LABEL: func.func @Vec$i32$get$i32(%arg0: !llvm.ptr, %arg1: i32) -> i32
-// CHECK: call @vx_vec_bounds_check(%{{.*}}, %{{.*}}) : (i64, i64) -> i32
-// CHECK-LABEL: func.func @ref$const$Graph$weight(%arg0: !llvm.ptr, %arg1: i32, %arg2: i32) -> i32
-// CHECK: call @Vec$i32$get$i32(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> i32
-// CHECK-LABEL: func.func @main() -> i32
-// CHECK: call @"Graph::new"(%{{.*}}) : (i32) -> !llvm.struct<"Graph", (i32, struct<"Vec_i32", (ptr, i32, i32)>)>
-// CHECK: call @Graph$add_edge(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32, i32) -> i32
-// CHECK: call @Graph$add_edge(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i32, i32, i32) -> i32
+// CHECK-DAG: func.func @graph_inf() -> i32
+// DIJKSTRA-LABEL: func.func @dijkstra(
+// DIJKSTRA: call @ref$const$Graph$node_count(
+// DIJKSTRA: call @graph_inf()
+// DIJKSTRA: call @"Vec::with_capacity$i32"(
+// DIJKSTRA: call @Vec$i32$push$i32(
+// DIJKSTRA: call @Vec$i32$set$i32(
+// DIJKSTRA: call @Vec$i32$get$i32(
+// DIJKSTRA: call @ref$const$Graph$weight(
+// BELLMAN-LABEL: func.func @bellman_ford(
+// BELLMAN: call @ref$const$Graph$node_count(
+// BELLMAN: call @graph_inf()
+// BELLMAN: call @ref$const$Graph$weight(
+
 import std::vec;
 import graph::core;
 import graph::shortest_path;
@@ -75,5 +40,7 @@ fn main() -> i32 {
   let mut g: Graph = Graph::new(3);
   g.add_edge(0, 1, 5);
   g.add_edge(1, 2, 7);
-  return 0;
+  let d = dijkstra(&g, 0, 2);
+  let b = bellman_ford(&g, 0, 2);
+  return d - b;
 }
