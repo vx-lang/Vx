@@ -467,9 +467,21 @@ impl<'a> TypeChecker<'a> {
                 // `tensor.from_elements`. So the restriction is on non-scalar VALUES -- a
                 // tensor variable -- not on nested literals, which stay legal.
                 let nested = matches!(elements.first(), Some(Expr::Array(_)));
+                // The element type comes from the first element that is not a bare number
+                // literal, so `[1.0, d]` takes `d`'s type. That element is checked first.
+                let lead = if nested {
+                    0
+                } else {
+                    elements
+                        .iter()
+                        .position(|e| !crate::hir::expr::is_untyped_numeric_literal(e))
+                        .unwrap_or(0)
+                };
+                let order = std::iter::once(lead).chain((0..elements.len()).filter(|&i| i != lead));
                 let mut elem_ty = ElementType::F32;
-                for (i, el) in elements.iter_mut().enumerate() {
-                    if i == 0 {
+                for i in order {
+                    let el = &mut elements[i];
+                    if i == lead {
                         let first = self.check_expr_type(el);
                         match (first, nested) {
                             (Type::Scalar(e), false) => elem_ty = e,
@@ -507,7 +519,23 @@ impl<'a> TypeChecker<'a> {
                         }
                         self.check_expr_type(el);
                     } else {
-                        self.check_expr_expecting(el, Some(Type::Scalar(elem_ty.clone())), true);
+                        let ty = self.check_expr_expecting(
+                            el,
+                            Some(Type::Scalar(elem_ty.clone())),
+                            true,
+                        );
+                        if let Type::Scalar(e) = &ty {
+                            if *e != elem_ty {
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E3018,
+                                    format!(
+                                        "this array literal's elements are {elem_ty}, but one is {e}; \
+                                         convert it with `as {elem_ty}`"
+                                    ),
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(&el.span())),
+                                );
+                            }
+                        }
                     }
                 }
                 // A literal knows its shape: `[1, 2, 3]` is `Tensor<i32, [3]>`, and

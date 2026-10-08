@@ -666,6 +666,24 @@ impl<'a> TypeChecker<'a> {
                 for arg in args.iter_mut() {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume));
                 }
+                // A number literal given to `Tensor<T, ..>::fill` takes the element type `T`.
+                if resolved_name == "Tensor::fill".into() {
+                    if let (Some(Type::Tensor(elem, _, _)), Some(value)) =
+                        (explicit_generic_args.first(), args.last_mut())
+                    {
+                        if crate::hir::expr::numeric_literal_mut(value).is_some() {
+                            crate::hir::expr::clear_literal_type(value);
+                            let ty = self.check_expr_expecting(
+                                value,
+                                Some(Type::Scalar(elem.clone())),
+                                arg_consume,
+                            );
+                            if let Some(last) = arg_types.last_mut() {
+                                *last = ty;
+                            }
+                        }
+                    }
+                }
 
                 self.check_overlapping_reference_args(&reborrow_plan, errors_before_args, span);
                 if let Some((params, _)) = &reborrow_plan.callee_sig {
@@ -1935,6 +1953,22 @@ impl<'a> TypeChecker<'a> {
                 self.errors.push(format!(
                     "'{resolved_name}' expects {wanted} argument(s): {why}"
                 ));
+            }
+            // The fill value has the tensor's element type: a number literal was given it when
+            // the arguments were checked, and a typed value needs `as`.
+            if let (true, Type::Tensor(elem, _, _), Some(Type::Scalar(got)), Some(value)) =
+                (fills, ty, arg_types.last(), args.last())
+            {
+                if got != elem {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3003,
+                        format!(
+                            "'{resolved_name}' fills a tensor of {elem}, but the value is {got}; \
+                             convert it with `as {elem}`"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&value.span())),
+                    );
+                }
             }
             // A `Tensor`'s extents are part of its type, so an extent nothing can evaluate is not
             // a static extent (Vx#399). Refused rather than quietly answered with a `?`:

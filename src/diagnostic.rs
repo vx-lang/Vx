@@ -203,7 +203,8 @@ pub enum DiagnosticCode {
     E3016,
     /// Closure argument count or type mismatch
     E3017,
-    /// An array literal whose elements are not scalars, or which is empty.
+    /// An array literal whose elements are not scalars, are not all of one type, or which is
+    /// empty. A number literal takes the type of the other elements; a typed value needs `as`.
     ///
     /// An array literal lowers to `tensor.from_elements`, whose element type must be a scalar,
     /// so `[a, b]` for tensors -- placed or not -- has nothing to lower to, and an empty
