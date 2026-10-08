@@ -3553,14 +3553,8 @@ impl<'r> Lowerer<'r> {
     /// `t.reshape([dims..])` and `t.transpose([perm..])` on a statically shaped tensor: a view
     /// with the new sizes over the same buffer, or the axes permuted, which the emitter copies
     /// into a fresh contiguous buffer, as the oracle does. The extents and the permutation are
-    /// literals. `PadMode::Trim` is a view like any reshape; `PadMode::Pad` makes a new tensor,
-    /// which this path does not lower yet.
+    /// literals. `PadMode::Trim` is a view like any reshape; `PadMode::Pad` makes a new tensor.
     fn lower_tensor_reshape(&mut self, mc: &crate::syntax::MethodCallExpr) -> Lowered<Val> {
-        if mc.is_padding_reshape() {
-            return Err(Decline::TypeNotModelled {
-                what: "a reshape with PadMode::Pad",
-            });
-        }
         let src = self.lower_expr(&mc.base)?;
         let LoweredTy::Tensor { elem, shape } = &src.ty else {
             return Err(Decline::TypeNotModelled {
@@ -3597,7 +3591,12 @@ impl<'r> Lowerer<'r> {
         if mc.method_name.as_ref() != "transpose" {
             let shape = vals.iter().map(|v| v.to_string()).collect();
             let ty = LoweredTy::Tensor { elem, shape };
-            return Ok(self.emit_typed(Opcode::TensorReshape, src.reg, Register(0), ty, 0));
+            let op = if mc.is_padding_reshape() {
+                Opcode::TensorPad
+            } else {
+                Opcode::TensorReshape
+            };
+            return Ok(self.emit_typed(op, src.reg, Register(0), ty, 0));
         }
         let rank = shape.len();
         let mut seen = vec![false; rank];
@@ -4682,6 +4681,7 @@ impl<'r> Lowerer<'r> {
                 | Opcode::MatmulInto
                 | Opcode::TensorClone
                 | Opcode::TensorTranspose
+                | Opcode::TensorPad
                 | Opcode::TensorMap
                 | Opcode::TensorReduce
                 | Opcode::TensorDim
@@ -6280,6 +6280,7 @@ fn makes_a_fresh_tensor(opcode: Opcode) -> bool {
             | Opcode::Matmul
             | Opcode::TensorClone
             | Opcode::TensorTranspose
+            | Opcode::TensorPad
             | Opcode::TensorMap
     )
 }

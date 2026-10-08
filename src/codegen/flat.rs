@@ -1984,6 +1984,7 @@ impl<'a> FnEmit<'a> {
             Opcode::InlineMlir => self.op_inline_mlir(idx, ins),
             Opcode::TensorReshape => self.op_tensor_reshape(idx, ins),
             Opcode::TensorTranspose => self.op_tensor_transpose(idx, ins),
+            Opcode::TensorPad => self.op_tensor_pad(idx, ins),
             Opcode::TensorMap => self.op_tensor_map(idx, ins),
             Opcode::TensorReduce => self.op_tensor_reduce(idx, ins),
             Opcode::TensorClone => self.op_tensor_clone(idx, ins),

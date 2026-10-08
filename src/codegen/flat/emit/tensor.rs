@@ -451,6 +451,48 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    // `TensorPad`: a fresh buffer of the result shape filled with zeros, with the source copied
+    // into its first elements, both seen as flat, the way the oracle lowers a `PadMode::Pad`
+    // reshape.
+    pub(crate) fn op_tensor_pad(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let ViewSource {
+            elem,
+            shape,
+            src,
+            src_mem,
+            src_sizes,
+        } = self.view_operands(ins)?;
+        let n: i64 = src_sizes.iter().product();
+        let el = mlir_scalar(&elem).ok_or(crate::emitter_gap!())?;
+        let memty = tensor_memref_ty(&elem, &shape).ok_or(crate::emitter_gap!())?;
+        let flat_ty = format!("memref<{n}x{el}>");
+        let dst = match self.nrvo_slot(idx, &memty) {
+            Some(slot) => slot,
+            None => {
+                let d = format!("%v{idx}");
+                self.body += &format!("  {d} = memref.alloc() : {memty}\n");
+                d
+            }
+        };
+        let zero = if el.starts_with('f') || el.starts_with("bf") {
+            "0.0"
+        } else {
+            "0"
+        };
+        self.body += &format!(
+            "  %tps{idx} = memref.reinterpret_cast {src} to offset: [0], sizes: [{n}], strides: [1] : {src_mem} to {flat_ty}\n"
+        );
+        self.body += &format!(
+            "  %tpd{idx} = memref.reinterpret_cast {dst} to offset: [0], sizes: [{n}], strides: [1] : {memty} to {flat_ty}\n"
+        );
+        self.body += &format!("  %z{idx} = arith.constant {zero} : {el}\n");
+        self.body += &format!("  linalg.fill ins(%z{idx} : {el}) outs({dst} : {memty})\n");
+        self.body += &format!("  memref.copy %tps{idx}, %tpd{idx} : {flat_ty} to {flat_ty}\n");
+        self.names[idx] = dst;
+        self.mem_of[idx] = Some(memty);
+        Ok(())
+    }
+
     // `TensorMap`: a fresh buffer of the source's shape, each element the closure adapter
     // applied to the source's, as a `linalg.generic` over the two, the way the oracle lowers
     // `map`. A `?` extent is read off the source.

@@ -1,0 +1,28 @@
+//===- reshape_pad_without_a_name_is_dropped.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A tensor made by `reshape` with `PadMode::Pad` and used without a name is dropped at the
+// end of its statement. Only the flat code generator does this; the AST code generator does
+// not drop such a tensor yet.
+
+import std::tensor;
+
+// CHECK-LABEL: func.func @read_one_padded_element
+// CHECK: %[[TMP:.*]] = memref.alloc() : memref<3x3xf32>
+// CHECK: arith.addf
+// CHECK-NEXT: vx.drop %[[TMP]] : memref<3x3xf32>
+fn read_one_padded_element(t : Tensor<f32, [2, 2]>) -> f32 {
+  let x = t.reshape([3, 3], PadMode::Pad)[2][2] + 1.0;
+  return x;
+}
+
+fn main() -> i32 {
+  return 0;
+}

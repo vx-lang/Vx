@@ -279,6 +279,9 @@ pub enum Opcode {
     /// written by the checker). With `TENSOR_DROP_FLAG` in `imm`, `operand2` is a `bool` that
     /// is true once the tensor was moved, and then nothing is freed.
     TensorDrop = 62,
+    /// `t.reshape(shape, PadMode::Pad)`: a new tensor of the result type, holding `operand1`'s
+    /// elements in row order and then zeros.
+    TensorPad = 63,
 }
 
 /// `Opcode::TensorDrop`'s `imm`: `operand2` is the moved flag.

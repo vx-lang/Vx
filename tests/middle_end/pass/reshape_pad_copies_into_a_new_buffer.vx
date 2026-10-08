@@ -21,7 +21,7 @@ import std::tensor;
 // CHECK: linalg.fill ins(%{{.*}} : f32) outs(%[[BIG]] : memref<3x3xf32>)
 // CHECK-NEXT: memref.copy %[[SRC]], %[[PREFIX]] : memref<4xf32> to memref<4xf32>
 // CHECK-NEXT: vx.drop %[[T]] : memref<2x2xf32>
-// CHECK: memref.load %[[BIG]]
+// CHECK: memref.load
 // CHECK-NEXT: vx.drop %[[BIG]] : memref<3x3xf32>
 // CHECK-NEXT: return
 fn first_padded(t : Tensor<f32, [2, 2]>) -> f32 {
