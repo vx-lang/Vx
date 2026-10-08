@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-10-08T18:00:00Z</updated>
+  <updated>2026-10-08T20:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Programming a GPU fleet as one program</title>
+    <link href="https://vxlang.org/blog/programming-a-gpu-fleet.html"/>
+    <id>https://vxlang.org/blog/programming-a-gpu-fleet.html</id>
+    <updated>2026-10-08T20:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>In Vx the machine is part of the program: its memories, their capacities and the links between them are declarations the compiler reads. A serving plan for a 70B model sharded 2 ways is refused on an 8-GPU node when it is compiled, with the 111.7 GB it needs against 80 GiB per GPU, while the same plan sharded 8 ways is accepted. Every move between GPUs and machines is priced from the declared link rates before anything runs, one program text is checked against every machine type by changing one flag, and the fleet itself is a graph in the same language. The post ends with what the models cannot express yet.</summary>
+  </entry>
 
   <entry>
     <title>Why void is a value in Vx</title>
