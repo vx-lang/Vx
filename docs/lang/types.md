@@ -321,11 +321,16 @@ In Vx, `is_assignable` is purely a **Type Compatibility Checker**. It determines
 When verifying `let target: TargetType = source_expression;`, the compiler permits the following structural coercions:
 
 1. **Strict Equality:** If the resolved `Target` and `Source` types are identical, the assignment is valid.
-1. **Implicit Unwrapping:** A hardware-specific wrapper type can implicitly decay to its base type. For example, `Ref<T>` or `Pinned<T>` can be safely assigned to a variable explicitly requesting a raw `T`.
-1. **Literal Broadcasting (Scalar to Tensor):** Scalar numerical literals (e.g., `1.0` or `42`) can be implicitly coerced and broadcasted into `Tensor<T>` configurations, provided they are not boolean mismatches.
-1. **Numeric Scalar Coercions:** Standard numeric types are permitted to automatically coerce across differing precisions (e.g., `f64` to `f32`) to accommodate literals during compilation, ensuring mathematical continuity without verbose casting.
-1. **Pointer Decay:** Safe borrows (`&mut T`) implicitly decay into raw unsafe pointers (`*mut T`) when crossing FFI or unsafe boundaries.
-1. **Safety Coercions:** A `Ref<T, HostDRAM>` can be coerced into a `Verified<T>` boundary type, signaling that host memory access requires no further spatial validation.
+1. **Number Literals:** A number literal takes the numeric type its place expects: `let b : f32 = 1.5;` and `let c : u8 = 7;` are valid. A value that already has a type is not converted: an `f64` variable does not fit an `f32`, and an `i32` variable does not fit an `i64`. Write `as` for those (`a as f32`).
+1. **Scalar to Rank 0 Tensor:** A scalar fits a rank 0 tensor of the same element type: `let t : Tensor<i32, []> = 1;`. It does not fit a tensor with a shape: `let t : Tensor<f32, [4]> = 1.0;` is E3023, and `Tensor<f32, [4]>::fill(1.0)` says it instead.
+1. **Borrow to Raw Pointer:** A borrow fits a raw pointer to the same type: `&mut T` fits `*mut T` or `*const T`, and `&T` fits `*const T`. A `&T` does not fit `*mut T`.
+1. **Dropping `mut`:** `&mut T` fits `&T`, and `*mut T` fits `*const T`. A raw pointer to `i8` fits a raw pointer to any type, and the other way round, as `void *` does in C.
+1. **Never:** A value of type `!`, such as a call to a function that never returns, fits any type.
+
+These are refused, and the compiler says so with E3001:
+
+- **`Pinned<T>` to `T`.** A value on a device does not turn into a plain value. Move it with `transfer(x, Memory::CPU_DRAM)`.
+- **`T` to `Verified<T>`.** A `Verified<T>` is built with `Verified(x)`, and fits only another `Verified<U>` whose `U` fits `T`.
 
 If the types pass the `is_assignable` constraint matrix, the Semantic Analyzer accepts the program. Advanced lifecycle validation (like borrow constraints) operates entirely independently of this type-compatibility pass.
 
