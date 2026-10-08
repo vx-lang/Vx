@@ -1,0 +1,33 @@
+//===- generic_call_of_a_void_function.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `apply<T>` calls the function it is given and returns its result. With
+// `T = void` the function returns nothing, and `apply` returns nothing too.
+// A `void` function is also called through a plain function pointer, and
+// `apply` still works with `T = i32`.
+//
+// EXPECT: said said 7
+
+fn apply<T>(f : fn() -> T) -> T {
+  return f();
+}
+
+fn say() -> void {
+  print("said ");
+}
+
+fn seven() -> i32 {
+  return 7;
+}
+
+fn main() -> i32 {
+  let _v = apply(say);
+  let g : fn() -> void = say;
+  g();
+  print(apply(seven));
+  return 0;
+}

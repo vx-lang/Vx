@@ -279,6 +279,10 @@ impl<'c> MeliorGenerator<'c> {
         ret_ty: Type<'c>,
         arg_tys: &[Type<'c>],
     ) -> (Option<Type<'c>>, Vec<Type<'c>>) {
+        // A `void` function has no result, both in its definition and in the type of its address.
+        if ret_ty == self.none_ty {
+            return (None, arg_tys.to_vec());
+        }
         if !returns_through_slot(&ret_ty.to_string()) {
             return (Some(ret_ty), arg_tys.to_vec());
         }

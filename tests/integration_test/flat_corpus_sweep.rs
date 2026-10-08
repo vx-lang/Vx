@@ -35,6 +35,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
     // ("an aggregate slot with no struct type").
     "backend/pass/tensor_views_end_at_their_last_use.vx",
+    // A call through a pointer to a `void` function: the flat path declines it ("an indirect
+    // callee returning a non-scalar").
+    "backend/pass/generic_call_of_a_void_function.vx",
     // `Duration`'s `+` and `-` go through `Option<Duration>`, and the flat path declines its
     // `unwrap` ("a non-scalar default return").
     "backend/pass/operators_on_user_types.vx",

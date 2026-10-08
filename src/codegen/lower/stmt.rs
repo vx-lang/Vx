@@ -38,6 +38,14 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         let (mut val, expr_ty, block) = gen.generate_expr(expr, block)?;
         gen.nrvo_slot = None;
         gen.expected_type = None;
+        // `return f();` in a function returning `void`, such as `apply<T>` with `T = void`:
+        // the call has run, and there is no value to return.
+        if !gen.in_spawn && gen.current_return_type == Some(gen.none_ty) {
+            let block = gen.run_value_drops(block)?;
+            block.append_operation(OperationBuilder::new("func.return", gen.loc()).build()?);
+            gen.has_returned = true;
+            return Ok(None);
+        }
         if let Some(ret_ty) = gen.current_return_type {
             if expr_ty != ret_ty {
                 if gen.is_memref(&expr_ty) && gen.is_memref(&ret_ty) {
