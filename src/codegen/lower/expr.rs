@@ -3212,8 +3212,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     for t in func_args.iter() {
                         a.push(gen.lower_type(t)?);
                     }
-                    actual_func_ty =
-                        melior::ir::r#type::FunctionType::new(gen.context, &a, &[r]).into();
+                    actual_func_ty = function_type(gen, &a, r);
                 } else {
                     panic!("Missing signature for function pointer '{}'", name);
                 }
@@ -3224,14 +3223,13 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                     for t in func_args.iter() {
                         a.push(gen.lower_type(t)?);
                     }
-                    actual_func_ty =
-                        melior::ir::r#type::FunctionType::new(gen.context, &a, &[r]).into();
+                    actual_func_ty = function_type(gen, &a, r);
                 } else {
                     panic!("Missing signature for closure '{}'", name);
                 }
             }
             if let Ok(mlir_func_ty) = melior::ir::r#type::FunctionType::try_from(actual_func_ty) {
-                let ret_ty = mlir_func_ty.result(0)?;
+                let ret_ty = mlir_func_ty.result(0).unwrap_or(gen.none_ty);
                 let mut arg_vals = Vec::new();
 
                 let mut arg_offset = 0;
@@ -3402,10 +3400,8 @@ impl<'c> LowerToMelior<'c> for IndirectCallExpr {
             for t in func_args.iter() {
                 a.push(gen.lower_type(t)?);
             }
-            let actual_mlir_func_ty = melior::ir::r#type::FunctionType::new(gen.context, &a, &[r]);
-            let actual_func_ty: melior::ir::Type = actual_mlir_func_ty.into();
-
-            let ret_ty = actual_mlir_func_ty.result(0)?;
+            let actual_func_ty = function_type(gen, &a, r);
+            let ret_ty = r;
 
             // Cast the raw func ptr to the actual function signature
             let cast_op = OperationBuilder::new("builtin.unrealized_conversion_cast", gen.loc())
@@ -4811,4 +4807,12 @@ fn lower_tensor_negate<'c>(
         .build()?;
     block.append_operation(generic);
     Ok((out, out_ty, block))
+}
+
+/// The MLIR type of a function taking `args` and returning `ret`. A function returning `void`
+/// lowers with no results, so its type must have none either: `() -> none` is a different type
+/// from `() -> ()`, and `func.call_indirect` refuses a callee whose type does not match.
+fn function_type<'c>(gen: &MeliorGenerator<'c>, args: &[Type<'c>], ret: Type<'c>) -> Type<'c> {
+    let results: &[Type<'c>] = if ret == gen.none_ty { &[] } else { &[ret] };
+    melior::ir::r#type::FunctionType::new(gen.context, args, results).into()
 }

@@ -1,0 +1,22 @@
+//===- if_else_with_no_value_bound_by_let.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `if`/`else` whose branches end with `;` has type `void`, and a `let` can
+// still bind it. The `if` runs its branch once.
+//
+// EXPECT: small end
+
+fn main() -> i32 {
+  let x : i32 = 3;
+  let _v = if x > 5 {
+    print("huge ");
+  } else {
+    print("small ");
+  };
+  print("end");
+  return 0;
+}

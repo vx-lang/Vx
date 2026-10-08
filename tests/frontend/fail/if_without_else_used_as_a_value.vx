@@ -1,0 +1,67 @@
+//===- if_without_else_used_as_a_value.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `if` with no `else` has no value when its condition is false, so its value cannot be
+// used: not bound by `let`, returned, or given as the value of an enclosing `if` or
+// `spawn`. As a statement, including the last one in a `void` function or in a `spawn`
+// used as a statement, it is fine.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn report(c: bool) -> void {
+  // CHECK-NOT: Error[E3048] at [[@LINE+1]]:
+  if c {
+    print("as a statement ");
+  }
+}
+
+fn pick(c: bool) -> i32 {
+  // CHECK: Error[E3048] at [[@LINE+1]]:10: this `if` has no `else`
+  return if c {
+    1
+  };
+}
+
+fn nested(a: bool, b: bool) -> i32 {
+  let n = if a {
+    1
+  } else {
+    // CHECK: Error[E3048] at [[@LINE+1]]:5:
+    if b {
+      2
+    }
+  };
+  return n;
+}
+
+fn spawned(c: bool) -> i32 {
+  spawn on(Topology::CPU) {
+    // CHECK-NOT: Error[E3048] at [[@LINE+1]]:
+    if c {
+      print("in a region ");
+    }
+  }
+  let _v = spawn on(Topology::CPU) {
+    // CHECK: Error[E3048] at [[@LINE+1]]:5:
+    if c {
+      1
+    }
+  };
+  return 0;
+}
+
+fn main() -> i32 {
+  let x : i32 = 3;
+  // CHECK: Error[E3048] at [[@LINE+1]]:11:
+  let u = if x > 2 {
+    print("big");
+  };
+  report(true);
+  return pick(true) + nested(true, false) + spawned(true);
+}
+
+// CHECK: 4 error(s) emitted

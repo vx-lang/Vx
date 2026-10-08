@@ -126,6 +126,7 @@ again. <code>void</code> picked that rule up by accident. The fix
 <p>The fix is an exception added to a general rule, and it finds <code>void</code> by its name.
 So a struct you declare yourself and name <code>void</code> gets the exception too:</p>
 
+<!-- vx-doctest: skip: the compiler now refuses a struct named void -->
 <pre><code>struct void {
   x : i32,
 }
@@ -140,7 +141,9 @@ fn main() -&gt; i32 {
 
 <p>This compiles and prints <code>5</code>. Rename the struct to <code>Plain</code> and the
 compiler reports E4001, as it should
-(<a href="https://github.com/vx-lang/Vx/issues/1386">#1386</a>). The better fix is to make <code>void</code> a built-in
+(<a href="https://github.com/vx-lang/Vx/issues/1386">#1386</a>). <em>Update: this is fixed. A program can no
+longer declare a struct, enum or trait named <code>void</code>
+(<a href="https://github.com/vx-lang/Vx/pull/1411">#1411</a>).</em> The better fix is to make <code>void</code> a built-in
 type that no program can declare, and have the check ask whether a type is plain data that can
 be copied freely, rather than compare names. Then <code>void</code> and the next built-in type
 of that kind are copyable for the same reason, with no list of exceptions.</p>

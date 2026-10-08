@@ -43,10 +43,13 @@ impl<'a> TypeChecker<'a> {
 
     /// A bare name that is not a declared nominal is a generic parameter still in scope, not a
     /// struct: `Option<T>::Some(v: T)` has to match its own `Generic("T")` payload (#242).
+    /// `void` is built in, so it is never declared, and stays `void`.
     fn as_scoped_generic(&self, ty: Type) -> Type {
         match ty {
             Type::Struct(name, None)
-                if !self.env.structs.contains_key(&name) && !self.env.enums.contains_key(&name) =>
+                if !self.env.structs.contains_key(&name)
+                    && !self.env.enums.contains_key(&name)
+                    && !crate::syntax::is_void_ty(&Type::Struct(name.clone(), None)) =>
             {
                 Type::Generic(name, None)
             }

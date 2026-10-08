@@ -1969,6 +1969,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_spawnon_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
+        let unused = std::mem::replace(&mut self.value_unused, false);
         match expr {
             Expr::SpawnOn(SpawnOnExpr {
                 top,
@@ -2107,6 +2108,9 @@ impl<'a> TypeChecker<'a> {
                 let mut ret_ty = Type::Struct("void".into(), None); // default void-like type
                 let has_ret = ret.is_some();
                 if let Some(r) = ret {
+                    // The parser reads a trailing `if` as the region's value; a region used as
+                    // a statement does not use it.
+                    self.value_unused = unused;
                     ret_ty = self.check_expr_type_flag(r, consume);
                 }
                 // A variable from outside the region is handed out as the same buffer.

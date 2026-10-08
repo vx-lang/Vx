@@ -147,6 +147,10 @@ impl<'c> LowerToMelior<'c> for IfExpr {
             has_ret,
         )?;
 
+        // With no expected type and no value from either branch, the `if` is `void`, as in
+        // `let u = if c { print(..); };`. There is no value to merge.
+        let has_ret = has_ret && (expected.is_some() || then_val.is_some() || else_val.is_some());
+
         // Without an expected type, the branches decide. A loop variable or an extent is an
         // `index` in MLIR but an `i32` in Vx, so an `index` value is given the Vx type, and a
         // branch that yields an `i32` and one that yields an `index` agree.
