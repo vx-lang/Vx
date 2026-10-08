@@ -3802,7 +3802,7 @@ impl<'r> Lowerer<'r> {
         if values.len() != count || count == 0 {
             return None;
         }
-        let bytes = (crate::hir::memory::element_bits(elem)? * count as u64).div_ceil(8);
+        let bytes = crate::hir::memory::element_bytes(elem)? * count as u64;
         let shape_s: Vec<String> = shape.iter().map(|d| d.to_string()).collect();
         let buf = self.emit_typed(
             Opcode::TensorAlloc,
@@ -3874,10 +3874,9 @@ impl<'r> Lowerer<'r> {
             } // only scalar-element arrays are modelled
         };
         let n = vals.len();
-        let bytes = (crate::hir::memory::element_bits(&elem).ok_or(Decline::TypeNotModelled {
+        let bytes = crate::hir::memory::element_bytes(&elem).ok_or(Decline::TypeNotModelled {
             what: "an element type with no known width",
-        })? * n as u64)
-            .div_ceil(8);
+        })? * n as u64;
         let buf = self.emit_typed(
             Opcode::TensorAlloc,
             Register(0),
@@ -7767,6 +7766,38 @@ mod tests {
         assert_eq!(
             result_gid(&w, Opcode::TensorAlloc),
             tensor_gid(&ElementType::F32, &["2".to_string(), "4".to_string()]),
+        );
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn a_bool_tensor_takes_a_byte_per_element() {
+        let f = parse_fn(
+            "fn f() -> Tensor<bool, [3]> \
+             { let o : Tensor<bool, [3]> = [true, false, true]; return o; }",
+        );
+        let mut w = worker();
+        lower_function_to_hir(&f, &mut w).expect("a bool literal should lower");
+        assert_eq!(
+            op_imm(&w, Opcode::TensorAlloc),
+            Some(3),
+            "3 bools are 3 bytes"
+        );
+        verify_hir_stream(&w);
+    }
+
+    #[test]
+    fn a_nested_bool_initializer_takes_a_byte_per_element() {
+        let f = parse_fn(
+            "fn f() -> Tensor<bool, [2, 3]> \
+             { let o = Tensor<bool>([[true, false, true], [false, true, false]]); return o; }",
+        );
+        let mut w = worker();
+        lower_function_to_hir(&f, &mut w).expect("a nested bool literal should lower");
+        assert_eq!(
+            op_imm(&w, Opcode::TensorAlloc),
+            Some(6),
+            "6 bools are 6 bytes"
         );
         verify_hir_stream(&w);
     }

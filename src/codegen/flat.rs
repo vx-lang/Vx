@@ -1070,7 +1070,7 @@ fn enum_scalar(ty: &Type, ctx: &EmitCtx) -> Option<&'static str> {
 }
 
 /// Byte size of a statically-shaped flat tensor (its shape strings are all integer literals):
-/// `ceil(element_bits × Π(dims) / 8)`. `None` when the shape is empty or any dim is symbolic — the
+/// `element_bytes × Π(dims)`. `None` when the shape is empty or any dim is symbolic — the
 /// flat-emitter analogue of the AST codegen's `static_tensor_bytes`, over the lowerer's `Vec<String>`
 /// shape, so both paths size a tile identically for the sub-space bump allocator.
 fn static_tile_bytes(elem: &ElementType, shape: &[String]) -> Option<u64> {
@@ -1081,11 +1081,7 @@ fn static_tile_bytes(elem: &ElementType, shape: &[String]) -> Option<u64> {
     for d in shape {
         count = count.checked_mul(d.parse::<u64>().ok()?)?;
     }
-    Some(
-        crate::hir::memory::element_bits(elem)?
-            .checked_mul(count)?
-            .div_ceil(8),
-    )
+    crate::hir::memory::element_bytes(elem)?.checked_mul(count)
 }
 
 /// The MLIR type string for an AST type in a function signature position (a parameter or return): a

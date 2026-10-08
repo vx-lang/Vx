@@ -1,0 +1,36 @@
+//===- sub_byte_tiles_take_a_byte_per_element.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two tiles of 2048 `bool`s placed one after the other in a space with 1 KiB granules.
+// Each `bool` takes a byte, so the first tile covers 2048 bytes (2 granules) and the
+// second starts after it, at 2048. Counted as packed bits, the first tile would look like
+// 256 bytes and the second would start at 1024, on top of it. Both code generators are checked.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+
+Memory CPU_DRAM {}
+Memory TILES {
+  within: Memory::CPU_DRAM, capacity: 64 KiB, granule: 1 KiB, managed: explicit
+}
+Topology Npu {
+  memory: Memory::TILES, visible: [Memory::TILES],
+  transfer Memory::CPU_DRAM -> Memory::TILES : 10
+}
+
+fn main() -> i32 {
+  let first = transfer(Tensor<bool, [2048]>::uninit(), Memory::TILES);
+  let second = transfer(Tensor<bool, [2048]>::uninit(), Memory::TILES);
+  return 0;
+}
+
+// CHECK: vx.transfer
+// CHECK-SAME: offset = 0 : i64
+// CHECK-SAME: slots = 2 : i64
+// CHECK: vx.transfer
+// CHECK-SAME: offset = 2048 : i64
+// CHECK-SAME: slots = 2 : i64

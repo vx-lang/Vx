@@ -126,6 +126,12 @@ pub fn element_bits(elem: &ElementType) -> Option<u64> {
     elem.bits().map(|b| b as u64)
 }
 
+/// Bytes one tensor element takes in memory. A tensor does not pack its elements: a `bool` or
+/// `i4` element takes a whole byte, like a scalar of that type.
+pub fn element_bytes(elem: &ElementType) -> Option<u64> {
+    element_bits(elem).map(|b| b.div_ceil(8))
+}
+
 /// A tensor dimension's compile-time value: an integer literal, or exact integer arithmetic over
 /// literals (`2 * LAYERS * CTX` once monomorphization has substituted its const generics). `None`
 /// for anything not constant — a runtime identifier, a call — which keeps the capacity check
@@ -165,7 +171,7 @@ fn const_dim(e: &Expr) -> Option<u64> {
     }
 }
 
-/// Byte size of a statically-shaped tensor: `ceil(element_bits × Π(dims) / 8)`. `None` when the
+/// Byte size of a statically-shaped tensor: `element_bytes × Π(dims)`. `None` when the
 /// shape is empty or any dimension is not a compile-time constant (so the size — and thus any
 /// capacity check — is unknown).
 ///
@@ -181,7 +187,7 @@ pub fn static_tensor_bytes(elem: &ElementType, dims: &[Dim]) -> Option<u64> {
     for d in dims {
         count = count.checked_mul(const_dim(d.as_static()?)?)?;
     }
-    Some(element_bits(elem)?.checked_mul(count)?.div_ceil(8))
+    element_bytes(elem)?.checked_mul(count)
 }
 
 /// A per-compilation view of the declared memory hierarchy. Nodes are `MemorySpace`s (a
@@ -841,15 +847,14 @@ mod tests {
             static_tensor_bytes(&ElementType::F32, &st(&[dim("256"), dim("256")])),
             Some(256 * 1024)
         );
-        // 8x8 i4 = 64 elems * 4 bits = 256 bits = 32 bytes (sub-byte packs).
+        // A sub-byte element takes a whole byte: 8x8 i4 is 64 bytes, and 3 bools are 3.
         assert_eq!(
             static_tensor_bytes(&ElementType::I4, &st(&[dim("8"), dim("8")])),
-            Some(32)
+            Some(64)
         );
-        // 3 bools = 3 bits -> ceil to 1 byte.
         assert_eq!(
             static_tensor_bytes(&ElementType::Bool, &st(&[dim("3")])),
-            Some(1)
+            Some(3)
         );
         // 64x64 f8e4m3 = 4096 elems * 8 bits = 4096 bytes (fp8 stores like i8).
         assert_eq!(
