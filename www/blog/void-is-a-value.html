@@ -139,7 +139,8 @@ fn main() -&gt; i32 {
 }</code></pre>
 
 <p>This compiles and prints <code>5</code>. Rename the struct to <code>Plain</code> and the
-compiler reports E4001, as it should. The better fix is to make <code>void</code> a built-in
+compiler reports E4001, as it should
+(<a href="https://github.com/vx-lang/Vx/issues/1386">#1386</a>). The better fix is to make <code>void</code> a built-in
 type that no program can declare, and have the check ask whether a type is plain data that can
 be copied freely, rather than compare names. Then <code>void</code> and the next built-in type
 of that kind are copyable for the same reason, with no list of exceptions.</p>
@@ -151,11 +152,13 @@ of that kind are copyable for the same reason, with no list of exceptions.</p>
 <code>Type mismatch on return. Expected Result&lt;void, i32&gt;, got Result&lt;void,
 i32&gt;</code>. The standard library already works around this: <code>core::fmt</code> returns
 <code>Result&lt;i32, Error&gt;</code> with <code>Ok(0)</code> where it means
-<code>Result&lt;void, Error&gt;</code>.</li>
+<code>Result&lt;void, Error&gt;</code>
+(<a href="https://github.com/vx-lang/Vx/issues/1387">#1387</a>).</li>
 <li><code>apply&lt;T&gt;</code> above, called with a function returning <code>void</code>, passes
-the checker but fails when the compiler checks the MLIR it generated.</li>
+the checker but fails when the compiler checks the MLIR it generated
+(<a href="https://github.com/vx-lang/Vx/issues/1388">#1388</a>).</li>
 <li><code>let u = if x &gt; 2 { print("big"); };</code> passes the checker and then crashes the
-code generator.</li>
+code generator (<a href="https://github.com/vx-lang/Vx/issues/1389">#1389</a>).</li>
 </ul>
 
 <p>Each of these is a place where generic code meets <code>T = void</code> and needs a special
