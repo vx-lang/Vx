@@ -1,0 +1,57 @@
+//===- fleet_serving_plan_on_an_8gpu_node.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Serving a 70B-class model (80 layers, 64 query heads, 8 KV heads of 128) at 32k context and
+// batch 8, in f16, on the 8-GPU node in fleet/node-8gpu.vx. Each GPU holds its shard of the
+// weights, its share of the KV cache and the activations, all at once. Then the plan shares
+// the weights and activations with the peer GPUs over NVLink, and migrates the KV cache to
+// another machine over InfiniBand, as when a node is drained.
+//
+// The memory declarations decide two things before any GPU runs:
+//
+// - Whether a plan fits. Sharded 8 ways, a GPU holds about 31 GB and the plan is admitted.
+//   Sharded 2 ways it holds 111,669,149,696 bytes, more than the 85,899,345,920 (80 GiB) of
+//   one GPU, so it is refused (E6010) with both numbers, although each tensor alone fits.
+// - What each move costs, from the link rates the node declares (in picoseconds). For the
+//   8-way plan: the 16.1 GB weight shard reaches the peers over NVLink in 35.8 ms; the
+//   10.7 GB KV cache crosses PCIe to the NIC in 170.4 ms and InfiniBand in 214.7 ms. A
+//   scheduler can compare those against recomputing the cache.
+//===----------------------------------------------------------------------===//
+// RUN: not vxc --host default --machine fleet/node-8gpu.vx %s --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
+// RUN: not vxc --host default --machine fleet/node-8gpu.vx %s --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s --check-prefix=ONE
+
+// CHECK: "verdict": "rejected"
+// CHECK: "code": "E6010"
+// CHECK-SAME: "space": "HBM", "required_bytes": 111669149696, "available_bytes": 85899345920
+// CHECK-SAME: "tiles": 3
+// CHECK: "path": ["HBM", "PEER_HBM"]{{.*}}"bytes": 16106127360, "derived_cost": 35791394134, "derived_unit": "ps"
+// CHECK: "path": ["HBM", "NIC_RAM"]{{.*}}"bytes": 10737418240, "derived_cost": 170435210159, "derived_unit": "ps"
+// CHECK: "path": ["NIC_RAM", "Remote_HBM"]{{.*}}"bytes": 10737418240, "derived_cost": 214748364800, "derived_unit": "ps"
+
+// Only the 2-way plan is refused.
+// ONE-COUNT-1: "level": "error"
+// ONE-NOT: "level": "error"
+
+fn serve<const LAYERS : i32, const HEADS : i32, const KVHEADS : i32, const HDIM : i32, const CTX : i32, const BATCH : i32, const TP : i32>() -> i32 {
+  let w : Tensor<f16, [12 * LAYERS * HEADS * HDIM / TP, HEADS * HDIM]> = Tensor<f16>([12 * LAYERS * HEADS * HDIM / TP, HEADS * HDIM]);
+  let weights = transfer(w, Memory::HBM);
+  let kv : Tensor<f16, [2 * LAYERS * BATCH * CTX / TP, KVHEADS * HDIM]> = Tensor<f16>([2 * LAYERS * BATCH * CTX / TP, KVHEADS * HDIM]);
+  let kv_cache = transfer(kv, Memory::HBM);
+  let a : Tensor<f16, [BATCH * CTX, HEADS * HDIM]> = Tensor<f16>([BATCH * CTX, HEADS * HDIM]);
+  let activations = transfer(a, Memory::HBM);
+  // All three are placed before any is read, so they are resident together.
+  let _on_peers = transfer(weights, Memory::PEER_HBM);
+  let _migrated = transfer(kv_cache, Memory::Remote_HBM);
+  let _shared = transfer(activations, Memory::PEER_HBM);
+  return 0;
+}
+
+fn main() -> i32 {
+  let eight_way = serve<80, 64, 8, 128, 32768, 8, 8>();
+  let two_way = serve<80, 64, 8, 128, 32768, 8, 2>();
+  return eight_way + two_way;
+}
