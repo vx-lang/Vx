@@ -11,10 +11,7 @@
 // `reshape` with `PadMode::Trim` keeps the first elements of the tensor, in row order.
 // CHECK: 10 11 12 20 end
 
-enum PadMode {
-  Pad,
-  Trim
-}
+import std::tensor;
 
 fn main() -> i32 {
   let mut t = Tensor<i32, [2, 3]>::new();

@@ -7,10 +7,7 @@
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
-enum PadMode {
-  Pad,
-  Trim
-}
+import std::tensor;
 
 fn process_tensor(val: Tensor<f32, [128, 128]>) -> Tensor<f32, [256]> {
   let first = val.reshape([256], PadMode::Trim);

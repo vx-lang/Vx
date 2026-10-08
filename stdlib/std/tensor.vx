@@ -9,6 +9,14 @@
 
 import core::num;
 
+/// The second argument of `t.reshape(shape, mode)`, for a new shape with a different number
+/// of elements. `Trim` keeps the first elements of `t` in row order, as a view of `t`. `Pad` to
+/// a larger shape is not supported yet.
+enum PadMode {
+  Pad,
+  Trim,
+}
+
 /// A floating-point element type, the only kind these tensor methods are written for.
 trait Float {}
 
