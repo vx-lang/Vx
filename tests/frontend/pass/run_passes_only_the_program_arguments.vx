@@ -1,0 +1,31 @@
+//===- run_passes_only_the_program_arguments.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run -- first second 2>&1 | FileCheck %s
+// A program run by `vxc --run` sees the arguments after `--`, as a built binary would:
+// argument 0 is the program, and the `.vx` file is not one of them.
+// CHECK: 3 arguments
+// CHECK-NEXT: first
+// CHECK-NEXT: second
+
+extern {
+  fn vx_env_args_count() -> i32;
+  fn vx_env_arg(idx : i32) -> *mut i8;
+}
+
+fn main() -> i32 {
+  let n = unsafe { vx_env_args_count() };
+  print!(n);
+  print!(" arguments
+");
+  for i in 1..n {
+    print!(unsafe { vx_env_arg(i) });
+    print!("
+");
+  }
+  return 0;
+}

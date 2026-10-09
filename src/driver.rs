@@ -562,11 +562,9 @@ impl CompilerDriver {
         }
 
         if self.options.action == Action::RunJit {
-            let mut args = vec![self.options.inputs[0].to_string_lossy().into_owned()];
-            args.extend(self.options.program_args.clone());
             let out = crate::jit::execute_mlir_streams(
                 &mlir_src,
-                args,
+                self.options.program_args.clone(),
                 self.options.opt_level,
                 self.options.disable_llvm_optimizations,
             )
@@ -1406,11 +1404,9 @@ impl CompilerDriver {
             }
             Action::RunJit => {
                 let mlir_str = format!("{}", module.as_operation());
-                let mut args = vec![self.options.inputs[0].to_string_lossy().into_owned()];
-                args.extend(self.options.program_args.clone());
                 let out = crate::jit::execute_mlir_streams(
                     &mlir_str,
-                    args,
+                    self.options.program_args.clone(),
                     self.options.opt_level,
                     self.options.disable_llvm_optimizations,
                 )
