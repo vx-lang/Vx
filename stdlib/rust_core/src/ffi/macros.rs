@@ -517,6 +517,9 @@ macro_rules! instantiate_file_ffi {
         /// count is zero except on success; native_code is meaningful only when
         /// has_native_code is true. See io_error_contract.md for the ABI table.
         /// The native code is copied before classification or other work.
+        /// On success, only the first `count` buffer bytes contain data read from
+        /// the file. Bytes in `buffer[count..len]` may also change, including at
+        /// EOF; callers must not rely on their previous contents being preserved.
         ///
         /// # Safety
         /// A null `ptr` or `buffer` is accepted and reports invalid arguments. A
