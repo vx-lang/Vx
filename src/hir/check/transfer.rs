@@ -394,6 +394,7 @@ impl<'a> TypeChecker<'a> {
         elem: &ElementType,
         space: &MemorySpace,
         context: &str,
+        span: Option<crate::diagnostic::SourceSpan>,
     ) {
         // An un-substituted generic is not an element type yet; the instantiated body is checked.
         if matches!(elem, ElementType::Generic(_)) {
@@ -423,8 +424,55 @@ impl<'a> TypeChecker<'a> {
                 topology.display_name(),
                 listed
             ),
-            None,
+            span,
         );
+    }
+
+    /// E6026 for an element type used *inside* the active region, asked of that region's device.
+    ///
+    /// The placement and transfer checks ask this question of a *space* -- that is how they know
+    /// which device to ask about, and it is why they only ever see values that were placed or
+    /// moved. A value built inside a region has no space yet, so nothing asked: `let t : f64 =
+    /// ...` in a kernel passed the checker and failed on the device instead, a machine away from
+    /// the mistake (docs/gpu_backends.md, "Shared work before a second backend", item 4).
+    pub(crate) fn check_element_type_in_active_region(
+        &mut self,
+        elem: &ElementType,
+        context: &str,
+        span: &crate::syntax::Span,
+    ) {
+        let space = self.active_memory.clone();
+        self.check_element_type(
+            elem,
+            &space,
+            context,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
+    /// The element types a type names: its own when it is a scalar, its element when it is a
+    /// tensor or a vector, and whatever the wrappers around it name. Nominal types are not
+    /// entered -- a struct's fields are declared elsewhere, and whether an instance of one is
+    /// placed is a question the placement checks already own.
+    pub(crate) fn element_types_of(ty: &Type) -> Vec<ElementType> {
+        let mut out = Vec::new();
+        let mut stack = vec![ty];
+        while let Some(t) = stack.pop() {
+            match t {
+                Type::Scalar(e) | Type::Tensor(e, _, _) | Type::Simd(e, _) => out.push(e.clone()),
+                Type::Ref(inner, _)
+                | Type::Verified(inner)
+                | Type::Pinned(inner, _)
+                | Type::Borrow { inner, .. }
+                | Type::Pointer(inner, _, _) => stack.push(inner),
+                Type::GenericInstance(inner, args) => {
+                    stack.push(inner);
+                    stack.extend(args.iter());
+                }
+                _ => {}
+            }
+        }
+        out
     }
 
     /// If a statically-shaped `Tensor<elem, dims>` placed in `space` exceeds that space's
@@ -907,7 +955,12 @@ impl<'a> TypeChecker<'a> {
         self.report_unheld_placements(ty, context);
         for (e, d, space) in self.placed_tensors(ty) {
             self.check_capacity_of(&e, &d, &space, context, span, record);
-            self.check_element_type(&e, &space, context);
+            self.check_element_type(
+                &e,
+                &space,
+                context,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
         }
     }
 
@@ -1082,7 +1135,14 @@ impl<'a> TypeChecker<'a> {
             // second visit to the same node.
             let placement_span = Self::buffer_span(&t.expr).unwrap_or(t.span);
             self.check_capacity(e, d, &target_mem, "transferred tensor", &placement_span);
-            self.check_element_type(e, &target_mem, "transferred tensor");
+            self.check_element_type(
+                e,
+                &target_mem,
+                "transferred tensor",
+                Some(crate::diagnostic::SourceSpan::from_ast_span(
+                    &placement_span,
+                )),
+            );
         }
 
         // Bandwidth-derived roofline cost (bytes / bandwidth along the hierarchy). When the

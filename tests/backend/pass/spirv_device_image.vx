@@ -1,0 +1,60 @@
+//===- spirv_device_image.vx - a spirv64 topology gets a SPIR-V image -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// A USER-DECLARED topology whose machine model says `arch: spirv64` gets its
+// kernel compiled to a SPIR-V module, carried in the dispatch payload -- the
+// Intel Arc's architecture (fleet/arc-a770.vx).
+//
+// The image is binary and holds NUL bytes in its first word, so it cannot ride
+// in a NUL-terminated `image=` entry; it rides in the payload's section, after
+// the entries, with the length that says where it ends. device_image_test.rs
+// decodes that section and asserts the SPIR-V magic, the kernel's name in the
+// module, and -- when spirv-val is installed -- that the module validates.
+//
+// This file pins the source-level half: the spawn carries the declared arch,
+// and the program computes the same answer locally, where the region runs on
+// the host and the transfers are no-ops.
+//
+// CHECK: vx.spawn topology({{[0-9]+}}) {
+// CHECK: } {arch = "spirv64"
+// EXPECT: [[0,   1],
+// EXPECT: [1,   2]]
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32, [2, 2]>::uninit();
+  let mut o = Tensor<f32, [2, 2]>::uninit();
+  for i in 0..2 {
+    for d in 0..2 {
+      a[i][d] = ((i + d) as f32) * 0.5;
+      o[i][d] = 0.0;
+    }
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..2 {
+      for d in 0..2 {
+        od[i][d] = ad[i][d] * 2.0;
+      }
+    }
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}
