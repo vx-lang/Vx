@@ -35,8 +35,8 @@ A backend is three pieces. The NVIDIA backend is the worked example for each.
 ## What a backend does not do
 
 The language, the type checker, and the placement rules (`transfer`, memory
-spaces, capacity checks) are the same for every backend. Two decisions of
-record:
+spaces, capacity checks) are the same for every backend. Two settled
+decisions:
 
 - **Matmul goes to a vendor library** (cuBLAS today; oneMKL would be the
   Intel parallel). A hand-tiled GEMM loses to the vendor one, so generated
@@ -51,7 +51,7 @@ record:
 
 | Target | Route | Status |
 |---|---|---|
-| CPU (x86-64, arm64) | native, through LLVM | working, tested in CI |
+| CPU (x86-64, arm64) | native, through LLVM | working; x86-64 tested in CI, arm64 built for release but not tested |
 | NVIDIA | `gpu` dialect → NVVM → PTX; cuBLAS for matmul | working for placed kernels; completion tracked in #251 |
 | Apple GPU / ANE | library routing (MPS, CoreML) | working for the routed patterns |
 | Intel XPU | kernel SPIR-V, SYCL runtime, oneMKL for matmul | the first community backend, offered by a contributor; planning in #1137 |
@@ -60,7 +60,7 @@ record:
 | TPU | — | not planned: there is no native route, since the vendor compiler stack is closed. Emitting StableHLO for a PJRT plugin is a public route, but a different kind of backend than the three pieces above |
 
 A "working" row is true of a build made for that target: `build.rs` builds
-one dispatch library (shared-work item 5), so a compiler built with CUDA
+one dispatch library (shared-work item 6), so a compiler built with CUDA
 cannot run programs on an Apple GPU, and one built on a Mac cannot run them
 on an NVIDIA GPU.
 
@@ -85,8 +85,8 @@ decides which runtimes a kernel can go to:
   device supports `VK_KHR_buffer_device_address`, so a Vulkan backend here
   should require that extension outright — the alternative is descriptor
   sets, which means a rework of the whole argument convention. Vulkan also
-  has no vendor BLAS, so the matmul rule has no answer there yet. What Vulkan
-  buys is reach (cards from every vendor) and Mesa's lavapipe, a software
+  has no vendor BLAS, so there is no vendor matmul library there yet. What
+  Vulkan buys is reach (cards from every vendor) and Mesa's lavapipe, a software
   Vulkan device that installs on a plain CI runner, so Vulkan kernels could
   actually *execute* in CI.
 
@@ -96,12 +96,14 @@ A Vulkan runtime can come later under the same device-image machinery.
 lowers a Vx kernel to the LLVM dialect with SPIR-V calling conventions; with
 `llvm.target_triple = "spirv64-unknown-unknown"`, `llc -mtriple=spirv64`
 turns it into SPIR-V, as text by default, so a test can FileCheck it. This
-reaches a module for a real Vx kernel today. The other two routes,
-`convert-gpu-to-spirv` and the XeVM target, have not been run against a Vx
-kernel end to end; the planning issue (#1137) records what blocks the first (it
+gives a SPIR-V module for a real Vx kernel today, but not yet one that
+`spirv-val` accepts: shared-work items 3 and 4 below are what stands between
+the two. Neither of the other two routes gets that far. `convert-gpu-to-spirv`
 expects structured control flow where Vx has a CFG, and replaces a memref
-with a runtime array that drops its shape and strides), and keeps the full
-recipe for the route above.
+with a runtime array that drops its shape and strides. The XeVM pipeline
+(`--gpu-lower-to-xevm-pipeline`) wraps the kernel body in a region that must
+have one block, and a Vx kernel body has several. The commands for all three
+are in the review of the pull request that added this page (#1138).
 
 ## Support tiers
 
@@ -110,16 +112,16 @@ without the hardware can check. The tiers, modeled on Rust's target tiers:
 
 - **Tier 1 — CPU paths.** CI runs the tests; a regression blocks the merge.
 - **Tier 2 — NVIDIA.** Maintainer-owned. CI proves it builds; correctness is
-  shown by parity runs on hardware before any release or public claim. A
-  scheduled, non-blocking run on rented hardware would catch regressions
+  shown by runs on real hardware, checked against the CPU result, before
+  any release or public claim. A scheduled, non-blocking run on rented hardware would catch regressions
   between releases; until one exists, the pre-release run is the only
   hardware signal.
 - **Tier 3 — community backends.** Must build in CI with no vendor SDK
   installed: the device-image half compiles and its output is checked with
   FileCheck, and the vendor-free runtime pieces have unit tests in
-  `tests/runtime/`. Correctness is shown by parity runs the hardware owner
-  records in each PR, with the test marked `REQUIRES: gpu`. A named owner is
-  a requirement for merging; a backend that loses its owner is marked
+  `tests/runtime/`. Correctness is shown by runs on real hardware, checked
+  against the CPU result, that the hardware owner records in each PR, with
+  the test marked `REQUIRES: gpu`. A named owner is a requirement for merging; a backend that loses its owner is marked
   unmaintained here, not reverted. A Tier 3 regression never blocks `main`,
   and that includes its CI build job: the job is a non-required check, and
   when a change on `main` breaks it, the owner has until the next release
@@ -141,11 +143,16 @@ their value whichever backend lands first.
 
 1. **Kernels all land in one module, for one arch.** `materializeGpuKernels`
    in `src/dialect/VxLowering.cpp` only clones kernels whose `arch:` is
-   `nvptx64`, and clones them all into the single `gpu.module @vx_kernels`.
+   `nvptx64`, and clones them all into the single `gpu.module @vx_kernels`,
+   together with the functions they call and the constant tables they read,
+   each copied once.
    Kernels need to be grouped into one `gpu.module` per target arch, each
    module carrying an attribute that names its target (`#nvvm.target`, or
    the SPIR-V route's `llvm.target_triple`), and `deviceImageOf()` becomes a choice keyed on that
-   attribute rather than a function that always runs the NVVM passes.
+   attribute rather than a function that always runs the NVVM passes. A
+   function or table used by kernels of two architectures then has to be
+   copied into each module, and the copies deduplicated per module rather
+   than once for the whole program.
 1. **The dispatch payload cannot carry a binary image.** The payload is a
    sequence of NUL-terminated `key=value` entries, which works because PTX is
    text; `deviceImageOf()` rejects images containing a NUL byte. SPIR-V is
@@ -163,16 +170,31 @@ their value whichever backend lands first.
    section, that test has to decode the section, or it stops covering the
    image.
 1. **Address spaces are mapped for NVVM only.** `AddressSpace` in
-   `src/arch.rs` knows the NVPTX numbering, and several places in
-   `VxLowering.cpp` compare the shared-memory address space to the integer 3
-   directly. The lowering should carry the symbolic
-   `#gpu.address_space<workgroup>` instead, and each target's type converter
+   `src/arch.rs` already has `gpu_attr()`, which gives the symbolic
+   `#gpu.address_space<...>` form, but nothing calls it: code generation
+   calls `nvptx_addrspace()`, and several places in `VxLowering.cpp` compare
+   the shared-memory address space to the integer 3 directly. The work is to
+   switch those callers to the symbolic form, and each target's type converter
    maps it to its own number (3 for NVVM, the `Workgroup` storage class for
    SPIR-V). The same goes for memory a kernel keeps for itself, such as the
    loop bounds it stores in stack slots: it has to be marked
    `#gpu.address_space<private>`. The SPIR-V route puts memory with no address
    space in device memory (`CrossWorkgroup`), and a stack slot there is
    invalid SPIR-V ("Storage class must match result type storage class").
+1. **Memrefs built inside a kernel do not survive typed SPIR-V pointers.**
+   On the route above, a memref value is a struct of two pointers, an
+   offset, sizes and strides. The pointers are untyped in the LLVM dialect,
+   and the SPIR-V backend gives the struct's pointer fields the type `i8*`,
+   while the pointers stored into them are `float*` or `i32*`. `spirv-val`
+   refuses the module ("The Object type (OpTypePointer) does not match the
+   type that results from indexing into the Composite"). This happens
+   wherever a kernel makes a memref of its own: the loop-bound stack slots
+   above, and a view of a parameter, such as one row of a tensor, made with
+   `memref.reinterpret_cast`. It does not change the kernel's parameters, so
+   `runtime/vx_kernel_launch.h` is unaffected. Two ways to remove it: keep
+   the loop bounds in SSA values instead of stack slots, and build views
+   without a new descriptor. Settle which before the SPIR-V image compiler
+   is written.
 1. **Scalar element types escape the `dtypes:` check.** E6026 covers tensors
    that are placed or transferred. An f64 *scalar* inside a `spawn` body
    passes the checker today and would only fail on the device, and the same
