@@ -84,6 +84,8 @@ Use the virtualenv created inside venv. Stop you dont find a venv virtual enviro
 
 ## General coding guidelines
 
+- Before adding a language feature, check it against `docs/language_rules_for_a_parallel_compiler.md`.
+  A feature that makes a global fact depend on a function body breaks the parallel compiler.
 - Remove trailing whitespaces
 - Remove redundant files/scripts that you create for making code changes
 - Prefer assert to escape hatches. This is a compiler, we better crash then fail silently.

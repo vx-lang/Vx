@@ -46,6 +46,7 @@ disagrees with the specification, the specification wins.
 | --- | --- |
 | [`architecture_executive_summary.md`](architecture_executive_summary.md) | The parallel compiler design, in brief |
 | [`parallel_compiler_architecture.md`](parallel_compiler_architecture.md) | The same at length: GIDs, the epoch model, the phase pipeline |
+| [`language_rules_for_a_parallel_compiler.md`](language_rules_for_a_parallel_compiler.md) | The language rules that let bodies be checked in parallel; a checklist for new features |
 | [`memory_algebra.md`](memory_algebra.md) | Containment, capacity and derived transfer cost |
 | [`custom_transfer_contract.md`](custom_transfer_contract.md) | What a hand-written transfer lowering must guarantee |
 | [`topology_representation.md`](topology_representation.md) | How topologies are represented internally |
