@@ -159,7 +159,11 @@ done
 cp -R fleet "$STAGE/fleet"
 
 mkdir -p "$STAGE/examples"
-cp examples/*.vx "$STAGE/examples/" 2>/dev/null || true
+# llama.vx imports a module from tests/ and reads model files from it, so it runs only in a checkout.
+for example in examples/*.vx; do
+    [ "$(basename "$example")" = "llama.vx" ] && continue
+    cp "$example" "$STAGE/examples/"
+done
 
 cp LICENSE "$STAGE/LICENSE"
 cp README.md "$STAGE/README.md"

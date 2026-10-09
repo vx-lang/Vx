@@ -282,6 +282,15 @@ jobs:
           "$prefix/bin/vxc" --parse-only uses_std.vx > /dev/null
           echo "packaged toolchain works from outside the source tree"
 
+          # Every example the toolchain ships has to compile with it.
+          for example in "$prefix"/examples/*.vx; do
+            "$prefix/bin/vxc" --action emit-mlir "$example" > /dev/null || {
+              echo "error: the shipped example $(basename "$example") does not compile" >&2
+              exit 1
+            }
+          done
+          echo "every shipped example compiles"
+
           # Ahead-of-time emission, which reaches MLIR by a different route from --run.
           #
           # `--run` hands the module to mlir-translate and links a native executable with clang.
