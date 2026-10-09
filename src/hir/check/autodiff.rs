@@ -62,6 +62,57 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Checks the arguments of a `grad`, `vjp` or `jvp` call against `func`'s parameters. Each
+    /// argument is checked expecting its parameter's type, so `0.25` passed to an `f64` parameter
+    /// is an `f64`, as it is in an ordinary call.
+    fn check_autodiff_args(
+        &mut self,
+        form: &str,
+        target_fn: &str,
+        func: &Function,
+        args: &mut [Expr],
+    ) {
+        if args.len() != func.params.len() {
+            self.errors.push(format!(
+                "Function {} expects {} arguments, but {} were provided",
+                target_fn,
+                func.params.len(),
+                args.len()
+            ));
+            return;
+        }
+        for (i, (arg, (_, param_type))) in args.iter_mut().zip(&func.params).enumerate() {
+            let arg_type = self.check_expr_type_expecting(arg, param_type.clone());
+            if !self.is_assignable(param_type, &arg_type) {
+                self.errors.push(format!(
+                    "Type mismatch in argument {} for {} target {}: expected {:?}, got {:?}",
+                    i + 1,
+                    form,
+                    target_fn,
+                    param_type,
+                    arg_type
+                ));
+            }
+        }
+    }
+
+    /// Checks the seed of a `vjp` or `jvp` call, expecting `expected`.
+    fn check_autodiff_seed(
+        &mut self,
+        form: &str,
+        target_fn: &str,
+        seed: &mut Expr,
+        expected: &Type,
+    ) {
+        let seed_type = self.check_expr_type_expecting(seed, expected.clone());
+        if !self.is_assignable(expected, &seed_type) {
+            self.errors.push(format!(
+                "Type mismatch in the seed for {} target {}: expected {:?}, got {:?}",
+                form, target_fn, expected, seed_type
+            ));
+        }
+    }
+
     pub(crate) fn check_grad_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::Grad(GradExpr {
@@ -80,25 +131,7 @@ impl<'a> TypeChecker<'a> {
                 };
                 self.check_differentiability(&func);
 
-                if args.len() != func.params.len() {
-                    self.errors.push(format!(
-                        "Function {} expects {} arguments, but {} were provided",
-                        target_fn,
-                        func.params.len(),
-                        args.len()
-                    ));
-                } else {
-                    for (i, arg) in args.iter_mut().enumerate() {
-                        let arg_type = self.check_expr_type(arg);
-                        let param_type = &func.params[i].1;
-                        if !self.is_assignable(param_type, &arg_type) {
-                            self.errors.push(format!(
-                                        "Type mismatch in argument {} for grad target {}: expected {:?}, got {:?}",
-                                        i + 1, target_fn, param_type, arg_type
-                                    ));
-                        }
-                    }
-                }
+                self.check_autodiff_args("grad", &*target_fn, &func, args);
                 func.return_type.clone()
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
@@ -122,26 +155,9 @@ impl<'a> TypeChecker<'a> {
                 };
                 self.check_differentiability(&func);
 
-                if args.len() != func.params.len() {
-                    self.errors.push(format!(
-                        "Function {} expects {} arguments, but {} were provided",
-                        target_fn,
-                        func.params.len(),
-                        args.len()
-                    ));
-                } else {
-                    for (i, arg) in args.iter_mut().enumerate() {
-                        let arg_type = self.check_expr_type(arg);
-                        let param_type = &func.params[i].1;
-                        if !self.is_assignable(param_type, &arg_type) {
-                            self.errors.push(format!(
-                                        "Type mismatch in argument {} for vjp target {}: expected {:?}, got {:?}",
-                                        i + 1, target_fn, param_type, arg_type
-                                    ));
-                        }
-                    }
-                }
-                self.check_expr_type(cotangent);
+                self.check_autodiff_args("vjp", &*target_fn, &func, args);
+                // The seed multiplies the derivative of the result, so it has the result's type.
+                self.check_autodiff_seed("vjp", &*target_fn, cotangent, &func.return_type);
                 func.return_type.clone()
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
@@ -165,26 +181,16 @@ impl<'a> TypeChecker<'a> {
                 };
                 self.check_differentiability(&func);
 
-                if args.len() != func.params.len() {
-                    self.errors.push(format!(
-                        "Function {} expects {} arguments, but {} were provided",
-                        target_fn,
-                        func.params.len(),
-                        args.len()
-                    ));
-                } else {
-                    for (i, arg) in args.iter_mut().enumerate() {
-                        let arg_type = self.check_expr_type(arg);
-                        let param_type = &func.params[i].1;
-                        if !self.is_assignable(param_type, &arg_type) {
-                            self.errors.push(format!(
-                                        "Type mismatch in argument {} for jvp target {}: expected {:?}, got {:?}",
-                                        i + 1, target_fn, param_type, arg_type
-                                    ));
-                        }
+                self.check_autodiff_args("jvp", &*target_fn, &func, args);
+                // The seed is a direction for the first parameter, so it has that parameter's type.
+                match func.params.first() {
+                    Some((_, first)) => {
+                        self.check_autodiff_seed("jvp", &*target_fn, tangent, first);
+                    }
+                    None => {
+                        self.check_expr_type(tangent);
                     }
                 }
-                self.check_expr_type(tangent);
                 func.return_type.clone()
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),

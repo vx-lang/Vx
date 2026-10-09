@@ -96,6 +96,16 @@ impl<'a> TypeChecker<'a> {
         ty
     }
 
+    /// As [`Self::check_expr_type`], with `expected` as the type an untyped numeric literal in
+    /// `expr` takes.
+    pub(crate) fn check_expr_type_expecting(&mut self, expr: &mut Expr, expected: Type) -> Type {
+        let saved = self.speculating;
+        self.speculating = false;
+        let ty = self.check_expr_expecting(expr, Some(expected), true);
+        self.speculating = saved;
+        ty
+    }
+
     pub(crate) fn check_expr_block(&mut self, stmts: &mut Vec<Statement>, consume: bool) -> Type {
         Self::name_loop_literals(stmts);
         self.hoist_spawn_allocations(stmts);

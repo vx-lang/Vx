@@ -1,0 +1,56 @@
+//===- autodiff_literal_arguments_take_parameter_types.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A number literal passed to grad takes the type of the parameter it is passed to, as in an
+// ordinary call: 0.25, 2.0 and 3.0 are f64 constants in the Enzyme calls, and 4 is an i32.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+fn half_square(x : f64) -> f64 {
+  return 0.5 * x * x;
+}
+
+fn scaled(x : f64, y : f64, n : i32) -> f64 {
+  return x * y * (n as f64);
+}
+
+fn main() -> i32 {
+  let _a = grad(half_square, 0.25);
+  let _b = grad(scaled, 2.0, 3.0, 4);
+  return 0;
+}
+
+// CHECK: module attributes {vx.drops} {
+// CHECK:   func.func private @vx_init_signals()
+// CHECK:   func.func private @__enzyme_autodiff_grad_half_square((f64) -> f64, f64) -> f64
+// CHECK:   func.func private @__enzyme_autodiff_grad_scaled((f64, f64, i32) -> f64, f64, f64, i32) -> f64
+// CHECK:   func.func @main() -> i32 {
+// CHECK:     call @vx_init_signals() : () -> ()
+// CHECK:     %cst = arith.constant 2.500000e-01 : f64
+// CHECK:     %f = constant @half_square : (f64) -> f64
+// CHECK:     %0 = call @__enzyme_autodiff_grad_half_square(%f, %cst) : ((f64) -> f64, f64) -> f64
+// CHECK:     %cst_0 = arith.constant 2.000000e+00 : f64
+// CHECK:     %cst_1 = arith.constant 3.000000e+00 : f64
+// CHECK:     %c4_i32 = arith.constant 4 : i32
+// CHECK:     %f_2 = constant @scaled : (f64, f64, i32) -> f64
+// CHECK:     %1 = call @__enzyme_autodiff_grad_scaled(%f_2, %cst_0, %cst_1, %c4_i32) : ((f64, f64, i32) -> f64, f64, f64, i32) -> f64
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     return %c0_i32 : i32
+// CHECK:   }
+// CHECK:   func.func @scaled(%arg0: f64, %arg1: f64, %arg2: i32) -> f64 {
+// CHECK:     %0 = arith.mulf %arg0, %arg1 : f64
+// CHECK:     %1 = arith.sitofp %arg2 : i32 to f64
+// CHECK:     %2 = arith.mulf %0, %1 : f64
+// CHECK:     return %2 : f64
+// CHECK:   }
+// CHECK:   func.func @half_square(%arg0: f64) -> f64 {
+// CHECK:     %cst = arith.constant 5.000000e-01 : f64
+// CHECK:     %0 = arith.mulf %cst, %arg0 : f64
+// CHECK:     %1 = arith.mulf %0, %arg0 : f64
+// CHECK:     return %1 : f64
+// CHECK:   }
+// CHECK: }
