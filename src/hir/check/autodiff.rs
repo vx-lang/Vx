@@ -182,12 +182,19 @@ impl<'a> TypeChecker<'a> {
                 self.check_differentiability(&func);
 
                 self.check_autodiff_args("jvp", &*target_fn, &func, args);
-                // The seed is a direction for the first parameter, so it has that parameter's type.
-                match func.params.first() {
-                    Some((_, first)) => {
-                        self.check_autodiff_seed("jvp", &*target_fn, tangent, first);
+                // The seed is a direction for the parameter, so it has that parameter's type. The
+                // generated code passes it after all the arguments, but Enzyme reads the argument
+                // after `x` as `x`'s seed, so only a one-parameter function works.
+                match func.params.as_slice() {
+                    [(_, param)] => {
+                        self.check_autodiff_seed("jvp", &*target_fn, tangent, param);
                     }
-                    None => {
+                    params => {
+                        self.errors.push(format!(
+                            "jvp works only on a function with one parameter, but {} has {}",
+                            target_fn,
+                            params.len()
+                        ));
                         self.check_expr_type(tangent);
                     }
                 }

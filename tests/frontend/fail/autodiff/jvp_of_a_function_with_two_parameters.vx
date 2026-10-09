@@ -1,0 +1,27 @@
+//===- jvp_of_a_function_with_two_parameters.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// jvp works only on a function with one parameter, so a function with two is a type error at
+// the call, whether the second parameter is a float or an integer.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: jvp works only on a function with one parameter, but times_y has 2
+// CHECK: jvp works only on a function with one parameter, but times_n has 2
+
+fn times_y(x : f64, y : f64) -> f64 {
+  return x * x * y;
+}
+
+fn times_n(x : f64, n : i32) -> f64 {
+  return x * x * (n as f64);
+}
+
+fn main() -> i32 {
+  let _a = jvp(times_y, 2.0, 3.0, 1.0);
+  let _b = jvp(times_n, 2.0, 3, 1.0);
+  return 0;
+}
