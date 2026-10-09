@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>When the build order changes the program</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="C++ generates a copy assignment or a template instance only where it is used, and lets each file make its own. When the copies differ, the link order picks which one runs. Which other languages share the problem, which rule it out, and where Vx stands.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="When the build order changes the program">
+<meta property="og:description" content="C++ makes code where it is used and lets the linker pick one copy. Swift and Haskell have the same shape; Rust rules it out. Where Vx stands, checked today.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-10-09T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/build-order-should-not-change-a-program.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-build-order-should-not-change-a-program.png">
+<meta property="og:image:alt" content="When the build order changes the program.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-build-order-should-not-change-a-program.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>When the build order changes the program</h1>
+<p class="post-meta">Aditya Kumar &middot; 9 October 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — C++ generates a class's copy assignment, or a
+template's code, only in the files that use it, and each of those files makes its own copy. The
+linker keeps one. If the copies differ, the link order decides which one the program runs, and the
+standard does not require the compiler to say anything. Swift and Haskell have the same shape;
+Rust rules it out with three rules. Vx follows those rules in most places. This post shows where
+it does not yet.</blockquote>
+
+<p class="lede">A compiler should give the same program for the same source, however the build is
+ordered, split or run in parallel. The code a C++ compiler generates only on use is where that
+promise breaks.</p>
+
+<h2>Code made where it is used</h2>
+
+<p>C++ does not generate code nobody calls. A class's implicit <code>operator=</code> is defined
+only when something assigns one of its objects. A template's body is instantiated only for the
+types it is used with. Both are generated in each file (translation unit) that uses them, as
+inline functions, and every one of those files puts its own copy in its object file. The linker
+keeps one copy and drops the rest.</p>
+
+<p>That is fine while the copies agree. Nothing makes them agree. Here a header is compiled twice
+with different settings, which a large build does by accident more often than anyone would
+like:</p>
+
+<!-- vx-doctest: skip (C++) -->
+<pre><code>// buffer.h
+struct Buffer {
+#ifdef LARGE
+  char bytes[4096];
+#else
+  char bytes[64];
+#endif
+};
+inline int capacity() { return sizeof(Buffer); }
+
+// a.cpp, compiled with -DLARGE
+#include "buffer.h"
+int from_a() { return capacity(); }
+
+// b.cpp, compiled without it
+#include "buffer.h"
+int from_b() { return capacity(); }</code></pre>
+
+<p>A <code>main</code> prints <code>from_a()</code> and <code>from_b()</code>. With GCC 15 on
+Linux:</p>
+
+<table>
+<thead><tr><th>Build</th><th>Prints</th></tr></thead>
+<tbody>
+<tr><td><code>-O0</code>, linked as <code>main.o a.o b.o</code></td><td><code>4096 4096</code></td></tr>
+<tr><td><code>-O0</code>, linked as <code>main.o b.o a.o</code></td><td><code>64 64</code></td></tr>
+<tr><td><code>-O2</code>, either order</td><td><code>4096 64</code></td></tr>
+</tbody>
+</table>
+
+<p>Three builds of the same files give three programs. At <code>-O0</code> the first object file
+the linker reads wins. At <code>-O2</code> each file inlines its own copy, so there is no single
+copy left to pick. An implicit <code>operator=</code> on <code>Buffer</code> is generated the same
+way, so it would copy 4096 bytes in one file and 64 in the other.</p>
+
+<p>The standard calls this a violation of the One Definition Rule: a program is ill-formed if two
+files define the same inline function differently. It also says "no diagnostic required", so
+neither the compiler nor the linker has to report it. The same holds for templates: if the code a
+template means depends on where it is instantiated, the program is ill-formed, with no diagnostic
+required.</p>
+
+<h2>Modules help, but not completely</h2>
+
+<p>C++20 modules remove the example above: a module is compiled once, so a macro can no longer
+give two files two versions of it. They do not remove the rule. A template is still instantiated
+in the modules that use it, and what it means there can still depend on which declarations that
+module can reach. When two modules bring in the same definition, the compiler has to merge them,
+and which one it sees first depends on the order the modules are loaded. Clang reports some
+mismatches as "different definitions in different modules". The standard still does not require
+it to.</p>
+
+<h2>Other languages with the same problem</h2>
+
+<p>The pattern is not specific to C++. It appears wherever something is chosen at the place it is
+used, and nothing makes every place choose the same way.</p>
+
+<ul>
+<li><strong>Swift.</strong> Two modules can each make the same type conform to the same protocol
+(a "retroactive conformance"). When a program contains both, the Swift runtime has to make
+exactly one of them active, and which one is not specified. Since
+<a href="https://github.com/swiftlang/swift-evolution/blob/main/proposals/0364-retroactive-conformance-warning.md">SE-0364</a>
+the compiler warns about such conformances unless they are marked <code>@retroactive</code>,
+which records that the author accepts the risk; it does not remove it.</li>
+<li><strong>Haskell.</strong> An "orphan" instance is one declared in a module that owns neither
+the class nor the type. Two libraries can both declare the same orphan instance. GHC reports
+overlapping instances only when it has to choose one for a use, not where they are declared or
+imported, so a program that imports both compiles until something uses the instance. The GHC
+developers chose this on purpose: refusing the import would stop two libraries with overlapping
+instances from ever being used together. With the <code>IncoherentInstances</code> extension
+the choice can depend on where it is made.</li>
+<li><strong>Java, and C++ static variables.</strong> A static initializer runs when the class is
+first used, and C++ runs initializers across files in an unspecified order (the "static
+initialization order fiasco"). This is order at run time rather than at build time, but the cause
+is the same: work happens on first use, and the first use is not fixed.</li>
+</ul>
+
+<h2>Languages that rule it out</h2>
+
+<p><strong>Rust</strong> generates generic code on use too, but the result cannot depend on where.
+Three rules make sure of that:</p>
+
+<ol>
+<li><strong>One implementation per type and trait.</strong> An <code>impl</code> must be in the
+crate that defines the trait or the type (the orphan rule), and two impls may not overlap. A whole
+program has at most one implementation of any trait for any type, so there is nothing to
+choose.</li>
+<li><strong>Generated code depends only on the type.</strong> <code>Clone</code> and
+<code>Copy</code> are asked for with <code>#[derive]</code> where the type is defined, not created
+where they are used.</li>
+<li><strong>Generic code is checked once.</strong> A generic function is type-checked against its
+bounds, not once per type it is used with, so an error cannot appear in one use and not another.</li>
+</ol>
+
+<p><strong>Go</strong> and <strong>C#</strong> also check generic code once. <strong>Zig</strong>
+is a useful middle case: it analyses a function only if something refers to it, so an unused
+function with a type error compiles. That depends on which functions are reachable, not on the
+order anything is built, so it is still deterministic.</p>
+
+<p>With these rules, generating code only on use is purely an optimization: it saves work, and it
+cannot change what the program does.</p>
+
+<h2>Where Vx stands</h2>
+
+<p>Vx compiles modules and functions in parallel with <code>vxc -j</code>, so this question is not
+academic. We checked each rule against the compiler as it is today.</p>
+
+<p><strong>The parallel build is the same program.</strong> A test compiles a program two modules
+deep at one thread and at four, and requires the generated MLIR to be the same bytes. The checking
+and the lowering of modules run concurrently at four threads, so module order is part of what the
+test compares.</p>
+
+<p><strong>Unused library functions are not checked, the way Zig does it.</strong> A function in
+the program's own file is always checked. A function in an imported module is checked only if the
+program uses it, so a library's type error appears only in programs that call the function. The
+error names the program's use: <code>in `from_left`, imported from `left` and used by this
+program</code>. This depends on what is reachable, not on build order, and the test for it runs
+with one thread, with four, and on both of Vx's code generators.</p>
+
+<p><strong>Two implementations of one trait for one type are refused, but too late.</strong> Here
+two modules implement the same trait for the same type, one returning 1 and one returning 2:</p>
+
+<!-- vx-doctest: skip (four files) -->
+<pre><code>// shape.vx
+struct Point { x : i32, y : i32, }
+trait Describe { fn describe(self : &amp;Self) -&gt; i32; }
+fn make() -&gt; Point { return Point { x : 1, y : 2 }; }
+
+// left.vx
+import shape;
+impl Describe for Point { fn describe(self : &amp;Point) -&gt; i32 { return 1; } }
+fn from_left(p : &amp;Point) -&gt; i32 { return p.describe(); }
+
+// right.vx: the same, but it returns 2 and the function is from_right
+
+// main.vx
+import shape;
+import left;
+import right;
+fn main() -&gt; i32 {
+  let p = make();
+  print(from_left(&amp;p));
+  print(from_right(&amp;p));
+  return 0;
+}</code></pre>
+
+<p>Vx never picks one silently. The program is refused with E3035 in both import orders, at one
+thread and at four, and on both code generators, with the same errors each time. (A
+<code>-j</code> build prints them in a slightly different order from a plain build, but in the
+same order at every thread count.)</p>
+
+<pre class="diag">error[E3035]: in `from_left`, imported from `left` and used by this program: Method 'describe'
+on 'Point' is defined by more than one impl (Describe, Describe); name the trait to choose one,
+as in 'Describe::describe(..)'</pre>
+
+<p>But this is GHC's behaviour, not Rust's. The two impls themselves are accepted: delete the two
+calls to <code>describe</code> and the program compiles. The error lands on whichever function
+calls the method, which may be in a third module whose author did nothing wrong. And the help is
+wrong for this case: both impls are of <code>Describe</code>, so naming the trait gives the same
+error. Both problems are filed as
+<a href="https://github.com/vx-lang/Vx/issues/1443">#1443</a>. The fix is to report the second
+impl where it is written. Whether Vx should also adopt Rust's orphan rule, which makes the
+cross-module case impossible to write, is a larger decision.</p>
+
+<p class="post-foot">Vx is Apache 2.0 with the LLVM exception &mdash;
+<a href="/docs/getting-started.html">install it</a> and try the examples.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+</body>
+</html>

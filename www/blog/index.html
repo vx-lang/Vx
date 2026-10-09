@@ -43,6 +43,14 @@
 
   <ul class="posts">
     <li>
+      <a href="/blog/build-order-should-not-change-a-program.html">When the build order changes the program</a>
+      <time datetime="2026-10-09">9 October 2026</time>
+      <p>C++ generates a copy assignment or a template instance only in the files that use it,
+      and the linker keeps one copy. When the copies differ, the link order picks which one runs.
+      Swift and Haskell share the problem, Rust rules it out, and Vx is mostly there, with one
+      gap found while writing this.</p>
+    </li>
+    <li>
       <a href="/blog/programming-a-gpu-fleet.html">Programming a GPU fleet as one program</a>
       <time datetime="2026-10-08">8 October 2026</time>
       <p>In Vx the machine is part of the program, so a serving plan that does not fit a GPU is

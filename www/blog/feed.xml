@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-10-08T21:00:00Z</updated>
+  <updated>2026-10-09T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>When the build order changes the program</title>
+    <link href="https://vxlang.org/blog/build-order-should-not-change-a-program.html"/>
+    <id>https://vxlang.org/blog/build-order-should-not-change-a-program.html</id>
+    <updated>2026-10-09T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>C++ generates a class's copy assignment, or a template's code, only in the files that use it, and each file makes its own copy; the linker keeps one. If the copies differ, the link order decides which one runs, and the standard requires no diagnostic. A short example prints three different results from three builds of the same files. Swift's retroactive conformances and Haskell's orphan instances have the same shape. Rust rules it out with one implementation per type and trait, derived code, and generic code checked once. Vx builds the same program at any thread count and never picks between two implementations silently, but it reports a duplicate implementation only where it is used.</summary>
+  </entry>
 
   <entry>
     <title>Programming a GPU fleet as one program</title>
