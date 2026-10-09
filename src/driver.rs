@@ -1176,7 +1176,8 @@ impl CompilerDriver {
         let context = melior::Context::new();
         let emit_diagnostics = self.options.emit_backend_diagnostics;
         context.attach_diagnostic_handler(move |diagnostic| {
-            // Errors always; anything quieter only when asked for.
+            // Errors and warnings always; notes and remarks only when asked
+            // for.
             //
             // This dropped everything unless `--emit-backend-diagnostics` was
             // passed, which is right for the notes and remarks a pass pipeline
@@ -1186,13 +1187,31 @@ impl CompilerDriver {
             // program and *why* was written, handed to this closure, and
             // discarded. A backend error is a compile error and belongs on
             // stderr on the same terms as any other.
+            //
+            // A warning is the same bargain one step quieter: a pass that
+            // quietly leaves a kernel off the device has decided something the
+            // program's author has to know, and a flag they were not told
+            // about is the wrong place to hide it. Only warnings join errors
+            // here; the notes and remarks stay behind the flag, because they
+            // are the bulk this filter exists for.
             if emit_diagnostics
                 || matches!(
                     diagnostic.severity(),
                     melior::diagnostic::DiagnosticSeverity::Error
+                        | melior::diagnostic::DiagnosticSeverity::Warning
                 )
             {
-                eprintln!("{}", diagnostic);
+                // MLIR's C printer writes the message alone -- no location, no
+                // severity -- so a warning would arrive looking exactly like an
+                // error. Say which it is. Errors keep the text they had.
+                if matches!(
+                    diagnostic.severity(),
+                    melior::diagnostic::DiagnosticSeverity::Warning
+                ) {
+                    eprintln!("Warning: {}", diagnostic);
+                } else {
+                    eprintln!("{}", diagnostic);
+                }
             }
             true
         });

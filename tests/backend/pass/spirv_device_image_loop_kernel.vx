@@ -1,0 +1,82 @@
+//===- spirv_device_image_loop_kernel.vx - a loop kernel gets a SPIR-V image -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// The shape a real placed kernel has, and the one the SPIR-V argument
+// flattening has to survive: four rank-2 operands, a loop nest, and each row
+// read through a view. `spirv_device_image.vx` proves the mechanism on two
+// 2x2 tensors; this is the corpus shape `placed_kernel_four_operands.vx` has,
+// where four expansions and their accesses have to stay apart.
+//
+// The loop counters live in stack slots (`{vx.parallel_init}` /
+// `{vx.parallel_bound}`), which are memref values until `mem2reg` promotes
+// them; a row view is a `memref.reinterpret_cast`, whose offset has to reach
+// the address arithmetic the flat arguments are addressed through.
+// device_image_test.rs decodes the payload's section and asserts the SPIR-V
+// magic, the kernel's name, and that `spirv-val` accepts the module.
+//
+// CHECK: vx.spawn topology({{[0-9]+}}) {
+// CHECK: } {arch = "spirv64"
+// All eight rows. Row i is 2*(i+j) + (j+2), so 2i + 3j + 2; every operand shows
+// up in the values, so a kernel that drops one changes them.
+// EXPECT: [[2,   5,   8,   11],
+// EXPECT:  [4,   7,   10,   13],
+// EXPECT:  [6,   9,   12,   15],
+// EXPECT:  [8,   11,   14,   17],
+// EXPECT:  [10,   13,   16,   19],
+// EXPECT:  [12,   15,   18,   21],
+// EXPECT:  [14,   17,   20,   23],
+// EXPECT:  [16,   19,   22,   25]]
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut a_h = Tensor<f32, [8, 4]>::uninit();
+  let mut b_h = Tensor<f32, [8, 4]>::uninit();
+  let mut c_h = Tensor<f32, [8, 4]>::uninit();
+  let mut o_h = Tensor<f32, [8, 4]>::uninit();
+
+  // Values that vary along both axes, so no operand can be dropped without
+  // changing the result.
+  for i in 0..8 {
+    for j in 0..4 {
+      a_h[i][j] = ((i + j) as f32);
+      b_h[i][j] = 2.0;
+      c_h[i][j] = ((j + 2) as f32);
+      o_h[i][j] = 0.0;
+    }
+  }
+
+  let a = transfer(a_h, Memory::GPU_HBM);
+  let b = transfer(b_h, Memory::GPU_HBM);
+  let c = transfer(c_h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+
+  spawn on(Topology::Dev) {
+    for i in 0..8 {
+      let arow = a[i];
+      let brow = b[i];
+      let crow = c[i];
+      let mut orow = o[i];
+      for j in 0..4 {
+        orow[j] = arow[j] * brow[j] + crow[j];
+      }
+    }
+  }
+
+  print(o);
+  return 0;
+}

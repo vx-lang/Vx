@@ -1,0 +1,50 @@
+//===- spirv_device_image_result_slot.vx - a yielding region warns -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// A `spirv64` region that yields a value hands it back through a host stack
+// slot, which a device cannot address, so the kernel gets no SPIR-V image and
+// the compiler says so. This is the sibling of the memref-cell warning the
+// legacy path already gets; device_image_test.rs asserts both the missing
+// `format=spirv` entry and the warning text, which names the host stack slot.
+//
+// This file pins the source-level half: the spawn carries the declared arch,
+// and the program still computes the right answer locally, where the region
+// runs on the host. device_image_test.rs is what asserts the warning text; the
+// warning goes to stderr, so a CHECK line for it here would be matched against
+// a stream whose two halves are not ordered.
+//
+// CHECK: vx.spawn topology({{[0-9]+}}) {
+// CHECK: } {arch = "spirv64"
+// EXPECT: 6
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<i32, [2, 2]>::uninit();
+  for i in 0..2 {
+    for j in 0..2 {
+      a[i][j] = i * 3 + j + 1;
+    }
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  let v = spawn on(Topology::Dev) {
+    ad[0][0] + ad[1][1]
+  };
+  let hv = transfer(v, Memory::CPU_DRAM);
+  print(hv);
+  return 0;
+}
