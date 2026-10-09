@@ -138,6 +138,13 @@ jobs:
           source config.local
           cargo build --release --workspace
 
+      # The macOS toolchain carries no LLVM, so it ships Enzyme on its own, built against the
+      # Homebrew LLVM 22 its users install.
+      - name: Build Enzyme (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: scripts/provision/build_enzyme.sh "$(dirname "$(command -v llvm-config)")" "$RUNNER_TEMP/enzyme"
+
       - name: Package
         shell: bash
         run: |
@@ -147,6 +154,8 @@ jobs:
           export VX_TARGET_SUFFIX="${{ matrix.cuda && '-cuda' || '' }}"
           if [ "$(uname -s)" = "Linux" ]; then
             export VX_BUNDLE_LLVM="$GITHUB_WORKSPACE/toolchain/install"
+          else
+            export VX_BUNDLE_ENZYME="$RUNNER_TEMP/enzyme/LLVMEnzyme-22.dylib"
           fi
           VX_SKIP_BUILD=1 ./scripts/release/package.sh "${{ steps.version.outputs.version }}"
 
@@ -339,6 +348,29 @@ jobs:
             exit 1
           fi
           echo "packaged toolchain links and runs a program containing 'spawn on'"
+
+          # grad, through the Enzyme the toolchain ships. The derivative of x * x at 3 is 6.
+          cat > grad.vx <<'EOF'
+          fn square(x : f64) -> f64 {
+              return x * x;
+          }
+
+          fn main() -> i32 {
+              let x : f64 = 3.0;
+              print(grad(square, x));
+              return 0;
+          }
+          EOF
+          set +e
+          grad_out=$("$prefix/bin/vxc" --run grad.vx 2>&1)
+          grad_status=$?
+          set -e
+          if [ "$grad_status" -ne 0 ] || ! grep -qx "6" <<<"$grad_out"; then
+            echo "error: the packaged toolchain could not run a program using grad (vxc exit $grad_status)" >&2
+            echo "$grad_out" >&2
+            exit 1
+          fi
+          echo "packaged toolchain runs a program using grad"
 
 
       - uses: actions/upload-artifact@v4

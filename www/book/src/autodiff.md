@@ -242,8 +242,8 @@ Differentiation is done by [Enzyme](https://enzyme.mit.edu/), which differentiat
 it works on the IR rather than on source, it differentiates through the optimiser's view of your
 code, including calls into other functions.
 
-Enzyme has to be present when the compiler is built — [Building from source](building.md) covers
-installing it.
+The toolchains the installer sets up include Enzyme. A compiler built from source uses the Enzyme
+plugin that `ENZYME_LIB` names; [Building from source](building.md) covers building one.
 
 ## Limits worth knowing
 
