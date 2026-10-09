@@ -1454,6 +1454,28 @@ static bool collectDeviceCallees(Operation *op, ModuleOp module, bool inCallee,
   return dialect && isDeviceLowerableDialect(dialect->getNamespace());
 }
 
+/// The device-image pipelines a kernel's declared `arch:` can select.
+///
+/// One entry today: a machine file that says `arch: nvptx64` asks for the NVVM
+/// pipeline in `deviceImageOf`. `None` is the answer for an architecture Vx has
+/// no pipeline for, and that is not an error -- `applegpu` reaches its device
+/// through the plugin ABI, and a topology Vx cannot compile for still
+/// type-checks.
+///
+/// A second backend adds a row here *and* a sibling of `deviceImageOf`. They
+/// land together, because a row without its pipeline clones a body into a
+/// `gpu.module` that nothing compiles (docs/gpu_backends.md, "Shared work
+/// before a second backend", item 1).
+enum class DevicePipeline { None, Nvptx };
+
+/// The pipeline a declared architecture names, `DevicePipeline::None` for an
+/// architecture this compiler has no pipeline for.
+static DevicePipeline pipelineForArch(StringRef arch) {
+  if (arch == "nvptx64")
+    return DevicePipeline::Nvptx;
+  return DevicePipeline::None;
+}
+
 // Turn each cell that holds a buffer into plain values. The AST code generator
 // keeps a tensor local in a cell (`memref<memref<..>>`), which the buffer
 // deallocation analysis cannot follow, and which stops being promotable once
@@ -2023,28 +2045,33 @@ struct ConvertVxToStandardPass
     llvm::DenseMap<Operation *, DeviceCallees> callees;
     module.walk([&](vx::KernelOp k) {
       const int32_t topo = static_cast<int32_t>(k.getTopology());
-      // Eligibility: the DECLARED arch when the kernel carries one, the
-      // dispatch-id band when it does not. A machine file that says `arch:
-      // nvptx64` has answered "what code do we emit for this topology" -- that
-      // is the field's documented meaning -- and this is the place that needed
-      // the answer; before the attribute existed the gate was the band alone,
-      // which a custom topology can never enter (declared ids start at 3000 by
+      // Eligibility: which device pipeline compiles this kernel, from the
+      // DECLARED arch when the kernel carries one and the dispatch-id band when
+      // it does not. A machine file that says `arch: nvptx64` has answered
+      // "what code do we emit for this topology" -- that is the field's
+      // documented meaning -- and this is the place that needed the answer;
+      // before the attribute existed the gate was the band alone, which a
+      // custom topology can never enter (declared ids start at 3000 by
       // construction), so no declaration could produce a device image (Vx#352).
       //
       // The band stays as the fallback for kernels with no arch attribute:
       // built-in topologies (whose descriptors declare no arch) and the
-      // AST-codegen path (which does not stamp). A declared arch we have no
-      // device pipeline for -- `applegpu` reaches its device through the plugin
-      // ABI, not NVVM -- is excluded here exactly like NPU/AccCore below.
-      if (auto arch = k->getAttrOfType<StringAttr>("arch")) {
-        if (arch.getValue() != "nvptx64")
-          return;
-      } else if (topo < 500 || topo >= 600) {
+      // AST-codegen path (which does not stamp). A declared arch with no row in
+      // the table -- `applegpu` reaches its device through the plugin ABI, not
+      // NVVM -- is excluded here exactly like NPU/AccCore below.
+      DevicePipeline pipeline = DevicePipeline::None;
+      if (auto arch = k->getAttrOfType<StringAttr>("arch"))
+        pipeline = pipelineForArch(arch.getValue());
+      else if (topo >= 500 && topo < 600)
         // The GPU band from `topology_dispatch_id`. NPU and AccCore outline the
         // same way but reach their devices through a different backend, and
         // giving them an NVVM twin would be claiming something untrue.
+        pipeline = DevicePipeline::Nvptx;
+      // Only the NVPTX pipeline exists, so only a kernel it claims gets a twin.
+      // A row added to the table before its pipeline lands stops here rather
+      // than cloning a body nothing will compile.
+      if (pipeline != DevicePipeline::Nvptx)
         return;
-      }
       // A kernel that hands back a value writes it into a host stack slot,
       // which a GPU cannot address; the runtime runs it on the host instead.
       if (k->hasAttr("vx.result_slot"))

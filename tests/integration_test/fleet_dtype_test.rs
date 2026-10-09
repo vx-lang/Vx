@@ -40,10 +40,15 @@ const MATRIX: &[(&str, &str, bool)] = &[
     ("mi300x", "f4e2m1", false),
     // int4 goes the other way: Ampere has it, Hopper and Blackwell do not.
     ("a100-80", "i4", true),
+    // The Arc's XMX units take INT4, so it joins Ampere in this column.
+    ("arc-a770", "i4", true),
     ("h100-sxm", "i4", false),
     ("b200", "i4", false),
-    // Metal has no double, so the Apple part is the one row with no f64.
+    // Metal has no double, so the Apple part refuses f64, and the Arc is the
+    // second part with no double -- measured on the card, which exposes no
+    // cl_khr_fp64 and reports shaderFloat64 false.
     ("m4-uma", "f64", false),
+    ("arc-a770", "f64", false),
     ("a100-80", "f64", true),
     ("h100-sxm", "f64", true),
     // Every part takes f32 and f16; a machine that refused those would be wrong
@@ -54,6 +59,8 @@ const MATRIX: &[(&str, &str, bool)] = &[
     ("mi300x", "f32", true),
     ("m4-uma", "f32", true),
     ("m4-uma", "f16", true),
+    ("arc-a770", "f32", true),
+    ("arc-a770", "f16", true),
 ];
 
 #[test]
