@@ -204,6 +204,9 @@ jobs:
             printf 'VX_LLVM_BIN="%s"\n' "$(dirname "$(command -v llvm-config)")" \
               > "$prefix/etc/llvm-env.sh"
           fi
+          # vxc remembers where the build put its libraries. Move them away too, so a library the
+          # tarball does not ship fails here.
+          mv "$GITHUB_WORKSPACE/target/release/build" "$GITHUB_WORKSPACE/target/release/build.moved-away"
 
           mkdir -p /tmp/vx-work
           cd /tmp/vx-work
@@ -316,20 +319,17 @@ jobs:
               return 0;
           }
           EOF
+          # Checked by exit status, since Apple's linker never prints "undefined reference".
           set +e
           spawn_out=$("$prefix/bin/vxc" --run spawned.vx 2>&1)
           spawn_status=$?
           set -e
-          case "$spawn_out" in
-            *"undefined reference to \`vx_plugin"*)
-              echo "error: the packaged toolchain has no dispatch backend" >&2
-              echo "$spawn_out" >&2
-              exit 1 ;;
-          esac
           if [ "$spawn_status" -ne 0 ]; then
-            echo "note: spawn program exited $spawn_status; linking succeeded, which is what this checks"
+            echo "error: the packaged toolchain could not run a program containing 'spawn on' (vxc exit $spawn_status)" >&2
+            echo "$spawn_out" >&2
+            exit 1
           fi
-          echo "packaged toolchain links a program containing 'spawn on'"
+          echo "packaged toolchain links and runs a program containing 'spawn on'"
 
 
       - uses: actions/upload-artifact@v4

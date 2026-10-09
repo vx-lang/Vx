@@ -372,7 +372,8 @@ fn main() {
         assert!(status.success(), "{} archiving failed", ar);
 
         // --- Compile the Objective-C++ runtime file for JIT (Shared Library) ---
-        let lib_shared_path = PathBuf::from(&out_dir).join("libnpu_shared.dylib");
+        // Named like the other platforms' backends, so the release packaging finds it.
+        let lib_shared_path = PathBuf::from(&out_dir).join("libvx_npu_dispatch.dylib");
         let mut clang_shared_cmd = Command::new(&cxx);
         clang_shared_cmd.args([
             "-shared",
@@ -390,6 +391,8 @@ fn main() {
             "-framework",
             "CoreML",
             "-lffi",
+            // Otherwise every program linked against it looks for it in this OUT_DIR.
+            "-Wl,-install_name,@rpath/libvx_npu_dispatch.dylib",
             "-o",
             lib_shared_path.to_str().unwrap(),
         ]);

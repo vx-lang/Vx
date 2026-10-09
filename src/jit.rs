@@ -534,6 +534,7 @@ pub fn execute_mlir_streams(
     // "no such file or directory", rather than falling back to host execution. The sibling
     // resolution in `shared_library_paths` has always checked this; the link path had not.
     if !lib_npu.is_empty() && std::path::Path::new(&lib_npu).exists() {
+        clang_cmd.arg(format!("-Wl,-rpath,{}", parent_of(&lib_npu)));
         clang_cmd.args([&lib_npu]);
         clang_cmd.arg("-lffi");
 
@@ -668,6 +669,7 @@ mod tests {
         for lib in [
             runtime_library_path().expect("runtime library not found"),
             mlir_shims_path(),
+            std::env!("NPU_SHARED_LIB_PATH").to_string(),
         ] {
             if lib.is_empty() {
                 continue; // The shims are optional; only half-precision printing needs them.

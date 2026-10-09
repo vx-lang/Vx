@@ -120,10 +120,11 @@ ls "$STAGE/lib/"
 # Tested by glob rather than by counting: `wc -l` pads its output, so a `case` against "0" never
 # matches and the guard silently passes. An unmatched glob leaves the pattern itself in $1, which
 # -e then rejects.
-set -- "$STAGE"/lib/*dispatch.*
+# The shared library is the one `vxc --run` links; a static archive alone used to pass this check.
+set -- "$STAGE"/lib/*dispatch."${DLL}"
 if [ ! -e "$1" ]; then
-    echo "error: no dispatch backend staged into lib/." >&2
-    echo "  Looked in $TARGET_DIR/build/*/out for *dispatch.$DLL and *dispatch.a." >&2
+    echo "error: no shared dispatch library staged into lib/." >&2
+    echo "  Looked in $TARGET_DIR/build/*/out for *dispatch.$DLL." >&2
     echo "  Without it every program using 'spawn on' fails to link." >&2
     exit 1
 fi
