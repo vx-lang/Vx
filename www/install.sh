@@ -163,7 +163,12 @@ find_llvm() {
         v=$("$candidate" --version 2>/dev/null || echo "")
         case "$v" in
             "${LLVM_MAJOR}".*)
-                LLVM_BIN=$("$candidate" --bindir 2>/dev/null || dirname "$candidate")
+                # Homebrew's --bindir is a folder named after the exact version, which `brew
+                # upgrade` deletes. Its opt/ link moves to the new version instead.
+                case "$candidate" in
+                    */opt/llvm*) LLVM_BIN=$(dirname "$candidate") ;;
+                    *) LLVM_BIN=$("$candidate" --bindir 2>/dev/null || dirname "$candidate") ;;
+                esac
                 LLVM_FOUND_VERSION="$v"
                 return 0
                 ;;

@@ -279,6 +279,14 @@ elif [ -f "\$PREFIX/etc/llvm-env.sh" ]; then
     . "\$PREFIX/etc/llvm-env.sh"
 fi
 
+# Upgrading LLVM can delete the folder the installer saved.
+if [ -n "\${VX_LLVM_BIN:-}" ] && [ ! -d "\$VX_LLVM_BIN" ]; then
+    echo "error: Vx was set up to use LLVM in \$VX_LLVM_BIN, which no longer exists." >&2
+    echo "  Run the installer again to find LLVM:" >&2
+    echo "    curl -fsSL https://vxlang.org/install.sh | VX_VERSION=${VERSION} sh" >&2
+    exit 1
+fi
+
 if [ -n "\${VX_LLVM_BIN:-}" ] && [ -d "\$VX_LLVM_BIN" ]; then
     # Both mechanisms: the env vars for the call sites that read them, and PATH for the ones
     # that still resolve by bare name.
