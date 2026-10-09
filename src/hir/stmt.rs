@@ -348,6 +348,20 @@ impl<'a> TypeChecker<'a> {
             ty
         };
 
+        // The device this region is placed on has to be able to represent what the body builds
+        // (docs/gpu_backends.md, "Shared work before a second backend", item 4). The placement
+        // check above asks the same question of a *space*, which is exactly why it only sees
+        // values that were placed: a scalar or a vector built here reaches no space at all.
+        // Outside a region the active space is host DRAM, whose descriptor declares no
+        // `dtypes:` and so constrains nothing -- so this is silent there by construction, not by
+        // a condition that could drift.
+        //
+        // Bindings only. A value that appears solely as the region's result -- never bound to a
+        // name -- is still unchecked, which is recorded rather than left to be rediscovered.
+        for elem in Self::element_types_of(&binding_ty) {
+            self.check_element_type_in_active_region(&elem, &context, span);
+        }
+
         self.bind_view(name.as_ref(), *_is_mut, expr, &binding_ty, span);
         if !self.speculating && !Self::views_foreign_memory(expr) {
             self.drops_note_owner(name.as_ref(), &binding_ty);

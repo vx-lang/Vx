@@ -1,0 +1,51 @@
+//===- f64_scalar_inside_a_device_region.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A value the body of a `spawn` builds, of an element type the device cannot
+// represent. E6026, the same code a placed tensor gets.
+//
+// The placement checks ask this question of a *space*: that is how they know
+// which device to ask about, and it is why they only ever see tensors that were
+// placed or transferred. A scalar the body declares reaches no space at all, so
+// nothing asked, and the first complaint came from the device -- on the machine
+// that lacks the type, after the job had been scheduled, rather than before a
+// kernel was emitted.
+//
+// The element type here is f64 and the device is the Intel Arc A770, which has
+// no double-precision path at all: no `cl_khr_fp64` on the OpenCL device and
+// `shaderFloat64` false under Vulkan, both measured (`fleet/arc-a770.vx`).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6026
+// CHECK-SAME: element type f64
+// CHECK-SAME: cannot represent
+
+Memory CPU_DRAM {}
+Memory HBM {
+  within: Memory::CPU_DRAM, capacity: 16 GiB, managed: explicit, scope: device
+}
+
+Topology A770 {
+  arch: spirv64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  // The same list fleet/arc-a770.vx declares, minus everything the card lacks.
+  dtypes: [f32, f16, i4, u4, i8, u8, i16, u16, i32, u32, i64, u64, bool],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s
+}
+
+fn main() -> i32 {
+  // A double-precision scratch value: nothing in this program places it, so the
+  // placement checks never see it, and before this check existed it compiled
+  // and then failed on the card.
+  spawn on(Topology::A770) {
+    let scale : f64 = 1.0;
+    let _step = scale * 2.0;
+  }
+  return 0;
+}
