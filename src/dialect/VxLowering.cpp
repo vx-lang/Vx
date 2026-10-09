@@ -1454,6 +1454,35 @@ static bool collectDeviceCallees(Operation *op, ModuleOp module, bool inCallee,
   return dialect && isDeviceLowerableDialect(dialect->getNamespace());
 }
 
+/// The device-image pipelines a kernel's declared `arch:` can select.
+///
+/// `None` is not an error -- `applegpu` reaches its device through the plugin
+/// ABI, so a topology Vx cannot compile for still type-checks. A row and its
+/// pipeline land together: a row without one would clone a body into a
+/// `gpu.module` that nothing compiles (docs/gpu_backends.md, item 1).
+enum class DevicePipeline { None, Nvptx };
+
+/// The pipeline a declared architecture names, `None` for one Vx has no
+/// pipeline for.
+static DevicePipeline pipelineForArch(StringRef arch) {
+  if (arch == "nvptx64")
+    return DevicePipeline::Nvptx;
+  return DevicePipeline::None;
+}
+
+/// The architecture a pipeline is the pipeline for: what a `gpu.module` it
+/// compiles records as its target, and what the image step reads back through
+/// `pipelineForArch`.
+static StringRef archOfPipeline(DevicePipeline pipeline) {
+  switch (pipeline) {
+  case DevicePipeline::Nvptx:
+    return "nvptx64";
+  case DevicePipeline::None:
+    return "";
+  }
+  return "";
+}
+
 // Turn each cell that holds a buffer into plain values. The AST code generator
 // keeps a tensor local in a cell (`memref<memref<..>>`), which the buffer
 // deallocation analysis cannot follow, and which stops being promotable once
@@ -2021,30 +2050,39 @@ struct ConvertVxToStandardPass
   void materializeGpuKernels(ModuleOp module) {
     SmallVector<vx::KernelOp> kernels;
     llvm::DenseMap<Operation *, DeviceCallees> callees;
+    // The pipeline the admitted kernels agreed on, recorded on the module
+    // below. Every kernel here passed the gate, so they share one.
+    DevicePipeline admittedPipeline = DevicePipeline::None;
     module.walk([&](vx::KernelOp k) {
       const int32_t topo = static_cast<int32_t>(k.getTopology());
-      // Eligibility: the DECLARED arch when the kernel carries one, the
-      // dispatch-id band when it does not. A machine file that says `arch:
-      // nvptx64` has answered "what code do we emit for this topology" -- that
-      // is the field's documented meaning -- and this is the place that needed
-      // the answer; before the attribute existed the gate was the band alone,
-      // which a custom topology can never enter (declared ids start at 3000 by
+      // Eligibility: which device pipeline compiles this kernel, from the
+      // DECLARED arch when the kernel carries one and the dispatch-id band when
+      // it does not. A machine file that says `arch: nvptx64` has answered
+      // "what code do we emit for this topology" -- that is the field's
+      // documented meaning -- and this is the place that needed the answer;
+      // before the attribute existed the gate was the band alone, which a
+      // custom topology can never enter (declared ids start at 3000 by
       // construction), so no declaration could produce a device image (Vx#352).
       //
       // The band stays as the fallback for kernels with no arch attribute:
       // built-in topologies (whose descriptors declare no arch) and the
-      // AST-codegen path (which does not stamp). A declared arch we have no
-      // device pipeline for -- `applegpu` reaches its device through the plugin
-      // ABI, not NVVM -- is excluded here exactly like NPU/AccCore below.
-      if (auto arch = k->getAttrOfType<StringAttr>("arch")) {
-        if (arch.getValue() != "nvptx64")
-          return;
-      } else if (topo < 500 || topo >= 600) {
+      // AST-codegen path (which does not stamp). A declared arch with no row in
+      // the table -- `applegpu` reaches its device through the plugin ABI, not
+      // NVVM -- is excluded here exactly like NPU/AccCore below.
+      DevicePipeline pipeline = DevicePipeline::None;
+      if (auto arch = k->getAttrOfType<StringAttr>("arch"))
+        pipeline = pipelineForArch(arch.getValue());
+      else if (topo >= 500 && topo < 600)
         // The GPU band from `topology_dispatch_id`. NPU and AccCore outline the
         // same way but reach their devices through a different backend, and
         // giving them an NVVM twin would be claiming something untrue.
+        pipeline = DevicePipeline::Nvptx;
+      // No pipeline claims the kernel -- its declared arch has no row, or it
+      // carries no arch and is outside the GPU band -- so it gets no device
+      // twin.
+      if (pipeline == DevicePipeline::None)
         return;
-      }
+      admittedPipeline = pipeline;
       // A kernel that hands back a value writes it into a host stack slot,
       // which a GPU cannot address; the runtime runs it on the host instead.
       if (k->hasAttr("vx.result_slot"))
@@ -2122,6 +2160,10 @@ struct ConvertVxToStandardPass
     builder.setInsertionPointToEnd(module.getBody());
     auto gpuModule =
         builder.create<gpu::GPUModuleOp>(module.getLoc(), "vx_kernels");
+    // The module names its target, so the image step reads the pipeline the
+    // gate chose instead of asking again (docs/gpu_backends.md, item 1).
+    gpuModule->setAttr("vx.target",
+                       builder.getStringAttr(archOfPipeline(admittedPipeline)));
 
     // The kernels' callees and constant tables, copied once each. The host
     // keeps its own: only the device clone needs these.
@@ -3528,8 +3570,23 @@ struct ConvertVxToLLVMPass
 
     llvm::StringMap<std::string> deviceImages;
     for (gpu::GPUModuleOp m : deviceModules) {
+      // Which pipeline compiles this module, from the target the gate recorded
+      // on it. A module with no target is a bug rather than a program Vx should
+      // compile: the gate gives a kernel with no pipeline no twin, so nothing
+      // reaches here without one.
+      auto target = m->getAttrOfType<StringAttr>("vx.target");
+      const DevicePipeline pipeline =
+          target ? pipelineForArch(target.getValue()) : DevicePipeline::None;
       std::string error;
-      std::string image = deviceImageOf(m, error);
+      std::string image;
+      switch (pipeline) {
+      case DevicePipeline::Nvptx:
+        image = deviceImageOf(m, error);
+        break;
+      case DevicePipeline::None:
+        error = "no device pipeline answers for this module";
+        break;
+      }
       // Fatal rather than "emit nothing and carry on". Carrying on produces a
       // program that compiles, dispatches, and is then refused at the far end
       // for a reason that has nothing to do with the refusal -- the kernel is
