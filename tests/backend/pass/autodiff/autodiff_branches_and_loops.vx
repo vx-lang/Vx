@@ -1,0 +1,44 @@
+//===- autodiff_branches_and_loops.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The derivative follows the branch or the loop the function takes: the Huber loss at 0.25, 3
+// and -3 (slopes 0.25, 1 and -1), and x^5 by a loop of 5 multiplications at x = 2 (5 x^4 = 80).
+// Printed times 10^6. From the autodiff page.
+//
+// EXPECT: 250000 1000000 -1000000 80000000
+
+fn huber(x : f64) -> f64 {
+  if x < -1.0 {
+    return -x - 0.5;
+  }
+  if x > 1.0 {
+    return x - 0.5;
+  }
+  return 0.5 * x * x;
+}
+
+fn power(x : f64, n : i32) -> f64 {
+  let mut result : f64 = 1.0;
+  for i in 0..n {
+    result = result * x;
+  }
+  return result;
+}
+
+fn main() -> i32 {
+  let near : f64 = 0.25;
+  let far : f64 = 3.0;
+  print((grad(huber, near) * 1000000.0) as i64);
+  print!(" ");
+  print((grad(huber, far) * 1000000.0) as i64);
+  print!(" ");
+  print((grad(huber, -far) * 1000000.0) as i64);
+  print!(" ");
+  let x : f64 = 2.0;
+  print((grad(power, x, 5) * 1000000.0) as i64);
+  return 0;
+}

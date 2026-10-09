@@ -1,0 +1,25 @@
+//===- autodiff_newton_method.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Newton's method with grad as the derivative finds the x where cos x = x, 0.739085..., printed
+// times 10^6. From the autodiff page.
+//
+// EXPECT: 739085
+import core::num;
+
+fn gap(x : f64) -> f64 {
+  return x.cos() - x;
+}
+
+fn main() -> i32 {
+  let mut x : f64 = 1.0;
+  for step in 0..6 {
+    x = x - gap(x) / grad(gap, x);
+  }
+  print((x * 1000000.0) as i64);
+  return 0;
+}

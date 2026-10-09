@@ -1,0 +1,29 @@
+//===- autodiff_partial_derivatives.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// grad moves only the first parameter. For f = x * x * y at (3, 2), grad(f, x, y) is the
+// derivative in x (2 x y = 12), and the same f with y first gives the derivative in y
+// (x * x = 9). Printed times 10^6. From the autodiff page.
+//
+// EXPECT: 12000000 9000000
+
+fn f(x : f64, y : f64) -> f64 {
+  return x * x * y;
+}
+
+fn f_in_y(y : f64, x : f64) -> f64 {
+  return f(x, y);
+}
+
+fn main() -> i32 {
+  let x : f64 = 3.0;
+  let y : f64 = 2.0;
+  print((grad(f, x, y) * 1000000.0) as i64);
+  print!(" ");
+  print((grad(f_in_y, y, x) * 1000000.0) as i64);
+  return 0;
+}

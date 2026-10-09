@@ -1,0 +1,27 @@
+//===- autodiff_gradient_descent.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Gradient descent with grad fits the slope w of the line y = w x to three points. The best
+// slope is 27.9 / 14 = 1.992857..., printed times 10^6. From the autodiff page.
+//
+// EXPECT: 1992857
+
+fn loss(w : f64) -> f64 {
+  let e1 = w * 1.0 - 2.0;
+  let e2 = w * 2.0 - 4.1;
+  let e3 = w * 3.0 - 5.9;
+  return e1 * e1 + e2 * e2 + e3 * e3;
+}
+
+fn main() -> i32 {
+  let mut w : f64 = 0.0;
+  for step in 0..50 {
+    w = w - 0.02 * grad(loss, w);
+  }
+  print((w * 1000000.0) as i64);
+  return 0;
+}

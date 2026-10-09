@@ -1,0 +1,32 @@
+//===- autodiff_softplus_through_function_calls.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The derivative of softplus, ln(1 + e^x), is the sigmoid. softplus reaches `exp` and `ln_1p`
+// through another function. Both are printed at x = 0.5, times 10^6. From the autodiff page.
+//
+// EXPECT: 622459 622459
+import core::num;
+
+fn log_one_plus(t : f64) -> f64 {
+  return t.ln_1p();
+}
+
+fn softplus(x : f64) -> f64 {
+  return log_one_plus(x.exp());
+}
+
+fn sigmoid(x : f64) -> f64 {
+  return 1.0 / (1.0 + (-x).exp());
+}
+
+fn main() -> i32 {
+  let x : f64 = 0.5;
+  print((grad(softplus, x) * 1000000.0) as i64);
+  print!(" ");
+  print((sigmoid(x) * 1000000.0) as i64);
+  return 0;
+}
