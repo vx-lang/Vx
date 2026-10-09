@@ -101,7 +101,7 @@ The last line should read:
 ## Installing a specific version
 
 ```bash
-VX_VERSION=v0.0.2 curl -fsSL https://vxlang.org/install.sh | sh
+VX_VERSION=v0.0.3 curl -fsSL https://vxlang.org/install.sh | sh
 ```
 
 Toolchains are unpacked side by side under `~/.vx/toolchains/`, and `~/.vx/current` is a symlink to

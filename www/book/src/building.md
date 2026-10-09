@@ -121,7 +121,7 @@ to force it off. The toolkit alone is enough to build; a GPU is only needed to r
 To produce a redistributable tarball from a source build:
 
 ```bash
-./scripts/release/package.sh v0.0.2
+./scripts/release/package.sh v0.0.3
 ```
 
 That stages the compiler, its runtime library, the standard library and the machine files under
