@@ -2042,7 +2042,12 @@ impl<'c> MeliorGenerator<'c> {
                         Some(m) => crate::arch::declared_address_space(m, self.memories.get(m))
                             .ok_or_else(|| LowerError::from(unmappable_space_message(m)))?,
                     };
-                    format!("!llvm.ptr<{}>", addr_space.nvptx_addrspace())
+                    // Placement is erased into the C ABI, so no `arch:` is in hand here: the
+                    // unknown-target answer (today's numbers) is the honest one.
+                    format!(
+                        "!llvm.ptr<{}>",
+                        crate::arch::address_space_for_arch(None, addr_space)
+                    )
                 }
             }
             syntax::Type::Struct(name, _) => {
@@ -2279,11 +2284,25 @@ impl<'c> MeliorGenerator<'c> {
         };
 
         let memref_str = if addr_space != crate::arch::AddressSpace::Host {
+            // The target is the placement's topology: its declared `arch:` when it has one.
+            // Only a declared topology can have one, so a built-in placement names no target
+            // and keeps today's numbering.
+            let arch: Option<&str> = match top.as_ref() {
+                Some(p) => match &p.topology {
+                    syntax::Topology::Custom(name) => self
+                        .topologies
+                        .get(name)
+                        .and_then(|d| d.arch.as_ref())
+                        .map(|a| a.as_ref()),
+                    _ => None,
+                },
+                None => None,
+            };
             format!(
                 "memref<{}{}, {}>",
                 shape_str,
                 ty_str,
-                addr_space.nvptx_addrspace()
+                crate::arch::address_space_for_arch(arch, addr_space)
             )
         } else {
             format!("memref<{}{}>", shape_str, ty_str)
