@@ -3284,9 +3284,8 @@ impl<'r> Lowerer<'r> {
             for (_, p) in &data.variants {
                 let Some(t) = p.get(i) else { continue };
                 let t = t.substitute(&mapping);
-                let Some((sz, al, _)) = self.payload_field(&t) else {
-                    continue;
-                };
+                // A missing payload can be skipped; an unsupported one invalidates the layout.
+                let (sz, al, _) = self.payload_field(&t)?;
                 let better = match &widest {
                     None => true,
                     Some((bsz, bal, _)) => (sz, al) > (*bsz, *bal),
