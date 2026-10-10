@@ -148,6 +148,13 @@ impl<'a> Parser<'a> {
             if self.shift_assign_at().is_some() {
                 break;
             }
+            // The operator's own token, so a diagnostic about the operation points at it
+            // rather than at 0:0.
+            let op_span = Span {
+                line: self.peek().line,
+                column: self.peek().column,
+                length: self.peek().length,
+            };
             // A shift is checked first: on its own, the leading `<` or `>` would read as
             // a comparison, which binds looser and would take the second bracket as the
             // start of its right operand.
@@ -170,7 +177,7 @@ impl<'a> Parser<'a> {
                     lhs: Box::new(left),
                     op,
                     rhs: Box::new(right),
-                    span: Span::default(),
+                    span: op_span,
                     operand_ty: None,
                 });
                 continue;
@@ -183,7 +190,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: LogicalOp::Or,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                     });
                 }
                 TokenType::AndAnd => {
@@ -192,7 +199,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: LogicalOp::And,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                     });
                 }
                 TokenType::EqEq => {
@@ -201,7 +208,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: RelationalOp::Eq,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                         operand_ty: None,
                     });
                 }
@@ -211,7 +218,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: RelationalOp::NotEq,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                         operand_ty: None,
                     });
                 }
@@ -221,7 +228,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: RelationalOp::Le,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                         operand_ty: None,
                     });
                 }
@@ -231,7 +238,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: RelationalOp::Ge,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                         operand_ty: None,
                     });
                 }
@@ -241,7 +248,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: RelationalOp::Lt,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                         operand_ty: None,
                     });
                 }
@@ -251,7 +258,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: RelationalOp::Gt,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                         operand_ty: None,
                     });
                 }
@@ -261,7 +268,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: BinaryOp::Add,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                         operand_ty: None,
                     });
                 }
@@ -271,7 +278,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: BinaryOp::Sub,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                         operand_ty: None,
                     });
                 }
@@ -281,7 +288,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: BinaryOp::Mul,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                         operand_ty: None,
                     });
                 }
@@ -291,7 +298,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: BinaryOp::MatMul,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                         operand_ty: None,
                     });
                 }
@@ -301,7 +308,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: BinaryOp::Div,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                         operand_ty: None,
                     });
                 }
@@ -311,7 +318,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: BinaryOp::Rem,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                         operand_ty: None,
                     });
                 }
@@ -321,7 +328,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: BinaryOp::BitAnd,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                         operand_ty: None,
                     });
                 }
@@ -331,7 +338,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: BinaryOp::BitOr,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                         operand_ty: None,
                     });
                 }
@@ -341,7 +348,7 @@ impl<'a> Parser<'a> {
                         lhs: Box::new(left),
                         op: BinaryOp::BitXor,
                         rhs: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                         operand_ty: None,
                     });
                 }
@@ -350,7 +357,7 @@ impl<'a> Parser<'a> {
                     left = Expr::Range(RangeExpr {
                         start: Box::new(left),
                         end: Box::new(right),
-                        span: Span::default(),
+                        span: op_span,
                     });
                 }
                 _ => return Err(self.error("Unknown binary operator")),

@@ -352,6 +352,13 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_expr()?;
                 self.parse_expr_or_assign_stmt(expr, token_span)
             }
+            // An `if`, `match`, `unsafe` or `spawn` block that starts a statement ends at its
+            // closing brace, as in Rust. Read as one expression, `if c { .. }` followed by
+            // `*x = 1;` would be `(if c { .. }) * x = 1`.
+            TokenType::If | TokenType::Match | TokenType::Unsafe | TokenType::Spawn => {
+                let expr = self.parse_primary_expr()?;
+                self.parse_expr_or_assign_stmt(expr, token_span)
+            }
             _ => {
                 let expr = self.parse_expr()?;
                 self.parse_expr_or_assign_stmt(expr, token_span)
