@@ -1,0 +1,118 @@
+//===- arc-a770.vx - Intel Arc A770 (DG2-512, Xe-HPG) machine model -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// One SKU's memory hierarchy, for `vxc --machine fleet/arc-a770.vx prog.vx`.
+// See fleet/README.md for the shared space vocabulary and provenance policy.
+//
+// The first Intel GPU here, and the first SKU whose device has no f64 at all:
+// the card's arithmetic is f32/f16 and integer, and the driver offers no
+// double-precision path either (`cl_khr_fp64` is absent from the OpenCL device
+// and `shaderFloat64` is false under Vulkan). `dtypes:` therefore omits f64,
+// and placing an f64 tensor here is E6026 before anything runs. That is the
+// policy docs/gpu_backends.md states -- a device limitation is a compile error,
+// never a silent change -- and this file is its first discrete-GPU case.
+//
+// Device execution: none yet. `arch:` names the device-image target a backend
+// would emit (docs/gpu_backends.md, PR #1138); no such backend exists, so a
+// region spawned on this topology takes the host fallback, or the honest
+// refusal when its operands are in a space the host cannot read.
+//
+// Figures measured on the card 2026-10-04 (Level Zero, OpenCL and Vulkan
+// queries) unless a `spec:` line names a published number.
+
+// spec: Intel Arc A770 (16 GB), DG2-512 / ACM-G10 -- 16 GB GDDR6 on a 256-bit
+// bus. TechPowerUp's GPU database gives the memory clock as 2000 MHz
+// (16 Gbps effective), which is 256 bits x 16 Gbps / 8 = 512 GB/s; Intel's own
+// product page quotes the same part, and if the board runs its memory at
+// 17.5 Gbps the figure is 560 GB/s instead. UNVERIFIED against Intel's
+// datasheet: the rendered spec table did not yield a readable figure, and a
+// memory bandwidth is what derives every transfer cost on this SKU's edges.
+//
+// Measured: what the card reaches of it is a device-to-device copy at
+// 449 GB/s and a triad at 422 GB/s (scripts/tools/xpu_bandwidth_spike.sh),
+// the fraction of peak those two traffic shapes normally carry.
+//
+// Measured: the driver reports 16225243136 bytes (15.11 GiB) of device memory,
+// about 0.9 GiB below the 16 GiB the part carries. Following fleet/README.md,
+// `capacity:` is what the hardware has, not what a deployment may use, so the
+// reservation is recorded here and not folded in. The check that would reject a
+// working set between the two numbers is the same open one as #285.
+Memory HBM {
+  capacity: 16 GiB, bandwidth: 512 GB/s, managed: explicit, scope: device
+}
+
+// Measured: 16777216 bytes (16 MiB) reported as the device's global memory
+// cache. Modelled as a device-scoped space within HBM, hardware-managed, so
+// `cached`. No bandwidth is declared: none is published for this part, and
+// leaving it off makes a route that has to cross L2 unpriceable rather than
+// priced by a guess (fleet/README.md calls that a gap to close, and
+// utils/memalg is how).
+Memory L2 {
+  within: Memory::HBM, capacity: 16 MiB, managed: cached, scope: device
+}
+
+// Measured: 65536 bytes (64 KiB) of workgroup shared local memory, the ceiling
+// one workgroup may request; the maximum workgroup size is 1024 invocations
+// with a preferred multiple of 64. Both are the numbers a backend has to
+// respect, and both are API-visible: Vulkan on this same card reports 48 KiB,
+// so the declared figure is the hardware's and the API's smaller one is a
+// backend detail.
+//
+// No `replicas:` and no `clock:`. Which unit a workgroup's scratchpad belongs
+// to on Xe (Xe-core, subslice, slice) is not settled by anything measured here,
+// and `replicas:` divides a derived bandwidth, so a wrong value moves every
+// on-die cost on this SKU by that factor.
+Memory SMEM {
+  within: Memory::L2, capacity: 64 KiB, managed: explicit, scope: sm
+}
+
+Topology Device {
+  // The device-image format, not the die: Xe-HPG's ISA is not an LLVM target
+  // Vx can name, and SPIR-V through Level Zero is the route docs/gpu_backends.md
+  // records for Intel XPU. A Vulkan backend would emit the same format.
+  arch: spirv64,
+  memory: Memory::HBM,
+  // Host memory is deliberately absent, as in fleet/h100-sxm.vx: the host
+  // cannot address this device's memory and a kernel here cannot address host
+  // memory, so either direction is an explicit transfer and E6003 says so.
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  // spec: the XMX matrix units take INT2, INT4 and INT8 (TechPowerUp's DG2-512
+  // entry), and the scalar path is f32/f16 and integer. INT4 is therefore a
+  // matrix-unit format here, as it is on Ampere, and `i4`/`u4` are declared for
+  // the same reason a100-80 declares them. INT2 has no `ElementType` and is not
+  // listed, the way TF32 is absent from every file.
+  // bf16 is left out although the matrix units most likely take it: an element
+  // type lists what a machine file can cite, and omitting one rejects a bf16
+  // program that would probably have run, which is the safe direction. Adding
+  // it is one token once a source says so.
+  dtypes: [f32, f16, i4, u4, i8, u8, i16, u16, i32, u32, i64, u64, bool],
+  // Measured: 10.8 GB/s, and it is this platform's edge, not the card's. The
+  // A770 is a Gen4 x16 part, so the datasheet figure is 31.5 GB/s per
+  // direction, but this machine's CPU is a Ryzen 7 5700G (Cezanne) and its
+  // lanes are PCIe 3.0 only, so the card runs at Gen3 x16: 15.75 GB/s of
+  // theory, of which a copy through pinned host staging gets about two thirds.
+  // Do not take the number back out of sysfs: `current_link_speed` and
+  // `max_link_speed` at 0000:12:00.0 both report 2.5 GT/s x1 (Gen1 x1), which
+  // cannot carry 10.8 GB/s, so this driver's link attributes are stale.
+  // scripts/tools/xpu_bandwidth_spike.sh measures both directions.
+  transfer Memory::CPU_DRAM -> Memory::HBM : 10.8 GB/s,
+  // The way home, measured in the same run: 10.0 GB/s. Reading a placed tensor
+  // back is how a program says it still holds it; without the edge the model
+  // can only describe one direction, and fleet/mi300x.vx is the file that
+  // currently cannot serve admission because it declares only the outbound hop.
+  transfer Memory::HBM -> Memory::CPU_DRAM : 10.0 GB/s,
+  // The on-die hops declare no cost: HBM and L2 nest via `within:`, so the
+  // roofline derives what their bandwidths support (E6013 forbids a second
+  // source on one edge). No `copy_engine` on the scratchpad hop: whether a
+  // global-to-SLM write is a copy-engine path on Xe or ordinary instruction
+  // issue is unmeasured, and a capability asserted without a measurement is
+  // what docs/memory_algebra.md records as falsified within hours on an A100.
+  // Unmarked means `sequenced`, which costs the slowest leg rather than none.
+  transfer Memory::HBM -> Memory::L2,
+  transfer Memory::L2 -> Memory::SMEM
+}
