@@ -1655,18 +1655,48 @@ impl<'c> LowerToMelior<'c> for LogicalOpExpr {
             rhs,
             span: _,
         } = self;
+        // The right side runs only when the left side does not decide the result, so a guard
+        // like `i > 0 && v.get(i - 1) == 0` never reads index -1.
         let (lhs_val, _lhs_ty, block) = gen.generate_expr(lhs, block)?;
-        let (rhs_val, _rhs_ty, block) = gen.generate_expr(rhs, block)?;
-
         let final_ty = gen.i1_ty;
+        let parent_region = block.parent_region().unwrap();
+        let rhs_block = parent_region.append_block(melior::ir::Block::new(&[]));
+        let merge_block =
+            parent_region.append_block(melior::ir::Block::new(&[(final_ty, gen.loc())]));
 
-        let builder = OperationBuilder::new(op.get_op_name(false, false), gen.loc())
-            .add_operands(&[lhs_val, rhs_val])
-            .add_results(&[final_ty]);
+        // `a && b` is `a` when `a` is false; `a || b` is `a` when `a` is true.
+        let (true_dest, false_dest, true_args, false_args): (_, _, &[Value], &[Value]) = match op {
+            syntax::LogicalOp::And => (&*rhs_block, &*merge_block, &[], &[lhs_val]),
+            syntax::LogicalOp::Or => (&*merge_block, &*rhs_block, &[lhs_val], &[]),
+        };
+        let operands: Vec<Value> = std::iter::once(lhs_val)
+            .chain(true_args.iter().copied())
+            .chain(false_args.iter().copied())
+            .collect();
+        block.append_operation(
+            OperationBuilder::new("cf.cond_br", gen.loc())
+                .add_operands(&operands)
+                .add_successors(&[true_dest, false_dest])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "operandSegmentSizes"),
+                    melior::ir::attribute::DenseI32ArrayAttribute::new(
+                        gen.context,
+                        &[1, true_args.len() as i32, false_args.len() as i32],
+                    )
+                    .into(),
+                )])
+                .build()?,
+        );
 
-        let bin_op = builder.build()?;
-        let bin_ref = block.append_operation(bin_op);
-        Ok((bin_ref.result(0)?.into(), final_ty, block))
+        let (rhs_val, _rhs_ty, rhs_end) = gen.generate_expr(rhs, rhs_block)?;
+        rhs_end.append_operation(
+            OperationBuilder::new("cf.br", gen.loc())
+                .add_operands(&[rhs_val])
+                .add_successors(&[&*merge_block])
+                .build()?,
+        );
+
+        Ok((merge_block.argument(0)?.into(), final_ty, merge_block))
     }
 }
 
