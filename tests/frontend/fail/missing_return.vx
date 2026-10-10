@@ -25,6 +25,12 @@ fn only_one_branch(x : i32) -> i32 {
   }
 }
 
+// An `unsafe` block counts only when every path through it returns.
+// CHECK-DAG: E3028{{.*}}'unsafe_without_return' returns i32 but its body can finish without returning a value
+fn unsafe_without_return(x : i32) -> i32 {
+  unsafe { let y : i32 = x + 1; }
+}
+
 fn main() -> i32 {
   return 0;
 }
