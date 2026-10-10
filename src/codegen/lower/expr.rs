@@ -2791,22 +2791,20 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let mut dims_count = 0;
 
             let mut current_b = block;
-            if args.len() == 1 {
-                if let Expr::Array(arr) = &args[0] {
-                    dims_count = arr.elements.len();
-                    for el in &arr.elements {
-                        let (mut val, ty, new_b) = gen.generate_expr(el, current_b)?;
-                        current_b = new_b;
-                        if ty.to_string() != "index" {
-                            let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
-                                .add_operands(&[val])
-                                .add_results(&[Type::index(gen.context)])
-                                .build()
-                                .unwrap();
-                            val = current_b.append_operation(cast_op).result(0)?.into();
-                        }
-                        dynamic_sizes.push(val);
+            if let [Expr::Array(arr)] = args {
+                dims_count = arr.elements.len();
+                for el in &arr.elements {
+                    let (mut val, ty, new_b) = gen.generate_expr(el, current_b)?;
+                    current_b = new_b;
+                    if ty.to_string() != "index" {
+                        let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
+                            .add_operands(&[val])
+                            .add_results(&[Type::index(gen.context)])
+                            .build()
+                            .unwrap();
+                        val = current_b.append_operation(cast_op).result(0)?.into();
                     }
+                    dynamic_sizes.push(val);
                 }
             } else if !args.is_empty() {
                 dims_count = args.len();

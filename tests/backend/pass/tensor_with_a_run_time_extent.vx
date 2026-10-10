@@ -1,0 +1,55 @@
+//===- tensor_with_a_run_time_extent.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Tensor<f32>(n)` with `n` known only at run time has `n` elements. With exactly one extent,
+// the AST path (`--legacy-codegen`) dropped it and made a tensor with no dimensions, so any
+// use as a one-dimensional tensor failed MLIR verification.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+import std::tensor;
+
+fn make(n : i32) -> Tensor<f32, [?]> {
+  let mut t = Tensor<f32>(n);
+  for i in 0..n {
+    t[i] = (i * 10) as f32;
+  }
+  return t;
+}
+
+fn main() -> i32 {
+  let n = 4;
+  let mut local = Tensor<f32>(n);
+  local[3] = 2.5;
+  print!("local: ");
+  print(local[3]);
+  print!("
+");
+  // CHECK: {{^}}local: 2.5{{$}}
+
+  let t = make(5);
+  print!("returned: ");
+  print(t[4]);
+  print!(" ");
+  print(t.len());
+  print!("
+");
+  // CHECK-NEXT: {{^}}returned: 40 5{{$}}
+
+  // Two run-time extents were already handled; kept here so both counts stay covered.
+  let rows = 2;
+  let cols = 3;
+  let mut m = Tensor<f32>(rows, cols);
+  m[1][2] = 7.0;
+  print!("two extents: ");
+  print(m[1][2]);
+  print!("
+");
+  // CHECK-NEXT: {{^}}two extents: 7{{$}}
+  return 0;
+}
