@@ -1,0 +1,79 @@
+//===- borrows_held_across_a_loop.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A borrow made before a loop is still in use inside the loop if it is used after the loop
+// or on the loop's next pass. Each function uses `v` in a loop while it is still borrowed.
+
+import std::vec;
+
+// `x` is used after the loop.
+fn for_loop_writes_the_variable() -> i64 {
+  let mut v = 1i64;
+  let x = &mut v;
+  for _i in 0..2 {
+    v = 5i64;
+  }
+  *x = *x + 10i64;
+  return 0i64;
+}
+
+fn while_loop_reads_the_variable() -> i64 {
+  let mut v = 1i64;
+  let x = &mut v;
+  let mut k = 0i64;
+  while k < 1i64 {
+    k = k + v;
+  }
+  *x = 10i64;
+  return k;
+}
+
+fn loop_writes_the_variable() -> i64 {
+  let mut v = 1i64;
+  let x = &mut v;
+  loop {
+    v = 5i64;
+    break;
+  }
+  *x = 10i64;
+  return 0i64;
+}
+
+// `x` is not used after the loop, but the next pass uses it after `v` was written.
+fn next_pass_uses_the_borrow() -> i64 {
+  let mut v = 1i64;
+  let x = &mut v;
+  for _i in 0..2 {
+    *x = *x + 1i64;
+    v = 5i64;
+  }
+  return 0i64;
+}
+
+// The loop calls `it.next()` before every pass, so `it` borrows `v` for the whole body.
+fn iterator_in_a_variable() -> i64 {
+  let mut v = Vec<i64>::new();
+  v.push(1i64);
+  let it = v.iter();
+  for x in it {
+    v.push(*x);
+  }
+  return 0i64;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: Error[E4002] at 20:5: Cannot access 'v' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at 31:13: Cannot access 'v' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at 41:5: Cannot access 'v' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at 54:5: Cannot access 'v' because it is mutably borrowed.
+// CHECK-DAG: Error[E4003] at 65:7: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+// CHECK: 5 error(s) emitted

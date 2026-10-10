@@ -1,0 +1,43 @@
+//===- raw_pointer_returned_by_a_call_keeps_its_source_borrowed.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A call that can return the pointer it was given keeps the variable behind that pointer
+// borrowed while the result is used, for a Vx function and for an `extern` one.
+
+extern {
+  safe fn same_count(p : *mut u64) -> *mut u64;
+}
+
+fn same(p : *mut u8) -> *mut u8 {
+  return p;
+}
+
+fn vx_function_returns_the_pointer() -> u8 {
+  let mut b : u8 = 0;
+  let q = same((&mut b) as *mut u8);
+  b = 1u8;
+  unsafe { *q = 2u8; }
+  return b;
+}
+
+fn extern_function_returns_the_pointer() -> u64 {
+  let mut c : u64 = 0;
+  let q = same_count(&mut c);
+  c = 1u64;
+  unsafe { *q = 2u64; }
+  return c;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: Error[E4002] at 24:3: Cannot access 'b' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at 32:3: Cannot access 'c' because it is mutably borrowed.
+// CHECK: 2 error(s) emitted

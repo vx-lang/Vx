@@ -1,0 +1,53 @@
+//===- borrows_that_end_before_a_loop.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A loop can use a variable whose borrow ended before the loop, or that is borrowed only
+// within one pass.
+//
+// CHECK-NOT: Error
+// CHECK-LABEL: func.func @main
+
+fn borrow_ends_before_the_loop() -> i64 {
+  let mut v = 1i64;
+  let x = &mut v;
+  *x = 2i64;
+  for _i in 0..2 {
+    v = v + 1i64;
+  }
+  return v;
+}
+
+fn each_pass_makes_its_own_borrow() -> i64 {
+  let mut v = 1i64;
+  for _i in 0..2 {
+    let x = &mut v;
+    *x = *x + 1i64;
+    v = v + 1i64;
+  }
+  return v;
+}
+
+// The `x` in the loop is a new variable. The `x` used after the loop is not a borrow.
+fn inner_variable_with_an_outer_name() -> i64 {
+  let mut v = 1i64;
+  let x = 3i64;
+  for _i in 0..2 {
+    let x = &mut v;
+    *x = 2i64;
+    v = v + 1i64;
+  }
+  return v + x;
+}
+
+fn main() -> i32 {
+  print(borrow_ends_before_the_loop());
+  print(each_pass_makes_its_own_borrow());
+  print(inner_variable_with_an_outer_name());
+  return 0;
+}
