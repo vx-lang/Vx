@@ -1,0 +1,12 @@
+//===- sides.vx - Vx Compiler -----------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module one directory into a package.
+
+fn square_sides() -> i64 {
+  return 4;
+}

@@ -49,6 +49,8 @@ enum Resolved {
 
 pub struct ModuleLoader {
     search_paths: Vec<PathBuf>,
+    /// `--package name=dir`: an import that starts with `name` is read from `dir` and nowhere else.
+    packages: Vec<(String, PathBuf)>,
     pub loaded_modules: HashMap<crate::symbol::Symbol, Program>,
     /// Imports resolved to a precompiled `.vxlib` **interface** instead of `.vx` source (#219): the
     /// module's source is never parsed, and its serialized module-interface bytes are collected here
@@ -96,12 +98,19 @@ impl ModuleLoader {
 
         Self {
             search_paths,
+            packages: Vec::new(),
             loaded_modules: HashMap::new(),
             loaded_interfaces: HashMap::new(),
             returned_modules_directly: false,
             paths: HashMap::new(),
             roots: Vec::new(),
         }
+    }
+
+    /// Read imports that start with `name` from `dir`: `import name::a::b` is `dir/a/b.vx`. The
+    /// search paths are not tried for them, so the package is the only place `name` comes from.
+    pub fn add_package(&mut self, name: &str, dir: &Path) {
+        self.packages.push((name.to_string(), dir.to_path_buf()));
     }
 
     pub fn load_main(&mut self, filename: &str) -> Result<(), ModuleError> {
@@ -289,6 +298,16 @@ impl ModuleLoader {
     /// Resolve an import path against the search paths, trying the given file extension. Shared by
     /// `.vx` source resolution and `.vxlib` artifact resolution (#219).
     fn resolve_with_ext(&self, path: &[crate::symbol::Symbol], ext: &str) -> Option<PathBuf> {
+        if path.len() > 1 {
+            if let Some((_, dir)) = self.packages.iter().find(|(name, _)| *path[0] == **name) {
+                let mut current_path = dir.clone();
+                for component in &path[1..] {
+                    current_path.push(component.as_ref());
+                }
+                current_path.set_extension(ext);
+                return current_path.exists().then_some(current_path);
+            }
+        }
         for search_path in &self.search_paths {
             let mut current_path = search_path.clone();
             if !path.is_empty() && *path[0] == *"std" {

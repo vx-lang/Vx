@@ -1,0 +1,28 @@
+//===- import_from_a_package.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc --package geometry=tests/modules/a_package_dir %s --run 2>&1 | FileCheck %s
+// RUN: vxc -j 2 --package geometry=tests/modules/a_package_dir %s --run 2>&1 | FileCheck %s
+// `--package name=dir` reads `name::..` imports from `dir`, at any depth, with or without `-j`,
+// and the stdlib still resolves beside it.
+// CHECK: area 9
+// CHECK-NEXT: sides 4
+
+import std::box;
+import geometry::area;
+import geometry::shapes::sides;
+
+fn main() -> i32 {
+  print!("area ");
+  print!(square_area(3));
+  print!("
+sides ");
+  print!(square_sides());
+  print!("
+");
+  return 0;
+}

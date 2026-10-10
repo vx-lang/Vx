@@ -1183,6 +1183,19 @@ fn test_frontend_fail_unimplemented_smt() -> Result<(), String> {
     )
 }
 
+// The sweep above compiles each file in process and never sees a RUN line's flags, so a
+// fixture that needs `--package` is only run by its RUN lines.
+#[test]
+fn test_frontend_pass_packages() -> Result<(), String> {
+    run_directory_tests(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/frontend/pass/packages"),
+        |path| {
+            println!("Running test_frontend_pass_packages on {:?}", path);
+            run_shell_tests(path)
+        },
+    )
+}
+
 #[test]
 fn test_backend_pass_autodiff() -> Result<(), String> {
     run_directory_tests(
