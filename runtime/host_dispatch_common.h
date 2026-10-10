@@ -133,7 +133,8 @@ inline void vx_describe_arg(int64_t i, int32_t tag, void *arg) {
   int32_t elem = VX_ABI_ELEM(tag);
   if (rank == 0 && elem == VX_DTYPE_UNKNOWN) {
     // Kind 0 covers both a ranked memref and the pointer fallback in
-    // abiTagForType; only the latter carries no element type or rank.
+    // dtypeCode in VxLowering.cpp; only the latter carries no element type or
+    // rank.
     fprintf(stderr, "  arg %lld: opaque ptr\n", (long long)i);
     return;
   }
