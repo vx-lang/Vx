@@ -1,0 +1,58 @@
+//===- statement_after_a_block_starts_on_its_own.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `if`, `match`, `unsafe` or `spawn` block that starts a statement ends at its closing brace, so
+// the next line is a statement of its own even when it starts with `*` or `-`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s
+// CHECK: after_if=10; after_match=11; after_unsafe=12; after_spawn=13; after_else=20;
+
+fn main() -> i32 {
+  let c = true;
+  let mut v = 1i64;
+  let x = &mut v;
+  if c {
+    print!("");
+  }
+  *x = 10i64;
+  print!("after_if=");
+  print(*x);
+  print!("; ");
+  match 1 {
+    1 => {
+      print!("");
+    }
+    _ => {}
+  }
+  *x = *x + 1i64;
+  print!("after_match=");
+  print(*x);
+  print!("; ");
+  unsafe { print!(""); }
+  -1i64;
+  *x = *x + 1i64;
+  print!("after_unsafe=");
+  print(*x);
+  print!("; ");
+  spawn on(Topology::CPU) {
+    print!("");
+  }
+  *x = *x + 1i64;
+  print!("after_spawn=");
+  print(*x);
+  print!("; ");
+  if c {
+    print!("");
+  } else {
+    print!("");
+  }
+  *x = 20i64;
+  print!("after_else=");
+  print(*x);
+  print!(";");
+  return 0;
+}

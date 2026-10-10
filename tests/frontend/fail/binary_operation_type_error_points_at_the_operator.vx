@@ -1,0 +1,19 @@
+//===- binary_operation_type_error_points_at_the_operator.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A type error in a binary operation is reported at the operator.
+
+fn main() -> i32 {
+  let a = 1i64;
+  let b = true;
+  let c = a + b;
+  return 0;
+}
+
+// CHECK: Error[E3004] at 15:13: Type mismatch in binary operation: i64 vs bool

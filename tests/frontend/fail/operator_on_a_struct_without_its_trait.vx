@@ -10,9 +10,9 @@
 // An operator on a struct needs an impl of its trait. `Point` has none, so `+`, `==` and
 // `<` are each refused, and the error names the trait to implement.
 
-// CHECK-DAG: Error[E3004] at 34:11: `+` is not defined for Point: it needs an impl of `core::ops::Add`
-// CHECK-DAG: Error[E3004] at 35:11: `==` is not defined for Point: it needs an impl of `core::cmp::PartialEq`
-// CHECK-DAG: Error[E3004] at 36:11: `<` is not defined for Point: it needs an impl of `core::cmp::PartialOrd`
+// CHECK-DAG: Error[E3004] at 34:13: `+` is not defined for Point: it needs an impl of `core::ops::Add`
+// CHECK-DAG: Error[E3004] at 35:13: `==` is not defined for Point: it needs an impl of `core::cmp::PartialEq`
+// CHECK-DAG: Error[E3004] at 36:13: `<` is not defined for Point: it needs an impl of `core::cmp::PartialOrd`
 // CHECK: 3 error(s) emitted
 
 import core::marker;
