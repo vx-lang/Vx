@@ -1,0 +1,53 @@
+//===- index_a_one_dimensional_elementwise_result.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Reading elements of `a + b` and `a * b` on one-dimensional tensors, with a constant index
+// and with a loop variable. The flat path keeps such a result as a vector value rather than a
+// buffer, found no buffer to index, and sent the whole program to the AST path.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// The first run must not fall back to the AST path, which says so with a `[flat-codegen]` line.
+// CHECK-NOT: flat-codegen
+
+// [1, 2, 3, 4]
+fn v4() -> Tensor<f32, [4]> {
+  let mut v = Tensor<f32, [4]>::uninit();
+  for i in 0..4 {
+    v[i] = (i + 1) as f32;
+  }
+  return v;
+}
+
+fn main() -> i32 {
+  // s = [2, 4, 6, 8]
+  let s = v4() + v4();
+  print!("constant index: ");
+  print(s[2]);
+  print!("
+");
+  // CHECK: {{^}}constant index: 6{{$}}
+
+  let mut total = 0.0;
+  for i in 0..4 {
+    total = total + s[i];
+  }
+  print!("loop index: ");
+  print(total);
+  print!("
+");
+  // CHECK-NEXT: {{^}}loop index: 20{{$}}
+
+  // d = [1, 4, 9, 16]
+  let d = v4() * v4();
+  print!("product: ");
+  print(d[3]);
+  print!("
+");
+  // CHECK-NEXT: {{^}}product: 16{{$}}
+  return 0;
+}

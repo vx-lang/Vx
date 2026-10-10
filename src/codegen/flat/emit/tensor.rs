@@ -895,6 +895,29 @@ impl FnEmit<'_> {
             .get(ins.operand1.0 as usize)
             .ok_or(crate::emitter_gap!())?
             .clone();
+        // A rank-1 elementwise result is a vector value, not a buffer: read an element
+        // straight out of it. There is nothing to store into.
+        if let (Some(Some(vecty)), Some(e), false) = (
+            self.vec_of.get(ins.operand1.0 as usize).cloned(),
+            elem_of_gid(result_gid),
+            ins.imm == 1,
+        ) {
+            let imt = mlir_scalar(&self.elem_at(ins.operand2.0).ok_or(crate::emitter_gap!())?)
+                .ok_or(crate::emitter_gap!())?;
+            let et = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+            let iname = self
+                .names
+                .get(ins.operand2.0 as usize)
+                .ok_or(crate::emitter_gap!())?
+                .clone();
+            let ic = format!("%ic{idx}");
+            let n = format!("%v{idx}");
+            self.body += &format!("  {ic} = arith.index_cast {iname} : {imt} to index\n");
+            self.body += &format!("  {n} = vector.extract {base}[{ic}] : {et} from {vecty}\n");
+            self.names[idx] = n;
+            self.etypes[idx] = Some(e);
+            return Ok(());
+        }
         let base_memty = self
             .mem_of
             .get(ins.operand1.0 as usize)
