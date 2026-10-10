@@ -1619,6 +1619,25 @@ impl<'c> LowerToMelior<'c> for RelationalOpExpr {
             || final_ty.to_string().contains("f16")
             || final_ty.to_string().contains("bf16");
 
+        // `arith.cmpi` takes only integers. Two raw pointers compare their addresses, as
+        // unsigned numbers.
+        if final_ty == gen.ptr_ty {
+            let pred = op
+                .get_predicate(false, true)
+                .expect("every relational operator has a predicate");
+            let i1_ty = gen.i1_ty;
+            let cmp = OperationBuilder::new("llvm.icmp", gen.loc())
+                .add_operands(&[lhs_val, rhs_val])
+                .add_results(&[i1_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "predicate"),
+                    IntegerAttribute::new(gen.i64_ty, pred).into(),
+                )])
+                .build()?;
+            let cmp_ref = block.append_operation(cmp);
+            return Ok((cmp_ref.result(0)?.into(), i1_ty, block));
+        }
+
         let is_unsigned = matches!(operand_ty, Some(e) if !e.is_float() && !e.is_signed_int());
         let mut builder = OperationBuilder::new(op.get_op_name(is_float, false), gen.loc());
         builder = builder.add_operands(&[lhs_val, rhs_val]);

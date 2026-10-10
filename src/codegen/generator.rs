@@ -44,6 +44,9 @@ pub struct MeliorGenerator<'c> {
     pub(crate) declared_tensor_prints: std::collections::HashSet<&'static str>,
     /// Locals whose element pointer the function takes: a view through it can share their memory.
     pub(crate) pointer_taken: std::collections::HashSet<crate::symbol::Symbol>,
+    /// The locals of the function being lowered that are borrowed with `&x`. Each gets a stack
+    /// slot, so every borrow of it is the same address.
+    pub(crate) address_taken: std::collections::HashSet<crate::symbol::Symbol>,
     /// Declared memory spaces, keyed by space, so a `transfer` can emit the sub-space descriptor
     /// (granule/capacity/scope/parent) as IR metadata for later passes (see subspace_scheduling.md).
     pub(crate) memories: HashMap<syntax::MemorySpace, syntax::MemoryDecl>,
@@ -799,6 +802,7 @@ impl<'c> MeliorGenerator<'c> {
             owned_tensors: std::collections::HashSet::new(),
             declared_tensor_prints: std::collections::HashSet::new(),
             pointer_taken: std::collections::HashSet::new(),
+            address_taken: std::collections::HashSet::new(),
             memories: HashMap::new(),
             transfer_impls: HashMap::new(),
             topologies: HashMap::new(),
@@ -1208,6 +1212,7 @@ impl<'c> MeliorGenerator<'c> {
         self.allocs.clear();
         self.subspace_offsets.clear(); // per-function sub-space bump allocator (SS2)
         self.pointer_taken = syntax::locals_with_pointer_taken(&func.body);
+        self.address_taken = syntax::locals_with_address_taken(&func.body);
         let is_main = func.name.as_ref() == "main";
         let true_ret_ty = self.lower_type(&func.return_type)?;
         let ret_ty = if is_main { self.i32_ty } else { true_ret_ty };

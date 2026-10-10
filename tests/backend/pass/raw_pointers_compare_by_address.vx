@@ -1,0 +1,83 @@
+//===- raw_pointers_compare_by_address.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `==`, `!=` and `<` on two raw pointers compare the addresses. They used to fail MLIR
+// verification. Two borrows of the same variable must give the same address, which the AST
+// path got wrong for a variable without `mut`: it copied the variable to a new place for each
+// `&x`.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+import core::ptr;
+
+struct Point {
+  x : i32,
+  y : i32,
+}
+
+// 1 for true and 0 for false, so each answer prints as a number.
+fn one_if(b : bool) -> i32 {
+  if b {
+    return 1;
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  let x : i32 = 7;
+  let y : i32 = 8;
+  let a : *const i32 = &x;
+  let b : *const i32 = &x;
+  let c : *const i32 = &y;
+  print!("same variable ==: ");
+  print!(one_if(a == b));
+  print!("
+");
+  // CHECK: {{^}}same variable ==: 1{{$}}
+  print!("same variable !=: ");
+  print!(one_if(a != b));
+  print!("
+");
+  // CHECK-NEXT: {{^}}same variable !=: 0{{$}}
+  print!("two variables ==: ");
+  print!(one_if(a == c));
+  print!("
+");
+  // CHECK-NEXT: {{^}}two variables ==: 0{{$}}
+
+  // Exactly one of the two addresses is smaller.
+  print!("one is smaller: ");
+  print!(one_if((a < c) != (c < a)));
+  print!("
+");
+  // CHECK-NEXT: {{^}}one is smaller: 1{{$}}
+
+  let none : *const i32 = null<i32>();
+  print!("null ==: ");
+  print!(one_if(none == null<i32>()));
+  print!("
+");
+  // CHECK-NEXT: {{^}}null ==: 1{{$}}
+  print!("not null: ");
+  print!(one_if(a != none));
+  print!("
+");
+  // CHECK-NEXT: {{^}}not null: 1{{$}}
+
+  let p = Point {
+    x: 1, y: 2
+  };
+  let first : *const Point = &p;
+  let second : *const Point = &p;
+  print!("same struct ==: ");
+  print!(one_if(first == second));
+  print!("
+");
+  // CHECK-NEXT: {{^}}same struct ==: 1{{$}}
+  return 0;
+}

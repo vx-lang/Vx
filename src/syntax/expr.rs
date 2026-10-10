@@ -1046,6 +1046,19 @@ pub fn locals_with_pointer_taken(stmts: &[Statement]) -> std::collections::HashS
     names
 }
 
+/// The locals in `stmts` whose address is taken with `&x` or `&mut x`.
+pub fn locals_with_address_taken(stmts: &[Statement]) -> std::collections::HashSet<Symbol> {
+    let mut names = std::collections::HashSet::new();
+    visit_exprs(stmts, &mut |e| {
+        if let Expr::Borrow(b) = e {
+            if let Expr::Identifier(id) = &*b.expr {
+                names.insert(id.name.clone());
+            }
+        }
+    });
+    names
+}
+
 /// Calls `f` on every expression in `stmts`, each one before the expressions inside it. The
 /// tokens of a macro that was not expanded are not expressions, and are not visited.
 pub fn visit_exprs(stmts: &[Statement], f: &mut dyn FnMut(&Expr)) {
