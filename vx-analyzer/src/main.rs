@@ -1,3 +1,4 @@
+use clap::Parser;
 use lsp_server::{Connection, Message, Request, RequestId, Response};
 use lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams, Hover,
@@ -33,7 +34,16 @@ macro_rules! log_line {
     };
 }
 
+/// The command line of the language server. It reads no arguments: the protocol comes
+/// over standard input. The derive is here so `--version` and `--help` answer instead of
+/// the server reading them as a malformed first message and exiting.
+#[derive(Parser)]
+#[command(name = "vx-analyzer", version, about = "Vx language server")]
+struct Cli {}
+
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
+    Cli::parse();
+
     let mut log_file = log_sink();
     log_line!(log_file, "--- vx-analyzer started (lsp-server) ---");
 
