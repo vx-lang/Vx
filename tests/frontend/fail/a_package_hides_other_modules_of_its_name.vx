@@ -1,0 +1,17 @@
+//===- a_package_hides_other_modules_of_its_name.vx -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc --package tests=tests/modules/a_package_dir %s --action print-ast 2>&1 | FileCheck %s
+// `tests::modules::clash_left` resolves from the working directory, but `tests` is a package
+// here, so it is read from the package directory only, which has no such module.
+// CHECK: Could not resolve import 'tests::modules::clash_left'
+
+import tests::modules::clash_left;
+
+fn main() -> i32 {
+  return 0;
+}

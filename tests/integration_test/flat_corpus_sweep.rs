@@ -342,6 +342,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/numa_peer_node_is_priced.vx",  // needs --host and --machine
             // needs --host and --machine
             "optimizations/pass/dtcm_tiles_in_sibling_blocks_fit_a_cortex_m7.vx",
+            "frontend/pass/packages/import_from_a_package.vx", // needs --package
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {
             continue;

@@ -38,6 +38,17 @@ fields rather than as prose you would have to parse out of a message.
 Note that with `--verify-seams` and no solver on `PATH`, the compile *fails* rather than certifying
 seams it could not check. `VX_ALLOW_UNVERIFIED=1` downgrades that to a warning.
 
+## Packages
+
+`--package name=dir` makes a library in another directory importable by name. With
+`--package textkit=../textkit`, `import textkit::runs` reads `../textkit/runs.vx`. Imports that start
+with `textkit` are read from that directory only, and the stdlib paths stay as they are. Give the
+flag once for each package.
+
+```bash
+vxc --package textkit=../textkit main.vx -o main
+```
+
 ## Separate compilation
 
 `--emit-interface` writes a `.vxlib`: the module's frozen registry and portable flat-HIR bodies.

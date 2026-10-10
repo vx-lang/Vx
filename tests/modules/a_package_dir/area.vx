@@ -1,0 +1,12 @@
+//===- area.vx - Vx Compiler ------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Imported as a package, under a name that is not this directory's.
+
+fn square_area(side : i64) -> i64 {
+  return side * side;
+}

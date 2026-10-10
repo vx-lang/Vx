@@ -16,7 +16,7 @@ use crate::syntax_printer::AstPrinter;
 use clap::{Parser, ValueEnum};
 use codegen::MeliorGenerator;
 use melior::ir::operation::OperationLike;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::Schedule;
 
@@ -103,6 +103,12 @@ pub struct DriverOptions {
     /// file and the program both declare is an error (E6012), never a silent shadow (#281).
     #[arg(long = "machine", value_name = "FILE")]
     pub machine: Option<PathBuf>,
+
+    /// Import a package by name: with `--package textkit=../textkit`, `import textkit::runs`
+    /// reads `../textkit/runs.vx`. The stdlib paths stay as they are, and only `dir` is read for
+    /// imports that start with `name`. Can be given more than once.
+    #[arg(long = "package", value_name = "NAME=DIR", value_parser = parse_package)]
+    pub packages: Vec<(String, PathBuf)>,
 
     /// The host the program runs on: a file declaring `Memory::CPU_DRAM`, or
     /// `default` for the machine compiling it.
@@ -214,6 +220,28 @@ pub struct DriverOptions {
     /// Arguments to pass to the running program
     #[arg(last = true)]
     pub program_args: Vec<String>,
+}
+
+/// `name=dir` for `--package`.
+fn parse_package(arg: &str) -> Result<(String, PathBuf), String> {
+    let Some((name, dir)) = arg.split_once('=') else {
+        return Err(format!("expected NAME=DIR, got `{arg}`"));
+    };
+    let is_name = name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !is_name {
+        return Err(format!("`{name}` is not a package name"));
+    }
+    if name == "std" {
+        return Err("`std` is the standard library and cannot be a package".to_string());
+    }
+    if !Path::new(dir).is_dir() {
+        return Err(format!("`{dir}` is not a directory"));
+    }
+    Ok((name.to_string(), PathBuf::from(dir)))
 }
 
 pub struct CompilerDriver {
@@ -524,7 +552,7 @@ impl CompilerDriver {
         }
         roots.push(filename.to_string());
 
-        let mut loader = ModuleLoader::new();
+        let mut loader = self.module_loader();
         // The error names the file it happened in -- an import deep in a wave, or the --machine
         // or --host file, none of which is the entry module. Naming the entry file here pointed
         // at a file that parsed cleanly, and left the real one to be read out of the nested
@@ -621,6 +649,15 @@ impl CompilerDriver {
         )
     }
 
+    /// A loader that reads the `--package` directories.
+    fn module_loader(&self) -> ModuleLoader {
+        let mut loader = ModuleLoader::new();
+        for (name, dir) in &self.options.packages {
+            loader.add_package(name, dir);
+        }
+        loader
+    }
+
     /// Load + macro-expand the entry module and its imports. Returns the parsed modules plus the
     /// serialized interface bytes of any import that resolved to a precompiled `.vxlib` (#219) — those
     /// modules are never parsed; their interfaces are merged into the registry instead.
@@ -628,7 +665,7 @@ impl CompilerDriver {
         &self,
         filename: &str,
     ) -> Result<(Vec<crate::syntax::Program>, Vec<Vec<u8>>), String> {
-        let mut loader = ModuleLoader::new();
+        let mut loader = self.module_loader();
         // The machine model loads first, so its declarations are in the unit before the program's
         // own module. It is a peer module, not an import: the program never names it, which is the
         // point -- the same program text is admitted against a different SKU by swapping the flag
