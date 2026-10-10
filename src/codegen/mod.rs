@@ -128,9 +128,6 @@ extern "C" {
     fn loadMlirPassPlugin(path: *const std::os::raw::c_char) -> bool;
     fn registerVxDialect(ctx: mlir_sys::MlirContext);
     fn registerVxPassesC();
-    pub fn addVxLoweringPass(pm: mlir_sys::MlirPassManager);
-    pub fn addVxToLLVMPass(pm: mlir_sys::MlirPassManager);
-    fn parseCommandLineOptions(argc: std::ffi::c_int, argv: *const *const std::ffi::c_char);
     fn mlirEnableOptimizationRemarks(ctx: mlir_sys::MlirContext);
 }
 
@@ -155,22 +152,6 @@ pub fn enable_optimization_remarks(context: &Context) {
     unsafe {
         mlirEnableOptimizationRemarks(context.to_raw());
     }
-}
-
-pub fn parse_command_line_options(args: &[String]) -> Result<(), String> {
-    let c_args: Vec<std::ffi::CString> = args
-        .iter()
-        .map(|s| {
-            std::ffi::CString::new(s.as_str())
-                .map_err(|_| format!("Invalid CLI argument (contains null byte): {}", s))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let c_args_ptrs: Vec<*const std::ffi::c_char> = c_args.iter().map(|s| s.as_ptr()).collect();
-    unsafe {
-        parseCommandLineOptions(c_args_ptrs.len() as std::ffi::c_int, c_args_ptrs.as_ptr());
-    }
-    Ok(())
 }
 
 pub fn register_vx_passes() {

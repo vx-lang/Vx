@@ -4247,63 +4247,45 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
                 continue;
             }
 
-            let func_name = match arg_ty.to_string().as_ref() {
-                "!llvm.ptr" | "!llvm.ptr<i8>" => "print_str",
-                _ => {
-                    // Fallback or warning
-                    println!("Warning: unsupported print arg type {}", arg_ty);
-                    "print_i32"
-                }
-            };
-
-            // Declare if not exists
-            if !gen.functions.contains_key(func_name) {
-                let func_ty = if func_name == "print_str" {
-                    Type::parse(gen.context, "(!llvm.ptr) -> i32").unwrap()
-                } else {
-                    Type::parse(gen.context, &format!("({}) -> i32", arg_ty)).unwrap()
-                };
-
-                let func_decl = OperationBuilder::new("func.func", gen.loc())
-                    .add_attributes(&[
-                        (
-                            Identifier::new(gen.context, "sym_name"),
-                            StringAttribute::new(gen.context, func_name).into(),
-                        ),
-                        (
-                            Identifier::new(gen.context, "function_type"),
-                            TypeAttribute::new(func_ty).into(),
-                        ),
-                        (
-                            Identifier::new(gen.context, "sym_visibility"),
-                            StringAttribute::new(gen.context, "private").into(),
-                        ),
-                    ])
-                    .add_regions([melior::ir::Region::new()])
-                    .build()?;
-
-                gen.module.body().append_operation(func_decl);
-                gen.functions.insert(
-                    func_name.to_string().into(),
-                    (
-                        gen.i32_ty,
-                        vec![if func_name == "print_str" {
-                            gen.ptr_ty
-                        } else {
-                            arg_ty
-                        }],
-                    ),
-                );
+            let arg_ty_str = arg_ty.to_string();
+            if arg_ty_str == r#"!llvm.struct<"String", (ptr)>"# {
+                // A `String` prints through a NUL-terminated copy of its contents, freed after.
+                let handle = block
+                    .append_operation(
+                        OperationBuilder::new("llvm.extractvalue", gen.loc())
+                            .add_operands(&[arg_val])
+                            .add_results(&[gen.ptr_ty])
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "position"),
+                                Attribute::parse(gen.context, "array<i64: 0>").unwrap(),
+                            )])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+                let c_str = super::call_runtime_fn(
+                    gen,
+                    block,
+                    "vx_string_as_c_str",
+                    &[(handle, "!llvm.ptr")],
+                    "!llvm.ptr",
+                )?;
+                super::call_runtime_fn(gen, block, "print_str", &[(c_str, "!llvm.ptr")], "i32")?;
+                super::call_runtime_fn(
+                    gen,
+                    block,
+                    "vx_string_free_c_str",
+                    &[(c_str, "!llvm.ptr")],
+                    "i32",
+                )?;
+                continue;
             }
-
-            let name_attr = FlatSymbolRefAttribute::new(gen.context, func_name);
-            let call_op = OperationBuilder::new("func.call", gen.loc())
-                .add_operands(&[arg_val])
-                .add_results(&[gen.i32_ty])
-                .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())])
-                .build()?;
-
-            block.append_operation(call_op);
+            if !matches!(arg_ty_str.as_str(), "!llvm.ptr" | "!llvm.ptr<i8>") {
+                return Err(LowerError::from(format!(
+                    "print cannot print a value of type {arg_ty}"
+                )));
+            }
+            super::call_runtime_fn(gen, block, "print_str", &[(arg_val, "!llvm.ptr")], "i32")?;
         }
 
         let dummy_op = OperationBuilder::new("llvm.mlir.constant", gen.loc())

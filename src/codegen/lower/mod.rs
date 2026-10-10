@@ -1288,9 +1288,30 @@ pub(crate) fn call_scalar_print<'c>(
     arg_val: Value<'c, 'c>,
     arg_ty_str: &str,
 ) -> Result<Value<'c, 'c>, LowerError> {
+    call_runtime_fn(gen, block, fn_name, &[(arg_val, arg_ty_str)], "i32")
+}
+
+/// Call a runtime function, declaring it first if the module does not have it yet. The
+/// declaration takes the given argument types, not the types of the values passed, so a later
+/// call is checked against the signature the declaration really has.
+pub(crate) fn call_runtime_fn<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    fn_name: &str,
+    args: &[(Value<'c, 'c>, &str)],
+    ret_ty_str: &str,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let parse = |text: &str| {
+        Type::parse(gen.context, text).ok_or_else(|| LowerError::ParseType(text.to_string()))
+    };
+    let ret_ty = parse(ret_ty_str)?;
     if !gen.functions.contains_key(fn_name) {
-        let func_ty = Type::parse(gen.context, &format!("({}) -> i32", arg_ty_str))
-            .ok_or_else(|| LowerError::ParseType(format!("({}) -> i32", arg_ty_str)))?;
+        let arg_tys: Vec<&str> = args.iter().map(|(_, ty)| *ty).collect();
+        let func_ty = parse(&format!("({}) -> {ret_ty_str}", arg_tys.join(", ")))?;
+        let recorded_tys = arg_tys
+            .iter()
+            .map(|ty| parse(ty))
+            .collect::<Result<Vec<_>, _>>()?;
         let func_decl = OperationBuilder::new("func.func", gen.loc())
             .add_attributes(&[
                 (
@@ -1309,18 +1330,14 @@ pub(crate) fn call_scalar_print<'c>(
             .add_regions([melior::ir::Region::new()])
             .build()?;
         gen.module.body().append_operation(func_decl);
-        // Record the widened parameter type, not the source scalar's, or a
-        // later call would be checked against a signature the declaration
-        // does not have.
-        let recorded_ty = Type::parse(gen.context, arg_ty_str)
-            .ok_or_else(|| LowerError::ParseType(arg_ty_str.to_string()))?;
         gen.functions
-            .insert(fn_name.to_string().into(), (gen.i32_ty, vec![recorded_ty]));
+            .insert(fn_name.to_string().into(), (ret_ty, recorded_tys));
     }
+    let operands: Vec<Value<'c, 'c>> = args.iter().map(|(v, _)| *v).collect();
     let call_op = block.append_operation(
         OperationBuilder::new("func.call", gen.loc())
-            .add_operands(&[arg_val])
-            .add_results(&[gen.i32_ty])
+            .add_operands(&operands)
+            .add_results(&[ret_ty])
             .add_attributes(&[(
                 Identifier::new(gen.context, "callee"),
                 FlatSymbolRefAttribute::new(gen.context, fn_name).into(),
