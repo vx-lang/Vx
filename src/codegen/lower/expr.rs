@@ -3960,6 +3960,22 @@ pub(crate) fn fit_payload_to_slot_text<'c>(
             .build()?;
         return Ok(block.append_operation(cast).result(0)?.into());
     }
+    // A float in an integer slot goes in as its bits.
+    let mut payload_val = payload_val;
+    let mut payload_ty = *payload_ty;
+    let payload_text = payload_ty.to_string();
+    if crate::codegen::generator::is_float_text(&payload_text) && int_bits(&slot_text).is_some() {
+        let bits = crate::codegen::generator::scalar_type_bits(&payload_text)
+            .ok_or_else(|| LowerError::from(format!("a float of no width: {payload_text}")))?;
+        let as_int = Type::parse(gen.context, &format!("i{bits}"))
+            .ok_or_else(|| LowerError::ParseType("Type::parse failed".to_string()))?;
+        let cast = OperationBuilder::new("arith.bitcast", gen.loc())
+            .add_operands(&[payload_val])
+            .add_results(&[as_int])
+            .build()?;
+        payload_val = block.append_operation(cast).result(0)?.into();
+        payload_ty = as_int;
+    }
     let (Some(have), Some(want)) = (int_bits(&payload_ty.to_string()), int_bits(&slot_text)) else {
         return Ok(payload_val);
     };
