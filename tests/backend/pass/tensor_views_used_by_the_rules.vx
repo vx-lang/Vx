@@ -5,11 +5,11 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// REQUIRES: flat-codegen
 // RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
 //
 // A row `q[1]` borrows its tensor. These uses keep to the rules of that borrow, and are
-// accepted. (`--legacy-codegen` cannot yet return a row from a function, as `second_row` does.)
+// accepted.
 
 fn take(t : Tensor<f32, [2, 4]>) -> f32 {
   return t[1][0];
