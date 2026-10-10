@@ -33,10 +33,17 @@ fn main() -> i32 {
   return 0;
 }
 
-// Check that MLIR code generates cmpi and logical ops correctly
-// CHECK: arith.cmpi
-// CHECK: arith.cmpi
-// CHECK: arith.cmpi
-// CHECK: arith.andi
-// CHECK: arith.xori
-// CHECK: arith.ori
+// Comparisons give `arith.cmpi`, and `!` gives `arith.xori`. `&&` and `||` are branches,
+// because their right side must not run when the left side already decides the result.
+// `a && b` jumps to the end with `a` when `a` is false; `a || b` does when `a` is true.
+// CHECK: [[LESS:%[0-9]+]] = arith.cmpi slt
+// CHECK: [[EQ:%[0-9]+]] = arith.cmpi eq
+// CHECK: arith.cmpi ne
+// CHECK: cf.cond_br [[LESS]], ^[[RHS:bb[0-9]+]], ^[[END:bb[0-9]+]]([[LESS]] : i1)
+// CHECK: ^[[RHS]]:
+// CHECK-NEXT: cf.br ^[[END]]([[EQ]] : i1)
+// CHECK: ^[[END]]([[AND:%[0-9]+]]: i1):
+// CHECK: [[NOT:%[0-9]+]] = arith.xori [[AND]]
+// CHECK-NEXT: cf.cond_br [[LEFT:%[0-9]+]], ^[[END2:bb[0-9]+]]([[LEFT]] : i1), ^[[RHS2:bb[0-9]+]]
+// CHECK: ^[[RHS2]]:
+// CHECK-NEXT: cf.br ^[[END2]]([[NOT]] : i1)

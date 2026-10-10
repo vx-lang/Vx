@@ -1,0 +1,88 @@
+//===- methods_that_call_themselves.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Methods that call themselves, directly or through each other. The compiler used to
+// check a method's body again at each call to it, so this overflowed the compiler's
+// stack.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+struct Point {
+  v : i32,
+}
+
+struct Wrapper<T> {
+  x : T,
+}
+
+impl Point {
+  fn count_down(self : &Point, n : i32) -> i32 {
+    if n <= 0 {
+      return self.v;
+    }
+    return self.count_down(n - 1) + 1;
+  }
+
+  // Calls itself on a new local value, not on `self`.
+  fn add_tens(self : &Point, n : i32) -> i32 {
+    if n <= 0 {
+      return self.v;
+    }
+    let next = Point {
+      v: self.v + 10
+    };
+    return next.add_tens(n - 1);
+  }
+
+  fn is_even(self : &Point, n : i32) -> bool {
+    if n == 0 {
+      return true;
+    }
+    return self.is_odd(n - 1);
+  }
+
+  fn is_odd(self : &Point, n : i32) -> bool {
+    if n == 0 {
+      return false;
+    }
+    return self.is_even(n - 1);
+  }
+}
+
+impl<T> Wrapper<T> {
+  fn depth(self : &Wrapper<T>, n : i32) -> i32 {
+    if n <= 0 {
+      return 0;
+    }
+    return self.depth(n - 1) + 1;
+  }
+}
+
+fn main() -> i32 {
+  let p = Point {
+    v: 1
+  };
+  print!(p.count_down(3));
+  print!(" ");
+  print!(p.add_tens(3));
+  print!(" ");
+  if p.is_even(10) {
+    print!("even ");
+  }
+  if p.is_odd(7) {
+    print!("odd ");
+  }
+  let w = Wrapper<i32> {
+    x: 5
+  };
+  print!(w.depth(4));
+  print!("
+");
+  // CHECK: {{^}}4 31 even odd 4{{$}}
+  return 0;
+}

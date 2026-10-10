@@ -1533,10 +1533,12 @@ impl<'a> TypeChecker<'a> {
 
             if !self.env.functions.contains_key(inst_name.as_ref())
                 && !self.mono.functions.iter().any(|(f, _)| f.name == inst_name)
+                && self.mono.being_checked.insert(inst_name.clone())
             {
                 let saved_edge = self.seam.lowering_edge.take();
                 self.check_function(&mut inst_func);
                 self.seam.lowering_edge = saved_edge;
+                self.mono.being_checked.remove(&inst_name);
                 self.mono.functions.push((inst_func, 0));
             }
 
@@ -1784,6 +1786,7 @@ impl<'a> TypeChecker<'a> {
 
             if !self.env.functions.contains_key(inst_name.as_ref())
                 && !self.mono.functions.iter().any(|(f, _)| f.name == inst_name)
+                && self.mono.being_checked.insert(inst_name.clone())
             {
                 // `check_function` checks the body in a borrow table of its own (#268).
                 // An instantiated generic is ordinary code even when the call site sits in
@@ -1791,6 +1794,7 @@ impl<'a> TypeChecker<'a> {
                 let saved_edge = self.seam.lowering_edge.take();
                 self.check_function(&mut inst_func);
                 self.seam.lowering_edge = saved_edge;
+                self.mono.being_checked.remove(&inst_name);
                 self.mono.functions.push((inst_func, origin_hash));
             }
             Some(inst_ret)
@@ -2392,12 +2396,14 @@ impl<'a> TypeChecker<'a> {
 
         method_func.name = mangled_name.clone().into();
 
+        let mangled_sym = crate::symbol::Symbol::from(mangled_name.as_str());
         if !self.env.functions.contains_key(&*mangled_name)
             && !self
                 .mono
                 .functions
                 .iter()
-                .any(|(f, _)| f.name == crate::symbol::Symbol::from(mangled_name.as_str()))
+                .any(|(f, _)| f.name == mangled_sym)
+            && self.mono.being_checked.insert(mangled_sym.clone())
         {
             // Type check the instantiated method
             let mut func_to_check = method_func.clone();
@@ -2407,6 +2413,7 @@ impl<'a> TypeChecker<'a> {
             self.check_function(&mut func_to_check);
             self.current_assignment_target = saved_target;
             self.seam.lowering_edge = saved_edge;
+            self.mono.being_checked.remove(&mangled_sym);
             self.mono.functions.push((func_to_check, 0)); // 0 will fall back to caller_module_idx
         }
         (method_func, mangled_name)
@@ -2539,6 +2546,14 @@ impl<'a> TypeChecker<'a> {
         self.speculating = true;
         let ret_ty = self.check_expr_type_flag(&mut func_call, consume);
         self.speculating = saved_speculating;
+        // A method calling itself is not registered until its body is checked, so the probe
+        // cannot find it. Its signature says what it returns.
+        let ret_ty =
+            if ret_ty == Type::Unknown && self.mono.being_checked.contains(mangled_name.as_str()) {
+                method_func.return_type.clone()
+            } else {
+                ret_ty
+            };
         (ret_ty, func_call)
     }
 

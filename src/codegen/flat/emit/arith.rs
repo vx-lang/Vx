@@ -11,6 +11,10 @@ impl FnEmit<'_> {
         let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
         let lit = if e.is_float() {
             mlir_float_literal(f64::from_bits(ins.imm))
+        } else if !is_signed(&e) && int_bits(&e).is_some_and(|b| b > 64) {
+            // The literal holds 64 bits. A wider unsigned type fills the rest with zeroes, so
+            // `2^64 - 1` stays positive in a `u128`.
+            ins.imm.to_string()
         } else {
             (ins.imm as i64).to_string()
         };

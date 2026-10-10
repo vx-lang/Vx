@@ -1655,18 +1655,48 @@ impl<'c> LowerToMelior<'c> for LogicalOpExpr {
             rhs,
             span: _,
         } = self;
+        // The right side runs only when the left side does not decide the result, so a guard
+        // like `i > 0 && v.get(i - 1) == 0` never reads index -1.
         let (lhs_val, _lhs_ty, block) = gen.generate_expr(lhs, block)?;
-        let (rhs_val, _rhs_ty, block) = gen.generate_expr(rhs, block)?;
-
         let final_ty = gen.i1_ty;
+        let parent_region = block.parent_region().unwrap();
+        let rhs_block = parent_region.append_block(melior::ir::Block::new(&[]));
+        let merge_block =
+            parent_region.append_block(melior::ir::Block::new(&[(final_ty, gen.loc())]));
 
-        let builder = OperationBuilder::new(op.get_op_name(false, false), gen.loc())
-            .add_operands(&[lhs_val, rhs_val])
-            .add_results(&[final_ty]);
+        // `a && b` is `a` when `a` is false; `a || b` is `a` when `a` is true.
+        let (true_dest, false_dest, true_args, false_args): (_, _, &[Value], &[Value]) = match op {
+            syntax::LogicalOp::And => (&*rhs_block, &*merge_block, &[], &[lhs_val]),
+            syntax::LogicalOp::Or => (&*merge_block, &*rhs_block, &[lhs_val], &[]),
+        };
+        let operands: Vec<Value> = std::iter::once(lhs_val)
+            .chain(true_args.iter().copied())
+            .chain(false_args.iter().copied())
+            .collect();
+        block.append_operation(
+            OperationBuilder::new("cf.cond_br", gen.loc())
+                .add_operands(&operands)
+                .add_successors(&[true_dest, false_dest])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "operandSegmentSizes"),
+                    melior::ir::attribute::DenseI32ArrayAttribute::new(
+                        gen.context,
+                        &[1, true_args.len() as i32, false_args.len() as i32],
+                    )
+                    .into(),
+                )])
+                .build()?,
+        );
 
-        let bin_op = builder.build()?;
-        let bin_ref = block.append_operation(bin_op);
-        Ok((bin_ref.result(0)?.into(), final_ty, block))
+        let (rhs_val, _rhs_ty, rhs_end) = gen.generate_expr(rhs, rhs_block)?;
+        rhs_end.append_operation(
+            OperationBuilder::new("cf.br", gen.loc())
+                .add_operands(&[rhs_val])
+                .add_successors(&[&*merge_block])
+                .build()?,
+        );
+
+        Ok((merge_block.argument(0)?.into(), final_ty, merge_block))
     }
 }
 
@@ -4546,6 +4576,31 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
                         .build()?;
                     let widened = block.append_operation(ext).result(0)?.into();
                     return Ok((widened, target_ty_mlir, block));
+                }
+                // For the same reason, an unsigned number converts to and from a float with
+                // the unsigned ops: `3000000000u32 as f64` is not negative.
+                let unsigned_float_op = if source_elem.int_bits().is_some()
+                    && !source_elem.is_signed_int()
+                    && target_elem.is_float()
+                    && melior::ir::TypeLike::is_integer(&_source_ty)
+                {
+                    Some("arith.uitofp")
+                } else if source_elem.is_float()
+                    && target_elem.int_bits().is_some()
+                    && !target_elem.is_signed_int()
+                    && melior::ir::TypeLike::is_integer(&target_ty_mlir)
+                {
+                    Some("arith.fptoui")
+                } else {
+                    None
+                };
+                if let Some(op_name) = unsigned_float_op {
+                    let op = OperationBuilder::new(op_name, gen.loc())
+                        .add_operands(&[source_val])
+                        .add_results(&[target_ty_mlir])
+                        .build()?;
+                    let converted = block.append_operation(op).result(0)?.into();
+                    return Ok((converted, target_ty_mlir, block));
                 }
             }
             let coerced_val = gen.coerce_type(&block, source_val, _source_ty, target_ty_mlir)?;
