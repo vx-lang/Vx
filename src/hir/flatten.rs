@@ -4974,6 +4974,21 @@ impl<'r> Lowerer<'r> {
             // Compound assignment `lhs op= rhs` desugars to `lhs = (lhs op rhs)`: read the current
             // value of the place, combine it with the right side, and store back.
             Statement::CompoundAssign(a) => {
+                // `p.x += n` and `*r += n` are `p.x = p.x + n` and `*r = *r + n`, which
+                // `lower_assign` already handles. The place is named twice, so only a variable
+                // followed by fields and `*`, where naming it twice cannot run anything twice.
+                if matches!(&a.lhs, Expr::MemberAccess(_) | Expr::Dereference(_))
+                    && named_without_side_effects(&a.lhs)
+                {
+                    let value = Expr::BinaryOp(crate::syntax::expr::BinaryOpExpr {
+                        lhs: Box::new(a.lhs.clone()),
+                        op: a.op.clone(),
+                        rhs: Box::new(a.rhs.clone()),
+                        span: a.span,
+                        operand_ty: a.operand_ty.clone(),
+                    });
+                    return self.lower_assign(&a.lhs, &value);
+                }
                 let cur = self.lower_expr(&a.lhs)?;
                 let rhs = self.lower_expr(&a.rhs)?;
                 let op = binop_opcode(&a.op).ok_or(Decline::Unsupported {
@@ -5905,6 +5920,17 @@ fn simple_ident(e: &Expr) -> Option<Symbol> {
     match e {
         Expr::Identifier(id) => Some(id.name.clone()),
         _ => None,
+    }
+}
+
+/// A variable followed by fields and `*`, like `p.x` or `*r` or `(*self).pos.x`: naming it
+/// evaluates nothing, so it can be named twice.
+fn named_without_side_effects(e: &Expr) -> bool {
+    match e {
+        Expr::Identifier(_) => true,
+        Expr::MemberAccess(m) => named_without_side_effects(&m.base),
+        Expr::Dereference(d) => named_without_side_effects(&d.expr),
+        _ => false,
     }
 }
 
