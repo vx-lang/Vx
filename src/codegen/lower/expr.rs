@@ -2909,7 +2909,29 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             //     contiguous buffer so downstream ops see row-major data.
             // See GitHub #148.
             let is_transpose = **name == *"transpose";
-            let (arg_val, expr_ty, block) = gen.generate_expr(&args[0], block)?;
+            let (arg_val, mut expr_ty, block) = gen.generate_expr(&args[0], block)?;
+            // A `let mut` tensor is a slot holding the tensor, and the slot keeps only `?`
+            // extents. The shape below is read off the memref type, so put the static extents
+            // the Vx type still knows back on it.
+            let mut arg_val = load_tensor_slot(gen, &block, arg_val, &mut expr_ty)?;
+            if expr_ty.to_string().contains('?') {
+                if let Some(syntax::Type::Tensor(_, dims, _)) = gen.infer_ast_type(&args[0]) {
+                    let extents: Option<Vec<&str>> = dims.iter().map(|d| d.literal()).collect();
+                    let el = extract_mlir_element_type(&expr_ty.to_string())
+                        .unwrap_or_else(|e| panic!("{}", e));
+                    if let Some(extents) = extents {
+                        let static_str = format!("memref<{}x{}>", extents.join("x"), el);
+                        let static_ty = Type::parse(gen.context, &static_str)
+                            .ok_or_else(|| LowerError::ParseType(static_str.clone()))?;
+                        let cast = OperationBuilder::new("memref.cast", gen.loc())
+                            .add_operands(&[arg_val])
+                            .add_results(&[static_ty])
+                            .build()?;
+                        arg_val = block.append_operation(cast).result(0)?.into();
+                        expr_ty = static_ty;
+                    }
+                }
+            }
             let expr_ty_str = expr_ty.to_string();
             let el_ty_str =
                 extract_mlir_element_type(&expr_ty_str).unwrap_or_else(|e| panic!("{}", e));
