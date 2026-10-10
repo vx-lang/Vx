@@ -820,7 +820,9 @@ impl<'a> Parser<'a> {
                 }
             }
             self.consume(&TokenType::RightBrace, "Expected '}'")?;
-            return Ok(Expr::UnsafeBlock(UnsafeBlockExpr {
+            // Only `as` may follow the block: a `(` or `[` on the next line starts a new
+            // statement, and `as` cannot.
+            return self.parse_as_casts(Expr::UnsafeBlock(UnsafeBlockExpr {
                 stmts,
                 ret,
                 span: Span::default(),
@@ -1349,19 +1351,27 @@ impl<'a> Parser<'a> {
                     index: Box::new(index),
                     span: ix_span,
                 });
-            } else if self.match_token(&TokenType::As) {
-                let target_ty = self.parse_type()?;
-                expr = Expr::AsCast(AsCastExpr {
-                    expr: Box::new(expr),
-                    target_ty,
-                    source_ty: None,
-                    span: Span::default(),
-                });
+            } else if self.check(&TokenType::As) {
+                expr = self.parse_as_casts(expr)?;
             } else {
                 break;
             }
         }
 
+        Ok(expr)
+    }
+
+    /// `expr as T`, any number of times.
+    fn parse_as_casts(&mut self, mut expr: Expr) -> ParseResult<'a, Expr> {
+        while self.match_token(&TokenType::As) {
+            let target_ty = self.parse_type()?;
+            expr = Expr::AsCast(AsCastExpr {
+                expr: Box::new(expr),
+                target_ty,
+                source_ty: None,
+                span: Span::default(),
+            });
+        }
         Ok(expr)
     }
 }
