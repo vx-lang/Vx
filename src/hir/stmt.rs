@@ -15,11 +15,20 @@ use std::collections::{HashMap, HashSet};
 use super::*;
 
 use crate::hir;
+use crate::hir::borrow_cx::BlockUses;
 use crate::hir::check_state::ComptimeEvalContext;
 use crate::hir::comptime_interpreter::{
     ComptimeFunctionBodies, ComptimeInterpreter, ComptimeObservation,
 };
 use crate::syntax;
+
+/// What a loop's header names for its body. The header runs before every pass.
+pub(crate) struct LoopHeader<'e> {
+    /// The variable a `for` loop declares.
+    pub(crate) binds: Option<&'e str>,
+    /// The iterator a `for` loop takes each value from.
+    pub(crate) evaluates: Option<&'e Expr>,
+}
 
 /// What running a statement did to the block it sits in.
 ///
@@ -125,20 +134,53 @@ impl<'a> TypeChecker<'a> {
     ///    statement (`extract_uses_stmt`) and insert them into `last_use` with the current statement index `i`.
     /// 4. By the end of the pass, `last_use[var]` holds the exact index of the *last* statement
     ///    that references `var` within this block.
-    /// 5. We hand this map to `self.borrow` (via `enter_block`) and advance its statement cursor with
-    ///    `set_stmt`, so the borrow context carries the per-block liveness.
+    /// 5. We hand this map, with the names the block declares, to `self.borrow` (via `enter_block`)
+    ///    and advance its statement cursor with `set_stmt`, so the borrow context carries the
+    ///    per-block liveness.
     ///
     /// This allows the Non-Lexical Lifetimes (NLL) borrow checker to query its `is_variable_used_after`
     /// in O(1) time instead of performing an O(N^2) AST tree-walk!
     pub(crate) fn check_block(&mut self, body: &mut Vec<Statement>, return_type: &Type) {
+        self.check_block_as(body, return_type, None);
+    }
+
+    /// Checks a loop body, which runs again after its last statement. The loop's header runs
+    /// before every pass: `header.binds` is the variable a `for` loop declares, and
+    /// `header.evaluates` the iterator it takes each value from.
+    pub(crate) fn check_loop_body(
+        &mut self,
+        body: &mut Vec<Statement>,
+        return_type: &Type,
+        header: LoopHeader,
+    ) {
+        self.check_block_as(body, return_type, Some(header));
+    }
+
+    fn check_block_as(
+        &mut self,
+        body: &mut Vec<Statement>,
+        return_type: &Type,
+        header: Option<LoopHeader>,
+    ) {
         Self::name_loop_literals(body);
         let mut terminated = false;
 
         // 1. Liveness Analysis Pass
         self.hoist_spawn_allocations(body);
-        let last_use = Self::compute_block_liveness(body);
+        let mut uses = Self::block_uses(body);
+        if let Some(LoopHeader { binds, evaluates }) = header {
+            uses.is_loop = true;
+            uses.declared.extend(binds.map(crate::symbol::Symbol::from));
+            if let Some(evaluates) = evaluates {
+                let mut names = HashSet::new();
+                Self::extract_uses_expr(evaluates, &mut names);
+                for name in names {
+                    uses.last_use.entry(name.into()).or_insert(0);
+                }
+            }
+        }
 
-        self.borrow.enter_block(last_use);
+        self.borrow.enter_block(uses);
         self.drops_enter_block(body);
 
         // A block is always checked for real, never speculatively. Force `speculating` off for the
@@ -183,6 +225,24 @@ impl<'a> TypeChecker<'a> {
     /// body -- the run-time code a `comptime` block must not leave behind.
     pub(crate) fn drop_spent_comptime_lambdas(body: &mut Vec<Statement>) {
         body.retain(|stmt| !Self::binds_a_comptime_lambda(stmt));
+    }
+
+    /// What the borrow checker needs to know about `body` before checking it: the last statement
+    /// that names each variable, and the variables `body` declares.
+    pub(crate) fn block_uses(body: &[Statement]) -> BlockUses {
+        let last_use = Self::compute_block_liveness(body);
+        let declared = body
+            .iter()
+            .filter_map(|stmt| match stmt {
+                Statement::LetDecl(l) => Some(l.name.clone()),
+                _ => None,
+            })
+            .collect();
+        BlockUses {
+            last_use,
+            declared,
+            is_loop: false,
+        }
     }
 
     pub(crate) fn compute_block_liveness(
@@ -750,7 +810,11 @@ impl<'a> TypeChecker<'a> {
         let marks_before = self.moved_snapshot();
         self.borrow.loop_exits.push(Default::default());
         self.drops_enter_loop();
-        self.check_block(body, return_type);
+        let header = LoopHeader {
+            binds: Some(iter.as_str()),
+            evaluates: Some(&**iterable),
+        };
+        self.check_loop_body(body, return_type, header);
         self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
@@ -849,7 +913,11 @@ impl<'a> TypeChecker<'a> {
         let marks_before = self.moved_snapshot();
         self.borrow.loop_exits.push(Default::default());
         self.drops_enter_loop();
-        self.check_block(body, return_type);
+        let header = LoopHeader {
+            binds: None,
+            evaluates: None,
+        };
+        self.check_loop_body(body, return_type, header);
         self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
