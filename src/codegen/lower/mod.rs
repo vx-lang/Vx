@@ -213,6 +213,19 @@ pub(crate) fn extract_mlir_element_type(ty_str: &str) -> Result<&'static str, St
         "i32" => Ok("i32"),
         "i64" => Ok("i64"),
         "i1" => Ok("i1"),
+        // The narrow integers, in both signednesses. MLIR spells an unsigned
+        // value with its signed type and marks the operation as unsigned, so
+        // `u8` maps to `i8`: a program that prints a `u8` tensor gets the `i8`
+        // printer, which is how `u32` and `u64` tensors are printed already.
+        //
+        // These arrive here whenever a program reaches a lowering that needs the
+        // element type of a memref or tensor -- printing a tensor of one of
+        // them, for one. Before they were listed, such a program stopped with
+        // `ParseType("Unsupported MLIR element type in: memref<?x?xi8>")`, an
+        // internal message about a type that the rest of the compiler handles.
+        "i8" | "u8" => Ok("i8"),
+        "i16" | "u16" => Ok("i16"),
+        "i4" | "u4" => Ok("i4"),
         _ => Err(format!("Unsupported MLIR element type in: {}", ty_str)),
     }
 }
@@ -1157,6 +1170,11 @@ pub(crate) fn lower_print_call<'c>(
         "i32" => "printMemrefI32",
         "i64" => "printMemrefI64",
         "bf16" => "printMemrefBF16",
+        // A 4-bit tensor has no printer in MLIR's runner utils, and no packed
+        // entry point either; the `_ =>` arm below refuses it with the element
+        // type named instead of failing later.
+        "i8" => "printMemrefI8",
+        "i16" => "printMemrefI16",
         _ => return Err(LowerError::UnsupportedElementType(el_ty_str.to_string())),
     };
 

@@ -14,10 +14,11 @@
 // Covered here: f16 scalar arithmetic, f16 tensor store and load, and an f16
 // matmul through the `@` operator (which lowers to `linalg.matmul`).
 //
-// Results are read back through `as f32` rather than printed as f16 tensors:
-// `printMemrefBF16` is absent from the MLIR runner utils on Linux, so printing
-// a half-precision *tensor* fails to link there for reasons unrelated to
-// arithmetic. Scalars are fine -- they widen (see scalar_print_narrow.vx).
+// Results are read back through `as f32` rather than printed as f16 tensors.
+// The reason this comment used to give for that -- that `printMemrefBF16` is
+// missing from the MLIR runner utils on Linux, so such a print fails to link --
+// is out of date: `runtime/vx_mlir_shims.c` supplies the plain symbol, and
+// printing a bf16 tensor works (measured; it has no test of its own yet).
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-DAG: func.func private @print_f32(
 // CHECK-DAG: func.func private @print_str(
