@@ -3128,6 +3128,32 @@ impl<'r> Lowerer<'r> {
             // A by-value field that is itself an instance (`Wrapper<N> { inner: Array<f32, N> }`)
             // is laid out first and embedded as its own `!llvm.struct`.
             let (sz, al, mlir, kind) = match &fty {
+                // An enum instance held by value, `Peek<T> { peeked : Option<T> }`. The type may
+                // spell the enum as a struct, so it is found by name.
+                Type::GenericInstance(b, a)
+                    if matches!(b.as_ref(), Type::Enum(n, _) | Type::Struct(n, _)
+                        if self.registry.enum_data.contains_key(n.as_ref())) =>
+                {
+                    let (Type::Enum(inner_name, _) | Type::Struct(inner_name, _)) = b.as_ref()
+                    else {
+                        return None;
+                    };
+                    let (inner, offsets, payload) =
+                        self.enum_instance_layout_of(inner_name.as_ref(), a)?;
+                    let (mut end, mut al) = (4u64, 4u64);
+                    for (o, pt) in offsets.iter().skip(1).zip(&payload) {
+                        let (psz, pal, _) = self.payload_field(pt)?;
+                        end = o + psz;
+                        al = al.max(pal);
+                    }
+                    let tys = &self.agg_layouts.iter().find(|(g, _, _)| *g == inner)?.2;
+                    (
+                        crate::layout::align_up(end as usize, al as usize) as u64,
+                        al,
+                        format!("!llvm.struct<({})>", tys.join(", ")),
+                        FieldTy::Nominal(inner),
+                    )
+                }
                 Type::GenericInstance(b, a) if matches!(b.as_ref(), Type::Struct(..)) => {
                     let Type::Struct(inner_name, _) = b.as_ref() else {
                         return None;
@@ -3185,6 +3211,22 @@ impl<'r> Lowerer<'r> {
             self.agg_layouts.push((gid, offsets, field_tys));
         }
         Some(gid)
+    }
+
+    /// Whether `ty` borrows or points to a generic struct instance whose layout is synthesized
+    /// (`&Peek<i64>`), which the registry alone does not know.
+    fn borrows_a_struct_instance(&mut self, ty: &Type) -> bool {
+        let (Type::Borrow { inner, .. } | Type::Pointer(inner, ..)) = ty else {
+            return false;
+        };
+        let Type::GenericInstance(b, a) = inner.as_ref() else {
+            return false;
+        };
+        let Type::Struct(n, _) = b.as_ref() else {
+            return false;
+        };
+        agg_gid_of_ty(ty, self.registry).is_none()
+            && self.struct_instance_layout_of(n.as_ref(), a).is_some()
     }
 
     /// Synthesize (once) and record the aggregate layout of a monomorphized data-carrying enum
@@ -4549,12 +4591,17 @@ impl<'r> Lowerer<'r> {
                     what: "a field not in the modelled layout",
                 })?;
             let offset = field.offset as u64;
-            if matches!(field.ty, FieldTy::Nominal(_)) {
+            let nested = matches!(field.ty, FieldTy::Nominal(_));
+            if nested && !construction_tail(rhs) {
                 return Err(Decline::TypeNotModelled {
                     what: "a store to a nested nominal field",
                 });
             }
-            let v = self.lower_expr(rhs)?;
+            let mut v = self.lower_expr(rhs)?;
+            // A struct or enum built in place yields its slot; the field holds the value.
+            if nested && matches!(v.ty, LoweredTy::Aggregate(_)) {
+                v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
+            }
             let pos = self.code.len();
             self.emit_effect(Opcode::FieldStore, base_reg, v.reg, offset);
             // A place-write field store (`*r = v` through a `&mut o.field` place): record it for
@@ -5237,7 +5284,10 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Lowe
         // value that binds as an SSA register even in memory mode: it is a block argument that
         // dominates every block, and mutation flows through the pointer to the pointee, not to the
         // register (so it never needs a slot). (#242)
-        if matches!(incoming.ty, LoweredTy::Tensor { .. }) || is_ptr_to_agg(ty, registry) {
+        if matches!(incoming.ty, LoweredTy::Tensor { .. })
+            || is_ptr_to_agg(ty, registry)
+            || lw.borrows_a_struct_instance(ty)
+        {
             lw.scope.insert(name.clone(), Binding::Reg(incoming));
         } else {
             lw.bind_local(name.clone(), incoming);
