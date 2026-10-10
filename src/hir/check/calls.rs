@@ -523,6 +523,13 @@ impl<'a> TypeChecker<'a> {
                 persists(*i),
                 span,
             );
+            // `let r = keep(m)`: `r` may point where `m` points, so it holds every borrow
+            // `m` holds, as it would after `let r = m`.
+            if persists(*i) {
+                if let Some(target) = self.current_assignment_target.clone() {
+                    self.borrow.copy_borrows(base, &target, self.scopes.len());
+                }
+            }
         }
         // (b) Selective revert: a base keeps its borrow past the call iff at least one
         //     of its argument positions is one the return derives from. Non-deriving
@@ -2853,16 +2860,16 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     // A returned reference keeps the receiver borrowed while it is used.
+                    let holds_ref =
+                        !Self::is_ref_type(&ret_ty) && self.result_can_hold_reference(&ret_ty);
+                    let keeps_borrow = (matches!(ret_ty, Type::Borrow { .. }) || holds_ref)
+                        && match &func_call {
+                            Expr::FunctionCall(fc) => {
+                                self.env.return_provenance_of(fc.name.as_ref()).includes(0)
+                            }
+                            _ => true,
+                        };
                     if let Some((base, path, is_mut)) = receiver_borrow {
-                        let holds_ref =
-                            !Self::is_ref_type(&ret_ty) && self.result_can_hold_reference(&ret_ty);
-                        let keeps_borrow = (matches!(ret_ty, Type::Borrow { .. }) || holds_ref)
-                            && match &func_call {
-                                Expr::FunctionCall(fc) => {
-                                    self.env.return_provenance_of(fc.name.as_ref()).includes(0)
-                                }
-                                _ => true,
-                            };
                         self.track_reference_arg_borrow(
                             &base,
                             path,
@@ -2871,6 +2878,18 @@ impl<'a> TypeChecker<'a> {
                             keeps_borrow,
                             &method_span,
                         );
+                    }
+                    // A receiver that is itself a reference: after `let r = m.get_mut()` with
+                    // `m : &mut S`, `r` may point where `m` points, so it holds every borrow
+                    // `m` holds.
+                    if keeps_borrow && matches!(base_ty, Type::Borrow { .. }) && !self.speculating {
+                        if let (Some((receiver, _)), Some(target)) = (
+                            Self::arg_reborrow_base(obj),
+                            self.current_assignment_target.clone(),
+                        ) {
+                            self.borrow
+                                .copy_borrows(&receiver, &target, self.scopes.len());
+                        }
                     }
                     *expr = func_call;
                     return ret_ty;

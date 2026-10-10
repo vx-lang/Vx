@@ -1,0 +1,77 @@
+//===- reference_returned_from_a_reference_keeps_its_source_borrowed.vx - Vx Compiler --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `m` borrows `x`, and a call given `m` returns a reference that may point where `m`
+// points. While that result is used, `x` cannot be used directly, as after `let r = m`.
+
+struct S {
+  v : i64,
+}
+
+impl S {
+  fn get_mut(self : &mut S) -> &mut i64 {
+    return &mut self.v;
+  }
+}
+
+fn keep(m : &mut i64) -> &mut i64 {
+  return m;
+}
+
+fn shrink(m : &mut i64) -> &i64 {
+  return m;
+}
+
+fn assign_while_the_result_is_used() -> i64 {
+  let mut x = 1i64;
+  let m = &mut x;
+  let r = keep(m);
+  x = 5i64;
+  *r = 7i64;
+  return 0i64;
+}
+
+fn read_while_the_result_is_used() -> i64 {
+  let mut x = 1i64;
+  let m = &mut x;
+  let r = keep(m);
+  let seen = x;
+  *r = 7i64;
+  return seen;
+}
+
+// A shared result made from `m` still comes from `m`'s mutable borrow of `x`.
+fn read_while_a_shared_result_is_used() -> i64 {
+  let mut x = 1i64;
+  let m = &mut x;
+  let r = shrink(m);
+  let seen = x;
+  return *r + seen;
+}
+
+fn method_called_on_a_reference() -> i64 {
+  let mut s = S {
+    v : 1
+  };
+  let m = &mut s;
+  let r = m.get_mut();
+  s.v = 5;
+  *r = 7;
+  return 0i64;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: Error[E4002] at 35:3: Cannot access 'x' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at 44:14: Cannot access 'x' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at 54:14: Cannot access 'x' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at 64:5: Cannot access 's' because it is mutably borrowed.
+// CHECK: 4 error(s) emitted
