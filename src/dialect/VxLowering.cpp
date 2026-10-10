@@ -1157,8 +1157,8 @@ static void placeTransferFree(vx::TransferOp transfer) {
         continue;
       auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
           call, call.getCalleeAttr());
-      if (callee &&
-          placedTopology(callee.getArgAttr(use.getOperandNumber(), "vx.placed")))
+      if (callee && placedTopology(
+                        callee.getArgAttr(use.getOperandNumber(), "vx.placed")))
         return;
     }
 
@@ -1283,6 +1283,31 @@ static LogicalResult lowerHostFrees(ModuleOp module) {
   return success();
 }
 
+/// A transfer into shared memory written outside a `spawn on` region. Shared
+/// memory belongs to the threads of one block on the device, and the host has
+/// none: the transfer's `gpu.barrier` would otherwise reach LLVM translation in
+/// a host function, with an error that names the op rather than the mistake.
+static LogicalResult diagnoseHostSharedMemoryTransfers(Operation *root) {
+  bool failed = false;
+  root->walk([&](vx::TransferOp transfer) {
+    auto scope = transfer->getAttrOfType<StringAttr>("scope");
+    if (!scope || scope.getValue() != "sm" ||
+        transfer->getParentOfType<vx::SpawnOp>() ||
+        transfer->getParentOfType<vx::KernelOp>())
+      return;
+    StringRef space = "shared memory";
+    if (auto s = transfer->getAttrOfType<StringAttr>("space"))
+      space = s.getValue();
+    transfer.emitError()
+        << "a transfer into " << space
+        << " must be inside a `spawn on` region: it is shared memory, which "
+           "belongs to the threads of one block on the device, and the host "
+           "has none";
+    failed = true;
+  });
+  return failure(failed);
+}
+
 /// Reject a placed region the target cannot run and the host cannot either.
 ///
 /// `kernelKindOf` deciding it cannot classify a region is not an error on its
@@ -1310,31 +1335,6 @@ static LogicalResult lowerHostFrees(ModuleOp module) {
 /// question is whether this *program* can execute as written, and one asking
 /// for a kernel the compiler cannot emit for the device it named cannot, on any
 /// machine. Answering it differently per build box is how the fault hid.
-/// A transfer into shared memory written outside a `spawn on` region. Shared
-/// memory belongs to the threads of one block on the device, and the host has
-/// none: the transfer's `gpu.barrier` would otherwise reach LLVM translation in
-/// a host function, with an error that names the op rather than the mistake.
-static LogicalResult diagnoseHostSharedMemoryTransfers(Operation *root) {
-  bool failed = false;
-  root->walk([&](vx::TransferOp transfer) {
-    auto scope = transfer->getAttrOfType<StringAttr>("scope");
-    if (!scope || scope.getValue() != "sm" ||
-        transfer->getParentOfType<vx::SpawnOp>() ||
-        transfer->getParentOfType<vx::KernelOp>())
-      return;
-    StringRef space = "shared memory";
-    if (auto s = transfer->getAttrOfType<StringAttr>("space"))
-      space = s.getValue();
-    transfer.emitError()
-        << "a transfer into " << space
-        << " must be inside a `spawn on` region: it is shared memory, which "
-           "belongs to the threads of one block on the device, and the host "
-           "has none";
-    failed = true;
-  });
-  return failure(failed);
-}
-
 static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
   bool failed = false;
   root->walk([&](vx::SpawnOp spawn) {
@@ -1511,7 +1511,6 @@ static void freePlaced(OpBuilder &builder, Location loc, Value buffer,
   builder.create<vx::FreeOp>(loc, buffer, topology);
 }
 
-
 // Whether parameter `i` of the function `call` reaches is taken by value.
 static bool takesOwnership(func::CallOp call, unsigned i) {
   auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
@@ -1548,7 +1547,6 @@ static Value castSource(Value v) {
 
 static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
                              std::optional<int32_t> &topology);
-
 
 // The origin of every value in `values`, when they all have the same one.
 static BufferOrigin commonOrigin(ArrayRef<Value> values,
@@ -2452,40 +2450,11 @@ struct ConvertVxToStandardPass
   }
 };
 
-// ABI type tags for kernel arguments, shared with runtime/npu_dispatch.mm.
-// The runtime maps these to libffi types to reconstruct the C calling
-// convention. Keep the encoding in sync with vx_abi_ffi_type() there.
-//   0=ptr, 1=i1, 2=i8, 3=i16, 4=i32, 5=i64, 6=f32, 7=f64
-static int32_t abiTagForType(Type t) {
-  if (isa<Float32Type>(t))
-    return 6;
-  if (isa<Float64Type>(t))
-    return 7;
-  if (auto it = dyn_cast<IntegerType>(t)) {
-    switch (it.getWidth()) {
-    case 1:
-      return 1;
-    case 8:
-      return 2;
-    case 16:
-      return 3;
-    case 32:
-      return 4;
-    default:
-      return 5; // i64 (and any wider integer, widened to i64 on the slot)
-    }
-  }
-  return 0; // pointer (memref descriptor) and fallback
-}
-
-// Element type code for a memref's element, packed into the high bytes of the
-// argument tag. Keep in sync with the VX_DTYPE_* enum in
-// include/vx_hardware_runtime.h.
-//
-// This is what a plugin needs in order to interpret the descriptor it receives:
-// without it, a runtime can only assume a layout, which is why the Apple path
-// hardcodes float and rank 2 and would silently misread an f16 buffer.
-static int32_t elemDtypeCode(Type t) {
+// The VX_DTYPE_* code of a type (include/vx_hardware_runtime.h). It is the tag
+// of a scalar kernel argument, and for a memref argument the code of its
+// element, packed into the tag's high bytes so the plugin can read the
+// descriptor without assuming a layout. 0 is a pointer or an unknown type.
+static int32_t dtypeCode(Type t) {
   if (isa<Float32Type>(t))
     return 6;
   if (isa<Float64Type>(t))
@@ -2505,10 +2474,24 @@ static int32_t elemDtypeCode(Type t) {
     case 32:
       return 4;
     default:
-      return 5;
+      return 5; // i64, and any wider integer, widened to i64 on the slot
     }
   }
-  return 0; // unknown
+  return 0;
+}
+
+// The runtime function `name`, declared at the top of the module the first
+// time it is needed.
+static LLVM::LLVMFuncOp getOrDeclareRuntimeFn(OpBuilder &builder,
+                                              ModuleOp module, Location loc,
+                                              StringRef name, Type result,
+                                              ArrayRef<Type> params) {
+  if (auto fn = module.lookupSymbol<LLVM::LLVMFuncOp>(name))
+    return fn;
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(module.getBody());
+  return builder.create<LLVM::LLVMFuncOp>(
+      loc, name, LLVM::LLVMFunctionType::get(result, params, false));
 }
 
 // Lower a transfer into a device space to the plugin's allocate-and-transfer.
@@ -2618,14 +2601,8 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
 
     ModuleOp module = op->getParentOfType<ModuleOp>();
     StringRef allocName = "vx_plugin_alloc_and_transfer";
-    if (!module.lookupSymbol<LLVM::LLVMFuncOp>(allocName)) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(module.getBody());
-      auto fnTy = LLVM::LLVMFunctionType::get(
-          llvmPtrType, {llvmI64Type, llvmPtrType, llvmI32Type, llvmI32Type},
-          false);
-      rewriter.create<LLVM::LLVMFuncOp>(loc, allocName, fnTy);
-    }
+    getOrDeclareRuntimeFn(rewriter, module, loc, allocName, llvmPtrType,
+                          {llvmI64Type, llvmPtrType, llvmI32Type, llvmI32Type});
     // What the model claims about host access to the target space, carried down
     // so the backend that knows whether a device is really here can compare the
     // two. `hostCanRead` has read this attribute all along; it had nowhere to
@@ -2652,14 +2629,9 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
           loc, llvmI32Type, rewriter.getI32IntegerAttr(srcTopology));
 
       StringRef fetchName = "vx_plugin_transfer_device_to_host";
-      if (!module.lookupSymbol<LLVM::LLVMFuncOp>(fetchName)) {
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(module.getBody());
-        auto fnTy = LLVM::LLVMFunctionType::get(
-            llvmI32Type, {llvmPtrType, llvmPtrType, llvmI64Type, llvmI32Type},
-            false);
-        rewriter.create<LLVM::LLVMFuncOp>(loc, fetchName, fnTy);
-      }
+      getOrDeclareRuntimeFn(
+          rewriter, module, loc, fetchName, llvmI32Type,
+          {llvmPtrType, llvmPtrType, llvmI64Type, llvmI32Type});
       rewriter.create<LLVM::CallOp>(
           loc, TypeRange{llvmI32Type},
           SymbolRefAttr::get(rewriter.getContext(), fetchName),
@@ -2674,14 +2646,9 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
           loc, llvmI32Type, rewriter.getI32IntegerAttr(srcTopology));
 
       StringRef peerName = "vx_plugin_transfer_peer";
-      if (!module.lookupSymbol<LLVM::LLVMFuncOp>(peerName)) {
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(module.getBody());
-        auto fnTy = LLVM::LLVMFunctionType::get(
-            llvmPtrType, {llvmPtrType, llvmI32Type, llvmI32Type, llvmI64Type},
-            false);
-        rewriter.create<LLVM::LLVMFuncOp>(loc, peerName, fnTy);
-      }
+      getOrDeclareRuntimeFn(
+          rewriter, module, loc, peerName, llvmPtrType,
+          {llvmPtrType, llvmI32Type, llvmI32Type, llvmI64Type});
       devicePtr = rewriter
                       .create<LLVM::CallOp>(
                           loc, TypeRange{llvmPtrType},
@@ -2774,13 +2741,8 @@ struct AllocOpLowering : public OpRewritePattern<vx::AllocOp> {
 
     ModuleOp module = op->getParentOfType<ModuleOp>();
     StringRef allocName = "vx_plugin_alloc_and_transfer";
-    if (!module.lookupSymbol<LLVM::LLVMFuncOp>(allocName)) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(module.getBody());
-      auto fnTy = LLVM::LLVMFunctionType::get(
-          ptrType, {i64Type, ptrType, i32Type, i32Type}, false);
-      rewriter.create<LLVM::LLVMFuncOp>(loc, allocName, fnTy);
-    }
+    getOrDeclareRuntimeFn(rewriter, module, loc, allocName, ptrType,
+                          {i64Type, ptrType, i32Type, i32Type});
     Value nullSrc = rewriter.create<LLVM::ZeroOp>(loc, ptrType);
     Value topology = rewriter.create<LLVM::ConstantOp>(
         loc, i32Type, rewriter.getI32IntegerAttr(op.getTargetTopology()));
@@ -2847,14 +2809,9 @@ struct FreeOpLowering : public OpRewritePattern<vx::FreeOp> {
 
     ModuleOp module = op->getParentOfType<ModuleOp>();
     StringRef freeName = "vx_plugin_free";
-    if (!module.lookupSymbol<LLVM::LLVMFuncOp>(freeName)) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(module.getBody());
-      auto freeTy =
-          LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(getContext()),
-                                      {llvmPtrType, llvmI32Type}, false);
-      rewriter.create<LLVM::LLVMFuncOp>(loc, freeName, freeTy);
-    }
+    getOrDeclareRuntimeFn(rewriter, module, loc, freeName,
+                          LLVM::LLVMVoidType::get(getContext()),
+                          {llvmPtrType, llvmI32Type});
     rewriter.create<LLVM::CallOp>(
         loc, TypeRange{}, SymbolRefAttr::get(rewriter.getContext(), freeName),
         ValueRange{ptr, topology});
@@ -3084,14 +3041,14 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
           elemTy = innerTy.getElementType();
         }
 
-        tag = slotBit | (rank << 16) | (elemDtypeCode(elemTy) << 8);
+        tag = slotBit | (rank << 16) | (dtypeCode(elemTy) << 8);
       } else {
         // Scalar: device_args[i] points directly to the value.
         Value scalarAlloc = rewriter.create<LLVM::AllocaOp>(
             loc, llvmPtrType, argTy, one, /*alignment=*/0);
         rewriter.create<LLVM::StoreOp>(loc, arg, scalarAlloc);
         valuePtr = scalarAlloc;
-        tag = abiTagForType(argTy);
+        tag = dtypeCode(argTy);
       }
 
       Value argSlot =
@@ -3110,18 +3067,9 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     // 3. Declare vx_plugin_dispatch_async(name, payload_size, device_args,
     //    arg_tags, num_args)
     StringRef dispatchFuncName = "vx_plugin_dispatch_async";
-    LLVM::LLVMFuncOp dispatchFunc =
-        module.lookupSymbol<LLVM::LLVMFuncOp>(dispatchFuncName);
-    if (!dispatchFunc) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(module.getBody());
-      auto funcType = LLVM::LLVMFunctionType::get(
-          llvmI64Type,
-          {llvmPtrType, llvmI64Type, llvmPtrType, llvmPtrType, llvmI64Type},
-          false);
-      dispatchFunc =
-          rewriter.create<LLVM::LLVMFuncOp>(loc, dispatchFuncName, funcType);
-    }
+    LLVM::LLVMFuncOp dispatchFunc = getOrDeclareRuntimeFn(
+        rewriter, module, loc, dispatchFuncName, llvmI64Type,
+        {llvmPtrType, llvmI64Type, llvmPtrType, llvmPtrType, llvmI64Type});
 
     // 4. Emit the call. payload_size bounds the blob so a consumer can walk the
     //    entries past the kernel name without running off the end; it was
