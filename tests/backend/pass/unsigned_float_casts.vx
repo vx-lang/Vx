@@ -1,0 +1,62 @@
+//===- unsigned_float_casts.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `as` between an unsigned integer and a float treats the integer as unsigned. Each
+// value here is above the largest signed number of its width, the only case where the
+// signed conversion gives a different answer. The AST path (`--legacy-codegen`) used to
+// turn `3000000000u32 as f64` into -1294967296.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+fn to_f64(x : u32) -> f64 {
+  return x as f64;
+}
+
+fn to_f64_wide(x : u64) -> f64 {
+  return x as f64;
+}
+
+fn from_f64(x : f64) -> u32 {
+  return x as u32;
+}
+
+fn from_f64_wide(x : f64) -> u64 {
+  return x as u64;
+}
+
+fn main() -> i32 {
+  print!("u32 to f64: ");
+  print!(to_f64(3000000000));
+  print!("
+");
+  // CHECK: {{^}}u32 to f64: 3000000000{{$}}
+  print!("u64 to f64: ");
+  print!(to_f64_wide(10000000000000000000u64));
+  print!("
+");
+  // CHECK-NEXT: {{^}}u64 to f64: 10000000000000000000{{$}}
+  print!("f64 to u32: ");
+  print!(from_f64(3000000000.0));
+  print!("
+");
+  // CHECK-NEXT: {{^}}f64 to u32: 3000000000{{$}}
+  print!("f64 to u64: ");
+  print!(from_f64_wide(10000000000000000000.0));
+  print!("
+");
+  // CHECK-NEXT: {{^}}f64 to u64: 10000000000000000000{{$}}
+
+  // Signed integers still convert as signed.
+  let neg : i32 = -5;
+  print!("i32 to f64: ");
+  print!(neg as f64);
+  print!("
+");
+  // CHECK-NEXT: {{^}}i32 to f64: -5{{$}}
+  return 0;
+}

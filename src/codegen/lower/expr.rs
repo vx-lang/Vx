@@ -4577,6 +4577,31 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
                     let widened = block.append_operation(ext).result(0)?.into();
                     return Ok((widened, target_ty_mlir, block));
                 }
+                // For the same reason, an unsigned number converts to and from a float with
+                // the unsigned ops: `3000000000u32 as f64` is not negative.
+                let unsigned_float_op = if source_elem.int_bits().is_some()
+                    && !source_elem.is_signed_int()
+                    && target_elem.is_float()
+                    && melior::ir::TypeLike::is_integer(&_source_ty)
+                {
+                    Some("arith.uitofp")
+                } else if source_elem.is_float()
+                    && target_elem.int_bits().is_some()
+                    && !target_elem.is_signed_int()
+                    && melior::ir::TypeLike::is_integer(&target_ty_mlir)
+                {
+                    Some("arith.fptoui")
+                } else {
+                    None
+                };
+                if let Some(op_name) = unsigned_float_op {
+                    let op = OperationBuilder::new(op_name, gen.loc())
+                        .add_operands(&[source_val])
+                        .add_results(&[target_ty_mlir])
+                        .build()?;
+                    let converted = block.append_operation(op).result(0)?.into();
+                    return Ok((converted, target_ty_mlir, block));
+                }
             }
             let coerced_val = gen.coerce_type(&block, source_val, _source_ty, target_ty_mlir)?;
             return Ok((coerced_val, target_ty_mlir, block));
