@@ -1,0 +1,114 @@
+//===- enum_variants_with_different_number_types.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Enums whose variants carry different number types: a float and an integer of the same
+// width, a float narrower or wider than the integer, two values in one variant, and
+// `Result<f32, i32>`. The AST path (`--legacy-codegen`) used to fail MLIR verification on
+// these, since it tried to put a float where the enum kept an integer.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+import core::result;
+
+enum Mixed<A, B> {
+  L(A),
+  R(B),
+}
+
+impl<A, B> Mixed<A, B> {
+  fn left_or(self : Mixed<A, B>, d : A) -> A {
+    match self {
+      Mixed<A, B>::L(v) => {
+        return v;
+      }
+      Mixed<A, B>::R(v) => {
+        return d;
+      }
+    }
+  }
+
+  fn right_or(self : Mixed<A, B>, d : B) -> B {
+    match self {
+      Mixed<A, B>::L(v) => {
+        return d;
+      }
+      Mixed<A, B>::R(v) => {
+        return v;
+      }
+    }
+  }
+}
+
+enum Reading {
+  Count(i64),
+  Level(f32),
+  Pair(f64, i8),
+}
+
+fn show(r : Reading) -> i32 {
+  match r {
+    Reading::Count(n) => {
+      print(n);
+    }
+    Reading::Level(x) => {
+      print(x);
+    }
+    Reading::Pair(a, b) => {
+      print(a);
+      print!(",");
+      print(b);
+    }
+  }
+  print!(" ");
+  return 0;
+}
+
+fn main() -> i32 {
+  print!("same width: ");
+  print(Mixed<i32, f32>::R(2.5).right_or(0.5));
+  print!(" ");
+  print(Mixed<i32, f32>::L(-7).left_or(0));
+  print!("
+");
+  // CHECK: {{^}}same width: 2.5 -7{{$}}
+
+  print!("float narrower: ");
+  print(Mixed<f32, i64>::L(1.5).left_or(0.0));
+  print!(" ");
+  print(Mixed<f32, i64>::R(-9i64).right_or(0i64));
+  print!("
+");
+  // CHECK-NEXT: {{^}}float narrower: 1.5 -9{{$}}
+
+  print!("float wider: ");
+  print(Mixed<i8, f64>::R(-2.25).right_or(0.0));
+  print!(" ");
+  print(Mixed<i8, f64>::L(-3i8).left_or(0i8));
+  print!("
+");
+  // CHECK-NEXT: {{^}}float wider: -2.25 -3{{$}}
+
+  print!("plain enum: ");
+  show(Reading::Count(-5i64));
+  show(Reading::Level(-0.5));
+  show(Reading::Pair(1.25, -7i8));
+  print!("
+");
+  // CHECK-NEXT: {{^}}plain enum: -5 -0.5 1.25,-7 {{$}}
+
+  let ok = Result<f32, i32>::Ok(3.5);
+  let bad = Result<f32, i32>::Err(-4);
+  print!("result: ");
+  print(ok.unwrap_or(0.0));
+  print!(" ");
+  print(bad.unwrap_or(0.25));
+  print!("
+");
+  // CHECK-NEXT: {{^}}result: 3.5 0.25{{$}}
+  return 0;
+}

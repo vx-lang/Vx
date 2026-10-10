@@ -21,13 +21,9 @@
 // Both variants of both enums are read, since a slot sized or typed for one of them is
 // exactly what worked before.
 //
-// The fix is to the flat path. The AST path has never lowered a mixed-payload enum and
-// still does not: it builds the value with `llvm.insertvalue` and would need a cast at
-// each insert and extract. That is why this file lives here rather than in backend/pass,
-// whose runner executes every program through the AST path -- this runner takes the RUN
-// line, which uses the flat path, and the marker keeps the legacy replay off.
-// REQUIRES: flat-codegen
+// Both code generators lower it: the second RUN line uses the AST path.
 // RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
 // CHECK: 7 2.5 -1 7 9223372036854775807 -1
 enum Mix<T> {
   A(T),

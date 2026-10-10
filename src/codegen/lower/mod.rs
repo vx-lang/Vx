@@ -751,6 +751,38 @@ pub fn generate_match_chain<'c>(
                 }
                 None => (payload_val, payload_ty),
             };
+            // A float kept in an integer slot comes back out from its bits.
+            let declared_float =
+                declared_payload_ty(gen, en.as_ref(), vn.as_ref(), position, &opt_ty_str).filter(
+                    |text| {
+                        crate::codegen::generator::is_float_text(text)
+                            && payload_ty_str.starts_with('i')
+                    },
+                );
+            let (payload_val, payload_ty) = match declared_float {
+                Some(text) => {
+                    let bits = crate::codegen::generator::scalar_type_bits(&text)
+                        .ok_or_else(|| LowerError::from(format!("a float of no width: {text}")))?;
+                    let mut val = payload_val;
+                    if payload_ty.to_string() != format!("i{bits}") {
+                        let as_int = melior::ir::Type::parse(gen.context, &format!("i{bits}"))
+                            .ok_or_else(|| LowerError::ParseType("Type::parse failed".into()))?;
+                        let trunc = OperationBuilder::new("arith.trunci", gen.loc())
+                            .add_operands(&[val])
+                            .add_results(&[as_int])
+                            .build()?;
+                        val = then_block.append_operation(trunc).result(0)?.into();
+                    }
+                    let ty = melior::ir::Type::parse(gen.context, &text)
+                        .ok_or_else(|| LowerError::ParseType("Type::parse failed".into()))?;
+                    let cast = OperationBuilder::new("arith.bitcast", gen.loc())
+                        .add_operands(&[val])
+                        .add_results(&[ty])
+                        .build()?;
+                    (then_block.append_operation(cast).result(0)?.into(), ty)
+                }
+                None => (payload_val, payload_ty),
+            };
             gen.note_shadow(name.as_ref());
             gen.env
                 .insert(name.to_string().into(), (payload_val, payload_ty));

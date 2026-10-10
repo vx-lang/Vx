@@ -240,6 +240,11 @@ pub(crate) fn scalar_type_bits(ty_text: &str) -> Option<u32> {
     }
 }
 
+/// Whether an MLIR type spelling is a float type.
+pub(crate) fn is_float_text(ty_text: &str) -> bool {
+    matches!(ty_text, "f16" | "bf16" | "f32" | "f64")
+}
+
 /// A drop waiting for the value of the statement it precedes.
 pub(crate) enum WaitingDrop<'c> {
     /// The buffer to free, read where the drop was: the owner, or (`field`) a tensor field of
@@ -1859,6 +1864,9 @@ impl<'c> MeliorGenerator<'c> {
         for position in 0..arity {
             let mut payload_ty_str = "none".to_string();
             let mut widest = 0u32;
+            // Numbers of different kinds, such as `i32` and `f32`, share an integer slot. A float
+            // goes in as its bits; an integer in a float slot could read back as a denormal.
+            let mut scalars: Vec<String> = Vec::new();
             for (_v_name, payload) in enum_def {
                 let Some(types) = payload else { continue };
                 let Some(ty) = types.get(position) else {
@@ -1883,6 +1891,9 @@ impl<'c> MeliorGenerator<'c> {
                          generator"
                     )));
                 }
+                if scalar_type_bits(&lowered).is_some() && !scalars.contains(&lowered) {
+                    scalars.push(lowered.clone());
+                }
                 match scalar_type_bits(&lowered) {
                     Some(b) if b > widest => {
                         widest = b;
@@ -1891,6 +1902,9 @@ impl<'c> MeliorGenerator<'c> {
                     None if payload_ty_str == "none" => payload_ty_str = lowered,
                     _ => {}
                 }
+            }
+            if scalars.len() > 1 && scalars.iter().any(|t| is_float_text(t)) {
+                payload_ty_str = format!("i{widest}");
             }
             slots.push(payload_ty_str);
         }
