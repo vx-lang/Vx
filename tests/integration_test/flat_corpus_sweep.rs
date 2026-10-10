@@ -38,9 +38,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // `let u = if c { ..; };`: the flat path declines a `let` of a `void` value, with or
     // without `: void` ("a let with no type annotation"). The file is about the AST path.
     "backend/pass/if_else_with_no_value_bound_by_let.vx",
-    // `Duration`'s `+` and `-` go through `Option<Duration>`, and the flat path declines its
-    // `unwrap` ("a non-scalar default return").
-    "backend/pass/operators_on_user_types.vx",
     // `Result<void, i32>`: the flat path has no layout for a `void` payload ("an enum payload
     // type that is not modelled").
     "backend/pass/result_of_void.vx",
@@ -61,10 +58,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/closure_literal_as_closure_value.vx",
     // "A store to a nested nominal field": `out.f = f` puts a closure into a struct's field.
     "backend/pass/closure_using_a_local_stays_in_its_function.vx",
-    // `Option::or` and its neighbours, which answer with an `Option<T>`. The flat path
-    // declines them as "a non-scalar default return" -- the same shape as the file below,
-    // and the AST path handles both. The module's other methods answer with a `T` or a
-    // `bool` and compile through the flat path; adding these three is what moved the file.
+    // `Option::take` writes through `&mut Option<T>`, which the flat path declines as "a
+    // pointer element type that is not modelled". The answers come from the AST path.
     "backend/pass/core_option.vx",
     // An `Option` of an `Option` and of a pair: the flat path declines `main` as "an enum
     // with no modelled instance layout". The answers come from the AST path.
@@ -120,10 +115,8 @@ const KNOWN_DECLINES: &[&str] = &[
     // The flat path declines `main` as "a callee return type", since `wrap` and `some_pair`
     // answer with a generic struct and a generic enum. The answers come from the AST path.
     "backend/pass/nested_generic_names_in_generic_fns.vx",
-    // `ok`, `err`, `map`, `map_err` and `and_then` all answer with an `Option` or a
-    // `Result`, which the flat path declines as "a non-scalar default return" -- the same
-    // shape as the file above. The AST path handles them, and that is where the answers
-    // come from.
+    // `and_then` calls a closure that answers a `Result`, which the flat path declines as "an
+    // indirect callee returning a non-scalar". The answers come from the AST path.
     "backend/pass/core_result.vx",
     // `partial_cmp` answers with an `Option<Ordering>`, and `then_with` and `max_by` take
     // closures that answer with an `Ordering`. The flat path declines the first as "a
@@ -131,19 +124,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // These live apart from `core_cmp.vx` so that file keeps compiling through the flat
     // path; putting them together would have moved it here instead.
     "backend/pass/core_cmp_partial.vx",
-    // `checked_add` and the other checked methods answer with an `Option<Duration>`, which
-    // the flat path declines as "a callee return type". The answers come from the AST path.
-    "backend/pass/core_time_duration.vx",
-    // `right_opt` and `left_opt` answer with an `Option<T>`, which the flat path declines
-    // as "a non-scalar default return" -- the same shape as the file above. Those two
-    // methods are the point of the file: a parameter only reaches the code that binds it
-    // when it is handed to another generic type, so the AST path is where it is asked.
-    "backend/pass/enum_binds_every_type_parameter.vx",
-    // A generic enum returned from a match whose arms each return. The flat path declines it
-    // as "a non-scalar default return" -- the same shape the AST path used to mis-lower, and
-    // the reason that file exists. Its answers come from the AST path, and it states no
-    // directive about emitted IR for that reason.
-    "backend/pass/generic_enum_returned_from_match.vx",
     // A generic struct, which the flat path declines as "a struct with no GID". The file
     // exists to pin that `>>` still closes two generics now that it is also the right
     // shift, and that question is settled in the parser, so the decline costs it nothing.
@@ -175,14 +155,12 @@ const KNOWN_DECLINES: &[&str] = &[
     // operand ("a matmul assignment whose destination may be one of its operands").
     "frontend/pass/tensor_drop_points_reassigned.vx",
     // The `vxc -j` fallback fixture: a program the flat path declines, chosen so the parallel
-    // frontend has something to hand back to the sequential driver. Same shape as
-    // generic_enum_returned_from_match.vx, and it declines for the same reason.
+    // frontend has something to hand back to the sequential driver. It declines "a match in
+    // value position".
     "frontend/pass/jobs_falls_back_outside_the_flat_subset.vx",
     // The same shape again, with a warning added: it states that a program checked by both
     // frontends has its warnings reported once, which needs a program that declines.
     "frontend/pass/jobs_warns_once_when_it_falls_back.vx",
-    // Same decline as `backend/pass/iterator_over_structs.vx`, through `vxc -j`.
-    "frontend/pass/jobs_iterator_over_structs.vx",
     "frontend/pass/trait_topologies.vx",
     // A `for` loop over `v.iter()`: the flat path declines `Vec` iteration by reference.
     "frontend/pass/vec_iterator_borrow_ends_at_last_use.vx",

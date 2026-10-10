@@ -6,9 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 // A program the flat path declines is still compiled under `-j`: the parallel frontend says
-// so and the sequential driver takes over, through its AST codegen. A generic method with a
-// type parameter of its own, returning a generic enum out of a `match`, is outside the flat
-// subset today.
+// so and the sequential driver takes over, through its AST codegen. A `match` whose arms give
+// the returned value is outside the flat subset today.
 //
 // The phase table is the second claim here: it describes the compile that produced the output.
 // Draining it when the parallel frontend declined printed the half that was thrown away, and
@@ -17,28 +16,19 @@
 // RUN: (vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
 // RUN: (VX_PIPELINE_PHASES=1 vxc -j 2 --emit-mlir %s 2>&1 >/dev/null) | FileCheck --check-prefix=PHASES %s
 
-enum Holder<T> {
-  Full(T),
-  Empty,
-}
-
-impl<T> Holder<T> {
-  fn widen<U>(self : Holder<T>, r : U) -> Holder<U> {
-    match self {
-      Holder<T>::Full(v) => {
-        return Holder<U>::Full(r);
-      },
-      Holder<T>::Empty() => {
-        return Holder<U>::Empty();
-      },
+fn seven_or_nine(n : i32) -> i32 {
+  return match n {
+    0 => {
+      7
     }
-  }
+    _ => {
+      9
+    }
+  };
 }
 
 fn main() -> i32 {
-  let full = Holder<i32>::Full(5);
-  let _widened = full.widen(9);
-  return 0;
+  return seven_or_nine(0);
 }
 
 // `flat_corpus_sweep` decides which codegen path a program took by looking for the flat emitter's

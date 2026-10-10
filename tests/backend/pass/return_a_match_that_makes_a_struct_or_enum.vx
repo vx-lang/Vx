@@ -1,0 +1,77 @@
+//===- return_a_match_that_makes_a_struct_or_enum.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `return match x { ... }` where every arm returns a struct or an enum. The flat code
+// generator used to refuse these, so the whole program went to the AST path. `unwrap` on an
+// `Option` of a struct is written this way in the standard library.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --check-prefix=VALUES
+// CHECK-NOT: flat-codegen
+
+import core::option;
+
+struct Point {
+  x : i32,
+  y : i32,
+}
+
+fn point_for(n : i32) -> Point {
+  return match n {
+    0 => {
+      return Point {
+        x: 1, y: 2
+      };
+    }
+    _ => {
+      return Point {
+        x: 3, y: 4
+      };
+    }
+  };
+}
+
+fn add_one(o : Option<i32>) -> Option<i32> {
+  return match o {
+    Option<i32>::Some(v) => {
+      return Option<i32>::Some(v + 1);
+    }
+    Option<i32>::None() => {
+      return Option<i32>::None();
+    }
+  };
+}
+
+fn main() -> i32 {
+  let p = point_for(5);
+  print!("struct: ");
+  print(p.x);
+  print!(" ");
+  print(p.y);
+  print!("
+");
+  // CHECK: {{^}}struct: 3 4{{$}}
+  // VALUES: {{^}}struct: 3 4{{$}}
+
+  print!("enum: ");
+  print(add_one(Option<i32>::Some(41)).unwrap());
+  print!("
+");
+  // CHECK-NEXT: {{^}}enum: 42{{$}}
+  // VALUES-NEXT: {{^}}enum: 42{{$}}
+
+  let q = Option<Point>::Some(Point {
+    x: 5, y: 6
+  });
+  print!("unwrap a struct: ");
+  print(q.unwrap().y);
+  print!("
+");
+  // CHECK-NEXT: {{^}}unwrap a struct: 6{{$}}
+  // VALUES-NEXT: {{^}}unwrap a struct: 6{{$}}
+  return 0;
+}

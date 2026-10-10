@@ -10,34 +10,25 @@
 // must be reported once. The parallel frontend used to print its warnings as it found them, so
 // every warning in a declining program appeared twice.
 //
-// The generic method returning a generic enum out of a `match` is what puts it outside the flat
-// subset; the unused binding is what warns.
+// The `match` whose arms give the returned value is what puts it outside the flat subset; the
+// unused binding is what warns.
 //
 // RUN: (vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
 
-enum Holder<T> {
-  Full(T),
-  Empty,
-}
-
-impl<T> Holder<T> {
-  fn widen<U>(self : Holder<T>, r : U) -> Holder<U> {
-    match self {
-      Holder<T>::Full(v) => {
-        return Holder<U>::Full(r);
-      },
-      Holder<T>::Empty() => {
-        return Holder<U>::Empty();
-      },
+fn seven_or_nine(n : i32) -> i32 {
+  return match n {
+    0 => {
+      7
     }
-  }
+    _ => {
+      9
+    }
+  };
 }
 
 fn main() -> i32 {
   let unused_here = 5;
-  let full = Holder<i32>::Full(5);
-  let _widened = full.widen(9);
-  return 0;
+  return seven_or_nine(0);
 }
 
 // Reported once. The sequential driver is what prints it on this path -- it re-checks the whole
