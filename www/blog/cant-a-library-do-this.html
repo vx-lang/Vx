@@ -70,27 +70,27 @@ time.</p>
 the shape:</p>
 
 <!-- vx-doctest: skip: Rust, the library version -->
-<pre><code>use std::marker::PhantomData;
+<pre><code><span class="k">use</span> std::marker::<span class="t">PhantomData</span>;
 
-struct CpuDram;
-struct GpuHbm;
+<span class="k">struct</span> <span class="t">CpuDram</span>;
+<span class="k">struct</span> <span class="t">GpuHbm</span>;
 
-trait HostVisible {}
-impl HostVisible for CpuDram {}
+<span class="k">trait</span> <span class="t">HostVisible</span> {}
+<span class="k">impl</span> <span class="t">HostVisible</span> <span class="k">for</span> <span class="t">CpuDram</span> {}
 
-struct Tensor&lt;const R: usize, const C: usize, M&gt; {
-    data: Vec&lt;f32&gt;,
-    space: PhantomData&lt;M&gt;,
+<span class="k">struct</span> <span class="t">Tensor</span>&lt;<span class="k">const</span> <span class="t">R</span>: <span class="t">usize</span>, <span class="k">const</span> <span class="t">C</span>: <span class="t">usize</span>, <span class="t">M</span>&gt; {
+    data: <span class="t">Vec</span>&lt;<span class="t">f32</span>&gt;,
+    space: <span class="t">PhantomData</span>&lt;<span class="t">M</span>&gt;,
 }
 
-fn sum_on_host&lt;const R: usize, const C: usize, M: HostVisible&gt;(t: &amp;Tensor&lt;R, C, M&gt;) -&gt; f32 {
-    t.data.iter().sum()
+<span class="k">fn</span> <span class="f">sum_on_host</span>&lt;<span class="k">const</span> <span class="t">R</span>: <span class="t">usize</span>, <span class="k">const</span> <span class="t">C</span>: <span class="t">usize</span>, <span class="t">M</span>: <span class="t">HostVisible</span>&gt;(t: &amp;<span class="t">Tensor</span>&lt;<span class="t">R</span>, <span class="t">C</span>, <span class="t">M</span>&gt;) -&gt; <span class="t">f32</span> {
+    t.data.<span class="f">iter</span>().<span class="f">sum</span>()
 }
 
-fn matmul&lt;const M: usize, const K: usize, const N: usize, S&gt;(
-    a: &amp;Tensor&lt;M, K, S&gt;,
-    b: &amp;Tensor&lt;K, N, S&gt;,
-) -&gt; Tensor&lt;M, N, S&gt; { /* ... */ }</code></pre>
+<span class="k">fn</span> <span class="f">matmul</span>&lt;<span class="k">const</span> <span class="t">M</span>: <span class="t">usize</span>, <span class="k">const</span> <span class="t">K</span>: <span class="t">usize</span>, <span class="k">const</span> <span class="t">N</span>: <span class="t">usize</span>, <span class="t">S</span>&gt;(
+    a: &amp;<span class="t">Tensor</span>&lt;<span class="t">M</span>, <span class="t">K</span>, <span class="t">S</span>&gt;,
+    b: &amp;<span class="t">Tensor</span>&lt;<span class="t">K</span>, <span class="t">N</span>, <span class="t">S</span>&gt;,
+) -&gt; <span class="t">Tensor</span>&lt;<span class="t">M</span>, <span class="t">N</span>, <span class="t">S</span>&gt; { <span class="c">/* ... */</span> }</code></pre>
 
 <p>With rustc 1.98, a host read of a <code>Tensor&lt;4, 4, GpuHbm&gt;</code> fails with
 <code>error[E0277]: the trait bound `GpuHbm: HostVisible` is not satisfied</code>, and a
@@ -108,10 +108,10 @@ result only reuses its inputs' sizes. A <code>concat</code> whose result has <co
 rows does not:</p>
 
 <!-- vx-doctest: skip: Rust -->
-<pre><code>fn concat&lt;const A: usize, const B: usize, M&gt;(
-    x: Tensor&lt;A, 1, M&gt;,
-    y: Tensor&lt;B, 1, M&gt;,
-) -&gt; Tensor&lt;{ A + B }, 1, M&gt;</code></pre>
+<pre><code><span class="k">fn</span> <span class="f">concat</span>&lt;<span class="k">const</span> <span class="t">A</span>: <span class="t">usize</span>, <span class="k">const</span> <span class="t">B</span>: <span class="t">usize</span>, <span class="t">M</span>&gt;(
+    x: <span class="t">Tensor</span>&lt;<span class="t">A</span>, <span class="n">1</span>, <span class="t">M</span>&gt;,
+    y: <span class="t">Tensor</span>&lt;<span class="t">B</span>, <span class="n">1</span>, <span class="t">M</span>&gt;,
+) -&gt; <span class="t">Tensor</span>&lt;{ <span class="t">A</span> + <span class="t">B</span> }, <span class="n">1</span>, <span class="t">M</span>&gt;</code></pre>
 
 <pre><code>error: generic parameters may not be used in const operations</code></pre>
 
@@ -125,34 +125,34 @@ multiprocessor on an H100. Whether a kernel's tiles fit depends on what each fun
 it calls the next one. Here each function fits in a 4 MiB space by itself, and together they do
 not:</p>
 
-<pre><code>Memory CPU_DRAM {}
-Memory SMEM {
-  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+<pre><code><span class="t">Memory</span> <span class="t">CPU_DRAM</span> {}
+<span class="t">Memory</span> <span class="t">SMEM</span> {
+  within: <span class="t">Memory</span>::<span class="t">CPU_DRAM</span>, capacity: <span class="n">4 MiB</span>, managed: explicit
 }
-Topology Dev {
+<span class="t">Topology</span> <span class="t">Dev</span> {
   arch: nvptx64,
-  memory: Memory::SMEM,
-  visible: [Memory::SMEM],
-  transfer Memory::CPU_DRAM -&gt; Memory::SMEM : 10
-  transfer Memory::SMEM -&gt; Memory::CPU_DRAM : 10
+  memory: <span class="t">Memory</span>::<span class="t">SMEM</span>,
+  visible: [<span class="t">Memory</span>::<span class="t">SMEM</span>],
+  <span class="k">transfer</span> <span class="t">Memory</span>::<span class="t">CPU_DRAM</span> -&gt; <span class="t">Memory</span>::<span class="t">SMEM</span> : <span class="n">10</span>
+  <span class="k">transfer</span> <span class="t">Memory</span>::<span class="t">SMEM</span> -&gt; <span class="t">Memory</span>::<span class="t">CPU_DRAM</span> : <span class="n">10</span>
 }
 
-fn inner() -&gt; i32 {
-  let y = Tensor&lt;f32, [1024, 768]&gt;::uninit();
-  let _tile = transfer(y, Memory::SMEM);
-  return 1;
+<span class="k">fn</span> <span class="f">inner</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> y = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">1024</span>, <span class="n">768</span>]&gt;::<span class="f">uninit</span>();
+  <span class="k">let</span> _tile = <span class="f">transfer</span>(y, <span class="t">Memory</span>::<span class="t">SMEM</span>);
+  <span class="k">return</span> <span class="n">1</span>;
 }
 
-fn outer() -&gt; i32 {
-  let x = Tensor&lt;f32, [1024, 768]&gt;::uninit();
-  let tile = transfer(x, Memory::SMEM);
-  let r = inner();
-  let _back = transfer(tile, Memory::CPU_DRAM);
-  return r;
+<span class="k">fn</span> <span class="f">outer</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> x = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">1024</span>, <span class="n">768</span>]&gt;::<span class="f">uninit</span>();
+  <span class="k">let</span> tile = <span class="f">transfer</span>(x, <span class="t">Memory</span>::<span class="t">SMEM</span>);
+  <span class="k">let</span> r = <span class="f">inner</span>();
+  <span class="k">let</span> _back = <span class="f">transfer</span>(tile, <span class="t">Memory</span>::<span class="t">CPU_DRAM</span>);
+  <span class="k">return</span> r;
 }
 
-fn main() -&gt; i32 {
-  return outer();
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">return</span> <span class="f">outer</span>();
 }</code></pre>
 
 <pre><code>Error[E6027] at 22:11: the working set along call path 'outer -&gt; inner' in memory space
@@ -176,13 +176,13 @@ or in a smaller language inside macros, which is what Burn's CubeCL does. The ho
 reach inside it. In Vx a <code>spawn on</code> block is in the same function as the code around
 it, and the compiler checks it as code for the device it runs on:</p>
 
-<pre><code>fn main() -&gt; i32 {
-  let host = Tensor&lt;f32, [4]&gt;::new();
-  let gpu = transfer(host, Memory::GPU_HBM);
-  let _p = spawn on(Topology::NPU[0]) {
-    let _x = gpu[0];
+<pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> host = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>]&gt;::<span class="f">new</span>();
+  <span class="k">let</span> gpu = <span class="f">transfer</span>(host, <span class="t">Memory</span>::<span class="t">GPU_HBM</span>);
+  <span class="k">let</span> _p = <span class="k">spawn</span> <span class="k">on</span>(<span class="t">Topology</span>::<span class="t">NPU</span>[<span class="n">0</span>]) {
+    <span class="k">let</span> _x = gpu[<span class="n">0</span>];
   };
-  return 0;
+  <span class="k">return</span> <span class="n">0</span>;
 }</code></pre>
 
 <pre><code>Error[E6003] at 5:14: 'gpu' lives in GPU_HBM but NPU[0] sees only [NPU_HBM];

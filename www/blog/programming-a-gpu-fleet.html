@@ -78,22 +78,22 @@ whatever the computation happens to run on. Vx makes the opposite choice.</p>
 <p>This is part of <code>fleet/node-8gpu.vx</code>, the model of an 8-GPU H100 node that ships
 in the repository. Each figure comes from a vendor datasheet, cited in the file:</p>
 
-<pre><code>Memory HBM {
-  capacity: 80 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
+<pre><code><span class="t">Memory</span> <span class="t">HBM</span> {
+  capacity: <span class="n">80 GiB</span>, bandwidth: <span class="n">3.35 TB/s</span>, managed: explicit, scope: device
 }
-// The other seven GPUs' memory, reached over NVLink.
-Memory PEER_HBM {
-  capacity: 560 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
+<span class="c">// The other seven GPUs' memory, reached over NVLink.</span>
+<span class="t">Memory</span> <span class="t">PEER_HBM</span> {
+  capacity: <span class="n">560 GiB</span>, bandwidth: <span class="n">3.35 TB/s</span>, managed: explicit, scope: device
 }
 
-Topology Node {
+<span class="t">Topology</span> <span class="t">Node</span> {
   arch: nvptx64,
-  memory: Memory::HBM,
-  visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::PEER_HBM],
-  transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,       // PCIe Gen5
-  transfer Memory::HBM -> Memory::PEER_HBM : 450 GB/s,      // NVLink 4
-  transfer Memory::HBM -> Memory::NIC_RAM : 63 GB/s,        // PCIe, to the network card
-  transfer Memory::NIC_RAM -> Memory::Remote_HBM : 50 GB/s  // InfiniBand NDR, one port
+  memory: <span class="t">Memory</span>::<span class="t">HBM</span>,
+  visible: [<span class="t">Memory</span>::<span class="t">HBM</span>, <span class="t">Memory</span>::<span class="t">L2</span>, <span class="t">Memory</span>::<span class="t">SMEM</span>, <span class="t">Memory</span>::<span class="t">PEER_HBM</span>],
+  <span class="k">transfer</span> <span class="t">Memory</span>::<span class="t">CPU_DRAM</span> -> <span class="t">Memory</span>::<span class="t">HBM</span> : <span class="n">63 GB/s</span>,       <span class="c">// PCIe Gen5</span>
+  <span class="k">transfer</span> <span class="t">Memory</span>::<span class="t">HBM</span> -> <span class="t">Memory</span>::<span class="t">PEER_HBM</span> : <span class="n">450 GB/s</span>,      <span class="c">// NVLink 4</span>
+  <span class="k">transfer</span> <span class="t">Memory</span>::<span class="t">HBM</span> -> <span class="t">Memory</span>::<span class="t">NIC_RAM</span> : <span class="n">63 GB/s</span>,        <span class="c">// PCIe, to the network card</span>
+  <span class="k">transfer</span> <span class="t">Memory</span>::<span class="t">NIC_RAM</span> -> <span class="t">Memory</span>::<span class="t">Remote_HBM</span> : <span class="n">50 GB/s</span>  <span class="c">// InfiniBand NDR, one port</span>
 }</code></pre>
 
 <p>A memory has a capacity and a bandwidth. A topology says which memories its code can see and
@@ -106,8 +106,8 @@ node, or a datacenter. The program does not include this file; it is passed when
 <p>In the program, where a tensor lives is part of its type. <code>transfer</code> moves a
 tensor and gives back one whose type names its new memory:</p>
 
-<pre><code>let w : Tensor&lt;f16, [12 * LAYERS * HEADS * HDIM / TP, HEADS * HDIM]&gt; = ...;
-let weights = transfer(w, Memory::HBM);   // Tensor&lt;f16, [..], Memory::HBM&gt;</code></pre>
+<pre><code><span class="k">let</span> w : <span class="t">Tensor</span>&lt;<span class="t">f16</span>, [<span class="n">12</span> * <span class="t">LAYERS</span> * <span class="t">HEADS</span> * <span class="t">HDIM</span> / <span class="t">TP</span>, <span class="t">HEADS</span> * <span class="t">HDIM</span>]&gt; = ...;
+<span class="k">let</span> weights = <span class="f">transfer</span>(w, <span class="t">Memory</span>::<span class="t">HBM</span>);   <span class="c">// Tensor&lt;f16, [..], Memory::HBM&gt;</span></code></pre>
 
 <p>Because the type carries the memory, the compiler can refuse what the hardware cannot do.
 Host code that reads GPU memory directly is a type error that says to bring the data home first.
@@ -126,21 +126,21 @@ cache, and the activations, all at once. Then it shares the weights and activati
 other GPUs over NVLink, and moves its KV cache to another machine, as when a node is drained for
 maintenance:</p>
 
-<pre><code>fn serve&lt;const LAYERS : i32, const HEADS : i32, const KVHEADS : i32, const HDIM : i32,
-         const CTX : i32, const BATCH : i32, const TP : i32&gt;() -&gt; i32 {
-  let weights = transfer(w, Memory::HBM);
-  let kv_cache = transfer(kv, Memory::HBM);
-  let activations = transfer(a, Memory::HBM);
-  let _on_peers = transfer(weights, Memory::PEER_HBM);
-  let _migrated = transfer(kv_cache, Memory::Remote_HBM);
-  let _shared = transfer(activations, Memory::PEER_HBM);
-  return 0;
+<pre><code><span class="k">fn</span> <span class="f">serve</span>&lt;<span class="k">const</span> <span class="t">LAYERS</span> : <span class="t">i32</span>, <span class="k">const</span> <span class="t">HEADS</span> : <span class="t">i32</span>, <span class="k">const</span> <span class="t">KVHEADS</span> : <span class="t">i32</span>, <span class="k">const</span> <span class="t">HDIM</span> : <span class="t">i32</span>,
+         <span class="k">const</span> <span class="t">CTX</span> : <span class="t">i32</span>, <span class="k">const</span> <span class="t">BATCH</span> : <span class="t">i32</span>, <span class="k">const</span> <span class="t">TP</span> : <span class="t">i32</span>&gt;() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> weights = <span class="f">transfer</span>(w, <span class="t">Memory</span>::<span class="t">HBM</span>);
+  <span class="k">let</span> kv_cache = <span class="f">transfer</span>(kv, <span class="t">Memory</span>::<span class="t">HBM</span>);
+  <span class="k">let</span> activations = <span class="f">transfer</span>(a, <span class="t">Memory</span>::<span class="t">HBM</span>);
+  <span class="k">let</span> _on_peers = <span class="f">transfer</span>(weights, <span class="t">Memory</span>::<span class="t">PEER_HBM</span>);
+  <span class="k">let</span> _migrated = <span class="f">transfer</span>(kv_cache, <span class="t">Memory</span>::<span class="t">Remote_HBM</span>);
+  <span class="k">let</span> _shared = <span class="f">transfer</span>(activations, <span class="t">Memory</span>::<span class="t">PEER_HBM</span>);
+  <span class="k">return</span> <span class="n">0</span>;
 }
 
-fn main() -&gt; i32 {
-  let eight_way = serve&lt;80, 64, 8, 128, 32768, 8, 8&gt;();
-  let two_way = serve&lt;80, 64, 8, 128, 32768, 8, 2&gt;();
-  return eight_way + two_way;
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> eight_way = <span class="f">serve</span>&lt;<span class="n">80</span>, <span class="n">64</span>, <span class="n">8</span>, <span class="n">128</span>, <span class="n">32768</span>, <span class="n">8</span>, <span class="n">8</span>&gt;();
+  <span class="k">let</span> two_way = <span class="f">serve</span>&lt;<span class="n">80</span>, <span class="n">64</span>, <span class="n">8</span>, <span class="n">128</span>, <span class="n">32768</span>, <span class="n">8</span>, <span class="n">2</span>&gt;();
+  <span class="k">return</span> eight_way + two_way;
 }</code></pre>
 
 <p>Compiled against the node, the 8-way plan is accepted: each GPU holds about 31 GB. The 2-way

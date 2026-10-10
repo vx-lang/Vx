@@ -64,15 +64,15 @@ device and gives back its result as <code>Pinned&lt;T, τ&gt;</code>: a value of
 <code>T</code> that lives on <code>τ</code>. A block that only writes to a tensor has no result,
 so <code>T</code> is <code>void</code> and the result is <code>Pinned&lt;void, τ&gt;</code>. The
 placement rules apply to it unchanged. This program runs today:
-<pre><code>fn main() -&gt; i32 {
-  let mut c = Tensor&lt;f32, [4], Memory::NPU_HBM&gt;::uninit();
-  let p = spawn on(Topology::NPU[0]) {
-    c[0] = 1.0;
+<pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> c = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>], <span class="t">Memory</span>::<span class="t">NPU_HBM</span>&gt;::<span class="f">uninit</span>();
+  <span class="k">let</span> p = <span class="k">spawn</span> <span class="k">on</span>(<span class="t">Topology</span>::<span class="t">NPU</span>[<span class="n">0</span>]) {
+    c[<span class="n">0</span>] = <span class="n">1.0</span>;
   };
-  let q = p;
-  let r = p;
-  print("done");
-  return 0;
+  <span class="k">let</span> q = p;
+  <span class="k">let</span> r = p;
+  <span class="f">print</span>(<span class="n">"done"</span>);
+  <span class="k">return</span> <span class="n">0</span>;
 }</code></pre></li>
 <li><strong>Generic types and functions</strong>: a <code>Result&lt;void, E&gt;</code> for an
 operation that can fail but has nothing to return, or a generic
@@ -103,13 +103,13 @@ at all: the function never returns.</p>
 nothing. Reading it twice cannot be a use after a move. Vx got this wrong
 (<a href="https://github.com/vx-lang/Vx/issues/402">#402</a>):</p>
 
-<pre><code>fn nothing() -&gt; void { }
+<pre><code><span class="k">fn</span> <span class="f">nothing</span>() -&gt; <span class="t">void</span> { }
 
-fn main() -&gt; i32 {
-  let z = nothing();
-  let a = z;
-  let b = z;
-  return 0;
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> z = <span class="f">nothing</span>();
+  <span class="k">let</span> a = z;
+  <span class="k">let</span> b = z;
+  <span class="k">return</span> <span class="n">0</span>;
 }</code></pre>
 
 <pre><code>Error[E4001] at 5:11: Use of moved or consumed linear variable: z</code></pre>
@@ -127,16 +127,16 @@ again. <code>void</code> picked that rule up by accident. The fix
 So a struct you declare yourself and name <code>void</code> gets the exception too:</p>
 
 <!-- vx-doctest: skip: the compiler now refuses a struct named void -->
-<pre><code>struct void {
-  x : i32,
+<pre><code><span class="k">struct</span> <span class="t">void</span> {
+  x : <span class="t">i32</span>,
 }
 
-fn main() -&gt; i32 {
-  let a = void { x: 5 };
-  let b = a;
-  let c = a;
-  print(c.x);
-  return 0;
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> a = <span class="t">void</span> { x: <span class="n">5</span> };
+  <span class="k">let</span> b = a;
+  <span class="k">let</span> c = a;
+  <span class="f">print</span>(c.x);
+  <span class="k">return</span> <span class="n">0</span>;
 }</code></pre>
 
 <p>This compiles and prints <code>5</code>. Rename the struct to <code>Plain</code> and the
