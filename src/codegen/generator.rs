@@ -2316,6 +2316,13 @@ impl<'c> MeliorGenerator<'c> {
                 is_mut: b.is_mut,
                 region_id: syntax::REGION_UNSET as usize,
             }),
+            // A generic struct's literal does not spell its type arguments, so only a plain
+            // struct is known from the literal alone.
+            Expr::StructInit(s) => self
+                .structs
+                .get(&s.name)
+                .filter(|decl| decl.generics.is_empty())
+                .map(|_| syntax::Type::Struct(s.name.clone(), s.type_id)),
             Expr::Identifier(id) => self.ast_env.get(&id.name).cloned().or_else(|| {
                 // A bare function name used as a *value* (`let f = probe`) is a function pointer;
                 // recover its signature from the function registry so a later indirect call `f(..)`

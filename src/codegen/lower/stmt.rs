@@ -309,6 +309,57 @@ fn nominal_struct_name(ty: &syntax::Type) -> Option<crate::symbol::Symbol> {
     }
 }
 
+/// For `place.member = rhs` where `place` is itself a field (`a.b`), a struct literal that
+/// copies every field of `place` but `member`, which is `rhs`. `None` when `place` is not a
+/// field of a variable path, or is a generic struct.
+fn struct_with_one_field_replaced(
+    gen: &MeliorGenerator<'_>,
+    place: &Expr,
+    member: &crate::symbol::Symbol,
+    rhs: &Expr,
+) -> Option<Expr> {
+    let Expr::MemberAccess(_) = place else {
+        return None;
+    };
+    // `place` is read once per field, so it must be a plain path such as `a.b.c`.
+    let mut root = place;
+    while let Expr::MemberAccess(m) = root {
+        root = &m.base;
+    }
+    if !matches!(root, Expr::Identifier(_)) {
+        return None;
+    }
+    let syntax::Type::Struct(name, _) = gen.infer_ast_type(place)? else {
+        return None;
+    };
+    let decl = gen.structs.get(&name)?;
+    if !decl.generics.is_empty() {
+        return None;
+    }
+    let fields = decl
+        .fields
+        .iter()
+        .map(|(field, _)| {
+            let value = if field == member {
+                rhs.clone()
+            } else {
+                Expr::MemberAccess(MemberAccessExpr {
+                    base: Box::new(place.clone()),
+                    member: field.clone(),
+                    struct_name: Some(name.clone()),
+                    span: place.span(),
+                })
+            };
+            (field.clone(), value)
+        })
+        .collect();
+    Some(Expr::StructInit(syntax::StructInitExpr::new(
+        name,
+        fields,
+        place.span(),
+    )))
+}
+
 /// Substitution `struct generic param -> concrete type arg`, parsed from a monomorphized struct name
 /// like `Vec<i32>` and the struct's declared generics. Mirrors the read-path logic so a generic
 /// field type (`data: *mut T`) lowers correctly on the *assignment* path (#205), instead of a raw
@@ -424,7 +475,20 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        let AssignStmt { lhs, rhs, span: _ } = self;
+        let AssignStmt { lhs, rhs, span } = self;
+
+        // `a.b.c = v` is lowered as `a.b = B { c: v, d: a.b.d, ... }`. The store below handles
+        // only a field of a variable, so each level of nesting peels off one field.
+        if let Expr::MemberAccess(m) = lhs {
+            if let Some(rebuilt) = struct_with_one_field_replaced(gen, &m.base, &m.member, rhs) {
+                let assign = AssignStmt {
+                    lhs: (*m.base).clone(),
+                    rhs: rebuilt,
+                    span: *span,
+                };
+                return assign.lower(gen, block);
+            }
+        }
 
         // Slice/row initializer: `o[i] = [a, b, c, d]`. Lower the LHS partial index to its S1 row
         // view and store each element. This is cold setup code, so scalar stores are fine.
