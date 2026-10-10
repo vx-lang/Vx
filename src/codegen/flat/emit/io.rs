@@ -47,6 +47,14 @@ impl FnEmit<'_> {
             // The narrow *signed* scalars have none, so they widen to one that does -- the same
             // widening the AST path applies, so a program prints the same text either way.
             let (arg, et) = match et {
+                // A `bool` goes to `print_bool` as an `i32`, the width C passes reliably.
+                "i1" => {
+                    let w = format!("%pw{idx}");
+                    self.body += &format!("  {w} = arith.extui {arg} : i1 to i32\n");
+                    let n = format!("%v{idx}");
+                    self.body += &format!("  {n} = func.call @print_bool({w}) : (i32) -> i32\n");
+                    return Ok(());
+                }
                 "f16" | "bf16" => {
                     let w = format!("%pw{idx}");
                     self.body += &format!("  {w} = arith.extf {arg} : {et} to f32\n");
