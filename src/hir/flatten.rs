@@ -4549,7 +4549,7 @@ impl<'r> Lowerer<'r> {
                     what: "a field not in the modelled layout",
                 })?;
             let offset = field.offset as u64;
-            if matches!(field.ty, FieldTy::Nominal(_)) {
+            if matches!(field.ty, FieldTy::Nominal(n) if !self.registry.is_payload_free_enum(n)) {
                 return Err(Decline::TypeNotModelled {
                     what: "a store to a nested nominal field",
                 });
