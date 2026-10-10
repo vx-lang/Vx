@@ -4903,8 +4903,8 @@ impl<'r> Lowerer<'r> {
             Statement::Return(r) => {
                 // `return <match>` (a value-position match whose arms `return` themselves, e.g.
                 // `Option::unwrap`): lower the match as a statement — each arm emits its own `Ret` — then
-                // give the fall-through merge block a terminator, a default (zero) return of the
-                // function's type, exactly as the AST codegen's merge block does. (#242)
+                // give the fall-through merge block a terminator: a default (zero) return of the
+                // function's type, or for a struct or enum, an abort. (#242)
                 if let Some(Expr::Match(m)) = &r.expr {
                     // The zero below is a fall-through default, correct when nothing reaches the
                     // merge block carrying a value -- `Option::unwrap`'s `None` arm ends in an
@@ -4936,6 +4936,22 @@ impl<'r> Lowerer<'r> {
                                 e.clone(),
                                 0,
                             ),
+                            // A struct or enum has no zero to return. Stop the program instead,
+                            // and give `Ret` an unwritten slot, which is never read.
+                            LoweredTy::Aggregate(_) => {
+                                let never = self.emit_value(
+                                    Opcode::Const,
+                                    Register(0),
+                                    Register(0),
+                                    ElementType::Bool,
+                                    0,
+                                );
+                                let imm = self.strings.len() as u64;
+                                self.strings
+                                    .push("no arm of the match returned a value".to_string());
+                                self.emit_effect(Opcode::Abort, never.reg, Register(0), imm);
+                                self.emit_alloca(rty.clone())
+                            }
                             _ => {
                                 return Err(Decline::TypeNotModelled {
                                     what: "a non-scalar default return",
