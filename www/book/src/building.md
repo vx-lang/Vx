@@ -99,7 +99,8 @@ The build succeeds without any of these; each unlocks one path.
 **Autodiff (Enzyme)** — needed for the autodiff tests and for `grad`/`jvp`/`vjp` lowering:
 
 ```bash
-./scripts/provision/install_enzyme.sh
+# The argument is your LLVM 22's bin directory; on macOS, Homebrew's.
+./scripts/provision/build_enzyme.sh /opt/homebrew/opt/llvm@22/bin .cargo/enzyme
 export ENZYME_LIB="$(pwd)/.cargo/enzyme/LLVMEnzyme-22.dylib"   # .so on Linux
 ```
 

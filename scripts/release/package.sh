@@ -201,6 +201,14 @@ if [ -n "${VX_BUNDLE_LLVM:-}" ]; then
     du -sh "$STAGE/llvm"
 fi
 
+# With VX_BUNDLE_ENZYME set to an Enzyme plugin, a toolchain that carries no LLVM ships it in
+# lib/enzyme/, to load into the user's LLVM. scripts/provision/build_enzyme.sh builds one.
+if [ -n "${VX_BUNDLE_ENZYME:-}" ]; then
+    echo "==> Staging Enzyme from $VX_BUNDLE_ENZYME"
+    mkdir -p "$STAGE/lib/enzyme"
+    cp "$VX_BUNDLE_ENZYME" "$STAGE/lib/enzyme/"
+fi
+
 # ---------------------------------------------------- relocate the libraries --
 
 # The compiler links a couple of libraries from the build machine's package manager. Left alone,
@@ -224,6 +232,18 @@ if [ "$os" = "Darwin" ]; then
             install_name_tool -change "$dep" "@executable_path/../lib/$base" "$bin"
         done
         install_name_tool -add_rpath "@executable_path/../lib" "$bin" 2>/dev/null || true
+    done
+    # Enzyme loads into the user's opt and must use that opt's libLLVM. The path to the build
+    # machine's libLLVM, and its absolute rpaths, could name a different LLVM on the user's Mac.
+    for plugin in "$STAGE"/lib/enzyme/*.dylib; do
+        [ -f "$plugin" ] || continue
+        llvm=$(otool -L "$plugin" | tail -n +2 | awk '{print $1}' | grep '/libLLVM[^/]*\.dylib$' || true)
+        [ -z "$llvm" ] || install_name_tool -change "$llvm" "@rpath/libLLVM.dylib" "$plugin"
+        rpaths=$(otool -l "$plugin" | awk '/cmd LC_RPATH/ {getline; getline; print $2}' | grep '^/' || true)
+        for rpath in $rpaths; do
+            install_name_tool -delete_rpath "$rpath" "$plugin"
+        done
+        codesign --force --sign - "$plugin"
     done
     # Re-sign: mutating a Mach-O invalidates the ad-hoc signature it was built with, and macOS
     # refuses to run a binary whose signature no longer matches its contents.
@@ -275,14 +295,17 @@ PREFIX=\$(CDPATH= cd -- "\$(dirname -- "\$self")/.." && pwd)
 # machine.
 if [ -x "\$PREFIX/llvm/bin/llvm-config" ]; then
     VX_LLVM_BIN="\$PREFIX/llvm/bin"
-    for candidate in "\$PREFIX"/llvm/lib/enzyme/LLVMEnzyme-*; do
-        if [ -f "\$candidate" ]; then
-            export ENZYME_LIB="\${ENZYME_LIB:-\$candidate}"
-        fi
-    done
 elif [ -f "\$PREFIX/etc/llvm-env.sh" ]; then
     . "\$PREFIX/etc/llvm-env.sh"
 fi
+
+# Enzyme, for grad, vjp and jvp: inside the LLVM this toolchain carries, or on its own in lib/.
+for candidate in "\$PREFIX"/llvm/lib/enzyme/LLVMEnzyme-* "\$PREFIX"/lib/enzyme/LLVMEnzyme-*; do
+    if [ -f "\$candidate" ]; then
+        export ENZYME_LIB="\${ENZYME_LIB:-\$candidate}"
+        break
+    fi
+done
 
 # Upgrading LLVM can delete the folder the installer saved.
 if [ -n "\${VX_LLVM_BIN:-}" ] && [ ! -d "\$VX_LLVM_BIN" ]; then

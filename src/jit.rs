@@ -119,6 +119,24 @@ fn host_target_triple() -> Result<String, String> {
     Ok(triple)
 }
 
+/// The Enzyme plugin `opt` should load for this LLVM IR, given `ENZYME_LIB`. Only a program that
+/// uses `grad`, `vjp` or `jvp` calls an `__enzyme_` function, so no other program loads the plugin.
+fn enzyme_plugin_for(llvm_ir: &[u8], enzyme_lib: Option<String>) -> Result<Option<String>, String> {
+    let needle = b"__enzyme_";
+    if !llvm_ir.windows(needle.len()).any(|w| w == needle) {
+        return Ok(None);
+    }
+    match enzyme_lib {
+        Some(lib) if !lib.is_empty() => Ok(Some(lib)),
+        _ => Err(
+            "This program uses grad, vjp or jvp, which need the Enzyme plugin, and \
+                  ENZYME_LIB is not set. Point ENZYME_LIB at an Enzyme built for LLVM 22, such \
+                  as the one scripts/provision/build_enzyme.sh builds."
+                .to_string(),
+        ),
+    }
+}
+
 /// The directory LLVM installs its runtime libraries in.
 ///
 /// Resolved through PATH by default (config.local puts the intended LLVM first), matching how
@@ -396,7 +414,9 @@ pub fn execute_mlir_streams(
 
     let mut passes = format!("default<O{}>", actual_opt_level);
 
-    if let Ok(enzyme_lib) = std::env::var("ENZYME_LIB") {
+    if let Some(enzyme_lib) =
+        enzyme_plugin_for(&mlir_translate_out.stdout, std::env::var("ENZYME_LIB").ok())?
+    {
         opt_args.push(format!("-load-pass-plugin={}", enzyme_lib));
         passes.push_str(",enzyme");
     }
@@ -693,5 +713,34 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 0, "no shipped library was checked");
+    }
+
+    const ENZYME: &str = "/toolchain/lib/enzyme/LLVMEnzyme-22.dylib";
+    const USES_GRAD: &[u8] = b"declare double @__enzyme_autodiff_grad_square(ptr, double)\n";
+
+    /// A program without grad, vjp or jvp never loads Enzyme, so a plugin that cannot load
+    /// does not stop it from compiling.
+    #[test]
+    fn a_program_without_autodiff_does_not_load_enzyme() {
+        let ir = b"define i32 @main() {\n  ret i32 42\n}\n";
+        assert_eq!(enzyme_plugin_for(ir, Some(ENZYME.to_string())), Ok(None));
+    }
+
+    #[test]
+    fn a_program_with_autodiff_loads_enzyme() {
+        assert_eq!(
+            enzyme_plugin_for(USES_GRAD, Some(ENZYME.to_string())),
+            Ok(Some(ENZYME.to_string()))
+        );
+    }
+
+    /// Without the plugin, the program would fail to link on an undefined `__enzyme_` symbol.
+    #[test]
+    fn a_program_with_autodiff_and_no_enzyme_says_what_is_missing() {
+        let err = enzyme_plugin_for(USES_GRAD, None).unwrap_err();
+        assert!(
+            err.contains("grad, vjp or jvp") && err.contains("ENZYME_LIB"),
+            "{err}"
+        );
     }
 }
