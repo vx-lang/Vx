@@ -1259,6 +1259,7 @@ pub(crate) fn pick_scalar_print<'c>(
         ("i16", true) => ("print_u16", None),
         ("i32", true) => ("print_u32", None),
         ("i64", true) => ("print_u64", None),
+        ("i1", _) => ("print_bool", Some(("arith.extui", "i32"))),
         ("i8" | "i16", false) => ("print_i32", Some(("arith.extsi", "i32"))),
         ("i32", false) => ("print_i32", None),
         ("i64", false) => ("print_i64", None),

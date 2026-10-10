@@ -1,0 +1,55 @@
+//===- compound_assignment_to_a_field_or_through_a_reference.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `p.x += n`, `self.x += n` and `*r += n` change the value they name. They used to compile
+// and run without changing anything.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+struct Point {
+  x : i32,
+  y : i32,
+}
+
+impl Point {
+  fn move_right(self : &mut Point, d : i32) -> void {
+    self.x += d;
+  }
+}
+
+fn bump(x : &mut i32) -> void {
+  *x += 2;
+}
+
+fn main() -> i32 {
+  let mut p = Point {
+    x: 10, y: 20
+  };
+  p.x += 12;
+  print!("field: ");
+  print!(p.x);
+  print!("
+");
+  // CHECK: {{^}}field: 22{{$}}
+
+  p.move_right(5);
+  print!("through self: ");
+  print!(p.x);
+  print!("
+");
+  // CHECK-NEXT: {{^}}through self: 27{{$}}
+
+  let mut v = 40;
+  bump(&mut v);
+  print!("through a reference: ");
+  print!(v);
+  print!("
+");
+  // CHECK-NEXT: {{^}}through a reference: 42{{$}}
+  return 0;
+}

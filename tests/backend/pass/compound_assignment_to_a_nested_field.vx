@@ -1,0 +1,62 @@
+//===- compound_assignment_to_a_nested_field.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Compound assignment to a field of a field, to a float field through a reference, and to an
+// unsigned number through `*r`. The flat path does `p.x op= v` as `p.x = p.x op v`.
+//
+// Flat path only: the AST path cannot store to a field of a field at all.
+// REQUIRES: flat-codegen
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// CHECK-NOT: flat-codegen
+
+struct Inner {
+  n : i32,
+}
+
+struct Outer {
+  inner : Inner,
+  f : f64,
+}
+
+fn halve(o : &mut Outer) -> void {
+  o.f /= 2.0;
+  o.inner.n -= 1;
+}
+
+fn main() -> i32 {
+  let mut o = Outer {
+    inner: Inner {
+      n: 10
+    }, f: 9.0
+  };
+  o.inner.n *= 3;
+  print!("nested field: ");
+  print!(o.inner.n);
+  print!("
+");
+  // CHECK: {{^}}nested field: 30{{$}}
+
+  halve(&mut o);
+  print!("through a reference: ");
+  print!(o.inner.n);
+  print!(" ");
+  print!(o.f);
+  print!("
+");
+  // CHECK-NEXT: {{^}}through a reference: 29 4.5{{$}}
+
+  // 4000000000 % 7 is 3 as unsigned, and -1 if the bits were read as signed.
+  let mut u : u32 = 4000000000;
+  let r = &mut u;
+  *r %= 7;
+  print!("unsigned through *r: ");
+  print!(u);
+  print!("
+");
+  // CHECK-NEXT: {{^}}unsigned through *r: 3{{$}}
+  return 0;
+}

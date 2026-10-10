@@ -53,6 +53,9 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/cast_a_borrow_to_a_raw_pointer.vx",
     "backend/pass/write_through_a_borrow_of_a_tensor_element.vx",
     "backend/pass/borrow_element_through_pointer.vx",
+    // A raw pointer held in a `let` ("a place-bound reference in value position"): the flat
+    // path has no pointer values yet.
+    "backend/pass/raw_pointers_compare_by_address.vx",
     // "A store to a nested nominal field": `self.inner = x` puts a struct into a struct's
     // field, which the flat path does not model. The file is about the AST path anyway.
     "backend/pass/assign_field_of_struct_local.vx",

@@ -233,9 +233,15 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
             _ => (val, ty),
         };
 
-        if *is_mut {
+        // A borrowed value needs one address for all its borrows, so it lives in a slot as a
+        // `let mut` does. Without one, each `&x` copied `x` to a new place.
+        let borrowed_value =
+            gen.address_taken.contains(name) && !gen.is_memref(&ty) && ty != gen.ptr_ty;
+        if *is_mut || borrowed_value {
             let ty_str = ty.to_string();
-            if ty_str.contains("!llvm.struct") || ty_str.contains("!llvm.ptr") {
+            // A borrowed value is never assigned, so a plain slot will do, and its address is
+            // the bare pointer an `&T` parameter takes.
+            if ty_str.contains("!llvm.struct") || ty_str.contains("!llvm.ptr") || !*is_mut {
                 let ptr_ty = gen.ptr_ty;
                 let i32_ty = gen.i32_ty;
                 let one_attr = IntegerAttribute::new(i32_ty, 1).into();
