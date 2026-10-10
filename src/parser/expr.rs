@@ -478,6 +478,14 @@ impl<'a> Parser<'a> {
                 Ok(ty) if self.check(&TokenType::DoubleColon) => {
                     return self.parse_tensor_constructor(ty, span);
                 }
+                // `Tensor<f32, [2, 2]>()` would fall through to the older spelling, which takes
+                // the shape from the arguments and so built a tensor with no dimensions.
+                Ok(ty) if self.check(&TokenType::LeftParen) => {
+                    return Err(self.error(&format!(
+                        "`{ty}` is built with `{ty}::new()` for zeroed storage or `{ty}::uninit()` \
+                         for storage left as it was found"
+                    )));
+                }
                 _ => self.pos = saved,
             }
         }
