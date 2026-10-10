@@ -1,0 +1,20 @@
+//===- print_a_string_value.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `print!` of a `String` prints its text. The test runs with both code generators.
+import std::string;
+import std::io;
+
+fn main() -> i32 {
+  let mut s : String = String::new();
+  unsafe { s.push_c_str("hello, "); s.push_c_str("world"); }
+  print!(s);
+  println!("");
+  return 0;
+}
+
+// EXPECT: hello, world

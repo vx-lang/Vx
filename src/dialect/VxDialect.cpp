@@ -3,7 +3,6 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/Remarks.h"
-#include "llvm/Support/CommandLine.h"
 
 using namespace mlir;
 using namespace mlir::vx;
@@ -28,10 +27,6 @@ extern "C" {
 void registerVxDialect(MlirContext ctx) {
   mlir::MLIRContext *cppCtx = unwrap(ctx);
   cppCtx->getOrLoadDialect<VxDialect>();
-}
-
-void parseCommandLineOptions(int argc, const char *const *argv) {
-  llvm::cl::ParseCommandLineOptions(argc, argv);
 }
 
 void mlirEnableOptimizationRemarks(MlirContext ctx) {

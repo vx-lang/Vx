@@ -1157,8 +1157,8 @@ static void placeTransferFree(vx::TransferOp transfer) {
         continue;
       auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
           call, call.getCalleeAttr());
-      if (callee &&
-          placedTopology(callee.getArgAttr(use.getOperandNumber(), "vx.placed")))
+      if (callee && placedTopology(
+                        callee.getArgAttr(use.getOperandNumber(), "vx.placed")))
         return;
     }
 
@@ -1511,7 +1511,6 @@ static void freePlaced(OpBuilder &builder, Location loc, Value buffer,
   builder.create<vx::FreeOp>(loc, buffer, topology);
 }
 
-
 // Whether parameter `i` of the function `call` reaches is taken by value.
 static bool takesOwnership(func::CallOp call, unsigned i) {
   auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
@@ -1548,7 +1547,6 @@ static Value castSource(Value v) {
 
 static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
                              std::optional<int32_t> &topology);
-
 
 // The origin of every value in `values`, when they all have the same one.
 static BufferOrigin commonOrigin(ArrayRef<Value> values,
@@ -3967,20 +3965,6 @@ struct ReorderableReductionsPass
 };
 
 } // namespace
-
-extern "C" {
-void registerVxLoweringPass(MlirContext ctx) {
-  // Exposed via registerVxPasses instead.
-}
-
-void addVxLoweringPass(MlirPassManager pm) {
-  unwrap(pm)->addPass(std::make_unique<ConvertVxToStandardPass>());
-}
-
-void addVxToLLVMPass(MlirPassManager pm) {
-  unwrap(pm)->addPass(std::make_unique<ConvertVxToLLVMPass>());
-}
-} // extern "C"
 
 namespace mlir {
 namespace vx {

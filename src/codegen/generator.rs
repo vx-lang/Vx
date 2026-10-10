@@ -359,11 +359,6 @@ impl<'c> MeliorGenerator<'c> {
             && !ty_str.starts_with("memref<memref<")
     }
 
-    pub fn is_llvm_ptr(&self, ty: &Type<'c>) -> bool {
-        let ty_str = ty.to_string();
-        ty_str.starts_with("!llvm.ptr") || ty_str.starts_with("!llvm.array")
-    }
-
     /// Adapt a closure-literal environment struct (`Closure_N`, the by-value capture record) to a
     /// nominal stdlib closure struct (`Closure0/1/2/3<Args.., Ret>`, laid out `{env: *mut i8, func}`).
     /// A closure passed where an API takes a `ClosureK` (e.g. `VecIter::map`'s `f: Closure1<T,NewItem>`)
@@ -1255,8 +1250,6 @@ impl<'c> MeliorGenerator<'c> {
         })?;
         let func_loc = dummy_op.location();
 
-        let _region = Region::new();
-
         let mut block_args = Vec::new();
         for ty in &arg_tys {
             block_args.push((*ty, self.loc()));
@@ -1915,7 +1908,6 @@ impl<'c> MeliorGenerator<'c> {
         })
     }
 
-    /// An instantiated generic enum (its name holds `<...>`): a tag and the payload slot.
     /// The `vx.placed` mark of a placed parameter or result. A placement written as a device
     /// holds that device's memory; on-chip memory, by the address space its type is given, is
     /// scratch nothing frees.
