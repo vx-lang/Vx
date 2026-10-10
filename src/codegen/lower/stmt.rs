@@ -46,7 +46,20 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
             gen.has_returned = true;
             return Ok(None);
         }
-        if let Some(ret_ty) = gen.current_return_type {
+        // A row of a tensor is a strided view of the tensor's memory, and the function returns a
+        // tensor of its own. A cast cannot change the layout, so the row is copied: into the
+        // caller's return slot, which the copy below does, or into a new buffer.
+        let returns_a_view = gen.current_return_type.is_some_and(|ret_ty| {
+            gen.is_memref(&expr_ty)
+                && expr_ty.to_string().contains("strided<")
+                && !ret_ty.to_string().contains("strided<")
+        });
+        if returns_a_view {
+            if gen.current_return_slot.filter(|_| !gen.in_spawn).is_none() {
+                let ret_ty = gen.current_return_type.expect("checked above");
+                val = copy_into_new_buffer(gen, &block, val, ret_ty)?;
+            }
+        } else if let Some(ret_ty) = gen.current_return_type {
             if expr_ty != ret_ty {
                 if gen.is_memref(&expr_ty) && gen.is_memref(&ret_ty) {
                     let expr_parts = expr_ty.to_string();
@@ -295,6 +308,72 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
 /// generic instantiation. `&Vec<i32>` -> `Vec`. Used to recover a struct name for field assignment
 /// when the base lowers to a bare `!llvm.ptr` (which carries no struct identity) and sema did not
 /// stamp `struct_name` on the assignment target (#205).
+/// A new buffer of type `ty` holding a copy of `val`, a view with the same extents in another
+/// layout. A `?` extent of `ty` is read off `val`.
+fn copy_into_new_buffer<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: &melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    ty: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let ty_str = ty.to_string();
+    let extents = ty_str
+        .strip_prefix("memref<")
+        .ok_or_else(|| LowerError::from(format!("not a memref: {ty_str}")))?
+        .split('x');
+    let mut dynamic = Vec::new();
+    for (axis, extent) in extents.enumerate() {
+        if extent != "?" {
+            continue;
+        }
+        let axis_val = block
+            .append_operation(
+                OperationBuilder::new("arith.constant", gen.loc())
+                    .add_results(&[gen.index_ty])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(gen.index_ty, axis as i64).into(),
+                    )])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        let dim = block
+            .append_operation(
+                OperationBuilder::new("memref.dim", gen.loc())
+                    .add_operands(&[val, axis_val])
+                    .add_results(&[gen.index_ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        dynamic.push(dim);
+    }
+    let buffer = block
+        .append_operation(
+            OperationBuilder::new("memref.alloc", gen.loc())
+                .add_operands(&dynamic)
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "operandSegmentSizes"),
+                    melior::ir::attribute::DenseI32ArrayAttribute::new(
+                        gen.context,
+                        &[dynamic.len() as i32, 0],
+                    )
+                    .into(),
+                )])
+                .add_results(&[ty])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    block.append_operation(
+        OperationBuilder::new("memref.copy", gen.loc())
+            .add_operands(&[val, buffer])
+            .build()?,
+    );
+    Ok(buffer)
+}
+
 fn nominal_struct_name(ty: &syntax::Type) -> Option<crate::symbol::Symbol> {
     use syntax::Type;
     match ty {

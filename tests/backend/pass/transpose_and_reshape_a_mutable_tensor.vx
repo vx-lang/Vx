@@ -1,0 +1,42 @@
+//===- transpose_and_reshape_a_mutable_tensor.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `transpose` of a `let mut` tensor. The AST path read the shape from the type of the tensor's
+// slot, which keeps only `?` extents, found no extents, and crashed. `reshape` reads the same
+// shape and is checked alongside it.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+fn main() -> i32 {
+  // u = [[0, 0, 7],
+  //      [4, 0, 0]]
+  let mut u = Tensor<f32, [2, 3]>::fill(0.0);
+  u[1][0] = 4.0;
+  u[0][2] = 7.0;
+
+  // The transpose is 3x2: p[i][j] = u[j][i].
+  let p = u.transpose([1, 0]);
+  print!("transpose: ");
+  print!(p[0][1]);
+  print!(" ");
+  print!(p[2][0]);
+  print!("
+");
+  // CHECK: {{^}}transpose: 4 7{{$}}
+
+  // The reshape keeps the order of the elements: 0 0 7 4 0 0, read as 3x2.
+  let r = u.reshape([3, 2]);
+  print!("reshape: ");
+  print!(r[1][0]);
+  print!(" ");
+  print!(r[1][1]);
+  print!("
+");
+  // CHECK-NEXT: {{^}}reshape: 7 4{{$}}
+  return 0;
+}
