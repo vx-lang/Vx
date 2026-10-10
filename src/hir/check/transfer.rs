@@ -2100,7 +2100,7 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 self.drops_enter_spawn();
-                self.check_expr_block(stmts, consume);
+                self.check_expr_block(stmts, ret.as_deref(), consume);
                 // Checked once the region's own frame is closed, so a variable from outside that
                 // the region hands out moves in the enclosing function.
                 self.drops_exit_spawn();

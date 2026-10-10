@@ -167,7 +167,7 @@ impl<'a> TypeChecker<'a> {
 
         // 1. Liveness Analysis Pass
         self.hoist_spawn_allocations(body);
-        let mut uses = Self::block_uses(body);
+        let mut uses = Self::block_uses(body, None);
         if let Some(LoopHeader { binds, evaluates }) = header {
             uses.is_loop = true;
             uses.declared.extend(binds.map(crate::symbol::Symbol::from));
@@ -228,9 +228,18 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// What the borrow checker needs to know about `body` before checking it: the last statement
-    /// that names each variable, and the variables `body` declares.
-    pub(crate) fn block_uses(body: &[Statement]) -> BlockUses {
-        let last_use = Self::compute_block_liveness(body);
+    /// that names each variable, and the variables `body` declares. `tail` is a value the block
+    /// ends with after its statements, such as an `unsafe` block's result; it counts as one more
+    /// statement.
+    pub(crate) fn block_uses(body: &[Statement], tail: Option<&Expr>) -> BlockUses {
+        let mut last_use = Self::compute_block_liveness(body);
+        if let Some(tail) = tail {
+            let mut names = HashSet::new();
+            Self::extract_uses_expr(tail, &mut names);
+            for name in names {
+                last_use.insert(name.into(), body.len());
+            }
+        }
         let declared = body
             .iter()
             .filter_map(|stmt| match stmt {
