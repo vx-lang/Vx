@@ -370,8 +370,10 @@ impl<'a> TypeChecker<'a> {
         // A `transfer(..)` validates its destination and records the tile it lands, at its own
         // site. The binding adds nothing: checking its type as well reported the same overflow
         // twice, counted one tile as two, and re-litigated a destination the transfer had
-        // already accepted.
-        let initializer_places_its_own = matches!(expr, Expr::Transfer(_));
+        // already accepted. A view, such as `t.reshape(..)` or a row `q[i]`, shares the memory
+        // of a tensor already counted, so it is not a second tile either.
+        let initializer_places_its_own =
+            matches!(expr, Expr::Transfer(_)) || self.view_of(expr, &ty).is_some();
         let context = format!("variable '{}'", name);
         let binding_ty = if let Some(ann) = ty_ann {
             // `Unknown` is the poison type of an already-reported failure (an unresolved call, a
