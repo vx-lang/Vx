@@ -2421,6 +2421,70 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A library function that calls another function of the same library: the program names only
+/// `answer`, and `is_square` and `square` have to be linked from the `.vxlib` as well, or the link
+/// fails with an undefined reference.
+#[test]
+fn driver_link_interface_links_what_a_library_function_calls() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("vx_link_callee_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (lib, app, vxlib) = (
+        dir.join("squares.vx"),
+        dir.join("app.vx"),
+        dir.join("squares.vxlib"),
+    );
+    std::fs::write(
+        &lib,
+        "fn square(x : i32) -> i32 { return x * x; }\n\
+         fn is_square(n : i32, root : i32) -> bool { return square(root) == n; }\n\
+         fn answer() -> i32 { if is_square(49, 7) { return 1; } return 0; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &app,
+        "fn main() -> i32 { print(answer()); print!(\"\\n\"); return 0; }\n",
+    )
+    .unwrap();
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    let emit = Command::new(vxc)
+        .args([
+            "--emit-interface",
+            lib.to_str().unwrap(),
+            "-o",
+            vxlib.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run vxc --emit-interface");
+    assert!(
+        emit.status.success(),
+        "emit-interface failed:\n{}",
+        String::from_utf8_lossy(&emit.stderr)
+    );
+
+    let run = Command::new(vxc)
+        .args([
+            "--link-interface",
+            vxlib.to_str().unwrap(),
+            app.to_str().unwrap(),
+            "--run",
+        ])
+        .output()
+        .expect("run vxc --link-interface --run");
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        out.lines().any(|l| l == "1"),
+        "expected answer() to print 1, got:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// #230 cross-module scalar references: the borrow-checker showcase `fn pick(a : &i32, b : &i32) ->
 /// &i32` — the signature rustc cannot compile without a lifetime annotation — defined in a `.vxlib`
 /// and *called across the module boundary* with the library source absent. `main` borrows two locals

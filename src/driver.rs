@@ -1626,16 +1626,34 @@ impl CompilerDriver {
             Vec<crate::bytecode::HirInstruction>,
             Vec<crate::gid::TypeId>,
         )> = Vec::new();
-        for name in &lowered_names {
-            if fn_map.contains_key(name) {
+        // A library function's own calls are followed too: their bodies are in the interface as
+        // well, and nothing in this compile names them.
+        let mut pending: std::collections::VecDeque<crate::gid::TypeId> = lowered_names
+            .iter()
+            .filter(|name| !fn_map.contains_key(*name))
+            .filter_map(|name| session.registry.fn_sigs.get(name).map(|sig| sig.gid))
+            .collect();
+        let mut linked = std::collections::HashSet::new();
+        while let Some(gid) = pending.pop_front() {
+            if !linked.insert(gid) {
                 continue;
             }
-            let Some(sig) = session.registry.fn_sigs.get(name) else {
+            let Some(body) = session.registry.body_of(gid) else {
                 continue;
             };
-            let Some(body) = session.registry.body_of(sig.gid) else {
+            if fn_map.contains_key(&body.name) {
                 continue;
-            };
+            }
+            for ins in &body.hir {
+                if matches!(
+                    ins.opcode,
+                    crate::bytecode::Opcode::Call | crate::bytecode::Opcode::FuncConst
+                ) {
+                    if let Some(callee) = body.types.get(ins.type_idx.0 as usize) {
+                        pending.push_back(*callee);
+                    }
+                }
+            }
             let synth = crate::syntax::Function {
                 is_unsafe: false,
                 name: body.name.clone(),
