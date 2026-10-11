@@ -2351,6 +2351,65 @@ fn driver_link_interface_runs_a_scalar_import() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A number literal inside a library takes its type from the type checker, as it does in a
+/// program: `b == 32` with `b : u8` compares two `u8`s. A library saved without being checked
+/// kept the literal as an `i32`, and the program that called `is_space` failed to compile.
+#[test]
+fn driver_link_interface_runs_a_library_with_a_u8_literal() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("vx_link_u8_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (lib, app, vxlib) = (
+        dir.join("bytes.vx"),
+        dir.join("app.vx"),
+        dir.join("bytes.vxlib"),
+    );
+    std::fs::write(&lib, "fn is_space(b : u8) -> bool { return b == 32; }\n").unwrap();
+    std::fs::write(
+        &app,
+        "fn main() -> i32 { if is_space(32) { print!(\"space\\n\"); } \
+           if is_space(33) { print!(\"wrong\\n\"); } return 0; }\n",
+    )
+    .unwrap();
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    let emit = Command::new(vxc)
+        .args([
+            "--emit-interface",
+            lib.to_str().unwrap(),
+            "-o",
+            vxlib.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run vxc --emit-interface");
+    assert!(
+        emit.status.success(),
+        "emit-interface failed:\n{}",
+        String::from_utf8_lossy(&emit.stderr)
+    );
+
+    let run = Command::new(vxc)
+        .args([
+            "--link-interface",
+            vxlib.to_str().unwrap(),
+            app.to_str().unwrap(),
+            "--run",
+        ])
+        .output()
+        .expect("run vxc --link-interface --run");
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        out.lines().any(|l| l == "space") && !out.contains("wrong"),
+        "expected is_space(32) to be true and is_space(33) false, got:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The AST codegen cannot link a `--link-interface` import (it has no AST for the imported function),
 /// so a consumer whose body falls outside the flat subset must fail with a **clean diagnostic** — the
 /// frontend check (incl. cross-module provenance) still passes, only codegen is blocked. Regression

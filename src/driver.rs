@@ -622,10 +622,6 @@ impl CompilerDriver {
             return self.handle_parse_only(&program_arr, filename);
         }
 
-        if self.options.action == Action::EmitInterface {
-            return self.handle_emit_interface(&mut program_arr, filename);
-        }
-
         // Interfaces to merge into the registry: `.vxlib` imports auto-loaded above, plus an explicit
         // `--link-interface`. Both the frontend session and the flat codegen consume this set (#219).
         let interfaces = self.all_interface_bytes(auto_interfaces)?;
@@ -633,6 +629,16 @@ impl CompilerDriver {
         let (mut main_ast, mut other_asts) =
             self.prepare_semantic_analysis(&mut program_arr, filename)?;
         self.run_semantic_analysis(&mut main_ast, &mut other_asts, filename, &interfaces)?;
+
+        // A library is type-checked before it is saved: a number literal takes its type from
+        // the checker, and a library with a type error is refused rather than written.
+        if self.options.action == Action::EmitInterface {
+            let mut others: Vec<_> = other_asts.into_values().collect();
+            others.sort_by(|a, b| a.module_path.cmp(&b.module_path));
+            let mut mods = vec![main_ast];
+            mods.extend(others);
+            return self.handle_emit_interface(&mut mods, filename);
+        }
 
         if self.options.action == Action::PrintAst {
             AstPrinter::print_program(&main_ast, &mut std::io::stdout()).unwrap();
