@@ -1099,6 +1099,9 @@ impl<'a> TypeChecker<'a> {
                 let is_reborrow = direct.is_none();
                 let place = direct.or_else(|| self.reborrow_base_and_path(inner));
                 if let Some((name, path)) = place {
+                    if *is_mut {
+                        self.check_two_mut_element_borrows(&name, &path, span);
+                    }
                     self.check_borrow_conflicts(&name, &path, *is_mut, span);
                     if !self.speculating {
                         // `&*rq` points at what `rq` points at, and keeps it borrowed after
@@ -1143,6 +1146,41 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
+        }
+    }
+
+    /// Two `&mut` borrows of different elements of one variable, `&mut a[0]` and `&mut a[1]`,
+    /// are refused even though they do not overlap: the code generators cannot hold both yet.
+    /// Borrows of different fields, `&mut p.x` and `&mut p.y`, are fine.
+    fn check_two_mut_element_borrows(
+        &mut self,
+        name: &str,
+        path: &[String],
+        span: &crate::syntax::Span,
+    ) {
+        if self.speculating {
+            return;
+        }
+        let other_element = self.borrow.live_borrows(name).iter().any(|b| {
+            // Overlapping borrows are refused by `check_borrow_conflicts` already.
+            b.is_mut
+                && !crate::hir::places::paths_may_alias(path, &b.path)
+                && path
+                    .iter()
+                    .zip(&b.path)
+                    .find(|(x, y)| x != y)
+                    .is_some_and(|(x, y)| x.starts_with('[') && y.starts_with('['))
+        });
+        if other_element {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E4004,
+                format!(
+                    "Cannot borrow an element of '{name}' as mutable while another element of \
+                     it is borrowed as mutable. Two `&mut` borrows into one value are not \
+                     supported yet; finish with the first before taking the second."
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
         }
     }
 
