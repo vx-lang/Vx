@@ -359,6 +359,10 @@ pub enum DiagnosticCode {
     /// condition is false there is no branch to give a value. Add an `else`, or use the `if`
     /// as a statement.
     E3048,
+    /// Two impls of the same trait for the same type: `impl Describe for Point` written twice,
+    /// in one module or in two. A type has one impl of a trait, so a call could not choose
+    /// between them. Remove one.
+    E3049,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
