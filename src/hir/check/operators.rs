@@ -126,8 +126,26 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_ascast_expr(&mut self, expr: &mut AsCastExpr, consume: bool) -> Type {
-        let source_ty = self.check_expr_type_flag(&mut expr.expr, consume);
         let target_ty = expr.target_ty.clone();
+        // An explicit byte-pointer cast is a checking position for a string literal, just like a
+        // byte-pointer annotation or call parameter. Preserve the literal's historical C-string
+        // form here instead of first constructing `Str` and then attempting a struct-to-pointer
+        // cast. This is also required by comptime code that writes into a literal-backed buffer.
+        let string_to_byte_pointer = matches!(&*expr.expr, Expr::StringLiteral(_))
+            && matches!(
+                &target_ty,
+                Type::Pointer(inner, _, _)
+                    if matches!(inner.as_ref(), Type::Scalar(ElementType::I8 | ElementType::U8))
+            );
+        let source_ty = if string_to_byte_pointer {
+            let Type::Pointer(inner, memory, _) = &target_ty else {
+                unreachable!()
+            };
+            let literal_ty = Type::Pointer(inner.clone(), memory.clone(), false);
+            self.check_expr_expecting(&mut expr.expr, Some(literal_ty), consume)
+        } else {
+            self.check_expr_type_flag(&mut expr.expr, consume)
+        };
         expr.source_ty = Some(source_ty.clone());
 
         match (&source_ty, &target_ty) {

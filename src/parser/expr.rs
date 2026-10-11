@@ -580,6 +580,10 @@ impl<'a> Parser<'a> {
         }
         if self.match_token(&TokenType::LeftParen) {
             let mut args = Vec::new();
+            let suppress_string_import = call_name == "print";
+            if suppress_string_import {
+                self.suppress_string_import += 1;
+            }
             if !self.check(&TokenType::RightParen) {
                 loop {
                     args.push(self.parse_expr()?);
@@ -587,6 +591,9 @@ impl<'a> Parser<'a> {
                         break;
                     }
                 }
+            }
+            if suppress_string_import {
+                self.suppress_string_import -= 1;
             }
             self.consume(&TokenType::RightParen, "Expected ')'")?;
             Ok(Expr::FunctionCall(FunctionCallExpr {
@@ -1185,10 +1192,43 @@ impl<'a> Parser<'a> {
                             span: Span::default(),
                         })
                     }
-                    TokenType::StringLiteral(s) => Expr::StringLiteral(StringLiteralExpr {
-                        value: s.into(),
-                        span: Span::default(),
-                    }),
+                    TokenType::StringLiteral(s) => {
+                        if self.suppress_string_import == 0 {
+                            self.uses_strings = true;
+                        }
+                        Expr::StringLiteral(StringLiteralExpr {
+                            value: s.into(),
+                            span: Span {
+                                line: token.line,
+                                column: token.column,
+                                length: token.length,
+                            },
+                        })
+                    }
+                    TokenType::CharLiteral(c) => {
+                        self.uses_chars = true;
+                        Expr::StructInit(StructInitExpr {
+                            name: "Char".into(),
+                            fields: vec![(
+                                "code".into(),
+                                Expr::Number(NumberExpr {
+                                    value: ((c as u32).to_string()).into(),
+                                    ty: Some(ElementType::U32),
+                                    span: Span {
+                                        line: token.line,
+                                        column: token.column,
+                                        length: token.length,
+                                    },
+                                }),
+                            )],
+                            type_id: None,
+                            span: Span {
+                                line: token.line,
+                                column: token.column,
+                                length: token.length,
+                            },
+                        })
+                    }
 
                     TokenType::Comptime => {
                         self.consume(&TokenType::LeftBrace, "Expected '{' for comptime block")?;
@@ -2251,6 +2291,21 @@ mod tests {
         } else {
             panic!("Expected StringLiteral, got {:?}", expr);
         }
+    }
+
+    #[test]
+    fn test_parse_character_literal_as_char_value() {
+        let expr = parse_expr("'λ'");
+        let Expr::StructInit(StructInitExpr { name, fields, .. }) = expr else {
+            panic!("Expected a Char struct literal");
+        };
+        assert_eq!(name.as_ref(), "Char");
+        assert_eq!(fields[0].0.as_ref(), "code");
+        let Expr::Number(NumberExpr { value, ty, .. }) = &fields[0].1 else {
+            panic!("Expected Char.code to be numeric");
+        };
+        assert_eq!(value.as_ref(), "955");
+        assert_eq!(*ty, Some(ElementType::U32));
     }
 
     // ---- Dereference chain test ----

@@ -578,8 +578,64 @@ impl<'c> LowerToMelior<'c> for StringLiteralExpr {
             .add_results(&[ptr_ty])
             .build()?;
         let addressof_ref = block.append_operation(addressof_op);
+        let ptr: Value = addressof_ref.result(0)?.into();
 
-        Ok((addressof_ref.result(0)?.into(), ptr_ty, block))
+        // A byte-pointer checking position is the compatibility bridge for C APIs. Everywhere
+        // else the literal is the ordinary `core::str::Str { ptr, len }` value.
+        if gen.expected_type.is_some_and(|t| t == ptr_ty) {
+            return Ok((ptr, ptr_ty, block));
+        }
+
+        let str_ty = gen.lower_type(&syntax::Type::Struct("Str".into(), None))?;
+        let undef = block
+            .append_operation(
+                OperationBuilder::new("llvm.mlir.undef", gen.loc())
+                    .add_results(&[str_ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        let with_ptr = block
+            .append_operation(
+                OperationBuilder::new("llvm.insertvalue", gen.loc())
+                    .add_operands(&[undef, ptr])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "position"),
+                        DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
+                    )])
+                    .add_results(&[str_ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        let len = block
+            .append_operation(
+                OperationBuilder::new("llvm.mlir.constant", gen.loc())
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "value"),
+                        IntegerAttribute::new(gen.i64_ty, self.value.as_bytes().len() as i64)
+                            .into(),
+                    )])
+                    .add_results(&[gen.i64_ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+        let value = block
+            .append_operation(
+                OperationBuilder::new("llvm.insertvalue", gen.loc())
+                    .add_operands(&[with_ptr, len])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "position"),
+                        DenseI64ArrayAttribute::new(gen.context, &[1]).into(),
+                    )])
+                    .add_results(&[str_ty])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+
+        Ok((value, str_ty, block))
     }
 }
 
@@ -4294,7 +4350,12 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         for arg in &self.args {
+            let previous_expected = gen.expected_type;
+            if matches!(arg, syntax::Expr::StringLiteral(_)) {
+                gen.expected_type = Some(gen.ptr_ty);
+            }
             let (arg_val, arg_ty, block) = gen.generate_expr(arg, block)?;
+            gen.expected_type = previous_expected;
             if let Some((fn_name, arg_val, arg_ty_str)) =
                 super::pick_scalar_print(gen, block, arg, arg_val, arg_ty)?
             {

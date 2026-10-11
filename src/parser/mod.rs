@@ -82,6 +82,13 @@ pub struct Parser<'a> {
     /// Set once tuple syntax is seen: the module then imports `core::tuple`, where the structs
     /// it stands for are declared.
     uses_tuples: bool,
+    /// Set by a character literal. Character syntax is sugar for `core::char::Char`.
+    uses_chars: bool,
+    /// Set by a value-position string literal. String values have the `core::str::Str` layout.
+    uses_strings: bool,
+    /// Direct `print("...")` arguments keep the historical C-string lowering and do not need the
+    /// value-level `Str` module. Nesting is possible through parenthesized expressions.
+    suppress_string_import: usize,
     /// Statements a desugaring produced after the one it returned: `let (a, b) = e;` is a `let`
     /// of `e` followed by one per name. `parse_statement_into` appends them.
     pending_stmts: Vec<crate::syntax::Statement>,
@@ -107,6 +114,35 @@ impl<'a> Parser<'a> {
             .expect("Failed to parse function source")
     }
     pub fn new(tokens: &'a [Token<'a>], source: &'a str) -> Self {
+        // Macro bodies are token trees and are not parsed as expressions until expansion. Notice
+        // literals inside a macro definition here; ordinary expressions are marked by
+        // `parse_primary`. Strings in an inline-MLIR `dialects: ["..."]` list are metadata, not Vx
+        // values, and therefore do not import `core::str`.
+        let mut in_macro = false;
+        let mut macro_braces = 0usize;
+        let mut in_dialects = false;
+        let mut uses_chars = false;
+        let mut uses_strings = false;
+        for token in tokens {
+            match &token.kind {
+                TokenType::MacroRules => in_macro = true,
+                TokenType::LeftBrace if in_macro => macro_braces += 1,
+                TokenType::RightBrace if in_macro => {
+                    macro_braces = macro_braces.saturating_sub(1);
+                    if macro_braces == 0 {
+                        in_macro = false;
+                        in_dialects = false;
+                    }
+                }
+                TokenType::Identifier(name) if in_macro && *name == "dialects" => {
+                    in_dialects = true;
+                }
+                TokenType::RightBracket if in_dialects => in_dialects = false,
+                TokenType::CharLiteral(_) if in_macro => uses_chars = true,
+                TokenType::StringLiteral(_) if in_macro && !in_dialects => uses_strings = true,
+                _ => {}
+            }
+        }
         Self {
             tokens,
             pos: 0,
@@ -114,6 +150,9 @@ impl<'a> Parser<'a> {
             mut_params: Vec::new(),
             source,
             uses_tuples: false,
+            uses_chars,
+            uses_strings,
+            suppress_string_import: 0,
             pending_stmts: Vec::new(),
             tuple_lets: 0,
             prefix_stmts: Vec::new(),

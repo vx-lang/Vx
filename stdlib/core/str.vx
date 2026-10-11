@@ -1,0 +1,41 @@
+//===- str.vx - Vx Standard Library -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+import core::marker;
+import core::ops;
+
+/// An immutable UTF-8 byte string. `len` is a byte count and the storage is borrowed/static.
+struct Str {
+  ptr : *const u8,
+  len : i64,
+}
+
+impl Copy for Str {}
+
+impl Str {
+  /// The number of UTF-8 bytes, not Unicode scalar values.
+  fn len(self : &Str) -> i64 {
+    return self.len;
+  }
+
+  fn is_empty(self : &Str) -> bool {
+    return self.len == 0i64;
+  }
+
+  fn as_ptr(self : &Str) -> *const u8 {
+    return self.ptr;
+  }
+}
+
+impl Index for Str {
+  type Output = u8;
+
+  fn index(self : &Str, index : i32) -> &u8 {
+    assert(index >= 0 && (index as i64) < self.len, "string index out of bounds");
+    return unsafe { &self.ptr[index] };
+  }
+}

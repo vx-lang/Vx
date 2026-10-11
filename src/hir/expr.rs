@@ -236,11 +236,22 @@ impl<'a> TypeChecker<'a> {
             Expr::Identifier(..) => self.check_identifier_expr(expr, consume),
             Expr::EnumVariant(..) => self.check_enumvariant_expr(expr, consume),
             Expr::Number(n) => self.check_number_literal(n),
-            Expr::StringLiteral(StringLiteralExpr { .. }) => Type::Pointer(
-                Box::new(Type::Scalar(ElementType::I8)),
-                None,
-                false, // const
-            ),
+            Expr::StringLiteral(StringLiteralExpr { .. }) => {
+                // A literal is a length-carrying `Str` in value position. Keep the historical
+                // literal-to-C-pointer coercion only in a checking position whose destination is
+                // explicitly a byte pointer; this lets existing extern calls remain source-compatible.
+                match self.expected_type.as_ref() {
+                    Some(Type::Pointer(inner, _, false))
+                        if matches!(
+                            inner.as_ref(),
+                            Type::Scalar(ElementType::I8 | ElementType::U8)
+                        ) =>
+                    {
+                        self.expected_type.clone().unwrap()
+                    }
+                    _ => Type::Struct("Str".into(), None),
+                }
+            }
             Expr::Transfer(..) => self.check_transfer_expr(expr, consume),
             // `Reachable<A, B>` is a comptime boolean.
             Expr::TransferPredicate(..) => Type::Scalar(ElementType::Bool),
