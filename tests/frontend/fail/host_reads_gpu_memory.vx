@@ -19,8 +19,8 @@
 // catch. A discrete GPU's memory is not in that list, so this one is.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Cross-topology access error
-// CHECK-SAME: from CPU
+// CHECK: Error[E6003] at 29:9: 'on_gpu' lives in GPU_HBM but CPU sees only
+// CHECK: 1 error(s) emitted
 
 fn main() -> i32 {
   let host_data : Tensor<f32, [ 4, 4 ]> = Tensor<f32, [ 4, 4 ]>::new();

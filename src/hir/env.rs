@@ -411,6 +411,9 @@ pub struct TypeChecker<'a> {
     /// "fresh check" entry points (`check_expr_type`, `check_block`) force it back off, so the
     /// field's dynamic scope reproduces the old parameter's exactly.
     pub(crate) speculating: bool,
+    /// Identifiers already reported as unreadable from the active topology, so the indexing of
+    /// the same read (`c[0][0]`) does not report it again.
+    pub(crate) unreadable_reported: std::collections::HashSet<crate::syntax::Span>,
     /// The name being indexed while the base of `name[i]` is checked: the one place a `const`
     /// table may be named.
     pub(crate) indexed_name: Option<crate::symbol::Symbol>,
@@ -471,6 +474,7 @@ impl<'a> TypeChecker<'a> {
             transfer_cost_graph,
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
             speculating: false,
+            unreadable_reported: Default::default(),
             indexed_name: None,
             value_unused: false,
             checking_assign_lhs: false,

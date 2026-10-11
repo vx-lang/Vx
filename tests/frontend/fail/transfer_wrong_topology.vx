@@ -7,4 +7,5 @@ fn main(host_data: Tensor<f32, [?, ?]>) on Topology::NPU[0] -> i32 {
   return 0;
 }
 
-// CHECK: Error: Cross-topology access error
+// CHECK: Error[E6003] at 6:11: 'device_data' lives in CPU_DRAM but NPU[0] sees only [NPU_HBM]
+// CHECK: 1 error(s) emitted

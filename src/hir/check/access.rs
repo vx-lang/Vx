@@ -479,6 +479,7 @@ impl<'a> TypeChecker<'a> {
                                         && self
                                             .space_is_cached(&self.value_memory_space(&ty, &top));
                                     if !allowed {
+                                        self.unreadable_reported.insert(span);
                                         match reach {
                                         Reachability::NeedsSeam { cost } => {
                                             // E6003, naming the value's space, the topology's
@@ -919,6 +920,8 @@ impl<'a> TypeChecker<'a> {
                                     &what, &obj_ty, &value_top, cost, &ix_span,
                                 );
                             }
+                            _ if index_root_span(obj)
+                                .is_some_and(|at| self.unreadable_reported.contains(&at)) => {}
                             _ => self.errors.push(format!(
                                 "Cross-topology access error: a value on {} cannot be read from {}",
                                 value_top.display_name(),
@@ -1819,5 +1822,15 @@ fn unknown_struct_message(
         crate::registry::ambiguous_import_message("Struct", struct_name)
     } else {
         format!("Unknown struct '{}' ({})", struct_name, site)
+    }
+}
+
+/// The span of the variable at the root of `v[i].f[j]`, if the root is a variable.
+fn index_root_span(e: &Expr) -> Option<crate::syntax::Span> {
+    match e {
+        Expr::Identifier(id) => Some(id.span),
+        Expr::IndexAccess(IndexAccessExpr { base, .. })
+        | Expr::MemberAccess(MemberAccessExpr { base, .. }) => index_root_span(base),
+        _ => None,
     }
 }
