@@ -353,6 +353,10 @@ pub enum Opcode {
     /// `t as f32`: a fresh tensor of the result type, each element of `operand1` cast to the
     /// result's element type.
     TensorCast = 85,
+    /// A window of rows of a tensor (`q[a..b]`): `operand1` is the tensor, `operand2` is the
+    /// register holding `a`, and `imm` is the number of the register holding `b`. The result is
+    /// a tensor of rows `a` to `b - 1`. It shares the memory of the original and is not a copy.
+    TensorRange = 86,
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.
@@ -538,6 +542,7 @@ impl Opcode {
             80 => LifetimeEnd,
             84 => CheckAggregate,
             85 => TensorCast,
+            86 => TensorRange,
             8 => Call,
             9 => Ret,
             10 => Matmul,
