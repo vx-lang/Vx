@@ -181,6 +181,16 @@ pattern ::=
     | string_literal
     | identifier ( "<" identifier ">" )? "::" identifier ( "(" ( pattern ","? )* ")" )?
     | identifier
+
+// How a number is spelled. The base prefix and the `_` separators change nothing about the
+// value: `0x2A`, `0b101010`, `0o52`, `4_2` and `42` are the same literal. A prefixed literal
+// is an integer, so it has no fraction and no float suffix. A suffix is the literal's type;
+// without one the literal takes the type its context asks for.
+number_literal ::= ( decimal_literal | hex_literal | octal_literal | binary_literal ) element_type?
+decimal_literal ::= digit ( digit | "_" )* ( "." digit ( digit | "_" )* )?
+hex_literal     ::= "0x" "_"* hex_digit ( hex_digit | "_" )*
+octal_literal   ::= "0o" "_"* octal_digit ( octal_digit | "_" )*
+binary_literal  ::= "0b" "_"* ( "0" | "1" ) ( "0" | "1" | "_" )*
 ```
 
 ## 5. Types & Memory Semantics

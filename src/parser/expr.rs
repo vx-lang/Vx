@@ -19,19 +19,80 @@ use super::*;
 /// type-checking, falling back to [`default_number_elem`] when no context supplies one. This
 /// keeps implicit numeric conversion out of the language: the literal is born at the right type
 /// rather than silently coerced.
-pub(crate) fn infer_number_literal(s: &str) -> Result<(&str, Option<ElementType>), String> {
-    let idx = s.find(|c: char| c.is_alphabetic() || c == '_');
-    let (num_part, suffix_part) = match idx {
-        Some(i) => (&s[..i], &s[i..]),
-        None => (s, ""),
+///
+/// The numeric part comes back as plain decimal text whatever the literal's spelling. `0x2A`,
+/// `0b101010`, `0o52` and `4_2` all come back as `42`. This is the one place that knows about
+/// the spellings, so everything after the parser keeps reading a literal with `str::parse`.
+/// The formatter never sees this: it prints tokens, so the file keeps the spelling it had.
+pub(crate) fn infer_number_literal(s: &str) -> Result<(String, Option<ElementType>), String> {
+    let (base, prefix) = match s.as_bytes() {
+        [b'0', b'x', ..] => (16, "0x"),
+        [b'0', b'o', ..] => (8, "0o"),
+        [b'0', b'b', ..] => (2, "0b"),
+        _ => (10, ""),
     };
+    let body = &s[prefix.len()..];
+
+    // Where the digits end and the type suffix starts. In base 10 the first letter is the
+    // suffix. In the other bases a letter can be a digit (`0xFF`), so the digits run as far as
+    // the base allows and whatever is left is the suffix.
+    let is_digit_here = |c: char| c == '_' || (base != 10 && c.is_digit(base));
+    let idx = body
+        .find(|c: char| {
+            if base == 10 {
+                c.is_alphabetic()
+            } else {
+                !is_digit_here(c)
+            }
+        })
+        .unwrap_or(body.len());
+    let (digits, suffix_part) = (&body[..idx], &body[idx..]);
 
     let el_ty = if !suffix_part.is_empty() {
+        if base != 10 && suffix_part.starts_with('.') {
+            return Err(format!(
+                "{} literal cannot have a fraction: '{}'",
+                base_name(base),
+                s
+            ));
+        }
+        if base != 10 && !suffix_part.starts_with(['i', 'u']) {
+            return Err(format!(
+                "'{}' is not {} digit in '{}'",
+                suffix_part.chars().next().unwrap(),
+                base_name(base),
+                s
+            ));
+        }
         Some(suffix_part.parse::<ElementType>()?)
     } else {
         None
     };
-    Ok((num_part, el_ty))
+
+    // `_` separates groups of digits and means nothing: `1_000_000` is `1000000`.
+    let digits: String = digits.chars().filter(|c| *c != '_').collect();
+    if base == 10 {
+        return Ok((digits, el_ty));
+    }
+    if digits.is_empty() {
+        return Err(format!(
+            "'{}' needs at least one digit after '{}'",
+            s, prefix
+        ));
+    }
+    let value = u128::from_str_radix(&digits, base)
+        .map_err(|_| format!("'{}' does not fit in 128 bits", s))?;
+    Ok((value.to_string(), el_ty))
+}
+
+/// How an error message names a literal's base, with its article: `0x` is "a hex".
+fn base_name(base: u32) -> &'static str {
+    match base {
+        16 => "a hex",
+        8 => "an octal",
+        2 => "a binary",
+        _ => "a decimal",
+    }
 }
 
 /// The spelling-based default element type for an *untyped* numeric literal — used when no
@@ -1592,6 +1653,113 @@ mod tests {
         let (num, ty) = infer_number_literal("3.14f64").unwrap();
         assert_eq!(num, "3.14");
         assert_eq!(ty, Some(ElementType::F64));
+    }
+
+    #[test]
+    fn hex_binary_and_octal_literals_become_decimal_text() {
+        assert_eq!(
+            infer_number_literal("0x2A").unwrap(),
+            ("42".to_string(), None)
+        );
+        assert_eq!(
+            infer_number_literal("0xff").unwrap(),
+            ("255".to_string(), None)
+        );
+        assert_eq!(
+            infer_number_literal("0b101010").unwrap(),
+            ("42".to_string(), None)
+        );
+        assert_eq!(
+            infer_number_literal("0o52").unwrap(),
+            ("42".to_string(), None)
+        );
+        assert_eq!(
+            infer_number_literal("0x0").unwrap(),
+            ("0".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn a_prefixed_literal_keeps_its_integer_suffix() {
+        assert_eq!(
+            infer_number_literal("0xFFu8").unwrap(),
+            ("255".to_string(), Some(ElementType::U8))
+        );
+        assert_eq!(
+            infer_number_literal("0b1i64").unwrap(),
+            ("1".to_string(), Some(ElementType::I64))
+        );
+        // `f` is a hex digit, so there is no float suffix on a hex literal: `0xFFf32` is the
+        // number 0xFFF32, as in Rust.
+        assert_eq!(
+            infer_number_literal("0xFFf32").unwrap(),
+            ("1048370".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn underscores_separate_digits_in_any_base() {
+        assert_eq!(
+            infer_number_literal("1_000_000").unwrap(),
+            ("1000000".to_string(), None)
+        );
+        assert_eq!(
+            infer_number_literal("1_000.5").unwrap(),
+            ("1000.5".to_string(), None)
+        );
+        assert_eq!(
+            infer_number_literal("0xDEAD_BEEF").unwrap(),
+            ("3735928559".to_string(), None)
+        );
+        assert_eq!(
+            infer_number_literal("0b1111_0000").unwrap(),
+            ("240".to_string(), None)
+        );
+        // An underscore between the digits and the suffix is allowed, as in Rust.
+        assert_eq!(
+            infer_number_literal("42_u8").unwrap(),
+            ("42".to_string(), Some(ElementType::U8))
+        );
+    }
+
+    #[test]
+    fn a_prefixed_literal_with_no_digits_is_an_error() {
+        assert!(infer_number_literal("0x")
+            .unwrap_err()
+            .contains("at least one digit"));
+        assert!(infer_number_literal("0b_")
+            .unwrap_err()
+            .contains("at least one digit"));
+    }
+
+    #[test]
+    fn a_digit_outside_the_base_is_an_error() {
+        let err = infer_number_literal("0b102").unwrap_err();
+        assert!(err.contains("'2' is not a binary digit"), "{err}");
+        let err = infer_number_literal("0o79").unwrap_err();
+        assert!(err.contains("'9' is not an octal digit"), "{err}");
+        let err = infer_number_literal("0xZZ").unwrap_err();
+        assert!(err.contains("'Z' is not a hex digit"), "{err}");
+    }
+
+    #[test]
+    fn a_prefixed_literal_cannot_have_a_fraction() {
+        let err = infer_number_literal("0x1.5").unwrap_err();
+        assert!(
+            err.contains("a hex literal cannot have a fraction"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_hex_literal_wider_than_128_bits_is_an_error() {
+        let err = infer_number_literal("0x1_0000_0000_0000_0000_0000_0000_0000_0000").unwrap_err();
+        assert!(err.contains("128 bits"), "{err}");
+        // The largest value that does fit.
+        assert_eq!(
+            infer_number_literal("0xFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF").unwrap(),
+            (u128::MAX.to_string(), None)
+        );
     }
 
     // ---- Binary operator precedence tests ----

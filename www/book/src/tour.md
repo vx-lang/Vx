@@ -23,6 +23,24 @@ wants one; you write the conversion. Integer literals infer to the type the cont
 This is deliberate — silent widening is a common source of both bugs and unintended performance
 cliffs.
 
+An integer can be written in decimal, hex, octal or binary, and `_` can separate groups of digits
+in any of them. The spelling is for the reader; the value is the same either way:
+
+```rust
+fn main() -> i32 {
+    let mask : i32 = 0b1111_0000;   // binary: 240
+    let page : i32 = 0x1000;        // hex: 4096
+    let mode : i32 = 0o755;         // octal: 493
+    let big : i64 = 1_000_000;
+    if big != 1000000 {
+        return 1;
+    }
+    return mask - 240 + page - 4096 + mode - 493;
+}
+```
+
+A prefixed literal is an integer, so `0x1.5` is an error; write a fraction in decimal.
+
 A `const` at the top level names a value known while compiling. Its type is required, and each use
 is replaced by the value:
 
