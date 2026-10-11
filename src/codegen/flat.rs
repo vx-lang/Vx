@@ -932,7 +932,7 @@ pub struct SubspaceInfo {
 /// `func.func private` declaration prepended. Order is load-bearing — the emit records which of
 /// these a function called as a bitmask over this array's indices, so inserting in the middle
 /// renumbers existing entries.
-const RUNTIME_HELPERS: [(&str, &str); 16] = [
+const RUNTIME_HELPERS: [(&str, &str); 18] = [
     ("printMemrefF32", "(memref<*xf32>)"),
     ("printMemrefF64", "(memref<*xf64>)"),
     ("printMemrefI32", "(memref<*xi32>)"),
@@ -949,6 +949,8 @@ const RUNTIME_HELPERS: [(&str, &str); 16] = [
     ("print_str", "(!llvm.ptr) -> i32"),
     ("vx_init_signals", "()"),
     ("print_bool", "(i32) -> i32"),
+    ("printMemrefU32", "(memref<*xi32>)"),
+    ("printMemrefU64", "(memref<*xi64>)"),
 ];
 
 /// Recover the declared memory sub-spaces from a compilation's env, in the shape
@@ -1281,7 +1283,7 @@ pub fn emit_module_mlir(
         .map(|(name, _)| format!("@{name}("))
         .collect();
 
-    type FnEmission = (String, Vec<(String, Vec<String>, String)>, u16);
+    type FnEmission = (String, Vec<(String, Vec<String>, String)>, u32);
     // An inline block's wrapper is named from a module-wide base, so two functions' do not collide.
     let inline_bases: Vec<usize> = {
         let mut bases = Vec::with_capacity(funcs.len());
@@ -1309,7 +1311,7 @@ pub fn emit_module_mlir(
                 alias_tables.get(fi).copied().unwrap_or(&[]),
                 &mut distinct_ctr,
             )?;
-            let helpers = helper_pats.iter().enumerate().fold(0u16, |m, (i, pat)| {
+            let helpers = helper_pats.iter().enumerate().fold(0u32, |m, (i, pat)| {
                 if text.contains(pat.as_str()) {
                     m | (1 << i)
                 } else {
@@ -1349,7 +1351,7 @@ pub fn emit_module_mlir(
     //
     // A decline is reported for the *first* declining function rather than whichever thread noticed
     // first, so `VX_FLAT_DBG` says the same thing it always did.
-    let mut helper_mask = 0u16;
+    let mut helper_mask = 0u32;
     for (fi, emission) in emitted.iter_mut().enumerate() {
         let (_, fn_calls, helpers) = match emission {
             Ok(e) => e,
