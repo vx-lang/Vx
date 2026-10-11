@@ -263,6 +263,7 @@ impl<'a> Parser<'a> {
             body,
             doc_comment: None,
             span,
+            file: None,
         })
     }
 

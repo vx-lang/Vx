@@ -15,7 +15,7 @@
 // holds when it calls, and the callee's own peak.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: E6027
+// CHECK: Error[E6027] at {{.*}}callee_tiles_join_the_callers_working_set.vx:{{[0-9]+:[0-9]+}}:
 // CHECK-SAME: call path 'f -> g'
 // CHECK-SAME: peaks at 6291456 bytes, over its 4194304 byte capacity
 // CHECK-SAME: 'f' holds 3145728 bytes across its call

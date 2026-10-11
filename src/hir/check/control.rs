@@ -950,6 +950,7 @@ impl<'a> TypeChecker<'a> {
                     body: body_stmts,
                     doc_comment: None,
                     span: e.span,
+                    file: self.errors.file.clone(),
                 };
 
                 self.mono.functions.push((call_func, 0));

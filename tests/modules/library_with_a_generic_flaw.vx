@@ -1,0 +1,21 @@
+//===- library_with_a_generic_flaw.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A generic library function with a type error in its body. The error is only found when a
+// program calls the function, which creates the instance that gets checked.
+
+struct Point {
+  x : i64,
+}
+
+// `Point` has no field `y`.
+fn first<T>(v : T) -> i64 {
+  let p = Point {
+    x : 1i64
+  };
+  return p.y;
+}

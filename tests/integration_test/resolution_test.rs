@@ -409,6 +409,7 @@ fn test_local_name_resolution() -> Result<(), String> {
             body: vec![],
             doc_comment: None,
             span: Span::default(),
+            file: None,
         }],
         consts: vec![],
     };
@@ -475,6 +476,7 @@ fn test_unresolved_symbol_remains_none() -> Result<(), String> {
             body: vec![],
             doc_comment: None,
             span: Span::default(),
+            file: None,
         }],
         consts: vec![],
     };
@@ -540,6 +542,7 @@ fn test_nested_type_resolution() -> Result<(), String> {
             body: vec![],
             doc_comment: None,
             span: Span::default(),
+            file: None,
         }],
         consts: vec![],
     };
@@ -611,6 +614,7 @@ fn test_expr_and_stmt_resolution() -> Result<(), String> {
             })],
             doc_comment: None,
             span: Span::default(),
+            file: None,
         }],
         consts: vec![],
     };

@@ -89,18 +89,17 @@ impl Analysis {
             let mut line = 1;
             let mut col = 1;
 
+            // The header reads `Error at FILE:LINE:COL: message`. The position is the first
+            // pair of numbers after the file, which may itself hold colons.
             if let Some(idx) = err_str.find("Error at ") {
-                let rest = &err_str[idx + 9..];
-                if let Some(colon_idx) = rest.find(':') {
-                    if let Ok(l) = rest[..colon_idx].parse::<usize>() {
-                        line = l;
-                        let rest_after_col = &rest[colon_idx + 1..];
-                        if let Some(second_colon) = rest_after_col.find(':') {
-                            if let Ok(c) = rest_after_col[..second_colon].parse::<usize>() {
-                                col = c;
-                            }
-                        }
-                    }
+                let header = err_str[idx + 9..].lines().next().unwrap_or("");
+                let fields: Vec<&str> = header.split(':').collect();
+                if let Some((l, c)) = fields
+                    .windows(2)
+                    .find_map(|w| Some((w[0].parse::<usize>().ok()?, w[1].parse::<usize>().ok()?)))
+                {
+                    line = l;
+                    col = c;
                 }
             }
 
@@ -354,5 +353,30 @@ impl Analysis {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The parse error header reads `Error at FILE:LINE:COL: ...`, and the position is read
+    /// from after the file, which used to put every parse error at 1:1.
+    #[test]
+    fn a_parse_error_is_placed_at_its_line_and_column() {
+        let mut host = AnalysisHost::new();
+        host.apply_change(
+            "file:///a.vx".to_string(),
+            "fn main() -> i32 {\n  let x = 10 return x;\n}\n".to_string(),
+        );
+        let diags = host.snapshot().diagnostics("file:///a.vx");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        // Line 2, column 14 in the source; the IDE counts both from zero.
+        assert_eq!(
+            (diags[0].line_start, diags[0].col_start),
+            (1, 13),
+            "{:?}",
+            diags[0]
+        );
     }
 }

@@ -137,6 +137,11 @@ fn run_frontend_on(
     timed("macro_expand", || {
         macro_expansion_phase(&mut modules, sched)
     })?;
+    // Every function names its file, so a diagnostic found while checking it names the file
+    // too, wherever the check runs from. After expansion, which adds functions.
+    for m in &mut modules {
+        m.name_file_on_functions();
+    }
     // `name_resolution_phase` hands back the symbol map so the freeze point can reuse it instead of
     // rebuilding it (c4c35e31); the timing wrapper carries the value through.
     let symbol_map = timed("name_resolution", || {
@@ -186,9 +191,14 @@ fn run_frontend_on(
 
     // Before any body: a body checked against an ambiguous declaration table has been checked
     // against a coin flip.
-    let whole_program_file = match modules.as_slice() {
-        [only] => only.file.as_deref(),
-        _ => None,
+    // One file among the modules: a module read from none, such as the native host, does not
+    // make the program several files.
+    let whole_program_file = {
+        let mut files = modules.iter().filter_map(|m| m.file.as_deref());
+        match (files.next(), files.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
     };
     let mut warnings = timed("decl_check", || {
         declaration_check_phase(&session, &env, whole_program_file)
@@ -463,15 +473,12 @@ fn parse_phase(file_paths: &[String], sched: Schedule) -> Result<Vec<VxModule>, 
         let mut lexer = Lexer::new(&source);
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, &source);
-        let mut program = parser.parse().map_err(|e| {
-            PipelineError::Parse(format!(
-                "Failed to parse {}:\n{}",
-                path,
-                e.format(&source, Some(path))
-            ))
-        })?;
+        // The error names the file itself, so nothing is added around it.
+        let mut program = parser
+            .parse()
+            .map_err(|e| PipelineError::Parse(e.format(&source, Some(path))))?;
         program.module_path = module_path_of(path).into();
-        program.file = Some(path.clone());
+        program.file = Some(path.as_str().into());
         Ok(program)
     };
     let parsed_modules: Vec<VxModule> = if sched.is_seq() {
@@ -1229,7 +1236,6 @@ fn by_value_nominal_gid(ty: &syntax::Type) -> Option<crate::gid::TypeId> {
 fn check_one_function(
     func: &mut syntax::Function,
     module_idx: usize,
-    file: Option<&str>,
     global_session: &std::sync::Arc<GlobalSession>,
     global_env: &GlobalAstEnv,
     lowering_edge: Option<(syntax::MemorySpace, syntax::MemorySpace, String)>,
@@ -1237,8 +1243,6 @@ fn check_one_function(
     let function = func.name.to_string();
     let mut worker = LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(global_env, &mut worker);
-    // Every diagnostic names the file the function is in.
-    checker.errors.file = file.map(str::to_string);
     // Inside an `impl transfer` body the eight `raw::` primitives resolve; everywhere
     // else the edge is `None` and they do not (Vx#353).
     checker.seam.lowering_edge = lowering_edge;
@@ -1288,7 +1292,7 @@ fn declaration_check_phase(
 ) -> Result<Vec<crate::diagnostic::Diagnostic>, PipelineError> {
     let mut worker = LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(global_env, &mut worker);
-    checker.errors.file = file.map(str::to_string);
+    checker.errors.file = file.map(Into::into);
     checker.check_whole_program_declarations();
 
     let found: Vec<&crate::diagnostic::Diagnostic> = checker.errors.iter().collect();
@@ -1414,14 +1418,10 @@ fn type_check_phase(
             .iter_mut()
             .enumerate()
             .flat_map(|(module_idx, module)| {
-                let module_file = module.file.clone();
-                let file = module_file.as_deref();
                 let mut results: Vec<FunctionCheck> = module
                     .functions
                     .iter_mut()
-                    .map(|f| {
-                        check_one_function(f, module_idx, file, global_session, global_env, None)
-                    })
+                    .map(|f| check_one_function(f, module_idx, global_session, global_env, None))
                     .collect();
                 // A copied default is checked as the instance a call creates, as in the driver.
                 let impl_results: Vec<FunctionCheck> = module
@@ -1433,9 +1433,7 @@ fn type_check_phase(
                             .iter_mut()
                             .filter(move |f| !copied.contains(&f.name))
                     })
-                    .map(|f| {
-                        check_one_function(f, module_idx, file, global_session, global_env, None)
-                    })
+                    .map(|f| check_one_function(f, module_idx, global_session, global_env, None))
                     .collect();
                 results.extend(impl_results);
                 // Transfer lowerings, same walk (#353). Third traversal rather than folded
@@ -1454,7 +1452,6 @@ fn type_check_phase(
                             check_one_function(
                                 f,
                                 module_idx,
-                                file,
                                 global_session,
                                 global_env,
                                 Some(edge.clone()),
@@ -1471,14 +1468,10 @@ fn type_check_phase(
             .par_iter_mut()
             .enumerate()
             .flat_map(|(module_idx, module)| {
-                let module_file = module.file.clone();
-                let file = module_file.as_deref();
                 let mut results: Vec<FunctionCheck> = module
                     .functions
                     .par_iter_mut()
-                    .map(|f| {
-                        check_one_function(f, module_idx, file, global_session, global_env, None)
-                    })
+                    .map(|f| check_one_function(f, module_idx, global_session, global_env, None))
                     .collect();
                 let impl_results: Vec<FunctionCheck> = module
                     .impls
@@ -1489,14 +1482,7 @@ fn type_check_phase(
                             .par_iter_mut()
                             .filter(move |f| !copied.contains(&f.name))
                             .map(|f| {
-                                check_one_function(
-                                    f,
-                                    module_idx,
-                                    file,
-                                    global_session,
-                                    global_env,
-                                    None,
-                                )
+                                check_one_function(f, module_idx, global_session, global_env, None)
                             })
                     })
                     .collect();
@@ -1514,7 +1500,6 @@ fn type_check_phase(
                             check_one_function(
                                 f,
                                 module_idx,
-                                file,
                                 global_session,
                                 global_env,
                                 Some(edge.clone()),
@@ -1561,11 +1546,6 @@ fn type_check_phase(
             .flat_map(|c| c.capacity_summaries.iter().cloned())
             .collect();
         let mut fold_diags = crate::diagnostic::DiagnosticsVec::new();
-        // The fold reads the whole program's call graph, so as with the declaration checks it
-        // names a file only when the program is one file.
-        if let [only] = parsed_modules.as_slice() {
-            fold_diags.file = only.file.clone();
-        }
         crate::hir::check::capacity_fold::fold_cross_call_capacity(
             &summaries,
             global_env,
@@ -2986,6 +2966,22 @@ fn main() -> i32 { return 0; }
                 path.to_string_lossy().to_string()
             })
             .collect()
+    }
+
+    /// A parse error names its file once, in the `Error at FILE:LINE:COL:` header.
+    #[test]
+    fn a_parse_error_names_its_file_once() {
+        let bad = scratch_modules(
+            "parse_error_once",
+            &[("bad.vx", "fn main() -> i32 { let x = 10 return x; }\n")],
+        );
+        let err = compile_pipeline_mlir(&bad).expect_err("a missing `;` must be refused");
+        let text = err.to_string();
+        assert!(
+            text.contains("Error at ") && text.contains("bad.vx:1:"),
+            "{text}"
+        );
+        assert_eq!(text.matches("bad.vx").count(), 1, "{text}");
     }
 
     /// The pipeline refuses a machine model whose declarations contradict each other.

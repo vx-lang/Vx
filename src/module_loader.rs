@@ -293,7 +293,7 @@ impl ModuleLoader {
             .parse()
             .map_err(|e| ModuleError::Parse(crate::error::Error(e.format(&source, Some(&name)))))?;
         program.module_path = module_path;
-        program.file = Some(name);
+        program.file = Some(name.as_str().into());
         Ok(program)
     }
 

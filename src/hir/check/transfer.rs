@@ -626,6 +626,7 @@ impl<'a> TypeChecker<'a> {
         calls.sort_by_key(|c| c.order);
         let mut summary = crate::hir::check::capacity_fold::FnCapacitySummary {
             name: self.current_function.clone(),
+            file: self.errors.file.clone(),
             self_peak: std::collections::BTreeMap::new(),
             calls: calls
                 .iter()

@@ -618,8 +618,9 @@ pub struct Diagnostic {
     pub span: Option<Span>,
     pub source_span: Option<SourceSpan>,
     /// The file the diagnostic is about, as the compiler was given it. Printed before the line
-    /// and column so an editor can turn the message into a link.
-    pub file: Option<String>,
+    /// and column so an editor can turn the message into a link. A `Symbol`, so every
+    /// diagnostic about a file shares one copy of its name.
+    pub file: Option<crate::symbol::Symbol>,
     pub notes: Vec<Note>,
     pub fix_its: Vec<FixIt>,
     /// Structured fields for `--diagnostics-json`; `None` for diagnostics with no campaign-
@@ -663,11 +664,6 @@ impl Diagnostic {
 
     pub fn with_source_span(mut self, span: SourceSpan) -> Self {
         self.source_span = Some(span);
-        self
-    }
-
-    pub fn with_file(mut self, file: impl Into<String>) -> Self {
-        self.file = Some(file.into());
         self
     }
 
@@ -730,7 +726,10 @@ impl std::fmt::Display for Diagnostic {
                 None => write!(f, " at {}:{}", s.line, s.column)?,
             }
         } else if let Some(s) = &self.span {
-            write!(f, " at {}..{}", s.start, s.end)?;
+            match &self.file {
+                Some(file) => write!(f, " at {}:{}..{}", file, s.start, s.end)?,
+                None => write!(f, " at {}..{}", s.start, s.end)?,
+            }
         } else if let Some(file) = &self.file {
             write!(f, " in {}", file)?;
         }
@@ -766,8 +765,8 @@ impl std::fmt::Display for Diagnostic {
 pub struct DiagnosticsVec {
     pub inner: Vec<Diagnostic>,
     /// The file whose code is being checked. Every diagnostic reported from now on names it.
-    /// The driver sets it before checking each file's functions.
-    pub file: Option<String>,
+    /// The checker sets it from each function it checks, and puts the previous one back after.
+    pub file: Option<crate::symbol::Symbol>,
 }
 
 impl DiagnosticsVec {
@@ -1020,10 +1019,10 @@ mod tests {
 
     #[test]
     fn a_diagnostic_with_a_file_prints_file_line_and_column() {
-        let d = Diagnostic::warning("unreachable code")
+        let mut d = Diagnostic::warning("unreachable code")
             .with_code(DiagnosticCode::W1003)
-            .with_source_span(SourceSpan::new(10, 5, 3))
-            .with_file("src/main.vx");
+            .with_source_span(SourceSpan::new(10, 5, 3));
+        d.file = Some("src/main.vx".into());
         assert_eq!(
             d.to_string(),
             "Warning[W1003] at src/main.vx:10:5: unreachable code"
@@ -1031,15 +1030,23 @@ mod tests {
     }
 
     #[test]
+    fn a_diagnostic_with_a_byte_range_and_a_file_names_both() {
+        let mut d = Diagnostic::error("bad token").with_span(Span { start: 5, end: 10 });
+        d.file = Some("src/main.vx".into());
+        assert_eq!(d.to_string(), "Error at src/main.vx:5..10: bad token");
+    }
+
+    #[test]
     fn a_diagnostic_with_a_file_but_no_position_still_names_the_file() {
-        let d = Diagnostic::error("no `main` function").with_file("src/main.vx");
+        let mut d = Diagnostic::error("no `main` function");
+        d.file = Some("src/main.vx".into());
         assert_eq!(d.to_string(), "Error in src/main.vx: no `main` function");
     }
 
     #[test]
     fn diagnostics_vec_stamps_its_file_on_every_report() {
         let mut diags = DiagnosticsVec::new();
-        diags.file = Some("lib.vx".to_string());
+        diags.file = Some("lib.vx".into());
         diags.warn(
             DiagnosticCode::W1001,
             "unused variable 'x'",

@@ -98,6 +98,11 @@ pub struct Function {
     /// Where the function's name is written. A diagnostic about the function as a whole, such
     /// as an unused parameter, points here.
     pub span: Span,
+    /// The file the function is written in, as the compiler was given it. Every diagnostic
+    /// found while checking the function names it, wherever the check runs from: a generic
+    /// instance checked from its caller still names the file it was written in. `None` for a
+    /// function built in memory.
+    pub file: Option<Symbol>,
 }
 
 impl Function {
@@ -120,6 +125,7 @@ impl Function {
             },
             doc_comment: self.doc_comment.clone(),
             span: self.span,
+            file: self.file.clone(),
         }
     }
 }
@@ -424,7 +430,7 @@ pub struct Program {
     pub module_path: Symbol,
     /// The path this module was read from, as the compiler was given it or as the import
     /// search found it. Diagnostics name it. `None` for a program built in memory.
-    pub file: Option<String>,
+    pub file: Option<Symbol>,
     pub imports: Vec<ImportDecl>,
     pub macros: Vec<MacroDefDecl>,
     pub externs: Vec<ExternDecl>,
@@ -456,6 +462,21 @@ pub type VxFunction = Function;
 impl Program {
     pub fn add(&mut self, func: VxFunction) {
         self.functions.push(func);
+    }
+
+    /// Give every function in the program the program's file. Run after macro expansion, which
+    /// can add functions the parser never saw.
+    pub fn name_file_on_functions(&mut self) {
+        let file = self.file.clone();
+        let functions = self.functions.iter_mut();
+        let methods = self.impls.iter_mut().flat_map(|i| i.methods.iter_mut());
+        let lowerings = self
+            .transfer_impls
+            .iter_mut()
+            .flat_map(|t| t.methods.iter_mut());
+        for f in functions.chain(methods).chain(lowerings) {
+            f.file = file.clone();
+        }
     }
 
     pub fn clone_signature(&self) -> Self {

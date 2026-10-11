@@ -939,6 +939,15 @@ impl CompilerDriver {
         // against it. With no interfaces, an empty registry — the AST env resolves everything (#219).
         let global_session = Self::session_with_interfaces(interfaces)?;
 
+        // Every function names its file, so a diagnostic found while checking it names the
+        // file too, wherever the check runs from. Before the env takes its clones, since a
+        // generic instance is built from the env's copy of the function. After macro
+        // expansion, which adds functions.
+        ast.name_file_on_functions();
+        for p in other_asts.values_mut() {
+            p.name_file_on_functions();
+        }
+
         // Build the resolution env from *owned* clones: full bodies for the imported modules (so
         // their methods/generics can be instantiated) plus the entry module's signature. Owning the
         // clones leaves `ast` and `other_asts` free to be type-checked *in place* below — which #203
@@ -960,9 +969,9 @@ impl CompilerDriver {
         let mut checker = TypeChecker::new(&env, &mut worker);
         checker.seam.verify = self.options.verify_seams;
 
-        // Every diagnostic names the file it is about. The checks that look at the whole
-        // program at once can only name one when the program is one file.
-        let whole_program_file = if other_asts.is_empty() {
+        // The checks that look at the whole program's declarations at once can only name a
+        // file when the program is one file; a `--host default` module was read from none.
+        let whole_program_file = if other_asts.values().all(|p| p.file.is_none()) {
             ast.file.clone()
         } else {
             None
@@ -970,10 +979,9 @@ impl CompilerDriver {
 
         // Everything that is about the program as a whole rather than one function, before any
         // body is checked. Shared with the parallel pipeline so the two frontends cannot drift.
-        checker.errors.file = whole_program_file.clone();
+        checker.errors.file = whole_program_file;
         checker.check_whole_program_declarations();
 
-        checker.errors.file = ast.file.clone();
         for f in &mut ast.functions {
             checker.check_function(f);
         }
@@ -1014,7 +1022,6 @@ impl CompilerDriver {
         // the library never saw. Reviewed and reproduced: an imported lowering that
         // fails every lowering check compiled clean before this loop.
         for p in other_asts.values_mut() {
-            checker.errors.file = p.file.clone();
             for t in &mut p.transfer_impls {
                 checker.seam.lowering_edge = Some((
                     t.from.clone(),
@@ -1028,7 +1035,6 @@ impl CompilerDriver {
             }
         }
         for p in other_asts.values() {
-            checker.errors.file = p.file.clone();
             checker.check_transfer_impl_bodies(&p.transfer_impls);
         }
 
@@ -1047,7 +1053,6 @@ impl CompilerDriver {
             (String, Vec<crate::diagnostic::Diagnostic>),
         > = std::collections::BTreeMap::new();
         for p in other_asts.values_mut() {
-            checker.errors.file = p.file.clone();
             for f in &mut p.functions {
                 if f.generics.is_empty() {
                     let before = checker.errors.len();
@@ -1087,7 +1092,6 @@ impl CompilerDriver {
         // monomorphized call graph. Reads only the summaries the per-function checks exported,
         // never a body, and only ever adds refusals.
         {
-            checker.errors.file = whole_program_file;
             let summaries = std::mem::take(&mut checker.traffic.capacity_summaries);
             crate::hir::check::capacity_fold::fold_cross_call_capacity(
                 &summaries,
@@ -1675,6 +1679,7 @@ impl CompilerDriver {
                 body: vec![],
                 doc_comment: None,
                 span: crate::syntax::Span::default(),
+                file: None,
             };
             imported_entries.push((synth, body.hir.clone(), body.types.clone()));
         }
