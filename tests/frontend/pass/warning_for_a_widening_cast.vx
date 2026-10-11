@@ -1,0 +1,34 @@
+//===- warning_for_a_widening_cast.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
+//
+// A cast that only widens, such as `i32` to `i64`, cannot lose a value, and `i64::from(..)` says
+// so (W1007). Casts that can lose a value get no W1007: `i64` to `f64` and `i32` to `f32` can
+// round, and a narrowing can cut. A cast of a literal gets none either.
+
+// CHECK: Warning[W1007] at {{.*}}warning_for_a_widening_cast.vx:20:16: this cast only widens, so it cannot lose a value; `i64::from(..)`
+// CHECK: Warning[W1007] at {{.*}}warning_for_a_widening_cast.vx:22:18: this cast only widens, so it cannot lose a value; `f64::from(..)`
+// CHECK-NOT: Warning[W1007]
+
+fn main() -> i32 {
+  let x : i32 = 1;
+  let wide = x as i64;
+  let f : f32 = 1.5;
+  let double = f as f64;
+  let big : i64 = 5;
+  let rounded = big as f64;
+  let single = x as f32;
+  let narrow = big as i32;
+  let literal = 3 as i64;
+  print(wide);
+  print(double);
+  print(rounded);
+  print(single);
+  print(literal);
+  return narrow;
+}

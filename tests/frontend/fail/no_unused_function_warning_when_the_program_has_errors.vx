@@ -1,0 +1,24 @@
+//===- no_unused_function_warning_when_the_program_has_errors.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A program with a type error gets only the error: `never_called` is not called from `main`, but
+// the warning for that (W1002) is given only for a program that type-checks.
+
+// Warnings are printed before errors, so this is where W1002 would be.
+// CHECK-NOT: Warning[W1002]
+// CHECK: Error[E3001] at {{.*}}no_unused_function_warning_when_the_program_has_errors.vx:22:3: 'count' is declared i32 but its initializer is *const i8
+
+fn never_called(x : i32) -> i32 {
+  return x * 3;
+}
+
+fn main() -> i32 {
+  let count : i32 = "three";
+  return count;
+}

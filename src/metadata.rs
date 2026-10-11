@@ -95,7 +95,7 @@ impl<'a> VxMetadata<'a> {
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v14";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v15";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -1017,8 +1017,33 @@ pub fn serialize_registry_interface_reporting(
     w.u64(n);
     w.buf.extend_from_slice(&sub.buf);
 
+    // enums: each data-free enum's variants, sorted by enum name. Every variant is written with
+    // its number, so the numbers survive even if the list is ever reordered.
+    let mut enums: Vec<_> = reg.enum_variants.iter().collect();
+    enums.sort_by(|a, b| a.0.as_ref().cmp(b.0.as_ref()));
+    w.u64(enums.len() as u64);
+    for (name, variants) in &enums {
+        w.sym(name);
+        w.u64(variants.len() as u64);
+        for (i, v) in variants.iter().enumerate() {
+            w.sym(v);
+            w.u64(i as u64);
+        }
+    }
+    let enum_report = TableReport {
+        table: "enums",
+        encoded: enums.len(),
+        skipped: Vec::new(),
+    };
+
     let report = InterfaceEmitReport {
-        tables: vec![fn_report, meth_report, body_report, struct_report],
+        tables: vec![
+            fn_report,
+            meth_report,
+            body_report,
+            struct_report,
+            enum_report,
+        ],
     };
     (w.buf, report)
 }
@@ -1133,6 +1158,27 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         structs.insert(gid, StructFields { generics, fields });
     }
 
+    let mut enum_variants = FxHashMap::default();
+    let n_enums = r.u64()?;
+    for _ in 0..n_enums {
+        let name = r.sym()?;
+        let n_variants = r.u64()? as usize;
+        let mut variants = vec![None; n_variants];
+        for _ in 0..n_variants {
+            let v = r.sym()?;
+            let i = r.u64()? as usize;
+            let slot = variants
+                .get_mut(i)
+                .ok_or_else(|| format!("vxlib: enum {name} has a variant numbered {i}"))?;
+            if slot.replace(v).is_some() {
+                return Err(format!("vxlib: enum {name} numbers two variants {i}"));
+            }
+        }
+        // n distinct numbers below n: every slot is filled.
+        let variants: Vec<_> = variants.into_iter().map(|v| v.expect("filled")).collect();
+        enum_variants.insert(name, variants);
+    }
+
     let layout_by_base_name = LayoutNameIndex::build(&layouts);
     Ok(ImmutableGlobalRegistry {
         layouts,
@@ -1140,9 +1186,7 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
         fn_sigs,
         methods,
         bodies,
-        // Enum-variant ordinals are not serialized into a `.vxlib` yet; a downstream compile that
-        // constructs/matches an imported enum falls back to the AST path (#227).
-        enum_variants: FxHashMap::default(),
+        enum_variants,
         structs,
         // Data-carrying enum decls are not serialized into a `.vxlib` yet; constructing/matching a
         // monomorphized imported enum then falls back to the AST path (#242).
@@ -1343,6 +1387,27 @@ mod tests {
             point.fields[0], point_orig.fields[0],
             "Point.x field type survives"
         );
+    }
+
+    /// A data-free enum's variants come back in their order, so each keeps its number.
+    #[test]
+    fn registry_interface_round_trips_enum_variants() {
+        let m = parse_and_resolve(
+            "crate::m",
+            "enum Color { Red, Green, Blue }\n\
+             enum Zero { Only }\n\
+             fn pick() -> Color { return Color::Blue; }\n",
+        );
+        let reg =
+            crate::pipeline::build_frozen_registry(std::slice::from_ref(&m)).expect("acyclic");
+        let bytes = serialize_registry_interface(&reg);
+        let round = deserialize_registry_interface(&bytes).expect("deserialize");
+        assert_eq!(round.enum_variants, reg.enum_variants);
+        let color: Vec<&str> = round.enum_variants[&Symbol::from("Color")]
+            .iter()
+            .map(|v| v.as_ref())
+            .collect();
+        assert_eq!(color, ["Red", "Green", "Blue"]);
     }
 
     /// A real function's flat-HIR body round-trips: lower `fn add(..)` to flat HIR, stash it as a

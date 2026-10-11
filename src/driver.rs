@@ -622,10 +622,6 @@ impl CompilerDriver {
             return self.handle_parse_only(&program_arr, filename);
         }
 
-        if self.options.action == Action::EmitInterface {
-            return self.handle_emit_interface(&mut program_arr, filename);
-        }
-
         // Interfaces to merge into the registry: `.vxlib` imports auto-loaded above, plus an explicit
         // `--link-interface`. Both the frontend session and the flat codegen consume this set (#219).
         let interfaces = self.all_interface_bytes(auto_interfaces)?;
@@ -633,6 +629,16 @@ impl CompilerDriver {
         let (mut main_ast, mut other_asts) =
             self.prepare_semantic_analysis(&mut program_arr, filename)?;
         self.run_semantic_analysis(&mut main_ast, &mut other_asts, filename, &interfaces)?;
+
+        // A library is type-checked before it is saved: a number literal takes its type from
+        // the checker, and a library with a type error is refused rather than written.
+        if self.options.action == Action::EmitInterface {
+            let mut others: Vec<_> = other_asts.into_values().collect();
+            others.sort_by(|a, b| a.module_path.cmp(&b.module_path));
+            let mut mods = vec![main_ast];
+            mods.extend(others);
+            return self.handle_emit_interface(&mut mods, filename);
+        }
 
         if self.options.action == Action::PrintAst {
             AstPrinter::print_program(&main_ast, &mut std::io::stdout()).unwrap();
@@ -981,7 +987,21 @@ impl CompilerDriver {
         // body is checked. Shared with the parallel pipeline so the two frontends cannot drift.
         checker.errors.file = whole_program_file;
         checker.check_whole_program_declarations();
+        // Found before the checks rename calls to generic instances, reported after them.
+        let mut unused_functions = crate::diagnostic::DiagnosticsVec::new();
+        crate::hir::check::unused_functions::warn_functions_nothing_calls(
+            ast,
+            &mut unused_functions,
+        );
 
+        // Taken before checking: a comptime function without parameters has its block folded
+        // in place, after which its body no longer looks like one.
+        let comptime_fns: std::collections::HashSet<crate::symbol::Symbol> = ast
+            .functions
+            .iter()
+            .filter(|f| crate::hir::TypeChecker::is_comptime_fn(f))
+            .map(|f| f.name.clone())
+            .collect();
         for f in &mut ast.functions {
             checker.check_function(f);
         }
@@ -1105,6 +1125,10 @@ impl CompilerDriver {
             .errors
             .iter()
             .any(|d| d.level == DiagnosticLevel::Error);
+        // A program with a type error is unfinished, and the error is what it needs to hear.
+        if !has_errors {
+            checker.errors.inner.extend(unused_functions.inner);
+        }
 
         // The machine-readable verdict, before the human-readable rendering below: one record on
         // stdout carrying every diagnostic plus the resolved staging routes, so an admission
@@ -1181,6 +1205,10 @@ impl CompilerDriver {
             .filter(|f| !crate::hir::TypeChecker::is_comptime_lambda_body(f))
             .collect();
         new_functions.extend(orig_functions);
+        // Every call to a comptime function has folded, so it is never emitted.
+        new_functions.retain(|f| {
+            !comptime_fns.contains(&f.name) && !crate::hir::TypeChecker::is_comptime_fn(f)
+        });
         ast.functions = new_functions;
         ast.structs.extend(checker.mono.generated_structs);
 
@@ -1645,16 +1673,34 @@ impl CompilerDriver {
             Vec<crate::bytecode::HirInstruction>,
             Vec<crate::gid::TypeId>,
         )> = Vec::new();
-        for name in &lowered_names {
-            if fn_map.contains_key(name) {
+        // A library function's own calls are followed too: their bodies are in the interface as
+        // well, and nothing in this compile names them.
+        let mut pending: std::collections::VecDeque<crate::gid::TypeId> = lowered_names
+            .iter()
+            .filter(|name| !fn_map.contains_key(*name))
+            .filter_map(|name| session.registry.fn_sigs.get(name).map(|sig| sig.gid))
+            .collect();
+        let mut linked = std::collections::HashSet::new();
+        while let Some(gid) = pending.pop_front() {
+            if !linked.insert(gid) {
                 continue;
             }
-            let Some(sig) = session.registry.fn_sigs.get(name) else {
+            let Some(body) = session.registry.body_of(gid) else {
                 continue;
             };
-            let Some(body) = session.registry.body_of(sig.gid) else {
+            if fn_map.contains_key(&body.name) {
                 continue;
-            };
+            }
+            for ins in &body.hir {
+                if matches!(
+                    ins.opcode,
+                    crate::bytecode::Opcode::Call | crate::bytecode::Opcode::FuncConst
+                ) {
+                    if let Some(callee) = body.types.get(ins.type_idx.0 as usize) {
+                        pending.push_back(*callee);
+                    }
+                }
+            }
             let synth = crate::syntax::Function {
                 is_unsafe: false,
                 name: body.name.clone(),

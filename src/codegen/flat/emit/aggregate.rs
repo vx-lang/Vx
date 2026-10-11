@@ -198,6 +198,12 @@ impl FnEmit<'_> {
             // A by-value nested-aggregate field load yields the whole `!llvm.struct` value,
             // tracked as an aggregate value so it can be re-stored / passed by value. (#242)
             self.agg_val_of[idx] = Some(nested_gid);
+        } else if let Some(g) =
+            gid_res.filter(|g| fty.starts_with("!llvm.struct") && self.ctx.aggs.contains_key(g))
+        {
+            // A synthesized layout (a generic struct instance) records no nested aggregates, so
+            // the result's own type says which aggregate the field holds.
+            self.agg_val_of[idx] = Some(g);
         } else {
             // The instruction's own type keeps the field's signedness, which its MLIR spelling
             // does not (`i64` is both `i64` and `u64`): a comparison reads it from here.

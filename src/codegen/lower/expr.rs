@@ -4658,6 +4658,10 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
                     "a borrow cast to a raw pointer, from {ty_text}"
                 )));
             }
+            // Between `*const T` and `*mut T` the address is unchanged.
+            if let Some(syntax::Type::Pointer(..)) = self.source_ty.as_ref() {
+                return Ok((source_val, _source_ty, block));
+            }
             if let Some(syntax::Type::Scalar(_)) = self.source_ty.as_ref() {
                 let ptr_ty = gen.ptr_ty;
                 let cast_op = OperationBuilder::new("llvm.inttoptr", gen.loc())

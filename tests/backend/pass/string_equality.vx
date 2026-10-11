@@ -1,0 +1,41 @@
+//===- string_equality.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `==` and `!=` on two `String` values compare their characters, as in Rust, not where
+// the strings are stored. Two strings made separately are equal when they hold the same
+// characters, however each was made.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+import std::string;
+
+fn main() -> i32 {
+  let twelve = 12;
+  let thirteen = 13;
+  let long = 123;
+  // Two copies of the same number.
+  print(twelve.to_string() == twelve.to_string());
+  print(" ");
+  // The same length, one character different.
+  print(twelve.to_string() == thirteen.to_string());
+  print(" ");
+  // One is the start of the other.
+  print(twelve.to_string() == long.to_string());
+  print(" ");
+  // Two empty strings.
+  print(String::new() == String::new());
+  print(" ");
+  // Made from a C string, and made from a number.
+  let from_text = unsafe { String::from_c_str("12") };
+  print(from_text == twelve.to_string());
+  print(" ");
+  // `!=` is the opposite of `==`.
+  print(twelve.to_string() != thirteen.to_string());
+  print(" ");
+  // CHECK: {{^}}true false false true true true {{$}}
+  return 0;
+}

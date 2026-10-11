@@ -6,8 +6,9 @@
 use super::super::*;
 
 impl FnEmit<'_> {
-    // Move a tensor to a memory space: `operand1` is the source, `imm` the target space's
-    // dispatch id, `type_idx` the result tensor (same element + shape). Emits `vx.transfer`
+    // Move a tensor to a memory space: `operand1` is the source, the low half of `imm` the target
+    // space's dispatch id and the high half the source's topology, `type_idx` the result tensor
+    // (same element + shape). Emits `vx.transfer`
     // (generic form) with `target_topology`; the vx→standard lowering turns it into an
     // alloc + `memref.copy` (it ignores the source's layout suffix, so the result is a plain
     // `memref<NxT>`). When the target space declares a sub-space descriptor, re-attach the
@@ -46,6 +47,8 @@ impl FnEmit<'_> {
             (srcty, dstty, Some(elem.clone()), Some(shape.clone()))
         };
         let n = format!("%v{idx}");
+        let space_id = ins.imm & 0xffff_ffff;
+        let source = ins.imm >> 32;
         // A space declaring `node: N` is dispatched by its NUMA band id rather than by the hash
         // of its name. The hash says which space; the backend has to know which NODE, and cannot
         // recover a node number from a hash. Copied out rather than held, so the descriptor's
@@ -53,12 +56,15 @@ impl FnEmit<'_> {
         let numa_target = self
             .ctx
             .subspaces
-            .get(&ins.imm)
+            .get(&space_id)
             .and_then(|d| d.numa_node)
             .and_then(crate::arch::numa_dispatch_id);
-        let target = numa_target.map(|i| i as u64).unwrap_or(ins.imm);
+        let target = numa_target.map(|i| i as u64).unwrap_or(space_id);
         let mut attrs = format!("target_topology = {} : i32", target);
-        if let Some(desc) = self.ctx.subspaces.get(&ins.imm) {
+        if source != 0 {
+            attrs += &format!(", source_topology = {source} : i32");
+        }
+        if let Some(desc) = self.ctx.subspaces.get(&space_id) {
             // Descriptor attrs, in the AST path's emission order (MLIR sorts on print, so the
             // final parsed form is byte-identical regardless of the order emitted here).
             attrs += &format!(", space = \"{}\"", desc.name);
@@ -86,12 +92,15 @@ impl FnEmit<'_> {
             if let (Some(granule), Some(bytes)) = (desc.granule, tile_bytes) {
                 if granule > 0 {
                     let rounded = bytes.div_ceil(granule) * granule;
-                    let offset = *self.subspace_offsets.entry(ins.imm).or_insert(0);
-                    self.subspace_offsets.insert(ins.imm, offset + rounded);
+                    let offset = *self.subspace_offsets.entry(space_id).or_insert(0);
+                    self.subspace_offsets.insert(space_id, offset + rounded);
                     attrs += &format!(", offset = {offset} : i64");
                     attrs += &format!(", slots = {} : i64", rounded / granule);
                 }
             }
+        } else if let Some(name) = crate::arch::builtin_memory_space_name(space_id) {
+            // A built-in space declares nothing, but its name still goes on the op.
+            attrs += &format!(", space = \"{name}\"");
         }
         self.body +=
             &format!("  {n} = \"vx.transfer\"({src}) {{{attrs}}} : ({srcty}) -> {dstty}\n");
@@ -105,10 +114,11 @@ impl FnEmit<'_> {
     // Open a `vx.spawn` region (generic form). The op is inline in the enclosing block, which
     // continues after it; the instructions up to the matching `SpawnEnd` form the region body.
     // The ops immediately after `Spawn` (a control-flow body's setup, before its first explicit
-    // block) go in the region's entry block, so open a label for it. `imm` is the topology
-    // dispatch id (the same value the AST path emits as `vx.spawn`'s `topology` attribute).
+    // block) go in the region's entry block, so open a label for it. The low half of `imm` is the
+    // topology dispatch id (the AST path's `topology` attribute), the high half its name's index.
     pub(crate) fn op_spawn(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        self.spawn_stack.push((ins.imm as i64, self.body.len()));
+        self.spawn_stack
+            .push((ins.imm as u32 as i64, self.body.len(), ins.imm >> 32));
         self.body += &format!("  \"vx.spawn\"() ({{\n^bbspawn{idx}:\n");
         self.terminated = false;
         Ok(())
@@ -118,7 +128,18 @@ impl FnEmit<'_> {
     // terminator already ended it), stamp the `topology` attribute, and resume emitting into
     // the enclosing block (which the spawn op did not terminate).
     pub(crate) fn op_spawn_end(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        let (topo, open_at) = self.spawn_stack.pop().ok_or(crate::emitter_gap!())?;
+        let (topo, open_at, name) = self.spawn_stack.pop().ok_or(crate::emitter_gap!())?;
+        // The topology's name as the program wrote it, from the function's string table.
+        let name = match name.checked_sub(1) {
+            Some(i) => {
+                let s = self.strings.get(i as usize).ok_or(crate::emitter_gap!())?;
+                format!(
+                    ", topology_name = \"{}\"",
+                    s.replace('\\', "\\\\").replace('"', "\\\"")
+                )
+            }
+            None => String::new(),
+        };
         // A region with a value yields `operand1`, and the op that opened at `open_at` gets
         // the result name now that the value's type is known. A scalar or a tensor.
         let mut result_ty: Option<String> = None;
@@ -184,11 +205,11 @@ impl FnEmit<'_> {
         };
         if let Some(arch) = self.ctx.topo_archs.get(&topo) {
             self.body += &format!(
-                "  }}) {{arch = \"{arch}\", topology = {topo} : i32{trip}}} : () -> ({result_ty})\n"
+                "  }}) {{arch = \"{arch}\", topology = {topo} : i32{name}{trip}}} : () -> ({result_ty})\n"
             );
         } else {
             self.body +=
-                &format!("  }}) {{topology = {topo} : i32{trip}}} : () -> ({result_ty})\n");
+                &format!("  }}) {{topology = {topo} : i32{name}{trip}}} : () -> ({result_ty})\n");
         }
         self.terminated = false;
         Ok(())

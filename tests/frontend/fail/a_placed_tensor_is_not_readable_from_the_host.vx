@@ -13,7 +13,8 @@
 // reachability answer rather than removing the question.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: cannot be read from CPU
+// CHECK: 't' (type: Tensor<f32, [4, 4], Topology::Dev>) is unreachable from CPU
+// CHECK: 1 error(s) emitted
 
 Memory Extra {
   capacity: 1 GB, bandwidth: 1 TB/s

@@ -6,7 +6,7 @@ fn main(device_data: Pinned<Tensor<f32, [?, ?]>, Topology::CPU>) on Topology::NP
   return 0;
 }
 
-// The message no longer names `Pinned`. The check reads where a value is from
-// either spelling -- the wrapper, or a placement on the tensor itself -- so
-// naming one of them described the type rather than the mistake.
-// CHECK: Cross-topology access error: a value on CPU cannot be read from NPU
+// The check reads where a value is from either spelling: the `Pinned` wrapper,
+// or a placement on the tensor itself.
+// CHECK: Error[E6003] at {{.*}}pinned_access.vx:5:11: 'device_data' lives in CPU_DRAM but NPU[0] sees only [NPU_HBM]
+// CHECK: 1 error(s) emitted

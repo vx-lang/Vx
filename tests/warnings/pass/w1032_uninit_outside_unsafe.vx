@@ -1,0 +1,10 @@
+// W1032: `::uninit()` outside `unsafe`. Its elements hold whatever the memory held, so the
+// program has to say, with `unsafe`, that it writes each one before reading it.
+// WARN: w1032_uninit_outside_unsafe.vx:7:15
+// WARN: Call it inside `unsafe { .. }`
+
+fn main() -> i32 {
+  let mut t = Tensor<f32, [4]>::uninit();
+  t[0] = 1.0;
+  return 0;
+}

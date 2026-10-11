@@ -1,0 +1,126 @@
+//===- fields_that_can_be_moved_out_of_a_struct.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A field can be read out of a struct by value when doing so cannot drop anything twice: a
+// `Copy` field is copied, a struct of numbers has nothing to drop, a tensor field is a view
+// of its owner, and a `let (a, b) = ..` moves every part out of the tuple, which then owns
+// nothing. A field with something to drop can still be borrowed.
+//
+// CHECK-NOT: Error
+// CHECK-LABEL: func.func @main
+
+import core::marker;
+import core::ops;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print(self.id);
+  }
+}
+
+struct Point {
+  x : i32,
+}
+
+impl Copy for Point {}
+
+// Not `Copy`, but it holds nothing that needs dropping.
+struct Label {
+  n : i32,
+}
+
+struct Shape {
+  corner : Point,
+  label : Label,
+  tag : Noisy,
+}
+
+struct Holder {
+  t : Tensor<f32, [?]>,
+}
+
+fn tensor_field_is_a_view() -> i32 {
+  let h = Holder {
+    t : Tensor<f32>([4])
+  };
+  let v = h.t;
+  return 0;
+}
+
+fn copy_field() -> i32 {
+  let s = Shape {
+    corner : Point {
+      x : 3
+    },
+    label : Label {
+      n : 0
+    },
+    tag : Noisy {
+      id : 1
+    }
+  };
+  let c = s.corner;
+  let d = s.corner;
+  return c.x + d.x;
+}
+
+fn field_with_nothing_to_drop() -> i32 {
+  let s = Shape {
+    corner : Point {
+      x : 3
+    },
+    label : Label {
+      n : 1
+    },
+    tag : Noisy {
+      id : 2
+    }
+  };
+  let label = s.label;
+  let again = s.label;
+  return label.n + again.n;
+}
+
+fn borrowed_field() -> i32 {
+  let s = Shape {
+    corner : Point {
+      x : 3
+    },
+    label : Label {
+      n : 0
+    },
+    tag : Noisy {
+      id : 3
+    }
+  };
+  let t = &s.tag;
+  return t.id;
+}
+
+fn tuple_parts() -> i32 {
+  let (a, b) = (Noisy {
+    id : 4
+  }, Noisy {
+    id : 5
+  });
+  return a.id + b.id;
+}
+
+fn main() -> i32 {
+  print(copy_field());
+  print(field_with_nothing_to_drop());
+  print(borrowed_field());
+  print(tuple_parts());
+  print(tensor_field_is_a_view());
+  return 0;
+}

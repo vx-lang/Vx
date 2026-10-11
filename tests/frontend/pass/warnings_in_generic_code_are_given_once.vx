@@ -1,0 +1,60 @@
+//===- warnings_in_generic_code_are_given_once.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s --check-prefix=FUNCTION
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s --check-prefix=METHOD
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s --check-prefix=STATIC
+//
+// A generic function's body is checked once for each type it is used with. A warning in it is
+// about the one body, so it is given once, however many types use the function. The same holds
+// for a method of a generic struct, called on a value or on the type.
+
+// FUNCTION: Warning[W1001] at {{.*}}warnings_in_generic_code_are_given_once.vx:24:3: Unused variable 'in_function'
+// FUNCTION-NOT: Unused variable 'in_function'
+// METHOD: Warning[W1001] at {{.*}}warnings_in_generic_code_are_given_once.vx:34:5: Unused variable 'in_method'
+// METHOD-NOT: Unused variable 'in_method'
+// STATIC: Warning[W1001] at {{.*}}warnings_in_generic_code_are_given_once.vx:39:5: Unused variable 'in_static'
+// STATIC-NOT: Unused variable 'in_static'
+
+fn same<T>(v : T) -> T {
+  let in_function : i32 = 1;
+  return v;
+}
+
+struct Wrap<T> {
+  v : T,
+}
+
+impl<T> Wrap<T> {
+  fn size(self : &Wrap<T>) -> i32 {
+    let in_method : i32 = 2;
+    return 4;
+  }
+
+  fn make(v : T) -> Wrap<T> {
+    let in_static : i32 = 5;
+    return Wrap<T> {
+      v : v
+    };
+  }
+}
+
+fn main() -> i32 {
+  let a = same(1);
+  let b = same(2.0);
+  let w = Wrap<i32> {
+    v : 3
+  };
+  let x = Wrap<f64> {
+    v : 4.0
+  };
+  let m = Wrap<i32>::make(5);
+  let n = Wrap<f64>::make(6.0);
+  print(n.v);
+  print(b);
+  return a + w.size() + x.size() + m.v;
+}

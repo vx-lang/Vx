@@ -9,8 +9,8 @@
 //
 // - `made`: the region creates `x` and hands it out, so `x` is created in GPU memory before
 //   the region, and `main` copies 0, 1, 2 and 3 back from it;
-// - `given`: the region hands out `a`, made before it, so `a` moves to `t`, and `main` copies
-//   2.5 four times back from `t` without dropping `a` first.
+// - `given`: the region hands out `a`, a host tensor made before it, so `a` moves to `t`, and
+//   `main` reads 2.5 four times from `t` without dropping `a` first.
 //
 // EXPECT: 6 | 10
 
@@ -35,8 +35,7 @@ fn given() -> f32 {
   let t = spawn on(Topology::GPU) {
     a
   };
-  let h = transfer(t, Memory::CPU_DRAM);
-  return h[0] + h[1] + h[2] + h[3];
+  return t[0] + t[1] + t[2] + t[3];
 }
 
 fn main() -> i32 {
