@@ -462,9 +462,16 @@ impl CompilerDriver {
             // Only the file the user named reports its diagnostics, matching what the
             // sequential driver keeps from its own import pass.
             let reported = crate::pipeline::Reported::OnlyEntry(filename.into());
+            // A failed check ends with the line the sequential driver prints, with the file.
             let text =
                 crate::pipeline::compile_modules_mlir_in(programs, sched, intern_mode, reported)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| match e {
+                        crate::pipeline::PipelineError::Failed { count, .. } => format!(
+                            "Semantic check failed on '{}': {} error(s) emitted",
+                            filename, count
+                        ),
+                        other => other.to_string(),
+                    })?;
             let Some(text) = text else {
                 // Worded so it cannot be mistaken for the flat emitter's own decline, which
                 // `flat_corpus_sweep` classifies a program by: the two say different things

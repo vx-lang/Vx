@@ -33,6 +33,13 @@ pub enum PipelineError {
     IO(String),
     Parse(String),
     Semantic(String),
+    /// Checking found `count` errors, which it has printed. `in_declarations` says the check of
+    /// the whole program's declarations found them, before any body was checked. The driver
+    /// ends a failed compile with the same line whether it ran in parallel or not.
+    Failed {
+        count: usize,
+        in_declarations: bool,
+    },
 }
 
 impl std::fmt::Display for PipelineError {
@@ -41,6 +48,9 @@ impl std::fmt::Display for PipelineError {
             PipelineError::IO(msg) => write!(f, "IO Error: {}", msg),
             PipelineError::Parse(msg) => write!(f, "Parse Error: {}", msg),
             PipelineError::Semantic(msg) => write!(f, "Semantic Error: {}", msg),
+            PipelineError::Failed { count, .. } => {
+                write!(f, "Semantic check failed: {count} error(s) emitted")
+            }
         }
     }
 }
@@ -1288,9 +1298,10 @@ fn declaration_check_phase(
     let found: Vec<&crate::diagnostic::Diagnostic> = checker.errors.iter().collect();
     let errors = report_errors(&found);
     if errors > 0 {
-        return Err(PipelineError::Semantic(format!(
-            "Compilation failed with {errors} declaration errors"
-        )));
+        return Err(PipelineError::Failed {
+            count: errors,
+            in_declarations: true,
+        });
     }
     Ok(found
         .into_iter()
@@ -1559,10 +1570,10 @@ fn type_check_phase(
     );
 
     if total_errors > 0 {
-        return Err(PipelineError::Semantic(format!(
-            "Compilation failed with {} semantic errors",
-            total_errors
-        )));
+        return Err(PipelineError::Failed {
+            count: total_errors,
+            in_declarations: false,
+        });
     }
 
     #[cfg(debug_assertions)]
@@ -2985,7 +2996,13 @@ fn main() -> i32 { return 0; }
         // On the message, not just on the variant: any error would satisfy `expect_err`, including
         // one from a phase that never reached these checks.
         assert!(
-            matches!(&err, PipelineError::Semantic(m) if m.contains("declaration errors")),
+            matches!(
+                &err,
+                PipelineError::Failed {
+                    in_declarations: true,
+                    ..
+                }
+            ),
             "expected a declaration error, got {err:?}"
         );
 
@@ -3001,7 +3018,13 @@ fn main() -> i32 { return 0; }
         let err = compile_pipeline_mlir(&collision)
             .expect_err("two spaces sharing a dispatch id must be refused");
         assert!(
-            matches!(&err, PipelineError::Semantic(m) if m.contains("declaration errors")),
+            matches!(
+                &err,
+                PipelineError::Failed {
+                    in_declarations: true,
+                    ..
+                }
+            ),
             "expected a declaration error, got {err:?}"
         );
 
