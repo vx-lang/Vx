@@ -1,0 +1,121 @@
+//===- fields_moved_out_are_dropped_once.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// A field moved out of a struct, `let x = p.a`, is dropped as `x`; `p` then drops only the
+// fields it still holds. Each `Noisy` prints its id when it is dropped, so a field dropped
+// twice prints twice.
+
+import core::ops;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("drop ");
+    print(self.id);
+    print!(" ");
+  }
+}
+
+struct Pair {
+  a : Noisy,
+  b : Noisy,
+}
+
+fn take(n : Noisy) -> i32 {
+  return n.id;
+}
+
+fn one_field() -> void {
+  let p = Pair {
+    a: Noisy {
+      id: 1
+    }, b: Noisy {
+      id: 2
+    }
+  };
+  let x = p.a;
+  print!("| ");
+}
+
+// Moved only on one path: `p` drops `p.a` only if that path did not run.
+fn maybe(c : bool) -> void {
+  let p = Pair {
+    a: Noisy {
+      id: 3
+    }, b: Noisy {
+      id: 4
+    }
+  };
+  if c {
+    print(take(p.a));
+    print!(" ");
+  }
+  print!("| ");
+}
+
+// Given a value again: the new one is dropped with `p`.
+fn field_again() -> void {
+  let mut p = Pair {
+    a: Noisy {
+      id: 5
+    }, b: Noisy {
+      id: 6
+    }
+  };
+  print(take(p.a));
+  print!(" ");
+  p.a = Noisy {
+    id: 7
+  };
+  print!("| ");
+}
+
+// `p` given a whole new value: the old one drops only `p.b`, the new one both fields.
+fn whole_again() -> void {
+  let mut p = Pair {
+    a: Noisy {
+      id: 8
+    }, b: Noisy {
+      id: 9
+    }
+  };
+  print(take(p.a));
+  print!(" ");
+  p = Pair {
+    a: Noisy {
+      id: 10
+    }, b: Noisy {
+      id: 11
+    }
+  };
+  print!("| ");
+}
+
+fn main() -> i32 {
+  one_field();
+  // CHECK: {{^}}| drop 1 drop 2 /
+  print!("/ ");
+  maybe(true);
+  // CHECK-SAME: drop 3 3 | drop 4 /
+  print!("/ ");
+  maybe(false);
+  // CHECK-SAME: | drop 3 drop 4 /
+  print!("/ ");
+  field_again();
+  // CHECK-SAME: drop 5 5 | drop 7 drop 6 /
+  print!("/ ");
+  whole_again();
+  // CHECK-SAME: drop 8 8 drop 9 | drop 10 drop 11 end{{$}}
+  print!("end");
+  return 0;
+}

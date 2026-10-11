@@ -394,6 +394,10 @@ pub enum DiagnosticCode {
     /// value is dropped, so calling it as well would run it twice. Write `drop(x)`, from
     /// `core::mem`, to drop a value early.
     E4012,
+    /// A field moved out of a value whose type implements `Drop`: `let x = p.a` where `p`'s
+    /// type has a `drop` method. That method runs when `p` is dropped and needs every field,
+    /// so none can be taken away. Borrow the field (`&p.a`) or clone it.
+    E4013,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block

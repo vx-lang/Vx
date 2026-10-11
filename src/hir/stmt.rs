@@ -1028,6 +1028,12 @@ impl<'a> TypeChecker<'a> {
                 owner_before = self.drops_owner_state(id.name.as_ref());
                 self.unconsume(id.name.as_ref());
             }
+            // `p.a = v` after `p.a` was moved out gives the field a value again.
+            if let Expr::MemberAccess(_) = lhs {
+                if let Some((root, path)) = Self::extract_base_and_path(lhs) {
+                    self.unconsume_field(&root, &path);
+                }
+            }
         }
 
         self.check_assign_while_borrowed(lhs);

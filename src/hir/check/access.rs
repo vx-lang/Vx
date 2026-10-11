@@ -219,6 +219,8 @@ impl<'a> TypeChecker<'a> {
             Expr::Identifier(id) => {
                 let name = id.name.clone();
                 let span = id.span;
+                // Only the identifier a field access starts from is its base.
+                let field_base = std::mem::take(&mut self.checking_field_base);
 
                 if name.as_ref() == "true" || name.as_ref() == "false" {
                     return Type::Scalar(ElementType::Bool);
@@ -261,6 +263,23 @@ impl<'a> TypeChecker<'a> {
                 }
                 // The moved check comes first now. A moved variable keeps its binding, so
                 // the lookup succeeds and testing that first would let the use through.
+                // A field moved out leaves the rest of the variable usable, but not the whole.
+                let moved_field = (!field_base)
+                    .then(|| self.moved_field(name.as_ref(), &[]))
+                    .flatten();
+                if let Some(field) = moved_field {
+                    if !self.speculating {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E4001,
+                            format!(
+                                "`{name}` is used whole, but `{field}` was moved out of it; use \
+                                 its other fields, or give `{field}` a value again first"
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                        );
+                    }
+                    return Type::Unknown;
+                }
                 if self.is_moved(name.as_ref()) {
                     if !self.speculating {
                         self.errors.error_with_code(
@@ -556,6 +575,64 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// `p.a` read by value: when its value has something to drop, it is moved out of `p`, as in
+    /// Rust, so it is not dropped twice. `p.b` stays usable; `p.a`, and `p` as a whole, do
+    /// not. Moving a field out through a reference, or out of a value whose type has its own
+    /// `Drop`, is refused. A value with nothing to drop is copied, as before.
+    pub(crate) fn move_field_out(&mut self, expr: &Expr, ty: &Type) {
+        if self.speculating || matches!(ty, Type::Tensor(..)) {
+            return;
+        }
+        let Expr::MemberAccess(access) = expr else {
+            return;
+        };
+        let Some((root, path)) = Self::extract_base_and_path(expr) else {
+            return;
+        };
+        if path.iter().any(|p| p.starts_with('[')) || self.drops_glue(ty).is_empty() {
+            return;
+        }
+        let place = Self::field_place(&root, &path);
+        let span = Some(crate::diagnostic::SourceSpan::from_ast_span(&access.span));
+        if matches!(
+            self.lookup(&root).map(|(t, _)| t),
+            Some(Type::Borrow { .. } | Type::Pointer(..) | Type::Ref(..))
+        ) {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E4008,
+                format!(
+                    "`{place}` cannot be moved out: `{root}` is a reference and does not own it; \
+                     borrow it (`&{place}`) or clone it"
+                ),
+                span,
+            );
+            return;
+        }
+        let mut base = &*access.base;
+        loop {
+            let base_ty = match self.check_expr_type_probe(base) {
+                Type::Borrow { inner, .. } => *inner,
+                other => other,
+            };
+            if self.drops_impl_call(&base_ty).is_some() {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E4013,
+                    format!(
+                        "`{place}` cannot be moved out: `{base_ty}` implements `Drop`, whose \
+                         `drop` needs every field; borrow it (`&{place}`) or clone it"
+                    ),
+                    span,
+                );
+                return;
+            }
+            match base {
+                Expr::MemberAccess(inner) => base = &inner.base,
+                _ => break,
+            }
+        }
+        self.consume_field(&root, &path);
+    }
+
     pub(crate) fn check_memberaccess_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::MemberAccess(MemberAccessExpr {
@@ -567,8 +644,29 @@ impl<'a> TypeChecker<'a> {
                 let ma_span = *ma_span;
                 let old_skip = self.borrow.skip_borrow_check;
                 self.borrow.skip_borrow_check = true;
+                let old_field_base = self.checking_field_base;
+                self.checking_field_base = Self::extract_base_and_path(obj).is_some();
                 let obj_ty = self.check_expr_type_flag(obj, false);
+                self.checking_field_base = old_field_base;
                 self.borrow.skip_borrow_check = old_skip;
+                // Reading a field that was moved out, or one inside it. Writing it gives it a
+                // value again, which the assignment handles.
+                if !self.checking_assign_lhs && !self.speculating {
+                    if let Some((root, mut path)) = Self::extract_base_and_path(obj) {
+                        // `p.b.id` after `p.b` moved: reported once, at `p.b`.
+                        let base_moved =
+                            !path.is_empty() && self.moved_field(&root, &path).is_some();
+                        path.push(member.to_string());
+                        if let Some(field) = self.moved_field(&root, &path).filter(|_| !base_moved)
+                        {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E4001,
+                                format!("`{field}` was moved out of `{root}` and has no value"),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&ma_span)),
+                            );
+                        }
+                    }
+                }
 
                 if !self.borrow.skip_borrow_check && !self.speculating {
                     if let Some((name, mut path)) = Self::extract_base_and_path(obj) {

@@ -426,6 +426,9 @@ pub struct TypeChecker<'a> {
     /// Set while checking the left-hand side of an assignment (plain or compound): a container
     /// index there is a *store* place, so the `v[i]` -> `v.get(i)` read rewrite must not fire.
     pub(crate) checking_assign_lhs: bool,
+    /// The identifier being checked is the base of a field access, `p` in `p.b`: a move of
+    /// another field, `p.a`, does not stop it.
+    pub(crate) checking_field_base: bool,
     pub(crate) next_id: u32,
     pub current_return_type: Option<Type>,
     /// Name of the function being checked, so a record produced deep inside a body can say
@@ -478,6 +481,7 @@ impl<'a> TypeChecker<'a> {
             indexed_name: None,
             value_unused: false,
             checking_assign_lhs: false,
+            checking_field_base: false,
             next_id: 1,
             current_return_type: None,
             current_function: String::new(),
@@ -544,6 +548,11 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn insert(&mut self, name: String, ty: Type) {
+        // A new variable of this name: the fields moved out of the old one say nothing about it.
+        if let Some(moved) = self.borrow.moved_vars.last_mut() {
+            let prefix = format!("{name}.");
+            moved.retain(|place| !place.starts_with(&prefix));
+        }
         let current_top = self.active_topology.clone();
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.into(), (ty, current_top));
@@ -814,6 +823,9 @@ impl<'a> TypeChecker<'a> {
         self.drops_note_move(name, true);
         if let Some(moved) = self.borrow.moved_vars.get_mut(scope) {
             moved.remove(name);
+            // A whole new value: none of its fields is moved out any more.
+            let prefix = format!("{name}.");
+            moved.retain(|place| !place.starts_with(&prefix));
         }
     }
 
@@ -873,6 +885,63 @@ impl<'a> TypeChecker<'a> {
         self.scopes
             .iter()
             .rposition(|scope| scope.contains_key(name))
+    }
+
+    /// `root.path` as a moved place is written: `p.a.c`.
+    pub(crate) fn field_place(root: &str, path: &[String]) -> String {
+        std::iter::once(root.to_string())
+            .chain(path.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(".")
+    }
+
+    /// The moved field of `root` that `root.path` is, or is inside: `p.a` for `p.a.c` after
+    /// `let x = p.a`. With an empty `path`, any moved field of `root`.
+    pub(crate) fn moved_field(&self, root: &str, path: &[String]) -> Option<String> {
+        let scope = self.scope_of(root)?;
+        let place = Self::field_place(root, path);
+        self.borrow.moved_vars[scope]
+            .iter()
+            .filter(|m| m.contains('.'))
+            .find(|m| {
+                if path.is_empty() {
+                    m.starts_with(&format!("{root}."))
+                } else {
+                    place == **m || place.starts_with(&format!("{m}."))
+                }
+            })
+            .cloned()
+    }
+
+    /// `root.path` was moved out: `let x = p.a`.
+    pub(crate) fn consume_field(&mut self, root: &str, path: &[String]) {
+        let Some(scope) = self.scope_of(root) else {
+            return;
+        };
+        let place = Self::field_place(root, path);
+        self.drops_note_field_move(root, path, false);
+        if let Some(moved) = self.borrow.moved_vars.get_mut(scope) {
+            moved.insert(place);
+        }
+    }
+
+    /// `root.path` was given a value again: `p.a = v` after `let x = p.a`.
+    pub(crate) fn unconsume_field(&mut self, root: &str, path: &[String]) {
+        let Some(scope) = self.scope_of(root) else {
+            return;
+        };
+        let place = Self::field_place(root, path);
+        let inside = format!("{place}.");
+        let was_moved = self.borrow.moved_vars[scope]
+            .iter()
+            .any(|m| *m == place || m.starts_with(&inside));
+        if !was_moved {
+            return;
+        }
+        self.drops_note_field_move(root, path, true);
+        if let Some(moved) = self.borrow.moved_vars.get_mut(scope) {
+            moved.retain(|m| *m != place && !m.starts_with(&inside));
+        }
     }
 
     pub fn is_moved(&self, name: &str) -> bool {

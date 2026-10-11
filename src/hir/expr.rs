@@ -265,7 +265,13 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::IndirectCall(..) => self.check_indirectcall_expr(expr, consume),
             Expr::Array(..) => self.check_array_expr(expr),
-            Expr::MemberAccess(..) => self.check_memberaccess_expr(expr),
+            Expr::MemberAccess(..) => {
+                let ty = self.check_memberaccess_expr(expr);
+                if consume {
+                    self.move_field_out(expr, &ty);
+                }
+                ty
+            }
             Expr::IndexAccess(..) => self.check_indexaccess_expr(expr, consume),
             Expr::MethodCall(..) => self.check_methodcall_expr(expr, consume),
             Expr::BinaryOp(..) => self.check_binaryop_expr(expr, consume),
