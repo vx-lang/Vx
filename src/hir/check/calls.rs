@@ -1200,9 +1200,16 @@ impl<'a> TypeChecker<'a> {
         let Expr::FunctionCall(call) = expr else {
             return;
         };
-        if !Self::is_closure_body(call.name.as_ref())
-            || !self.callee_is_comptime(call.name.as_ref())
-        {
+        if !Self::is_closure_body(call.name.as_ref()) {
+            if self
+                .callee_body(call.name.as_ref())
+                .is_some_and(Self::is_comptime_fn)
+            {
+                self.fold_comptime_fn_call(expr, span);
+            }
+            return;
+        }
+        if !self.callee_is_comptime(call.name.as_ref()) {
             return;
         }
         // The enclosing comptime interpreter must observe the call before it is replaced with a
@@ -1228,6 +1235,64 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+    }
+
+    /// Fold a call to a comptime function, or refuse it, as a comptime lambda's call is.
+    ///
+    /// The call runs in the `comptime` interpreter, so the function's body can use what a
+    /// `comptime` block can: byte buffers made from string literals, among them.
+    fn fold_comptime_fn_call(&mut self, expr: &mut Expr, span: &crate::syntax::Span) {
+        // The enclosing comptime interpreter must observe the call before it is replaced.
+        if self.consteval.comptime_depth > 0 {
+            return;
+        }
+        let ret_ty = match &*expr {
+            Expr::FunctionCall(call) => self
+                .callee_body(call.name.as_ref())
+                .map(|func| func.return_type.clone()),
+            _ => None,
+        };
+        let before = self.consteval_snapshot();
+        let observed = self.observe_comptime_block(&[], Some(&*expr), &before);
+        let outcome = &observed.outcome;
+        let folded = (observed.escaping_write.is_none()
+            && !observed.call_depth_exceeded
+            && !outcome.requires_refusal
+            && outcome.support.is_supported())
+        .then_some(outcome.value.concrete.as_ref())
+        .flatten()
+        .and_then(|value| Self::value_to_expr(value, span));
+        match folded {
+            Some(mut constant) => {
+                // The literal takes the function's return type. Left bare it is an `i32`.
+                if let (Expr::Number(n), Some(Type::Scalar(elem))) = (&mut constant, &ret_ty) {
+                    n.ty.get_or_insert_with(|| elem.clone());
+                }
+                *expr = constant;
+            }
+            None => {
+                if !self.speculating {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3033,
+                        "this call to a `comptime` function cannot be evaluated: it runs \
+                         while compiling, so every argument has to be known then"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Whether a function is a comptime function: it takes parameters, and its whole body is
+    /// `return comptime { .. };`. It runs only while compiling, so every call folds and the
+    /// function is never emitted. Without parameters there is nothing to wait for, so such a
+    /// block folds where it is written, as any other `comptime` block does.
+    pub fn is_comptime_fn(func: &Function) -> bool {
+        !Self::is_closure_body(func.name.as_ref())
+            && !func.params.is_empty()
+            && matches!(func.body.as_slice(),
+                [Statement::Return(r)] if matches!(&r.expr, Some(Expr::ComptimeBlock(_))))
     }
 
     /// Whether a function is the generated body of a comptime lambda.
@@ -2599,6 +2664,13 @@ impl<'a> TypeChecker<'a> {
         self.speculating = true;
         let ret_ty = self.check_expr_type_flag(&mut func_call, consume);
         self.speculating = saved_speculating;
+        // A call to a comptime method has to fold. The probe tried with diagnostics off, so
+        // try again here, where a call that cannot fold is reported.
+        let comptime_callee = matches!(&func_call, Expr::FunctionCall(call)
+            if self.callee_body(call.name.as_ref()).is_some_and(Self::is_comptime_fn));
+        if comptime_callee {
+            self.fold_comptime_fn_call(&mut func_call, &span);
+        }
         // A method calling itself is not registered until its body is checked, so the probe
         // cannot find it. Its signature says what it returns.
         let ret_ty =

@@ -185,6 +185,10 @@ impl<'a> TypeChecker<'a> {
                 ty: None,
                 span: *span,
             })),
+            Value::CStr(text) => Some(Expr::StringLiteral(StringLiteralExpr {
+                value: text.as_str().into(),
+                span: *span,
+            })),
             Value::Bool(b) => Some(Expr::Identifier(IdentifierExpr {
                 name: if *b { "true".into() } else { "false".into() },
                 span: *span,

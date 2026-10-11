@@ -1,0 +1,97 @@
+//===- comptime_decimal_c_str.vx - Vx Compiler ---------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Comptime functions, and `decimal_c_str` built on them: a function whose whole body is
+// `return comptime { .. };` runs at each call while compiling. The call becomes its value,
+// and the function is not emitted.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: i8=-128,127; i16=-32768,32767; i32=-2147483648,2147483647;
+// CHECK-SAME: i64=-9223372036854775808,9223372036854775807; zero=0; minus_one=-1;
+// CHECK-SAME: u8=255; u16=65535; u32=4294967295; u64=9223372036854775807; twice=42;
+//
+// The program holds the strings, not the code that made them.
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=IR
+// IR-DAG: llvm.mlir.global internal constant {{.*}}("-9223372036854775808\00")
+// IR-DAG: llvm.mlir.global internal constant {{.*}}("4294967295\00")
+// IR-NOT: func.func {{.*}}decimal_c_str
+// IR-NOT: func.func @twice
+// IR-LABEL: func.func @main()
+// IR-NOT: write_decimal
+// IR-NOT: twice
+// IR: return
+// IR-NOT: func.func {{.*}}decimal_c_str
+// IR-NOT: func.func @twice
+import core::num;
+
+fn twice(x : i64) -> i64 {
+  return comptime {
+    x * 2i64
+  };
+}
+
+fn pair(name : *const i8, lo : *const i8, hi : *const i8) -> i32 {
+  print!(name);
+  print!("=");
+  print!(lo);
+  print!(",");
+  print!(hi);
+  print!("; ");
+  return 0;
+}
+
+fn one(name : *const i8, s : *const i8) -> i32 {
+  print!(name);
+  print!("=");
+  print!(s);
+  print!("; ");
+  return 0;
+}
+
+fn wide(name : *const i8, v : i64) -> i32 {
+  print!(name);
+  print!("=");
+  print(v);
+  print!(";");
+  return 0;
+}
+
+fn main() -> i32 {
+  let i8_lo : i8 = -127i8 - 1i8;
+  let i8_hi : i8 = 127i8;
+  pair("i8", i8_lo.decimal_c_str(), i8_hi.decimal_c_str());
+  let i16_lo : i16 = -32767i16 - 1i16;
+  let i16_hi : i16 = 32767i16;
+  pair("i16", i16_lo.decimal_c_str(), i16_hi.decimal_c_str());
+  let i32_lo : i32 = -2147483647 - 1;
+  let i32_hi : i32 = 2147483647;
+  pair("i32", i32_lo.decimal_c_str(), i32_hi.decimal_c_str());
+  let i64_lo : i64 = -9223372036854775807i64 - 1i64;
+  let i64_hi : i64 = 9223372036854775807i64;
+  pair("i64", i64_lo.decimal_c_str(), i64_hi.decimal_c_str());
+  let zero : i32 = 0;
+  one("zero", zero.decimal_c_str());
+  let minus_one : i64 = -1i64;
+  one("minus_one", minus_one.decimal_c_str());
+
+  let u8_hi : u8 = 255u8;
+  one("u8", u8_hi.decimal_c_str());
+  let u16_hi : u16 = 65535u16;
+  one("u16", u16_hi.decimal_c_str());
+  let u32_hi : u32 = 4294967295u32;
+  one("u32", u32_hi.decimal_c_str());
+  // The largest u64 the evaluator can hold; see comptime_decimal_c_str_refused.vx.
+  let u64_hi : u64 = 9223372036854775807u64;
+  one("u64", u64_hi.decimal_c_str());
+
+  // Held in a `let` and passed as an `i64`: a folded call must keep its type, or the `let`
+  // becomes an `i32` and the call no longer matches.
+  let t = twice(21i64);
+  wide("twice", t);
+  return 0;
+}

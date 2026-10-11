@@ -152,6 +152,44 @@ The consequence is worth stating plainly. A lambda like this cannot be called wi
 only known at run time — that call is an error rather than a run-time call. If you want a closure
 that runs at run time, do not give it a `comptime` body.
 
+## Functions that run while compiling
+
+A function that takes parameters and whose whole body is `return comptime { .. };` is the named
+form of such a lambda. Each call runs while compiling and is replaced by its value, and the function
+itself is not compiled into the program:
+
+```rust
+fn twice(x : i64) -> i64 {
+    return comptime { x * 2i64 };
+}
+
+fn main() -> i32 {
+    let t = twice(21i64);   // the program holds 42
+    return 0;
+}
+```
+
+As with the lambda, a call with an argument that is only known at run time is an error. A function
+without parameters has nothing to wait for, so its `comptime` block is worked out where it is
+written, like any other.
+
+Inside a `comptime` block a string literal is a byte buffer the block can write through a pointer,
+and a pointer result becomes a string constant in the program. `core::num` uses this for
+`decimal_c_str`, which writes a number's digits while compiling:
+
+```rust
+import core::num;
+
+fn main() -> i32 {
+    let n : i64 = -42i64;
+    print!(n.decimal_c_str());   // the program holds "-42"; nothing is worked out at run time
+    return 0;
+}
+```
+
+A `comptime` block may put at most 1 MiB in such buffers. Compile-time integers are `i64`, so a
+`u64` from 2^63 up cannot be worked out yet.
+
 ## Where to next
 
 - [Generics and traits](generics.md) — the rest of the generic system

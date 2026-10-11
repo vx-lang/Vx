@@ -1636,10 +1636,10 @@ impl<'a> TypeChecker<'a> {
                     Some(t) => t.is_float(),
                     None => n_str.contains('.') || n_str.contains('e') || n_str.contains('E'),
                 };
+                // An integer too big for an i64 has no value. Read as a float it would lose its
+                // low digits: `u64::MAX` was worked out as 18446744073709551616.
                 if !is_float {
-                    if let Ok(i) = n_str.parse::<i64>() {
-                        return Some(Value::Int(i));
-                    }
+                    return n_str.parse::<i64>().ok().map(Value::Int);
                 }
                 n_str.parse::<f64>().ok().map(Value::Number)
             }
@@ -1788,6 +1788,16 @@ impl<'a> TypeChecker<'a> {
                     None
                 }
             }
+            // No value for the one negation that overflows, as for the other operators.
+            Expr::UnaryOp(UnaryOpExpr {
+                op: UnaryOp::Neg,
+                expr: inner,
+                span: _,
+            }) => match self.eval_expr(inner, env)? {
+                Value::Int(i) => i.checked_neg().map(Value::Int),
+                Value::Number(n) => Some(Value::Number(-n)),
+                _ => None,
+            },
             // `[ a, b, c ]`. Every element has to be known, or the whole array is unknown:
             // a half-built array would let a later index read a value that was never there.
             Expr::Array(ArrayExpr { elements, span: _ }) => {
@@ -2021,7 +2031,7 @@ impl<'a> TypeChecker<'a> {
         self.callee_body(name)
     }
 
-    fn callee_body(&self, name: &str) -> Option<&Function> {
+    pub(crate) fn callee_body(&self, name: &str) -> Option<&Function> {
         if let Some(func) = self.env.syntax_functions.get(name) {
             if !func.body.is_empty() {
                 return Some(func);

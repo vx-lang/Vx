@@ -36,6 +36,15 @@ pub enum Value {
     /// A fixed-size array of scalars, known at compile time. The length is set when the
     /// array is built and never changes, so an index past the end is a compile error.
     Array(Vec<Value>),
+    /// A place in a byte buffer that a `comptime` block made from a string literal. It only
+    /// exists while the block runs; every copy of the pointer sees the same bytes.
+    Ptr {
+        block: usize,
+        offset: i64,
+    },
+    /// The text a `comptime` block's pointer result points at, up to its NUL. Written into the
+    /// program as a string literal.
+    CStr(String),
 }
 
 impl Value {
@@ -323,6 +332,10 @@ impl<'a> GlobalAstEnv<'a> {
             for func in &module.functions {
                 for stmt in &func.body {
                     collect_comptime_seeds(stmt, &mut pending);
+                }
+                // A comptime function runs only while compiling, wherever it is called from.
+                if TypeChecker::is_comptime_fn(func) {
+                    pending.push(func.name.to_string());
                 }
             }
         }
@@ -1528,7 +1541,20 @@ impl<'a> TypeChecker<'a> {
             .map(|(n, t)| (n.to_string(), t.clone()))
             .collect();
         self.drops_enter_function(owned_params, &func.body);
+        // A comptime function folds at each call, where its parameters have values, so its
+        // block is not folded here, the same as a comptime lambda's body.
+        let comptime_fn = Self::is_comptime_fn(func);
+        let outer_comptime = if comptime_fn {
+            self.consteval.closure_body_depth += 1;
+            std::mem::take(&mut self.consteval.comptime_depth)
+        } else {
+            self.consteval.comptime_depth
+        };
         self.check_block(&mut func.body, &func.return_type.clone());
+        if comptime_fn {
+            self.consteval.closure_body_depth -= 1;
+            self.consteval.comptime_depth = outer_comptime;
+        }
         self.drops_exit_function();
         Self::drop_spent_comptime_lambdas(&mut func.body);
 
