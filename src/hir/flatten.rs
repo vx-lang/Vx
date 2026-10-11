@@ -1328,8 +1328,14 @@ impl<'r> Lowerer<'r> {
                         })
                     }
                 };
-                let mem_id = crate::arch::memory_space_dispatch_id(&t.space) as u64;
-                Ok(self.emit_typed(Opcode::Transfer, src.reg, Register(0), result_ty, mem_id))
+                let mem_id = crate::arch::memory_space_dispatch_id(&t.space) as u32 as u64;
+                // Where the value is now, which its type says when it is pinned to a topology.
+                let source = match self.infer_ast_type(&t.expr) {
+                    Some(Type::Pinned(_, top)) => crate::arch::topology_dispatch_id(&top) as u32,
+                    _ => 0,
+                };
+                let imm = mem_id | ((source as u64) << 32);
+                Ok(self.emit_typed(Opcode::Transfer, src.reg, Register(0), result_ty, imm))
             }
             // `Tensor<T>([..])` allocates a buffer. Any other name is an ordinary function call.
             Expr::FunctionCall(fc) => {
@@ -2864,8 +2870,15 @@ impl<'r> Lowerer<'r> {
                 what: "a spawn expression whose region has no value",
             });
         }
-        let top_id = crate::arch::topology_dispatch_id(&s.top);
-        self.emit_effect(Opcode::Spawn, Register(0), Register(0), top_id as u64);
+        let top_id = crate::arch::topology_dispatch_id(&s.top) as u32 as u64;
+        let name = self.strings.len() as u64 + 1;
+        self.strings.push(s.top.display_name());
+        self.emit_effect(
+            Opcode::Spawn,
+            Register(0),
+            Register(0),
+            top_id | (name << 32),
+        );
         // Two proofs are offered, FLAT FIRST. The flat grid-stride (#251) is the measured
         // record shape -- one thread per iteration, slice bodies vectorized -- so a region it
         // covers must keep it: since the block-row write rule (Vx#379 R3) landed, a plain
@@ -9273,7 +9286,7 @@ mod tests {
             .find(|i| i.opcode == Opcode::Spawn)
             .unwrap();
         assert_eq!(
-            spawn.imm,
+            spawn.imm & 0xffff_ffff,
             crate::arch::topology_dispatch_id(&crate::syntax::Topology::gpu(0)) as u64
         );
         assert!(

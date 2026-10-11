@@ -1365,9 +1365,15 @@ pub fn emit_module_mlir(
         };
         calls.append(fn_calls);
         helper_mask |= *helpers;
+        // Only the strings the code takes the address of become globals: an assert message
+        // or a spawn's topology name is written into the op itself.
         let strs = string_tables.get(fi).copied().unwrap_or(&[]);
+        let text = emission.as_ref().map(|(t, _, _)| t.as_str()).unwrap_or("");
         for (li, s) in strs.iter().enumerate() {
-            globals += &emit_string_global(str_bases[fi] + li, s);
+            let n = str_bases[fi] + li;
+            if text.contains(&format!("@\".str.{n}\"")) {
+                globals += &emit_string_global(n, s);
+            }
         }
     }
     for table in &registry.const_tables {
@@ -1833,7 +1839,8 @@ pub(crate) struct FnEmit<'a> {
     /// The open `vx.spawn` regions, innermost last: each is its topology, for `SpawnEnd` to
     /// stamp the `topology` attribute, and where in `body` its op begins, so a region with a
     /// value can be given its result name when the value is known. Empty outside a spawn.
-    pub(crate) spawn_stack: Vec<(i64, usize)>,
+    /// The third field is the spawn's name index, as its `imm` carries it.
+    pub(crate) spawn_stack: Vec<(i64, usize, u64)>,
     /// Per-function sub-space bump allocator (space dispatch id -> next free byte), mirroring the
     /// AST path's `MeliorGenerator::subspace_offsets`: each `Transfer` into a granule'd space
     /// claims the next granule-rounded `offset` and advances the cursor, so both paths assign
@@ -1889,7 +1896,7 @@ impl<'a> FnEmit<'a> {
             // lifted out of it stops being the kernel's own scratch and becomes
             // a value defined above it -- which outlining captures and passes
             // in, handing a device kernel a host stack pointer. Those stay.
-            Some((t, _)) if *t != 0 => self.body += text,
+            Some((t, _, _)) if *t != 0 => self.body += text,
             // A host region is inlined where it was written, so its slots
             // belong to the enclosing function like any other.
             _ => self.entry += text,

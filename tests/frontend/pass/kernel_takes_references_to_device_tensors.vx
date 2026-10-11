@@ -104,7 +104,7 @@ fn main() -> i32 {
 // CHECK:       cf.br ^bb1
 // CHECK:     ^bb4:  // pred: ^bb1
 // CHECK:       vx.yield
-// CHECK:     } {vx_parallel_trip = 1024 : i64}
+// CHECK:     } {topology_name = "Device", vx_parallel_trip = 1024 : i64}
 // CHECK:     return
 // CHECK:   }
 // CHECK: }
