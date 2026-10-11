@@ -1344,7 +1344,7 @@ impl<'a> TypeChecker<'a> {
             .collect();
 
         Function {
-            is_unsafe: false,
+            is_unsafe: generic_func.is_unsafe,
             name: mangled_name.into(),
             generics: Vec::new(),
             params: new_params,
