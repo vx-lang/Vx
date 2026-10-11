@@ -2351,6 +2351,74 @@ fn driver_link_interface_runs_a_scalar_import() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An enum a library declares, passed between the library's functions by a program that imports
+/// it: `pick` returns one and `number` matches on it. The program cannot compile at all unless the
+/// `.vxlib` says what `Color` is. That each variant keeps its number is checked in
+/// `registry_interface_round_trips_enum_variants`, since here both ends run the library's code.
+#[test]
+fn driver_link_interface_runs_an_imported_enum() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("vx_link_enum_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (lib, app, vxlib) = (
+        dir.join("colors.vx"),
+        dir.join("app.vx"),
+        dir.join("colors.vxlib"),
+    );
+    std::fs::write(
+        &lib,
+        "enum Color { Red, Green, Blue }\n\
+         fn pick(k : i32) -> Color { if k == 0 { return Color::Red; } \
+           if k == 1 { return Color::Green; } return Color::Blue; }\n\
+         fn number(c : Color) -> i32 { match c { Color::Red => { return 10; } \
+           Color::Green => { return 20; } Color::Blue => { return 30; } } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &app,
+        "fn main() -> i32 { let c = pick(2); print(number(pick(0))); print!(\" \"); \
+           print(number(pick(1))); print!(\" \"); print(number(c)); print!(\"\\n\"); return 0; }\n",
+    )
+    .unwrap();
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    let emit = Command::new(vxc)
+        .args([
+            "--emit-interface",
+            lib.to_str().unwrap(),
+            "-o",
+            vxlib.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run vxc --emit-interface");
+    assert!(
+        emit.status.success(),
+        "emit-interface failed:\n{}",
+        String::from_utf8_lossy(&emit.stderr)
+    );
+
+    let run = Command::new(vxc)
+        .args([
+            "--link-interface",
+            vxlib.to_str().unwrap(),
+            app.to_str().unwrap(),
+            "--run",
+        ])
+        .output()
+        .expect("run vxc --link-interface --run");
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        out.lines().any(|l| l == "10 20 30"),
+        "expected the imported enum to print 10 20 30, got:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A number literal inside a library takes its type from the type checker, as it does in a
 /// program: `b == 32` with `b : u8` compares two `u8`s. A library saved without being checked
 /// kept the literal as an `i32`, and the program that called `is_space` failed to compile.

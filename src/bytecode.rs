@@ -68,9 +68,10 @@ pub enum Opcode {
     /// Marks the entry of basic block `imm`. Branch targets are block ids; codegen turns each
     /// `BlockStart` into an MLIR block.
     BlockStart = 19,
-    /// Opens a `vx.spawn` region on the topology whose dispatch id is `imm`
-    /// (`arch::topology_dispatch_id`). The instructions up to the matching `SpawnEnd` form the
-    /// spawned kernel body.
+    /// Opens a `vx.spawn` region on the topology whose dispatch id is the low 32 bits of `imm`
+    /// (`arch::topology_dispatch_id`). The high 32 bits are one more than the index of the
+    /// topology's name in the function's string table, since the id alone cannot give the name
+    /// back. The instructions up to the matching `SpawnEnd` form the spawned kernel body.
     Spawn = 20,
     /// Closes the `vx.spawn` region opened by the nearest preceding `Spawn` (maps to `vx.yield`).
     /// A region with a value yields `operand1` and is typed with it; this instruction's register
@@ -110,9 +111,11 @@ pub enum Opcode {
     /// slice (`o[i] = <slice>`); a scalar-element place (a `TensorIndex` with `imm = 1`) takes a
     /// scalar (`q[i][j] = <scalar>`).
     TensorStore = 27,
-    /// Move a tensor to a memory space: `operand1` is the source, `imm` the target space's dispatch
-    /// id (`arch::memory_space_dispatch_id`), `type_idx` the result tensor (same element + shape, so
-    /// the destination is sized to hold it). Backs `transfer(src, Memory::X)`.
+    /// Move a tensor to a memory space: `operand1` is the source, `type_idx` the result tensor (same
+    /// element + shape, so the destination is sized to hold it). The low 32 bits of `imm` are the
+    /// target space's dispatch id (`arch::memory_space_dispatch_id`); the high 32 bits are the
+    /// topology id of where the source is now, when its type is `Pinned`, and 0 otherwise. Backs
+    /// `transfer(src, Memory::X)`.
     Transfer = 28,
     /// One argument of the following `Call`: `operand1` is the argument's value register. The N-ary
     /// argument list a fixed two-operand instruction can't hold is spelled as N `Arg`s immediately

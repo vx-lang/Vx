@@ -6,13 +6,34 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=FLAT
 //
 // One file for the whole topology-polymorphism surface (kept together so the test
-// suite links vxc once, not per case). The full emitted MLIR is checked; regenerate
-// the CHECK lines with `cargo run --bin update_mlir_test_checks -- <this file>`.
-// The path is pinned: the `source_topology` and `space` attributes on the transfer
-// and the `topology_name` on each spawn are facts of the AST path's emission; the
-// flat path, which lowers this program too, does not write them yet.
+// suite links vxc once, not per case). The full emitted MLIR of the AST code generator
+// is checked; regenerate the CHECK lines with
+// `cargo run --bin update_mlir_test_checks -- <this file>`. The FLAT lines check that
+// the flat code generator writes the same `topology_name` on each spawn, and the same
+// `source_topology` and `space` on each transfer.
+//
+// FLAT-NOT: flat-codegen
+// FLAT-LABEL: func.func @main()
+// FLAT: {topology_name = "GPU[0]"} : i32
+// FLAT: {topology_name = "GPU[0]"} : i32
+// FLAT: {topology_name = "GPU[0]"} : i32
+// FLAT: {topology_name = "CPU"} : i32
+// FLAT: {topology_name = "GPU[0]"} : i32
+// FLAT: {topology_name = "CPU"} : i32
+// FLAT: {topology_name = "NPU[0]"} : i32
+// FLAT: {topology_name = "GPU[0]"} : i32
+// FLAT: {topology_name = "GPU[0]"} : i32
+// FLAT-LABEL: func.func @stage$CPU$GPU(
+// FLAT: {topology_name = "CPU"} : i32
+// FLAT-LABEL: func.func @run_on$GPU(
+// FLAT: {topology_name = "GPU[0]"}
+// FLAT-LABEL: func.func @pipeline$GPU$CPU$NPU(
+// FLAT: "vx.transfer"(%arg0) <{target_topology = 0 : i32}> {source_topology = 500 : i32, space = "CPU_DRAM"}
+// FLAT-LABEL: func.func @move_between$CPU$GPU(
+// FLAT: "vx.transfer"(%arg0) <{target_topology = 0 : i32}> {source_topology = 500 : i32, space = "CPU_DRAM"}
 //
 //   identity_on   -- signature-level `<D: Topology>` monomorphization
 //   run_on        -- body-level substitution (`spawn on(Topology::D)` in the body)

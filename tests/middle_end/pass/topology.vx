@@ -6,6 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=FLAT
+//
+// The flat code generator names the built-in space on the transfer and the topology on
+// the spawn, as the AST code generator does, and the name adds no string global.
+// FLAT-NOT: flat-codegen
+// FLAT-NOT: llvm.mlir.global
+// FLAT-LABEL: func.func @process(
+// FLAT: "vx.transfer"(%arg0) <{target_topology = 100 : i32}> {space = "NPU_HBM"}
+// FLAT: } {topology_name = "NPU[0]"}
 
 fn main() -> i32 {
   return 0;

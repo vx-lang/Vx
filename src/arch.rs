@@ -440,6 +440,22 @@ pub fn memory_space_dispatch_id(mem: &MemorySpace) -> i32 {
     }
 }
 
+/// The name of the built-in memory space whose dispatch id is `id`, if one has it. A declared
+/// space's id is a hash of its name and cannot be turned back.
+pub fn builtin_memory_space_name(id: u64) -> Option<String> {
+    [
+        MemorySpace::CPUDRAM,
+        MemorySpace::NPUHBM,
+        MemorySpace::LocalSRAM,
+        MemorySpace::GpuHbm,
+        MemorySpace::NicRam,
+        MemorySpace::RemoteHbm,
+    ]
+    .into_iter()
+    .find(|m| memory_space_dispatch_id(m) as u64 == id)
+    .map(|m| m.name())
+}
+
 /// A target-independent address space: what the memory *is*, not what number a particular GPU
 /// ISA gives it. Codegen maps this to a concrete annotation per target (`nvptx_addrspace` today;
 /// the `#gpu.address_space<..>` attribute spelling when a GPU backend lands, #251), so the
