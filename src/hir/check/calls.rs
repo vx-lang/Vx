@@ -40,6 +40,8 @@ struct ReborrowPlan {
     ref_args: Vec<(usize, String, Vec<String>, bool, bool)>,
     /// Pre-call borrow list of each distinct reference-argument base, for the selective revert.
     base_snapshots: HashMap<String, Option<Vec<BorrowRecord>>>,
+    /// By-value arguments that can hold a reference, `s` after `let s = View { r : &x }`.
+    held_args: Vec<String>,
 }
 
 /// How an impl block is named in a diagnostic: the trait with its arguments, so two impls of
@@ -343,6 +345,7 @@ impl<'a> TypeChecker<'a> {
         // plus a snapshot of each distinct base's pre-call borrow list.
         let mut ref_args: Vec<(usize, String, Vec<String>, bool, bool)> = Vec::new();
         let mut base_snapshots: HashMap<String, Option<Vec<BorrowRecord>>> = HashMap::new();
+        let mut held_args = Vec::new();
         let is_extern = self
             .env
             .externs
@@ -379,6 +382,11 @@ impl<'a> TypeChecker<'a> {
                             ));
                         }
                     }
+                    Some(pty) if self.result_can_hold_reference(pty) => {
+                        if let Expr::Identifier(id) = arg {
+                            held_args.push(id.name.to_string());
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -393,6 +401,7 @@ impl<'a> TypeChecker<'a> {
             imported_prov,
             ref_args,
             base_snapshots,
+            held_args,
         }
     }
 
@@ -408,13 +417,31 @@ impl<'a> TypeChecker<'a> {
         let Some((param_types, _)) = &plan.callee_sig else {
             return;
         };
-        let borrows = plan
+        let mut borrows = plan
             .ref_args
             .iter()
             .filter(|(i, ..)| matches!(param_types.get(*i), Some(Type::Borrow { .. })))
             .map(|(_, base, path, is_mut, _)| (base.clone(), path.clone(), *is_mut))
             .collect::<Vec<_>>();
+        Self::add_held_borrows(&mut borrows, &plan.held_args, &plan.base_snapshots);
         self.check_overlapping_borrows(&borrows, &plan.base_snapshots, errors_before_args, span);
+    }
+
+    /// A by-value argument that holds a borrow takes part in the overlap check too, as mutable
+    /// as the borrow it holds: `f(&mut x, s)`, where `s` holds `&x`, gives the callee `x` twice.
+    /// The other argument's snapshot of `x`, taken before the arguments were checked, still has
+    /// `s`'s borrow, which may have ended at this call since.
+    fn add_held_borrows(
+        borrows: &mut Vec<(String, Vec<String>, bool)>,
+        held: &[String],
+        snapshots: &HashMap<String, Option<Vec<BorrowRecord>>>,
+    ) {
+        for var in held {
+            let is_mut = snapshots.values().flatten().flatten().any(|record| {
+                record.borrower_name.as_deref() == Some(var.as_str()) && record.is_mut
+            });
+            borrows.push((var.clone(), Vec::new(), is_mut));
+        }
     }
 
     /// The shared part of the check above, also used for a method's receiver and arguments.
@@ -2807,7 +2834,7 @@ impl<'a> TypeChecker<'a> {
                         );
                     }
                     // The receiver counts as the first borrowed argument when `self` is a reference.
-                    let borrows = std::iter::once(&**obj)
+                    let mut borrows = std::iter::once(&**obj)
                         .chain(args.iter())
                         .zip(generic_method.params.iter())
                         .filter_map(|(operand, (_, param_ty))| match param_ty {
@@ -2816,6 +2843,20 @@ impl<'a> TypeChecker<'a> {
                             _ => None,
                         })
                         .collect::<Vec<_>>();
+                    let held = std::iter::once(&**obj)
+                        .chain(args.iter())
+                        .zip(generic_method.params.iter())
+                        .filter_map(|(operand, (_, param_ty))| match operand {
+                            Expr::Identifier(id)
+                                if !Self::is_ref_type(param_ty)
+                                    && self.result_can_hold_reference(param_ty) =>
+                            {
+                                Some(id.name.to_string())
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    Self::add_held_borrows(&mut borrows, &held, &borrowed_snapshots);
                     self.check_overlapping_borrows(
                         &borrows,
                         &borrowed_snapshots,
