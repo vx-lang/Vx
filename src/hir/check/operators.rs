@@ -108,6 +108,23 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Whether every `src` value is exactly a `dst` value. These are the conversions
+    /// `core::convert` has a `From` for, so `dst::from(..)` always works where this holds.
+    fn widens_without_loss(src: &ElementType, dst: &ElementType) -> bool {
+        use ElementType::*;
+        matches!(
+            (src, dst),
+            (I8, I16 | I32 | I64 | F32 | F64)
+                | (I16, I32 | I64 | F32 | F64)
+                | (I32, I64 | F64)
+                | (U8, U16 | U32 | U64 | I16 | I32 | I64 | USize | F32 | F64)
+                | (U16, U32 | U64 | I32 | I64 | USize | F32 | F64)
+                | (U32, U64 | I64 | USize | F64)
+                | (USize, U64 | I64)
+                | (F32, F64)
+        )
+    }
+
     pub(crate) fn check_ascast_expr(&mut self, expr: &mut AsCastExpr, consume: bool) -> Type {
         let source_ty = self.check_expr_type_flag(&mut expr.expr, consume);
         let target_ty = expr.target_ty.clone();
@@ -182,11 +199,20 @@ impl<'a> TypeChecker<'a> {
                     Expr::UnaryOp(u) => u.op == UnaryOp::Neg && matches!(*u.expr, Expr::Number(_)),
                     _ => false,
                 };
-                if src == dst && !literal && self.mono.being_checked.is_empty() && !self.speculating
-                {
+                let quiet = literal || !self.mono.being_checked.is_empty() || self.speculating;
+                if !quiet && src == dst {
                     self.errors.warn(
                         crate::diagnostic::DiagnosticCode::W1013,
                         format!("this value is already {dst}, so the cast does nothing"),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
+                    );
+                } else if !quiet && Self::widens_without_loss(src, dst) {
+                    self.errors.warn(
+                        crate::diagnostic::DiagnosticCode::W1007,
+                        format!(
+                            "this cast only widens, so it cannot lose a value; \
+                             `{dst}::from(..)` from `core::convert` says so"
+                        ),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
                     );
                 }
