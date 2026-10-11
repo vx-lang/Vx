@@ -254,9 +254,20 @@ fn payload_match(name: &str, place: Expr, payload: &EnumGlue) -> Expr {
 
 /// The drops that run `glue` on `name`.
 fn glue_drops(name: &str, glue: &[GluePart], flag: Option<&str>) -> Vec<Statement> {
+    glue_drops_at(name, None, glue, flag)
+}
+
+/// The drops that run `glue` on the value at `base`, a place reached from the variable `name`
+/// (`b.v`, `*out`), or on `name` itself when `base` is `None`.
+fn glue_drops_at(
+    name: &str,
+    base: Option<&Expr>,
+    glue: &[GluePart],
+    flag: Option<&str>,
+) -> Vec<Statement> {
     glue.iter()
         .map(|part| {
-            let mut place = ident(name);
+            let mut place = base.cloned().unwrap_or_else(|| ident(name));
             for (field, struct_ty) in &part.path {
                 let mut access =
                     MemberAccessExpr::new(Box::new(place), field.clone(), Span::default());
@@ -285,7 +296,7 @@ fn glue_drops(name: &str, glue: &[GluePart], flag: Option<&str>) -> Vec<Statemen
                     ))],
                     Span::default(),
                 ))),
-                None if part.path.is_empty() => None,
+                None if part.path.is_empty() && base.is_none() => None,
                 None => Some(place),
             };
             Statement::Drop(DropStmt {
@@ -905,6 +916,68 @@ impl<'a> TypeChecker<'a> {
             .collect();
         if let Some(FrameKind::Block { stmt, edits, .. }) = self.borrow.drops.frames.last_mut() {
             edits.assign.insert(*stmt, (drop_old, flag));
+        }
+    }
+
+    /// `place = rhs` where `place` is a field (`b.v`, `r.v`) or a dereference (`*out`): the
+    /// value it held is dropped once `rhs` is computed, before it is stored, as for a variable.
+    /// A tensor is left alone, since a store into one may write into its buffer, and so is a
+    /// place behind a raw pointer, whose memory may hold no value yet.
+    pub(crate) fn drops_note_place_assign(&mut self, place: &Expr, ty: &Type, line: usize) {
+        if self.speculating || matches!(ty, Type::Tensor(..)) {
+            return;
+        }
+        let mut root = place;
+        let mut fields = Vec::new();
+        while let Expr::MemberAccess(m) = root {
+            fields.push(m.member.to_string());
+            root = &m.base;
+        }
+        fields.reverse();
+        let (name, through_reference) = match root {
+            Expr::Identifier(id) => (id.name.to_string(), false),
+            Expr::Dereference(d) => match &*d.expr {
+                Expr::Identifier(id) => (id.name.to_string(), true),
+                _ => return,
+            },
+            _ => return,
+        };
+        let root_ty = self.lookup(&name).map(|(t, _)| t.clone());
+        let is_mut_borrow = matches!(root_ty, Some(Type::Borrow { is_mut: true, .. }));
+        // The old value lives in a variable this function owns, or behind a `&mut`, which
+        // always points at a value.
+        let flag = if is_mut_borrow {
+            None
+        } else if through_reference {
+            return;
+        } else {
+            match self.drops_owner(&name).map(|o| (o.moved, o.flag.clone())) {
+                Some((Moved::No, _)) => None,
+                Some((Moved::Maybe, Some(f))) => Some(f),
+                _ => return,
+            }
+        };
+        let glue = self.drops_glue(ty);
+        if glue.is_empty() {
+            return;
+        }
+        if printing() {
+            eprintln!(
+                "drop in {}: the old value of {}{}, before the assignment on line {line}",
+                self.current_function,
+                if through_reference { "*" } else { "" },
+                crate::hir::places::display_place(&name, &fields)
+            );
+        }
+        if !self.drops_rewriting() {
+            return;
+        }
+        let drop_old: Vec<Statement> = glue_drops_at(&name, Some(place), &glue, flag.as_deref())
+            .into_iter()
+            .map(after_value)
+            .collect();
+        if let Some(FrameKind::Block { stmt, edits, .. }) = self.borrow.drops.frames.last_mut() {
+            edits.assign.insert(*stmt, (drop_old, None));
         }
     }
 

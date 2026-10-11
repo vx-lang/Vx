@@ -1,0 +1,89 @@
+//===- a_store_drops_the_value_it_replaces.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// Storing into a field, or through a `&mut`, drops the value that was there, once the new
+// value is computed and before it is stored. Each `Noisy` prints its id when dropped.
+//
+// CHECK: field: 1 | deref: 3 | ref field: 2 | nested: 6 7 | end: 8 4 5
+
+import core::ops;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print(self.id);
+    print!(" ");
+  }
+}
+
+struct Box {
+  n : Noisy,
+}
+
+struct Outer {
+  b : Box,
+}
+
+fn set(out : &mut Noisy, id : i32) -> void {
+  *out = Noisy {
+    id : id
+  };
+}
+
+fn set_field(out : &mut Box, id : i32) -> void {
+  out.n = Noisy {
+    id : id
+  };
+}
+
+fn main() -> i32 {
+  // The old `n` (1) is dropped.
+  print!("field: ");
+  let mut b = Box {
+    n : Noisy {
+      id : 1
+    }
+  };
+  b.n = Noisy {
+    id : 2
+  };
+  // `set` drops the old `x` (3).
+  print!("| deref: ");
+  let mut x = Noisy {
+    id : 3
+  };
+  set(&mut x, 4);
+  // `set_field` drops the old `b.n` (2).
+  print!("| ref field: ");
+  set_field(&mut b, 5);
+  // The old `o.b.n` (6), then the old `o.b`, which holds 7.
+  print!("| nested: ");
+  let mut o = Outer {
+    b : Box {
+      n : Noisy {
+        id : 6
+      }
+    }
+  };
+  o.b.n = Noisy {
+    id : 7
+  };
+  o.b = Box {
+    n : Noisy {
+      id : 8
+    }
+  };
+  // `o`, `x` and `b` are dropped when `main` returns.
+  print!("| end: ");
+  return 0;
+}

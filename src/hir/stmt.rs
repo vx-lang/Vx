@@ -1157,6 +1157,8 @@ impl<'a> TypeChecker<'a> {
                             .copy_borrows(from.name.as_ref(), id.name.as_ref(), depth);
                     }
                 }
+            } else {
+                self.drops_note_place_assign(lhs, &lhs_ty, lhs.span().line);
             }
         }
         if let Some(op) = op {
