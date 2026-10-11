@@ -1,0 +1,21 @@
+//===- range_index_with_ends_that_are_not_literal_numbers.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A range index whose ends are not literal numbers, `q[i..i + 2]`, is refused with an error
+// message on both code generators, instead of crashing the compiler. The legacy code
+// generator refuses every range index.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: a range index `q[a..b]` is not supported by the legacy code generator
+fn main() -> i32 {
+  let q = Tensor<f32, [4, 2]>::new();
+  let i = 1;
+  let r = q[i..i + 2];
+  print(r[0][0] as i32);
+  return 0;
+}
