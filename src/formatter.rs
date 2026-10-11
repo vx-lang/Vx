@@ -425,6 +425,13 @@ mod tests {
     }
 
     #[test]
+    fn escapes_in_strings_are_kept() {
+        let input =
+            "fn main() -> i32 {\n  print!(\"a\\tb\\n say \\\"hi\\\" \\\\ \");\n  return 0;\n}";
+        assert_eq!(format_file(input, 2), input);
+    }
+
+    #[test]
     fn test_format_off_block() {
         let input = "fn foo() {\n// vx-format-begin: OFF\n      let   x = 1;\n// vx-format-end: OFF\nlet y = 2;\n}";
         let expected = "fn foo() {\n  // vx-format-begin: OFF\n      let   x = 1;\n  // vx-format-end: OFF\n  let y = 2;\n}";
