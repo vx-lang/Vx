@@ -1069,6 +1069,9 @@ impl<'a> TypeChecker<'a> {
                 // placement in its type, so each read through it is checked where it happens.
                 let borrows_placed = Self::extract_base_and_path(inner).is_some()
                     && self.check_expr_type_probe(inner).placement().is_some();
+                if *is_mut {
+                    self.record_change(inner);
+                }
                 let old_allow = self.allow_cross_topology;
                 self.allow_cross_topology |= borrows_placed;
                 let inner_ty = self.check_expr_type_flag(inner, false);
@@ -1602,18 +1605,33 @@ impl<'a> TypeChecker<'a> {
     /// behind. Persist only when the reborrow outlives the call (the callee returns a reference);
     /// a value/void call borrows only for its own duration.
     #[allow(clippy::too_many_arguments)]
-    /// The read-only variable that changing `place` would change: `x` for `x`, `x.f` or `x[i]`.
-    /// A place reached through a reference variable, `r.f` or `r[i]`, changes what `r` points
-    /// at rather than `r`; `None` then, and for a variable declared `mut`.
-    pub(crate) fn read_only_root(&self, place: &Expr) -> Option<String> {
+    /// The variable that changing `place` would change: `x` for `x`, `x.f` or `x[i]`. A place
+    /// reached through a reference variable, `r.f` or `r[i]`, changes what `r` points at rather
+    /// than `r`; `None` then.
+    pub(crate) fn changed_root(&self, place: &Expr) -> Option<String> {
         let (root, _) = Self::extract_base_and_path(place)?;
         let through_reference = !matches!(place, Expr::Identifier(_))
             && matches!(
                 self.lookup(&root).map(|(t, _)| t),
                 Some(Type::Borrow { .. } | Type::Pointer(..) | Type::Ref(..))
             );
+        (!through_reference).then_some(root)
+    }
+
+    /// Record that `place` changes, so its variable's `mut` is needed. Call it before `place`
+    /// is checked: checking can rewrite `v[i]` into a call, which has no variable to record.
+    pub(crate) fn record_change(&mut self, place: &Expr) {
+        if let Some(root) = self.changed_root(place) {
+            self.changed_vars.insert(root);
+        }
+    }
+
+    /// The read-only variable that changing `place` would change, as [`Self::changed_root`]
+    /// finds it; `None` for a variable declared `mut`.
+    pub(crate) fn read_only_root(&self, place: &Expr) -> Option<String> {
+        let root = self.changed_root(place)?;
         let is_const = self.lookup(&root).is_none() && self.env.consts.contains_key(root.as_str());
-        (is_const || (!through_reference && !self.is_mutable(&root))).then_some(root)
+        (is_const || !self.is_mutable(&root)).then_some(root)
     }
 
     /// E4010: `name` was declared without `mut` and `what` would change it.

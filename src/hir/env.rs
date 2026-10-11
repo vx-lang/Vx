@@ -437,6 +437,11 @@ pub struct TypeChecker<'a> {
     pub(crate) used_vars: std::collections::HashSet<crate::symbol::Symbol>,
     /// Tracks declared variables with their spans (for unused variable warnings).
     pub(crate) declared_vars: Vec<(crate::symbol::Symbol, crate::syntax::Span)>,
+    /// The current function's `let mut` bindings, for the warning about a `mut` never needed.
+    pub(crate) declared_mut_vars: Vec<(crate::symbol::Symbol, crate::syntax::Span)>,
+    /// The variables the current function changes: assigns, borrows `&mut`, or calls a
+    /// `&mut self` method on.
+    pub(crate) changed_vars: std::collections::HashSet<String>,
     /// Expected type of the expression currently being checked, from a `let x: T = …` or a
     /// `return` in a typed function. Lets a generic call deduce a *return-only* topology (or
     /// type) variable — e.g. `D` in `-> Pinned<T, D>` — from the call's context.
@@ -484,6 +489,8 @@ impl<'a> TypeChecker<'a> {
             current_assignment_target: None,
             used_vars: std::collections::HashSet::new(),
             declared_vars: Vec::new(),
+            declared_mut_vars: Vec::new(),
+            changed_vars: std::collections::HashSet::new(),
             expected_type: None,
             consteval: Default::default(),
             mono: Default::default(),
@@ -1476,6 +1483,8 @@ impl<'a> TypeChecker<'a> {
         // method call.
         let prev_used_vars = std::mem::take(&mut self.used_vars);
         let prev_declared_vars = std::mem::take(&mut self.declared_vars);
+        let prev_declared_mut_vars = std::mem::take(&mut self.declared_mut_vars);
+        let prev_changed_vars = std::mem::take(&mut self.changed_vars);
         self.push_scope();
 
         let prev_top = self.active_topology.clone();
@@ -1584,6 +1593,28 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // W1004: a `let mut` binding that never changes. An unused one already has W1001. An
+        // instance of a generic function is skipped: `it.next()` changes `it` for some types
+        // and not for a reference, so the `mut` may be needed by another instance.
+        let is_instance = self.mono.being_checked.contains(&func.name);
+        for (var_name, var_span) in std::mem::take(&mut self.declared_mut_vars) {
+            let name_str: &str = var_name.as_ref();
+            if !self.speculating
+                && !is_instance
+                && !name_str.starts_with(['_', '$'])
+                && self.used_vars.contains(&var_name)
+                && !self.changed_vars.contains(name_str)
+            {
+                self.errors.warn(
+                    crate::diagnostic::DiagnosticCode::W1004,
+                    format!(
+                        "`{var_name}` is declared `mut` but never changes, so the `mut` can go"
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&var_span)),
+                );
+            }
+        }
+
         // The whole function has been checked; verify the working set of each memory space
         // it places tiles into fits (or is `overcommit`). Clears the per-function placement map.
         self.check_cumulative_capacity();
@@ -1605,6 +1636,8 @@ impl<'a> TypeChecker<'a> {
         self.borrow.restore_borrowers(prev_borrowers);
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;
+        self.declared_mut_vars = prev_declared_mut_vars;
+        self.changed_vars = prev_changed_vars;
     }
 
     pub fn parse_ty_str(&self, s: &str) -> Type {

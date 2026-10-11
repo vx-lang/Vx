@@ -341,8 +341,11 @@ impl<'a> TypeChecker<'a> {
             expr,
             span,
         } = decl;
-        // Track declared variables for W1001 (unused variable) detection
+        // Track declared variables for W1001 (unused variable) and W1004 (`mut` never needed)
         self.declared_vars.push((name.clone(), *span));
+        if *_is_mut {
+            self.declared_mut_vars.push((name.clone(), *span));
+        }
 
         self.current_assignment_target = Some(name.to_string());
         // Forward the annotation as an expected-type hint so a generic call can
@@ -1031,6 +1034,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.check_assign_while_borrowed(lhs);
+        self.record_change(lhs);
         if let Some(root) = self.read_only_root(lhs) {
             self.report_read_only(&root, "it cannot be assigned", &lhs.span());
         }

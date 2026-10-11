@@ -2632,6 +2632,9 @@ impl<'a> TypeChecker<'a> {
                 if takes_an_address {
                     self.allow_cross_topology = true;
                 }
+                // Found before the check rewrites `v[i]` into a call: the variable that
+                // changes if the method changes its receiver.
+                let receiver_root = self.changed_root(obj);
                 let mut base_ty = self.check_expr_type_flag(obj, false);
                 self.allow_cross_topology = prev_allow;
 
@@ -2873,6 +2876,18 @@ impl<'a> TypeChecker<'a> {
                         }
                         _ => None,
                     };
+                    // A method that takes `&mut self` changes a receiver that is not a reference.
+                    let takes_mut_self = matches!(
+                        generic_method.params.first(),
+                        Some((
+                            _,
+                            Type::Borrow { is_mut: true, .. } | Type::Pointer(_, _, true)
+                        ))
+                    );
+                    if takes_mut_self && !matches!(base_ty, Type::Borrow { .. } | Type::Pointer(..))
+                    {
+                        self.changed_vars.extend(receiver_root.clone());
+                    }
                     // `x.drop()` would run `drop`, and `x` would be dropped again when its owner
                     // gives it up, as in Rust.
                     if ib.trait_name.as_deref() == Some("Drop") && !self.speculating {
@@ -3011,6 +3026,10 @@ impl<'a> TypeChecker<'a> {
                         };
                     match &base_ty {
                         Type::Tensor(el, _, place) => {
+                            // The tensor can be written through the pointer, so it changes.
+                            if is_mut {
+                                self.changed_vars.extend(receiver_root.clone());
+                            }
                             base_ty = element_pointer(is_mut, el, place);
                         }
                         Type::Borrow {
@@ -3053,11 +3072,16 @@ impl<'a> TypeChecker<'a> {
                             self.errors.push(format!("Cannot call len on {}", base_ty));
                         }
                     }
-                } else if !self.speculating {
-                    self.errors.push(format!(
-                        "Method '{}' not found on type {}",
-                        _method, base_ty
-                    ));
+                } else {
+                    // A method that is not found might have changed its receiver; assume so,
+                    // so the error does not also bring a warning that its `mut` is not needed.
+                    self.changed_vars.extend(receiver_root.clone());
+                    if !self.speculating {
+                        self.errors.push(format!(
+                            "Method '{}' not found on type {}",
+                            _method, base_ty
+                        ));
+                    }
                 }
                 base_ty
             }
