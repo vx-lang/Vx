@@ -1,0 +1,94 @@
+//===- two_architectures_in_one_device_module.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program whose two placed kernels declare different architectures is refused
+// by name.
+//
+// Every admitted kernel goes into one `gpu.module`, and each module becomes one
+// device image -- a loader takes the module and then asks for a function by
+// name. Two architectures need two pipelines and so two images, so labelling
+// the module with either one would compile the other kernel for the wrong
+// machine. This used to be exactly what happened: the last kernel walked set
+// the module's target (Vx#1368).
+//
+// RUN: not vxc %s --emit-llvm 2>&1 | FileCheck %s
+// CHECK: this device module holds kernels for more than one architecture
+// CHECK: each needs a module of its own
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 16 GiB, bandwidth: 450 GB/s,
+  managed: cached
+}
+Memory GPU_SMEM {
+  within: Memory::GPU_HBM, capacity: 64 KiB, managed: explicit, scope: sm
+}
+Memory XPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 16 GiB, bandwidth: 560 GB/s,
+  managed: cached
+}
+Memory XPU_SMEM {
+  within: Memory::XPU_HBM, capacity: 64 KiB, managed: explicit, scope: sm
+}
+
+// Two topologies, one architecture each, so the two kernels below need two
+// different device pipelines.
+Topology Nvidia {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::GPU_SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::GPU_SMEM
+}
+Topology Intel {
+  arch: spirv64,
+  memory: Memory::XPU_HBM,
+  visible: [Memory::XPU_HBM, Memory::XPU_SMEM],
+  transfer Memory::CPU_DRAM -> Memory::XPU_HBM : 31.5 GB/s,
+  transfer Memory::XPU_HBM -> Memory::XPU_SMEM
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32, [2, 2]>::uninit();
+  let mut b = Tensor<f32, [2, 2]>::uninit();
+  let mut c = Tensor<f32, [2, 2]>::uninit();
+  let mut d = Tensor<f32, [2, 2]>::uninit();
+  for i in 0..2 {
+    for j in 0..2 {
+      a[i][j] = ((i + j) as f32) * 0.5;
+      b[i][j] = 0.0;
+      c[i][j] = ((i + j) as f32) + 1.0;
+      d[i][j] = 0.0;
+    }
+  }
+
+  let an = transfer(a, Memory::GPU_HBM);
+  let mut hn = transfer(b, Memory::GPU_HBM);
+  spawn on(Topology::Nvidia) {
+    let tile = transfer(an, Memory::GPU_SMEM);
+    for i in 0..2 {
+      for j in 0..2 {
+        hn[i][j] = tile[i][j] * 2.0;
+      }
+    }
+  }
+
+  let ax = transfer(c, Memory::XPU_HBM);
+  let mut hx = transfer(d, Memory::XPU_HBM);
+  spawn on(Topology::Intel) {
+    let tile = transfer(ax, Memory::XPU_SMEM);
+    for i in 0..2 {
+      for j in 0..2 {
+        hx[i][j] = tile[i][j] * 2.0;
+      }
+    }
+  }
+
+  let home = transfer(hn, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

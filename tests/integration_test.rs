@@ -33,6 +33,7 @@ mod integration_test {
     mod missing_solver_test;
     mod mlir_diagnostic_test;
     mod module_api_test;
+    mod payload_test;
     mod pipeline_scale_test;
     mod registry_test;
     mod remote_client_test;

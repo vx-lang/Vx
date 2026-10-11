@@ -1,0 +1,83 @@
+//===- spirv_device_image_strided_row.vx - views get a SPIR-V image -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// The two shapes whose flat lowering reads a memref's own parts back by name:
+//
+//   - a row of a rank-3 tensor (`arow[j]` below) is a `strided_row`, built
+//     with `memref.extract_strided_metadata`;
+//   - a row of a run-time-shaped tensor (`drow` below) is a `dynamic_row`,
+//     built with `memref.dim`.
+//
+// The SPIR-V argument flattening used to refuse both -- it had no rewrite for
+// either op -- and the refusal was fatal: the whole compile failed instead of
+// the region taking the host path the way other unready shapes do. It now
+// rewrites them into the flat arguments' address arithmetic, so the kernel
+// stays on the device.
+//
+// device_image_test.rs decodes the payload's section and asserts the SPIR-V
+// magic, the kernel's name, and -- when spirv-val is installed -- that the
+// module validates.
+//
+// This file pins the source-level half: the spawn carries the declared arch,
+// and the program computes the same answer locally, where the region runs on
+// the host and the transfers are no-ops.
+//
+// Flat path only: the legacy code generator lowers a `memref.dim` of a row view
+// with the wrong number of indices, so the run-time-shaped row does not compile
+// there. Both shapes are the flat emitter's, so this is where they are pinned.
+//
+// REQUIRES: flat-codegen
+// CHECK: vx.spawn topology({{[0-9]+}}) {
+// CHECK: } {arch = "spirv64"
+// EXPECT: [[0,   4,   8],
+// EXPECT:  [12,   16,   20]]
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  // A run-time-shaped tensor: a row of it has a run-time extent.
+  let mut d = Tensor<f32, [?, ?]>::uninit([2, 3]);
+  // A rank-3 tensor: its middle row is a strided view.
+  let mut a = Tensor<f32, [2, 3, 3]>::uninit();
+  let mut o = Tensor<f32, [2, 3]>::uninit();
+  for i in 0..2 {
+    for j in 0..3 {
+      d[i][j] = ((i * 3 + j) as f32);
+      o[i][j] = 0.0;
+      for k in 0..3 {
+        a[i][j][k] = ((i * 9 + j * 3 + k) as f32);
+      }
+    }
+  }
+  let dd = transfer(d, Memory::GPU_HBM);
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..2 {
+      let drow = dd[i];
+      let arow = ad[i];
+      let mut orow = od[i];
+      for j in 0..3 {
+        // drow[j] is the memref.dim path; arow[j][0] is the strided-row path.
+        orow[j] = drow[j] + arow[j][0];
+      }
+    }
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}
