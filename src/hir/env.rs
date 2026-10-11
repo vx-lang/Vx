@@ -399,14 +399,14 @@ pub struct TypeChecker<'a> {
     pub(crate) active_memory: MemorySpace,
     pub transfer_cost_graph: &'a crate::arch::TransferCostGraph,
     /// Borrow-checking state (active records + NLL liveness), encapsulated so a conflict-check read
-    /// cannot bypass the dead-borrow sweep (frontend_refactoring_borrow_checker.md R1; the #276 bug class). Replaces
-    /// the former `active_borrows` / `block_liveness` / `current_stmt_idx` fields.
+    /// cannot bypass the dead-borrow sweep. Replaces the former `active_borrows` /
+    /// `block_liveness` / `current_stmt_idx` fields.
     pub(crate) borrow: crate::hir::borrow_cx::BorrowCx,
     /// Speculative-check mode. When set, expression checking is a *probe* — diagnostics are
     /// suppressed, borrow/move side effects and unreachable-code warnings are skipped, and
     /// `check_if_expr`/`check_match_expr` return a placeholder without descending into the block.
-    /// Replaces the `silent: bool` parameter that used to thread through ~36 checker signatures
-    /// (frontend_refactoring_borrow_checker.md R3, #279). The only site that turns it on is the
+    /// Replaces the `silent: bool` parameter that used to thread through ~36 checker signatures.
+    /// The only site that turns it on is the
     /// method-call → function-call return-type probe in `check_methodcall_expr`; the two
     /// "fresh check" entry points (`check_expr_type`, `check_block`) force it back off, so the
     /// field's dynamic scope reproduces the old parameter's exactly.

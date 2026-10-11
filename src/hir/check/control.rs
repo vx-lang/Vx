@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 //
 // One expression family's type checks, split out of the former 5000-line `hir/expr.rs` along the
-// `check_expr_type_flag` dispatch seam (frontend_refactoring_borrow_checker.md R2, #279). An additional
+// `check_expr_type_flag` dispatch seam. An additional
 // `impl TypeChecker` block; moves only, zero logic change. Reaches the shared types and helpers via
 // `use super::super::*`, exactly as `expr.rs` uses `use super::*`.
 //

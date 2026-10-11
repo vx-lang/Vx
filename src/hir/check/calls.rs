@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 //
 // One expression family's type checks, split out of the former 5000-line `hir/expr.rs` along the
-// `check_expr_type_flag` dispatch seam (frontend_refactoring_borrow_checker.md R2, #279). An additional
+// `check_expr_type_flag` dispatch seam. An additional
 // `impl TypeChecker` block; moves only, zero logic change. Reaches the shared types and helpers via
 // `use super::super::*`, exactly as `expr.rs` uses `use super::*`.
 //
@@ -1293,8 +1293,7 @@ impl<'a> TypeChecker<'a> {
     /// from the type declared for the result, instantiates it, checks the arguments against the
     /// instance, rewrites `name` to the mangled instance and checks that instance once. Returns
     /// the instance return type, or `Unknown` after an undefined-method error or when a type
-    /// parameter is left unbound. Split out of `check_functioncall_expr`
-    /// (frontend_refactoring_borrow_checker.md R4, #279).
+    /// parameter is left unbound. Split out of `check_functioncall_expr`.
     fn check_static_method_call(
         &mut self,
         resolved_name: &crate::symbol::Symbol,

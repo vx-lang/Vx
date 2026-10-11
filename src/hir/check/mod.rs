@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 //
 // Expression type-checking, split out of the former 5000-line `hir/expr.rs` along the
-// `check_expr_type_flag` dispatch seam (frontend_refactoring_borrow_checker.md R2, #279). Each submodule
+// `check_expr_type_flag` dispatch seam. Each submodule
 // holds the checks for one family of expressions as additional `impl TypeChecker` blocks; the dispatch and
 // the shared type helpers (`is_assignable`, `lower_to_type_id`) stay in `hir/expr.rs`. Moves only — zero
 // logic change.
