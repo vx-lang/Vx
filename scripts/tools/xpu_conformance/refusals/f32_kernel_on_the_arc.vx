@@ -1,0 +1,51 @@
+//===- f32_kernel_on_the_arc.vx - a region the compiler cannot give a kernel -===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An elementwise region placed on the Arc's own topology, with its operands
+// transferred into the machine file's HBM. That space is declared `managed:
+// explicit` -- memory the host cannot read -- and the region is not one the
+// compiler can emit a device kernel for (only a matmul is routed today). The
+// host fallback would therefore dereference device memory, so the compiler
+// refuses the region by name instead.
+//
+// The element type is f32, which the device does declare, so the refusal is
+// about the region and not about the type. The runner compiles it with
+// `--machine fleet/arc-a770.vx --host default` and checks the message.
+//
+// The same region placed on a topology whose memory is `managed: cached` does
+// get a device image -- that is what scripts/tools/xpu_conformance/transpose.vx
+// is, and what the runner compares against the CPU.
+
+fn main() -> i32 {
+  let mut a = Tensor<f32, [8, 8]>::uninit();
+  let mut b = Tensor<f32, [8, 8]>::uninit();
+  for i in 0..8 {
+    for j in 0..8 {
+      a[i][j] = (i + j) as f32;
+      b[i][j] = 2.0;
+    }
+  }
+
+  let mut c = Tensor<f32, [8, 8]>::uninit();
+  let ga = transfer(a, Memory::HBM);
+  let gb = transfer(b, Memory::HBM);
+  let mut gc = transfer(c, Memory::HBM);
+  spawn on(Topology::Device) {
+    for i in 0..8 {
+      let arow = ga[i];
+      let brow = gb[i];
+      let mut crow = gc[i];
+      for j in 0..8 {
+        crow[j] = arow[j] * brow[j];
+      }
+    }
+  }
+  let home = transfer(gc, Memory::CPU_DRAM);
+
+  print(home[0][0]);
+  return 0;
+}

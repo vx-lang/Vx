@@ -1,0 +1,558 @@
+//===- elementwise.vx - the same arithmetic in every element type ----------===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// One placed region per element type the Arc machine model declares, each
+// computing `o = a * b + c` over a 32x32 tensor. The values stay inside the
+// narrowest type (i4), so a type the device stores differently from the host
+// shows up as a wrong number rather than as an overflow.
+//
+// Each region's result is summed back on the host and printed, one number per
+// type, so running the whole program on the CPU and on the Arc and comparing
+// the two lines covers every declared type -- including i4, u4 and bool, whose
+// four-bit and one-bit elements no hand-built descriptor can address.
+//
+// The runner (scripts/tools/vx_xpu_conformance.sh) also drives the first eleven
+// types one at a time through the dispatch ABI, element by element.
+//
+// The regions are in this order, and the runner pairs the dispatch order with
+// it: f32 f16 i8 u8 i16 u16 i32 u32 i64 u64 i4 u4 bool.
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::CPU_DRAM : 60 GB/s
+}
+
+fn main() -> i32 {
+  let mut a0 = Tensor<f32, [32, 32]>::uninit();
+  let mut b0 = Tensor<f32, [32, 32]>::uninit();
+  let mut c0 = Tensor<f32, [32, 32]>::uninit();
+  let mut o0 = Tensor<f32, [32, 32]>::uninit();
+  for i in 0..32 {
+    for j in 0..32 {
+      a0[i][j] = ((i + j) % 4) as f32;
+      b0[i][j] = 2 as f32;
+      c0[i][j] = 1 as f32;
+      o0[i][j] = 0 as f32;
+    }
+  }
+  let ga0 = transfer(a0, Memory::GPU_HBM);
+  let gb0 = transfer(b0, Memory::GPU_HBM);
+  let gc0 = transfer(c0, Memory::GPU_HBM);
+  let mut go0 = transfer(o0, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..32 {
+      let ar = ga0[i];
+      let br = gb0[i];
+      let cr = gc0[i];
+      let mut orow = go0[i];
+      for j in 0..32 {
+        orow[j] = ar[j] * br[j] + cr[j];
+      }
+    }
+  }
+  let back0 = transfer(go0, Memory::CPU_DRAM);
+
+  // The whole result as a single exact integer, so one printed number covers
+  // every element of this type's tensor.
+  let mut sum0 = 0;
+  for i in 0..32 {
+    for j in 0..32 {
+      sum0 = sum0 + (back0[i][j] as i32);
+    }
+  }
+  print(sum0);
+  print!(" ");
+
+  let mut a1 = Tensor<f16, [32, 32]>::uninit();
+  let mut b1 = Tensor<f16, [32, 32]>::uninit();
+  let mut c1 = Tensor<f16, [32, 32]>::uninit();
+  let mut o1 = Tensor<f16, [32, 32]>::uninit();
+  for i in 0..32 {
+    for j in 0..32 {
+      a1[i][j] = ((i + j) % 4) as f16;
+      b1[i][j] = 2 as f16;
+      c1[i][j] = 1 as f16;
+      o1[i][j] = 0 as f16;
+    }
+  }
+  let ga1 = transfer(a1, Memory::GPU_HBM);
+  let gb1 = transfer(b1, Memory::GPU_HBM);
+  let gc1 = transfer(c1, Memory::GPU_HBM);
+  let mut go1 = transfer(o1, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..32 {
+      let ar = ga1[i];
+      let br = gb1[i];
+      let cr = gc1[i];
+      let mut orow = go1[i];
+      for j in 0..32 {
+        orow[j] = ar[j] * br[j] + cr[j];
+      }
+    }
+  }
+  let back1 = transfer(go1, Memory::CPU_DRAM);
+
+  // The whole result as a single exact integer, so one printed number covers
+  // every element of this type's tensor.
+  let mut sum1 = 0;
+  for i in 0..32 {
+    for j in 0..32 {
+      sum1 = sum1 + (back1[i][j] as i32);
+    }
+  }
+  print(sum1);
+  print!(" ");
+
+  let mut a2 = Tensor<i8, [32, 32]>::uninit();
+  let mut b2 = Tensor<i8, [32, 32]>::uninit();
+  let mut c2 = Tensor<i8, [32, 32]>::uninit();
+  let mut o2 = Tensor<i8, [32, 32]>::uninit();
+  for i in 0..32 {
+    for j in 0..32 {
+      a2[i][j] = ((i + j) % 4) as i8;
+      b2[i][j] = 2 as i8;
+      c2[i][j] = 1 as i8;
+      o2[i][j] = 0 as i8;
+    }
+  }
+  let ga2 = transfer(a2, Memory::GPU_HBM);
+  let gb2 = transfer(b2, Memory::GPU_HBM);
+  let gc2 = transfer(c2, Memory::GPU_HBM);
+  let mut go2 = transfer(o2, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..32 {
+      let ar = ga2[i];
+      let br = gb2[i];
+      let cr = gc2[i];
+      let mut orow = go2[i];
+      for j in 0..32 {
+        orow[j] = ar[j] * br[j] + cr[j];
+      }
+    }
+  }
+  let back2 = transfer(go2, Memory::CPU_DRAM);
+
+  // The whole result as a single exact integer, so one printed number covers
+  // every element of this type's tensor.
+  let mut sum2 = 0;
+  for i in 0..32 {
+    for j in 0..32 {
+      sum2 = sum2 + (back2[i][j] as i32);
+    }
+  }
+  print(sum2);
+  print!(" ");
+
+  let mut a3 = Tensor<u8, [32, 32]>::uninit();
+  let mut b3 = Tensor<u8, [32, 32]>::uninit();
+  let mut c3 = Tensor<u8, [32, 32]>::uninit();
+  let mut o3 = Tensor<u8, [32, 32]>::uninit();
+  for i in 0..32 {
+    for j in 0..32 {
+      a3[i][j] = ((i + j) % 4) as u8;
+      b3[i][j] = 2 as u8;
+      c3[i][j] = 1 as u8;
+      o3[i][j] = 0 as u8;
+    }
+  }
+  let ga3 = transfer(a3, Memory::GPU_HBM);
+  let gb3 = transfer(b3, Memory::GPU_HBM);
+  let gc3 = transfer(c3, Memory::GPU_HBM);
+  let mut go3 = transfer(o3, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..32 {
+      let ar = ga3[i];
+      let br = gb3[i];
+      let cr = gc3[i];
+      let mut orow = go3[i];
+      for j in 0..32 {
+        orow[j] = ar[j] * br[j] + cr[j];
+      }
+    }
+  }
+  let back3 = transfer(go3, Memory::CPU_DRAM);
+
+  // The whole result as a single exact integer, so one printed number covers
+  // every element of this type's tensor.
+  let mut sum3 = 0;
+  for i in 0..32 {
+    for j in 0..32 {
+      sum3 = sum3 + (back3[i][j] as i32);
+    }
+  }
+  print(sum3);
+  print!(" ");
+
+  let mut a4 = Tensor<i16, [32, 32]>::uninit();
+  let mut b4 = Tensor<i16, [32, 32]>::uninit();
+  let mut c4 = Tensor<i16, [32, 32]>::uninit();
+  let mut o4 = Tensor<i16, [32, 32]>::uninit();
+  for i in 0..32 {
+    for j in 0..32 {
+      a4[i][j] = ((i + j) % 4) as i16;
+      b4[i][j] = 2 as i16;
+      c4[i][j] = 1 as i16;
+      o4[i][j] = 0 as i16;
+    }
+  }
+  let ga4 = transfer(a4, Memory::GPU_HBM);
+  let gb4 = transfer(b4, Memory::GPU_HBM);
+  let gc4 = transfer(c4, Memory::GPU_HBM);
+  let mut go4 = transfer(o4, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..32 {
+      let ar = ga4[i];
+      let br = gb4[i];
+      let cr = gc4[i];
+      let mut orow = go4[i];
+      for j in 0..32 {
+        orow[j] = ar[j] * br[j] + cr[j];
+      }
+    }
+  }
+  let back4 = transfer(go4, Memory::CPU_DRAM);
+
+  // The whole result as a single exact integer, so one printed number covers
+  // every element of this type's tensor.
+  let mut sum4 = 0;
+  for i in 0..32 {
+    for j in 0..32 {
+      sum4 = sum4 + (back4[i][j] as i32);
+    }
+  }
+  print(sum4);
+  print!(" ");
+
+  let mut a5 = Tensor<u16, [32, 32]>::uninit();
+  let mut b5 = Tensor<u16, [32, 32]>::uninit();
+  let mut c5 = Tensor<u16, [32, 32]>::uninit();
+  let mut o5 = Tensor<u16, [32, 32]>::uninit();
+  for i in 0..32 {
+    for j in 0..32 {
+      a5[i][j] = ((i + j) % 4) as u16;
+      b5[i][j] = 2 as u16;
+      c5[i][j] = 1 as u16;
+      o5[i][j] = 0 as u16;
+    }
+  }
+  let ga5 = transfer(a5, Memory::GPU_HBM);
+  let gb5 = transfer(b5, Memory::GPU_HBM);
+  let gc5 = transfer(c5, Memory::GPU_HBM);
+  let mut go5 = transfer(o5, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..32 {
+      let ar = ga5[i];
+      let br = gb5[i];
+      let cr = gc5[i];
+      let mut orow = go5[i];
+      for j in 0..32 {
+        orow[j] = ar[j] * br[j] + cr[j];
+      }
+    }
+  }
+  let back5 = transfer(go5, Memory::CPU_DRAM);
+
+  // The whole result as a single exact integer, so one printed number covers
+  // every element of this type's tensor.
+  let mut sum5 = 0;
+  for i in 0..32 {
+    for j in 0..32 {
+      sum5 = sum5 + (back5[i][j] as i32);
+    }
+  }
+  print(sum5);
+  print!(" ");
+
+  let mut a6 = Tensor<i32, [32, 32]>::uninit();
+  let mut b6 = Tensor<i32, [32, 32]>::uninit();
+  let mut c6 = Tensor<i32, [32, 32]>::uninit();
+  let mut o6 = Tensor<i32, [32, 32]>::uninit();
+  for i in 0..32 {
+    for j in 0..32 {
+      a6[i][j] = ((i + j) % 4) as i32;
+      b6[i][j] = 2 as i32;
+      c6[i][j] = 1 as i32;
+      o6[i][j] = 0 as i32;
+    }
+  }
+  let ga6 = transfer(a6, Memory::GPU_HBM);
+  let gb6 = transfer(b6, Memory::GPU_HBM);
+  let gc6 = transfer(c6, Memory::GPU_HBM);
+  let mut go6 = transfer(o6, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..32 {
+      let ar = ga6[i];
+      let br = gb6[i];
+      let cr = gc6[i];
+      let mut orow = go6[i];
+      for j in 0..32 {
+        orow[j] = ar[j] * br[j] + cr[j];
+      }
+    }
+  }
+  let back6 = transfer(go6, Memory::CPU_DRAM);
+
+  // The whole result as a single exact integer, so one printed number covers
+  // every element of this type's tensor.
+  let mut sum6 = 0;
+  for i in 0..32 {
+    for j in 0..32 {
+      sum6 = sum6 + (back6[i][j] as i32);
+    }
+  }
+  print(sum6);
+  print!(" ");
+
+  let mut a7 = Tensor<u32, [32, 32]>::uninit();
+  let mut b7 = Tensor<u32, [32, 32]>::uninit();
+  let mut c7 = Tensor<u32, [32, 32]>::uninit();
+  let mut o7 = Tensor<u32, [32, 32]>::uninit();
+  for i in 0..32 {
+    for j in 0..32 {
+      a7[i][j] = ((i + j) % 4) as u32;
+      b7[i][j] = 2 as u32;
+      c7[i][j] = 1 as u32;
+      o7[i][j] = 0 as u32;
+    }
+  }
+  let ga7 = transfer(a7, Memory::GPU_HBM);
+  let gb7 = transfer(b7, Memory::GPU_HBM);
+  let gc7 = transfer(c7, Memory::GPU_HBM);
+  let mut go7 = transfer(o7, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..32 {
+      let ar = ga7[i];
+      let br = gb7[i];
+      let cr = gc7[i];
+      let mut orow = go7[i];
+      for j in 0..32 {
+        orow[j] = ar[j] * br[j] + cr[j];
+      }
+    }
+  }
+  let back7 = transfer(go7, Memory::CPU_DRAM);
+
+  // The whole result as a single exact integer, so one printed number covers
+  // every element of this type's tensor.
+  let mut sum7 = 0;
+  for i in 0..32 {
+    for j in 0..32 {
+      sum7 = sum7 + (back7[i][j] as i32);
+    }
+  }
+  print(sum7);
+  print!(" ");
+
+  let mut a8 = Tensor<i64, [32, 32]>::uninit();
+  let mut b8 = Tensor<i64, [32, 32]>::uninit();
+  let mut c8 = Tensor<i64, [32, 32]>::uninit();
+  let mut o8 = Tensor<i64, [32, 32]>::uninit();
+  for i in 0..32 {
+    for j in 0..32 {
+      a8[i][j] = ((i + j) % 4) as i64;
+      b8[i][j] = 2 as i64;
+      c8[i][j] = 1 as i64;
+      o8[i][j] = 0 as i64;
+    }
+  }
+  let ga8 = transfer(a8, Memory::GPU_HBM);
+  let gb8 = transfer(b8, Memory::GPU_HBM);
+  let gc8 = transfer(c8, Memory::GPU_HBM);
+  let mut go8 = transfer(o8, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..32 {
+      let ar = ga8[i];
+      let br = gb8[i];
+      let cr = gc8[i];
+      let mut orow = go8[i];
+      for j in 0..32 {
+        orow[j] = ar[j] * br[j] + cr[j];
+      }
+    }
+  }
+  let back8 = transfer(go8, Memory::CPU_DRAM);
+
+  // The whole result as a single exact integer, so one printed number covers
+  // every element of this type's tensor.
+  let mut sum8 = 0;
+  for i in 0..32 {
+    for j in 0..32 {
+      sum8 = sum8 + (back8[i][j] as i32);
+    }
+  }
+  print(sum8);
+  print!(" ");
+
+  let mut a9 = Tensor<u64, [32, 32]>::uninit();
+  let mut b9 = Tensor<u64, [32, 32]>::uninit();
+  let mut c9 = Tensor<u64, [32, 32]>::uninit();
+  let mut o9 = Tensor<u64, [32, 32]>::uninit();
+  for i in 0..32 {
+    for j in 0..32 {
+      a9[i][j] = ((i + j) % 4) as u64;
+      b9[i][j] = 2 as u64;
+      c9[i][j] = 1 as u64;
+      o9[i][j] = 0 as u64;
+    }
+  }
+  let ga9 = transfer(a9, Memory::GPU_HBM);
+  let gb9 = transfer(b9, Memory::GPU_HBM);
+  let gc9 = transfer(c9, Memory::GPU_HBM);
+  let mut go9 = transfer(o9, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..32 {
+      let ar = ga9[i];
+      let br = gb9[i];
+      let cr = gc9[i];
+      let mut orow = go9[i];
+      for j in 0..32 {
+        orow[j] = ar[j] * br[j] + cr[j];
+      }
+    }
+  }
+  let back9 = transfer(go9, Memory::CPU_DRAM);
+
+  // The whole result as a single exact integer, so one printed number covers
+  // every element of this type's tensor.
+  let mut sum9 = 0;
+  for i in 0..32 {
+    for j in 0..32 {
+      sum9 = sum9 + (back9[i][j] as i32);
+    }
+  }
+  print(sum9);
+  print!(" ");
+
+  let mut a10 = Tensor<i4, [32, 32]>::uninit();
+  let mut b10 = Tensor<i4, [32, 32]>::uninit();
+  let mut c10 = Tensor<i4, [32, 32]>::uninit();
+  let mut o10 = Tensor<i4, [32, 32]>::uninit();
+  for i in 0..32 {
+    for j in 0..32 {
+      a10[i][j] = ((i + j) % 4) as i4;
+      b10[i][j] = 2 as i4;
+      c10[i][j] = 1 as i4;
+      o10[i][j] = 0 as i4;
+    }
+  }
+  let ga10 = transfer(a10, Memory::GPU_HBM);
+  let gb10 = transfer(b10, Memory::GPU_HBM);
+  let gc10 = transfer(c10, Memory::GPU_HBM);
+  let mut go10 = transfer(o10, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..32 {
+      let ar = ga10[i];
+      let br = gb10[i];
+      let cr = gc10[i];
+      let mut orow = go10[i];
+      for j in 0..32 {
+        orow[j] = ar[j] * br[j] + cr[j];
+      }
+    }
+  }
+  let back10 = transfer(go10, Memory::CPU_DRAM);
+
+  // The whole result as a single exact integer, so one printed number covers
+  // every element of this type's tensor.
+  let mut sum10 = 0;
+  for i in 0..32 {
+    for j in 0..32 {
+      sum10 = sum10 + (back10[i][j] as i32);
+    }
+  }
+  print(sum10);
+  print!(" ");
+
+  let mut a11 = Tensor<u4, [32, 32]>::uninit();
+  let mut b11 = Tensor<u4, [32, 32]>::uninit();
+  let mut c11 = Tensor<u4, [32, 32]>::uninit();
+  let mut o11 = Tensor<u4, [32, 32]>::uninit();
+  for i in 0..32 {
+    for j in 0..32 {
+      a11[i][j] = ((i + j) % 4) as u4;
+      b11[i][j] = 2 as u4;
+      c11[i][j] = 1 as u4;
+      o11[i][j] = 0 as u4;
+    }
+  }
+  let ga11 = transfer(a11, Memory::GPU_HBM);
+  let gb11 = transfer(b11, Memory::GPU_HBM);
+  let gc11 = transfer(c11, Memory::GPU_HBM);
+  let mut go11 = transfer(o11, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..32 {
+      let ar = ga11[i];
+      let br = gb11[i];
+      let cr = gc11[i];
+      let mut orow = go11[i];
+      for j in 0..32 {
+        orow[j] = ar[j] * br[j] + cr[j];
+      }
+    }
+  }
+  let back11 = transfer(go11, Memory::CPU_DRAM);
+
+  // The whole result as a single exact integer, so one printed number covers
+  // every element of this type's tensor.
+  let mut sum11 = 0;
+  for i in 0..32 {
+    for j in 0..32 {
+      sum11 = sum11 + (back11[i][j] as i32);
+    }
+  }
+  print(sum11);
+  print!(" ");
+
+  let mut a12 = Tensor<bool, [32, 32]>::uninit();
+  let mut b12 = Tensor<bool, [32, 32]>::uninit();
+  let mut c12 = Tensor<bool, [32, 32]>::uninit();
+  let mut o12 = Tensor<bool, [32, 32]>::uninit();
+  for i in 0..32 {
+    for j in 0..32 {
+      a12[i][j] = ((i + j) % 4) as bool;
+      b12[i][j] = 2 as bool;
+      c12[i][j] = 1 as bool;
+      o12[i][j] = 0 as bool;
+    }
+  }
+  let ga12 = transfer(a12, Memory::GPU_HBM);
+  let gb12 = transfer(b12, Memory::GPU_HBM);
+  let gc12 = transfer(c12, Memory::GPU_HBM);
+  let mut go12 = transfer(o12, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..32 {
+      let ar = ga12[i];
+      let br = gb12[i];
+      let cr = gc12[i];
+      let mut orow = go12[i];
+      for j in 0..32 {
+        orow[j] = ar[j] * br[j] + cr[j];
+      }
+    }
+  }
+  let back12 = transfer(go12, Memory::CPU_DRAM);
+
+  // The whole result as a single exact integer, so one printed number covers
+  // every element of this type's tensor.
+  let mut sum12 = 0;
+  for i in 0..32 {
+    for j in 0..32 {
+      sum12 = sum12 + (back12[i][j] as i32);
+    }
+  }
+  print(sum12);
+  print!(" ");
+
+  return 0;
+}

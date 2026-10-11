@@ -1,0 +1,54 @@
+//===- transpose.vx - a transposing write on the device ---------------------===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A 48x32 tensor written out transposed. The read walks a row and the write
+// walks a column, so both operands' strides are exercised: an argument the
+// kernel addresses with the wrong stride still lands inside the buffer and
+// still writes every element, and only the numbers say so.
+//
+// The runner runs this region on the Intel Arc and on the CPU and compares the
+// two results element by element. Every value is a small integer, exact in f32.
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::CPU_DRAM : 60 GB/s
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32, [48, 32]>::uninit();
+  let mut o = Tensor<f32, [32, 48]>::uninit();
+  for i in 0..48 {
+    for j in 0..32 {
+      a[i][j] = (((i * 13 + j * 7) % 101) as f32);
+      o[j][i] = 0.0;
+    }
+  }
+
+  let ga = transfer(a, Memory::GPU_HBM);
+  let mut go = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..48 {
+      let arow = ga[i];
+      for j in 0..32 {
+        go[j][i] = arow[j];
+      }
+    }
+  }
+  let home = transfer(go, Memory::CPU_DRAM);
+
+  print(home[0][0] as i32);
+  print!(" ");
+  print(home[31][47] as i32);
+  return 0;
+}

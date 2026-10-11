@@ -1,0 +1,48 @@
+//===- matmul.vx - a classified matrix multiply on the device ---------------===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A 1024x1024 fp32 matrix multiply placed on the GPU. The region is one
+// `linalg.matmul`, which the compiler classifies (`kind=matmul`) and the
+// dispatch library routes to oneMKL on the Intel Arc.
+//
+// The placement is on the built-in `Topology::GPU` rather than a declared
+// `arch: spirv64` one, and that is not a detail: the library only routes a
+// classified matmul when the payload's topology is in the GPU band (500..599).
+// A custom topology's id is a hash (3000 and up), so a matmul placed there
+// takes the host fallback instead -- see the report.
+//
+// The runner times this region on the Arc, times the same region on the CPU
+// backend, and compares the results within a relative tolerance, because the
+// two sum in different orders. matmul_big.vx is the same region at 8192 in each
+// dimension, for the throughput figure.
+
+fn fill_a(i : i32, j : i32) -> f32 {
+  return ((((i * 131 + j * 17) % 200) as f32) - 100.0) / 97.0;
+}
+
+fn fill_b(i : i32, j : i32) -> f32 {
+  return ((((i * 61 + j * 29) % 200) as f32) - 100.0) / 89.0;
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32, [1024, 1024]>::uninit();
+  let mut b = Tensor<f32, [1024, 1024]>::uninit();
+  for i in 0..1024 {
+    for j in 0..1024 {
+      a[i][j] = fill_a(i, j);
+      b[i][j] = fill_b(i, j);
+    }
+  }
+
+  let mut c = Tensor<f32, [1024, 1024]>::uninit();
+  spawn on(Topology::GPU) {
+    c = a @b;
+  }
+
+  print(c[0][0]);
+  return 0;
+}

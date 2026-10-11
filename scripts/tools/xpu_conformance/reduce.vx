@@ -1,0 +1,57 @@
+//===- reduce.vx - a row-sum reduction on the device ------------------------===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// One placed region reducing each row of a 64x32 tensor to a single number, so
+// the device reads a row and writes one element of a column. The accumulator
+// lives in the region, which is the part of a reduction a device kernel has to
+// get right.
+//
+// The runner runs this region on the Intel Arc and on the CPU and compares the
+// two results element by element. The values are small integers, exact in f32,
+// so the two must agree exactly.
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::CPU_DRAM : 60 GB/s
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32, [64, 32]>::uninit();
+  let mut o = Tensor<f32, [64, 1]>::uninit();
+  for i in 0..64 {
+    o[i][0] = 0.0;
+    for j in 0..32 {
+      a[i][j] = (((i * 7 + j) % 5) as f32);
+    }
+  }
+
+  let ga = transfer(a, Memory::GPU_HBM);
+  let mut go = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..64 {
+      let arow = ga[i];
+      let mut sum = 0.0;
+      for j in 0..32 {
+        sum = sum + arow[j];
+      }
+      go[i][0] = sum;
+    }
+  }
+  let home = transfer(go, Memory::CPU_DRAM);
+
+  print(home[0][0] as i32);
+  print!(" ");
+  print(home[63][0] as i32);
+  return 0;
+}

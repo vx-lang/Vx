@@ -1,0 +1,38 @@
+//===- f64_on_the_arc.vx - a dtype the machine file does not declare --------===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An fp64 region placed on the Arc. The A770 has no fp64 at all -- the machine
+// file (fleet/arc-a770.vx) leaves f64 out of its `dtypes:` for that reason, so
+// the compiler refuses the placement by name before anything runs.
+//
+// This is the "not supported on the device" half of the conformance set: the
+// right outcome is a named refusal, not a quiet substitution of f32. The runner
+// compiles it with `--machine fleet/arc-a770.vx` and checks that the refusal
+// names the element type.
+
+fn main() -> i32 {
+  let mut a = Tensor<f64, [8, 8]>::uninit();
+  let mut b = Tensor<f64, [8, 8]>::uninit();
+  for i in 0..8 {
+    for j in 0..8 {
+      a[i][j] = (i + j) as f64;
+      b[i][j] = 2.0;
+    }
+  }
+
+  let mut c = Tensor<f64, [8, 8]>::uninit();
+  let ga = transfer(a, Memory::HBM);
+  let gb = transfer(b, Memory::HBM);
+  let mut gc = transfer(c, Memory::HBM);
+  spawn on(Topology::Device) {
+    gc = ga @gb;
+  }
+  let home = transfer(gc, Memory::CPU_DRAM);
+
+  print(home[0][0]);
+  return 0;
+}
