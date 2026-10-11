@@ -1064,6 +1064,7 @@ impl<'a> TypeChecker<'a> {
         consume: bool,
         operand_ty: Option<&mut Option<crate::syntax::ElementType>>,
     ) {
+        self.strip_tensor_deref_at_root(lhs);
         // Assigning to a moved variable gives it a value again. A write does not read what
         // was there, so the move stops being in the way -- and the mark has to go before the
         // left-hand side is checked, which is what would otherwise report it as a use.

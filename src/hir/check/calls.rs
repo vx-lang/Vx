@@ -2726,6 +2726,7 @@ impl<'a> TypeChecker<'a> {
                 span: method_span,
             }) => {
                 let method_span = *method_span;
+                self.strip_tensor_deref(obj);
                 // Taking the address of a tensor does not read it, so `on_gpu.as_ptr()` is
                 // allowed from host code even though a host read of `on_gpu` is not. The
                 // pointer it gives carries the tensor's placement, and reading through that
@@ -3525,9 +3526,11 @@ impl<'a> TypeChecker<'a> {
         args: &mut [Expr],
         span: &crate::syntax::Span,
     ) -> Option<(Type, bool)> {
-        // `a.reduce(..)` with `a : &Tensor<..>` reads the tensor it points to.
+        // `a.reduce(..)` with `a : &Tensor<..>` reads the tensor it points to, and
+        // `a.reshape(..)` is a view of it.
         if let Type::Borrow { inner, .. } = base_ty {
-            if _method == "reduce" && args.len() == 2 && matches!(**inner, Type::Tensor(..)) {
+            let through = (_method == "reduce" && args.len() == 2) || _method == "reshape";
+            if through && matches!(**inner, Type::Tensor(..)) {
                 return self.resolve_intrinsic_method(inner, _method, args, span);
             }
         }

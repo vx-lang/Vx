@@ -838,6 +838,30 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
+    /// `(*t)[i]` and `(*t).reshape(..)`, with `t` a tensor reference, are `t[i]` and
+    /// `t.reshape(..)`: both code generators hold a `&Tensor` as the tensor's own buffer, so the
+    /// `*` names the same memory. Rewritten before the base is checked.
+    pub(crate) fn strip_tensor_deref(&self, base: &mut Expr) {
+        if let Expr::Dereference(d) = base {
+            if matches!(
+                self.check_expr_type_probe(&d.expr),
+                Type::Borrow { ref inner, .. } if matches!(**inner, Type::Tensor(..))
+            ) {
+                *base = (*d.expr).clone();
+            }
+        }
+    }
+
+    /// The same at the root of a place: `(*t)[i][j] = x` writes `t[i][j]`, and the place is
+    /// rooted at `t` for the borrow checks.
+    pub(crate) fn strip_tensor_deref_at_root(&self, place: &mut Expr) {
+        match place {
+            Expr::IndexAccess(ix) => self.strip_tensor_deref_at_root(&mut ix.base),
+            Expr::MemberAccess(m) => self.strip_tensor_deref_at_root(&mut m.base),
+            other => self.strip_tensor_deref(other),
+        }
+    }
+
     pub(crate) fn check_indexaccess_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         // `a[i]` on a struct or an enum whose type implements `Index` reads `*a.index(i)`, and
         // a write, `a[i] = x`, goes through `*a.index_mut(i)`, as in Rust.
@@ -845,6 +869,7 @@ impl<'a> TypeChecker<'a> {
             base, index, span, ..
         }) = expr
         {
+            self.strip_tensor_deref(base);
             let method = if self.checking_assign_lhs {
                 "index_mut"
             } else {
