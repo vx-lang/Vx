@@ -1642,7 +1642,8 @@ fn flat_matches_ast_print_of_a_string_local() {
     // A string bound to a local is a pointer value; printing it goes through `print_str`, as
     // a literal does.
     assert_output_parity(
-        "fn main() -> i32 { let s = \"hi|\"; let st : i32 = print!(s); print!(s); \
+        "struct Str { ptr: *const u8, len: i64 }\n\
+         fn main() -> i32 { let s = \"hi|\"; let _st : i32 = print!(s); \
            println!(\"\"); return 0; }",
     );
 }
@@ -2847,9 +2848,26 @@ fn flat_matches_ast_string_value_pointer_arg() {
     // ignores the pointer and returns the length, so the exit code is observable without a deref or a
     // runtime symbol (self-contained). Exercises `StringConst` + pointer param + pointer arg.
     assert_parity(
-        "fn take(p: *const u8, n: i32) -> i32 { return n; }\n\
+        "struct Str { ptr: *const u8, len: i64 }\n\
+         fn take(p: *const u8, n: i32) -> i32 { return n; }\n\
          fn main() -> i32 { let msg = \"Hello!\\n\"; let r = take(msg, 14); return r; }",
         14,
+    );
+}
+
+#[test]
+fn flat_matches_ast_string_literal_byte_index() {
+    // This single-module differential harness deliberately does not load imports, so spell the
+    // compiler-known layout locally and index its byte pointer. The backend corpus test exercises
+    // the surface `s[0]` spelling through the real `core::str::Index` implementation.
+    assert_parity(
+        "struct Str { ptr: *const u8, len: i64 }\n\
+         fn main() -> i32 {\n\
+         let s = \"hi\";\n\
+         unsafe { if s.ptr[0] == 104u8 { return 7; } }\n\
+         return 0;\n\
+         }",
+        7,
     );
 }
 
@@ -2860,7 +2878,8 @@ fn flat_matches_ast_pointer_return_and_memory_slot() {
     // lives in an `llvm.alloca` slot), and a pointer argument read back from that slot. All Vx-defined,
     // so no external symbol is linked — the exit code alone proves the pointer threaded through.
     assert_parity(
-        "fn make(x: *const u8) -> *const u8 { return x; }\n\
+        "struct Str { ptr: *const u8, len: i64 }\n\
+         fn make(x: *const u8) -> *const u8 { return x; }\n\
          fn take(p: *const u8) -> i32 { return 7; }\n\
          fn main() -> i32 {\n\
          let s = \"hi\";\n\
@@ -2878,7 +2897,11 @@ fn flat_matches_ast_corpus_ffi_stdio_strings() {
     // The #231 corpus driver: string *values* bound to locals and passed to the `vx_stdout_write`/
     // `vx_stderr_write` FFI externs (`!llvm.ptr` arguments), plus print-position strings (#225). Its
     // JIT stdout must match the AST oracle byte for byte.
-    assert_output_parity(&corpus("ffi_stdio.vx"));
+    let source = format!(
+        "struct Str {{ ptr: *const u8, len: i64 }}\n{}",
+        corpus("ffi_stdio.vx")
+    );
+    assert_output_parity(&source);
 }
 
 #[test]

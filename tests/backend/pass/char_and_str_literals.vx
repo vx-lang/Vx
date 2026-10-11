@@ -1,0 +1,25 @@
+//===- char_and_str_literals.vx - Vx Compiler --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run | FileCheck %s --check-prefix=EXPECT
+
+fn main() -> i32 {
+  let ascii = 'A';
+  let unicode = 'λ';
+  let empty = "";
+  let text = "hé";
+
+  assert(ascii.as_u32() == 65u32, "ASCII character value");
+  assert(unicode.as_u32() == 955u32, "Unicode scalar value");
+  assert(empty.is_empty(), "empty string");
+  assert(text.len() == 3i64, "UTF-8 byte length");
+  assert(text[0] == 104u8, "string byte indexing");
+  print!("char/str literals: ok");
+  return 0;
+}
+
+// EXPECT: char/str literals: ok
