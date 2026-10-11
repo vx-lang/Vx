@@ -413,6 +413,9 @@ struct Lowerer<'r> {
     /// the match's fall-through merge block needs a terminator, so it returns a default (zero) value of
     /// this type — mirroring the AST codegen's default-return merge block (`Option::unwrap`). (#242)
     ret_ty: Option<LoweredTy>,
+    /// The function returns `void`. Its `return f(x);` (a closure body calling a void function)
+    /// runs the call and returns nothing.
+    ret_void: bool,
     /// Base locals whose address must be **materialized** — a borrow of them *escapes* (a call arg, a
     /// return, a struct field, or a reference local used as anything but `*r`). Such a local lives in an
     /// addressable `Slot` so `&x` has a real pointer to yield. This refines the old "any `&x` slots x"
@@ -503,6 +506,7 @@ impl<'r> Lowerer<'r> {
             inline_blocks: Vec::new(),
             instance_layouts: HashMap::new(),
             ret_ty: None,
+            ret_void: false,
             materialized: HashSet::new(),
             mutated: HashSet::new(),
             has_control_flow: false,
@@ -4972,6 +4976,14 @@ impl<'r> Lowerer<'r> {
                     return Ok(());
                 };
                 let v = self.lower_expr(ret_expr)?;
+                if self.ret_void {
+                    if !self.block_terminated() {
+                        self.run_value_drops()?;
+                        self.drop_temps_here(None);
+                        self.emit_effect(Opcode::Ret, Register(0), Register(0), 0);
+                    }
+                    return Ok(());
+                }
                 // A transparent block can carry the return itself: `return comptime { ..;
                 // return x; }` is a synthesized closure body's shape, and its inner `return`
                 // already ended the block. A second Ret -- or any op after the first -- is
@@ -5243,6 +5255,7 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Lowe
         .any(|(_, ty)| matches!(lowered_ty(ty, registry), Some(LoweredTy::Aggregate(_))));
     lw.memory = lw.has_control_flow || has_aggregate_param || body_constructs_struct(&func.body);
     lw.ret_ty = lw.lower_ty_synth(&func.return_type);
+    lw.ret_void = crate::syntax::is_void_ty(&func.return_type);
     if lw.memory {
         lw.emit_effect(Opcode::BlockStart, Register(0), Register(0), 0); // entry block
     }
