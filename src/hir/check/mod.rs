@@ -28,4 +28,5 @@ pub mod projection;
 pub mod raw;
 pub mod region_traffic;
 pub mod transfer;
+pub mod unused_functions;
 pub mod views;
