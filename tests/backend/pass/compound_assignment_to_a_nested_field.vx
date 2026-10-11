@@ -8,9 +8,8 @@
 // Compound assignment to a field of a field, to a float field through a reference, and to an
 // unsigned number through `*r`. The flat path does `p.x op= v` as `p.x = p.x op v`.
 //
-// Flat path only: the AST path cannot store to a field of a field at all.
-// REQUIRES: flat-codegen
 // RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --check-prefix=VALUES
 // CHECK-NOT: flat-codegen
 
 struct Inner {
@@ -39,6 +38,7 @@ fn main() -> i32 {
   print!("
 ");
   // CHECK: {{^}}nested field: 30{{$}}
+  // VALUES: {{^}}nested field: 30{{$}}
 
   halve(&mut o);
   print!("through a reference: ");
@@ -48,6 +48,7 @@ fn main() -> i32 {
   print!("
 ");
   // CHECK-NEXT: {{^}}through a reference: 29 4.5{{$}}
+  // VALUES-NEXT: {{^}}through a reference: 29 4.5{{$}}
 
   // 4000000000 % 7 is 3 as unsigned, and -1 if the bits were read as signed.
   let mut u : u32 = 4000000000;
@@ -58,5 +59,6 @@ fn main() -> i32 {
   print!("
 ");
   // CHECK-NEXT: {{^}}unsigned through *r: 3{{$}}
+  // VALUES-NEXT: {{^}}unsigned through *r: 3{{$}}
   return 0;
 }
