@@ -1589,7 +1589,7 @@ impl<'a> TypeChecker<'a> {
                 && self.mono.being_checked.insert(inst_name.clone())
             {
                 let saved_edge = self.seam.lowering_edge.take();
-                self.check_function(&mut inst_func);
+                self.check_instance(&generic_func, &mut inst_func);
                 self.seam.lowering_edge = saved_edge;
                 self.mono.being_checked.remove(&inst_name);
                 self.mono.functions.push((inst_func, 0));
@@ -1845,7 +1845,7 @@ impl<'a> TypeChecker<'a> {
                 // An instantiated generic is ordinary code even when the call site sits in
                 // a transfer lowering; the raw:: primitives must not resolve inside it.
                 let saved_edge = self.seam.lowering_edge.take();
-                self.check_function(&mut inst_func);
+                self.check_instance(generic_func, &mut inst_func);
                 self.seam.lowering_edge = saved_edge;
                 self.mono.being_checked.remove(&inst_name);
                 self.mono.functions.push((inst_func, origin_hash));
@@ -2415,6 +2415,29 @@ impl<'a> TypeChecker<'a> {
         found_method
     }
 
+    /// Names a generic function's body by the function's name and where the body starts. Two
+    /// generic methods can share a name, such as two types' `new`, but not a body.
+    fn generic_body_key(template: &Function) -> String {
+        format!(
+            "{}@{:?}",
+            template.name,
+            template.body.first().map(|s| s.span())
+        )
+    }
+
+    /// Checks one instance of the generic function `template`. Every instance checks the same
+    /// body, so a warning an earlier instance already gave is not given again.
+    fn check_instance(&mut self, template: &Function, inst: &mut Function) {
+        let start = self.errors.len();
+        self.check_function(inst);
+        let given = self
+            .mono
+            .warnings_given
+            .entry(Self::generic_body_key(template))
+            .or_default();
+        self.errors.drop_warnings_already_given(start, given);
+    }
+
     /// `generic_method` of `ib`, instantiated at `mapping` for the receiver type `base_ty`,
     /// type-checked and registered unless it already is. Returns it, renamed to its mangled
     /// name, and that name.
@@ -2463,7 +2486,7 @@ impl<'a> TypeChecker<'a> {
             let saved_edge = self.seam.lowering_edge.take();
             // The body's own `let`s overwrite it, and the caller's `let` still needs it.
             let saved_target = self.current_assignment_target.take();
-            self.check_function(&mut func_to_check);
+            self.check_instance(generic_method, &mut func_to_check);
             self.current_assignment_target = saved_target;
             self.seam.lowering_edge = saved_edge;
             self.mono.being_checked.remove(&mangled_sym);

@@ -873,7 +873,37 @@ impl DiagnosticsVec {
             .iter()
             .any(|d| d.level == DiagnosticLevel::Error && d.code == Some(code))
     }
+
+    /// Drops each warning added since `start` that is already in `given`, and adds the rest to
+    /// it. Two warnings are the same when their code, position and message are.
+    pub fn drop_warnings_already_given(
+        &mut self,
+        start: usize,
+        given: &mut std::collections::HashSet<WarningKey>,
+    ) {
+        let mut i = start;
+        while i < self.inner.len() {
+            let d = &self.inner[i];
+            if d.level != DiagnosticLevel::Warning {
+                i += 1;
+                continue;
+            }
+            let at = d.source_span.as_ref().map(|s| (s.line, s.column, s.length));
+            if given.insert((d.code, at, d.message.to_string())) {
+                i += 1;
+            } else {
+                self.inner.remove(i);
+            }
+        }
+    }
 }
+
+/// What makes two warnings the same: code, position (line, column, length) and message.
+pub type WarningKey = (
+    Option<DiagnosticCode>,
+    Option<(usize, usize, usize)>,
+    String,
+);
 
 impl IntoIterator for DiagnosticsVec {
     type Item = Diagnostic;
