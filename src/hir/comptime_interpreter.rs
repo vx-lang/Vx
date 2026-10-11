@@ -2354,13 +2354,22 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             Expr::Closure(_) => ComptimeEvalOutcome::refusal(),
             Expr::AsCast(cast) => {
                 let value = self.expr(&cast.expr);
-                // The legacy value model has no target type, so using its `Int`/`Number`
-                // representation here would silently get narrowing, signedness, pointer, and
-                // tensor casts wrong. Evaluate the operand for effects, then refuse the whole
-                // block until a typed comptime value can model the conversion. This is live
-                // rather than observational because legacy evaluation otherwise drops an
-                // unsupported cast statement and folds a later tail.
-                self.refusal_after([value])
+                let concrete = match (&cast.source_ty, &cast.target_ty) {
+                    (Some(Type::Scalar(from)), Type::Scalar(to)) => value
+                        .value
+                        .concrete
+                        .as_ref()
+                        .and_then(|v| cast_number(v, from, to)),
+                    _ => None,
+                };
+                // A cast the value model cannot answer exactly refuses the whole block, rather
+                // than letting a later tail fold without it.
+                let Some(concrete) = concrete else {
+                    return self.refusal_after([value]);
+                };
+                let mut outcome = self.unknown_after([value]);
+                outcome.value.concrete = Some(concrete);
+                outcome
             }
             Expr::Print(print) => {
                 let args = print
@@ -2445,6 +2454,58 @@ fn comptime_sizeof_bytes(ty: &Type) -> Option<i64> {
         Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => Some(8),
         _ => None,
     }
+}
+
+/// `value as to`, where `value` is a `from`, with the answer the generated code gives. An
+/// integer wraps to the target width. A value is not always one its type can hold, since
+/// arithmetic here is done in `i64`, so a value outside `from` gives no answer. Nor does an
+/// answer outside `i64`, or a float outside the target's range, where the generated code's
+/// answer is undefined.
+fn cast_number(value: &Value, from: &ElementType, to: &ElementType) -> Option<Value> {
+    if *from == ElementType::Bool || *to == ElementType::Bool {
+        return None;
+    }
+    if !from.is_float() {
+        let Value::Int(i) = value else {
+            return None;
+        };
+        let (lo, hi) = int_range(from)?;
+        if (*i as i128) < lo || (*i as i128) > hi {
+            return None;
+        }
+    }
+    if to.is_float() {
+        let x = value.as_f64()?;
+        return Some(Value::Number(if *to == ElementType::F32 {
+            x as f32 as f64
+        } else {
+            x
+        }));
+    }
+    let (lo, hi) = int_range(to)?;
+    let whole = match value {
+        Value::Int(i) => *i as i128,
+        Value::Number(n) if n.is_finite() => {
+            let t = n.trunc() as i128;
+            if t < lo || t > hi {
+                return None;
+            }
+            t
+        }
+        _ => return None,
+    };
+    let wrapped = (whole - lo).rem_euclid(hi - lo + 1) + lo;
+    i64::try_from(wrapped).ok().map(Value::Int)
+}
+
+/// The smallest and largest value of an integer type of at most 64 bits.
+fn int_range(ty: &ElementType) -> Option<(i128, i128)> {
+    let bits = ty.bits().filter(|b| *b <= 64)?;
+    Some(if ty.is_signed_int() {
+        (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+    } else {
+        (0, (1i128 << bits) - 1)
+    })
 }
 
 #[cfg(test)]
