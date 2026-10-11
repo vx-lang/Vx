@@ -1,0 +1,20 @@
+//===- assigning_to_a_tuple_of_places.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Assigning a tuple to a tuple of places follows the rules of each assignment: a place that
+// is not `mut` cannot be assigned.
+//
+// CHECK: Error[E4010] at 18:{{.*}}`b`
+
+fn main() -> i32 {
+  let mut a : i32 = 0;
+  let b : i32 = 0;
+  (a, b) = (1, 2);
+  return a + b;
+}
