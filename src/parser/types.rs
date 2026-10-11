@@ -170,7 +170,23 @@ impl<'a> Parser<'a> {
         }
         if self.match_token(&TokenType::Ampersand) {
             let is_mut = self.match_token(&TokenType::Mut);
-            let inner = self.parse_type()?;
+            let inner = if self.match_token(&TokenType::LeftBracket) {
+                let elem = self.parse_type()?;
+                self.consume(
+                    &TokenType::RightBracket,
+                    "Expected ']' after slice element type",
+                )?;
+                self.uses_slices = true;
+                Type::GenericInstance(
+                    Box::new(Type::Struct(
+                        if is_mut { "SliceMut" } else { "Slice" }.into(),
+                        None,
+                    )),
+                    vec![elem],
+                )
+            } else {
+                self.parse_type()?
+            };
             Ok(Type::Borrow {
                 inner: Box::new(inner),
                 mem_space: None,

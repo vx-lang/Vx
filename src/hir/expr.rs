@@ -665,6 +665,26 @@ impl<'a> TypeChecker<'a> {
         // or perhaps we shouldn't strip it here. Let's revert this coercion so type_mismatch fails again.
 
         // Allow coercing Borrow to Pointer (e.g. &mut T to *mut T)
+        // A slice constructor is an ordinary `Slice<T>`/`SliceMut<T>` aggregate inside a
+        // borrow-aware surface type. This is the one representation-preserving wrap/unwrap:
+        // it does not turn an arbitrary struct into a reference, only the compiler-known backing
+        // nominal of `&[T]` or `&mut [T]`.
+        if let Some((_elem, _)) = crate::syntax::slice_borrow_parts(target) {
+            if let Type::Borrow { inner, .. } = target {
+                if self.is_assignable(inner, source) {
+                    return true;
+                }
+            }
+        }
+        if let (Some((target_elem, target_mut)), Some((source_elem, source_mut))) = (
+            crate::syntax::slice_borrow_parts(target),
+            crate::syntax::slice_borrow_parts(source),
+        ) {
+            if (!target_mut || source_mut) && self.is_assignable(target_elem, source_elem) {
+                return true;
+            }
+        }
+
         if let Type::Pointer(target_inner, target_mem, target_mut) = target {
             if let Type::Borrow {
                 inner: source_inner,

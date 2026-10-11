@@ -18,10 +18,11 @@ use melior::ir::{
 /// back. Without this, `let p : *mut i32 = &mut cell;` loaded `cell` and passed the integer
 /// where a pointer was wanted, which reached LLVM translation as a cast from `i32` to a pointer.
 fn holds_a_reference(gen: &MeliorGenerator<'_>, name: &crate::symbol::Symbol) -> bool {
-    matches!(
-        gen.ast_env.get(name),
-        Some(syntax::Type::Pointer(..) | syntax::Type::Borrow { .. } | syntax::Type::Ref(..))
-    )
+    match gen.ast_env.get(name) {
+        Some(ty @ syntax::Type::Borrow { .. }) => syntax::slice_borrow_parts(ty).is_none(),
+        Some(syntax::Type::Pointer(..) | syntax::Type::Ref(..)) => true,
+        _ => false,
+    }
 }
 
 /// The one value of a rank-0 tensor, for an operation on scalars; any other value as it is.
@@ -319,6 +320,24 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let BorrowExpr { expr, .. } = self;
+        // `&[T]` and `&mut [T]` are already borrow values: their runtime representation is the
+        // two-word Slice/SliceMut aggregate. Method-call desugaring still wraps a receiver in a
+        // BorrowExpr, but taking the address here would turn that fat value into a pointer and
+        // leave the call trying to cast `!llvm.ptr` back to an LLVM struct. Pass the slice value
+        // through instead. An allocated mutable local is read in value context, loading the
+        // aggregate from its slot.
+        if gen.expected_type.is_some_and(|ty| ty != gen.ptr_ty)
+            && gen
+                .infer_ast_type(expr)
+                .as_ref()
+                .is_some_and(|ty| syntax::slice_borrow_parts(ty).is_some())
+        {
+            let prev_lvalue = gen.is_lvalue_context;
+            gen.is_lvalue_context = false;
+            let result = gen.generate_expr(expr, block);
+            gen.is_lvalue_context = prev_lvalue;
+            return result;
+        }
         if let Expr::Identifier(id) = &**expr {
             if gen.allocs.contains(&*id.name) {
                 if let Some((val, val_ty)) = gen.env.get(&*id.name) {
@@ -4431,6 +4450,13 @@ impl<'c> LowerToMelior<'c> for syntax::expr::SizeOfExpr {
             syntax::Type::Scalar(e) => crate::layout::scalar_size_align(e)
                 .map(|(s, _)| s as i64)
                 .unwrap_or(8),
+            syntax::Type::Borrow { inner, .. }
+                if syntax::slice_borrow_parts(&self.target_ty).is_some() =>
+            {
+                gen.type_size_align(inner, 0)
+                    .map(|(s, _)| s as i64)
+                    .unwrap_or(16)
+            }
             syntax::Type::Pointer(..) | syntax::Type::Borrow { .. } | syntax::Type::Ref(..) => 8,
             // A nominal struct (or a monomorphized generic instance of one) gets its *real* layout
             // size, not the old hardcoded `8` — otherwise a `Vec<struct>`'s element buffer sized by

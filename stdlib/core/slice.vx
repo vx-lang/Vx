@@ -1,0 +1,105 @@
+//===- slice.vx - Vx Standard Library -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+import core::marker;
+import core::ops;
+
+/// The `(pointer, length)` backing value of `&[T]`.
+struct Slice<T> {
+  ptr : *const T,
+  len : i64,
+}
+
+/// The `(pointer, length)` backing value of `&mut [T]`.
+struct SliceMut<T> {
+  ptr : *mut T,
+  len : i64,
+}
+
+impl<T> Copy for Slice<T> {}
+
+impl<T> Slice<T> {
+  /// Construct a shared slice. The caller proves that `data..data+len` is readable for the
+  /// lifetime represented by the returned `&[T]`.
+  unsafe fn from_raw_parts(data : *const T, len : i64) -> Slice<T> {
+    return Slice<T> { ptr : data, len : len };
+  }
+
+  fn len(self : &Slice<T>) -> i64 {
+    return self.len;
+  }
+
+  fn as_ptr(self : &Slice<T>) -> *const T {
+    return self.ptr;
+  }
+
+  fn is_empty(self : &Slice<T>) -> bool {
+    return self.len == 0i64;
+  }
+
+  fn get(self : &Slice<T>, index : i32) -> &T {
+    assert(index >= 0 && (index as i64) < self.len, "slice index out of bounds");
+    return unsafe { &self.ptr[index] };
+  }
+}
+
+impl<T> SliceMut<T> {
+  /// Construct a unique slice. The caller proves exclusive access to the range for the lifetime
+  /// represented by the returned `&mut [T]`.
+  unsafe fn from_raw_parts(data : *mut T, len : i64) -> SliceMut<T> {
+    return SliceMut<T> { ptr : data, len : len };
+  }
+
+  fn len(self : &SliceMut<T>) -> i64 {
+    return self.len;
+  }
+
+  fn as_ptr(self : &SliceMut<T>) -> *const T {
+    return self.ptr;
+  }
+
+  fn as_mut_ptr(mut self : &mut SliceMut<T>) -> *mut T {
+    return self.ptr;
+  }
+
+  fn is_empty(self : &SliceMut<T>) -> bool {
+    return self.len == 0i64;
+  }
+
+  fn get(self : &SliceMut<T>, index : i32) -> &T {
+    assert(index >= 0 && (index as i64) < self.len, "slice index out of bounds");
+    return unsafe { &self.ptr[index] };
+  }
+
+  fn get_mut(mut self : &mut SliceMut<T>, index : i32) -> &mut T {
+    assert(index >= 0 && (index as i64) < self.len, "slice index out of bounds");
+    return unsafe { &mut self.ptr[index] };
+  }
+}
+
+impl<T> Index for Slice<T> {
+  type Output = T;
+  fn index(self : &Slice<T>, index : i32) -> &T {
+    assert(index >= 0 && (index as i64) < self.len, "slice index out of bounds");
+    return unsafe { &self.ptr[index] };
+  }
+}
+
+impl<T> Index for SliceMut<T> {
+  type Output = T;
+  fn index(self : &SliceMut<T>, index : i32) -> &T {
+    assert(index >= 0 && (index as i64) < self.len, "slice index out of bounds");
+    return unsafe { &self.ptr[index] };
+  }
+}
+
+impl<T> IndexMut for SliceMut<T> {
+  type Output = T;
+  fn index_mut(mut self : &mut SliceMut<T>, index : i32) -> &mut T {
+    return self.get_mut(index);
+  }
+}

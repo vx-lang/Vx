@@ -1821,6 +1821,9 @@ impl<'c> MeliorGenerator<'c> {
         }
         match ty {
             syntax::Type::Scalar(e) => scalar_size_align(e),
+            syntax::Type::Borrow { inner, .. } if syntax::slice_borrow_parts(ty).is_some() => {
+                self.type_size_align(inner, depth)
+            }
             syntax::Type::Pointer(..) | syntax::Type::Borrow { .. } | syntax::Type::Ref(..) => {
                 Some((8, 8))
             }
@@ -2038,6 +2041,9 @@ impl<'c> MeliorGenerator<'c> {
             syntax::Type::Pinned(inner, _top) => {
                 let inner_ty_str = self.lower_type(inner)?.to_string();
                 inner_ty_str
+            }
+            syntax::Type::Borrow { inner, .. } if syntax::slice_borrow_parts(ty).is_some() => {
+                return self.lower_type(inner);
             }
             syntax::Type::Borrow { inner, .. } | syntax::Type::Pointer(inner, _, _) => {
                 // A raw pointer's placement is a fact for the type checker, not for the C ABI:

@@ -10,6 +10,7 @@ import core::iter::traits;
 import core::marker;
 import core::mem;
 import core::ops;
+import core::slice;
 
 // Memory management is delegated to the type-erased byte allocator in
 // `stdlib/rust_core` (collections/vec.rs). Rust owns alignment, growth doubling,
@@ -61,28 +62,37 @@ Vec<T> {
     return self.data;
   }
 
-  /// A mutable reference to the first element.
-  ///
-  /// Named for what it will return once slices exist (Vx#534); today it hands back the first
-  /// element rather than a `(pointer, length)` pair, so the length has to be carried
-  /// separately by whoever reads it.
-  fn as_mut_slice(self : &mut Vec<T>) -> &mut T {
-    let ptr : *mut T = self.data;
-    return unsafe { &mut *ptr };
+  /// A mutable, length-carrying view of every initialized element.
+  fn as_mut_slice(self : &mut Vec<T>) -> &mut [T] {
+    return unsafe { SliceMut<T>::from_raw_parts(self.data, self.len as i64) };
   }
 
-  /// Gives up the vector without freeing its buffer, and returns its first element as
-  /// `as_mut_slice` does. Nothing frees the buffer, so the reference stays valid.
+  /// Gives up the vector without freeing its buffer, returning its first element as before.
+  /// `leak_slice` is the length-carrying form.
   fn leak(self : Vec<T>) -> &mut T {
     let ptr : *mut T = self.data;
     forget(self);
     return unsafe { &mut *ptr };
   }
 
-  /// A reference to the first element, with the caveat `as_mut_slice` describes.
-  fn as_slice(self : &Vec<T>) -> &T {
+  /// Gives up the vector and returns its allocation as a raw pointer.
+  fn leak_ptr(self : Vec<T>) -> *mut T {
     let ptr : *mut T = self.data;
-    return unsafe { &*ptr };
+    forget(self);
+    return ptr;
+  }
+
+  /// Gives up the vector without freeing its buffer and returns a length-carrying view.
+  fn leak_slice(self : Vec<T>) -> &mut [T] {
+    let ptr : *mut T = self.data;
+    let len = self.len as i64;
+    forget(self);
+    return unsafe { SliceMut<T>::from_raw_parts(ptr, len) };
+  }
+
+  /// A shared, length-carrying view of every initialized element.
+  fn as_slice(self : &Vec<T>) -> &[T] {
+    return unsafe { Slice<T>::from_raw_parts(self.data, self.len as i64) };
   }
 
   /// Append a value, growing the buffer when it is full.
