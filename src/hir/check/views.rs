@@ -206,12 +206,11 @@ impl<'a> TypeChecker<'a> {
                 self.lookup(owner).map(|(t, _)| t),
                 Some(t) if Self::is_ref_type(t)
             );
-            if is_mut
-                && !through_reference
-                && self.lookup(owner).is_some()
-                && !self.is_mutable(owner)
-            {
-                self.report_read_only(owner, "a view of it cannot be declared `mut`", span);
+            if is_mut && !through_reference && self.lookup(owner).is_some() {
+                self.changed_vars.insert(owner.to_string());
+                if !self.is_mutable(owner) {
+                    self.report_read_only(owner, "a view of it cannot be declared `mut`", span);
+                }
             }
         }
         self.borrow_for_view(name, &view, is_mut, span);

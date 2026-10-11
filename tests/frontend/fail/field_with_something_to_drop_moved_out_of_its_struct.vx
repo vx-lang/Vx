@@ -1,0 +1,59 @@
+//===- field_with_something_to_drop_moved_out_of_its_struct.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Reading a field that has something to drop moves it out of its struct. Two such moves are
+// refused, because nothing could stop the field being dropped twice: one out of a value with no
+// name (E4013), which drops all its fields at the end of the statement, and one through a
+// reference (E4008), which does not own the field.
+
+import core::ops;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print(self.id);
+  }
+}
+
+struct Pair {
+  a : Noisy,
+  b : Noisy,
+}
+
+fn make() -> Pair {
+  return Pair {
+    a : Noisy {
+      id : 1
+    },
+    b : Noisy {
+      id : 2
+    }
+  };
+}
+
+fn field_of_a_call_result() -> i32 {
+  // CHECK-DAG: Error[E4013] at [[@LINE+1]]:18: this field cannot be moved out of a value with no name
+  let x = make().a;
+  return x.id;
+}
+
+fn field_through_a_reference(r : &Pair) -> i32 {
+  // CHECK-DAG: Error[E4008] at [[@LINE+1]]:16: this field cannot be moved out through a reference
+  let x = (*r).a;
+  return x.id;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: 2 error(s) emitted

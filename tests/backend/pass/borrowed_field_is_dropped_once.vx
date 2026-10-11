@@ -1,0 +1,51 @@
+//===- borrowed_field_is_dropped_once.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A field read through a borrow, `&p.a`, stays owned by `p`, so each `Noisy` is dropped once,
+// when `p` is.
+//
+// EXPECT: read=1; drop=1; drop=2; end
+
+import core::ops;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("drop=");
+    print(self.id);
+    print!("; ");
+  }
+}
+
+struct Pair {
+  a : Noisy,
+  b : Noisy,
+}
+
+fn run() -> void {
+  let p = Pair {
+    a : Noisy {
+      id : 1
+    },
+    b : Noisy {
+      id : 2
+    }
+  };
+  let x = &p.a;
+  print!("read=");
+  print(x.id);
+  print!("; ");
+}
+
+fn main() -> i32 {
+  run();
+  print!("end");
+  return 0;
+}

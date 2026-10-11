@@ -127,6 +127,7 @@ impl<'a> TypeChecker<'a> {
         self.drops_enter_block(stmts);
         self.borrow.enter_block(Self::block_uses(stmts, tail));
 
+        let mut declared = std::collections::HashMap::new();
         for (i, s) in stmts.iter_mut().enumerate() {
             self.borrow.set_stmt(i);
             self.drops_set_stmt(i);
@@ -139,6 +140,7 @@ impl<'a> TypeChecker<'a> {
                 );
                 break;
             }
+            self.warn_if_declared_twice(s, &mut declared);
 
             // Only a last expression with no `;` gives the block its value.
             ret_ty = Type::Struct("void".into(), None);
@@ -337,8 +339,9 @@ impl<'a> TypeChecker<'a> {
                 for (_, arg_expr, _) in &mut e.inputs {
                     self.check_expr_type_flag(arg_expr, consume);
                 }
-                // Typecheck clobbers and mark them as mutated if needed
+                // Typecheck clobbers. The block writes to each of them, so each one changes.
                 for clobber in &mut e.clobbers {
+                    self.record_change(clobber);
                     self.check_expr_type_flag(clobber, consume);
                 }
 

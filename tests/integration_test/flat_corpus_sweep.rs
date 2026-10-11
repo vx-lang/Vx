@@ -159,6 +159,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/trait_topologies.vx",
     // A `for` loop over `v.iter()`: the flat path declines `Vec` iteration by reference.
     "frontend/pass/vec_iterator_borrow_ends_at_last_use.vx",
+    // `&&x` borrows a borrow, and the flat path declines a borrow of anything but a tensor.
+    "frontend/pass/warning_for_a_borrow_of_a_borrow.vx",
     // A parameter with run-time extents (Vx#409). It used to compile through the flat path
     // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
     // signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one function, plus

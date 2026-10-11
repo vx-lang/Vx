@@ -7,14 +7,14 @@
 //===----------------------------------------------------------------------===//
 //! Shared "place" helpers — one derivation of *which memory an lvalue names* and *whether two paths
 //! overlap*, used by both the borrow checker (conflict detection, `expr.rs`) and the flat lowerer
-//! (§5.4 alias-scope disjointness, `flatten.rs`).
+//! (alias-scope disjointness, `flatten.rs`).
 //!
-//! `scalar_references_flat.md` §16.2 recorded that these facts were being computed twice — the checker's
-//! `extract_base_and_path` / its three inline overlap loops, and the lowerer's `place_base_path` /
-//! `paths_may_alias`. Both derivations were individually sound but duplicated; this module is the single
-//! source both now call. The borrow checker keeps its `Vec<String>` representation (its `BorrowRecord`
-//! stores string paths) by adapting `base_and_path` at the boundary; the overlap predicate is generic
-//! over the path element, so `Vec<String>` and `Vec<Symbol>` share it without conversion.
+//! These facts used to be computed twice -- the checker's `extract_base_and_path` and its three
+//! inline overlap loops, and the lowerer's `place_base_path` / `paths_may_alias`. Both were sound
+//! but duplicated; this module is the single source both now call. The borrow checker keeps its
+//! `Vec<String>` representation (its `BorrowRecord` stores string paths) by adapting
+//! `base_and_path` at the boundary; the overlap predicate is generic over the path element, so
+//! `Vec<String>` and `Vec<Symbol>` share it without conversion.
 use crate::symbol::Symbol;
 use crate::syntax::Expr;
 

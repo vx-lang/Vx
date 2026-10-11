@@ -770,6 +770,8 @@ pub enum Pattern {
 pub struct MatchArm {
     pub pattern: Pattern,
     pub body: Vec<Statement>,
+    /// The arm's first token. `Span::default()` for an arm the compiler wrote itself.
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1394,6 +1396,7 @@ impl Expr {
                     .map(|arm| MatchArm {
                         pattern: arm.pattern.clone(), // Patterns don't currently have types to substitute
                         body: arm.body.iter().map(|s| s.substitute(mapping)).collect(),
+                        span: arm.span,
                     })
                     .collect(),
                 span: e.span,

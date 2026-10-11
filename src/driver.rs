@@ -968,7 +968,21 @@ impl CompilerDriver {
         // Everything that is about the program as a whole rather than one function, before any
         // body is checked. Shared with the parallel pipeline so the two frontends cannot drift.
         checker.check_whole_program_declarations();
+        // Found before the checks rename calls to generic instances, reported after them.
+        let mut unused_functions = crate::diagnostic::DiagnosticsVec::new();
+        crate::hir::check::unused_functions::warn_functions_nothing_calls(
+            ast,
+            &mut unused_functions,
+        );
 
+        // Taken before checking: a comptime function without parameters has its block folded
+        // in place, after which its body no longer looks like one.
+        let comptime_fns: std::collections::HashSet<crate::symbol::Symbol> = ast
+            .functions
+            .iter()
+            .filter(|f| crate::hir::TypeChecker::is_comptime_fn(f))
+            .map(|f| f.name.clone())
+            .collect();
         for f in &mut ast.functions {
             checker.check_function(f);
         }
@@ -1092,6 +1106,10 @@ impl CompilerDriver {
             .errors
             .iter()
             .any(|d| d.level == DiagnosticLevel::Error);
+        // A program with a type error is unfinished, and the error is what it needs to hear.
+        if !has_errors {
+            checker.errors.inner.extend(unused_functions.inner);
+        }
 
         // The machine-readable verdict, before the human-readable rendering below: one record on
         // stdout carrying every diagnostic plus the resolved staging routes, so an admission
@@ -1168,6 +1186,10 @@ impl CompilerDriver {
             .filter(|f| !crate::hir::TypeChecker::is_comptime_lambda_body(f))
             .collect();
         new_functions.extend(orig_functions);
+        // Every call to a comptime function has folded, so it is never emitted.
+        new_functions.retain(|f| {
+            !comptime_fns.contains(&f.name) && !crate::hir::TypeChecker::is_comptime_fn(f)
+        });
         ast.functions = new_functions;
         ast.structs.extend(checker.mono.generated_structs);
 

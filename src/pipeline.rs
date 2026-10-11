@@ -187,6 +187,15 @@ fn run_frontend_on(
     // Before any body: a body checked against an ambiguous declaration table has been checked
     // against a coin flip.
     let mut warnings = timed("decl_check", || declaration_check_phase(&session, &env))?;
+    // Found before the checks rename calls to generic instances, and reported after them only if
+    // they found no error, as in the driver.
+    let mut unused_functions = crate::diagnostic::DiagnosticsVec::new();
+    for m in modules.iter().filter(|m| match &reported {
+        Reported::EveryModule => true,
+        Reported::OnlyEntry(name) => m.module_path == *name,
+    }) {
+        crate::hir::check::unused_functions::warn_functions_nothing_calls(m, &mut unused_functions);
+    }
 
     let Checked {
         mut checks,
@@ -195,6 +204,7 @@ fn run_frontend_on(
         type_check_phase(&mut modules, &session, &env, sched, &reported)
     })?;
     warnings.extend(body_warnings);
+    warnings.extend(unused_functions.inner);
     let (merged_slow, merged_gen, merged_off, slow_mappings, gen_mappings) =
         timed("dedup_barrier", || deduplication_phase(&checks, &session));
 
@@ -1238,7 +1248,10 @@ fn check_one_function(
         .mono
         .functions
         .into_iter()
-        .filter(|(f, _)| !crate::hir::TypeChecker::is_comptime_lambda_body(f))
+        .filter(|(f, _)| {
+            !crate::hir::TypeChecker::is_comptime_lambda_body(f)
+                && !crate::hir::TypeChecker::is_comptime_fn(f)
+        })
         .collect();
     let gen_structs = checker.mono.generated_structs;
     let capacity_summaries = std::mem::take(&mut checker.traffic.capacity_summaries);

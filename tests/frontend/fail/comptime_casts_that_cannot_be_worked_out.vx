@@ -11,14 +11,14 @@
 
 fn main() -> i32 {
   // -1 as a u64 is 2^64 - 1, which the compile-time i64 cannot hold.
-  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
+  // CHECK: Error[E3033] at [[@LINE+3]]:{{.*}}cannot be evaluated
   let a = comptime {
     let minus_one : i64 = -1i64;
     minus_one as u64
   };
 
   // 1e30 is past the top of an i64, where the generated code's answer is undefined.
-  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
+  // CHECK: Error[E3033] at [[@LINE+3]]:{{.*}}cannot be evaluated
   let b = comptime {
     let huge : f64 = 1000000000000000000000000000000.0;
     huge as i64
@@ -26,7 +26,7 @@ fn main() -> i32 {
 
   // At compile time `top + 1` is worked out in i64, giving 2147483648, which no i32 holds.
   // Casting it would give an answer the program never computes.
-  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
+  // CHECK: Error[E3033] at [[@LINE+3]]:{{.*}}cannot be evaluated
   let c = comptime {
     let top : i32 = 2147483647;
     (top + 1) as i64
