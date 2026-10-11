@@ -789,18 +789,29 @@ impl<'a> Parser<'a> {
                 is_mut,
                 span: amp_span,
             }));
-        } else if self.match_token(&TokenType::AndAnd) {
-            // `&&x` borrows a borrow; the lexer made the two `&`s one token.
+        } else if self.check(&TokenType::AndAnd) {
+            // `&&x` borrows a borrow; the lexer made the two `&`s one token. The outer borrow is
+            // the first `&` and the inner one the second.
+            let (line, column) = (self.peek().line, self.peek().column);
+            self.advance();
             let is_mut = self.match_token(&TokenType::Mut);
             let inner = self.parse_primary_expr()?;
             return Ok(Expr::Borrow(BorrowExpr {
                 expr: Box::new(Expr::Borrow(BorrowExpr {
                     expr: Box::new(inner),
                     is_mut,
-                    span: Span::default(),
+                    span: Span {
+                        line,
+                        column: column + 1,
+                        length: 1,
+                    },
                 })),
                 is_mut: false,
-                span: Span::default(),
+                span: Span {
+                    line,
+                    column,
+                    length: 1,
+                },
             }));
         } else if self.check(&TokenType::Star) {
             // The `*` token, so a diagnostic about the dereference points at it.

@@ -1073,6 +1073,20 @@ impl<'a> TypeChecker<'a> {
                 self.allow_cross_topology |= borrows_placed;
                 let inner_ty = self.check_expr_type_flag(inner, false);
                 self.allow_cross_topology = old_allow;
+                // Quiet when a reference to a reference is what was asked for, as in
+                // `let q : &&i64 = &&a;`.
+                let asked_for = matches!(
+                    &self.expected_type,
+                    Some(Type::Borrow { inner, .. }) if matches!(**inner, Type::Borrow { .. })
+                );
+                if matches!(**inner, Expr::Borrow(_)) && !asked_for && !self.speculating {
+                    self.errors.warn(
+                        crate::diagnostic::DiagnosticCode::W1006,
+                        "this borrows a borrow: `&&x` is a reference to a reference, where `&x` \
+                         was probably meant",
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                }
                 if *is_mut {
                     if let Some(root) = self.read_only_root(inner) {
                         self.report_read_only(&root, "it cannot be borrowed `&mut`", span);
