@@ -1272,6 +1272,9 @@ impl<'a> Parser<'a> {
                             span: Span::default(),
                         })
                     }
+                    TokenType::Unknown('"') => {
+                        return Err(self.error_at(&token, super::UNCLOSED_STRING))
+                    }
                     _ => {
                         return Err(self.error_at(
                             &token,
