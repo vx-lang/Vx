@@ -5,7 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Byte buffers a `comptime` block must refuse rather than answer wrongly.
+// Byte buffers a `comptime` block must refuse rather than answer wrongly. Each error points at
+// the value the block ends with.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
@@ -15,7 +16,6 @@ fn fresh() -> *mut i8 {
 
 // `k` is only known at run time, so either branch may have run, and the byte is not known.
 fn depends_on(k : i32) -> i32 {
-  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
   let s = comptime {
     let buf = "ab" as *mut i8;
     if k > 0 {
@@ -23,6 +23,7 @@ fn depends_on(k : i32) -> i32 {
     } else {
       unsafe { buf[0i64] = 66i8; }
     }
+    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
     buf as *const i8
   };
   print!(s);
@@ -31,23 +32,22 @@ fn depends_on(k : i32) -> i32 {
 
 fn main() -> i32 {
   // A write past the end of the buffer.
-  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}a statement the evaluator cannot run
   let a = comptime {
     let buf = "ab" as *mut i8;
     unsafe { buf[5i64] = 0i8; }
+    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}a statement the evaluator cannot run
     buf as *const i8
   };
 
   // Its NUL is overwritten, so the text has no end to be written out with.
-  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}not one that can be written as a constant
   let b = comptime {
     let buf = "ab" as *mut i8;
     unsafe { buf[2i64] = 65i8; }
+    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}not one that can be written as a constant
     buf as *const i8
   };
 
   // 100000 buffers of 21 bytes is past the 1 MiB one `comptime` block may allocate.
-  // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
   let c = comptime {
     let mut i = 0i64;
     let mut last = fresh();
@@ -58,6 +58,7 @@ fn main() -> i32 {
       last = fresh();
       i = i + 1i64;
     }
+    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
     last as *const i8
   };
   return 0;
