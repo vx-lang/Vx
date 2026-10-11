@@ -1,0 +1,80 @@
+//===- borrows_passed_as_raw_pointers_end_with_the_call.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A borrow passed to a raw-pointer parameter, written `&mut c` or `(&mut c) as *mut T`,
+// ends when the call returns if the call returns a plain number. This holds for a Vx
+// function, a method and a function from an `extern` block. A raw pointer passed by value is a
+// copy, so it borrows nothing.
+//
+// CHECK-NOT: Error
+// CHECK-LABEL: func.func @main
+
+extern {
+  safe fn store_count(count : *mut u64) -> i32;
+  safe fn lookup(table : *mut i8, key : i32) -> *mut i8;
+}
+
+fn fill(p : *mut u8, n : u64) -> u64 {
+  unsafe { *p = 7u8; }
+  return n;
+}
+
+struct Sink {
+  n : u64,
+}
+
+impl Sink {
+  fn put(self : &Sink, p : *mut u8) -> u64 {
+    unsafe { *p = 7u8; }
+    return self.n;
+  }
+}
+
+fn cast_borrow_passed_to_a_method_twice() -> u64 {
+  let s = Sink {
+    n : 1
+  };
+  let mut b : u8 = 0;
+  let got = s.put((&mut b) as *mut u8);
+  let again = s.put((&mut b) as *mut u8);
+  let seen = b as u64;
+  return got + again + seen;
+}
+
+fn cast_borrow_passed_twice() -> u64 {
+  let mut b : u8 = 0;
+  let got = fill((&mut b) as *mut u8, 1);
+  let again = fill((&mut b) as *mut u8, 1);
+  let seen = b as u64;
+  return got + again + seen;
+}
+
+fn borrow_passed_to_an_extern_function() -> i32 {
+  let mut c : u64 = 99;
+  let status = store_count(&mut c);
+  let seen = c;
+  return status + (seen as i32);
+}
+
+fn pointer_passed_by_value_while_a_result_is_used(table : *mut i8) -> i32 {
+  let first = lookup(table, 1);
+  let second = lookup(table, 2);
+  let third = lookup(first, 3);
+  let fourth = lookup(second, 4);
+  let _ = lookup(third, 5);
+  let _ = lookup(fourth, 6);
+  return 0;
+}
+
+fn main() -> i32 {
+  print(cast_borrow_passed_twice());
+  print(cast_borrow_passed_to_a_method_twice());
+  print(borrow_passed_to_an_extern_function());
+  return 0;
+}

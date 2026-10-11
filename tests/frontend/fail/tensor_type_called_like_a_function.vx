@@ -1,0 +1,17 @@
+//===- tensor_type_called_like_a_function.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor type followed by `()` is not a constructor. It used to compile and
+// build a tensor with no dimensions, dropping the shape written in the type.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: Error at 15:30: `Tensor<f32, [2, 2]>` is built with `Tensor<f32, [2, 2]>::new()` for zeroed storage or `Tensor<f32, [2, 2]>::uninit()` for storage left as it was found
+
+fn main() -> i32 {
+  let t = Tensor<f32, [2, 2]>();
+  return 0;
+}

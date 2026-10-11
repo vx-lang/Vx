@@ -1619,6 +1619,25 @@ impl<'c> LowerToMelior<'c> for RelationalOpExpr {
             || final_ty.to_string().contains("f16")
             || final_ty.to_string().contains("bf16");
 
+        // `arith.cmpi` takes only integers. Two raw pointers compare their addresses, as
+        // unsigned numbers.
+        if final_ty == gen.ptr_ty {
+            let pred = op
+                .get_predicate(false, true)
+                .expect("every relational operator has a predicate");
+            let i1_ty = gen.i1_ty;
+            let cmp = OperationBuilder::new("llvm.icmp", gen.loc())
+                .add_operands(&[lhs_val, rhs_val])
+                .add_results(&[i1_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "predicate"),
+                    IntegerAttribute::new(gen.i64_ty, pred).into(),
+                )])
+                .build()?;
+            let cmp_ref = block.append_operation(cmp);
+            return Ok((cmp_ref.result(0)?.into(), i1_ty, block));
+        }
+
         let is_unsigned = matches!(operand_ty, Some(e) if !e.is_float() && !e.is_signed_int());
         let mut builder = OperationBuilder::new(op.get_op_name(is_float, false), gen.loc());
         builder = builder.add_operands(&[lhs_val, rhs_val]);
@@ -2791,22 +2810,20 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let mut dims_count = 0;
 
             let mut current_b = block;
-            if args.len() == 1 {
-                if let Expr::Array(arr) = &args[0] {
-                    dims_count = arr.elements.len();
-                    for el in &arr.elements {
-                        let (mut val, ty, new_b) = gen.generate_expr(el, current_b)?;
-                        current_b = new_b;
-                        if ty.to_string() != "index" {
-                            let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
-                                .add_operands(&[val])
-                                .add_results(&[Type::index(gen.context)])
-                                .build()
-                                .unwrap();
-                            val = current_b.append_operation(cast_op).result(0)?.into();
-                        }
-                        dynamic_sizes.push(val);
+            if let [Expr::Array(arr)] = args {
+                dims_count = arr.elements.len();
+                for el in &arr.elements {
+                    let (mut val, ty, new_b) = gen.generate_expr(el, current_b)?;
+                    current_b = new_b;
+                    if ty.to_string() != "index" {
+                        let cast_op = OperationBuilder::new("arith.index_cast", gen.loc())
+                            .add_operands(&[val])
+                            .add_results(&[Type::index(gen.context)])
+                            .build()
+                            .unwrap();
+                        val = current_b.append_operation(cast_op).result(0)?.into();
                     }
+                    dynamic_sizes.push(val);
                 }
             } else if !args.is_empty() {
                 dims_count = args.len();
@@ -2909,7 +2926,29 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             //     contiguous buffer so downstream ops see row-major data.
             // See GitHub #148.
             let is_transpose = **name == *"transpose";
-            let (arg_val, expr_ty, block) = gen.generate_expr(&args[0], block)?;
+            let (arg_val, mut expr_ty, block) = gen.generate_expr(&args[0], block)?;
+            // A `let mut` tensor is a slot holding the tensor, and the slot keeps only `?`
+            // extents. The shape below is read off the memref type, so put the static extents
+            // the Vx type still knows back on it.
+            let mut arg_val = load_tensor_slot(gen, &block, arg_val, &mut expr_ty)?;
+            if expr_ty.to_string().contains('?') {
+                if let Some(syntax::Type::Tensor(_, dims, _)) = gen.infer_ast_type(&args[0]) {
+                    let extents: Option<Vec<&str>> = dims.iter().map(|d| d.literal()).collect();
+                    let el = extract_mlir_element_type(&expr_ty.to_string())
+                        .unwrap_or_else(|e| panic!("{}", e));
+                    if let Some(extents) = extents {
+                        let static_str = format!("memref<{}x{}>", extents.join("x"), el);
+                        let static_ty = Type::parse(gen.context, &static_str)
+                            .ok_or_else(|| LowerError::ParseType(static_str.clone()))?;
+                        let cast = OperationBuilder::new("memref.cast", gen.loc())
+                            .add_operands(&[arg_val])
+                            .add_results(&[static_ty])
+                            .build()?;
+                        arg_val = block.append_operation(cast).result(0)?.into();
+                        expr_ty = static_ty;
+                    }
+                }
+            }
             let expr_ty_str = expr_ty.to_string();
             let el_ty_str =
                 extract_mlir_element_type(&expr_ty_str).unwrap_or_else(|e| panic!("{}", e));
@@ -3959,6 +3998,22 @@ pub(crate) fn fit_payload_to_slot_text<'c>(
             .add_results(&[slot_ty])
             .build()?;
         return Ok(block.append_operation(cast).result(0)?.into());
+    }
+    // A float in an integer slot goes in as its bits.
+    let mut payload_val = payload_val;
+    let mut payload_ty = *payload_ty;
+    let payload_text = payload_ty.to_string();
+    if crate::codegen::generator::is_float_text(&payload_text) && int_bits(&slot_text).is_some() {
+        let bits = crate::codegen::generator::scalar_type_bits(&payload_text)
+            .ok_or_else(|| LowerError::from(format!("a float of no width: {payload_text}")))?;
+        let as_int = Type::parse(gen.context, &format!("i{bits}"))
+            .ok_or_else(|| LowerError::ParseType("Type::parse failed".to_string()))?;
+        let cast = OperationBuilder::new("arith.bitcast", gen.loc())
+            .add_operands(&[payload_val])
+            .add_results(&[as_int])
+            .build()?;
+        payload_val = block.append_operation(cast).result(0)?.into();
+        payload_ty = as_int;
     }
     let (Some(have), Some(want)) = (int_bits(&payload_ty.to_string()), int_bits(&slot_text)) else {
         return Ok(payload_val);

@@ -1,0 +1,88 @@
+//===- assign_to_a_field_of_a_field.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Assigning to a field of a field (`o.inner.n = 5`): two and three levels deep, with a right
+// side that reads the same field, and through `&mut self`. The other fields keep their values.
+// The AST path (`--legacy-codegen`) used to crash on these.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+struct Inner {
+  n : i32,
+  m : i32,
+}
+
+struct Outer {
+  inner : Inner,
+  k : i32,
+}
+
+struct Top {
+  outer : Outer,
+}
+
+impl Outer {
+  fn set_n(self : &mut Outer, v : i32) -> void {
+    self.inner.n = v;
+  }
+}
+
+fn main() -> i32 {
+  let mut o = Outer {
+    inner: Inner {
+      n: 10, m: 20
+    }, k: 30
+  };
+  o.inner.n = 5;
+  print!("two levels: ");
+  print(o.inner.n);
+  print!(" ");
+  print(o.inner.m);
+  print!(" ");
+  print(o.k);
+  print!("
+");
+  // CHECK: {{^}}two levels: 5 20 30{{$}}
+
+  o.inner.m = o.inner.m * 3;
+  print!("reads itself: ");
+  print(o.inner.n);
+  print!(" ");
+  print(o.inner.m);
+  print!("
+");
+  // CHECK-NEXT: {{^}}reads itself: 5 60{{$}}
+
+  let mut t = Top {
+    outer: Outer {
+      inner: Inner {
+        n: 1, m: 2
+      }, k: 3
+    }
+  };
+  t.outer.inner.m = 7;
+  print!("three levels: ");
+  print(t.outer.inner.n);
+  print!(" ");
+  print(t.outer.inner.m);
+  print!(" ");
+  print(t.outer.k);
+  print!("
+");
+  // CHECK-NEXT: {{^}}three levels: 1 7 3{{$}}
+
+  o.set_n(42);
+  print!("through self: ");
+  print(o.inner.n);
+  print!(" ");
+  print(o.inner.m);
+  print!("
+");
+  // CHECK-NEXT: {{^}}through self: 42 60{{$}}
+  return 0;
+}

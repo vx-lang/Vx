@@ -64,6 +64,14 @@ pub extern "C" fn print_u64(val: u64) -> i32 {
     0
 }
 
+/// A `bool`, widened to an `i32` by the caller: prints `true` or `false`, as Rust does.
+#[no_mangle]
+pub extern "C" fn print_bool(val: i32) -> i32 {
+    print!("{}", val != 0);
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    0
+}
+
 #[no_mangle]
 pub extern "C" fn print_f32(val: f32) -> i32 {
     print!("{}", val);

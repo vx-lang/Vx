@@ -67,23 +67,23 @@ with different settings, which a large build does by accident more often than an
 like:</p>
 
 <!-- vx-doctest: skip (C++) -->
-<pre><code>// buffer.h
-struct Buffer {
-#ifdef LARGE
-  char bytes[4096];
-#else
-  char bytes[64];
-#endif
+<pre><code><span class="c">// buffer.h</span>
+<span class="k">struct</span> <span class="t">Buffer</span> {
+<span class="k">#ifdef</span> LARGE
+  <span class="t">char</span> bytes[<span class="n">4096</span>];
+<span class="k">#else</span>
+  <span class="t">char</span> bytes[<span class="n">64</span>];
+<span class="k">#endif</span>
 };
-inline int capacity() { return sizeof(Buffer); }
+<span class="k">inline</span> <span class="t">int</span> <span class="f">capacity</span>() { <span class="k">return</span> <span class="k">sizeof</span>(<span class="t">Buffer</span>); }
 
-// a.cpp, compiled with -DLARGE
-#include "buffer.h"
-int from_a() { return capacity(); }
+<span class="c">// a.cpp, compiled with -DLARGE</span>
+<span class="k">#include</span> <span class="n">"buffer.h"</span>
+<span class="t">int</span> <span class="f">from_a</span>() { <span class="k">return</span> <span class="f">capacity</span>(); }
 
-// b.cpp, compiled without it
-#include "buffer.h"
-int from_b() { return capacity(); }</code></pre>
+<span class="c">// b.cpp, compiled without it</span>
+<span class="k">#include</span> <span class="n">"buffer.h"</span>
+<span class="t">int</span> <span class="f">from_b</span>() { <span class="k">return</span> <span class="f">capacity</span>(); }</code></pre>
 
 <p>A <code>main</code> prints <code>from_a()</code> and <code>from_b()</code>. With GCC 15 on
 Linux:</p>
@@ -189,27 +189,27 @@ with one thread, with four, and on both of Vx's code generators.</p>
 two modules implement the same trait for the same type, one returning 1 and one returning 2:</p>
 
 <!-- vx-doctest: skip (four files) -->
-<pre><code>// shape.vx
-struct Point { x : i32, y : i32, }
-trait Describe { fn describe(self : &amp;Self) -&gt; i32; }
-fn make() -&gt; Point { return Point { x : 1, y : 2 }; }
+<pre><code><span class="c">// shape.vx</span>
+<span class="k">struct</span> <span class="t">Point</span> { x : <span class="t">i32</span>, y : <span class="t">i32</span>, }
+<span class="k">trait</span> <span class="t">Describe</span> { <span class="k">fn</span> <span class="f">describe</span>(<span class="k">self</span> : &amp;<span class="t">Self</span>) -&gt; <span class="t">i32</span>; }
+<span class="k">fn</span> <span class="f">make</span>() -&gt; <span class="t">Point</span> { <span class="k">return</span> <span class="t">Point</span> { x : <span class="n">1</span>, y : <span class="n">2</span> }; }
 
-// left.vx
-import shape;
-impl Describe for Point { fn describe(self : &amp;Point) -&gt; i32 { return 1; } }
-fn from_left(p : &amp;Point) -&gt; i32 { return p.describe(); }
+<span class="c">// left.vx</span>
+<span class="k">import</span> shape;
+<span class="k">impl</span> <span class="t">Describe</span> <span class="k">for</span> <span class="t">Point</span> { <span class="k">fn</span> <span class="f">describe</span>(<span class="k">self</span> : &amp;<span class="t">Point</span>) -&gt; <span class="t">i32</span> { <span class="k">return</span> <span class="n">1</span>; } }
+<span class="k">fn</span> <span class="f">from_left</span>(p : &amp;<span class="t">Point</span>) -&gt; <span class="t">i32</span> { <span class="k">return</span> p.<span class="f">describe</span>(); }
 
-// right.vx: the same, but it returns 2 and the function is from_right
+<span class="c">// right.vx: the same, but it returns 2 and the function is from_right</span>
 
-// main.vx
-import shape;
-import left;
-import right;
-fn main() -&gt; i32 {
-  let p = make();
-  print(from_left(&amp;p));
-  print(from_right(&amp;p));
-  return 0;
+<span class="c">// main.vx</span>
+<span class="k">import</span> shape;
+<span class="k">import</span> left;
+<span class="k">import</span> right;
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> p = <span class="f">make</span>();
+  <span class="f">print</span>(<span class="f">from_left</span>(&amp;p));
+  <span class="f">print</span>(<span class="f">from_right</span>(&amp;p));
+  <span class="k">return</span> <span class="n">0</span>;
 }</code></pre>
 
 <p>Vx never picks one silently. The program is refused with E3035 in both import orders, at one

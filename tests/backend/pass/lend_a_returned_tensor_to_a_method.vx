@@ -1,0 +1,36 @@
+//===- lend_a_returned_tensor_to_a_method.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor with a written shape, returned from a function, lent to a method that takes any
+// shape (`copy` takes `&Tensor<T, [?, ?]>`). The AST path used to fail MLIR verification on
+// the cast between the two shapes.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+import std::tensor;
+
+fn counted() -> Tensor<f32, [2, 2]> {
+  let mut t = Tensor<f32, [2, 2]>::uninit();
+  t[0][0] = 1.0;
+  t[1][1] = 4.0;
+  return t;
+}
+
+fn main() -> i32 {
+  let src = counted();
+  let mut dst = Tensor<f32, [2, 2]>::uninit();
+  dst.fill(0.0);
+  dst.copy(&src);
+  print(dst[0][0]);
+  print!(" ");
+  print(dst[1][1]);
+  print!("
+");
+  // CHECK: {{^}}1 4{{$}}
+  return 0;
+}

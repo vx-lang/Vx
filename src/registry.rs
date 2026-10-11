@@ -494,6 +494,14 @@ impl ImmutableGlobalRegistry {
         })
     }
 
+    /// An enum whose variants carry no data: its layout has no fields, and its value is an
+    /// `i32` tag.
+    pub fn is_payload_free_enum(&self, gid: TypeId) -> bool {
+        self.layouts.get(&gid).is_some_and(|d| {
+            d.align_bytes != 0 && d.fields.is_empty() && !self.structs.contains_key(&gid)
+        })
+    }
+
     /// The `const` table named `name`, with its position in `const_tables`.
     pub fn const_table(&self, name: &str) -> Option<(usize, &ConstTable)> {
         let at = self

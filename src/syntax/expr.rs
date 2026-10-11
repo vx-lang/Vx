@@ -644,6 +644,7 @@ pub fn statement_always_exits(stmt: &Statement, never: &dyn Fn(&str) -> bool) ->
                 !arms.is_empty() && arms.iter().all(|a| block_always_exits(&a.body, never))
             }
             Expr::FunctionCall(c) => is_abort_or_panic(c) || never(c.name.as_ref()),
+            Expr::UnsafeBlock(UnsafeBlockExpr { stmts, .. }) => block_always_exits(stmts, never),
             _ => false,
         },
         _ => false,
@@ -691,13 +692,15 @@ pub fn yields_no_value(expr: &Expr) -> bool {
 /// Only the case where *every* path returns counts. A construct where one arm returns and another
 /// yields a value is still a value.
 pub fn diverges_on_every_path(expr: &Expr) -> bool {
-    // A branch may also end in a `match` whose every arm exits; that `match` is a statement too.
+    // A branch may also end in a `match` or an `unsafe` block that exits on every path; that is a
+    // statement too.
     fn block_returns(stmts: &[Statement]) -> bool {
         match stmts.last() {
             Some(Statement::Return(_)) => true,
             Some(last @ Statement::ExprStmt(ExprStmtStmt { expr, .. })) => {
                 diverges_on_every_path(expr)
-                    || (matches!(expr, Expr::Match(_)) && statement_always_exits(last, &|_| false))
+                    || (matches!(expr, Expr::Match(_) | Expr::UnsafeBlock(_))
+                        && statement_always_exits(last, &|_| false))
             }
             _ => false,
         }
@@ -1040,6 +1043,19 @@ pub fn locals_with_pointer_taken(stmts: &[Statement]) -> std::collections::HashS
                 if let Some(root) = matmul_operand_root(&m.base) {
                     names.insert(root.clone());
                 }
+            }
+        }
+    });
+    names
+}
+
+/// The locals in `stmts` whose address is taken with `&x` or `&mut x`.
+pub fn locals_with_address_taken(stmts: &[Statement]) -> std::collections::HashSet<Symbol> {
+    let mut names = std::collections::HashSet::new();
+    visit_exprs(stmts, &mut |e| {
+        if let Expr::Borrow(b) = e {
+            if let Expr::Identifier(id) = &*b.expr {
+                names.insert(id.name.clone());
             }
         }
     });

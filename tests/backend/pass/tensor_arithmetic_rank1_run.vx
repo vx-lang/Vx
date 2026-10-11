@@ -12,13 +12,8 @@
 // named `linalg` op. `tensor_operations.vx` pins that IR and stops there,
 // leaving the numbers unchecked, which is what this file adds.
 //
-// It is apart from `tensor_arithmetic_run.vx` because the flat path declines
-// the moment one of these results is indexed: the vector lowering records no
-// memref type for the value it produced, so `op_tensor_index` has nothing to
-// load from and the whole module falls back to the AST path. Keeping the two
-// files separate means the rank-2 and matmul checks next door still run on
-// both paths. This one is listed in `KNOWN_DECLINES`; when the gap closes, the
-// entry goes and these checks start running on the flat path too, unchanged.
+// Indexing one of these results reads the element out of the vector, so these
+// checks run on both paths.
 //
 // EXPECT: add2=33;
 // EXPECT: sub1=18;

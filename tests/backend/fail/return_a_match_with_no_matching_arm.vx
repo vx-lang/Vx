@@ -1,0 +1,39 @@
+// A `return match` that makes a struct, with no arm for the value it gets: the program stops
+// with a message instead of returning a struct that was never filled in.
+//
+// REQUIRES: flat-codegen
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: {{^}}first: 8{{$}}
+// CHECK-NEXT: {{^}}second: no arm of the match returned a value{{$}}
+// CHECK: Program was killed by signal 6 (SIGABRT
+
+struct Point {
+  x : i32,
+}
+
+fn point_for(n : i32) -> Point {
+  return match n {
+    0 => {
+      return Point {
+        x: 7
+      };
+    }
+    1 => {
+      return Point {
+        x: 8
+      };
+    }
+  };
+}
+
+fn main() -> i32 {
+  print!("first: ");
+  print(point_for(1).x);
+  print!("
+");
+  print!("second: ");
+  print(point_for(5).x);
+  print!("
+");
+  return 0;
+}

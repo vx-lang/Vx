@@ -106,7 +106,15 @@ impl<'a> TypeChecker<'a> {
         ty
     }
 
-    pub(crate) fn check_expr_block(&mut self, stmts: &mut Vec<Statement>, consume: bool) -> Type {
+    /// Checks the statements of an `if` or `match` arm, or of an `unsafe`, `comptime` or `spawn`
+    /// block. `tail` is the value such a block ends with after its statements, which the caller
+    /// checks; it is passed here so a borrow it uses lasts until it.
+    pub(crate) fn check_expr_block(
+        &mut self,
+        stmts: &mut Vec<Statement>,
+        tail: Option<&Expr>,
+        consume: bool,
+    ) -> Type {
         Self::name_loop_literals(stmts);
         self.hoist_spawn_allocations(stmts);
         let block_unused = std::mem::replace(&mut self.value_unused, false);
@@ -114,10 +122,13 @@ impl<'a> TypeChecker<'a> {
         let mut terminated = false;
         let mut terminated_at = None;
         let last = stmts.len().saturating_sub(1);
-        // An `if` or `match` arm is a block of its own: what it declares is dropped inside it.
+        // An `if` or `match` arm is a block of its own: what it declares is dropped inside it,
+        // and a borrow made in it ends at its last use there.
         self.drops_enter_block(stmts);
+        self.borrow.enter_block(Self::block_uses(stmts, tail));
 
         for (i, s) in stmts.iter_mut().enumerate() {
+            self.borrow.set_stmt(i);
             self.drops_set_stmt(i);
             if terminated && !self.speculating {
                 let stmt_span = s.span();
@@ -174,6 +185,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
         self.drops_exit_block(stmts, terminated_at);
+        self.borrow.exit_block();
         ret_ty
     }
 

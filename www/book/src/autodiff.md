@@ -1,7 +1,8 @@
 # Automatic differentiation
 
-Vx can differentiate a function you wrote, at compile time. There is no tape, no graph built at run
-time, and no separate framework — the derivative is generated from the function's own code.
+Vx can differentiate a function you wrote, at compile time. The derivative is generated from the
+function's own code: the program does not record its operations as it runs, builds no graph, and
+needs no separate framework.
 
 Three forms, matching the three things people usually want.
 
@@ -68,14 +69,16 @@ move in that direction.
 | One input, many outputs | `jvp` |
 | A scalar function of a scalar | `grad` |
 
-The cost of `vjp` scales with the number of outputs; the cost of `jvp` scales with the number of
-inputs. That is the whole reason both exist.
+One call to `vjp` or `jvp` costs a small multiple of one call to the function. In general, to get
+the whole Jacobian — every partial derivative — of a function with n inputs and m outputs, you need
+one `vjp` for each output, or one `jvp` for each input. That is the whole reason both exist.
+
+So far Vx differentiates only a function whose first parameter and result are each a single
+number; see [Limits worth knowing](#limits-worth-knowing).
 
 ## Larger examples
 
-These use `f64`, with `exp`, `ln_1p` and `cos` from `core::num`. Pass the point as an `f64`
-variable: a bare literal such as `0.5` is read as an `f32`, and `grad` then refuses it
-([#1446](https://github.com/vx-lang/Vx/issues/1446)).
+These use `f64`, with `exp`, `ln_1p` and `cos` from `core::num`.
 
 ### Through calls to other functions
 
@@ -247,19 +250,29 @@ plugin that `ENZYME_LIB` names; [Building from source](building.md) covers build
 
 ## Limits worth knowing
 
-**A function must be differentiable to be differentiated.** A derivative needs both ends
-continuous, and the compiler checks both at the call:
+**Only floating-point values can be differentiated.** At each `grad`, `vjp` or `jvp` call, the
+compiler checks the types of two things:
 
-- the **result**. An `i32`, a `bool`, a tensor of integers — these take separated values, so
-  between any two of them there is no limit to take.
-- the **value it is taken with respect to**, which is the first parameter, for the same reason.
+- the **result**, and
+- the **first parameter**, which is the value the derivative is taken with respect to.
+
+Both must be floating-point types. An `i32` or a `bool` takes separated values: between any two of
+them there is no limit to take, so there is no derivative.
 
 ```
 Error: Function 'discrete_func' cannot be differentiated because it returns the discrete type i32
 ```
 
-A *later* parameter may be discrete. A function of an `f32` that also takes an index or a loop
-count is an ordinary thing to differentiate, and only the first argument is the one being moved.
+The check is on types only. It does not look for corners or jumps inside the function: a function
+built from pieces, like `huber` above, is differentiated piece by piece.
+
+**Only single numbers, so far.** The first parameter and the result must each be one number, such
+as an `f64`, not a tensor. For a function like that the three forms agree: `grad` gives the slope,
+and `vjp` and `jvp` give the slope times the seed.
+
+**A later parameter may be discrete, for `grad` and `vjp`.** A function of an `f64` that also takes
+an index or a loop count is an ordinary thing to differentiate, and only the first argument varies.
+`jvp` takes only a function with one parameter.
 
 ## Where to next
 

@@ -12,11 +12,9 @@
 // `bound(true, ..)` takes the assigning arm and gives 3; `bound(false, 7)` takes the other and
 // leaves the start value alone, so 37 covers both arms.
 //
-// Here rather than under middle_end or backend because those runners generate through the AST
-// codegen in process, and the AST path still fails on this program for a separate reason (#655).
-//
 // RUN: vxc %s --action emit-mlir | FileCheck %s
 // RUN: (vxc %s --run 2>&1; echo "exit=$?") | FileCheck --check-prefix=JIT %s
+// RUN: (vxc %s --run --legacy-codegen 2>&1; echo "exit=$?") | FileCheck --check-prefix=JIT %s
 
 fn bound(c : bool, start : i32) -> i32 {
   let mut n = start;

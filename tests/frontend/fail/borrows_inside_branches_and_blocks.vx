@@ -1,0 +1,132 @@
+//===- borrows_inside_branches_and_blocks.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The borrow rules hold inside an `if` or `else` arm, a `match` arm, a `while` body and an
+// `unsafe` block, as they do in a function body. Each function breaks one rule there.
+
+fn two_mut_borrows_in_an_if() -> i64 {
+  let mut v = 1i64;
+  if true {
+    let x = &mut v;
+    let y = &mut v;
+    *x = 10i64;
+    *y = 20i64;
+  }
+  return v;
+}
+
+fn two_mut_borrows_in_an_else(c : bool) -> i64 {
+  let mut v = 1i64;
+  if c {
+    v = 2i64;
+  } else {
+    let x = &mut v;
+    let y = &mut v;
+    *x = 10i64;
+    *y = 20i64;
+  }
+  return v;
+}
+
+fn two_mut_borrows_in_a_match_arm(c : i32) -> i64 {
+  let mut v = 1i64;
+  match c {
+    1 => {
+      let x = &mut v;
+      let y = &mut v;
+      *x = 10i64;
+      *y = 20i64;
+    }
+    _ => {}
+  }
+  return v;
+}
+
+fn two_mut_borrows_in_a_while_body() -> i64 {
+  let mut v = 1i64;
+  let mut k = 0;
+  while k < 1 {
+    k += 1;
+    let x = &mut v;
+    let y = &mut v;
+    *x = 10i64;
+    *y = 20i64;
+  }
+  return v;
+}
+
+fn two_mut_borrows_in_an_unsafe_block() -> i64 {
+  let mut v = 1i64;
+  unsafe { let x = &mut v; let y = &mut v; *x = 10i64; *y = 20i64; }
+  return v;
+}
+
+// `x` is last used by the value the block ends with.
+fn borrow_used_by_the_value_of_an_unsafe_block() -> i64 {
+  let mut v = 1i64;
+  let r = unsafe { let x = &mut v; let y = &mut v; *y = 20i64; *x };
+  return r;
+}
+
+fn read_while_borrowed_in_an_if() -> i64 {
+  let mut v = 1i64;
+  let mut seen = 0i64;
+  if true {
+    let x = &mut v;
+    seen = v;
+    *x = 10i64;
+  }
+  return seen;
+}
+
+// `x` is made before the `if` and last used inside it.
+fn outer_borrow_last_used_in_an_if() -> i64 {
+  let mut v = 1i64;
+  let x = &mut v;
+  if true {
+    let y = &mut v;
+    *y = 20i64;
+    *x = 10i64;
+  }
+  return v;
+}
+
+// `&mut` parameters are marked `noalias`, so passing one variable as both would let the
+// optimizer return 1 here where the program means 2.
+fn write_both(a : &mut i64, b : &mut i64) -> i64 {
+  *a = 1i64;
+  *b = 2i64;
+  return *a;
+}
+
+fn one_variable_passed_as_both_noalias_parameters() -> i64 {
+  let mut v = 0i64;
+  let mut r = 0i64;
+  if true {
+    let x = &mut v;
+    let y = &mut v;
+    r = write_both(x, y);
+  }
+  return r;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: Error[E4004] at 17:13: Cannot borrow 'v' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at 30:13: Cannot borrow 'v' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at 42:15: Cannot borrow 'v' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at 57:13: Cannot borrow 'v' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at 66:36: Cannot borrow 'v' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at 73:44: Cannot borrow 'v' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4002] at 82:12: Cannot access 'v' because it is mutably borrowed.
+// CHECK-DAG: Error[E4004] at 93:13: Cannot borrow 'v' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at 113:13: Cannot borrow 'v' because it is already borrowed as mutable.
+// CHECK: 9 error(s) emitted

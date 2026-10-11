@@ -1232,12 +1232,13 @@ impl<'a> TypeChecker<'a> {
         })
     }
 
-    /// Base variable and field path a reference *argument* reborrows, seeing through a leading `&`.
-    /// `foo(m)` and `foo(&m.slot)` both reborrow storage rooted at `m`; the summary-driven persist
-    /// decision (#243) keys on that base. Returns `None` for arguments with no nameable base
-    /// (`foo(&5)`, `foo(g())`).
+    /// Base variable and field path a reference *argument* reborrows, seeing through a leading `&`
+    /// and an `as` cast. `foo(m)`, `foo(&m.slot)` and `foo((&mut m) as *mut T)` all reborrow
+    /// storage rooted at `m`; the summary-driven persist decision (#243) keys on that base.
+    /// Returns `None` for arguments with no nameable base (`foo(&5)`, `foo(g())`).
     pub(crate) fn arg_reborrow_base(arg: &Expr) -> Option<(String, Vec<String>)> {
         match arg {
+            Expr::AsCast(cast) => Self::arg_reborrow_base(&cast.expr),
             Expr::Borrow(b) => Self::extract_base_and_path(&b.expr),
             other => Self::extract_base_and_path(other),
         }

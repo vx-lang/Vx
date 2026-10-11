@@ -232,7 +232,7 @@ impl<'a> TypeChecker<'a> {
                 self.push_scope();
                 self.consteval.comptime_depth += 1;
                 self.value_unused = unused;
-                let mut ret_ty = self.check_expr_block(stmts, consume);
+                let mut ret_ty = self.check_expr_block(stmts, ret.as_deref(), consume);
                 if let Some(r) = ret {
                     ret_ty = self.check_expr_type(r);
                 }
@@ -380,7 +380,7 @@ impl<'a> TypeChecker<'a> {
         let mut then_ty = Type::Struct("void".into(), None);
         if !self.speculating && !if_expr.then_block.is_empty() {
             self.value_unused = unused;
-            then_ty = self.check_expr_block(&mut if_expr.then_block, consume);
+            then_ty = self.check_expr_block(&mut if_expr.then_block, None, consume);
         }
         self.pop_scope();
         let then_facts = self.consteval.constraints.split_off(facts_before);
@@ -399,7 +399,7 @@ impl<'a> TypeChecker<'a> {
                 self.push_releasing_scope();
                 if !self.speculating {
                     self.value_unused = unused;
-                    else_ty = self.check_expr_block(else_b, consume);
+                    else_ty = self.check_expr_block(else_b, None, consume);
                 }
                 self.pop_scope();
                 marks_after_else = self.branch_end(else_b);
@@ -503,7 +503,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.push_scope();
                 self.value_unused = unused;
-                let mut ret_ty = self.check_expr_block(stmts, consume);
+                let mut ret_ty = self.check_expr_block(stmts, ret_expr.as_deref(), consume);
                 if let Some(r) = ret_expr {
                     self.value_unused = unused;
                     ret_ty = self.check_expr_type_flag(r, consume);
@@ -730,7 +730,7 @@ impl<'a> TypeChecker<'a> {
 
                     let arm_ty = if !self.speculating {
                         self.value_unused = unused;
-                        self.check_expr_block(&mut arm.body, consume)
+                        self.check_expr_block(&mut arm.body, None, consume)
                     } else {
                         Type::Struct("void".into(), None)
                     };

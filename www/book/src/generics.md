@@ -20,6 +20,11 @@ enum Maybe<T> {
 Instantiate by naming the argument:
 
 ```rust
+enum Maybe<T> {
+    Just(T),
+    Nothing,
+}
+
 fn main() -> i32 {
     let m = Maybe<i32>::Just(42);
 

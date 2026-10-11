@@ -343,10 +343,29 @@ impl<'a> TypeChecker<'a> {
         // plus a snapshot of each distinct base's pre-call borrow list.
         let mut ref_args: Vec<(usize, String, Vec<String>, bool, bool)> = Vec::new();
         let mut base_snapshots: HashMap<String, Option<Vec<BorrowRecord>>> = HashMap::new();
+        let is_extern = self
+            .env
+            .externs
+            .iter()
+            .any(|e| e.name.as_ref() == resolved_name.as_ref());
         if let Some((param_types, _)) = &callee_sig {
             for (i, arg) in args.iter().enumerate() {
                 match param_types.get(i) {
                     Some(pty) if Self::is_ref_type(pty) => {
+                        // `(&mut b) as *mut u8` passes a borrow of `b`, as `&mut b` does.
+                        let mut arg = arg;
+                        while let Expr::AsCast(cast) = arg {
+                            arg = &cast.expr;
+                        }
+                        // The checker cannot see an `extern` function's body, so it takes the
+                        // result to come from every argument. A raw pointer passed by value is
+                        // a copy and borrows nothing; only a borrow written at the call counts.
+                        if is_extern
+                            && matches!(pty, Type::Pointer(..))
+                            && !matches!(arg, Expr::Borrow(_))
+                        {
+                            continue;
+                        }
                         if let Some((base, path)) = Self::arg_reborrow_base(arg) {
                             base_snapshots
                                 .entry(base.clone())
@@ -523,6 +542,13 @@ impl<'a> TypeChecker<'a> {
                 persists(*i),
                 span,
             );
+            // `let r = keep(m)`: `r` may point where `m` points, so it holds every borrow
+            // `m` holds, as it would after `let r = m`.
+            if persists(*i) {
+                if let Some(target) = self.current_assignment_target.clone() {
+                    self.borrow.copy_borrows(base, &target, self.scopes.len());
+                }
+            }
         }
         // (b) Selective revert: a base keeps its borrow past the call iff at least one
         //     of its argument positions is one the return derives from. Non-deriving
@@ -2853,16 +2879,16 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     // A returned reference keeps the receiver borrowed while it is used.
+                    let holds_ref =
+                        !Self::is_ref_type(&ret_ty) && self.result_can_hold_reference(&ret_ty);
+                    let keeps_borrow = (matches!(ret_ty, Type::Borrow { .. }) || holds_ref)
+                        && match &func_call {
+                            Expr::FunctionCall(fc) => {
+                                self.env.return_provenance_of(fc.name.as_ref()).includes(0)
+                            }
+                            _ => true,
+                        };
                     if let Some((base, path, is_mut)) = receiver_borrow {
-                        let holds_ref =
-                            !Self::is_ref_type(&ret_ty) && self.result_can_hold_reference(&ret_ty);
-                        let keeps_borrow = (matches!(ret_ty, Type::Borrow { .. }) || holds_ref)
-                            && match &func_call {
-                                Expr::FunctionCall(fc) => {
-                                    self.env.return_provenance_of(fc.name.as_ref()).includes(0)
-                                }
-                                _ => true,
-                            };
                         self.track_reference_arg_borrow(
                             &base,
                             path,
@@ -2871,6 +2897,18 @@ impl<'a> TypeChecker<'a> {
                             keeps_borrow,
                             &method_span,
                         );
+                    }
+                    // A receiver that is itself a reference: after `let r = m.get_mut()` with
+                    // `m : &mut S`, `r` may point where `m` points, so it holds every borrow
+                    // `m` holds.
+                    if keeps_borrow && matches!(base_ty, Type::Borrow { .. }) && !self.speculating {
+                        if let (Some((receiver, _)), Some(target)) = (
+                            Self::arg_reborrow_base(obj),
+                            self.current_assignment_target.clone(),
+                        ) {
+                            self.borrow
+                                .copy_borrows(&receiver, &target, self.scopes.len());
+                        }
                     }
                     *expr = func_call;
                     return ret_ty;
@@ -3074,6 +3112,19 @@ impl<'a> TypeChecker<'a> {
             return Some((
                 gf.params.iter().map(|(_, t)| t.clone()).collect(),
                 gf.return_type.clone(),
+            ));
+        }
+        // A function from an `extern` block. Without its signature, none of the borrows its
+        // arguments make would end when the call returns.
+        if let Some(ext) = self
+            .env
+            .externs
+            .iter()
+            .find(|e| e.name.as_ref() == resolved_name)
+        {
+            return Some((
+                ext.params.iter().map(|(_, t)| t.clone()).collect(),
+                ext.return_type.clone(),
             ));
         }
         // An *imported* callee resolved from a merged `.vxlib` interface (#219 flip, phase 2) has no

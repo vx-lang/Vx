@@ -1,0 +1,55 @@
+//===- spawn_loop_reading_another_row_stays_serial.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each pass of the `spawn on` loop reads row i + 1 and writes row i. Row i + 1 belongs to the
+// next pass, so the loop must not be split across workers or GPU threads.
+//
+// The kernel asks for no worker split and carries no launch size:
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard,vx-to-llvm)" 2>&1 | FileCheck %s
+// CHECK-NOT: launch=
+// CHECK-NOT: vx_host_worker_id
+// CHECK: func.func @vx_npu_kernel_0
+// CHECK-NOT: vx_host_worker_id
+//
+// Run in order, row i ends holding i + 1, so no row is wrong. Split across 8 workers, the last
+// row of each worker's range read a row the next worker had already written, and 7 rows came
+// out wrong. Only the Linux host dispatcher splits a loop, so on macOS this line passes either
+// way.
+//
+// RUN: env VX_HOST_THREADS=8 vxc %s 2>/dev/null | FileCheck %s --check-prefix=ANSWER
+// ANSWER: wrong=0{{$}}
+
+fn count_wrong_rows() -> i32 {
+  let mut o = Tensor<f32, [65537, 8]>::uninit();
+  for i in 0..65537 {
+    for j in 0..8 {
+      o[i][j] = (i as f32);
+    }
+  }
+  spawn on(Topology::GPU) {
+    for i in 0..65536 {
+      for j in 0..8 {
+        o[i][j] = o[i + 1][j];
+      }
+    }
+  }
+  let mut wrong = 0;
+  for i in 0..65536 {
+    if o[i][0] != ((i + 1) as f32) {
+      wrong = wrong + 1;
+    }
+  }
+  return wrong;
+}
+
+fn main() -> i32 {
+  print!("wrong=");
+  print(count_wrong_rows());
+  return 0;
+}

@@ -19,12 +19,6 @@
 //
 // The `as i64` on a `u64` draw is there because `print` reaches the signed helper for both,
 // so a draw above i64's range prints as a negative number. The cast says so at the call.
-//
-// Flat path only: the legacy code generator lowers an unsigned `>>` to an arithmetic shift,
-// which turns "uniform in [0, 1)" into a negative number. It compiles and answers wrongly, so
-// running it there would pin a miscompile rather than test the library.
-//
-// REQUIRES: flat-codegen
 // EXPECT: -5523389002881075622 5142052590334782674 | 0.8396274618764198 0.9810977 0.99072266 0.87109375 | 260928194 448548299 26457 9949 138 -69 | 7 -4 -0.09716069453706844 1 0 | 229352378439957178 9145175930522072856 | -0.11902840736293237 -1.2117382437320459 -0.09410879996291692 | -5523389002881075622 7191089600892374487 | 0.7029218 0.5204366 0.5741057 0.39132857 | 0.7026367 0.52001953 0.57373047 0.39111328 | 6.390625 6.0273438 3.5058594 5.1796875
 import std::rand;
 

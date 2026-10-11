@@ -755,6 +755,11 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                     field_pointee.push(None);
                     field_agg.push(None);
                 }
+                FieldTy::Nominal(nested_gid) if registry.is_payload_free_enum(*nested_gid) => {
+                    field_tys.push("i32".to_string());
+                    field_pointee.push(None);
+                    field_agg.push(None);
+                }
                 FieldTy::Nominal(nested_gid) => {
                     match agg_struct_ty_of(*nested_gid, registry, &mut Vec::new()) {
                         Ok(nested_ty) => {
@@ -825,6 +830,7 @@ pub(crate) fn agg_struct_ty_of(
             FieldTy::Scalar(e) => mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string(),
             FieldTy::Opaque => "!llvm.ptr".to_string(),
             FieldTy::Tensor(_, rank) => memref_descriptor_ty(*rank),
+            FieldTy::Nominal(n) if registry.is_payload_free_enum(*n) => "i32".to_string(),
             FieldTy::Nominal(n) => agg_struct_ty_of(*n, registry, visiting)?,
             FieldTy::Vector(e, lanes) => mlir_vector(e, *lanes).ok_or(crate::emitter_gap!())?,
         };
@@ -926,7 +932,7 @@ pub struct SubspaceInfo {
 /// `func.func private` declaration prepended. Order is load-bearing — the emit records which of
 /// these a function called as a bitmask over this array's indices, so inserting in the middle
 /// renumbers existing entries.
-const RUNTIME_HELPERS: [(&str, &str); 15] = [
+const RUNTIME_HELPERS: [(&str, &str); 16] = [
     ("printMemrefF32", "(memref<*xf32>)"),
     ("printMemrefF64", "(memref<*xf64>)"),
     ("printMemrefI32", "(memref<*xi32>)"),
@@ -942,6 +948,7 @@ const RUNTIME_HELPERS: [(&str, &str); 15] = [
     ("print_u64", "(i64) -> i32"),
     ("print_str", "(!llvm.ptr) -> i32"),
     ("vx_init_signals", "()"),
+    ("print_bool", "(i32) -> i32"),
 ];
 
 /// Recover the declared memory sub-spaces from a compilation's env, in the shape

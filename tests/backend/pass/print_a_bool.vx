@@ -1,0 +1,55 @@
+//===- print_a_bool.vx - Vx Compiler ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `bool` prints as `true` or `false`, as in Rust, with `print!`, `println!` and `print`.
+// It used to be passed to the `i32` printer: a warning, a `1`, and MLIR that failed to
+// verify once the same program also printed an `i32`.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// The first run must not fall back to the AST path, which says so with a `[flat-codegen]` line.
+// CHECK-NOT: {{Warning|flat-codegen}}
+
+fn positive(n : i32) -> bool {
+  return n > 0;
+}
+
+fn main() -> i32 {
+  let n = 1;
+  let b = n > 0;
+  print!("variable: ");
+  print!(b);
+  print!("
+");
+  // CHECK: {{^}}variable: true{{$}}
+  print!("comparison: ");
+  print!(n < 0);
+  print!("
+");
+  // CHECK-NEXT: {{^}}comparison: false{{$}}
+  print!("call: ");
+  print!(positive(5));
+  print!("
+");
+  // CHECK-NEXT: {{^}}call: true{{$}}
+
+  // An `i32` printed after the bools.
+  print!("number: ");
+  print!(5);
+  print!("
+");
+  // CHECK-NEXT: {{^}}number: 5{{$}}
+
+  println!("println: {}", b);
+  // CHECK-NEXT: {{^}}println: true{{$}}
+  print!("print: ");
+  print(false);
+  print!("
+");
+  // CHECK-NEXT: {{^}}print: false{{$}}
+  return 0;
+}

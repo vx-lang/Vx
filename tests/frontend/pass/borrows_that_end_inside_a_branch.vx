@@ -1,0 +1,60 @@
+//===- borrows_that_end_inside_a_branch.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A borrow made inside an `if` or `match` arm ends at its last use there, as in a function
+// body, so a later borrow in the same arm is allowed.
+//
+// CHECK-NOT: Error
+// CHECK-LABEL: func.func @main
+
+fn borrows_one_after_another_in_an_if() -> i64 {
+  let mut v = 1i64;
+  if true {
+    let x = &mut v;
+    *x = 2i64;
+    let y = &mut v;
+    *y = *y + 1i64;
+    v = v + 1i64;
+  }
+  return v;
+}
+
+fn borrows_one_after_another_in_a_match_arm(c : i32) -> i64 {
+  let mut v = 1i64;
+  match c {
+    1 => {
+      let x = &mut v;
+      *x = 2i64;
+      let y = &v;
+      let next = *y + 1i64;
+      v = next;
+    }
+    _ => {}
+  }
+  return v;
+}
+
+// The `x` in the arm is a new variable. The `x` used after the `if` is not a borrow.
+fn inner_variable_with_an_outer_name() -> i64 {
+  let mut v = 1i64;
+  let x = 3i64;
+  if true {
+    let x = &mut v;
+    *x = 2i64;
+    v = v + 1i64;
+  }
+  return v + x;
+}
+
+fn main() -> i32 {
+  print(borrows_one_after_another_in_an_if());
+  print(borrows_one_after_another_in_a_match_arm(1));
+  print(inner_variable_with_an_outer_name());
+  return 0;
+}

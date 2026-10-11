@@ -99,7 +99,7 @@ can be generic over a shape without giving up that knowledge:
 
 ```rust
 fn main() -> i32 {
-    let t : Tensor<f32, [2, 2]> = Tensor<f32, [2, 2]>();
+    let t : Tensor<f32, [2, 2]> = Tensor<f32, [2, 2]>::new();
     return 0;
 }
 ```
