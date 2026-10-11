@@ -697,6 +697,12 @@ impl<'a> TypeChecker<'a> {
                     base_name = resolved_name[..idx].to_string().into();
                 }
                 self.fold_const_generic_args(&mut explicit_generic_args);
+                // The code generators read `Tensor<f32, [N]>::new()`'s type off the call.
+                if let Some(written) = type_args.as_mut() {
+                    if *written != explicit_generic_args {
+                        *written = explicit_generic_args.clone();
+                    }
+                }
 
                 // Mocking built-ins
                 let mut arg_types = Vec::new();
@@ -718,6 +724,9 @@ impl<'a> TypeChecker<'a> {
                 let errors_before_args = self.errors.inner.len();
                 for arg in args.iter_mut() {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume));
+                }
+                if resolved_name == "Tensor".into() {
+                    self.fold_shape_args(args);
                 }
                 // A number literal given to `Tensor<T, ..>::fill` takes the element type `T`.
                 if resolved_name == "Tensor::fill".into() {
@@ -1319,6 +1328,29 @@ impl<'a> TypeChecker<'a> {
         })
     }
 
+    /// `Tensor<f32>([R * C])` in an instance of `<const R, const C>` reads `[2 * 3]`. Each extent
+    /// that works out is written as the number, checked like one written there, since the code
+    /// generators take only a number as a static extent.
+    fn fold_shape_args(&mut self, args: &mut [Expr]) {
+        if matches!(args, [Expr::Array(arr)] if arr.initializer_shape().is_some()) {
+            return;
+        }
+        let dims: &mut [Expr] = match args {
+            [Expr::Array(arr)] => &mut arr.elements,
+            _ => args,
+        };
+        for d in dims {
+            if let Some(v) = self.extent_value(d) {
+                *d = Expr::Number(NumberExpr {
+                    value: v.to_string().into(),
+                    ty: None,
+                    span: d.span(),
+                });
+                self.check_expr_type_flag(d, false);
+            }
+        }
+    }
+
     /// Reduce each constant generic argument to the number it works out to.
     ///
     /// `countdown<N - 1>()` inside `countdown<3>` has to become `countdown<2>`, not
@@ -1327,16 +1359,31 @@ impl<'a> TypeChecker<'a> {
     /// case -- it took the compiler's stack down rather than terminating.
     ///
     /// An argument the evaluator cannot work out is left as written, which is what it did
-    /// before this.
+    /// before this. A module `const` is worked out too: `fill<N>()`, where a name parses as a
+    /// type, becomes `fill<4>()`, and the extents of a type argument are folded.
     fn fold_const_generic_args(&mut self, args: &mut [Type]) {
         for arg in args.iter_mut() {
+            if let Type::Struct(name, None) = arg {
+                if !self.env.structs.contains_key(name) && !self.env.enums.contains_key(name) {
+                    if let Some(v) = self.const_int(name) {
+                        *arg = Type::Const(Box::new(Expr::Number(NumberExpr {
+                            value: v.to_string().into(),
+                            ty: None,
+                            span: Span::default(),
+                        })));
+                    }
+                }
+                continue;
+            }
             let Type::Const(expr) = arg else {
+                self.fold_extents(arg);
                 continue;
             };
             if matches!(&**expr, Expr::Number(_)) {
                 continue;
             }
-            let env = self.consteval_snapshot();
+            let mut env = self.consteval_snapshot();
+            self.add_const_ints(expr, &mut env);
             let Some(value) = self.eval_expr(expr, &env).and_then(|v| match v {
                 Value::Int(i) => Some(i.to_string()),
                 Value::Number(n) if n.fract() == 0.0 => Some((n as i64).to_string()),

@@ -131,6 +131,7 @@ impl Analysis {
         for m in modules.iter_mut() {
             let _ = expander.expand_module(m); // Ignore expansion errors for IDE
         }
+        crate::resolver::fold_const_extents(&mut modules);
 
         // 2. Name Resolution
         let symbol_map = crate::resolver::build_symbol_map(&modules);
@@ -354,5 +355,35 @@ impl Analysis {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A module `const` in a parameter's tensor type is the number it stands for, so passing a
+    /// tensor of that size is no type mismatch in the editor either.
+    #[test]
+    fn a_module_const_extent_matches_its_value() {
+        let uri = "file:///const_extent.vx".to_string();
+        let mut host = AnalysisHost::new();
+        host.apply_change(
+            uri.clone(),
+            "const N : i32 = 4;\n\
+             fn first(t : &Tensor<f32, [N]>) -> f32 { return t[0]; }\n\
+             fn main() -> i32 {\n  let t = Tensor<f32>([4]);\n  return first(&t) as i32;\n}\n"
+                .to_string(),
+        );
+        let messages: Vec<String> = host
+            .snapshot()
+            .diagnostics(&uri)
+            .into_iter()
+            .map(|d| d.message)
+            .collect();
+        assert!(
+            !messages.iter().any(|m| m.contains("Type mismatch")),
+            "{messages:?}"
+        );
     }
 }

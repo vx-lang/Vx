@@ -1,0 +1,93 @@
+//===- module_const_as_tensor_extent.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module `const` can be a tensor extent wherever a number can: in a parameter's type, a return
+// type, a struct field, a `let`'s type and in a const generic argument. A const generic parameter
+// with the same name keeps its own meaning. `[R * C]` is a number in each instance of `<R, C>`.
+//
+// EXPECT: param=1;
+// EXPECT: generic_arg=2;
+// EXPECT: arithmetic_arg=5;
+// EXPECT: product=3;
+// EXPECT: field=4;
+// EXPECT: returned=0;
+// EXPECT: hidden=3;
+
+const N : i32 = 4;
+const TWICE_N : i32 = N * 2;
+
+struct Pair {
+  a : Tensor<f32, [N]>,
+  b : Tensor<f32, [TWICE_N]>,
+}
+
+fn fill_ones(t : &mut Tensor<f32, [N]>) -> void {
+  for i in 0..N {
+    t[i] = 1.0;
+  }
+  return;
+}
+
+fn fill_with<const R : i32>(t : &mut Tensor<f32, [R]>, v : f32) -> void {
+  for i in 0..R {
+    t[i] = v;
+  }
+  return;
+}
+
+fn product<const R : i32, const C : i32>() -> f32 {
+  let mut t = Tensor<f32>([R * C]);
+  fill_with(&mut t, 3.0);
+  return t[R * C - 1];
+}
+
+fn longer() -> Tensor<f32, [N + 1]> {
+  let t : Tensor<f32, [N + 1]> = Tensor<f32, [N + 1]>::new();
+  return t;
+}
+
+// This `N` is the generic parameter, not the module `const`.
+fn length<const N : i32>(_t : &Tensor<f32, [N]>) -> i32 {
+  return N;
+}
+
+fn main() -> i32 {
+  let mut t = Tensor<f32>([N]);
+  fill_ones(&mut t);
+  print!("param=");
+  print(t[3]);
+
+  let mut u = Tensor<f32, [N]>::new();
+  fill_with<N>(&mut u, 2.0);
+  print!("; generic_arg=");
+  print(u[3]);
+
+  let mut shorter = Tensor<f32>([N - 1]);
+  fill_with<N - 1>(&mut shorter, 5.0);
+  print!("; arithmetic_arg=");
+  print(shorter[2]);
+
+  print!("; product=");
+  print(product<2, 3>());
+
+  let mut p = Pair {
+    a: Tensor<f32, [4]>::new(), b: Tensor<f32, [8]>::new()
+  };
+  p.b[7] = 4.0;
+  print!("; field=");
+  print(p.b[7]);
+
+  let l = longer();
+  print!("; returned=");
+  print(l[4]);
+
+  let three = Tensor<f32>([3]);
+  print!("; hidden=");
+  print(length(&three));
+  print!(";");
+  return 0;
+}

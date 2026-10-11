@@ -511,10 +511,12 @@ fn macro_expansion_phase(
     let expander = MacroExpander::new(&global_macros, &trait_defaults);
     let expand = |m: &mut VxModule| expander.expand_module(m).map_err(PipelineError::Parse);
     if sched.is_seq() {
-        parsed_modules.iter_mut().try_for_each(expand)
+        parsed_modules.iter_mut().try_for_each(expand)?;
     } else {
-        parsed_modules.par_iter_mut().try_for_each(expand)
+        parsed_modules.par_iter_mut().try_for_each(expand)?;
     }
+    crate::resolver::fold_const_extents(parsed_modules);
+    Ok(())
 }
 
 /// Resolve names, and hand back the symbol map so the freeze point does not rebuild it.
@@ -3210,6 +3212,33 @@ fn main() -> i32 { return 0; }
             "the sequential schedule produces a different type stream than the parallel one"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A module `const` in a parameter's tensor type is the number it stands for here as well as
+    /// in `vxc`: this entry point expands macros itself, so it folds the `const`s itself.
+    #[test]
+    fn pipeline_folds_a_module_const_in_a_signature() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("vx_const_extent_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("extent.vx");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(
+                b"const N : i32 = 4;\n\
+                  fn first(t : &Tensor<f32, [N]>) -> f32 { return t[0]; }\n\
+                  fn main() -> i32 { return 0; }\n",
+            )
+            .unwrap();
+        let text = compile_pipeline_mlir(&[path.to_string_lossy().to_string()])
+            .expect("pipeline")
+            .expect("the program is inside the flat subset");
+        assert!(
+            text.contains("func.func @first(%arg0: memref<4xf32>"),
+            "`[N]` did not become `[4]`:\n{text}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

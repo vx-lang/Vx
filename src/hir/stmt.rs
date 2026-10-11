@@ -395,6 +395,9 @@ impl<'a> TypeChecker<'a> {
         self.current_assignment_target = Some(name.to_string());
         // Forward the annotation as an expected-type hint so a generic call can
         // deduce a return-only topology/type variable from it.
+        if let Some(ann) = ty_ann.as_mut() {
+            self.fold_extents(ann);
+        }
         let prev_expected = self.expected_type.take();
         self.expected_type = ty_ann.clone();
         let ty = self.check_expr_type_flag(expr, consume);

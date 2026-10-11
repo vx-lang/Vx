@@ -272,6 +272,10 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
     if let Err(e) = expander.expand_module(&mut program) {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
+    // A module `const` in a signature becomes its value after expansion, as in the driver.
+    program_arr.push(program);
+    vxc::resolver::fold_const_extents(&mut program_arr);
+    program = program_arr.pop().expect("the main program was just pushed");
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
@@ -555,6 +559,10 @@ fn run_backend_test(path: &Path) -> Result<(), String> {
     if let Err(e) = expander.expand_module(&mut program) {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
+    // A module `const` in a signature becomes its value after expansion, as in the driver.
+    program_arr.push(program);
+    vxc::resolver::fold_const_extents(&mut program_arr);
+    program = program_arr.pop().expect("the main program was just pushed");
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
@@ -1258,6 +1266,10 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
     if let Err(e) = expander.expand_module(&mut program) {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
+    // A module `const` in a signature becomes its value after expansion, as in the driver.
+    program_arr.push(program);
+    vxc::resolver::fold_const_extents(&mut program_arr);
+    program = program_arr.pop().expect("the main program was just pushed");
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
@@ -1514,6 +1526,10 @@ fn test_melior_matmul() -> Result<(), String> {
     if let Err(e) = expander.expand_module(&mut program) {
         return Err(format!("Macro expansion failed on {:?}: {}", path, e));
     }
+    // A module `const` in a signature becomes its value after expansion, as in the driver.
+    program_arr.push(program);
+    vxc::resolver::fold_const_extents(&mut program_arr);
+    program = program_arr.pop().expect("the main program was just pushed");
 
     let global_session = std::sync::Arc::new(vxc::session::GlobalSession::new(1));
     let mut all_programs = program_arr.clone();
