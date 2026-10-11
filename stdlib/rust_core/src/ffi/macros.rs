@@ -306,6 +306,19 @@ macro_rules! instantiate_string_ffi {
             s.len()
         }
 
+        /// 1 when the two strings hold the same bytes, else 0. A null string is empty.
+        #[no_mangle]
+        pub extern "C" fn vx_string_eq(a: *mut std::ffi::c_void, b: *mut std::ffi::c_void) -> i32 {
+            let bytes = |p: *mut std::ffi::c_void| {
+                if p.is_null() {
+                    ""
+                } else {
+                    unsafe { (*(p as *mut String)).as_str() }
+                }
+            };
+            (bytes(a) == bytes(b)) as i32
+        }
+
         #[no_mangle]
         pub extern "C" fn vx_string_as_c_str(
             ptr: *mut std::ffi::c_void,
