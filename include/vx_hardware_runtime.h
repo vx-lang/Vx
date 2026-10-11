@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h> /* vx_payload_topology: strtol */
-#include <string.h> /* vx_payload_field: strlen, memcmp */
+#include <string.h> /* vx_payload_field: strlen, memcmp, memchr */
 
 #ifdef __cplusplus
 extern "C" {
@@ -254,25 +254,25 @@ vx_payload_field(const void *payload, size_t payload_size, const char *key) {
 
   const char *base = (const char *)payload;
   size_t key_len = strlen(key);
-  size_t pos = 0;
 
-  /* Skip the kernel name, then walk the remaining NUL-terminated entries. */
-  while (pos < payload_size && base[pos] != '\0') {
-    ++pos;
+  /* Skip the kernel name, then walk the remaining NUL-terminated entries. memchr rather
+     than a byte loop: an `image=` entry holds a whole module's PTX, and looking up a field
+     that is absent walks all of it, on every launch. */
+  const char *name_end = (const char *)memchr(base, '\0', payload_size);
+  if (!name_end) {
+    return NULL;
   }
-  ++pos;
+  size_t pos = (size_t)(name_end - base) + 1;
 
   while (pos < payload_size) {
     const char *entry = base + pos;
     size_t remaining = payload_size - pos;
-    size_t len = 0;
-    while (len < remaining && entry[len] != '\0') {
-      ++len;
-    }
-    if (len == remaining) {
+    const char *end = (const char *)memchr(entry, '\0', remaining);
+    if (!end) {
       /* Unterminated: refuse rather than read past the blob. */
       return NULL;
     }
+    size_t len = (size_t)(end - entry);
     if (len > key_len && memcmp(entry, key, key_len) == 0) {
       return entry + key_len;
     }
