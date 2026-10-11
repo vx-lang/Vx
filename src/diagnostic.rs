@@ -394,6 +394,10 @@ pub enum DiagnosticCode {
     /// value is dropped, so calling it as well would run it twice. Write `drop(x)`, from
     /// `core::mem`, to drop a value early.
     E4012,
+    /// A field moved out of a struct by value: `let x = p.a`, where `p.a` is a struct or enum
+    /// that is not `Copy`. `p` still owns the field and drops it, so the moved value would be
+    /// dropped twice. Clone the field (`p.a.clone()`) or borrow it (`&p.a`).
+    E4013,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block

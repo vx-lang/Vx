@@ -555,6 +555,51 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// E4013: `let x = p.a` moves a struct or enum out of `p`, which still owns it and will drop
+    /// it, so a value that has something to drop would be dropped twice. A tensor field is a view
+    /// of its owner, not a move, and a `Copy` value is copied. The `$tuple` and `$value` locals of
+    /// a `let (a, b) = ..` and of an `unsafe` block's value own nothing: their parts are moved out.
+    pub(crate) fn refuse_field_move(&mut self, expr: &Expr, field_ty: &Type) {
+        let movable = matches!(
+            field_ty,
+            Type::Struct(..) | Type::Enum(..) | Type::GenericInstance(..)
+        ) && field_ty.is_linear()
+            && !self.is_copy(field_ty);
+        if !movable || self.speculating || self.drops_glue(field_ty).is_empty() {
+            return;
+        }
+        let field = match crate::hir::places::base_and_path(expr) {
+            Some((root, _)) if root.starts_with("$tuple") || root.starts_with("$value") => return,
+            Some((root, path)) => path.iter().fold(root.to_string(), |text, step| {
+                if step.starts_with('[') {
+                    format!("{text}{step}")
+                } else {
+                    format!("{text}.{step}")
+                }
+            }),
+            // A field of a value that has no name, such as a call's result, which is dropped
+            // at the end of the statement.
+            None => {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E4013,
+                    "this field cannot be moved out of the struct that holds it, which would \
+                     drop it again; clone it or borrow it"
+                        .to_string(),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span())),
+                );
+                return;
+            }
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E4013,
+            format!(
+                "`{field}` cannot be moved out of the struct that holds it, which would drop it \
+                 again; clone it (`{field}.clone()`) or borrow it (`&{field}`)"
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span())),
+        );
+    }
+
     pub(crate) fn check_memberaccess_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::MemberAccess(MemberAccessExpr {

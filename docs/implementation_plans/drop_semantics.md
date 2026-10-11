@@ -85,7 +85,8 @@ linear.
 **Gaps the plan has to close.**
 
 - A field or index read of a linear type (`let x = s.field`, `let r = q[i]`) moves nothing and is
-  not tracked: an untracked alias of the same type.
+  not tracked: an untracked alias of the same type. Moving a field that has something to drop is
+  now refused (E4013, §2.4).
 - By-value parameters: "moved" in the checker, "still owned by the caller" in codegen.
 - Struct fields holding tensors go through `unrealized_conversion_cast`, which disables freeing.
 - Tensors allocated inside device regions are never freed unless they are small and static.
@@ -151,7 +152,8 @@ elaboration", done once, ahead of both code generators.
 - **Moving out of a field** (`let x = s.field` where the field owns): either a move of the field
   (a partial move, after which `s` may only have its other fields used and is dropped field by
   field), or refused. The plan starts with **refused** (an error suggesting a reference or a
-  swap), and adds partial moves only if programs need them.
+  clone), and adds partial moves only if programs need them. Done (#1507): E4013 refuses moving
+  a field whose type has something to drop; partial moves are #1512.
 - **Indexing a tensor of owners** does not arise yet: `Tensor` elements are scalars.
 
 ### 2.5 Calls, returns and closures
