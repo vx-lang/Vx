@@ -541,6 +541,9 @@ pub enum DiagnosticCode {
     /// `::uninit()`, with no type annotation, a size that uses nothing the region computes, and
     /// a name nothing outside the region already uses.
     E6030,
+    /// A tensor shape that folds to a negative extent, or whose size in bytes does not fit in 64
+    /// bits. The size is known, and it is not one the generated code can allocate: it would wrap.
+    E6031,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

@@ -1,0 +1,33 @@
+//===- tensor_size_that_folds_through_a_negative_value.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// An extent can go negative on the way and still come to a positive number: `3 - 5 + 4` is 2.
+// Its size is then known, so placing it is capacity-checked rather than unverified (W1029).
+//
+// CHECK-NOT: W1029
+// CHECK-NOT: Error
+// CHECK-LABEL: func.func @main
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10
+}
+
+fn main() -> i32 {
+  let a = Tensor<f32>([3 - 5 + 4]);
+  let s = transfer(a, Memory::W);
+  let _b = transfer(s, Memory::CPU_DRAM);
+  return 0;
+}

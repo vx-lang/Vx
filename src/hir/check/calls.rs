@@ -2050,6 +2050,9 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
             }
+            if let Type::Tensor(elem, dims, _) = ty {
+                self.refuse_unrepresentable_shape(elem, dims, &call_span);
+            }
             return Some(ty.clone());
         }
         if resolved_name == "Verified" {
@@ -2115,7 +2118,8 @@ impl<'a> TypeChecker<'a> {
                         Dim::Dyn
                     }
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            self.refuse_unrepresentable_shape(&el_ty, &dims, &call_span);
             Some(Type::Tensor(el_ty, dims, None))
         } else if resolved_name.starts_with("Math::") {
             if args.len() != 1 {
