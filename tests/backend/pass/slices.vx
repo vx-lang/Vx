@@ -1,0 +1,50 @@
+//===- slices.vx - Vx Compiler ----------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
+// RUN: vxc %s --action run-jit
+import std::vec;
+import std::io;
+
+fn sum(xs : &[i32]) -> i32 {
+  return xs[0] + xs[1] + xs[2];
+}
+
+fn replace_middle(mut xs : &mut [i32]) -> i32 {
+  xs[1] = 20i32;
+  return xs[1];
+}
+
+fn main() -> i32 {
+  let mut values = Vec<i32>::new();
+  values.push(1i32);
+  values.push(2i32);
+  values.push(3i32);
+
+  let before = sum(values.as_slice());
+  let changed = replace_middle(values.as_mut_slice());
+  let after = sum(values.as_slice());
+
+  print!(before);
+  print!("
+");
+  print!(changed);
+  print!("
+");
+  print!(after);
+  print!("
+");
+  return 0;
+}
+
+// EXPECT: 6
+// EXPECT: 20
+// EXPECT: 24
+
+// Slice parameters and results are two-word aggregate values, not bare pointers.
+// MLIR: !llvm.struct<"Slice_i32", (ptr, i64)>
+// MLIR: !llvm.struct<"SliceMut_i32", (ptr, i64)>

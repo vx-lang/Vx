@@ -23,7 +23,7 @@ struct SliceMut<T> {
 impl<T> Copy for Slice<T> {}
 
 impl<T> Slice<T> {
-  /// Construct a shared slice. The caller proves that `data..data+len` is readable for the
+  /// Construct a shared slice. The caller proves that `data..data + len` is readable for the
   /// lifetime represented by the returned `&[T]`.
   unsafe fn from_raw_parts(data : *const T, len : i64) -> Slice<T> {
     return Slice<T> { ptr : data, len : len };

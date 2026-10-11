@@ -21,8 +21,8 @@
 import core::iter;
 import std::vec;
 
-struct Slice {
-  s : &mut f32,
+struct SliceHolder {
+  s : &mut [f32],
 }
 
 fn used_after_into_iter() -> i32 {
@@ -31,15 +31,15 @@ fn used_after_into_iter() -> i32 {
   return w.len();
 }
 
-fn slice_returned(n : i32) -> &mut f32 {
+fn slice_returned(n : i32) -> &mut [f32] {
   let mut v : Vec<f32> = Vec<f32>::with_capacity(n);
   v.push(2.5);
   return v.as_mut_slice();
 }
 
-fn slice_returned_in_a_struct(n : i32) -> Slice {
+fn slice_returned_in_a_struct(n : i32) -> SliceHolder {
   let mut v : Vec<f32> = Vec<f32>::with_capacity(n);
-  return Slice {
+  return SliceHolder {
     s : v.as_mut_slice()
   };
 }
