@@ -288,9 +288,9 @@ impl<T : Float> Tensor<T, [?, ?]> {
         memref.store %true, %res[] : memref<i1>
         linalg.generic {
           indexing_maps = [
-          affine_map<(d0, d1) -> (d0, d1)>,
-          affine_map<(d0, d1) -> (d0, d1)>,
-          affine_map<(d0, d1) -> ()>
+            affine_map<(d0, d1) -> (d0, d1)>,
+            affine_map<(d0, d1) -> (d0, d1)>,
+            affine_map<(d0, d1) -> ()>
           ],
           iterator_types = ["reduction", "reduction"]
         } ins(%lhs, %rhs : memref<?x?xf32>, memref<?x?xf32>) outs(%res : memref<i1>) {
@@ -315,9 +315,9 @@ impl<T : Float> Tensor<T, [?, ?]> {
         memref.store %true, %res[] : memref<i1>
         linalg.generic {
           indexing_maps = [
-          affine_map<(d0, d1) -> (d0, d1)>,
-          affine_map<(d0, d1) -> (d0, d1)>,
-          affine_map<(d0, d1) -> ()>
+            affine_map<(d0, d1) -> (d0, d1)>,
+            affine_map<(d0, d1) -> (d0, d1)>,
+            affine_map<(d0, d1) -> ()>
           ],
           iterator_types = ["reduction", "reduction"]
         } ins(%lhs, %rhs : memref<?x?xf32>, memref<?x?xf32>) outs(%res : memref<i1>) {
@@ -341,9 +341,9 @@ impl<T : Float> Tensor<T, [?, ?]> {
         memref.store %true, %res[] : memref<i1>
         linalg.generic {
           indexing_maps = [
-          affine_map<(d0, d1) -> (d0, d1)>,
-          affine_map<(d0, d1) -> (d0, d1)>,
-          affine_map<(d0, d1) -> ()>
+            affine_map<(d0, d1) -> (d0, d1)>,
+            affine_map<(d0, d1) -> (d0, d1)>,
+            affine_map<(d0, d1) -> ()>
           ],
           iterator_types = ["reduction", "reduction"]
         } ins(%lhs, %rhs : memref<?x?xf32>, memref<?x?xf32>) outs(%res : memref<i1>) {

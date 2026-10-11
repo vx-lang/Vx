@@ -327,13 +327,41 @@ fn emit_formatted_string(tokens: Vec<Token>, indent_spaces: usize, original_len:
 
     let mut is_new_line = true;
     let mut format_enabled = true;
+    // For each open `[`, whether its line ends after it, so its rows are indented one level.
+    let mut brackets: Vec<bool> = Vec::new();
 
-    for token in tokens {
+    let mut tokens = tokens.into_iter().peekable();
+    while let Some(token) = tokens.next() {
         if token.kind == TokenType::Eof {
             break;
         }
 
         match token.kind {
+            TokenType::LeftBracket => {
+                if format_enabled && is_new_line {
+                    write_indent(&mut formatted, indent_level, indent_spaces);
+                }
+                is_new_line = false;
+                formatted.push('[');
+                let rows_below = matches!(
+                    tokens.peek().map(|t| &t.kind),
+                    Some(TokenType::Whitespace(ws)) if ws.contains('\n')
+                );
+                if rows_below {
+                    indent_level += 1;
+                }
+                brackets.push(rows_below);
+            }
+            TokenType::RightBracket => {
+                if brackets.pop() == Some(true) {
+                    indent_level = (indent_level - 1).max(0);
+                }
+                if format_enabled && is_new_line {
+                    write_indent(&mut formatted, indent_level, indent_spaces);
+                }
+                is_new_line = false;
+                formatted.push(']');
+            }
             TokenType::Whitespace(ws) => {
                 if !format_enabled {
                     formatted.push_str(ws);
@@ -422,6 +450,13 @@ mod tests {
         let input = "//! vx-format: OFF\nfn   foo()   {\nlet  x=1;\n}";
         let formatted = format_file(input, 2);
         assert_eq!(formatted, input);
+    }
+
+    #[test]
+    fn the_rows_of_a_multi_line_array_are_indented() {
+        let input = "const T : Tensor<i64, [3]> = [\n1,\n2,\n3\n];\n\nfn main() -> i32 {\n  let a : Tensor<i64, [3]> = [\n  1, 2,\n  3\n  ];\n  let b = [ 1, 2 ];\n  return a[0] + b[1];\n}";
+        let expected = "const T : Tensor<i64, [3]> = [\n  1,\n  2,\n  3\n];\n\nfn main() -> i32 {\n  let a : Tensor<i64, [3]> = [\n    1, 2,\n    3\n  ];\n  let b = [ 1, 2 ];\n  return a[0] + b[1];\n}";
+        assert_eq!(format_file(input, 2), expected);
     }
 
     #[test]
