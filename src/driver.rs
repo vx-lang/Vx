@@ -1537,6 +1537,7 @@ impl CompilerDriver {
         // path emits (otherwise dropped on the default path).
         let subspaces: Vec<crate::codegen::flat::SubspaceInfo>;
         let topo_archs: Vec<(i64, String)>;
+        let local_devices: Vec<(i32, i32)>;
         {
             let env_mods = mods.clone();
             let env = GlobalAstEnv::build(&env_mods);
@@ -1549,6 +1550,7 @@ impl CompilerDriver {
             }
             subspaces = crate::codegen::flat::subspaces_from_env(&env);
             topo_archs = crate::codegen::flat::topo_archs_from_env(&env);
+            local_devices = crate::codegen::flat::local_devices_from_env(&env);
         }
 
         // Index every non-generic function by name (the main-module version wins any collision).
@@ -1729,6 +1731,7 @@ impl CompilerDriver {
             &alias_tables,
             &subspaces,
             &topo_archs,
+            &local_devices,
             crate::config::Schedule::Parallel,
         ) {
             Ok(t) => t,

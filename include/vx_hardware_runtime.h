@@ -387,6 +387,13 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload);
 #define VX_CTRL_SHUTDOWN 0x02
 #define VX_CTRL_GET_DEVICE_COUNT                                               \
   0x03 // Returns number of valid Topology::NPU[i] indices
+// A topology or memory space declared in a machine file is a local device.
+// `payload` points to two int32_t: the declared id, then the built-in id it
+// stands for (500 is GPU 0). A declared id is a hash of its name, so without
+// this a backend cannot tell that it names a GPU. Programs send it at the
+// start of `main`. A name the fleet manifest lists is still remote. Returns 1
+// if kept.
+#define VX_CTRL_LOCAL_DEVICE 0x04
 #define VX_CTRL_VENDOR_BASE 0x1000 // Vendors start their custom opcodes here
 
 #ifdef __cplusplus

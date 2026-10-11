@@ -94,6 +94,8 @@ struct Frontend {
     /// Same travel pattern as `subspaces`: the declared-arch table for `vx.spawn` stamping
     /// (Vx#352), extracted from the env because the env cannot leave the frontend.
     topo_archs: Vec<(i64, String)>,
+    /// Same again: `arch::local_device_aliases`, for the `vx.local_devices` module attribute.
+    local_devices: Vec<(i32, i32)>,
     checks: Vec<FunctionCheck>,
     /// Warnings the checks found, held rather than printed. See [`report_warnings`].
     warnings: Vec<crate::diagnostic::Diagnostic>,
@@ -209,6 +211,7 @@ fn run_frontend_on(
         warnings,
         subspaces: crate::codegen::flat::subspaces_from_env(&env),
         topo_archs: crate::codegen::flat::topo_archs_from_env(&env),
+        local_devices: crate::codegen::flat::local_devices_from_env(&env),
         checks,
         type_streams,
         merged_arenas: (merged_slow, merged_gen, merged_off),
@@ -352,6 +355,7 @@ pub fn compile_modules_mlir_in(
         session,
         subspaces,
         topo_archs,
+        local_devices,
         mut checks,
         warnings,
         type_streams,
@@ -363,6 +367,7 @@ pub fn compile_modules_mlir_in(
             &mut checks,
             &subspaces,
             &topo_archs,
+            &local_devices,
             &session,
             merged_arenas,
             sched,
@@ -1883,11 +1888,13 @@ fn lower_bodies_phase<'a>(
 ///
 /// Epoch 2 lives and dies here: the session holding it and the workers that lowered against it are
 /// released before this returns.
+#[allow(clippy::too_many_arguments)]
 fn codegen_mlir_phase(
     parsed_modules: &[VxModule],
     check_results: &mut [FunctionCheck],
     subspaces: &[crate::codegen::flat::SubspaceInfo],
     topo_archs: &[(i64, String)],
+    local_devices: &[(i32, i32)],
     global_session: &std::sync::Arc<GlobalSession>,
     merged_arenas: MergedArenas,
     sched: Schedule,
@@ -1965,6 +1972,7 @@ fn codegen_mlir_phase(
         &alias_tables,
         subspaces,
         topo_archs,
+        local_devices,
         sched,
     )
     .ok()?;

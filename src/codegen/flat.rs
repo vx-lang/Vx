@@ -959,6 +959,24 @@ const RUNTIME_HELPERS: [(&str, &str); 16] = [
 /// `Opcode::Transfer` should carry are silently dropped on the flat path. Shared by `vxc`'s
 /// `build_flat_module` and the parallel pipeline's codegen phase, so the two cannot disagree about
 /// what a `vx.transfer` is annotated with (#311).
+/// `, vx.local_devices = array<i32: ...>`, the pairs of `arch::local_device_aliases` that
+/// `vx-to-llvm` sends to the backend at startup, or nothing when there are none.
+pub(crate) fn local_devices_attr(pairs: &[(i32, i32)]) -> String {
+    if pairs.is_empty() {
+        return String::new();
+    }
+    let ids: Vec<String> = pairs
+        .iter()
+        .flat_map(|(declared, builtin)| [declared.to_string(), builtin.to_string()])
+        .collect();
+    format!(", vx.local_devices = array<i32: {}>", ids.join(", "))
+}
+
+/// The `arch::local_device_aliases` of the topologies declared in a compilation's env.
+pub fn local_devices_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i32, i32)> {
+    crate::arch::local_device_aliases(env.topologies.values().map(|d| (&d.name, &d.descriptor)))
+}
+
 /// The declared-arch table for `EmitCtx::topo_archs`, from the per-compilation env: one entry per
 /// user-declared topology that states an `arch:`. A topology that declines to declare one gets no
 /// entry, no `arch` attribute, and therefore no device compilation -- refusing to guess is the
@@ -1160,6 +1178,7 @@ pub fn emit_module_mlir(
     alias_tables: &[&[(usize, usize, Vec<usize>)]],
     subspaces: &[SubspaceInfo],
     topo_archs: &[(i64, String)],
+    local_devices: &[(i32, i32)],
     sched: crate::config::Schedule,
 ) -> Lowered<String> {
     let setup = std::time::Instant::now();
@@ -1424,11 +1443,14 @@ pub fn emit_module_mlir(
     // Emitting the wrapper here rather than leaving it to callers is what removes the last of them:
     // a caller that has to wrap the return value cannot avoid copying it.
     // `vx.drops`: the program frees its tensors at its drops (see convert-vx-to-standard).
-    let open = "module attributes {vx.drops} {\n";
+    let open = format!(
+        "module attributes {{vx.drops{}}} {{\n",
+        local_devices_attr(local_devices)
+    );
     const CLOSE: &str = "}\n";
     let mut module =
         String::with_capacity(open.len() + globals.len() + decls.len() + out_len + CLOSE.len());
-    module.push_str(open);
+    module.push_str(&open);
     module.push_str(&globals);
     module.push_str(&decls);
     for emission in emitted.iter().flatten() {
@@ -2440,6 +2462,7 @@ mod tests {
             &inline_tables,
             &agg_layouts,
             &alias_tables,
+            &[],
             &[],
             &[],
             crate::config::Schedule::Parallel,
