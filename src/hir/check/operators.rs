@@ -174,7 +174,22 @@ impl<'a> TypeChecker<'a> {
             {
                 return Type::Tensor(dst_el.clone(), dims.clone(), top.clone());
             }
-            (Type::Scalar(_), Type::Scalar(dst)) => {
+            (Type::Scalar(src), Type::Scalar(dst)) => {
+                // A literal is left alone, since a cast is one way to give a number its type.
+                // So is a generic instance: there `x as T` converts for every other `T`.
+                let literal = match &*expr.expr {
+                    Expr::Number(_) => true,
+                    Expr::UnaryOp(u) => u.op == UnaryOp::Neg && matches!(*u.expr, Expr::Number(_)),
+                    _ => false,
+                };
+                if src == dst && !literal && self.mono.being_checked.is_empty() && !self.speculating
+                {
+                    self.errors.warn(
+                        crate::diagnostic::DiagnosticCode::W1013,
+                        format!("this value is already {dst}, so the cast does nothing"),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
+                    );
+                }
                 // Only a number known while compiling: a narrowing of a variable is what `as`
                 // is for, and warning on every one would bury the casts that lose a value.
                 if let Some(crate::hir::env::Value::Int(v)) =
