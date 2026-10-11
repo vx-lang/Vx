@@ -2011,6 +2011,18 @@ impl<'a> TypeChecker<'a> {
                     "'{resolved_name}' expects {wanted} argument(s): {why}"
                 ));
             }
+            // `unsafe` is where a program says it writes every element of `::uninit()` storage
+            // before reading it.
+            if resolved_name == "Tensor::uninit" && !self.in_unsafe_block && !self.speculating {
+                self.errors.warn(
+                    crate::diagnostic::DiagnosticCode::W1032,
+                    "`::uninit()` storage is not written: reading an element before writing it \
+                     reads whatever the memory held. Call it inside `unsafe { .. }` to say every \
+                     element is written first, or use `::new()` for zeroed storage. This will \
+                     become an error",
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span)),
+                );
+            }
             // The fill value has the tensor's element type: a number literal was given it when
             // the arguments were checked, and a typed value needs `as`.
             if let (true, Type::Tensor(elem, _, _), Some(Type::Scalar(got)), Some(value)) =

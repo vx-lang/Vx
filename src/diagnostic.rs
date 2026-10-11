@@ -118,6 +118,11 @@ pub enum DiagnosticCode {
     /// ran and found a violation. Emitted only under `VX_ALLOW_UNVERIFIED`; without it a missing
     /// solver is an error, because silence used to be indistinguishable from success (Vx#374).
     W1031,
+    /// `Tensor<..>::uninit()` called outside an `unsafe` block. Its elements hold whatever the
+    /// memory held before, so reading one before writing it reads data the program never wrote.
+    /// Call it inside `unsafe { .. }` to say that every element is written first, or use `::new()`
+    /// for zeroed storage. A later version makes this an error.
+    W1032,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
