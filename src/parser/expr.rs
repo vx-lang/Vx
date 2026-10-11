@@ -916,13 +916,18 @@ impl<'a> Parser<'a> {
             {
                 return self.lower_tuple_match(expr, tuple_arms, at_statement);
             }
-            for (pattern, body, _) in tuple_arms {
+            for (pattern, body, arm_token) in tuple_arms {
                 let tuple_match::ArmPattern::Plain(pattern) = pattern else {
                     unreachable!("a tuple pattern is lowered above")
                 };
                 arms.push(MatchArm {
                     pattern: *pattern,
                     body,
+                    span: Span {
+                        line: arm_token.line,
+                        column: arm_token.column,
+                        length: arm_token.length,
+                    },
                 });
             }
             return Ok(Expr::Match(MatchExpr {

@@ -717,6 +717,18 @@ impl<'a> TypeChecker<'a> {
                         Pattern::EnumVariant(_, variant, _) => covered.push(variant.clone()),
                         _ => {}
                     }
+                    // `_ => {}` and an empty enum variant arm are there to make the match cover
+                    // every case, so they stay quiet. Every arm the compiler writes is one of them.
+                    if arm.body.is_empty()
+                        && !matches!(arm.pattern, Pattern::Wildcard | Pattern::EnumVariant(..))
+                        && !self.speculating
+                    {
+                        self.errors.warn(
+                            crate::diagnostic::DiagnosticCode::W1008,
+                            "this match arm's body is empty, so this case does nothing",
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&arm.span)),
+                        );
+                    }
                     self.push_scope();
                     self.check_literal_pattern_range(&arm.pattern, &expr_ty);
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);
