@@ -845,8 +845,10 @@ impl<'a> TypeChecker<'a> {
                 let ret_expr =
                     Expr::Identifier(IdentifierExpr::new(var_name.clone().into(), *span));
 
-                let block =
-                    Expr::UnsafeBlock(UnsafeBlockExpr::new(stmts, Some(Box::new(ret_expr)), *span));
+                let block = Expr::UnsafeBlock(UnsafeBlockExpr {
+                    generated: true,
+                    ..UnsafeBlockExpr::new(stmts, Some(Box::new(ret_expr)), *span)
+                });
 
                 *expr = block;
                 self.check_expr_type(expr)

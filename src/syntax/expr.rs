@@ -476,10 +476,18 @@ pub struct UnsafeBlockExpr {
     pub stmts: Vec<Statement>,
     pub ret: Option<Box<Expr>>,
     pub span: Span,
+    /// The compiler made this block (for `vec![..]`), so W1010 never warns about it or counts it
+    /// as a block around another one.
+    pub generated: bool,
 }
 impl UnsafeBlockExpr {
     pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
-        Self { stmts, ret, span }
+        Self {
+            stmts,
+            ret,
+            span,
+            generated: false,
+        }
     }
 }
 
@@ -1350,6 +1358,7 @@ impl Expr {
                 stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
                 span: e.span,
+                generated: e.generated,
             }),
             Expr::StructInit(e) => {
                 let mut new_name = e.name.clone();

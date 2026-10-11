@@ -2101,9 +2101,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         if let Statement::ExprStmt(ExprStmtStmt {
             expr:
                 Expr::UnsafeBlock(UnsafeBlockExpr {
-                    stmts,
-                    ret: None,
-                    span: _,
+                    stmts, ret: None, ..
                 }),
             has_semi: _,
             span: _,

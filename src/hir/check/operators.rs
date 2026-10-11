@@ -249,7 +249,7 @@ impl<'a> TypeChecker<'a> {
             }
             (Type::Scalar(_), Type::Pointer(_, _, _)) => {
                 // Allow casting integers to pointers (e.g. 0 as *mut T)
-                if !self.in_unsafe_block && !self.speculating {
+                if self.unsafe_is_missing() {
                     self.errors.push(
                         "Casting an integer to a raw pointer requires an unsafe block".to_string(),
                     );

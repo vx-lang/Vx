@@ -565,7 +565,7 @@ impl<'a> TypeChecker<'a> {
     /// or that anything lives at it. `*p`, `p[i]` and `p.field` are one operation with three
     /// spellings, so they answer to one rule.
     fn require_unsafe_raw_access(&mut self, what: &str, span: &Span) {
-        if self.in_unsafe_block || self.speculating {
+        if !self.unsafe_is_missing() {
             return;
         }
         self.errors.error_with_code(

@@ -762,7 +762,7 @@ impl<'a> TypeChecker<'a> {
                 {
                     // The contract rides on the type, so a call through a name honours it just
                     // as a call through the declaration does.
-                    if callee_unsafe && !self.in_unsafe_block && !self.speculating {
+                    if callee_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!(
@@ -905,7 +905,7 @@ impl<'a> TypeChecker<'a> {
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
                     }
-                    if *is_unsafe && !self.in_unsafe_block && !self.speculating {
+                    if *is_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name),
@@ -941,7 +941,7 @@ impl<'a> TypeChecker<'a> {
                 {
                     self.record_call_edge(resolved_name.as_ref(), span);
                     // An instance made by an earlier call keeps the template's `unsafe`.
-                    if mono_unsafe && !self.in_unsafe_block && !self.speculating {
+                    if mono_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!(
@@ -977,7 +977,7 @@ impl<'a> TypeChecker<'a> {
                 {
                     // A generic `unsafe fn` resolves here rather than through `env.functions`,
                     // so the rule is repeated: being generic does not discharge a contract.
-                    if generic_func.is_unsafe && !self.in_unsafe_block && !self.speculating {
+                    if generic_func.is_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!(
@@ -1018,7 +1018,7 @@ impl<'a> TypeChecker<'a> {
                     // The signature carries the callee's unsafe-ness precisely so an importing
                     // module can refuse the call without seeing the body. Read it here, or the
                     // flag crosses the boundary and means nothing.
-                    if sig.is_unsafe && !self.in_unsafe_block && !self.speculating {
+                    if sig.is_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!(
@@ -1618,7 +1618,7 @@ impl<'a> TypeChecker<'a> {
 
         if let Some(generic_func) = found_generic_func {
             // `Type::method(..)` calling an `unsafe fn` needs an unsafe context too.
-            if generic_func.is_unsafe && !self.in_unsafe_block && !self.speculating {
+            if generic_func.is_unsafe && self.unsafe_is_missing() {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E5001,
                     format!(
@@ -2331,7 +2331,7 @@ impl<'a> TypeChecker<'a> {
                 self.errors
                     .push("Function 'tensor_view_2d' expects (ptr, rows, cols)".to_string());
             }
-            if !self.in_unsafe_block && !self.speculating {
+            if self.unsafe_is_missing() {
                 self.errors
                     .push("Viewing raw memory as a tensor requires an unsafe block".to_string());
             }
@@ -2965,7 +2965,7 @@ impl<'a> TypeChecker<'a> {
                     // An `unsafe fn` method needs an unsafe context at its call, exactly as a
                     // free function does. Only the resolution differs, so the rule is repeated
                     // here rather than shared: a method never reaches `env.functions`.
-                    if generic_method.is_unsafe && !self.in_unsafe_block && !self.speculating {
+                    if generic_method.is_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!(
