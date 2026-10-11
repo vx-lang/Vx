@@ -154,9 +154,9 @@ that runs at run time, do not give it a `comptime` body.
 
 ## Functions that run while compiling
 
-A function that takes parameters and whose whole body is `return comptime { .. };` is the named
-form of such a lambda. Each call runs while compiling and is replaced by its value, and the function
-itself is not compiled into the program:
+A function whose whole body is `return comptime { .. };` is the named form of such a lambda. Each
+call runs while compiling and is replaced by its value, and the function itself is not compiled into
+the program:
 
 ```rust
 fn twice(x : i64) -> i64 {
@@ -170,8 +170,8 @@ fn main() -> i32 {
 ```
 
 As with the lambda, a call with an argument that is only known at run time is an error. A function
-without parameters has nothing to wait for, so its `comptime` block is worked out where it is
-written, like any other.
+without parameters, which names an expression, is also worked out where it is written, so a mistake
+in it is reported even when nothing calls it.
 
 Inside a `comptime` block a string literal is a byte buffer the block can write through a pointer,
 and a pointer result becomes a string constant in the program. `core::num` uses this for

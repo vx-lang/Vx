@@ -13,7 +13,7 @@
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
 // CHECK: i8=-128,127; i16=-32768,32767; i32=-2147483648,2147483647;
 // CHECK-SAME: i64=-9223372036854775808,9223372036854775807; zero=0; minus_one=-1;
-// CHECK-SAME: u8=255; u16=65535; u32=4294967295; u64=9223372036854775807; twice=42;
+// CHECK-SAME: u8=255; u16=65535; u32=4294967295; u64=9223372036854775807; twice=42; answer=42;
 //
 // The program holds the strings, not the code that made them.
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=IR
@@ -21,13 +21,23 @@
 // IR-DAG: llvm.mlir.global internal constant {{.*}}("4294967295\00")
 // IR-NOT: func.func {{.*}}decimal_c_str
 // IR-NOT: func.func @twice
+// IR-NOT: func.func @answer
 // IR-LABEL: func.func @main()
 // IR-NOT: write_decimal
 // IR-NOT: twice
+// IR-NOT: call @answer
 // IR: return
 // IR-NOT: func.func {{.*}}decimal_c_str
 // IR-NOT: func.func @twice
+// IR-NOT: func.func @answer
 import core::num;
+
+// No parameters: an expression given a name. Its block is also worked out where it is written.
+fn answer() -> i64 {
+  return comptime {
+    6i64 * 7i64
+  };
+}
 
 fn twice(x : i64) -> i64 {
   return comptime {
@@ -93,5 +103,7 @@ fn main() -> i32 {
   // becomes an `i32` and the call no longer matches.
   let t = twice(21i64);
   wide("twice", t);
+  print!(" ");
+  wide("answer", answer());
   return 0;
 }

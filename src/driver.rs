@@ -969,6 +969,14 @@ impl CompilerDriver {
         // body is checked. Shared with the parallel pipeline so the two frontends cannot drift.
         checker.check_whole_program_declarations();
 
+        // Taken before checking: a comptime function without parameters has its block folded
+        // in place, after which its body no longer looks like one.
+        let comptime_fns: std::collections::HashSet<crate::symbol::Symbol> = ast
+            .functions
+            .iter()
+            .filter(|f| crate::hir::TypeChecker::is_comptime_fn(f))
+            .map(|f| f.name.clone())
+            .collect();
         for f in &mut ast.functions {
             checker.check_function(f);
         }
@@ -1169,7 +1177,9 @@ impl CompilerDriver {
             .collect();
         new_functions.extend(orig_functions);
         // Every call to a comptime function has folded, so it is never emitted.
-        new_functions.retain(|f| !crate::hir::TypeChecker::is_comptime_fn(f));
+        new_functions.retain(|f| {
+            !comptime_fns.contains(&f.name) && !crate::hir::TypeChecker::is_comptime_fn(f)
+        });
         ast.functions = new_functions;
         ast.structs.extend(checker.mono.generated_structs);
 

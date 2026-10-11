@@ -1541,9 +1541,10 @@ impl<'a> TypeChecker<'a> {
             .map(|(n, t)| (n.to_string(), t.clone()))
             .collect();
         self.drops_enter_function(owned_params, &func.body);
-        // A comptime function folds at each call, where its parameters have values, so its
-        // block is not folded here, the same as a comptime lambda's body.
-        let comptime_fn = Self::is_comptime_fn(func);
+        // A comptime function with parameters folds at each call, where they have values, so
+        // its block is not folded here, the same as a comptime lambda's body. Without
+        // parameters it folds here as well, so an error in it is reported even with no call.
+        let comptime_fn = Self::is_comptime_fn(func) && !func.params.is_empty();
         let outer_comptime = if comptime_fn {
             self.consteval.closure_body_depth += 1;
             std::mem::take(&mut self.consteval.comptime_depth)

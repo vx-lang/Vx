@@ -1246,11 +1246,12 @@ impl<'a> TypeChecker<'a> {
         if self.consteval.comptime_depth > 0 {
             return;
         }
-        let ret_ty = match &*expr {
-            Expr::FunctionCall(call) => self
-                .callee_body(call.name.as_ref())
-                .map(|func| func.return_type.clone()),
-            _ => None,
+        let (ret_ty, takes_params) = match &*expr {
+            Expr::FunctionCall(call) => match self.callee_body(call.name.as_ref()) {
+                Some(func) => (Some(func.return_type.clone()), !func.params.is_empty()),
+                None => (None, true),
+            },
+            _ => (None, true),
         };
         let before = self.consteval_snapshot();
         let observed = self.observe_comptime_block(&[], Some(&*expr), &before);
@@ -1270,8 +1271,10 @@ impl<'a> TypeChecker<'a> {
                 }
                 *expr = constant;
             }
+            // Without parameters the function's block was worked out where it is written, and
+            // a failure was reported there.
             None => {
-                if !self.speculating {
+                if !self.speculating && takes_params {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3033,
                         "this call to a `comptime` function cannot be evaluated: it runs \
@@ -1284,13 +1287,10 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// Whether a function is a comptime function: it takes parameters, and its whole body is
-    /// `return comptime { .. };`. It runs only while compiling, so every call folds and the
-    /// function is never emitted. Without parameters there is nothing to wait for, so such a
-    /// block folds where it is written, as any other `comptime` block does.
+    /// Whether a function is a comptime function: its whole body is `return comptime { .. };`.
+    /// It runs only while compiling, so every call folds and the function is never emitted.
     pub fn is_comptime_fn(func: &Function) -> bool {
         !Self::is_closure_body(func.name.as_ref())
-            && !func.params.is_empty()
             && matches!(func.body.as_slice(),
                 [Statement::Return(r)] if matches!(&r.expr, Some(Expr::ComptimeBlock(_))))
     }
