@@ -7125,7 +7125,10 @@ impl<'r> Lowerer<'r> {
             }
             match ins.opcode {
                 // A view of `r` or `r` under another type: dead when that is.
-                Opcode::Cast | Opcode::TensorIndex | Opcode::TensorReshape => {
+                Opcode::Cast
+                | Opcode::TensorIndex
+                | Opcode::TensorRange
+                | Opcode::TensorReshape => {
                     if !self.temp_is_dead(Register(i as u32), keep) {
                         return false;
                     }
@@ -9096,6 +9099,11 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             Opcode::TensorDrop => assert!(
                 ins.operand1.0 < i
                     && (ins.imm & crate::bytecode::TENSOR_DROP_FLAG == 0 || ins.operand2.0 < i),
+                "HIR operand not dominated at instruction {i}"
+            ),
+            // The end of the range is a register in `imm`.
+            Opcode::TensorRange => assert!(
+                ins.operand1.0 < i && ins.operand2.0 < i && ins.imm < u64::from(i),
                 "HIR operand not dominated at instruction {i}"
             ),
             Opcode::CondBr => {
