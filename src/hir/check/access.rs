@@ -1765,6 +1765,13 @@ impl<'a> TypeChecker<'a> {
         match expr {
             Expr::Dereference(e) => {
                 let inner_ty = self.check_expr_type_flag(&mut e.expr, false);
+                if matches!(*e.expr, Expr::Borrow(_)) && !self.speculating {
+                    self.errors.warn(
+                        crate::diagnostic::DiagnosticCode::W1020,
+                        "this dereferences a borrow made in the same place: `*&x` is just `x`",
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&e.span)),
+                    );
+                }
                 // Taking the value out of `*r` moves it, and a reference cannot give away
                 // what it points at.
                 if let Type::Borrow { inner, .. } = &inner_ty {
