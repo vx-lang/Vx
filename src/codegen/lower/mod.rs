@@ -1163,6 +1163,18 @@ pub(crate) fn lower_print_call<'c>(
     if let Expr::Borrow(borrow) = print_arg {
         print_arg = &borrow.expr;
     }
+    // The checker marks a tensor of `u32` or `u64` with a cast to its own type: MLIR integers
+    // carry no sign, and its runtime printer reads them signed.
+    let mut unsigned_tensor = false;
+    if let Expr::AsCast(cast) = print_arg {
+        if let syntax::Type::Tensor(e, _, _) = &cast.target_ty {
+            unsigned_tensor = matches!(
+                e,
+                syntax::types::ElementType::U32 | syntax::types::ElementType::U64
+            );
+            print_arg = &cast.expr;
+        }
+    }
 
     let (mut arg_val, arg_ty, block) = gen.generate_expr(print_arg, block)?;
 
@@ -1183,12 +1195,14 @@ pub(crate) fn lower_print_call<'c>(
 
     let el_ty_str = extract_mlir_element_type(&arg_ty.to_string())?;
 
-    let print_fn_name = match el_ty_str {
-        "f32" => "printMemrefF32",
-        "f64" => "printMemrefF64",
-        "i32" => "printMemrefI32",
-        "i64" => "printMemrefI64",
-        "bf16" => "printMemrefBF16",
+    let print_fn_name = match (el_ty_str, unsigned_tensor) {
+        ("f32", _) => "printMemrefF32",
+        ("f64", _) => "printMemrefF64",
+        ("i32", true) => "printMemrefU32",
+        ("i64", true) => "printMemrefU64",
+        ("i32", false) => "printMemrefI32",
+        ("i64", false) => "printMemrefI64",
+        ("bf16", _) => "printMemrefBF16",
         _ => return Err(LowerError::UnsupportedElementType(el_ty_str.to_string())),
     };
 

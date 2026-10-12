@@ -164,6 +164,8 @@ impl<'a> TypeChecker<'a> {
     ) {
         Self::name_loop_literals(body);
         let mut terminated = false;
+        // Only a loop body has a header; the other block checked here is a function's body.
+        let is_function_body = header.is_none();
 
         // 1. Liveness Analysis Pass
         self.hoist_spawn_allocations(body);
@@ -191,6 +193,12 @@ impl<'a> TypeChecker<'a> {
         self.speculating = false;
 
         let mut terminated_at = None;
+        let mut declared = HashMap::new();
+        if is_function_body {
+            for name in self.borrow.current_params.keys() {
+                declared.insert(name.clone(), true);
+            }
+        }
         #[allow(clippy::needless_range_loop)]
         for i in 0..body.len() {
             self.borrow.set_stmt(i);
@@ -205,6 +213,7 @@ impl<'a> TypeChecker<'a> {
                 break; // Only warn once per block
             }
 
+            self.warn_if_declared_twice(&body[i], &mut declared);
             self.check_statement(&mut body[i], return_type, true);
             match &body[i] {
                 Statement::Return(_) | Statement::Break(_) | Statement::Continue(_) => {
@@ -217,6 +226,42 @@ impl<'a> TypeChecker<'a> {
         self.drops_exit_block(body, terminated_at);
         self.speculating = saved_speculating;
         self.borrow.exit_block();
+    }
+
+    /// W1005: `stmt` is a `let` of a name its block already declared, so the earlier value can no
+    /// longer be named. `declared` maps each name declared so far to whether it is a parameter.
+    pub(crate) fn warn_if_declared_twice(
+        &mut self,
+        stmt: &Statement,
+        declared: &mut HashMap<crate::symbol::Symbol, bool>,
+    ) {
+        let Statement::LetDecl(decl) = stmt else {
+            return;
+        };
+        // Names the compiler makes up start with `$` or `_`, and a let with no position is one
+        // it wrote. A `_` name also says the program does not mean to use the value.
+        let name: &str = decl.name.as_ref();
+        if name.starts_with(['$', '_']) || decl.span == Span::default() {
+            return;
+        }
+        let message = match declared.insert(decl.name.clone(), false) {
+            None => return,
+            Some(true) => {
+                format!("`{name}` is already a parameter of this function; this `let` hides it")
+            }
+            Some(false) => {
+                format!(
+                    "`{name}` is already declared in this block; this `let` hides the earlier one"
+                )
+            }
+        };
+        if !self.speculating {
+            self.errors.warn(
+                crate::diagnostic::DiagnosticCode::W1005,
+                message,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&decl.span)),
+            );
+        }
     }
 
     /// Drop the bindings of comptime lambdas once their calls have folded.
@@ -341,8 +386,11 @@ impl<'a> TypeChecker<'a> {
             expr,
             span,
         } = decl;
-        // Track declared variables for W1001 (unused variable) detection
+        // Track declared variables for W1001 (unused variable) and W1004 (`mut` never needed)
         self.declared_vars.push((name.clone(), *span));
+        if *_is_mut {
+            self.declared_mut_vars.push((name.clone(), *span));
+        }
 
         self.current_assignment_target = Some(name.to_string());
         // Forward the annotation as an expected-type hint so a generic call can
@@ -1031,6 +1079,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.check_assign_while_borrowed(lhs);
+        self.record_change(lhs);
         if let Some(root) = self.read_only_root(lhs) {
             self.report_read_only(&root, "it cannot be assigned", &lhs.span());
         }
@@ -1636,10 +1685,10 @@ impl<'a> TypeChecker<'a> {
                     Some(t) => t.is_float(),
                     None => n_str.contains('.') || n_str.contains('e') || n_str.contains('E'),
                 };
+                // An integer too big for an i64 has no value. Read as a float it would lose its
+                // low digits: `u64::MAX` was worked out as 18446744073709551616.
                 if !is_float {
-                    if let Ok(i) = n_str.parse::<i64>() {
-                        return Some(Value::Int(i));
-                    }
+                    return n_str.parse::<i64>().ok().map(Value::Int);
                 }
                 n_str.parse::<f64>().ok().map(Value::Number)
             }
@@ -1788,6 +1837,16 @@ impl<'a> TypeChecker<'a> {
                     None
                 }
             }
+            // No value for the one negation that overflows, as for the other operators.
+            Expr::UnaryOp(UnaryOpExpr {
+                op: UnaryOp::Neg,
+                expr: inner,
+                span: _,
+            }) => match self.eval_expr(inner, env)? {
+                Value::Int(i) => i.checked_neg().map(Value::Int),
+                Value::Number(n) => Some(Value::Number(-n)),
+                _ => None,
+            },
             // `[ a, b, c ]`. Every element has to be known, or the whole array is unknown:
             // a half-built array would let a later index read a value that was never there.
             Expr::Array(ArrayExpr { elements, span: _ }) => {
@@ -2021,7 +2080,7 @@ impl<'a> TypeChecker<'a> {
         self.callee_body(name)
     }
 
-    fn callee_body(&self, name: &str) -> Option<&Function> {
+    pub(crate) fn callee_body(&self, name: &str) -> Option<&Function> {
         if let Some(func) = self.env.syntax_functions.get(name) {
             if !func.body.is_empty() {
                 return Some(func);

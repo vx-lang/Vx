@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 //
 // One expression family's type checks, split out of the former 5000-line `hir/expr.rs` along the
-// `check_expr_type_flag` dispatch seam (frontend_refactoring_borrow_checker.md R2, #279). An additional
+// `check_expr_type_flag` dispatch seam. An additional
 // `impl TypeChecker` block; moves only, zero logic change. Reaches the shared types and helpers via
 // `use super::super::*`, exactly as `expr.rs` uses `use super::*`.
 //
@@ -183,6 +183,10 @@ impl<'a> TypeChecker<'a> {
             Value::Number(n) => Some(Expr::Number(NumberExpr {
                 value: n.to_string().into(),
                 ty: None,
+                span: *span,
+            })),
+            Value::CStr(text) => Some(Expr::StringLiteral(StringLiteralExpr {
+                value: text.as_str().into(),
                 span: *span,
             })),
             Value::Bool(b) => Some(Expr::Identifier(IdentifierExpr {
@@ -716,6 +720,18 @@ impl<'a> TypeChecker<'a> {
                         Pattern::Wildcard | Pattern::Identifier(_) => has_wildcard = true,
                         Pattern::EnumVariant(_, variant, _) => covered.push(variant.clone()),
                         _ => {}
+                    }
+                    // `_ => {}` and an empty enum variant arm are there to make the match cover
+                    // every case, so they stay quiet. Every arm the compiler writes is one of them.
+                    if arm.body.is_empty()
+                        && !matches!(arm.pattern, Pattern::Wildcard | Pattern::EnumVariant(..))
+                        && !self.speculating
+                    {
+                        self.errors.warn(
+                            crate::diagnostic::DiagnosticCode::W1008,
+                            "this match arm's body is empty, so this case does nothing",
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&arm.span)),
+                        );
                     }
                     self.push_scope();
                     self.check_literal_pattern_range(&arm.pattern, &expr_ty);

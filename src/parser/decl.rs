@@ -1332,6 +1332,9 @@ impl<'a> Parser<'a> {
         let mut traits = Vec::new();
         let mut impls = Vec::new();
         let mut functions = Vec::new();
+        // Where each function was written, to report a second one with the same name.
+        let mut defined_at: std::collections::HashMap<crate::symbol::Symbol, (usize, usize)> =
+            std::collections::HashMap::new();
         let mut consts = Vec::new();
         let mut macros = Vec::new();
         let mut transfer_impls = Vec::new();
@@ -1389,8 +1392,17 @@ impl<'a> Parser<'a> {
                 c.doc_comment = doc_comment;
                 consts.push(c);
             } else if self.at_fn_start() {
+                let start = self.peek().clone();
                 let mut f = self.parse_function()?;
                 f.doc_comment = doc_comment;
+                // Vx has no overloading: a second `fn foo` replaced the first without a word.
+                if let Some((line, column)) = defined_at.get(&f.name) {
+                    return Err(self.error_at(
+                        &start,
+                        &format!("`{}` is already defined at {line}:{column}", f.name),
+                    ));
+                }
+                defined_at.insert(f.name.clone(), (start.line, start.column));
                 functions.push(f);
             } else if self.check(&TokenType::Topology) {
                 // `Topology <Name> { memory: Memory::X, visible: [Memory::Y, ...] }` declares a

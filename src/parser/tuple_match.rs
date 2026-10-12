@@ -294,10 +294,12 @@ fn build_steps(
                             payload.clone(),
                         ),
                         body: build_steps(arms, i, &inner, body),
+                        span: Span::default(),
                     },
                     MatchArm {
                         pattern: Pattern::Wildcard,
                         body: build(arms, i + 1),
+                        span: Span::default(),
                     },
                 ],
                 Span::default(),

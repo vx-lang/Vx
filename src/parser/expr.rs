@@ -789,18 +789,29 @@ impl<'a> Parser<'a> {
                 is_mut,
                 span: amp_span,
             }));
-        } else if self.match_token(&TokenType::AndAnd) {
-            // `&&x` borrows a borrow; the lexer made the two `&`s one token.
+        } else if self.check(&TokenType::AndAnd) {
+            // `&&x` borrows a borrow; the lexer made the two `&`s one token. The outer borrow is
+            // the first `&` and the inner one the second.
+            let (line, column) = (self.peek().line, self.peek().column);
+            self.advance();
             let is_mut = self.match_token(&TokenType::Mut);
             let inner = self.parse_primary_expr()?;
             return Ok(Expr::Borrow(BorrowExpr {
                 expr: Box::new(Expr::Borrow(BorrowExpr {
                     expr: Box::new(inner),
                     is_mut,
-                    span: Span::default(),
+                    span: Span {
+                        line,
+                        column: column + 1,
+                        length: 1,
+                    },
                 })),
                 is_mut: false,
-                span: Span::default(),
+                span: Span {
+                    line,
+                    column,
+                    length: 1,
+                },
             }));
         } else if self.check(&TokenType::Star) {
             // The `*` token, so a diagnostic about the dereference points at it.
@@ -916,13 +927,18 @@ impl<'a> Parser<'a> {
             {
                 return self.lower_tuple_match(expr, tuple_arms, at_statement);
             }
-            for (pattern, body, _) in tuple_arms {
+            for (pattern, body, arm_token) in tuple_arms {
                 let tuple_match::ArmPattern::Plain(pattern) = pattern else {
                     unreachable!("a tuple pattern is lowered above")
                 };
                 arms.push(MatchArm {
                     pattern: *pattern,
                     body,
+                    span: Span {
+                        line: arm_token.line,
+                        column: arm_token.column,
+                        length: arm_token.length,
+                    },
                 });
             }
             return Ok(Expr::Match(MatchExpr {
@@ -946,7 +962,11 @@ impl<'a> Parser<'a> {
                     space: mem,
                     cost: None,
                     lowering: None,
-                    span: Span::default(),
+                    span: Span {
+                        line: peeked_token.line,
+                        column: peeked_token.column,
+                        length: peeked_token.length,
+                    },
                 })
             }
             TokenType::LeftBracket => {
@@ -1269,7 +1289,11 @@ impl<'a> Parser<'a> {
                             top,
                             stmts,
                             ret: ret_expr,
-                            span: Span::default(),
+                            span: Span {
+                                line: token.line,
+                                column: token.column,
+                                length: token.length,
+                            },
                         })
                     }
                     TokenType::Unknown('"') => {
@@ -1381,13 +1405,20 @@ impl<'a> Parser<'a> {
 
     /// `expr as T`, any number of times.
     fn parse_as_casts(&mut self, mut expr: Expr) -> ParseResult<'a, Expr> {
-        while self.match_token(&TokenType::As) {
+        while self.check(&TokenType::As) {
+            // The `as` token, so a diagnostic about the cast points at it.
+            let as_span = Span {
+                line: self.peek().line,
+                column: self.peek().column,
+                length: self.peek().length,
+            };
+            self.advance();
             let target_ty = self.parse_type()?;
             expr = Expr::AsCast(AsCastExpr {
                 expr: Box::new(expr),
                 target_ty,
                 source_ty: None,
-                span: Span::default(),
+                span: as_span,
             });
         }
         Ok(expr)

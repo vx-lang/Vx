@@ -1,0 +1,49 @@
+//===- warning_for_a_name_declared_twice_in_one_block.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s --check-prefix=COUNT
+//
+// W1005 warns when a `let` reuses a parameter's name in a function's body, or a name declared
+// earlier in its own block. An `if`, loop or `match` arm body may reuse an outer name, its loop
+// variable or a pattern's name; `_` names never warn, and neither does a lone tuple `let`.
+
+// CHECK: Warning[W1005] at 21:3: `x` is already a parameter of this function
+// CHECK: Warning[W1005] at 27:3: `total` is already declared in this block
+// COUNT-COUNT-2: Warning[W1005]
+// COUNT-NOT: Warning[W1005]
+
+fn add_one(x : i32) -> i32 {
+  let x = x + 1;
+  return x;
+}
+
+fn main() -> i32 {
+  let total : i32 = 1;
+  let total = total + 1;
+  let _ignored = 1;
+  let _ignored = 2;
+  let (a, b) = (3, 4);
+  if total > 0 {
+    let total = a;
+    print(total);
+  }
+  for i in 0..2 {
+    let i = i + b;
+    let total = i;
+    print(total);
+  }
+  match (a, b) {
+    (0, _) => {
+      print(0);
+    }, (p, q) => {
+      let p = p + q;
+      print(p);
+    }
+  }
+  return add_one(total);
+}
