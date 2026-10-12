@@ -353,6 +353,7 @@ impl<'a> TypeChecker<'a> {
                     .then(|| self.moved_field(name.as_ref(), &[]))
                     .flatten();
                 if let Some(field) = moved_field {
+                    let field = crate::hir::places::display_dotted(&field);
                     if !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E4001,
@@ -780,6 +781,7 @@ impl<'a> TypeChecker<'a> {
                         path.push(member.to_string());
                         if let Some(field) = self.moved_field(&root, &path).filter(|_| !base_moved)
                         {
+                            let field = crate::hir::places::display_dotted(&field);
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E4001,
                                 format!("`{field}` was moved out of `{root}` and has no value"),
