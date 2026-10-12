@@ -2890,9 +2890,11 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             let block = current_b;
             let alloc_ref = block.append_operation(alloc_op);
             let alloc_val: Value = alloc_ref.result(0)?.into();
-            // `::new()` zeroes what `::uninit()` leaves as it was found. The same fill a matmul
-            // emits before it accumulates, so there is one answer to what zero is per element.
-            if name.as_ref().ends_with("::new") {
+            // `::new()` zeroes what `::uninit()` leaves as it was found, and so does the older
+            // `Tensor<T>([..])`: only `::uninit()`, which belongs inside `unsafe`, skips the fill.
+            // The same fill a matmul emits before it accumulates, so there is one answer to what
+            // zero is per element.
+            if name.as_ref().ends_with("::new") || name.as_ref() == "Tensor" {
                 emit_zero_fill(gen, &block, alloc_val, &mlir_ty_str)?;
             }
             let block = if let Some(fe) = &fill_expr {

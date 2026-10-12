@@ -3545,15 +3545,18 @@ impl<'r> Lowerer<'r> {
             Some(Expr::Array(arr)) if fc.args.len() == 1 => &arr.elements,
             _ => &fc.args,
         };
-        // `Tensor<T>()` is the dims-less default construction: a rank-0 buffer, one element,
-        // uninitialized like every other constructed tensor (Vx#396's model).
+        // `Tensor<T>()` is the dims-less default construction: a rank-0 buffer, one element.
+        // This older spelling starts at zero, as `::new()` does; only `::uninit()`, which
+        // belongs inside `unsafe`, leaves storage as it was found.
         if dims.is_empty() {
             let bytes = crate::hir::memory::element_bits(&elem)?.div_ceil(8);
             let ty = LoweredTy::Tensor {
                 elem,
                 shape: vec![],
             };
-            return Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes));
+            let buf = self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes);
+            self.emit_effect(Opcode::TensorZero, buf.reg, Register(0), 0);
+            return Some(buf);
         }
         // A literal is a static extent; anything else is a run-time one, lowered to a value the
         // alloc reads. The checker typed the result the same way, per position.
@@ -3577,7 +3580,9 @@ impl<'r> Lowerer<'r> {
         for r in extents {
             self.emit_effect(Opcode::Arg, r, Register(0), 0);
         }
-        Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes))
+        let buf = self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes);
+        self.emit_effect(Opcode::TensorZero, buf.reg, Register(0), 0);
+        Some(buf)
     }
 
     /// `tensor_view_2d(ptr, rows, cols)`: the pointer is the view's `operand1`, a run-time extent
