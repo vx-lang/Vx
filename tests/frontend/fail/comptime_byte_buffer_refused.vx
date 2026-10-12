@@ -5,7 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Byte buffers a `comptime` block must refuse rather than answer wrongly.
+// Byte buffers a `comptime` block must refuse rather than answer wrongly. Each error points at
+// the value the block ends with.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
