@@ -1,0 +1,64 @@
+//===- warning_for_unsafe_with_nothing_unsafe.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
+//
+// An `unsafe` block with nothing inside that needs `unsafe` gets W1010, and so does one inside
+// another `unsafe` block. Reading through a raw pointer, calling an `unsafe fn` or a C function,
+// and turning an integer into a pointer all need `unsafe`, so those blocks get no warning.
+// Neither does a block that declares a variable (Vx has no plain `{ .. }` block). `vec![..]`
+// becomes an `unsafe` block the compiler writes, which never warns or counts as an outer block.
+
+// CHECK-NOT: Warning[W1010]
+// CHECK: Warning[W1010] at 51:11: this `unsafe` block holds nothing that needs `unsafe`
+// CHECK-NOT: Warning[W1010]
+// CHECK: Warning[W1010] at 59:12: this `unsafe` block is inside another one
+// CHECK-NOT: Warning[W1010]
+
+import std::vec;
+import core::ops;
+
+extern {
+  fn c_abs(x: i32) -> i32;
+}
+
+unsafe fn read(p : *mut i32) -> i32 {
+  let v = unsafe { *p };
+  return v;
+}
+
+struct Cell {
+  v : i32,
+}
+
+impl Cell {
+  unsafe fn make(p : *mut i32) -> Cell {
+    let v = unsafe { *p };
+    return Cell {
+      v : v
+    };
+  }
+}
+
+fn main() -> i32 {
+  let mut x : i32 = 1;
+  let mut y : i32 = 2;
+  let p : *mut i32 = &mut y;
+  let a = unsafe { x + 1 };
+  let b = unsafe { *p };
+  let c = unsafe { read(p) };
+  let d = unsafe { c_abs(0 - 3) };
+  let _q = unsafe { 0 as *mut i32 };
+  // The second call finds the function the first call made, a different path in the checker.
+  let first = unsafe { Cell::make(p) };
+  let second = unsafe { Cell::make(p) };
+  unsafe { unsafe { x = *p; } }
+  unsafe { let x = 5; print(x); }
+  let pair = vec![b, unsafe { *p }];
+  print(pair.len());
+  return a + b + c + d + first.v + second.v;
+}

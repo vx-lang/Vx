@@ -476,16 +476,40 @@ impl<'a> TypeChecker<'a> {
         then_ty
     }
 
+    /// Notes that an operation needing `unsafe` was found (W1010 reads this), and returns true
+    /// when nothing around the operation allows it, so the caller should report an error.
+    pub(crate) fn unsafe_is_missing(&mut self) -> bool {
+        self.unsafe_op_seen = true;
+        !self.in_unsafe_block && !self.speculating
+    }
+
     pub(crate) fn check_unsafeblock_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let unused = std::mem::replace(&mut self.value_unused, false);
         match expr {
             Expr::UnsafeBlock(UnsafeBlockExpr {
                 stmts,
                 ret: ret_expr,
-                span: _,
+                span,
+                generated,
             }) => {
+                let block_span = *span;
+                let written = !*generated;
                 let prev_unsafe = self.in_unsafe_block;
                 self.in_unsafe_block = true;
+                // A block the compiler made is transparent here: what it holds counts for the
+                // written block around it.
+                let prev_written = self.in_written_unsafe_block;
+                let prev_op_seen = self.unsafe_op_seen;
+                if written {
+                    self.in_written_unsafe_block = true;
+                    self.unsafe_op_seen = false;
+                }
+                let errors_before = self.errors.error_count();
+                // Vx has no plain `{ .. }` block, so one that declares a variable may be there to
+                // end the variable's life early. Removing it would change the program.
+                let declares_a_variable = stmts
+                    .iter()
+                    .any(|s| matches!(s, Statement::LetDecl(l) if !l.name.starts_with("$value")));
                 // `unsafe { let v = ..; v }`, as `vec![..]` writes: the block's drops are placed
                 // when its statements are checked, so the value is moved out of `v` by one of
                 // them, into a `$value` that owns nothing.
@@ -513,6 +537,35 @@ impl<'a> TypeChecker<'a> {
                     ret_ty = self.check_expr_type_flag(r, consume);
                 }
                 self.pop_scope();
+                if written {
+                    // An error inside may hide the operation that needed `unsafe`, so only a
+                    // block with no errors in it warns.
+                    if !self.speculating
+                        && !declares_a_variable
+                        && self.errors.error_count() == errors_before
+                    {
+                        let message = if !self.unsafe_op_seen {
+                            Some("this `unsafe` block holds nothing that needs `unsafe`, so it can go")
+                        } else if prev_written {
+                            Some(
+                                "this `unsafe` block is inside another one, which already allows \
+                                 what it holds",
+                            )
+                        } else {
+                            None
+                        };
+                        if let Some(message) = message {
+                            self.errors.warn(
+                                crate::diagnostic::DiagnosticCode::W1010,
+                                message,
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&block_span)),
+                            );
+                        }
+                    }
+                    // What this block holds also needs the block around it, if there is one.
+                    self.unsafe_op_seen |= prev_op_seen;
+                    self.in_written_unsafe_block = prev_written;
+                }
                 self.in_unsafe_block = prev_unsafe;
                 ret_ty
             }

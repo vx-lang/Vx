@@ -516,6 +516,19 @@ impl<'a> Lexer<'a> {
             };
         }
 
+        // The formatter writes each string back as it is written, escapes included. Decoded,
+        // `"\n"` came back as a line break inside the quotes.
+        if self.preserve_comments && end_byte >= start_byte + 2 {
+            return TokenBase {
+                kind: TokenTypeBase::StringLiteral(std::borrow::Cow::Borrowed(
+                    &self.source[start_byte + 1..end_byte - 1],
+                )),
+                line: self.line,
+                column: start_col,
+                length: end_byte - start_byte,
+            };
+        }
+
         if let Some(c) = unknown_escape {
             return TokenBase {
                 kind: TokenTypeBase::Unknown(c),

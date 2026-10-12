@@ -4596,7 +4596,19 @@ impl<'r> Lowerer<'r> {
         // pointer, so always a `PtrStore`). (#242)
         if let Expr::Dereference(_) = lhs {
             let place = self.lower_place(lhs)?;
-            let value = self.lower_expr(rhs)?;
+            let mut value = self.lower_expr(rhs)?;
+            // A struct or enum built in place yields its slot; the place holds the value.
+            if construction_tail(rhs) && matches!(value.ty, LoweredTy::Aggregate(_)) {
+                value = self.emit_typed(
+                    Opcode::SlotLoad,
+                    value.reg,
+                    Register(0),
+                    value.ty.clone(),
+                    0,
+                );
+            }
+            // The old value's drops run now that the new value is computed, before it is stored.
+            self.run_value_drops()?;
             self.emit_effect(Opcode::PtrStore, place.reg, value.reg, 0);
             return Ok(());
         }
@@ -4629,6 +4641,7 @@ impl<'r> Lowerer<'r> {
             if nested && matches!(v.ty, LoweredTy::Aggregate(_)) {
                 v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
             }
+            self.run_value_drops()?;
             let pos = self.code.len();
             self.emit_effect(Opcode::FieldStore, base_reg, v.reg, offset);
             // A place-write field store (`*r = v` through a `&mut o.field` place): record it for

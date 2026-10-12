@@ -827,7 +827,14 @@ impl<'a> Parser<'a> {
                 ty: None,
                 span: star_span,
             }));
-        } else if self.match_token(&TokenType::Unsafe) {
+        } else if self.check(&TokenType::Unsafe) {
+            // The `unsafe` token, so a warning about the block points at it.
+            let unsafe_span = crate::syntax::Span {
+                line: self.peek().line,
+                column: self.peek().column,
+                length: self.peek().length,
+            };
+            self.advance();
             self.consume(&TokenType::LeftBrace, "Expected '{' after unsafe")?;
             let mut stmts = Vec::new();
             while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -851,7 +858,8 @@ impl<'a> Parser<'a> {
             return self.parse_as_casts(Expr::UnsafeBlock(UnsafeBlockExpr {
                 stmts,
                 ret,
-                span: Span::default(),
+                span: unsafe_span,
+                generated: false,
             }));
         } else if self.check(&TokenType::If) {
             // The `if` token, so a diagnostic about the `if` points at it.

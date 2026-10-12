@@ -474,6 +474,13 @@ mod tests {
     }
 
     #[test]
+    fn escapes_in_strings_are_kept() {
+        let input =
+            "fn main() -> i32 {\n  print!(\"a\\tb\\n say \\\"hi\\\" \\\\ \");\n  return 0;\n}";
+        assert_eq!(format_file(input, 2), input);
+    }
+
+    #[test]
     fn a_file_that_ends_inside_a_string_is_left_as_it_is() {
         let input = "fn main() -> i32 {\n    let s = \"abc";
         assert_eq!(format_file(input, 2), input);
