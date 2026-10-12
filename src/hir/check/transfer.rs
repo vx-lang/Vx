@@ -1992,12 +1992,14 @@ impl<'a> TypeChecker<'a> {
         let Statement::LetDecl(made) = &spawn.stmts[at] else {
             return None;
         };
-        let is_constructor = matches!(&made.expr, Expr::FunctionCall(c)
+        // `unsafe { Tensor<..>::uninit() }` is the same allocation; the `unsafe` stays on it.
+        let init = crate::syntax::bare_unsafe_value(&made.expr);
+        let is_constructor = matches!(init, Expr::FunctionCall(c)
             if c.name.as_ref() == "Tensor" || c.name.as_ref().starts_with("Tensor::"));
         // The size must not use anything the region computes before it.
         let uses_region_value = spawn.stmts[..at].iter().any(|s| {
             matches!(s, Statement::LetDecl(d)
-                if crate::hir::check::raw::expr_mentions(&made.expr, d.name.as_ref()))
+                if crate::hir::check::raw::expr_mentions(init, d.name.as_ref()))
         });
         if !is_constructor || made.ty_ann.is_some() || uses_region_value {
             return None;

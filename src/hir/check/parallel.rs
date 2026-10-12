@@ -188,15 +188,16 @@ fn outer_for(stmts: &[Statement], explain: bool) -> Verdict {
             continue;
         };
         // A pre-loop declaration replicates per thread, so its initializer may read anything but
-        // must not be able to write: `Tensor<..>(..)` scratch is the intended shape, and a plain
-        // expression passes through the same no-side-door walk as body reads.
-        let init_ok = match &d.expr {
+        // must not be able to write: `Tensor<..>(..)` scratch is the intended shape, also inside
+        // `unsafe { .. }`, and a plain expression passes through the same no-side-door walk as
+        // body reads.
+        let init_ok = match crate::syntax::bare_unsafe_value(&d.expr) {
             Expr::FunctionCall(fc)
                 if is_tensor_alloc_call(fc) && fc.args.iter().all(|a| scan.expr(a)) =>
             {
                 true
             }
-            e => scan.expr(e),
+            _ => scan.expr(&d.expr),
         };
         if !init_ok || !scan.declare(&d.name, d.span) {
             return Verdict::NotSplittable;
@@ -722,14 +723,14 @@ impl ParallelScan {
     /// the shared-write discipline via `smem` (Vx#379 stage B).
     fn let_decl_two_level(&mut self, d: &crate::syntax::stmt::LetDeclStmt) -> bool {
         let mut is_smem = false;
-        let init_ok = match &d.expr {
+        let init_ok = match crate::syntax::bare_unsafe_value(&d.expr) {
             Expr::FunctionCall(fc)
                 if is_tensor_alloc_call(fc) && fc.args.iter().all(|a| self.expr(a)) =>
             {
                 is_smem = tensor_alloc_placement(fc).is_some();
                 true
             }
-            e => self.expr(e),
+            _ => self.expr(&d.expr),
         };
         if !init_ok || !self.declare(&d.name, d.span) {
             return false;

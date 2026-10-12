@@ -1007,7 +1007,7 @@ fn substitute_words(text: &str, mapping: &std::collections::HashMap<Symbol, Type
 /// names memory the compiler does not control: two views over one pointer are two names for one
 /// buffer, which no rule about names can see.
 pub fn is_tensor_construction(e: &Expr) -> bool {
-    match e {
+    match bare_unsafe_value(e) {
         Expr::FunctionCall(fc) => {
             let n = fc.name.as_ref();
             if matches!(n, "Tensor::new" | "Tensor::uninit" | "Tensor::fill") {
@@ -1017,6 +1017,19 @@ pub fn is_tensor_construction(e: &Expr) -> bool {
         }
         _ => false,
     }
+}
+
+/// `unsafe { e }` with nothing else in it, as `e`, so code that recognises a shape sees
+/// `unsafe { Tensor<..>::uninit() }` as the allocation it is. Peels any number of them.
+pub fn bare_unsafe_value(e: &Expr) -> &Expr {
+    let mut e = e;
+    while let Expr::UnsafeBlock(u) = e {
+        match (u.stmts.is_empty(), u.ret.as_deref()) {
+            (true, Some(r)) => e = r,
+            _ => break,
+        }
+    }
+    e
 }
 
 /// The local an `@` operand reads, when the operand is a bare name or a borrow of one.

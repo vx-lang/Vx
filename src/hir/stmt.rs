@@ -509,11 +509,11 @@ impl<'a> TypeChecker<'a> {
             // `raw::extent(t)` folds to its literal element count first: the prover cannot
             // lower a function call, so `let n = raw::extent(src)` would otherwise record
             // an unlowerable fact and every bound written against `n` would be unprovable
-            // (Vx#353).
+            // (Vx#353). An `unsafe` block holding only a value is that value.
             let eq_expr = Expr::RelationalOp(RelationalOpExpr {
                 lhs: Box::new(id_expr),
                 op: RelationalOp::Eq,
-                rhs: Box::new(self.fold_raw_extent(expr)),
+                rhs: Box::new(self.fold_raw_extent(crate::syntax::bare_unsafe_value(expr))),
                 span: Span::default(),
                 operand_ty: None,
             });
