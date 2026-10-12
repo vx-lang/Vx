@@ -1,0 +1,84 @@
+//===- warning_for_mut_that_is_never_needed.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s --check-prefix=QUIET
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s --check-prefix=UNUSED
+//
+// `let mut x` where `x` never changes gets a warning (W1004) at the `let`: the `mut` can go.
+// Changing `x` by `=`, `+=`, a field or index assignment, `&mut x`, or a `&mut self` method
+// called on `x` or on `x[i]` keeps it quiet. An unused `let mut` gets only the unused-variable
+// warning (W1001).
+
+// CHECK: Warning[W1004] at 58:3: `never_changed` is declared `mut` but never changes
+
+// QUIET-NOT: `assigned` is declared `mut`
+// QUIET-NOT: `added_to` is declared `mut`
+// QUIET-NOT: `point` is declared `mut`
+// QUIET-NOT: `values` is declared `mut`
+// QUIET-NOT: `borrowed` is declared `mut`
+// QUIET-NOT: `counter` is declared `mut`
+// QUIET-NOT: `counters` is declared `mut`
+// QUIET-NOT: `unused` is declared `mut`
+
+// UNUSED: Warning[W1001] at 81:3: Unused variable 'unused'
+
+import core::ops;
+
+struct Counter {
+  count: i32
+}
+
+impl Counter {
+  fn add_one(self : &mut Counter) -> void {
+    self.count = self.count + 1;
+  }
+}
+
+struct Counters {
+  first: Counter
+}
+
+impl Index for Counters {
+  type Output = Counter;
+  fn index(self : &Counters, _i : i32) -> &Counter {
+    return &self.first;
+  }
+}
+
+fn increment(n : &mut i32) -> void {
+  *n = *n + 1;
+}
+
+fn main() -> i32 {
+  let mut never_changed = 1;
+  let mut assigned = 1;
+  assigned = 2;
+  let mut added_to = 1;
+  added_to += 1;
+  let mut point = Counter {
+    count: 0
+  };
+  point.count = 5;
+  let mut values : Tensor<i32, [2]> = Tensor<i32, [2]>::fill(0);
+  values[0] = 3;
+  let mut borrowed = 1;
+  increment(&mut borrowed);
+  let mut counter = Counter {
+    count: 0
+  };
+  counter.add_one();
+  let mut counters = Counters {
+    first: Counter {
+      count: 0
+    }
+  };
+  counters[0].add_one();
+  let mut unused = 0;
+  return never_changed + assigned + added_to + point.count + values[0] + borrowed
+  + counter.count + counters.first.count;
+}

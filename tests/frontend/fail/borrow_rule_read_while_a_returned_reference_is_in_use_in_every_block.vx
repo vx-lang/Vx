@@ -1,0 +1,284 @@
+//===- borrow_rule_read_while_a_returned_reference_is_in_use_in_every_block.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s '--implicit-check-not=Error['
+//
+// The rule: reading `x` while a `&mut` that a call returned is in use is an error (E4002).
+// Each function breaks it in one kind of block, so a failure names the block. The
+// `_borrowed_outside` functions take the borrow before the block and use it after, so it is in
+// use the whole time the block runs. A closure body is written `|n| unsafe { .. }`, the one
+// block form a closure body takes today.
+//
+// borrows_that_end_in_every_block_*.vx has the same code with the borrow ended in time.
+
+struct Holder {
+  r : &i32,
+}
+
+fn pass_mut(r : &mut i32) -> &mut i32 {
+  return r;
+}
+
+fn function_body(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  let a = pass_mut(&mut x);
+  // CHECK: Error[E4002] at [[@LINE+1]]:
+  y = x;
+  *a = 2;
+  return x + y;
+}
+
+fn if_arm(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  if k > 0 {
+    let a = pass_mut(&mut x);
+    // CHECK: Error[E4002] at [[@LINE+1]]:
+    y = x;
+    *a = 2;
+  }
+  return x + y;
+}
+
+// Borrowed before an `if` arm, used after it.
+fn if_arm_borrowed_outside(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  let a = pass_mut(&mut x);
+  if k > 0 {
+    // CHECK: Error[E4002] at [[@LINE+1]]:
+    y = x;
+  }
+  *a = 2;
+  return x + y;
+}
+
+fn else_arm(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  if k > 0 {
+    y = 1;
+  } else {
+    let a = pass_mut(&mut x);
+    // CHECK: Error[E4002] at [[@LINE+1]]:
+    y = x;
+    *a = 2;
+  }
+  return x + y;
+}
+
+// Borrowed before an `else` arm, used after it.
+fn else_arm_borrowed_outside(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  let a = pass_mut(&mut x);
+  if k > 0 {
+    y = 1;
+  } else {
+    // CHECK: Error[E4002] at [[@LINE+1]]:
+    y = x;
+  }
+  *a = 2;
+  return x + y;
+}
+
+fn match_arm(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  match k {
+    0 => {
+      let a = pass_mut(&mut x);
+      // CHECK: Error[E4002] at [[@LINE+1]]:
+      y = x;
+      *a = 2;
+    }
+    _ => {
+      y = 1;
+    }
+  }
+  return x + y;
+}
+
+// Borrowed before a `match` arm, used after it.
+fn match_arm_borrowed_outside(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  let a = pass_mut(&mut x);
+  match k {
+    0 => {
+      // CHECK: Error[E4002] at [[@LINE+1]]:
+      y = x;
+    }
+    _ => {
+      y = 1;
+    }
+  }
+  *a = 2;
+  return x + y;
+}
+
+fn while_body(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  let mut i = 0;
+  while i < k {
+    let a = pass_mut(&mut x);
+    // CHECK: Error[E4002] at [[@LINE+1]]:
+    y = x;
+    *a = 2;
+    i = i + 1;
+  }
+  return x + y;
+}
+
+// Borrowed before a `while` body, used after it.
+fn while_body_borrowed_outside(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  let a = pass_mut(&mut x);
+  let mut i = 0;
+  while i < k {
+    // CHECK: Error[E4002] at [[@LINE+1]]:
+    y = x;
+    i = i + 1;
+  }
+  *a = 2;
+  return x + y;
+}
+
+fn for_body(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  for _i in 0..k {
+    let a = pass_mut(&mut x);
+    // CHECK: Error[E4002] at [[@LINE+1]]:
+    y = x;
+    *a = 2;
+  }
+  return x + y;
+}
+
+// Borrowed before a `for` body, used after it.
+fn for_body_borrowed_outside(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  let a = pass_mut(&mut x);
+  for _i in 0..k {
+    // CHECK: Error[E4002] at [[@LINE+1]]:
+    y = x;
+  }
+  *a = 2;
+  return x + y;
+}
+
+fn loop_body(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  loop {
+    let a = pass_mut(&mut x);
+    // CHECK: Error[E4002] at [[@LINE+1]]:
+    y = x;
+    *a = 2;
+    break;
+  }
+  return x + y;
+}
+
+// Borrowed before a `loop` body, used after it.
+fn loop_body_borrowed_outside(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  let a = pass_mut(&mut x);
+  loop {
+    // CHECK: Error[E4002] at [[@LINE+1]]:
+    y = x;
+    break;
+  }
+  *a = 2;
+  return x + y;
+}
+
+fn unsafe_block(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  // CHECK: Error[E4002] at [[@LINE+1]]:
+  unsafe { let a = pass_mut(&mut x); y = x; *a = 2; }
+  return x + y;
+}
+
+// Borrowed before an `unsafe` block, used after it.
+fn unsafe_block_borrowed_outside(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  let a = pass_mut(&mut x);
+  // CHECK: Error[E4002] at [[@LINE+1]]:
+  unsafe { y = x; }
+  *a = 2;
+  return x + y;
+}
+
+fn closure_body(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  let f = |n : i32| unsafe {
+    let mut x = n;
+    let mut y = 0;
+    let a = pass_mut(&mut x);
+    // CHECK: Error[E4002] at [[@LINE+1]]:
+    y = x;
+    *a = 2;
+    x + y
+  };
+  y = f(k);
+  return x + y;
+}
+
+// Borrowed before a closure body, used after it.
+fn closure_body_borrowed_outside(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  let a = pass_mut(&mut x);
+  // CHECK: Error[E4002] at [[@LINE+1]]:
+  let f = |n : i32| unsafe { y = x; n };
+  y = y + f(k);
+  *a = 2;
+  return x + y;
+}
+
+fn if_inside_a_loop(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  for i in 0..k {
+    if i > 0 {
+      let a = pass_mut(&mut x);
+      // CHECK: Error[E4002] at [[@LINE+1]]:
+      y = x;
+      *a = 2;
+    }
+  }
+  return x + y;
+}
+
+// Borrowed before an `if` inside a loop, used after it.
+fn if_inside_a_loop_borrowed_outside(k : i32) -> i32 {
+  let mut x = 1;
+  let mut y = 0;
+  let a = pass_mut(&mut x);
+  for i in 0..k {
+    if i > 0 {
+      // CHECK: Error[E4002] at [[@LINE+1]]:
+      y = x;
+    }
+  }
+  *a = 2;
+  return x + y;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -462,9 +462,16 @@ impl CompilerDriver {
             // Only the file the user named reports its diagnostics, matching what the
             // sequential driver keeps from its own import pass.
             let reported = crate::pipeline::Reported::OnlyEntry(filename.into());
+            // A failed check ends with the line the sequential driver prints, with the file.
             let text =
                 crate::pipeline::compile_modules_mlir_in(programs, sched, intern_mode, reported)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| match e {
+                        crate::pipeline::PipelineError::Failed { count, .. } => format!(
+                            "Semantic check failed on '{}': {} error(s) emitted",
+                            filename, count
+                        ),
+                        other => other.to_string(),
+                    })?;
             let Some(text) = text else {
                 // Worded so it cannot be mistaken for the flat emitter's own decline, which
                 // `flat_corpus_sweep` classifies a program by: the two say different things
@@ -968,7 +975,21 @@ impl CompilerDriver {
         // Everything that is about the program as a whole rather than one function, before any
         // body is checked. Shared with the parallel pipeline so the two frontends cannot drift.
         checker.check_whole_program_declarations();
+        // Found before the checks rename calls to generic instances, reported after them.
+        let mut unused_functions = crate::diagnostic::DiagnosticsVec::new();
+        crate::hir::check::unused_functions::warn_functions_nothing_calls(
+            ast,
+            &mut unused_functions,
+        );
 
+        // Taken before checking: a comptime function without parameters has its block folded
+        // in place, after which its body no longer looks like one.
+        let comptime_fns: std::collections::HashSet<crate::symbol::Symbol> = ast
+            .functions
+            .iter()
+            .filter(|f| crate::hir::TypeChecker::is_comptime_fn(f))
+            .map(|f| f.name.clone())
+            .collect();
         for f in &mut ast.functions {
             checker.check_function(f);
         }
@@ -1092,6 +1113,10 @@ impl CompilerDriver {
             .errors
             .iter()
             .any(|d| d.level == DiagnosticLevel::Error);
+        // A program with a type error is unfinished, and the error is what it needs to hear.
+        if !has_errors {
+            checker.errors.inner.extend(unused_functions.inner);
+        }
 
         // The machine-readable verdict, before the human-readable rendering below: one record on
         // stdout carrying every diagnostic plus the resolved staging routes, so an admission
@@ -1168,6 +1193,10 @@ impl CompilerDriver {
             .filter(|f| !crate::hir::TypeChecker::is_comptime_lambda_body(f))
             .collect();
         new_functions.extend(orig_functions);
+        // Every call to a comptime function has folded, so it is never emitted.
+        new_functions.retain(|f| {
+            !comptime_fns.contains(&f.name) && !crate::hir::TypeChecker::is_comptime_fn(f)
+        });
         ast.functions = new_functions;
         ast.structs.extend(checker.mono.generated_structs);
 
@@ -1543,6 +1572,7 @@ impl CompilerDriver {
         // path emits (otherwise dropped on the default path).
         let subspaces: Vec<crate::codegen::flat::SubspaceInfo>;
         let topo_archs: Vec<(i64, String)>;
+        let local_devices: Vec<(i32, i32)>;
         {
             let env_mods = mods.clone();
             let env = GlobalAstEnv::build(&env_mods);
@@ -1555,6 +1585,7 @@ impl CompilerDriver {
             }
             subspaces = crate::codegen::flat::subspaces_from_env(&env);
             topo_archs = crate::codegen::flat::topo_archs_from_env(&env);
+            local_devices = crate::codegen::flat::local_devices_from_env(&env);
         }
 
         // Index every non-generic function by name (the main-module version wins any collision).
@@ -1735,6 +1766,7 @@ impl CompilerDriver {
             &alias_tables,
             &subspaces,
             &topo_archs,
+            &local_devices,
             crate::config::Schedule::Parallel,
         ) {
             Ok(t) => t,

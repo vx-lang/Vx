@@ -1,0 +1,34 @@
+//===- warnings_for_casts_transfers_and_spawns.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s --check-prefix=ONCE
+//
+// Three lines that compile but do not do what they look like:
+//
+// - `100000 as i8` gives -96 (W1014); `100 as i8` fits, so it gets no warning;
+// - a transfer into the memory the tensor is already in only copies it (W1022);
+// - `spawn on(Topology::Current)` runs where the code around it runs (W1023).
+
+// CHECK-DAG: Warning[W1014] at 24:22: 100000 does not fit in i8
+// CHECK-DAG: Warning[W1022] at 27:11: the value is already in CPU_DRAM
+// CHECK-DAG: Warning[W1023] at 28:3: `spawn on(Topology::Current)`
+// ONCE-COUNT-1: Warning[W1014]
+// ONCE-NOT: Warning[W1014]
+
+fn main() -> i32 {
+  let small = 100000 as i8;
+  let fine = 100 as i8;
+  let t = Tensor<f32, [4]>::new();
+  let s = transfer(t, Memory::CPU_DRAM);
+  spawn on(Topology::Current) {
+    print(small);
+  }
+  print(fine);
+  print(s[0]);
+  return 0;
+}

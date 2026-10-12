@@ -38,6 +38,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // `let u = if c { ..; };`: the flat path declines a `let` of a `void` value, with or
     // without `: void` ("a let with no type annotation"). The file is about the AST path.
     "backend/pass/if_else_with_no_value_bound_by_let.vx",
+    // A function returning `Result<void, E>`: the flat path has no layout for a payload of type
+    // `void` ("a callee return type").
+    "backend/pass/result_with_a_void_success_type.vx",
     // `Result<void, i32>`: the flat path has no layout for a `void` payload ("an enum payload
     // type that is not modelled").
     "backend/pass/result_of_void.vx",
@@ -159,6 +162,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/trait_topologies.vx",
     // A `for` loop over `v.iter()`: the flat path declines `Vec` iteration by reference.
     "frontend/pass/vec_iterator_borrow_ends_at_last_use.vx",
+    // `&&x` borrows a borrow, and the flat path declines a borrow of anything but a tensor.
+    "frontend/pass/warning_for_a_borrow_of_a_borrow.vx",
     // A parameter with run-time extents (Vx#409). It used to compile through the flat path
     // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
     // signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one function, plus

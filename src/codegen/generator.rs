@@ -890,6 +890,17 @@ impl<'c> MeliorGenerator<'c> {
 
         self.generate_module(program, modules)?;
 
+        // After `generate_module`, which is what fills `self.topologies`.
+        let local_devices = crate::arch::local_device_aliases(self.topologies.iter());
+        let attr = crate::codegen::flat::local_devices_attr(&local_devices);
+        if let Some(value) = attr.strip_prefix(", vx.local_devices = ") {
+            let value = melior::ir::Attribute::parse(self.context, value)
+                .expect("vx.local_devices is a valid array attribute");
+            self.module
+                .as_operation_mut()
+                .set_attribute("vx.local_devices", value);
+        }
+
         let op = self.module.as_operation();
         let s = format!("{}", op);
         Ok(s)

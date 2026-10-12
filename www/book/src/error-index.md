@@ -14,11 +14,11 @@ the test suite has one, a program that triggers it.
 
 ## Contents
 
-- [Warnings](#warnings) — `W1001`–`W1031` (23 codes)
+- [Warnings](#warnings) — `W1001`–`W1032` (24 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3048` (47 codes)
-- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4012` (12 codes)
+- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4013` (13 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6031` (31 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
@@ -31,20 +31,20 @@ Reported without stopping the compile. A warning means the program is accepted b
 | Code | Meaning |
 | --- | --- |
 | [`W1001`](/errors/W1001/) | Unused variable binding |
-| [`W1002`](/errors/W1002/) | Unused function definition |
+| [`W1002`](/errors/W1002/) | A function in the program's own file that nothing calls, directly or through other functions, starting from `main`. |
 | [`W1003`](/errors/W1003/) | Unreachable code after return, break, or continue |
-| [`W1004`](/errors/W1004/) | Unnecessary mutable binding (`let mut x` where x is never reassigned) |
-| [`W1005`](/errors/W1005/) | Shadowed variable in same scope |
-| [`W1006`](/errors/W1006/) | Redundant borrow (`&&x`) |
-| [`W1007`](/errors/W1007/) | Implicit type widening in `as` cast |
-| [`W1008`](/errors/W1008/) | Empty match arm body |
+| [`W1004`](/errors/W1004/) | `let mut x` where `x` never changes: it is never assigned, never borrowed `&mut`, and no method that changes it is called on it. The `mut` can go. |
+| [`W1005`](/errors/W1005/) | A `let` that reuses a name already declared in the same block, so the first value can no longer be named. |
+| [`W1006`](/errors/W1006/) | `&&x`, a borrow of a borrow, where `&x` was probably meant. |
+| [`W1007`](/errors/W1007/) | An `as` cast that widens, such as `x as i64` when `x` is an `i32`. It cannot lose a value, and `i64::from(x)` says so. |
+| [`W1008`](/errors/W1008/) | A match arm whose body is empty, such as `1 => {}`. |
 | [`W1009`](/errors/W1009/) | Unused function parameter |
-| [`W1010`](/errors/W1010/) | Unnecessary unsafe block (no unsafe ops inside) |
-| [`W1013`](/errors/W1013/) | Redundant `as` cast to same type |
-| [`W1014`](/errors/W1014/) | Narrowing cast loses precision |
-| [`W1020`](/errors/W1020/) | Immediately dereferenced borrow (`*&x`) |
-| [`W1022`](/errors/W1022/) | Transfer to same memory space (no-op) |
-| [`W1023`](/errors/W1023/) | Spawn on Topology::Current (no-op) |
+| [`W1010`](/errors/W1010/) | An `unsafe` block with nothing inside it that needs `unsafe`. |
+| [`W1013`](/errors/W1013/) | An `as` cast to the type the value already has, such as `x as i32` when `x` is an `i32`. |
+| [`W1014`](/errors/W1014/) | An `as` cast of a number known while compiling that does not fit the target type, such as `100000 as i8`, which gives -96. |
+| [`W1020`](/errors/W1020/) | `*&x`, a borrow that is dereferenced at once. It is the same as `x`. |
+| [`W1022`](/errors/W1022/) | A `transfer` into the memory the value is already in. It only makes a copy. |
+| [`W1023`](/errors/W1023/) | `spawn on(Topology::Current)`: the region runs where the code around it already runs. |
 | [`W1024`](/errors/W1024/) | Implicit cross-topology transfer inserted via a `Relocatable` impl (a real data movement happens silently at the use site; write the transfer explicitly to silence). `Relocatable` answers "may this value move implicitly?" and is keyed on a user type. That is a different question from "what code moves bytes across this hardware edge?", which is `impl Transfer<Memory::A, Memory::B> for Topology::X`. Both were called `Transfer` before Vx#353. |
 | [`W1025`](/errors/W1025/) | Use of a user-defined topology with no registered descriptor (not declared via `Topology <Name> { ... }` and not registered by a plugin). Often a typo of a built-in; defaults to host-like placement. |
 | [`W1026`](/errors/W1026/) | A user-defined topology's memory is unreachable from the host (no transfer path), so data can never be moved to it. See the topology coherence check. |
@@ -53,6 +53,7 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1029`](/errors/W1029/) | A tensor placed in a memory space that declares a `capacity` has a *dynamic* (non- literal) shape, so the capacity check (E6009/E6010) could not run — the placement is unverified. Silence by making the shape static, or bounding it. Emitted only when the destination space actually declares a capacity. |
 | [`W1030`](/errors/W1030/) | A topology's device index is not a compile-time constant (`GPU[i]` for a runtime `i`), so it cannot be resolved to a device instance and falls back to index 0. Every such spawn therefore targets the same device. Vx models one representative device per declared kind (#284), so a fleet program should index with constants or const generics. |
 | [`W1031`](/errors/W1031/) | A proof obligation could not be discharged because no SMT solver was available, so the property is **unverified** rather than proved. Distinct from W1027, which means the solver ran and found a violation. Emitted only under `VX_ALLOW_UNVERIFIED`; without it a missing solver is an error, because silence used to be indistinguishable from success (Vx#374). |
+| [`W1032`](/errors/W1032/) | `Tensor<..>::uninit()` called outside an `unsafe` block. Its elements hold whatever the memory held before, so reading one before writing it reads data the program never wrote. Call it inside `unsafe { .. }` to say that every element is written first, or use `::new()` for zeroed storage. A later version makes this an error. |
 
 ## Parser Errors
 
@@ -160,6 +161,7 @@ Raised by the borrow checker and the linear-type rules. These rule out use-after
 | [`E4010`](/errors/E4010/) | A change to a variable declared without `mut`: assigning it, or a field or element of it, borrowing it `&mut`, or calling a method that takes `&mut self` on it. Declare it `let mut x`, or for a parameter `mut x : T`. |
 | [`E4011`](/errors/E4011/) | A view of a tensor (a row `q[i]` or a field `h.t`) used where a tensor of its own is held: stored in a variable that already exists (`t = q[i]`) or a struct field (`h.t = q[i]`, `Holder { t : q[i] }`), or passed to a function that takes the tensor by value (`f(q[i])`). A view shares its owner's memory and is not a copy. Bind it to a new variable with `let`, pass `q[i].clone()`, or take the parameter by reference. |
 | [`E4012`](/errors/E4012/) | A call to the `drop` method of a `Drop` impl by hand: `x.drop()`. `drop` runs when the value is dropped, so calling it as well would run it twice. Write `drop(x)`, from `core::mem`, to drop a value early. |
+| [`E4013`](/errors/E4013/) | A field moved out of a struct by value: `let x = p.a`, where `p.a` is a struct or enum that is not `Copy`. `p` still owns the field and drops it, so the moved value would be dropped twice. Clone the field (`p.a.clone()`) or borrow it (`&p.a`). |
 
 ## Safety Errors
 
@@ -234,4 +236,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-145 diagnostics.
+147 diagnostics.
