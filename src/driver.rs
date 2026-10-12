@@ -1829,8 +1829,9 @@ fn get_optimization_pipeline(
     if opt_level > 0 && !disable_mlir_optimizations {
         // Inlining puts each `mlir!` block in its caller, and lowering linalg to affine loops
         // lets the affine passes below fuse the library's linalg code with what is around it.
-        // Fusion and tiling run only where no two buffers can alias; see the pass.
-        passes.push("inline".to_string());
+        // Fusion and tiling run only where no two buffers can alias; see the pass. Only small
+        // functions are inlined, so deeply nested calls do not multiply the code.
+        passes.push("vx-inline".to_string());
         passes.push("canonicalize".to_string());
         passes.push("cse".to_string());
         passes.push(

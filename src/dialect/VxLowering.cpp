@@ -1,6 +1,7 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #include "VxDialect.h"
+#include "mlir/Analysis/CallGraph.h"
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Pass.h"
@@ -34,7 +35,9 @@
 #include "mlir/Target/LLVMIR/Dialect/All.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/Inliner.h"
 #include "mlir/Transforms/Mem2Reg.h"
+#include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringMap.h"
@@ -3967,6 +3970,53 @@ struct ReorderableReductionsPass
   }
 };
 
+// Upstream's `inline` pass inlines every call it can. A function that calls
+// another three times, which calls another three times, and so on, then holds
+// 3^depth copies of the innermost one, and compile time grows the same way.
+//
+// This pass inlines a call only when the function called has at most
+// `kMaxInlinedOps` operations. The inliner works from callees up to callers,
+// so a callee is measured after its own calls were inlined, and every inlined
+// call adds at most that many operations. LLVM's inliner still runs
+// afterwards, at -O1 and above, and weighs the remaining calls itself.
+struct BoundedInlinerPass
+    : public PassWrapper<BoundedInlinerPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(BoundedInlinerPass)
+
+  static constexpr unsigned kMaxInlinedOps = 200;
+
+  llvm::StringRef getArgument() const override { return "vx-inline"; }
+
+  llvm::StringRef getDescription() const override {
+    return "Inlines calls to small functions";
+  }
+
+  static LogicalResult runNested(Pass &pass, OpPassManager &pipeline,
+                                 Operation *op) {
+    return static_cast<BoundedInlinerPass &>(pass).runPipeline(pipeline, op);
+  }
+
+  static bool worthInlining(const Inliner::ResolvedCall &call) {
+    Region *body = call.targetNode->getCallableRegion();
+    if (!body)
+      return false;
+    unsigned ops = 0;
+    body->walk([&](Operation *) { ++ops; });
+    return ops <= kMaxInlinedOps;
+  }
+
+  void runOnOperation() override {
+    InlinerConfig config;
+    config.setDefaultPipeline(
+        [](OpPassManager &pm) { pm.addPass(createCanonicalizerPass()); });
+    config.setMaxInliningIterations(4);
+    Inliner inliner(getOperation(), getAnalysis<CallGraph>(), *this,
+                    getAnalysisManager(), runNested, config, worthInlining);
+    if (failed(inliner.doInlining()))
+      signalPassFailure();
+  }
+};
+
 } // namespace
 
 namespace mlir {
@@ -3989,6 +4039,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<ReorderableReductionsPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<BoundedInlinerPass>();
   });
 }
 } // namespace vx
