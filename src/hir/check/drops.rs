@@ -166,7 +166,7 @@ pub(crate) struct DropFrames {
     counter: usize,
 }
 
-fn printing() -> bool {
+fn printing_requested() -> bool {
     std::env::var_os("VX_PRINT_DROPS").is_some()
 }
 
@@ -303,6 +303,12 @@ fn glue_drops(name: &str, glue: &[GluePart], flag: Option<&str>) -> Vec<Statemen
 
 impl<'a> TypeChecker<'a> {
     /// Whether drops are written into the function being checked.
+    /// A body that already holds its drops is checked again without being rewritten; its drops
+    /// were printed the first time.
+    fn printing(&self) -> bool {
+        printing_requested() && self.drops_rewriting()
+    }
+
     fn drops_rewriting(&self) -> bool {
         !self.speculating
             && self.borrow.drops.frames.iter().rev().find_map(|f| match f {
@@ -878,7 +884,7 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         // The operator's drop was printed where the operator moved it.
-        if printing() && !operand_drop {
+        if self.printing() && !operand_drop {
             let flag = if moved == Moved::Maybe {
                 " if it was not moved"
             } else {
@@ -928,7 +934,7 @@ impl<'a> TypeChecker<'a> {
             {
                 continue;
             }
-            if printing() {
+            if self.printing() {
                 eprintln!(
                     "drop in {}: {}, after the operator it is moved into on line {line}",
                     self.current_function, id.name
@@ -971,7 +977,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn drops_print(&self, owner: &Owner, at: String) {
-        if !printing() {
+        if !self.printing() {
             return;
         }
         let flag = if owner.moved == Moved::Maybe {
