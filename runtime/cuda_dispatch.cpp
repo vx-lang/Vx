@@ -128,6 +128,27 @@ bool cuda_available() {
   return available;
 }
 
+/// Declared ids the program said are local devices (VX_CTRL_LOCAL_DEVICE),
+/// each with the built-in id it stands for. Filled before `main`, read after.
+struct LocalDevice {
+  int32_t declared;
+  int32_t builtin;
+};
+LocalDevice local_devices[64];
+size_t local_device_count = 0;
+
+/// The GPU ordinal a topology id names, or -1 when it names no GPU. A declared
+/// id is looked up in `local_devices` first.
+int gpu_index(int32_t topology_id) {
+  for (size_t i = 0; i < local_device_count; ++i) {
+    if (local_devices[i].declared == topology_id) {
+      topology_id = local_devices[i].builtin;
+      break;
+    }
+  }
+  return vx_topology_device_index(topology_id, VX_TOPO_GPU_BASE);
+}
+
 /// Select the device this launch targets, and report whether it exists.
 ///
 /// The topology id says which GPU the program asked for -- `Topology::GPU[1]`
@@ -149,7 +170,7 @@ bool cuda_available() {
 /// because it was the same computation run twice on one GPU. Both halves of the
 /// evidence passed for a run that never disaggregated anything.
 bool select_device(int32_t topology_id, const char *why) {
-  int index = vx_topology_device_index(topology_id, VX_TOPO_GPU_BASE);
+  int index = gpu_index(topology_id);
   if (index < 0) {
     return true;
   }
@@ -599,8 +620,7 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
   // faulted the first time it looked at a result it had transferred back.
   // Invisible on a device-less box, which is the only place the way home had
   // run before Vx#377.
-  if (!cuda_available() ||
-      vx_topology_device_index((int32_t)topology_id, VX_TOPO_GPU_BASE) < 0) {
+  if (!cuda_available() || gpu_index((int32_t)topology_id) < 0) {
     void *ptr = malloc(bytes);
     if (ptr && host_ptr) {
       memcpy(ptr, host_ptr, bytes);
@@ -650,10 +670,8 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
     return dst;
   }
 
-  int src =
-      vx_topology_device_index((int32_t)src_topology_id, VX_TOPO_GPU_BASE);
-  int dst =
-      vx_topology_device_index((int32_t)dst_topology_id, VX_TOPO_GPU_BASE);
+  int src = gpu_index((int32_t)src_topology_id);
+  int dst = gpu_index((int32_t)dst_topology_id);
   if (src < 0 || dst < 0) {
     // This entry point exists to move between two GPUs. A topology that is not
     // one has no device index to copy between, and guessing which device was
@@ -1096,7 +1114,6 @@ void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
 void vx_plugin_release_future(uint64_t future_id) { (void)future_id; }
 
 int32_t vx_plugin_control(uint32_t opcode, void *payload) {
-  (void)payload;
   switch (opcode) {
   case VX_CTRL_GET_DEVICE_COUNT: {
     int count = 0;
@@ -1112,6 +1129,20 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload) {
       cudaDeviceReset();
     }
     return 1;
+  case VX_CTRL_LOCAL_DEVICE: {
+    const int32_t *pair = static_cast<const int32_t *>(payload);
+    if (!pair) {
+      return 0;
+    }
+    if (local_device_count ==
+        sizeof(local_devices) / sizeof(local_devices[0])) {
+      fprintf(stderr, "[Vx CUDA] FATAL: more than %zu declared local devices\n",
+              local_device_count);
+      abort();
+    }
+    local_devices[local_device_count++] = {pair[0], pair[1]};
+    return 1;
+  }
   default:
     return 0;
   }

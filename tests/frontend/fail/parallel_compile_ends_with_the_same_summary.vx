@@ -1,0 +1,19 @@
+//===- parallel_compile_ends_with_the_same_summary.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s -j 4 2>&1 | FileCheck %s
+//
+// A compile with errors ends with the same line in a normal and a parallel (`-j`) compile,
+// naming the file and how many errors it found.
+//
+// CHECK: Error[E2001] at 18:10: Undefined variable 'y'
+// CHECK: Semantic check failed on '{{.*}}parallel_compile_ends_with_the_same_summary.vx': 1 error(s) emitted
+
+fn main() -> i32 {
+  return y;
+}
