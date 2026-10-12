@@ -25,6 +25,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Pass/Pass.h"
@@ -3967,6 +3968,78 @@ struct ReorderableReductionsPass
   }
 };
 
+// Integer division and remainder stop the program, as Rust does, when the
+// divisor is 0 or a signed `MIN / -1` overflows. LLVM leaves both undefined:
+// x86 raises SIGFPE with no message, and arm64 answers 0 or `MIN` and the
+// program goes on with a wrong value. A divisor that is a constant which
+// cannot fail is not checked, and neither is an operation inside a `linalg`
+// region or a GPU kernel, where `cf.assert` does not lower.
+struct CheckIntegerDivisionPass
+    : public PassWrapper<CheckIntegerDivisionPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CheckIntegerDivisionPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-check-integer-division";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Traps on integer division by zero and on signed MIN / -1";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<cf::ControlFlowDialect, arith::ArithDialect>();
+  }
+
+  void runOnOperation() override {
+    SmallVector<Operation *> ops;
+    getOperation().walk([&](Operation *op) {
+      if (isa<arith::DivSIOp, arith::RemSIOp, arith::DivUIOp, arith::RemUIOp,
+              arith::CeilDivSIOp, arith::CeilDivUIOp, arith::FloorDivSIOp>(
+              op) &&
+          isa<IntegerType>(op->getResult(0).getType()) &&
+          op->getParentOfType<gpu::GPUModuleOp>() == nullptr &&
+          op->getParentOp()->getDialect()->getNamespace() != "linalg")
+        ops.push_back(op);
+    });
+    for (Operation *op : ops) {
+      Value lhs = op->getOperand(0), rhs = op->getOperand(1);
+      auto ty = cast<IntegerType>(rhs.getType());
+      bool isSigned = isa<arith::DivSIOp, arith::RemSIOp, arith::CeilDivSIOp,
+                          arith::FloorDivSIOp>(op);
+      bool isRem = isa<arith::RemSIOp, arith::RemUIOp>(op);
+      APInt divisor;
+      bool constant = matchPattern(rhs, m_ConstantInt(&divisor));
+      OpBuilder b(op);
+      Location loc = op->getLoc();
+      if (!constant || divisor.isZero()) {
+        Value zero = b.create<arith::ConstantIntOp>(loc, ty, 0);
+        Value ok =
+            b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ne, rhs, zero);
+        b.create<cf::AssertOp>(
+            loc, ok,
+            isRem ? "attempt to calculate the remainder with a divisor of zero"
+                  : "attempt to divide by zero");
+      }
+      if (isSigned && ty.getWidth() > 1 && (!constant || divisor.isAllOnes())) {
+        Value min = b.create<arith::ConstantOp>(
+            loc, b.getIntegerAttr(ty, APInt::getSignedMinValue(ty.getWidth())));
+        Value minusOne = b.create<arith::ConstantIntOp>(loc, ty, -1);
+        Value isMin =
+            b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhs, min);
+        Value isMinusOne = b.create<arith::CmpIOp>(
+            loc, arith::CmpIPredicate::eq, rhs, minusOne);
+        Value both = b.create<arith::AndIOp>(loc, isMin, isMinusOne);
+        Value one = b.create<arith::ConstantIntOp>(loc, b.getI1Type(), 1);
+        Value ok = b.create<arith::XOrIOp>(loc, both, one);
+        b.create<cf::AssertOp>(
+            loc, ok,
+            isRem ? "attempt to calculate the remainder with overflow"
+                  : "attempt to divide with overflow");
+      }
+    }
+  }
+};
+
 } // namespace
 
 namespace mlir {
@@ -3989,6 +4062,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<ReorderableReductionsPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<CheckIntegerDivisionPass>();
   });
 }
 } // namespace vx

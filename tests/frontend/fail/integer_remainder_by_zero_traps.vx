@@ -1,0 +1,24 @@
+//===- integer_remainder_by_zero_traps.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// RUN: not vxc %s -O2 2>&1 | FileCheck %s
+//
+// A `u32` remainder by zero stops the program, on both code generators and at -O2.
+
+// CHECK: attempt to calculate the remainder with a divisor of zero
+// CHECK-NOT: wrong answer
+fn rem(a : u32, b : u32) -> u32 {
+  return a % b;
+}
+
+fn main() -> i32 {
+  print(rem(42u32, 0u32));
+  print!(" wrong answer");
+  return 0;
+}

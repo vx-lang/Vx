@@ -1822,6 +1822,8 @@ fn get_optimization_pipeline(
 
     if opt_level > 0 || llvm_lower {
         passes.push("convert-vx-to-standard".to_string());
+        // Before any optimization, so none can remove or move a division before it is checked.
+        passes.push("vx-check-integer-division".to_string());
         // Before linalg is lowered, while each reduce is still one `linalg.generic`.
         passes.push("vx-reorderable-reductions".to_string());
     }

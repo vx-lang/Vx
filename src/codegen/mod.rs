@@ -198,7 +198,7 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
 
     // Run unified pipeline. Custom Vx lowering passes run first, followed by standard lowering.
     let mut pipeline =
-        "builtin.module(convert-vx-to-standard,vx-reorderable-reductions,vx-to-llvm,".to_string();
+        "builtin.module(convert-vx-to-standard,vx-check-integer-division,vx-reorderable-reductions,vx-to-llvm,".to_string();
     if has_enzyme {
         pipeline.push_str("enzyme,");
     }
