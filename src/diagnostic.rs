@@ -359,6 +359,9 @@ pub enum DiagnosticCode {
     /// condition is false there is no branch to give a value. Add an `else`, or use the `if`
     /// as a statement.
     E3048,
+    /// A tensor whose sizes are all known while compiling, but that no tensor can have: a size
+    /// is negative, as `[N - 2 * N]` is, or the tensor takes more than 2^63 - 1 bytes.
+    E3050,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

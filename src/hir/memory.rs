@@ -190,6 +190,61 @@ pub fn static_tensor_bytes(elem: &ElementType, dims: &[Dim]) -> Option<u64> {
     element_bytes(elem)?.checked_mul(count)
 }
 
+/// A tensor shape that every size of is known while compiling, but that no tensor can have.
+#[derive(Debug, PartialEq, Eq)]
+pub enum BadShape {
+    /// The size at this position (counted from 0) is negative.
+    Negative { index: usize, value: i128 },
+    /// The tensor takes more than `i64::MAX` bytes, the most an allocation can ask for.
+    TooLarge,
+}
+
+/// A tensor dimension's value as a signed number, so that `N - 2 * N` folds to a negative
+/// number rather than to "not known". `None` for anything not constant, and for arithmetic
+/// that leaves `i128`.
+fn signed_dim(e: &Expr) -> Option<i128> {
+    match e {
+        Expr::Number(n) => n.value.as_ref().parse::<i128>().ok(),
+        Expr::UnaryOp(u) if u.op == crate::syntax::UnaryOp::Neg => {
+            signed_dim(&u.expr)?.checked_neg()
+        }
+        Expr::BinaryOp(b) => {
+            let l = signed_dim(&b.lhs)?;
+            let r = signed_dim(&b.rhs)?;
+            match b.op {
+                crate::syntax::BinaryOp::Add => l.checked_add(r),
+                crate::syntax::BinaryOp::Sub => l.checked_sub(r),
+                crate::syntax::BinaryOp::Mul => l.checked_mul(r),
+                crate::syntax::BinaryOp::Div => l.checked_div(r),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Whether a tensor shape is one no tensor can have: a size that is negative, or a total that
+/// does not fit an allocation. Sizes not known while compiling are skipped, so `[?, -1]` is
+/// still refused for its `-1`.
+pub fn bad_static_shape(elem: &ElementType, dims: &[Dim]) -> Option<BadShape> {
+    let sizes: Vec<Option<i128>> = dims
+        .iter()
+        .map(|d| d.as_static().and_then(signed_dim))
+        .collect();
+    if let Some((index, value)) = sizes
+        .iter()
+        .enumerate()
+        .find_map(|(i, v)| v.filter(|v| *v < 0).map(|v| (i, v)))
+    {
+        return Some(BadShape::Negative { index, value });
+    }
+    let mut bytes = i128::from(element_bytes(elem)?);
+    for size in sizes {
+        bytes = bytes.saturating_mul(size?);
+    }
+    (bytes > i128::from(i64::MAX)).then_some(BadShape::TooLarge)
+}
+
 /// A per-compilation view of the declared memory hierarchy. Nodes are `MemorySpace`s (a
 /// declared space's identity is `MemorySpace::from_name(name)`, so `Memory GPU_HBM { ... }`
 /// describes the built-in `GPU_HBM`); edges are `within:` parent links.

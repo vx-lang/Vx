@@ -378,6 +378,36 @@ impl<'a> TypeChecker<'a> {
 
     /// Check a `let` binding: type the initializer, bind the name (annotation wins), record the
     /// binding's reference provenance (#243), and register an equality constraint for an immutable.
+    /// Refuse a tensor whose sizes are all known while compiling but that no tensor can have: a
+    /// negative size, or more bytes than an allocation can ask for. Its allocation would ask for
+    /// a wrapped-around number of bytes.
+    fn check_tensor_shape_fits(&mut self, ty: &Type, name: &str, span: &crate::syntax::Span) {
+        let Type::Tensor(elem, dims, _) = ty else {
+            return;
+        };
+        if self.speculating {
+            return;
+        }
+        let Some(bad) = crate::hir::memory::bad_static_shape(elem, dims) else {
+            return;
+        };
+        let message = match bad {
+            crate::hir::memory::BadShape::Negative { index, value } => format!(
+                "tensor '{name}' has size {value} in position {}: a size cannot be negative",
+                index + 1
+            ),
+            crate::hir::memory::BadShape::TooLarge => format!(
+                "tensor '{name}' is too large: it takes more than 2^63 - 1 bytes, the most an \
+                 allocation can ask for"
+            ),
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E3050,
+            message,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     fn check_let_decl_stmt(&mut self, decl: &mut LetDeclStmt, consume: bool) {
         let LetDeclStmt {
             name,
@@ -465,6 +495,7 @@ impl<'a> TypeChecker<'a> {
             ty
         };
 
+        self.check_tensor_shape_fits(&binding_ty, name.as_ref(), span);
         self.bind_view(name.as_ref(), *_is_mut, expr, &binding_ty, span);
         if !self.speculating && !Self::views_foreign_memory(expr) {
             self.drops_note_owner(name.as_ref(), &binding_ty);
