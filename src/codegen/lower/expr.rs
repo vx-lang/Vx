@@ -2528,11 +2528,9 @@ fn retype_tensor_reference<'c>(
         desc = move_view_pointer(gen, block, desc, src_ty, desc_ty)?;
     }
     if desc_ty != dst_ty {
-        let cast = OperationBuilder::new("memref.cast", gen.loc())
-            .add_operands(&[desc])
-            .add_results(&[dst_ty])
-            .build()?;
-        desc = block.append_operation(cast).result(0)?.into();
+        // Through a space cast when the parameter names a memory: `&mut d` of a placed local
+        // into `&mut Tensor<f32, [1024], Memory::HBM>`.
+        desc = super::cast_memref(gen, block, desc, desc_ty, dst_ty)?;
     }
     let slot: Value = block
         .append_operation(
