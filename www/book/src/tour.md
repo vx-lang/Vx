@@ -256,6 +256,11 @@ fn matmul(a : Tensor<f32, [?, ?]>, b : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?
 `.extent(n)` reads the size of dimension `n`. Shapes that *are* known statically get checked
 statically — a matmul whose inner dimensions disagree is a compile error rather than a runtime one.
 
+`m[i]` is row `i`, and a row has the size of the last dimension: for a `[2, 3]` tensor, `m[0][j]`
+needs `j < 3` and does not reach into the next row. An index the compiler can see is too large,
+such as `m[0][5]` or `m[0][j]` inside `for j in 0..6`, is a compile error. To walk all the
+elements in one loop, `.reshape` the tensor to one dimension.
+
 `.reshape(shape)` gives the same elements in a new shape, without copying them. `.pad(shape)` makes
 a larger tensor with zeros after each axis, which is how a matrix is rounded up to a tile size:
 

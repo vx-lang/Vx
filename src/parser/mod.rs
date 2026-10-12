@@ -68,6 +68,10 @@ impl<'a> ParserError<'a> {
 
 pub(crate) type ParseResult<'a, T> = Result<T, ParserError<'a>>;
 
+/// The error for a string the file ends inside: the lexer gives its opening quote as an
+/// unknown `"`.
+pub(crate) const UNCLOSED_STRING: &str = "this string has no closing `\"`: the file ends inside it";
+
 pub struct Parser<'a> {
     tokens: &'a [Token<'a>],
     pos: usize,
