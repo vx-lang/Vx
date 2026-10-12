@@ -29,16 +29,20 @@ fn size_of<T>() -> i64 {
 }
 
 /// Each value ends up where the other one was.
+///
+/// Through raw pointers, as Rust's does: `*a` cannot move a value out from behind a
+/// reference, and nothing is dropped, since each value is moved, not copied.
 fn swap<T>(a : &mut T, b : &mut T) -> void {
-  let t = *a;
-  *a = *b;
-  *b = t;
+  let pa = a as *mut T;
+  let pb = b as *mut T;
+  unsafe { let t = *pa; *pa = *pb; *pb = t; }
 }
 
-/// `src` goes in, and what was there comes back.
+/// `src` goes in, and what was there comes back. Through a raw pointer, as `swap`.
 fn replace<T>(dest : &mut T, src : T) -> T {
-  let old = *dest;
-  *dest = src;
+  let p = dest as *mut T;
+  let old = unsafe { *p };
+  unsafe { *p = src; }
   return old;
 }
 

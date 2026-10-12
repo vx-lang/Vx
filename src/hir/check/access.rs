@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 //
 // One expression family's type checks, split out of the former 5000-line `hir/expr.rs` along the
-// `check_expr_type_flag` dispatch seam (frontend_refactoring_borrow_checker.md R2, #279). An additional
+// `check_expr_type_flag` dispatch seam. An additional
 // `impl TypeChecker` block; moves only, zero logic change. Reaches the shared types and helpers via
 // `use super::super::*`, exactly as `expr.rs` uses `use super::*`.
 //
@@ -556,6 +556,51 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// E4013: `let x = p.a` moves a struct or enum out of `p`, which still owns it and will drop
+    /// it, so a value that has something to drop would be dropped twice. A tensor field is a view
+    /// of its owner, not a move, and a `Copy` value is copied. The `$tuple` and `$value` locals of
+    /// a `let (a, b) = ..` and of an `unsafe` block's value own nothing: their parts are moved out.
+    pub(crate) fn refuse_field_move(&mut self, expr: &Expr, field_ty: &Type) {
+        let movable = matches!(
+            field_ty,
+            Type::Struct(..) | Type::Enum(..) | Type::GenericInstance(..)
+        ) && field_ty.is_linear()
+            && !self.is_copy(field_ty);
+        if !movable || self.speculating || self.drops_glue(field_ty).is_empty() {
+            return;
+        }
+        let field = match crate::hir::places::base_and_path(expr) {
+            Some((root, _)) if root.starts_with("$tuple") || root.starts_with("$value") => return,
+            Some((root, path)) => path.iter().fold(root.to_string(), |text, step| {
+                if step.starts_with('[') {
+                    format!("{text}{step}")
+                } else {
+                    format!("{text}.{step}")
+                }
+            }),
+            // A field of a value that has no name, such as a call's result, which is dropped
+            // at the end of the statement.
+            None => {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E4013,
+                    "this field cannot be moved out of the struct that holds it, which would \
+                     drop it again; clone it or borrow it"
+                        .to_string(),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span())),
+                );
+                return;
+            }
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E4013,
+            format!(
+                "`{field}` cannot be moved out of the struct that holds it, which would drop it \
+                 again; clone it (`{field}.clone()`) or borrow it (`&{field}`)"
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span())),
+        );
+    }
+
     pub(crate) fn check_memberaccess_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::MemberAccess(MemberAccessExpr {
@@ -1069,10 +1114,27 @@ impl<'a> TypeChecker<'a> {
                 // placement in its type, so each read through it is checked where it happens.
                 let borrows_placed = Self::extract_base_and_path(inner).is_some()
                     && self.check_expr_type_probe(inner).placement().is_some();
+                if *is_mut {
+                    self.record_change(inner);
+                }
                 let old_allow = self.allow_cross_topology;
                 self.allow_cross_topology |= borrows_placed;
                 let inner_ty = self.check_expr_type_flag(inner, false);
                 self.allow_cross_topology = old_allow;
+                // Quiet when a reference to a reference is what was asked for, as in
+                // `let q : &&i64 = &&a;`.
+                let asked_for = matches!(
+                    &self.expected_type,
+                    Some(Type::Borrow { inner, .. }) if matches!(**inner, Type::Borrow { .. })
+                );
+                if matches!(**inner, Expr::Borrow(_)) && !asked_for && !self.speculating {
+                    self.errors.warn(
+                        crate::diagnostic::DiagnosticCode::W1006,
+                        "this borrows a borrow: `&&x` is a reference to a reference, where `&x` \
+                         was probably meant",
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                }
                 if *is_mut {
                     if let Some(root) = self.read_only_root(inner) {
                         self.report_read_only(&root, "it cannot be borrowed `&mut`", span);
@@ -1640,18 +1702,33 @@ impl<'a> TypeChecker<'a> {
     /// behind. Persist only when the reborrow outlives the call (the callee returns a reference);
     /// a value/void call borrows only for its own duration.
     #[allow(clippy::too_many_arguments)]
-    /// The read-only variable that changing `place` would change: `x` for `x`, `x.f` or `x[i]`.
-    /// A place reached through a reference variable, `r.f` or `r[i]`, changes what `r` points
-    /// at rather than `r`; `None` then, and for a variable declared `mut`.
-    pub(crate) fn read_only_root(&self, place: &Expr) -> Option<String> {
+    /// The variable that changing `place` would change: `x` for `x`, `x.f` or `x[i]`. A place
+    /// reached through a reference variable, `r.f` or `r[i]`, changes what `r` points at rather
+    /// than `r`; `None` then.
+    pub(crate) fn changed_root(&self, place: &Expr) -> Option<String> {
         let (root, _) = Self::extract_base_and_path(place)?;
         let through_reference = !matches!(place, Expr::Identifier(_))
             && matches!(
                 self.lookup(&root).map(|(t, _)| t),
                 Some(Type::Borrow { .. } | Type::Pointer(..) | Type::Ref(..))
             );
+        (!through_reference).then_some(root)
+    }
+
+    /// Record that `place` changes, so its variable's `mut` is needed. Call it before `place`
+    /// is checked: checking can rewrite `v[i]` into a call, which has no variable to record.
+    pub(crate) fn record_change(&mut self, place: &Expr) {
+        if let Some(root) = self.changed_root(place) {
+            self.changed_vars.insert(root);
+        }
+    }
+
+    /// The read-only variable that changing `place` would change, as [`Self::changed_root`]
+    /// finds it; `None` for a variable declared `mut`.
+    pub(crate) fn read_only_root(&self, place: &Expr) -> Option<String> {
+        let root = self.changed_root(place)?;
         let is_const = self.lookup(&root).is_none() && self.env.consts.contains_key(root.as_str());
-        (is_const || (!through_reference && !self.is_mutable(&root))).then_some(root)
+        (is_const || !self.is_mutable(&root)).then_some(root)
     }
 
     /// E4010: `name` was declared without `mut` and `what` would change it.
@@ -1803,6 +1880,13 @@ impl<'a> TypeChecker<'a> {
         match expr {
             Expr::Dereference(e) => {
                 let inner_ty = self.check_expr_type_flag(&mut e.expr, false);
+                if matches!(*e.expr, Expr::Borrow(_)) && !self.speculating {
+                    self.errors.warn(
+                        crate::diagnostic::DiagnosticCode::W1020,
+                        "this dereferences a borrow made in the same place: `*&x` is just `x`",
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&e.span)),
+                    );
+                }
                 // Taking the value out of `*r` moves it, and a reference cannot give away
                 // what it points at.
                 if let Type::Borrow { inner, .. } = &inner_ty {
