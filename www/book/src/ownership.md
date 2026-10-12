@@ -65,6 +65,11 @@ print(r.v);
 **A reference cannot give away what it points at (E4008).** `let b = *r;` would move the value out
 of `r`, which only borrows it. Copy or clone it instead; for a number, `*r` is a copy and is fine.
 
+**A field that has something to drop cannot be moved out of its struct (E4013).** After
+`let x = s.a;`, `s` would still own `a` and drop it, and so would `x`. Borrow the field (`&s.a`)
+or clone it (`s.a.clone()`). A `Copy` field is copied, a field with nothing to drop can be read,
+and `let (a, b) = t` takes a tuple apart.
+
 **A variable without `mut` is read-only (E4010).** As in Rust, `let x = ..` and a parameter `x : T`
 cannot be assigned, nor can a field or element of `x`; `x` cannot be borrowed `&mut`; and a method
 that takes `&mut self` cannot be called on it. Write `let mut x = ..`, or `mut x : T` for a

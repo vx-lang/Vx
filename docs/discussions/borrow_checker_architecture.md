@@ -71,6 +71,36 @@ This approach handles local variable lifetimes without the overhead of tracking 
 > borrow state. (This supersedes the old "identifier access does not perform NLL cleanup" limitation
 > noted in the retired `borrow_checker_mapping.md` §6.)
 
+### When a borrow ends
+
+Before a block is checked, `block_uses` (`src/hir/stmt.rs`) records, for every variable, the index
+of the last statement in the block that names it, which variables the block declares, and whether
+the block is a loop body. A borrow belongs to a borrower variable, and `BorrowCx::live_borrows`
+drops it once `is_variable_used_after(borrower)` is false. That searches the blocks from the
+innermost out:
+
+- a later statement in the block names the borrower: still in use;
+- the block declares the borrower: not in use, since no block around it can see that variable;
+- the block is a loop body and names the borrower anywhere: still in use, because the next pass
+  names it again. The names a loop header uses, such as a `for` loop's iterator, count as named on
+  every pass.
+
+A call ends the borrows of its arguments when it returns, unless its result can hold a reference;
+then the variable that takes the result keeps them. A copy of a reference carries its borrows (§4).
+
+`tests/frontend/fail/borrow_rule_*_in_every_block.vx` tries each rule in each kind of block.
+
+What it does not model:
+
+- **A use is any statement that names the borrower.** Giving a reference a new value does not end
+  its old borrow: after `let mut r = &x; r = &y;`, `x` stays borrowed for as long as `r` is used.
+  Sound, and stricter than Rust.
+- **A loop body counts every outer variable it names as used again**, even on its last pass.
+- **Moves are tracked per variable**, not per field (#1507, #1512).
+- **`q[i]` and `q[j]` overlap** unless both indices are constants (#1513).
+- **No lifetimes across frames**: a reference or closure kept past the frame it points into is
+  not caught by this part of the checker (#860).
+
 ### Reborrows and escapes (#243)
 
 Two rules extend the lexical checker beyond `&x`-on-a-named-local:
@@ -98,7 +128,7 @@ While the Lexical checker handles local variables, it cannot verify lifetimes ac
 
 Instead of building a cross-module constraint graph, Vx mathematically compresses lifetime bounds into the 256-bit `TypeId` registry.
 
-- **Lowering:** In `sema.rs`, when a reference is assigned or passed to a function, `lower_to_type_id` dynamically creates a `TypeId`. The Lexical `scope_depth` is assigned as the **Region ID**.
+- **Lowering:** In `src/hir/expr.rs`, when a reference is assigned or passed to a function, `lower_to_type_id` dynamically creates a `TypeId`. The Lexical `scope_depth` is assigned as the **Region ID**.
 - **Bitpacking:** The Region ID and the Reference Variance are packed into a 16-bit slot inside Word 2 of the 256-bit `TypeId`. Slots 1-3 (the parameters) hold `[ region: 12 | variance: 3 | reserved: 1 ]`; slot 0 (the return) reserves three of those region bits for a provenance code (see below), so it holds `[ region: 9 | prov: 3 | variance: 3 | reserved: 1 ]`.
 - **Hardware Math:** When assigning a reference to a function parameter, `verify_subtyping_bounds` (in `borrow.rs`) executes a hardware-level check. It applies a bitwise mask to extract the Region IDs and performs a direct mathematical comparison (`region_a <= region_b`). The mask is *slot-dependent*: slot 0 uses the 9-bit `REGION_MASK_0`, slots 1-3 the 12-bit `REGION_MASK`.
 
@@ -125,9 +155,10 @@ every parameter the summary flags as an alias source, the code flags it too (pro
 `inline_code_conservatively_refines_the_summary`). Intra-compilation the summary side table
 (`return_provenances`) still drives the per-argument reborrow decision; the inline code is populated
 and checked against the summary on every call (a debug-only round-trip assertion in the
-`Expr::FunctionCall` arm), and the **cross-module consumer that reads it from a serialised `.vxlib`
-is step 7** — deferred, tracked with [#220](https://github.com/hiraditya/Vx/issues/220) /
-[#224](https://github.com/hiraditya/Vx/issues/224).
+`Expr::FunctionCall` arm). For an **imported** callee, which has no body to summarise, the checker
+reads the provenance a `.vxlib` stores in its `FnSig.ret_prov` (`src/hir/check/calls.rs`; tested by
+`borrow_check_reads_return_provenance_from_a_vxlib_interface` in `src/pipeline.rs`). A local
+definition's summary always wins over it.
 
 ### The reserved "unset" region sentinel (#267)
 
@@ -261,18 +292,13 @@ A borrow ends at the view's last use, as for `&`.
   either name is used. Before this, `let r2 = r; let s = q;` with `r = &q` was accepted.
 - **The borrower is the view variable,** so the existing liveness sweep ends the borrow at its last
   use.
-- **Indices are not part of a borrow's path** (`places::base_and_path`), so `q[0]` and `q[1]` count
-  as the same place. That is sound and sometimes too strict (#1060).
+- **A constant index is part of a borrow's path** (`places::index_element`), so `q[0]` and `q[1]`
+  are different places. Any other index may name any element, so `q[i]` overlaps every row,
+  `q[j]` included.
 
 ### Not checked yet
 
-| Case | Issue |
-| --- | --- |
-| A closure that uses a row reads the wrong value on the default code generator. This is a code generation bug, not a borrow rule. | #1080 |
-| Two `mut` rows of different indices are refused. | #1060 |
-
-Only a handful of programs in the repository take a view, so a fuzzer generator for them (#1062)
-is the main test still missing.
+`q[i]` and `q[j]` are taken to overlap even where the program shows `i != j` (#1513).
 
 ## Summary
 

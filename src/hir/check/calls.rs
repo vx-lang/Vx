@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 //
 // One expression family's type checks, split out of the former 5000-line `hir/expr.rs` along the
-// `check_expr_type_flag` dispatch seam (frontend_refactoring_borrow_checker.md R2, #279). An additional
+// `check_expr_type_flag` dispatch seam. An additional
 // `impl TypeChecker` block; moves only, zero logic change. Reaches the shared types and helpers via
 // `use super::super::*`, exactly as `expr.rs` uses `use super::*`.
 //
@@ -1200,9 +1200,16 @@ impl<'a> TypeChecker<'a> {
         let Expr::FunctionCall(call) = expr else {
             return;
         };
-        if !Self::is_closure_body(call.name.as_ref())
-            || !self.callee_is_comptime(call.name.as_ref())
-        {
+        if !Self::is_closure_body(call.name.as_ref()) {
+            if self
+                .callee_body(call.name.as_ref())
+                .is_some_and(Self::is_comptime_fn)
+            {
+                self.fold_comptime_fn_call(expr, span);
+            }
+            return;
+        }
+        if !self.callee_is_comptime(call.name.as_ref()) {
             return;
         }
         // The enclosing comptime interpreter must observe the call before it is replaced with a
@@ -1228,6 +1235,64 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+    }
+
+    /// Fold a call to a comptime function, or refuse it, as a comptime lambda's call is.
+    ///
+    /// The call runs in the `comptime` interpreter, so the function's body can use what a
+    /// `comptime` block can: byte buffers made from string literals, among them.
+    fn fold_comptime_fn_call(&mut self, expr: &mut Expr, span: &crate::syntax::Span) {
+        // The enclosing comptime interpreter must observe the call before it is replaced.
+        if self.consteval.comptime_depth > 0 {
+            return;
+        }
+        let (ret_ty, takes_params) = match &*expr {
+            Expr::FunctionCall(call) => match self.callee_body(call.name.as_ref()) {
+                Some(func) => (Some(func.return_type.clone()), !func.params.is_empty()),
+                None => (None, true),
+            },
+            _ => (None, true),
+        };
+        let before = self.consteval_snapshot();
+        let observed = self.observe_comptime_block(&[], Some(&*expr), &before);
+        let outcome = &observed.outcome;
+        let folded = (observed.escaping_write.is_none()
+            && !observed.call_depth_exceeded
+            && !outcome.requires_refusal
+            && outcome.support.is_supported())
+        .then_some(outcome.value.concrete.as_ref())
+        .flatten()
+        .and_then(|value| Self::value_to_expr(value, span));
+        match folded {
+            Some(mut constant) => {
+                // The literal takes the function's return type. Left bare it is an `i32`.
+                if let (Expr::Number(n), Some(Type::Scalar(elem))) = (&mut constant, &ret_ty) {
+                    n.ty.get_or_insert_with(|| elem.clone());
+                }
+                *expr = constant;
+            }
+            // Without parameters the function's block was worked out where it is written, and
+            // a failure was reported there.
+            None => {
+                if !self.speculating && takes_params {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E3033,
+                        "this call to a `comptime` function cannot be evaluated: it runs \
+                         while compiling, so every argument has to be known then"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Whether a function is a comptime function: its whole body is `return comptime { .. };`.
+    /// It runs only while compiling, so every call folds and the function is never emitted.
+    pub fn is_comptime_fn(func: &Function) -> bool {
+        !Self::is_closure_body(func.name.as_ref())
+            && matches!(func.body.as_slice(),
+                [Statement::Return(r)] if matches!(&r.expr, Some(Expr::ComptimeBlock(_))))
     }
 
     /// Whether a function is the generated body of a comptime lambda.
@@ -1293,8 +1358,7 @@ impl<'a> TypeChecker<'a> {
     /// from the type declared for the result, instantiates it, checks the arguments against the
     /// instance, rewrites `name` to the mangled instance and checks that instance once. Returns
     /// the instance return type, or `Unknown` after an undefined-method error or when a type
-    /// parameter is left unbound. Split out of `check_functioncall_expr`
-    /// (frontend_refactoring_borrow_checker.md R4, #279).
+    /// parameter is left unbound. Split out of `check_functioncall_expr`.
     fn check_static_method_call(
         &mut self,
         resolved_name: &crate::symbol::Symbol,
@@ -1589,7 +1653,7 @@ impl<'a> TypeChecker<'a> {
                 && self.mono.being_checked.insert(inst_name.clone())
             {
                 let saved_edge = self.seam.lowering_edge.take();
-                self.check_function(&mut inst_func);
+                self.check_instance(&generic_func, &mut inst_func);
                 self.seam.lowering_edge = saved_edge;
                 self.mono.being_checked.remove(&inst_name);
                 self.mono.functions.push((inst_func, 0));
@@ -1845,7 +1909,7 @@ impl<'a> TypeChecker<'a> {
                 // An instantiated generic is ordinary code even when the call site sits in
                 // a transfer lowering; the raw:: primitives must not resolve inside it.
                 let saved_edge = self.seam.lowering_edge.take();
-                self.check_function(&mut inst_func);
+                self.check_instance(generic_func, &mut inst_func);
                 self.seam.lowering_edge = saved_edge;
                 self.mono.being_checked.remove(&inst_name);
                 self.mono.functions.push((inst_func, origin_hash));
@@ -1884,11 +1948,16 @@ impl<'a> TypeChecker<'a> {
             (Expr::Borrow(b), Type::Borrow { inner, .. }) => (&mut *b.expr, &**inner),
             (arg, ty) => (arg, ty),
         };
-        let Type::Scalar(e) = ty else { return };
-        if !matches!(
-            e,
-            ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64
-        ) {
+        // A tensor of `u32` or `u64` is marked the same way, for its runtime printer.
+        let unsigned = match ty {
+            Type::Scalar(e) => matches!(
+                e,
+                ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64
+            ),
+            Type::Tensor(e, _, _) => matches!(e, ElementType::U32 | ElementType::U64),
+            _ => false,
+        };
+        if !unsigned {
             return;
         }
         if matches!(arg, Expr::AsCast(c) if c.target_ty == *ty) {
@@ -2010,6 +2079,18 @@ impl<'a> TypeChecker<'a> {
                 self.errors.push(format!(
                     "'{resolved_name}' expects {wanted} argument(s): {why}"
                 ));
+            }
+            // `unsafe` is where a program says it writes every element of `::uninit()` storage
+            // before reading it.
+            if resolved_name == "Tensor::uninit" && !self.in_unsafe_block && !self.speculating {
+                self.errors.warn(
+                    crate::diagnostic::DiagnosticCode::W1032,
+                    "`::uninit()` storage is not written: reading an element before writing it \
+                     reads whatever the memory held. Call it inside `unsafe { .. }` to say every \
+                     element is written first, or use `::new()` for zeroed storage. This will \
+                     become an error",
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span)),
+                );
             }
             // The fill value has the tensor's element type: a number literal was given it when
             // the arguments were checked, and a typed value needs `as`.
@@ -2415,6 +2496,29 @@ impl<'a> TypeChecker<'a> {
         found_method
     }
 
+    /// Names a generic function's body by the function's name and where the body starts. Two
+    /// generic methods can share a name, such as two types' `new`, but not a body.
+    fn generic_body_key(template: &Function) -> String {
+        format!(
+            "{}@{:?}",
+            template.name,
+            template.body.first().map(|s| s.span())
+        )
+    }
+
+    /// Checks one instance of the generic function `template`. Every instance checks the same
+    /// body, so a warning an earlier instance already gave is not given again.
+    fn check_instance(&mut self, template: &Function, inst: &mut Function) {
+        let start = self.errors.len();
+        self.check_function(inst);
+        let given = self
+            .mono
+            .warnings_given
+            .entry(Self::generic_body_key(template))
+            .or_default();
+        self.errors.drop_warnings_already_given(start, given);
+    }
+
     /// `generic_method` of `ib`, instantiated at `mapping` for the receiver type `base_ty`,
     /// type-checked and registered unless it already is. Returns it, renamed to its mangled
     /// name, and that name.
@@ -2463,7 +2567,7 @@ impl<'a> TypeChecker<'a> {
             let saved_edge = self.seam.lowering_edge.take();
             // The body's own `let`s overwrite it, and the caller's `let` still needs it.
             let saved_target = self.current_assignment_target.take();
-            self.check_function(&mut func_to_check);
+            self.check_instance(generic_method, &mut func_to_check);
             self.current_assignment_target = saved_target;
             self.seam.lowering_edge = saved_edge;
             self.mono.being_checked.remove(&mangled_sym);
@@ -2599,6 +2703,13 @@ impl<'a> TypeChecker<'a> {
         self.speculating = true;
         let ret_ty = self.check_expr_type_flag(&mut func_call, consume);
         self.speculating = saved_speculating;
+        // A call to a comptime method has to fold. The probe tried with diagnostics off, so
+        // try again here, where a call that cannot fold is reported.
+        let comptime_callee = matches!(&func_call, Expr::FunctionCall(call)
+            if self.callee_body(call.name.as_ref()).is_some_and(Self::is_comptime_fn));
+        if comptime_callee {
+            self.fold_comptime_fn_call(&mut func_call, &span);
+        }
         // A method calling itself is not registered until its body is checked, so the probe
         // cannot find it. Its signature says what it returns.
         let ret_ty =
@@ -2632,6 +2743,9 @@ impl<'a> TypeChecker<'a> {
                 if takes_an_address {
                     self.allow_cross_topology = true;
                 }
+                // Found before the check rewrites `v[i]` into a call: the variable that
+                // changes if the method changes its receiver.
+                let receiver_root = self.changed_root(obj);
                 let mut base_ty = self.check_expr_type_flag(obj, false);
                 self.allow_cross_topology = prev_allow;
 
@@ -2873,6 +2987,18 @@ impl<'a> TypeChecker<'a> {
                         }
                         _ => None,
                     };
+                    // A method that takes `&mut self` changes a receiver that is not a reference.
+                    let takes_mut_self = matches!(
+                        generic_method.params.first(),
+                        Some((
+                            _,
+                            Type::Borrow { is_mut: true, .. } | Type::Pointer(_, _, true)
+                        ))
+                    );
+                    if takes_mut_self && !matches!(base_ty, Type::Borrow { .. } | Type::Pointer(..))
+                    {
+                        self.changed_vars.extend(receiver_root.clone());
+                    }
                     // `x.drop()` would run `drop`, and `x` would be dropped again when its owner
                     // gives it up, as in Rust.
                     if ib.trait_name.as_deref() == Some("Drop") && !self.speculating {
@@ -3011,6 +3137,10 @@ impl<'a> TypeChecker<'a> {
                         };
                     match &base_ty {
                         Type::Tensor(el, _, place) => {
+                            // The tensor can be written through the pointer, so it changes.
+                            if is_mut {
+                                self.changed_vars.extend(receiver_root.clone());
+                            }
                             base_ty = element_pointer(is_mut, el, place);
                         }
                         Type::Borrow {
@@ -3053,11 +3183,16 @@ impl<'a> TypeChecker<'a> {
                             self.errors.push(format!("Cannot call len on {}", base_ty));
                         }
                     }
-                } else if !self.speculating {
-                    self.errors.push(format!(
-                        "Method '{}' not found on type {}",
-                        _method, base_ty
-                    ));
+                } else {
+                    // A method that is not found might have changed its receiver; assume so,
+                    // so the error does not also bring a warning that its `mut` is not needed.
+                    self.changed_vars.extend(receiver_root.clone());
+                    if !self.speculating {
+                        self.errors.push(format!(
+                            "Method '{}' not found on type {}",
+                            _method, base_ty
+                        ));
+                    }
                 }
                 base_ty
             }

@@ -241,11 +241,13 @@ fn payload_match(name: &str, place: Expr, payload: &EnumGlue) -> Expr {
                 Some(patterns),
             ),
             body,
+            span: Span::default(),
         });
     }
     arms.push(MatchArm {
         pattern: Pattern::Wildcard,
         body: Vec::new(),
+        span: Span::default(),
     });
     Expr::Match(MatchExpr::new(Box::new(place), arms, Span::default()))
 }

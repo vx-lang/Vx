@@ -246,6 +246,7 @@ fn flat_llvm(src: &str) -> Option<String> {
         &alias_tables,
         &[],
         &[],
+        &[],
         vxc::config::Schedule::Parallel,
     )
     .ok()?;
@@ -344,6 +345,7 @@ fn flat_module_mlir(src: &str) -> Option<String> {
         &agg_layouts,
         &alias_tables,
         &subspaces,
+        &[],
         &[],
         vxc::config::Schedule::Parallel,
     )
@@ -2195,6 +2197,7 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
     let mlir = vxc::codegen::flat::emit_module_mlir(
         &funcs,
         &session.registry,
+        &[],
         &[],
         &[],
         &[],

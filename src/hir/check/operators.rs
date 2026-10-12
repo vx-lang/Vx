@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 //
 // One expression family's type checks, split out of the former 5000-line `hir/expr.rs` along the
-// `check_expr_type_flag` dispatch seam (frontend_refactoring_borrow_checker.md R2, #279). An additional
+// `check_expr_type_flag` dispatch seam. An additional
 // `impl TypeChecker` block; moves only, zero logic change. Reaches the shared types and helpers via
 // `use super::super::*`, exactly as `expr.rs` uses `use super::*`.
 //
@@ -108,6 +108,23 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Whether every `src` value is exactly a `dst` value. These are the conversions
+    /// `core::convert` has a `From` for, so `dst::from(..)` always works where this holds.
+    fn widens_without_loss(src: &ElementType, dst: &ElementType) -> bool {
+        use ElementType::*;
+        matches!(
+            (src, dst),
+            (I8, I16 | I32 | I64 | F32 | F64)
+                | (I16, I32 | I64 | F32 | F64)
+                | (I32, I64 | F64)
+                | (U8, U16 | U32 | U64 | I16 | I32 | I64 | USize | F32 | F64)
+                | (U16, U32 | U64 | I32 | I64 | USize | F32 | F64)
+                | (U32, U64 | I64 | USize | F64)
+                | (USize, U64 | I64)
+                | (F32, F64)
+        )
+    }
+
     pub(crate) fn check_ascast_expr(&mut self, expr: &mut AsCastExpr, consume: bool) -> Type {
         let source_ty = self.check_expr_type_flag(&mut expr.expr, consume);
         let target_ty = expr.target_ty.clone();
@@ -174,7 +191,46 @@ impl<'a> TypeChecker<'a> {
             {
                 return Type::Tensor(dst_el.clone(), dims.clone(), top.clone());
             }
-            (Type::Scalar(_), Type::Scalar(_)) => {
+            (Type::Scalar(src), Type::Scalar(dst)) => {
+                // A literal is left alone, since a cast is one way to give a number its type.
+                // So is a generic instance: there `x as T` converts for every other `T`.
+                let literal = match &*expr.expr {
+                    Expr::Number(_) => true,
+                    Expr::UnaryOp(u) => u.op == UnaryOp::Neg && matches!(*u.expr, Expr::Number(_)),
+                    _ => false,
+                };
+                let quiet = literal || !self.mono.being_checked.is_empty() || self.speculating;
+                if !quiet && src == dst {
+                    self.errors.warn(
+                        crate::diagnostic::DiagnosticCode::W1013,
+                        format!("this value is already {dst}, so the cast does nothing"),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
+                    );
+                } else if !quiet && Self::widens_without_loss(src, dst) {
+                    self.errors.warn(
+                        crate::diagnostic::DiagnosticCode::W1007,
+                        format!(
+                            "this cast only widens, so it cannot lose a value; \
+                             `{dst}::from(..)` from `core::convert` says so"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
+                    );
+                }
+                // Only a number known while compiling: a narrowing of a variable is what `as`
+                // is for, and warning on every one would bury the casts that lose a value.
+                if let Some(crate::hir::env::Value::Int(v)) =
+                    self.eval_expr(&expr.expr, &std::collections::HashMap::new())
+                {
+                    if dst.accepts_integer_literal(&v.to_string()) == Some(false)
+                        && !self.speculating
+                    {
+                        self.errors.warn(
+                            crate::diagnostic::DiagnosticCode::W1014,
+                            format!("{v} does not fit in {dst}, so `as` changes its value"),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&expr.span)),
+                        );
+                    }
+                }
                 return target_ty;
             }
             // `&mut x as *mut T`: the same conversion `let p : *mut T = &mut x` makes, spelled as
