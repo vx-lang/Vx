@@ -477,7 +477,13 @@ impl<'a> TypeChecker<'a> {
                 {
                     let mut all_match = true;
                     for (at, asrc) in args_target.iter().zip(args_source.iter()) {
-                        if !self.is_assignable(at, asrc) {
+                        // A const argument is held as written (`Grid<4>`) or as a struct
+                        // literal's argument was worked out (`Grid { .. }`); both are the `4`.
+                        let same_extent = matches!(
+                            (Self::extent_of(at), Self::extent_of(asrc)),
+                            (Some(a), Some(b)) if a == b
+                        );
+                        if !same_extent && !self.is_assignable(at, asrc) {
                             all_match = false;
                             break;
                         }
