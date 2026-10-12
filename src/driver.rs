@@ -1487,6 +1487,29 @@ impl CompilerDriver {
                 print_program_output(&out);
             }
             Action::EmitObj => {
+                let output_path = self.options.output.clone().unwrap_or_else(|| {
+                    let mut p = main_file.to_path_buf();
+                    p.set_extension("o");
+                    p
+                });
+
+                // `grad`, `vjp` and `jvp` are calls that the Enzyme pass in `opt` fills in.
+                // The execution engine below never runs it, so such a program is built the
+                // way `run-jit` builds one.
+                let mlir_str = format!("{}", module.as_operation());
+                if mlir_str.contains("__enzyme_") {
+                    let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+                    let obj = crate::jit::compile_mlir_to_object(
+                        &mlir_str,
+                        temp_dir.path(),
+                        self.options.opt_level,
+                        self.options.disable_llvm_optimizations,
+                    )?;
+                    std::fs::copy(&obj, &output_path)
+                        .map_err(|e| format!("could not write '{}': {e}", output_path.display()))?;
+                    return Ok(());
+                }
+
                 // One resolution, shared with the JIT. This arm used to build its own list from
                 // bare filenames, which MLIR resolves against the process CWD, so it looked for
                 // `libmlir_runner_utils` in the repo root; and for the dispatch plugin under
@@ -1494,12 +1517,6 @@ impl CompilerDriver {
                 // and producing no object.
                 let engine =
                     crate::jit::ObjectEmitter::new(&module, self.options.opt_level as usize)?;
-
-                let output_path = self.options.output.clone().unwrap_or_else(|| {
-                    let mut p = main_file.to_path_buf();
-                    p.set_extension("o");
-                    p
-                });
 
                 // Whether an object was actually written is the only thing that says this
                 // succeeded. `dump_to_object_file` returns nothing and the arm returned `Ok(())`
