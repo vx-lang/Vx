@@ -1,0 +1,59 @@
+//===- two_mutable_borrows_of_elements_of_one_tensor.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s '--implicit-check-not=Error['
+//
+// Two `&mut` borrows of different elements of one tensor are refused, even when the elements
+// cannot be the same: the code generators cannot hold both yet. Finish with the first borrow
+// before taking the second. two_mutable_borrows_one_after_the_other.vx has what is allowed.
+
+fn two_constants() -> i32 {
+  let mut arr = Tensor<i32>([4]);
+  let a = &mut arr[0];
+  // CHECK: Error[E4004] at [[@LINE+1]]:{{.*}}another element of it is borrowed as mutable
+  let b = &mut arr[1];
+  *a = 1;
+  *b = 2;
+  return arr[0];
+}
+
+fn two_rows_of_a_grid() -> i32 {
+  let mut m = Tensor<i32>([2, 2]);
+  let a = &mut m[0][1];
+  // CHECK: Error[E4004] at [[@LINE+1]]:{{.*}}another element of it is borrowed as mutable
+  let b = &mut m[1][0];
+  *a = 1;
+  *b = 2;
+  return m[0][0];
+}
+
+// `arr[i]` may be `arr[0]`, so this one overlaps, and is reported once.
+fn constant_and_variable(i : i32) -> i32 {
+  let mut arr = Tensor<i32>([4]);
+  let a = &mut arr[0];
+  // CHECK: Error[E4004] at [[@LINE+1]]:{{.*}}already borrowed as mutable
+  let b = &mut arr[i];
+  *a = 1;
+  *b = 2;
+  return arr[0];
+}
+
+fn checked_different(i : i32, j : i32) -> i32 {
+  let mut arr = Tensor<i32>([4]);
+  if i != j {
+    let a = &mut arr[i];
+    // CHECK: Error[E4004] at [[@LINE+1]]:
+    let b = &mut arr[j];
+    *a = 1;
+    *b = 2;
+  }
+  return arr[0];
+}
+
+fn main() -> i32 {
+  return 0;
+}

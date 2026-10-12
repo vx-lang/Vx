@@ -27,6 +27,15 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
         }
     }
 
+    // A file that does not lex, such as one that ends inside a string, is left as it is: an
+    // unknown token is written back as one character, which would lose the rest of its text.
+    if tokens
+        .iter()
+        .any(|t| matches!(t.kind, TokenType::Unknown(_)))
+    {
+        return content.to_string();
+    }
+
     let tokens = normalize_and_expand_blocks(tokens);
     let tokens = adjust_spacing(tokens);
     emit_formatted_string(tokens, indent_spaces, content.len())
@@ -462,6 +471,12 @@ mod tests {
         let input = "const T : Tensor<i64, [3]> = [\n1,\n2,\n3\n];\n\nfn main() -> i32 {\n  let a : Tensor<i64, [3]> = [\n  1, 2,\n  3\n  ];\n  let b = [ 1, 2 ];\n  return a[0] + b[1];\n}";
         let expected = "const T : Tensor<i64, [3]> = [\n  1,\n  2,\n  3\n];\n\nfn main() -> i32 {\n  let a : Tensor<i64, [3]> = [\n    1, 2,\n    3\n  ];\n  let b = [ 1, 2 ];\n  return a[0] + b[1];\n}";
         assert_eq!(format_file(input, 2), expected);
+    }
+
+    #[test]
+    fn a_file_that_ends_inside_a_string_is_left_as_it_is() {
+        let input = "fn main() -> i32 {\n    let s = \"abc";
+        assert_eq!(format_file(input, 2), input);
     }
 
     #[test]

@@ -441,6 +441,45 @@ impl<'a> TypeChecker<'a> {
         self.check_capacity_of(elem, dims, space, context, span, true)
     }
 
+    /// E6031: a static shape that folds to a negative extent, or to more bytes than 64 bits hold.
+    /// The size is known and wrong, so it is an error rather than an unverified size (W1029).
+    /// Returns whether the shape was refused.
+    pub(crate) fn refuse_unrepresentable_shape(
+        &mut self,
+        elem: &ElementType,
+        dims: &[Dim],
+        span: &Span,
+    ) -> bool {
+        use crate::hir::memory::StaticSize;
+        let why = match crate::hir::memory::static_tensor_size(elem, dims) {
+            StaticSize::NegativeExtent => "one of its extents is negative",
+            StaticSize::Overflows => "its size in bytes does not fit in 64 bits",
+            StaticSize::Bytes(_) | StaticSize::NotConstant => return false,
+        };
+        // The extents as they fold, so `[N - 2 * N]` shows the number it comes to.
+        let extents = dims
+            .iter()
+            .map(|d| match crate::hir::memory::static_extent(d) {
+                Some(v) => v.to_string(),
+                None => "?".to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let message = format!("`Tensor<{elem}, [{extents}]>` cannot be allocated: {why}");
+        // One tensor is checked where it is made and again at each transfer; say it once.
+        let said = self.errors.inner.iter().any(|d| {
+            d.code == Some(crate::diagnostic::DiagnosticCode::E6031) && d.message == message
+        });
+        if !self.speculating && !said {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E6031,
+                message,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        }
+        true
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn check_capacity_of(
         &mut self,
@@ -451,6 +490,9 @@ impl<'a> TypeChecker<'a> {
         span: &Span,
         record: bool,
     ) {
+        if self.refuse_unrepresentable_shape(elem, dims, span) {
+            return;
+        }
         let sized = {
             let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
             let Some(decl) = h.descriptor(space) else {

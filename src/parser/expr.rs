@@ -1296,6 +1296,9 @@ impl<'a> Parser<'a> {
                             },
                         })
                     }
+                    TokenType::Unknown('"') => {
+                        return Err(self.error_at(&token, super::UNCLOSED_STRING))
+                    }
                     _ => {
                         return Err(self.error_at(
                             &token,

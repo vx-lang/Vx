@@ -445,12 +445,15 @@ impl<'a> Lexer<'a> {
     }
 
     fn string_literal(&mut self, start_byte: usize, start_col: usize) -> Token<'a> {
+        let start_line = self.line;
         let mut text: Option<String> = None;
         let mut raw_len = 0;
         let mut unknown_escape = None;
+        let mut closed = false;
         while let Some(next_c) = self.peek_char() {
             if next_c == '"' {
                 self.advance();
+                closed = true;
                 break;
             }
             let mut char_to_push = self.advance().unwrap().1;
@@ -500,6 +503,18 @@ impl<'a> Lexer<'a> {
         }
 
         let end_byte = self.current_byte_offset();
+
+        // The file ended inside the string. The parser reports an unknown `"` as a string
+        // with no closing quote, at the quote that opened it. The token still covers the rest
+        // of the file, so a tool that copies tokens back out loses none of it.
+        if !closed {
+            return TokenBase {
+                kind: TokenTypeBase::Unknown('"'),
+                line: start_line,
+                column: start_col,
+                length: end_byte - start_byte,
+            };
+        }
 
         if let Some(c) = unknown_escape {
             return TokenBase {

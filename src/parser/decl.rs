@@ -1421,6 +1421,8 @@ impl<'a> Parser<'a> {
                 // `stamp_impl!(i32);` where an item goes. What it expands to is not known until
                 // macro expansion runs, so it is recorded and replaced there.
                 item_macros.push(self.parse_item_macro_call()?);
+            } else if self.peek().kind == TokenType::Unknown('"') {
+                return Err(self.error(super::UNCLOSED_STRING));
             } else {
                 return Err(self.error(&format!(
                     "Unexpected token at top level: {:?}",
