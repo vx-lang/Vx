@@ -744,11 +744,20 @@ impl<'a> Parser<'a> {
     /// Text rather than `f64` so [`crate::units::to_bytes`] can do exact integer arithmetic: `3.35`
     /// is not representable in binary floating point, and a parse-multiply-round pipeline is
     /// correct only for the particular values it happens to be given.
+    ///
+    /// The spellings are those of a literal in an expression, so `1_048_576` and `0x100000`
+    /// are read here too, and come back as plain decimal text.
     fn parse_number_text(&mut self, what: &str) -> ParseResult<'a, String> {
-        match &self.advance().kind {
-            TokenType::Number(s) => Ok(s.to_string()),
-            other => Err(self.error(&format!("Expected {}, got {:?}", what, other))),
+        let literal = match &self.advance().kind {
+            TokenType::Number(s) => s.to_string(),
+            other => return Err(self.error(&format!("Expected {}, got {:?}", what, other))),
+        };
+        let (text, suffix) =
+            crate::parser::expr::infer_number_literal(&literal).map_err(|e| self.error(&e))?;
+        if suffix.is_some() {
+            return Err(self.error(&format!("{what} takes no type suffix, got '{literal}'")));
         }
+        Ok(text)
     }
 
     /// Exact mantissa-times-unit, with the failure reported where the reader can see the figure.

@@ -55,6 +55,18 @@ pub(crate) fn numeric_literal_mut(e: &mut Expr) -> Option<&mut NumberExpr> {
     }
 }
 
+/// Whether the numeric literal an expression is has an odd number of minus signs in front.
+pub(crate) fn literal_is_negated(e: &Expr) -> bool {
+    match e {
+        Expr::UnaryOp(UnaryOpExpr {
+            op: UnaryOp::Neg,
+            expr: inner,
+            ..
+        }) => !literal_is_negated(inner),
+        _ => false,
+    }
+}
+
 /// Whether an expression is a numeric literal that has no type of its own yet -- the one that
 /// takes its type from the other operand of a binary op, or from the position it sits in.
 pub(crate) fn is_untyped_numeric_literal(e: &Expr) -> bool {

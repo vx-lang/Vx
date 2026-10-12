@@ -231,11 +231,12 @@ impl<'a> TypeChecker<'a> {
         param_ty: &Type,
         arg_ty: &Type,
     ) -> Type {
+        let negated = crate::hir::expr::literal_is_negated(arg);
         if let Some(n) = crate::hir::expr::numeric_literal_mut(arg) {
             if let Some(elem) = expected_numeric_elem(param_ty, &n.value) {
                 n.ty = Some(elem.clone());
                 let n = n.clone();
-                self.check_usize_literal(&n, &elem);
+                self.check_literal_fits(&n, &elem, negated);
                 return Type::Scalar(elem);
             }
         }

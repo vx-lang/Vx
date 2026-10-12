@@ -866,6 +866,8 @@ impl<'a> TypeChecker<'a> {
                 expr: inner,
                 span,
             }) => {
+                self.literal_negated =
+                    matches!(op, UnaryOp::Neg) && matches!(**inner, Expr::Number(_));
                 let inner_ty = self.check_expr_type(inner);
                 // Both would leave `usize`'s range: `-x` is below zero for any `x` but 0, and
                 // `!x` sets the top bit. A tensor of `usize` too, elementwise.

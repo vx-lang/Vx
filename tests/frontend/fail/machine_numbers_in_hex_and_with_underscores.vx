@@ -1,0 +1,35 @@
+//===- machine_numbers_in_hex_and_with_underscores.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A number in a `Memory` declaration and the lane count of a vector type take the same
+// spellings as any other literal. Each capacity here is one byte too small for the tensor,
+// so the error shows the number the compiler read.
+
+Memory NPU_HBM {
+  capacity: 16_383 B
+}
+
+Memory GPU_HBM {
+  capacity: 0x3FFF B
+}
+
+struct Lanes {
+  v : <0x4 x f32>,
+}
+
+fn main() -> i32 {
+  let a : Tensor<f32, [64, 64]> = Tensor<f32, [64, 64]>::uninit();
+  let b : Tensor<f32, [64, 64]> = Tensor<f32, [64, 64]>::uninit();
+  // CHECK: Error[E6009]: transferred tensor needs 16384 bytes but memory space 'NPU_HBM' has capacity 16383 bytes
+  let staged = transfer(a, Memory::NPU_HBM);
+  // CHECK: Error[E6009]: transferred tensor needs 16384 bytes but memory space 'GPU_HBM' has capacity 16383 bytes
+  let other = transfer(b, Memory::GPU_HBM);
+  return 0;
+}
+// CHECK: 2 error(s) emitted

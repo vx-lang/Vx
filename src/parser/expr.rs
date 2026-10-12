@@ -31,6 +31,12 @@ pub(crate) fn infer_number_literal(s: &str) -> Result<(String, Option<ElementTyp
         [b'0', b'b', ..] => (2, "0b"),
         _ => (10, ""),
     };
+    // `0bf16` is zero as a `bf16`: the `b` starts the type, not a binary literal.
+    if base != 10 {
+        if let Ok(el) = s[1..].parse::<ElementType>() {
+            return Ok(("0".to_string(), Some(el)));
+        }
+    }
     let body = &s[prefix.len()..];
 
     // Where the digits end and the type suffix starts. In base 10 the first letter is the
@@ -56,6 +62,18 @@ pub(crate) fn infer_number_literal(s: &str) -> Result<(String, Option<ElementTyp
                 s
             ));
         }
+        // `0b1f32`: the `f32` is a type, so calling `f` a bad digit would mislead.
+        if base != 10
+            && suffix_part
+                .parse::<ElementType>()
+                .is_ok_and(|el| el.is_float())
+        {
+            return Err(format!(
+                "{} literal cannot have a float suffix: '{}'",
+                base_name(base),
+                s
+            ));
+        }
         if base != 10 && !suffix_part.starts_with(['i', 'u']) {
             return Err(format!(
                 "'{}' is not {} digit in '{}'",
@@ -69,6 +87,10 @@ pub(crate) fn infer_number_literal(s: &str) -> Result<(String, Option<ElementTyp
         None
     };
 
+    // The grammar wants a digit after the point, as Rust does: `1._5` is not `1.5`.
+    if digits.contains("._") {
+        return Err(format!("a digit must follow the '.' in '{}'", s));
+    }
     // `_` separates groups of digits and means nothing: `1_000_000` is `1000000`.
     let digits: String = digits.chars().filter(|c| *c != '_').collect();
     if base == 10 {
@@ -1748,6 +1770,39 @@ mod tests {
         assert!(
             err.contains("a hex literal cannot have a fraction"),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn zero_with_a_type_that_starts_with_b_is_not_a_binary_literal() {
+        assert_eq!(
+            infer_number_literal("0bf16").unwrap(),
+            ("0".to_string(), Some(ElementType::BF16))
+        );
+    }
+
+    #[test]
+    fn a_prefixed_literal_cannot_have_a_float_suffix() {
+        let err = infer_number_literal("0b1f32").unwrap_err();
+        assert!(
+            err.contains("a binary literal cannot have a float suffix"),
+            "{err}"
+        );
+        let err = infer_number_literal("0o7bf16").unwrap_err();
+        assert!(
+            err.contains("an octal literal cannot have a float suffix"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_underscore_cannot_follow_the_point() {
+        let err = infer_number_literal("1._5").unwrap_err();
+        assert!(err.contains("a digit must follow the '.'"), "{err}");
+        // An underscore before the point, or after a digit of the fraction, is a separator.
+        assert_eq!(
+            infer_number_literal("1_.5_0").unwrap(),
+            ("1.50".to_string(), None)
         );
     }
 
