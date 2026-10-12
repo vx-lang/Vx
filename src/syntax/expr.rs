@@ -1009,6 +1009,21 @@ fn substitute_words(text: &str, mapping: &std::collections::HashMap<Symbol, Type
     result
 }
 
+/// An `mlir!` block's `returns` type is parsed without the enclosing function's type
+/// parameters in scope, so `returns : T` reads as a type named `T`. A name the substitution
+/// binds is that parameter, so it is substituted like one.
+fn substitute_mlir_returns(ty: &Type, mapping: &std::collections::HashMap<Symbol, Type>) -> Type {
+    match ty {
+        Type::Struct(name, None) if mapping.contains_key(name) => mapping[name].clone(),
+        Type::Pointer(inner, mem, is_mut) => Type::Pointer(
+            Box::new(substitute_mlir_returns(inner, mapping)),
+            mem.clone(),
+            *is_mut,
+        ),
+        _ => ty.substitute(mapping),
+    }
+}
+
 /// Is this a tensor construction -- storage the compiler allocated?
 ///
 /// A view built with `tensor_view_2d` has the same type and a shape the checker enforces, but
@@ -1525,7 +1540,10 @@ impl Expr {
                     })
                     .collect(),
                 clobbers: e.clobbers.iter().map(|ex| ex.substitute(mapping)).collect(),
-                returns: e.returns.as_ref().map(|t| t.substitute(mapping)),
+                returns: e
+                    .returns
+                    .as_ref()
+                    .map(|t| substitute_mlir_returns(t, mapping)),
                 dialects: e.dialects.clone(),
                 block_str: substitute_words(&e.block_str, mapping),
                 span: e.span,
