@@ -14,7 +14,7 @@ the test suite has one, a program that triggers it.
 
 ## Contents
 
-- [Warnings](#warnings) — `W1001`–`W1032` (24 codes)
+- [Warnings](#warnings) — `W1001`–`W1033` (25 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3048` (47 codes)
@@ -54,6 +54,7 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1030`](/errors/W1030/) | A topology's device index is not a compile-time constant (`GPU[i]` for a runtime `i`), so it cannot be resolved to a device instance and falls back to index 0. Every such spawn therefore targets the same device. Vx models one representative device per declared kind (#284), so a fleet program should index with constants or const generics. |
 | [`W1031`](/errors/W1031/) | A proof obligation could not be discharged because no SMT solver was available, so the property is **unverified** rather than proved. Distinct from W1027, which means the solver ran and found a violation. Emitted only under `VX_ALLOW_UNVERIFIED`; without it a missing solver is an error, because silence used to be indistinguishable from success (Vx#374). |
 | [`W1032`](/errors/W1032/) | `Tensor<..>::uninit()` called outside an `unsafe` block. Its elements hold whatever the memory held before, so reading one before writing it reads data the program never wrote. Call it inside `unsafe { .. }` to say that every element is written first, or use `::new()` for zeroed storage. A later version makes this an error. |
+| [`W1033`](/errors/W1033/) | The loop of a `spawn` region runs on one thread although each pass writes only memory of its own, so its passes could run at the same time. The warning points at what stops it: a call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass writes, bounds not known when compiling, and the like. |
 
 ## Parser Errors
 
@@ -236,4 +237,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-147 diagnostics.
+148 diagnostics.
