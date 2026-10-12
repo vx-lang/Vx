@@ -18,8 +18,10 @@ pub extern "C" fn vx_env_args_count() -> i32 {
     args.len().saturating_sub(start_idx) as i32
 }
 
+/// The argument at `idx`, as a C string the caller may keep. `c_char`, not `i8`: that is what
+/// `CString::into_raw` returns, and it is `u8` on aarch64 Linux.
 #[no_mangle]
-pub extern "C" fn vx_env_arg(idx: i32) -> *mut i8 {
+pub extern "C" fn vx_env_arg(idx: i32) -> *mut std::ffi::c_char {
     let args: Vec<String> = std::env::args().collect();
     let mut start_idx = 0;
 

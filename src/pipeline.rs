@@ -33,6 +33,13 @@ pub enum PipelineError {
     IO(String),
     Parse(String),
     Semantic(String),
+    /// Checking found `count` errors, which it has printed. `in_declarations` says the check of
+    /// the whole program's declarations found them, before any body was checked. The driver
+    /// ends a failed compile with the same line whether it ran in parallel or not.
+    Failed {
+        count: usize,
+        in_declarations: bool,
+    },
 }
 
 impl std::fmt::Display for PipelineError {
@@ -41,6 +48,9 @@ impl std::fmt::Display for PipelineError {
             PipelineError::IO(msg) => write!(f, "IO Error: {}", msg),
             PipelineError::Parse(msg) => write!(f, "Parse Error: {}", msg),
             PipelineError::Semantic(msg) => write!(f, "Semantic Error: {}", msg),
+            PipelineError::Failed { count, .. } => {
+                write!(f, "Semantic check failed: {count} error(s) emitted")
+            }
         }
     }
 }
@@ -94,6 +104,8 @@ struct Frontend {
     /// Same travel pattern as `subspaces`: the declared-arch table for `vx.spawn` stamping
     /// (Vx#352), extracted from the env because the env cannot leave the frontend.
     topo_archs: Vec<(i64, String)>,
+    /// Same again: `arch::local_device_aliases`, for the `vx.local_devices` module attribute.
+    local_devices: Vec<(i32, i32)>,
     checks: Vec<FunctionCheck>,
     /// Warnings the checks found, held rather than printed. See [`report_warnings`].
     warnings: Vec<crate::diagnostic::Diagnostic>,
@@ -219,6 +231,7 @@ fn run_frontend_on(
         warnings,
         subspaces: crate::codegen::flat::subspaces_from_env(&env),
         topo_archs: crate::codegen::flat::topo_archs_from_env(&env),
+        local_devices: crate::codegen::flat::local_devices_from_env(&env),
         checks,
         type_streams,
         merged_arenas: (merged_slow, merged_gen, merged_off),
@@ -362,6 +375,7 @@ pub fn compile_modules_mlir_in(
         session,
         subspaces,
         topo_archs,
+        local_devices,
         mut checks,
         warnings,
         type_streams,
@@ -373,6 +387,7 @@ pub fn compile_modules_mlir_in(
             &mut checks,
             &subspaces,
             &topo_archs,
+            &local_devices,
             &session,
             merged_arenas,
             sched,
@@ -1290,9 +1305,10 @@ fn declaration_check_phase(
     let found: Vec<&crate::diagnostic::Diagnostic> = checker.errors.iter().collect();
     let errors = report_errors(&found);
     if errors > 0 {
-        return Err(PipelineError::Semantic(format!(
-            "Compilation failed with {errors} declaration errors"
-        )));
+        return Err(PipelineError::Failed {
+            count: errors,
+            in_declarations: true,
+        });
     }
     Ok(found
         .into_iter()
@@ -1561,10 +1577,10 @@ fn type_check_phase(
     );
 
     if total_errors > 0 {
-        return Err(PipelineError::Semantic(format!(
-            "Compilation failed with {} semantic errors",
-            total_errors
-        )));
+        return Err(PipelineError::Failed {
+            count: total_errors,
+            in_declarations: false,
+        });
     }
 
     #[cfg(debug_assertions)]
@@ -1898,11 +1914,13 @@ fn lower_bodies_phase<'a>(
 ///
 /// Epoch 2 lives and dies here: the session holding it and the workers that lowered against it are
 /// released before this returns.
+#[allow(clippy::too_many_arguments)]
 fn codegen_mlir_phase(
     parsed_modules: &[VxModule],
     check_results: &mut [FunctionCheck],
     subspaces: &[crate::codegen::flat::SubspaceInfo],
     topo_archs: &[(i64, String)],
+    local_devices: &[(i32, i32)],
     global_session: &std::sync::Arc<GlobalSession>,
     merged_arenas: MergedArenas,
     sched: Schedule,
@@ -1980,6 +1998,7 @@ fn codegen_mlir_phase(
         &alias_tables,
         subspaces,
         topo_archs,
+        local_devices,
         sched,
     )
     .ok()?;
@@ -2987,7 +3006,13 @@ fn main() -> i32 { return 0; }
         // On the message, not just on the variant: any error would satisfy `expect_err`, including
         // one from a phase that never reached these checks.
         assert!(
-            matches!(&err, PipelineError::Semantic(m) if m.contains("declaration errors")),
+            matches!(
+                &err,
+                PipelineError::Failed {
+                    in_declarations: true,
+                    ..
+                }
+            ),
             "expected a declaration error, got {err:?}"
         );
 
@@ -3003,7 +3028,13 @@ fn main() -> i32 { return 0; }
         let err = compile_pipeline_mlir(&collision)
             .expect_err("two spaces sharing a dispatch id must be refused");
         assert!(
-            matches!(&err, PipelineError::Semantic(m) if m.contains("declaration errors")),
+            matches!(
+                &err,
+                PipelineError::Failed {
+                    in_declarations: true,
+                    ..
+                }
+            ),
             "expected a declaration error, got {err:?}"
         );
 

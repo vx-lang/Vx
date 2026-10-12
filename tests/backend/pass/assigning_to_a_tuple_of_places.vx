@@ -1,0 +1,50 @@
+//===- assigning_to_a_tuple_of_places.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// `(a, b) = e` assigns each element of `e` to its place, as in Rust. The right side is worked
+// out first, so `(a, b) = (b, a)` swaps. `_` assigns nothing, a nested tuple assigns its own
+// elements, and a place can be a field.
+//
+// CHECK: {{^}}3 21 51 123 15{{$}}
+
+struct P {
+  x : i32,
+  y : i32,
+}
+
+fn pair() -> (i32, i32) {
+  return (7, 8);
+}
+
+fn main() -> i32 {
+  let mut a : i32 = 0;
+  let mut b : i32 = 0;
+  (a, b) = (1, 2);
+  print(a + b);
+  print!(" ");
+  (a, b) = (b, a);
+  print(a);
+  print(b);
+  print!(" ");
+  (a, _) = (5, 6);
+  print(a);
+  print(b);
+  print!(" ");
+  let mut c : i32 = 0;
+  (a, (b, c)) = (1, (2, 3));
+  print(a * 100 + b * 10 + c);
+  print!(" ");
+  let mut p = P {
+    x: 0, y: 0
+  };
+  (p.x, p.y) = pair();
+  print(p.x + p.y);
+  return 0;
+}

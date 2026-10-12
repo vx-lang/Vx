@@ -1995,11 +1995,16 @@ impl<'a> TypeChecker<'a> {
             (Expr::Borrow(b), Type::Borrow { inner, .. }) => (&mut *b.expr, &**inner),
             (arg, ty) => (arg, ty),
         };
-        let Type::Scalar(e) = ty else { return };
-        if !matches!(
-            e,
-            ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64
-        ) {
+        // A tensor of `u32` or `u64` is marked the same way, for its runtime printer.
+        let unsigned = match ty {
+            Type::Scalar(e) => matches!(
+                e,
+                ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64
+            ),
+            Type::Tensor(e, _, _) => matches!(e, ElementType::U32 | ElementType::U64),
+            _ => false,
+        };
+        if !unsigned {
             return;
         }
         if matches!(arg, Expr::AsCast(c) if c.target_ty == *ty) {

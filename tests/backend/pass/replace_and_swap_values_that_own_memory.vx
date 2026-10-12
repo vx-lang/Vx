@@ -1,0 +1,67 @@
+//===- replace_and_swap_values_that_own_memory.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// `core::mem::replace` and `swap` work for values that own memory or have a `drop`, not only
+// for numbers, and each value is dropped once. Each `Noisy` prints when it is dropped.
+
+import std::vec;
+import core::mem;
+import core::ops;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("drop ");
+    print(self.id);
+    print!(" ");
+  }
+}
+
+fn replaced() -> void {
+  let mut n = Noisy {
+    id: 1
+  };
+  let old = replace(&mut n, Noisy {
+    id: 2
+  });
+  print(old.id);
+  print(n.id);
+  print!(" | ");
+}
+
+fn swapped() -> void {
+  let mut a = Noisy {
+    id: 3
+  };
+  let mut b = Noisy {
+    id: 4
+  };
+  swap(&mut a, &mut b);
+  print(a.id);
+  print(b.id);
+  print!(" | ");
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i64>::new();
+  v.push(7);
+  let old = replace(&mut v, Vec<i64>::new());
+  print(old.len());
+  print(v.len());
+  print!(" ");
+  replaced();
+  print!("/ ");
+  swapped();
+  // CHECK: {{^}}10 12 | drop 1 drop 2 / 43 | drop 3 drop 4 {{$}}
+  return 0;
+}
