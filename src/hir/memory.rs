@@ -132,62 +132,133 @@ pub fn element_bytes(elem: &ElementType) -> Option<u64> {
     element_bits(elem).map(|b| b.div_ceil(8))
 }
 
+/// What a statically written tensor shape comes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaticSize {
+    /// Every extent is a compile-time constant, and the size in bytes fits a `u64`.
+    Bytes(u64),
+    /// Some extent is not a compile-time constant: a run-time value, `?`, or a call. The caller
+    /// reports such a shape as unverified (W1029) rather than inventing a size.
+    NotConstant,
+    /// Every extent is a constant, but one of them is negative.
+    NegativeExtent,
+    /// Every extent is a constant, but the size in bytes does not fit a `u64`.
+    Overflows,
+}
+
+/// Why an extent did not fold to a number.
+enum Unfolded {
+    NotConstant,
+    Overflows,
+}
+
 /// A tensor dimension's compile-time value: an integer literal, or exact integer arithmetic over
-/// literals (`2 * LAYERS * CTX` once monomorphization has substituted its const generics). `None`
-/// for anything not constant — a runtime identifier, a call — which keeps the capacity check
-/// fail-closed (the caller then reports W1029 "unverified" rather than inventing a size).
+/// literals (`2 * LAYERS * CTX` once monomorphization has substituted its const generics).
 ///
-/// Deliberately exact `u64` rather than the checker's `f64` `eval_expr`: these become byte counts
-/// compared against a declared capacity, and a model-shape product (layers x context x heads x
-/// head_dim x batch) reaches magnitudes where float rounding would silently shift a verdict.
-/// Overflow, division by zero, and a negative intermediate all yield `None` rather than wrapping.
-fn const_dim(e: &Expr) -> Option<u64> {
+/// Deliberately exact integers rather than the checker's `f64` `eval_expr`: these become byte
+/// counts compared against a declared capacity, and a model-shape product (layers x context x
+/// heads x head_dim x batch) reaches magnitudes where float rounding would silently shift a
+/// verdict. Signed and wide, so a negative value or one past `u64` is told apart from a value
+/// that is not constant at all. Division by zero leaves the extent unfolded.
+fn const_dim(e: &Expr) -> Result<i128, Unfolded> {
+    use crate::syntax::BinaryOp as B;
     match e {
-        Expr::Number(n) => n.value.as_ref().parse::<u64>().ok(),
+        Expr::Number(n) => n
+            .value
+            .as_ref()
+            .parse::<u64>()
+            .map(i128::from)
+            .map_err(|_| Unfolded::NotConstant),
         Expr::BinaryOp(b) => {
             let l = const_dim(&b.lhs)?;
             let r = const_dim(&b.rhs)?;
-            match b.op {
-                crate::syntax::BinaryOp::Add => l.checked_add(r),
-                crate::syntax::BinaryOp::Sub => l.checked_sub(r),
-                crate::syntax::BinaryOp::Mul => l.checked_mul(r),
-                crate::syntax::BinaryOp::Div => (r != 0).then_some(l / r),
-                crate::syntax::BinaryOp::Rem => (r != 0).then_some(l % r),
-                crate::syntax::BinaryOp::BitAnd => Some(l & r),
-                crate::syntax::BinaryOp::BitOr => Some(l | r),
-                crate::syntax::BinaryOp::BitXor => Some(l ^ r),
+            let folded = match b.op {
+                B::Add => l.checked_add(r),
+                B::Sub => l.checked_sub(r),
+                B::Mul => l.checked_mul(r),
+                B::Div | B::Rem if r == 0 => return Err(Unfolded::NotConstant),
+                B::Div => l.checked_div(r),
+                B::Rem => l.checked_rem(r),
+                B::BitAnd => Some(l & r),
+                B::BitOr => Some(l | r),
+                B::BitXor => Some(l ^ r),
                 // A count that is negative or at least the operand's width is undefined,
                 // so it is left unfolded rather than folded to something invented.
-                crate::syntax::BinaryOp::Shl => {
-                    u32::try_from(r).ok().and_then(|s| l.checked_shl(s))
+                B::Shl | B::Shr => {
+                    let Ok(s) = u32::try_from(r) else {
+                        return Err(Unfolded::NotConstant);
+                    };
+                    if s >= 64 {
+                        return Err(Unfolded::NotConstant);
+                    }
+                    if matches!(b.op, B::Shl) {
+                        l.checked_shl(s)
+                    } else {
+                        l.checked_shr(s)
+                    }
                 }
-                crate::syntax::BinaryOp::Shr => {
-                    u32::try_from(r).ok().and_then(|s| l.checked_shr(s))
-                }
-                crate::syntax::BinaryOp::MatMul => None,
-            }
+                B::MatMul => return Err(Unfolded::NotConstant),
+            };
+            folded.ok_or(Unfolded::Overflows)
         }
-        _ => None,
+        _ => Err(Unfolded::NotConstant),
     }
 }
 
-/// Byte size of a statically-shaped tensor: `element_bytes × Π(dims)`. `None` when the
-/// shape is empty or any dimension is not a compile-time constant (so the size — and thus any
-/// capacity check — is unknown).
+/// Size of a statically-shaped tensor: `element_bytes x product(dims)`.
 ///
 /// Dimensions are const-folded, not merely pattern-matched against a literal. A real model shape
-/// is arithmetic — a KV cache is `2 * layers * context` by `heads * head_dim` — and requiring a
+/// is arithmetic -- a KV cache is `2 * layers * context` by `heads * head_dim` -- and requiring a
 /// bare literal meant every such placement was silently reported "unverified" (W1029) instead of
 /// admitted or rejected, which would have made an admission matrix over realistic configs vacuous.
-pub fn static_tensor_bytes(elem: &ElementType, dims: &[Dim]) -> Option<u64> {
+/// A shape that does fold, but to a negative extent or a size past `u64`, is an error the caller
+/// reports, not an unknown size.
+pub fn static_tensor_size(elem: &ElementType, dims: &[Dim]) -> StaticSize {
     if dims.is_empty() {
-        return None;
+        return StaticSize::NotConstant;
     }
-    let mut count: u64 = 1;
+    let mut extents = Vec::with_capacity(dims.len());
+    let mut overflows = false;
     for d in dims {
-        count = count.checked_mul(const_dim(d.as_static()?)?)?;
+        let Some(e) = d.as_static() else {
+            return StaticSize::NotConstant;
+        };
+        match const_dim(e) {
+            Ok(v) => extents.push(v),
+            Err(Unfolded::Overflows) => overflows = true,
+            Err(Unfolded::NotConstant) => return StaticSize::NotConstant,
+        }
     }
-    element_bytes(elem)?.checked_mul(count)
+    if extents.iter().any(|&v| v < 0) {
+        return StaticSize::NegativeExtent;
+    }
+    let Some(elem_bytes) = element_bytes(elem) else {
+        return StaticSize::NotConstant;
+    };
+    if overflows {
+        return StaticSize::Overflows;
+    }
+    let mut bytes = Some(elem_bytes);
+    for v in extents {
+        bytes = bytes.and_then(|b| u64::try_from(v).ok().and_then(|v| b.checked_mul(v)));
+    }
+    match bytes {
+        Some(b) => StaticSize::Bytes(b),
+        None => StaticSize::Overflows,
+    }
+}
+
+/// A dimension's folded value, which may be negative, or `None` when it is not a constant.
+pub fn static_extent(d: &Dim) -> Option<i128> {
+    const_dim(d.as_static()?).ok()
+}
+
+/// Byte size of a statically-shaped tensor, or `None` when the size is not a known number of bytes.
+pub fn static_tensor_bytes(elem: &ElementType, dims: &[Dim]) -> Option<u64> {
+    match static_tensor_size(elem, dims) {
+        StaticSize::Bytes(b) => Some(b),
+        _ => None,
+    }
 }
 
 /// A per-compilation view of the declared memory hierarchy. Nodes are `MemorySpace`s (a
@@ -819,6 +890,47 @@ mod tests {
             None,
             "overflow declines rather than wrapping"
         );
+    }
+
+    fn binop(l: Expr, op: crate::syntax::BinaryOp, r: Expr) -> Expr {
+        Expr::BinaryOp(crate::syntax::BinaryOpExpr {
+            lhs: Box::new(l),
+            op,
+            rhs: Box::new(r),
+            span: crate::syntax::Span::default(),
+            operand_ty: None,
+        })
+    }
+
+    /// A shape that folds is a known size, even when that size is negative or too big to allocate;
+    /// only a shape that does not fold is unknown. Telling them apart is what lets the caller refuse
+    /// the first two (E6031) instead of reporting them unverified (W1029).
+    #[test]
+    fn tensor_size_tells_overflow_and_negative_apart_from_unknown() {
+        use crate::syntax::BinaryOp::{Add, Sub};
+        let f32 = ElementType::F32;
+        // 2^30 x 2^30 x 4 f32 is 2^64 bytes.
+        let huge = st(&[dim("1073741824"), dim("1073741824"), dim("4")]);
+        assert_eq!(static_tensor_size(&f32, &huge), StaticSize::Overflows);
+        // 2^32 * 2^32 elements: the extent alone is past u64.
+        let wide = st(&[mul(dim("4294967296"), dim("4294967296"))]);
+        assert_eq!(static_tensor_size(&f32, &wide), StaticSize::Overflows);
+        // N - 2 * N with N = 2^20.
+        let negative = st(&[binop(dim("1048576"), Sub, mul(dim("2"), dim("1048576")))]);
+        assert_eq!(
+            static_tensor_size(&f32, &negative),
+            StaticSize::NegativeExtent
+        );
+        // 3 - 5 + 4 is negative only on the way, and comes to 2.
+        let back = st(&[binop(binop(dim("3"), Sub, dim("5")), Add, dim("4"))]);
+        assert_eq!(static_tensor_size(&f32, &back), StaticSize::Bytes(8));
+        // A dimension that is not constant makes the whole shape unknown, even next to a bad one.
+        let n = Expr::Identifier(crate::syntax::IdentifierExpr {
+            name: "n".into(),
+            span: crate::syntax::Span::default(),
+        });
+        let mixed = st(&[binop(dim("1"), Sub, dim("2")), n]);
+        assert_eq!(static_tensor_size(&f32, &mixed), StaticSize::NotConstant);
     }
 
     /// A genuinely dynamic dimension must still decline, so the capacity check stays fail-closed

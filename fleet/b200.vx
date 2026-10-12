@@ -27,8 +27,11 @@
 // (verified 2026-08-03) -- GPU Memory "180 GB HBM3e", GPU Memory Bandwidth
 // "7.7 TB/s", form factor SXM6.
 //
-// CAPACITY: 192 GB -- MEASURED ON HARDWARE, which outranks the spec sheets.
-//   A B200 device reports 192 GB. Vendor materials say 180 GB (Lenovo's HGX
+// CAPACITY: 183359 MiB (192 GB) -- MEASURED ON HARDWARE, which outranks the
+//   spec sheets. measured: nvidia-smi memory.total on a B200 (driver 580.95.05,
+//   2026-10-05, #1204) reports 183,359 MiB, which is 192.3 GB and 179.06 GiB.
+//   It was declared `192 GiB` before: the right digits in the wrong unit, 7.2%
+//   (14 GiB) more than the device has. Vendor materials say 180 GB (Lenovo's HGX
 //   B200 per-GPU table; NVIDIA's DGX B200 aggregate of 1,440 GB / 8), which is
 //   most likely a *usable* figure after ECC and reservation rather than a
 //   different part.
@@ -64,7 +67,7 @@
 //   GB200 NVL part". That was tidier than the evidence supports: NVIDIA's own
 //   DGX B200 aggregate implies 8 TB/s for this 180 GB part too.)
 Memory HBM {
-  capacity: 192 GiB, bandwidth: 7.7 TB/s, managed: explicit, scope: device
+  capacity: 183359 MiB, bandwidth: 7.7 TB/s, managed: explicit, scope: device
 }
 
 // spec: NVIDIA Blackwell Architecture Technical Brief -- 126 MB L2 (two dies).

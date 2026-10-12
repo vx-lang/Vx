@@ -1,0 +1,56 @@
+//===- tensor_size_that_cannot_be_allocated.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=UNVERIFIED
+//
+// A tensor shape that folds to a negative extent, or to more bytes than 64 bits hold, is refused
+// (E6031) wherever the tensor is made. Its size is known, so it is not reported as unverified
+// (W1029), which let it compile and allocate a wrapped size.
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10
+}
+
+fn size_past_64_bits() -> i32 {
+  let a = Tensor<f32, [1073741824, 1073741824, 4]>::new();
+  let s = transfer(a, Memory::W);
+  let _b = transfer(s, Memory::CPU_DRAM);
+  return 0;
+}
+
+fn negative_extent<const N : i32>() -> i32 {
+  let a : Tensor<f32, [N - 2 * N]> = Tensor<f32>([N - 2 * N]);
+  let s = transfer(a, Memory::W);
+  let _b = transfer(s, Memory::CPU_DRAM);
+  return 0;
+}
+
+// Refused where it is made, though it is never placed in a space.
+fn negative_extent_never_placed<const N : i32>() -> i32 {
+  let _a = Tensor<f32>([N - 3 * N]);
+  return 0;
+}
+
+fn main() -> i32 {
+  return size_past_64_bits() + negative_extent<1048576>() + negative_extent_never_placed<1048576>();
+}
+
+// CHECK-DAG: Error[E6031] at 27:11: `Tensor<f32, [1073741824, 1073741824, 4]>` cannot be allocated: its size in bytes does not fit in 64 bits
+// CHECK-DAG: Error[E6031] at 34:38: `Tensor<f32, [-1048576]>` cannot be allocated: one of its extents is negative
+// CHECK-DAG: Error[E6031] at 42:12: `Tensor<f32, [-2097152]>` cannot be allocated: one of its extents is negative
+// CHECK: 3 error(s) emitted
+//
+// UNVERIFIED-NOT: W1029
+// UNVERIFIED: error(s) emitted

@@ -6540,7 +6540,7 @@ fn parallel_outer_for(stmts: &[Statement]) -> Option<(usize, u64)> {
     if !scan.declare(&f.iter) {
         return None;
     }
-    if scan.stmts(&f.body, 0) && !scan.reads_rows_others_write() {
+    if scan.stmts(&f.body, 0) && !scan.passes_may_share_rows() {
         Some((idx, (hi - lo) as u64))
     } else {
         None
@@ -6655,7 +6655,7 @@ fn parallel_two_level(stmts: &[Statement]) -> Option<(u64, TwoLevelPlan)> {
     if !walker.items(&f.body) || !walker.items(&f.body) {
         return None;
     }
-    if !walker.saw_thread_loop || walker.scan.reads_rows_others_write() {
+    if !walker.saw_thread_loop || walker.scan.passes_may_share_rows() {
         return None;
     }
     let threads = walker.max_thread_trip.clamp(1, 1024) as u64;
@@ -6929,6 +6929,30 @@ fn parallel_pure_call(name: &str) -> bool {
         )
 }
 
+/// An index expression written out without spans, with the operands of `+` and `*` in a fixed
+/// order, so `lo + i` and `i + lo` are one key, and the loop's own variable written `$iv`, so two
+/// loops of one kernel over the same rows agree. `None` for anything else, which `owns_row` never
+/// accepts as a row.
+fn index_key(e: &Expr, iv: &str) -> Option<String> {
+    match e {
+        Expr::Identifier(id) if *id.name == *iv => Some("$iv".to_string()),
+        Expr::Identifier(id) => Some(id.name.to_string()),
+        Expr::Number(n) => Some(n.value.to_string()),
+        Expr::BinaryOp(b) => {
+            let (l, r) = (index_key(&b.lhs, iv)?, index_key(&b.rhs, iv)?);
+            let op = match b.op {
+                BinaryOp::Add => "+",
+                BinaryOp::Sub => "-",
+                BinaryOp::Mul => "*",
+                _ => return None,
+            };
+            let (l, r) = if op != "-" && r < l { (r, l) } else { (l, r) };
+            Some(format!("({l}{op}{r})"))
+        }
+        _ => None,
+    }
+}
+
 /// The disjointness walk behind `parallel_outer_for`: what each iteration writes, and what it reads
 /// of what is written. `declared` and `used_captured` grow in program order; every `false` means
 /// "reject the region", never an error.
@@ -6956,6 +6980,11 @@ struct ParallelScan {
     /// be writing.
     captured_written: HashSet<String>,
     captured_nonown_read: HashSet<String>,
+    /// For each tensor from outside the region, the first index of every access that reads or
+    /// writes a row its pass owns, written out without spans. A written tensor reached through
+    /// two different first indices, such as `o[i]` and `o[lo + i]`, is a race: one pass's
+    /// `lo + i` is another pass's `i`.
+    row_keys: HashMap<String, HashSet<String>>,
     /// Set while scanning a COOPERATIVE thread loop (Vx#379 stage C): admits `barrier()` as a
     /// statement (under the divergence guards below) and arms the seam checks.
     coop: bool,
@@ -6980,6 +7009,7 @@ impl ParallelScan {
             smem_nonown_read: HashSet::new(),
             captured_written: HashSet::new(),
             captured_nonown_read: HashSet::new(),
+            row_keys: HashMap::new(),
             coop: false,
             barrier_ok: false,
             loop_barrier_stack: Vec::new(),
@@ -7175,7 +7205,50 @@ impl ParallelScan {
                 }
                 self.note(&id.name);
                 self.captured_written.insert(id.name.to_string());
-                self.owns_row(&indices)
+                if !self.owns_row(&indices) {
+                    return false;
+                }
+                self.record_row(&id.name, first);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Note which row of `name` an access the current pass owns goes to; see `row_keys`.
+    fn record_row(&mut self, name: &str, first: &Expr) {
+        if let Some(key) = index_key(first, &self.iv) {
+            self.row_keys
+                .entry(name.to_string())
+                .or_default()
+                .insert(key);
+        }
+    }
+
+    /// `iv + e`, `e + iv`, `iv - e` or `e - iv`, where `e` does not change during the loop: it
+    /// is made of numbers and names from outside the region, which the region cannot write
+    /// (`target` refuses a write to one). Each pass then reaches a different row.
+    fn offset_first(&self, e: &Expr) -> bool {
+        let Expr::BinaryOp(b) = e else {
+            return false;
+        };
+        if !matches!(b.op, BinaryOp::Add | BinaryOp::Sub) {
+            return false;
+        }
+        let is_iv = |x: &Expr| matches!(x, Expr::Identifier(id) if *id.name == *self.iv);
+        (is_iv(&b.lhs) && self.loop_invariant(&b.rhs))
+            || (is_iv(&b.rhs) && self.loop_invariant(&b.lhs))
+    }
+
+    /// Whether `e` has the same value on every pass: numbers, and names from outside the region.
+    fn loop_invariant(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Number(_) => true,
+            Expr::Identifier(id) => *id.name != *self.iv && !self.declared.contains(&*id.name),
+            Expr::BinaryOp(b) => {
+                matches!(b.op, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul)
+                    && self.loop_invariant(&b.lhs)
+                    && self.loop_invariant(&b.rhs)
             }
             _ => false,
         }
@@ -7188,16 +7261,19 @@ impl ParallelScan {
             return false;
         };
         matches!(first, Expr::Identifier(fid) if *fid.name == *self.iv)
+            || self.offset_first(first)
             || self.affine_first(first)
             || self.block_row_write(indices)
     }
 
-    /// Whether some tensor from outside the region is both written in it and read at a row the
-    /// reading iteration may not own.
-    fn reads_rows_others_write(&self) -> bool {
-        !self
-            .captured_written
-            .is_disjoint(&self.captured_nonown_read)
+    /// Whether two passes may reach the same row of a tensor from outside the region that the
+    /// loop writes: one reads a row the reading pass may not own, or the tensor is reached
+    /// through two different first indices.
+    fn passes_may_share_rows(&self) -> bool {
+        self.captured_written.iter().any(|name| {
+            self.captured_nonown_read.contains(name)
+                || self.row_keys.get(name).is_some_and(|keys| keys.len() > 1)
+        })
     }
 
     /// The third captured-write ownership form (Vx#379 R3): the BLOCK owns the row and the
@@ -7324,8 +7400,14 @@ impl ParallelScan {
                     }
                 }
                 // A row of a tensor from outside the region that this iteration may not own.
-                if !self.declared.contains(&*id.name) && !self.owns_row(&indices) {
-                    self.captured_nonown_read.insert(id.name.to_string());
+                if !self.declared.contains(&*id.name) {
+                    if self.owns_row(&indices) {
+                        if let Some(first) = indices.last() {
+                            self.record_row(&id.name, first);
+                        }
+                    } else {
+                        self.captured_nonown_read.insert(id.name.to_string());
+                    }
                 }
                 self.note(&id.name);
                 indices.iter().all(|i| self.expr(i))
@@ -9287,6 +9369,116 @@ mod tests {
             .find(|i| i.opcode == Opcode::SpawnEnd)
             .expect("a SpawnEnd")
             .imm
+    }
+
+    #[test]
+    fn a_write_at_an_offset_from_the_loop_variable_still_strides() {
+        // `lo` is fixed for the whole loop, so `lo + r` is a different row on every pass.
+        let trip = spawn_trip(
+            "fn main() -> i32 {\n\
+               let mut o = Tensor<f32>([1024, 1]);\n\
+               let lo = 512;\n\
+               spawn on (Topology::GPU) {\n\
+                 for r in 0..512 {\n\
+                   o[lo + r][0] = o[lo + r][0] + 2.0;\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+        );
+        assert_eq!(trip, 512, "an offset row is the pass's own row");
+    }
+
+    #[test]
+    fn a_tensor_reached_through_two_row_forms_stays_serial() {
+        // Pass `r` reads row `r`, which pass `r - lo` writes.
+        let trip = spawn_trip(
+            "fn main() -> i32 {\n\
+               let mut o = Tensor<f32>([1024, 1]);\n\
+               let lo = 512;\n\
+               spawn on (Topology::GPU) {\n\
+                 for r in 0..512 {\n\
+                   o[lo + r][0] = o[r][0];\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+        );
+        assert_eq!(
+            trip, 0,
+            "`o[r]` and `o[lo + r]` are rows of different passes"
+        );
+    }
+
+    #[test]
+    fn two_writes_through_different_offsets_stay_serial() {
+        let trip = spawn_trip(
+            "fn main() -> i32 {\n\
+               let mut o = Tensor<f32>([1024, 1]);\n\
+               let lo = 512;\n\
+               spawn on (Topology::GPU) {\n\
+                 for r in 0..512 {\n\
+                   o[r][0] = 1.0;\n\
+                   o[lo + r][0] = 2.0;\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+        );
+        assert_eq!(
+            trip, 0,
+            "pass `r` writes rows `r` and `lo + r`, and pass `r + lo` writes row `r + lo`"
+        );
+    }
+
+    #[test]
+    fn an_offset_made_inside_the_loop_stays_serial() {
+        // `k` is a local of the loop, so `k + r` need not be a different row on every pass.
+        let trip = spawn_trip(
+            "fn main() -> i32 {\n\
+               let mut o = Tensor<f32>([1024, 1]);\n\
+               spawn on (Topology::GPU) {\n\
+                 for r in 0..512 {\n\
+                   let k = 511 - r;\n\
+                   o[k + r][0] = 1.0;\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+        );
+        assert_eq!(
+            trip, 0,
+            "an offset that changes with the pass is not a row the pass owns"
+        );
+    }
+
+    #[test]
+    fn two_thread_loops_over_the_same_rows_keep_the_two_level_plan() {
+        // The two thread loops have their own variables, `qi` and `qj`, but `bq * 4 + qi` and
+        // `bq * 4 + qj` are the same row for the same thread: one row form, not two.
+        let imm = spawn_trip(
+            "fn main() -> i32 {\n\
+               let mut o = Tensor<f32>([8, 4]);\n\
+               spawn on (Topology::GPU) {\n\
+                 for bq in 0..2 {\n\
+                   for qi in 0..4 {\n\
+                     o[bq * 4 + qi][0] = 1.0;\n\
+                   }\n\
+                   barrier();\n\
+                   for qj in 0..4 {\n\
+                     o[bq * 4 + qj][1] = 2.0;\n\
+                   }\n\
+                   barrier();\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+        );
+        assert_ne!(
+            imm & SPAWN_TWO_LEVEL,
+            0,
+            "the two loops reach the same rows"
+        );
     }
 
     #[test]

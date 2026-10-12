@@ -144,7 +144,7 @@ matrix, but enough to flip a marginal cell.
 | Figure class | Status |
 |---|---|
 | `HBM` capacity and bandwidth (A100 40/80, H100, H200, MI300X) | **verified 2026-08-03** — quoted from per-GPU vendor spec tables |
-| `HBM` capacity (**B200**) | **measured on hardware** — 192 GB reported by the device. Vendor materials say 180 GB, most likely a usable-after-reservation figure |
+| `HBM` capacity (**B200**) | **measured on hardware** — `nvidia-smi` reports 183,359 MiB (192.3 GB, 179.06 GiB), #1204. Vendor materials say 180 GB, most likely a usable-after-reservation figure |
 | `HBM` bandwidth (**B200**) | **contested** — 7.7 TB/s (Lenovo per-GPU table) vs 8.0 TB/s (NVIDIA DGX aggregate ÷ 8). 7.7 used; see `b200.vx` |
 | `L2` capacity and bandwidth | **unverified** — transcribed from architecture whitepapers from memory |
 | `SMEM` capacity | **unverified** — per-SM/CU configurable maximum |

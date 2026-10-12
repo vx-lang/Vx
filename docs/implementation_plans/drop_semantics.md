@@ -84,9 +84,8 @@ linear.
 
 **Gaps the plan has to close.**
 
-- A field or index read of a linear type (`let x = s.field`, `let r = q[i]`) moves nothing and is
-  not tracked: an untracked alias of the same type. Moving a field that has something to drop is
-  now refused (E4013, §2.4).
+- An index read of a linear type (`let r = q[i]`) moves nothing and is not tracked. A field
+  read is now a move when the field has something to drop (§2.4).
 - By-value parameters: "moved" in the checker, "still owned by the caller" in codegen.
 - Struct fields holding tensors go through `unrealized_conversion_cast`, which disables freeing.
 - Tensors allocated inside device regions are never freed unless they are small and static.
@@ -149,11 +148,12 @@ elaboration", done once, ahead of both code generators.
 
 ### 2.4 Moves the checker must start tracking
 
-- **Moving out of a field** (`let x = s.field` where the field owns): either a move of the field
-  (a partial move, after which `s` may only have its other fields used and is dropped field by
-  field), or refused. The plan starts with **refused** (an error suggesting a reference or a
-  clone), and adds partial moves only if programs need them. Done (#1507): E4013 refuses moving
-  a field whose type has something to drop; partial moves are #1512.
+- **Moving out of a field** (`let x = s.field` where the field has something to drop) is a
+  partial move, as in Rust. Afterwards `s.field` has no value, `s` cannot be used whole, and its
+  other fields can; `s` drops only the fields it still holds. A field moved on one path only is
+  dropped under a flag of its own. Assigning the field, or `s`, gives it a value again. Moving a
+  field out through a reference (E4008) or out of a type with its own `Drop` (E4013) is
+  refused. A field with nothing to drop is copied, so it can be read any number of times.
 - **Indexing a tensor of owners** does not arise yet: `Tensor` elements are scalars.
 
 ### 2.5 Calls, returns and closures
@@ -222,7 +222,8 @@ paths are revisited.
 
 ## 5. Open questions
 
-1. **Partial moves out of struct fields:** refuse first (this plan), or allow as Rust does?
+1. **Partial moves out of struct fields:** allowed as Rust does, for a field with something to
+   drop (§2.4). A field with nothing to drop is still copied rather than moved.
 1. **Reassigning an owner** (`t = Tensor<f32>([n])` when `t` already owns a buffer): drop the old
    value first, as Rust does. Planned as yes; it changes the meaning of programs that today
    overwrite without freeing.
