@@ -26,8 +26,8 @@ fn also_floats() -> i32 {
 // CHECK: Error[E3030]{{.*}}`^` takes two integers or bools, got f64 and f64
 
 fn tensors() -> i32 {
-  let a = Tensor<f32, [4]>::uninit();
-  let b = Tensor<f32, [4]>::uninit();
+  let a = unsafe { Tensor<f32, [4]>::uninit() };
+  let b = unsafe { Tensor<f32, [4]>::uninit() };
   let c = a | b;
   return 0;
 }

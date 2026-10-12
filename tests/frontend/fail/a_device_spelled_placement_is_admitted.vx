@@ -25,7 +25,9 @@
 // CHECK-SAME: 'HBM' has capacity 42949672960 bytes
 
 fn mk() on Topology::Device -> i32 {
-  let big : Tensor<f32, [120000, 125000], Topology::Device> = Tensor<f32, [120000, 125000], Topology::Device>::uninit();
+  let big : Tensor<f32, [120000, 125000], Topology::Device> = unsafe {
+    Tensor<f32, [120000, 125000], Topology::Device>::uninit()
+  };
   return 0;
 }
 
