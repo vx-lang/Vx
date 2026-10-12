@@ -1,0 +1,58 @@
+//===- hex_binary_octal_and_underscored_literals.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An integer can be written in hex (`0x2A`), binary (`0b101010`) or octal (`0o52`), and
+// `_` can separate groups of digits in any spelling (`1_000_000`, `0xDEAD_BEEF`). The
+// spelling changes nothing about the value, so each line prints what its decimal spelling
+// would. A prefixed literal takes a type suffix and the type of its context like a decimal
+// one, and a decimal with `_` can still have a fraction.
+//
+// EXPECT: 42 42 42 42 1000000 3735928559 255 240 -42 1 1
+
+fn main() -> i32 {
+  let hex = 0x2A;
+  let bin = 0b101010;
+  let oct = 0o52;
+  let dec = 4_2;
+  let million : i64 = 1_000_000;
+  let beef : i64 = 0xDEAD_BEEF;
+  let byte = 0xFFu8;
+  let mask = 0b1111_0000u8;
+  let neg = -0x2A;
+  let half : i32 = if 1_000.5 == 1000.5 {
+    1
+  } else {
+    0
+  };
+  let same : i32 = if 0x10 == 16 {
+    1
+  } else {
+    0
+  };
+  print(hex);
+  print(" ");
+  print(bin);
+  print(" ");
+  print(oct);
+  print(" ");
+  print(dec);
+  print(" ");
+  print(million);
+  print(" ");
+  print(beef);
+  print(" ");
+  print(byte as i32);
+  print(" ");
+  print(mask as i32);
+  print(" ");
+  print(neg);
+  print(" ");
+  print(half);
+  print(" ");
+  print(same);
+  return 0;
+}
