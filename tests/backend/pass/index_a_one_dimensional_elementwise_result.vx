@@ -16,7 +16,7 @@
 
 // [1, 2, 3, 4]
 fn v4() -> Tensor<f32, [4]> {
-  let mut v = Tensor<f32, [4]>::uninit();
+  let mut v = unsafe { Tensor<f32, [4]>::uninit() };
   for i in 0..4 {
     v[i] = (i + 1) as f32;
   }
