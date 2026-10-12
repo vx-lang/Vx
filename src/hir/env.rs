@@ -1188,7 +1188,11 @@ impl<'a> TypeChecker<'a> {
                     false
                 }
             }
-            (Type::Struct(n1, _), Type::Struct(n2, _)) => n1 == n2,
+            // A name written in a type parses as a struct, since the parser cannot tell an enum
+            // from one, so `impl Op` targets `Struct("Op")` while `Op::A` is an `Enum("Op")`.
+            (Type::Struct(n1, _) | Type::Enum(n1, _), Type::Struct(n2, _) | Type::Enum(n2, _)) => {
+                n1 == n2
+            }
             (Type::Pinned(t1, top1), Type::Pinned(t2, top2)) => {
                 // A topology variable (`Pinned<_, D>` with D a `<D: Topology>` param) binds
                 // to the argument's concrete topology; a concrete topology must match. Then
