@@ -1545,9 +1545,13 @@ impl<'r> Lowerer<'r> {
                     }
                 }
                 // `&*ptr` / `&mut *ptr`: a reborrow of a raw pointer is the pointer itself, the
-                // `Vec::as_mut_slice` shape.
+                // `Vec::as_mut_slice` shape. A reborrow of a tensor reference is the tensor, since
+                // borrowing a tensor is transparent.
                 if let Expr::Dereference(d) = &*b.expr {
                     let p = self.lower_expr(&d.expr)?;
+                    if matches!(p.ty, LoweredTy::Tensor { .. }) {
+                        return Ok(p);
+                    }
                     if matches!(p.ty, LoweredTy::Ptr) {
                         return Ok(Val {
                             reg: p.reg,

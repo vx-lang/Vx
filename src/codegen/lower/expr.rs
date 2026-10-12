@@ -646,6 +646,29 @@ fn deref_pointee_type(ty: &syntax::Type) -> Option<syntax::Type> {
     }
 }
 
+/// What `*r` reads or writes through. A reference local, `let r = &mut x`, is bound to `x`'s own
+/// slot, a scalar memref, and has no slot of its own (it is not in `allocs`). Lowered as a value,
+/// `r` would be loaded from `x`'s slot, and `*r` would then use `x`'s value as an address.
+pub(crate) fn deref_target<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    expr: &Expr,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    if let Expr::Identifier(id) = expr {
+        if let Some((val, ty)) = gen.env.get(&*id.name).copied() {
+            let ty_str = ty.to_string();
+            if !gen.allocs.contains(&*id.name)
+                && ty_str.starts_with("memref<")
+                && !ty_str.contains('x')
+                && !ty_str.starts_with("memref<memref<")
+            {
+                return Ok((val, ty, block));
+            }
+        }
+    }
+    gen.generate_expr(expr, block)
+}
+
 impl<'c> LowerToMelior<'c> for DereferenceExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
@@ -653,7 +676,7 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        let (ptr_val, ptr_ty, block) = gen.generate_expr(&self.expr, block)?;
+        let (ptr_val, ptr_ty, block) = deref_target(gen, &self.expr, block)?;
         let ptr_ty_str = ptr_ty.to_string();
 
         // The pointee (loaded) type: the checker-set `self.ty` when present; else the pointee recovered
