@@ -1,0 +1,54 @@
+//===- match_on_a_reference_to_an_enum.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` on a reference to an enum reads the enum it points at. Printed: `code` of `Op::B`
+// through `self : &Op`, and the payload of `Reading::Value(7)` read through `&Reading`.
+//
+// EXPECT: 2 7
+
+enum Op {
+  A,
+  B,
+}
+
+impl Op {
+  fn code(self : &Op) -> i32 {
+    match self {
+      Op::A => {
+        return 1;
+      }
+      Op::B => {
+        return 2;
+      }
+    }
+  }
+}
+
+enum Reading {
+  Value(i32),
+  Missing,
+}
+
+fn value_of(r : &Reading) -> i32 {
+  match r {
+    Reading::Value(v) => {
+      return v;
+    }
+    Reading::Missing => {
+      return 0;
+    }
+  }
+}
+
+fn main() -> i32 {
+  let x = Op::B;
+  print(Op::code(&x));
+  print!(" ");
+  let r = Reading::Value(7);
+  print(value_of(&r));
+  return 0;
+}
