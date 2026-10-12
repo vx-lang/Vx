@@ -1,0 +1,28 @@
+//===- two_functions_with_the_same_name.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s -j 4 2>&1 | FileCheck %s
+//
+// Vx has no overloading, so a second function with the same name in one file is an error at
+// the second one, in a normal and a parallel (`-j`) compile. It used to replace the first
+// without a word.
+//
+// CHECK: Error at 21:1: `foo` is already defined at 17:1
+
+fn foo(x : i32) -> i32 {
+  return x + 1;
+}
+
+fn foo(x : i64) -> i64 {
+  return x + 100;
+}
+
+fn main() -> i32 {
+  let a : i32 = 1;
+  return foo(a);
+}

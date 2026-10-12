@@ -31,6 +31,9 @@ fn main() -> i32 {
   return pick();
 }
 
-// CHECK-LABEL: func.func @pick
+// `pick` is a comptime function, so its call is the constant and `pick` itself is not emitted.
+// CHECK-NOT: func.func @pick
+// CHECK-LABEL: func.func @main
 // CHECK: arith.constant 30 : i32
 // CHECK-NEXT: return
+// CHECK-NOT: func.func @pick

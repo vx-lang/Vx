@@ -17,4 +17,4 @@ fn main() -> i32 {
 // compile.
 // JOBS-NOT: using the sequential driver
 // CHECK: in `wrong_field`, imported from `tests::modules::library_that_uses_its_type_error` and used by this program: Struct 'Point' has no field 'y'
-// JOBS: Compilation failed with 1 semantic errors
+// JOBS: Semantic check failed on '{{.*}}using_an_imported_function_with_a_type_error.vx': 1 error(s) emitted

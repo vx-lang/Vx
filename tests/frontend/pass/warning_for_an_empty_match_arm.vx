@@ -1,0 +1,61 @@
+//===- warning_for_an_empty_match_arm.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
+//
+// A `match` arm with a literal pattern and an empty body, such as `2 => {}`, does nothing for
+// its case (W1008). An empty arm whose pattern is `_` or an enum variant, such as
+// `Color::Green => {}`, gets no warning: it is there so the match covers every case. Nor does
+// an arm with a statement in its body. This warning does not look at a `match` on a tuple
+// yet, so the empty arm in `blue_one` gets no warning either.
+
+// CHECK-NOT: Warning[W1008]
+// CHECK: Warning[W1008] at 30:5: this match arm's body is empty, so this case does nothing
+// CHECK-NOT: Warning[W1008]
+
+enum Color {
+  Red, Green, Blue,
+}
+
+fn count_ones(x : i32) -> i32 {
+  let mut n = 0;
+  match x {
+    1 => {
+      n = n + 1;
+    }
+    2 => {}
+    _ => {}
+  }
+  return n;
+}
+
+fn is_red(c : Color) -> i32 {
+  let mut r = 0;
+  match c {
+    Color::Red => {
+      r = 1;
+    }
+    Color::Green => {}
+    _ => {}
+  }
+  return r;
+}
+
+fn blue_one(x : i32, c : Color) -> i32 {
+  let mut r = 1;
+  match (x, c) {
+    (1, Color::Blue) => {}
+    _ => {
+      r = 0;
+    }
+  }
+  return r;
+}
+
+fn main() -> i32 {
+  return count_ones(1) + is_red(Color::Red) + blue_one(1, Color::Blue);
+}
