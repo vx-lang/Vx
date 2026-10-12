@@ -39,7 +39,7 @@
 
 // The shape is in the type, so the constructor takes nothing.
 fn by_type() -> f32 {
-  let mut t = Tensor<f32, [2, 2]>::uninit();
+  let mut t = unsafe { Tensor<f32, [2, 2]>::uninit() };
   for i in 0..2 {
     for j in 0..2 {
       t[i][j] = (i * 2 + j + 1) as f32;
@@ -64,7 +64,7 @@ fn by_call() -> f32 {
 // A rank-1 tensor, because the shape travels as one array argument and a single extent is the
 // case a normalisation that forgets the wrapper gets wrong -- it reads as rank 0.
 fn rank_one() -> f32 {
-  let mut v = Tensor<f32, [3]>::uninit();
+  let mut v = unsafe { Tensor<f32, [3]>::uninit() };
   v[0] = 1.0;
   v[1] = 1.0;
   v[2] = 1.0;

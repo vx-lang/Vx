@@ -61,7 +61,7 @@ fn build(n : i32) -> Tensor<f32, [?, 4]> {
 fn main() -> i32 {
   // Rank 2. Every element gets a distinct value, so no pair of positions can
   // be confused for each other.
-  let mut a = Tensor<f32, [2, 3]>::uninit();
+  let mut a = unsafe { Tensor<f32, [2, 3]>::uninit() };
   for i in 0..2 {
     for j in 0..3 {
       a[i][j] = (i * 3 + j + 1) as f32;
@@ -76,7 +76,7 @@ fn main() -> i32 {
 
   // Rank 3. The middle axis has a stride of its own, and the two positions
   // below differ only in which axis carries the 1.
-  let mut r = Tensor<f32, [2, 2, 2]>::uninit();
+  let mut r = unsafe { Tensor<f32, [2, 2, 2]>::uninit() };
   for i in 0..2 {
     for j in 0..2 {
       for k in 0..2 {
@@ -92,7 +92,7 @@ fn main() -> i32 {
   print!("; ");
 
   // Rank 1, where there is one index and nothing to swap it with.
-  let mut v = Tensor<f32, [4]>::uninit();
+  let mut v = unsafe { Tensor<f32, [4]>::uninit() };
   for i in 0..4 {
     v[i] = ((i + 1) * 10) as f32;
   }
@@ -101,7 +101,7 @@ fn main() -> i32 {
   print!("; ");
 
   // Through a borrow, written by one function and read by another.
-  let mut w = Tensor<f32, [2, 2]>::uninit();
+  let mut w = unsafe { Tensor<f32, [2, 2]>::uninit() };
   write_through(&mut w);
   print!("w01=");
   print(read_back(&w, 0, 1));
