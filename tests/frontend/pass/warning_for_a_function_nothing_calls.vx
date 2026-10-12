@@ -1,0 +1,93 @@
+//===- warning_for_a_function_nothing_calls.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
+//
+// W1002 warns about a function that `main` never calls, directly or through other functions, even
+// when two such functions call each other. No warning for one `main` reaches by a call, as a value,
+// through `grad` or in a closure, for one a method calls, or for one whose name starts with `_`.
+
+// CHECK-NOT: Warning[W1002]
+// CHECK: Warning[W1002]: function `never_called` is never called, directly or through other functions, from `main`; remove it, or start its name with `_` to keep it
+// CHECK-NEXT: Warning[W1002]: function `ping` is never called
+// CHECK-NEXT: Warning[W1002]: function `pong` is never called
+// CHECK-NOT: Warning[W1002]: function `_kept`
+// CHECK-NOT: Warning[W1002]: function `add_one`
+// CHECK-NOT: Warning[W1002]: function `square`
+// CHECK-NOT: Warning[W1002]: function `negate`
+// CHECK-NOT: Warning[W1002]: function `half_square`
+// CHECK-NOT: Warning[W1002]: function `called_in_a_closure`
+// CHECK-NOT: Warning[W1002]: function `called_by_a_method`
+// CHECK-NOT: Warning[W1002]
+
+fn never_called(x : i32) -> i32 {
+  return x * 3;
+}
+
+fn ping(n : i32) -> i32 {
+  if n <= 0 {
+    return 0;
+  }
+  return pong(n - 1);
+}
+
+fn pong(n : i32) -> i32 {
+  return ping(n);
+}
+
+fn _kept(x : i32) -> i32 {
+  return x;
+}
+
+fn add_one(x : i32) -> i32 {
+  return x + 1;
+}
+
+fn square(x : i32) -> i32 {
+  return x * x;
+}
+
+fn sum_of_squares(a : i32, b : i32) -> i32 {
+  return square(a) + square(b);
+}
+
+fn negate(x : i32) -> i32 {
+  return 0 - x;
+}
+
+fn apply(f : fn(i32) -> i32, v : i32) -> i32 {
+  return f(v);
+}
+
+fn half_square(x : f64) -> f64 {
+  return 0.5 * x * x;
+}
+
+fn called_in_a_closure(x : i32) -> i32 {
+  return x - 1;
+}
+
+fn called_by_a_method(x : i32) -> i32 {
+  return x + 2;
+}
+
+struct Counter {
+  n : i32,
+}
+
+impl Counter {
+  fn bump(self : Counter) -> i32 {
+    return called_by_a_method(self.n);
+  }
+}
+
+fn main() -> i32 {
+  let slope = grad(half_square, 0.25);
+  let minus_one = |y : i32| called_in_a_closure(y);
+  let calls = add_one(1) + sum_of_squares(2, 3) + apply(negate, 4);
+  return calls + (slope as i32) + minus_one(5);
+}

@@ -1,0 +1,39 @@
+//===- a_declared_gpu_is_gpu_0_at_run_time.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Topology Device` in fleet/h100-sxm.vx runs nvptx64 code, and its memory is
+// `HBM`. Their ids are hashes of the names (1036766083 and 1855308478), so the
+// CUDA backend took them for host memory. At the start of `main` the program
+// now tells the backend that both are GPU 0 (id 500), one
+// `vx_plugin_control(4, {id, 500})` call each. L2 and SMEM are not the
+// topology's own memory and get no call.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// CHECK-LABEL: llvm.func @main()
+// CHECK-DAG: %[[HBM:.*]] = llvm.mlir.constant(1855308478 : i32) : i32
+// CHECK-DAG: %[[GPU0:.*]] = llvm.mlir.constant(500 : i32) : i32
+// CHECK-DAG: %[[DEVICE:.*]] = llvm.mlir.constant(1036766083 : i32) : i32
+// CHECK-DAG: %[[LOCAL_DEVICE:.*]] = llvm.mlir.constant(4 : i32) : i32
+// CHECK: %[[PAIR:.*]] = llvm.alloca
+// CHECK: %[[SECOND:.*]] = llvm.getelementptr %[[PAIR]][1]
+// CHECK-NEXT: llvm.store %[[DEVICE]], %[[PAIR]]
+// CHECK-NEXT: llvm.store %[[GPU0]], %[[SECOND]]
+// CHECK-NEXT: llvm.call @vx_plugin_control(%[[LOCAL_DEVICE]], %[[PAIR]])
+// CHECK-NEXT: llvm.store %[[HBM]], %[[PAIR]]
+// CHECK-NEXT: llvm.store %[[GPU0]], %[[SECOND]]
+// CHECK-NEXT: llvm.call @vx_plugin_control(%[[LOCAL_DEVICE]], %[[PAIR]])
+// CHECK-NOT: vx_plugin_control
+
+fn main() -> i32 {
+  let h = Tensor<f32, [1024]>::fill(2.0);
+  let d = transfer(h, Memory::HBM);
+  let back = transfer(d, Memory::CPU_DRAM);
+  print(back[0]);
+  return 0;
+}

@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 //
 // One expression family's type checks, split out of the former 5000-line `hir/expr.rs` along the
-// `check_expr_type_flag` dispatch seam (frontend_refactoring_borrow_checker.md R2, #279). An additional
+// `check_expr_type_flag` dispatch seam. An additional
 // `impl TypeChecker` block; moves only, zero logic change. Reaches the shared types and helpers via
 // `use super::super::*`, exactly as `expr.rs` uses `use super::*`.
 //
@@ -75,7 +75,20 @@ impl<'a> TypeChecker<'a> {
                     if let Some((_, expected_payload)) =
                         enum_decl.variants.iter().find(|(n, _)| n == variant)
                     {
-                        if let Some(expr_payload) = payload {
+                        // `Result<void, E>::Ok()`: a payload whose type is `void` here takes no
+                        // argument, as Rust's `Ok(())` holds nothing.
+                        let void_payload = expected_payload.as_ref().is_some_and(|exp_types| {
+                            let mut mapping = HashMap::new();
+                            let ty_args = self.enum_name_type_args(enum_name);
+                            for (param, ty_arg) in enum_decl.generics.iter().zip(ty_args.iter()) {
+                                mapping.insert(param.name().into(), ty_arg.clone());
+                            }
+                            exp_types.len() == 1
+                                && crate::syntax::is_void_ty(&exp_types[0].substitute(&mapping))
+                        });
+                        if void_payload && payload.as_ref().is_none_or(|p| p.is_empty()) {
+                            // Nothing to check.
+                        } else if let Some(expr_payload) = payload {
                             if let Some(exp_types) = expected_payload {
                                 if expr_payload.len() != exp_types.len() {
                                     if !self.speculating {

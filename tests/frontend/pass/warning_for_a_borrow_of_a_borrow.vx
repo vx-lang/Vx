@@ -1,0 +1,26 @@
+//===- warning_for_a_borrow_of_a_borrow.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action print-ast 2>&1 | FileCheck %s
+//
+// `&&x` and `& &x` borrow a borrow: a reference to a reference, where `&x` was probably meant
+// (W1006). A plain `&x` gets no warning, nor does `&r` of a reference kept in a variable, nor
+// `&&x` where the declared type asks for a reference to a reference.
+
+// CHECK: Warning[W1006] at 20:12: this borrows a borrow
+// CHECK: Warning[W1006] at 21:16: this borrows a borrow
+// CHECK-NOT: Warning[W1006]
+
+fn main() -> i32 {
+  let x : i32 = 1;
+  let rr = &&x;
+  let spaced = & &x;
+  let r = &x;
+  let also = &r;
+  let asked : &&i32 = &&x;
+  return **rr + **spaced + *r + **also + **asked;
+}

@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+import core::cmp;
 import core::ops;
 import core::num;
 
@@ -17,6 +18,8 @@ extern {
   fn vx_string_push_c_str(ptr : *mut i8, c_str : *const i8) -> i32;
   /// The Rust core behind `String::len`.
   fn vx_string_len(ptr : *mut i8) -> i32;
+  /// The Rust core behind `==` on two strings: 1 when they hold the same bytes.
+  fn vx_string_eq(a : *mut i8, b : *mut i8) -> i32;
   /// Allocate a NUL-terminated copy and hand out its raw pointer. The caller owns it and
   /// releases it with `vx_string_free_c_str`; `String::as_c_str` does not, and leaks.
   fn vx_string_as_c_str(ptr : *mut i8) -> *const i8;
@@ -79,6 +82,15 @@ impl String {
     return unsafe { vx_string_as_c_str(self.ptr) };
   }
 }
+
+/// Two strings are equal when they hold the same bytes, as in Rust.
+impl PartialEq for String {
+  fn eq(self : &String, other : &String) -> bool {
+    return unsafe { vx_string_eq(self.ptr, other.ptr) } != 0;
+  }
+}
+
+impl Eq for String {}
 
 impl Drop for String {
   fn drop(self : &mut String) -> void {

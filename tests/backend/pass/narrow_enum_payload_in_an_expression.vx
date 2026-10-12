@@ -1,0 +1,67 @@
+//===- narrow_enum_payload_in_an_expression.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An enum whose variants hold integers of different widths keeps one slot, as wide as the
+// widest. The narrow `i8` payload is used in a cast and in a comparison, which must read it
+// as an `i8`, and the wide one is read in full.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+enum Pick<T> {
+  Narrow(i8),
+  Wide(T),
+}
+
+impl<T> Pick<T> {
+  fn narrow_or(self : Pick<T>, d : i64) -> i64 {
+    match self {
+      Pick<T>::Narrow(n) => {
+        return n as i64;
+      }
+      Pick<T>::Wide(w) => {
+        return d;
+      }
+    }
+  }
+
+  fn is_negative(self : Pick<T>) -> bool {
+    match self {
+      Pick<T>::Narrow(n) => {
+        return n < (0 as i8);
+      }
+      Pick<T>::Wide(w) => {
+        return false;
+      }
+    }
+  }
+}
+
+fn wide_value(p : Pick<i64>) -> i64 {
+  match p {
+    Pick<i64>::Narrow(n) => {
+      return 0;
+    }
+    Pick<i64>::Wide(w) => {
+      return w;
+    }
+  }
+}
+
+fn main() -> i32 {
+  print(Pick<i64>::Narrow(-3 as i8).narrow_or(0));
+  print(" ");
+  if Pick<i64>::Narrow(-3 as i8).is_negative() {
+    print("negative");
+  } else {
+    print("not negative");
+  }
+  print(" ");
+  print(wide_value(Pick<i64>::Wide(9223372036854775807)));
+  // CHECK: {{^}}-3 negative 9223372036854775807{{$}}
+  return 0;
+}

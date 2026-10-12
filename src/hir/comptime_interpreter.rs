@@ -115,7 +115,15 @@ pub(crate) struct ComptimeInterpreter<'graph, 'bodies> {
     transfer_cost_graph: &'graph TransferCostGraph,
     active_topology: Topology,
     context: ComptimeEvalContext,
+    /// The byte buffers this block has made, one per string literal it evaluated, indexed by
+    /// `Value::Ptr::block`. They last as long as the block, and calls share them.
+    heap: Vec<Vec<u8>>,
+    /// How many bytes `heap` holds, against `MAX_HEAP_BYTES`.
+    heap_bytes: usize,
 }
+
+/// How many bytes one `comptime` block may put in byte buffers.
+const MAX_HEAP_BYTES: usize = 1 << 20;
 
 /// A directly modelled local place that can receive an interpreted write. Anything more complex
 /// is deliberately invalidated rather than leaving an older component value behind as certainty.
@@ -155,6 +163,8 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             transfer_cost_graph,
             active_topology,
             context,
+            heap: Vec::new(),
+            heap_bytes: 0,
         }
     }
 
@@ -196,7 +206,14 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         stmts: &[Statement],
         tail: Option<&Expr>,
     ) -> ComptimeObservation {
-        let outcome = self.block_with_tail(stmts, tail);
+        let mut outcome = self.block_with_tail(stmts, tail);
+        // A pointer cannot outlive the block, but the text it points at can, as a constant.
+        // A pointer whose bytes have no NUL stays a pointer, which has no constant form.
+        if let Some(ptr @ Value::Ptr { .. }) = &outcome.value.concrete {
+            if let Some(text) = self.c_str(ptr) {
+                outcome.value.concrete = Some(Value::CStr(text));
+            }
+        }
         ComptimeObservation {
             outcome,
             escaping_write: self.context.escaping_write().cloned(),
@@ -471,7 +488,81 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         }
     }
 
+    /// `p[i] = v` where `p` holds a pointer into a byte buffer: the byte changes, not `p`.
+    /// `None` when `lhs` is not such a write. A write that cannot be carried out exactly, past
+    /// the end of the buffer or of an unknown value, refuses the block.
+    fn store_through_pointer(&mut self, lhs: &Expr, rhs: &Expr) -> Option<ComptimeEvalOutcome> {
+        let Expr::IndexAccess(access) = lhs else {
+            return None;
+        };
+        let Expr::Identifier(base) = &*access.base else {
+            return None;
+        };
+        let ptr = match self.env.get(&base.name).and_then(|v| v.concrete.as_ref()) {
+            Some(ptr @ Value::Ptr { .. }) => ptr.clone(),
+            _ => return None,
+        };
+        let index = self.expr(&access.index);
+        let value = self.expr(rhs);
+        let place = match &index.value.concrete {
+            Some(Value::Int(i)) => self.heap_place(&ptr, *i),
+            _ => None,
+        };
+        let stored = match (place, &value.value.concrete) {
+            (Some((block, at)), Some(Value::Int(v))) => {
+                self.heap[block][at] = *v as u8;
+                true
+            }
+            _ => false,
+        };
+        let mut outcome = self.unknown_after([index, value]);
+        if !stored {
+            outcome.mark_unsupported();
+        }
+        Some(outcome)
+    }
+
+    /// A new buffer holding `bytes`, or `None` past `MAX_HEAP_BYTES`.
+    fn heap_alloc(&mut self, bytes: Vec<u8>) -> Option<Value> {
+        let used = self.heap_bytes + bytes.len();
+        if used > MAX_HEAP_BYTES {
+            return None;
+        }
+        self.heap_bytes = used;
+        self.heap.push(bytes);
+        Some(Value::Ptr {
+            block: self.heap.len() - 1,
+            offset: 0,
+        })
+    }
+
+    /// Where `ptr[index]` is: its buffer and the byte in it, or `None` outside the buffer.
+    fn heap_place(&self, ptr: &Value, index: i64) -> Option<(usize, usize)> {
+        let Value::Ptr { block, offset } = ptr else {
+            return None;
+        };
+        let at = usize::try_from(offset.checked_add(index)?).ok()?;
+        (at < self.heap.get(*block)?.len()).then_some((*block, at))
+    }
+
+    /// The text a pointer starts, up to its NUL. `None` without a NUL in the buffer, or for
+    /// bytes that are not UTF-8.
+    fn c_str(&self, ptr: &Value) -> Option<String> {
+        let Value::Ptr { block, offset } = ptr else {
+            return None;
+        };
+        let bytes = self
+            .heap
+            .get(*block)?
+            .get(usize::try_from(*offset).ok()?..)?;
+        let end = bytes.iter().position(|b| *b == 0)?;
+        String::from_utf8(bytes[..end].to_vec()).ok()
+    }
+
     fn assign(&mut self, lhs: &Expr, rhs: &Expr) -> ComptimeEvalOutcome {
+        if let Some(outcome) = self.store_through_pointer(lhs, rhs) {
+            return outcome;
+        }
         let (left, place) = self.write_place(lhs);
         let right = self.expr(rhs);
         let stored = self.store_place(lhs, place, right.value.clone());
@@ -1160,6 +1251,10 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             (Some(Value::Array(items)), Some(Value::Int(index))) if *index >= 0 => {
                 items.get(*index as usize).cloned()
             }
+            // A byte reads as the `i8` it is.
+            (Some(ptr @ Value::Ptr { .. }), Some(Value::Int(index))) => self
+                .heap_place(ptr, *index)
+                .map(|(block, at)| Value::Int(self.heap[block][at] as i8 as i64)),
             _ => None,
         };
         let mut outcome = self.unknown_after([base, index]);
@@ -1659,9 +1754,16 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         );
         self.written_roots = then_interpreter.written_roots;
         self.written_roots.extend(else_interpreter.written_roots);
+        // Bytes written on only one path cannot be known after it.
+        let heaps_agree = then_interpreter.heap == else_interpreter.heap;
+        self.heap = then_interpreter.heap;
+        self.heap_bytes = then_interpreter.heap_bytes.max(else_interpreter.heap_bytes);
 
         let mut outcome = then_outcome;
         outcome.merge_from(&else_outcome);
+        if !heaps_agree {
+            outcome.mark_unsupported();
+        }
         outcome.support.merge_from(condition.support);
         outcome
             .unsupported_reason
@@ -1703,12 +1805,8 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         if is_float {
             number.value.parse::<f64>().ok().map(Value::Number)
         } else {
-            number
-                .value
-                .parse::<i64>()
-                .map(Value::Int)
-                .or_else(|_| number.value.parse::<f64>().map(Value::Number))
-                .ok()
+            // An integer too big for an i64 has no value, rather than a float's rounded one.
+            number.value.parse::<i64>().ok().map(Value::Int)
         }
     }
 
@@ -2044,7 +2142,16 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 .map(Value::Int)
                 .map(ComptimeEvalOutcome::known)
                 .unwrap_or_else(ComptimeEvalOutcome::refusal),
-            Expr::StringLiteral(_) | Expr::MemorySpace(_) | Expr::MacroCall(_) => {
+            // Each evaluation is a fresh buffer holding the text and its NUL.
+            Expr::StringLiteral(literal) => {
+                let mut bytes = literal.value.as_bytes().to_vec();
+                bytes.push(0);
+                match self.heap_alloc(bytes) {
+                    Some(ptr) => ComptimeEvalOutcome::known(ptr),
+                    None => ComptimeEvalOutcome::unknown(),
+                }
+            }
+            Expr::MemorySpace(_) | Expr::MacroCall(_) => {
                 // The transition value model cannot faithfully represent these forms.  A raw
                 // memory-space or macro node also violates an earlier lowering invariant, but
                 // must still be live if it reaches this defensive interpreter boundary.
@@ -2354,13 +2461,29 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             Expr::Closure(_) => ComptimeEvalOutcome::refusal(),
             Expr::AsCast(cast) => {
                 let value = self.expr(&cast.expr);
-                // The legacy value model has no target type, so using its `Int`/`Number`
-                // representation here would silently get narrowing, signedness, pointer, and
-                // tensor casts wrong. Evaluate the operand for effects, then refuse the whole
-                // block until a typed comptime value can model the conversion. This is live
-                // rather than observational because legacy evaluation otherwise drops an
-                // unsupported cast statement and folds a later tail.
-                self.refusal_after([value])
+                let concrete = match (&cast.source_ty, &cast.target_ty) {
+                    // `*const i8` to `*mut i8` and back: the same buffer. Only a pointer is a
+                    // `Ptr`, so this holds in a body the checker has not seen yet too.
+                    (_, Type::Pointer(..)) => value
+                        .value
+                        .concrete
+                        .clone()
+                        .filter(|v| matches!(v, Value::Ptr { .. })),
+                    (Some(Type::Scalar(from)), Type::Scalar(to)) => value
+                        .value
+                        .concrete
+                        .as_ref()
+                        .and_then(|v| cast_number(v, from, to)),
+                    _ => None,
+                };
+                // A cast the value model cannot answer exactly refuses the whole block, rather
+                // than letting a later tail fold without it.
+                let Some(concrete) = concrete else {
+                    return self.refusal_after([value]);
+                };
+                let mut outcome = self.unknown_after([value]);
+                outcome.value.concrete = Some(concrete);
+                outcome
             }
             Expr::Print(print) => {
                 let args = print
@@ -2445,6 +2568,58 @@ fn comptime_sizeof_bytes(ty: &Type) -> Option<i64> {
         Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => Some(8),
         _ => None,
     }
+}
+
+/// `value as to`, where `value` is a `from`, with the answer the generated code gives. An
+/// integer wraps to the target width. A value is not always one its type can hold, since
+/// arithmetic here is done in `i64`, so a value outside `from` gives no answer. Nor does an
+/// answer outside `i64`, or a float outside the target's range, where the generated code's
+/// answer is undefined.
+fn cast_number(value: &Value, from: &ElementType, to: &ElementType) -> Option<Value> {
+    if *from == ElementType::Bool || *to == ElementType::Bool {
+        return None;
+    }
+    if !from.is_float() {
+        let Value::Int(i) = value else {
+            return None;
+        };
+        let (lo, hi) = int_range(from)?;
+        if (*i as i128) < lo || (*i as i128) > hi {
+            return None;
+        }
+    }
+    if to.is_float() {
+        let x = value.as_f64()?;
+        return Some(Value::Number(if *to == ElementType::F32 {
+            x as f32 as f64
+        } else {
+            x
+        }));
+    }
+    let (lo, hi) = int_range(to)?;
+    let whole = match value {
+        Value::Int(i) => *i as i128,
+        Value::Number(n) if n.is_finite() => {
+            let t = n.trunc() as i128;
+            if t < lo || t > hi {
+                return None;
+            }
+            t
+        }
+        _ => return None,
+    };
+    let wrapped = (whole - lo).rem_euclid(hi - lo + 1) + lo;
+    i64::try_from(wrapped).ok().map(Value::Int)
+}
+
+/// The smallest and largest value of an integer type of at most 64 bits.
+fn int_range(ty: &ElementType) -> Option<(i128, i128)> {
+    let bits = ty.bits().filter(|b| *b <= 64)?;
+    Some(if ty.is_signed_int() {
+        (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+    } else {
+        (0, (1i128 << bits) - 1)
+    })
 }
 
 #[cfg(test)]

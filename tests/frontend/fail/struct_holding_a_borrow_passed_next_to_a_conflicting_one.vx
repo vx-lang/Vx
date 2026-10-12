@@ -1,0 +1,90 @@
+//===- struct_holding_a_borrow_passed_next_to_a_conflicting_one.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A struct that holds a borrow of `x`, passed to a call together with a borrow of `x`, gives
+// the callee `x` twice. As with `f(&mut x, &x)`, that is refused when either one is `&mut`.
+
+struct View {
+  r : &i64,
+}
+
+struct Writer {
+  w : &mut i64,
+}
+
+struct Tool {
+  k : i64,
+}
+
+impl Tool {
+  fn write_then_read(self : &Tool, a : &mut i64, s : View) -> i64 {
+    *a = 5i64;
+    return *s.r + self.k;
+  }
+}
+
+fn write_then_read(a : &mut i64, s : View) -> i64 {
+  *a = 5i64;
+  return *s.r;
+}
+
+fn read_then_write(s : View, a : &mut i64) -> i64 {
+  *a = 5i64;
+  return *s.r;
+}
+
+fn write_through_struct_then_read(s : Writer, b : &i64) -> i64 {
+  *s.w = 5i64;
+  return *b;
+}
+
+fn struct_holding_a_shared_borrow() -> i64 {
+  let mut x = 1i64;
+  let s = View {
+    r : &x
+  };
+  return write_then_read(&mut x, s);
+}
+
+fn struct_passed_first() -> i64 {
+  let mut x = 1i64;
+  let s = View {
+    r : &x
+  };
+  return read_then_write(s, &mut x);
+}
+
+fn struct_holding_a_mutable_borrow() -> i64 {
+  let mut x = 1i64;
+  let s = Writer {
+    w : &mut x
+  };
+  return write_through_struct_then_read(s, &x);
+}
+
+fn method_call() -> i64 {
+  let t = Tool {
+    k : 0i64
+  };
+  let mut x = 1i64;
+  let s = View {
+    r : &x
+  };
+  return t.write_then_read(&mut x, s);
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: Error[E4003] at 52:10: Cannot borrow 'x' as mutable and as immutable in one call.
+// CHECK-DAG: Error[E4003] at 60:10: Cannot borrow 'x' as mutable and as immutable in one call.
+// CHECK-DAG: Error[E4003] at 68:10: Cannot borrow 'x' as mutable and as immutable in one call.
+// CHECK-DAG: Error[E4003] at 79:12: Cannot borrow 'x' as mutable and as immutable in one call.
+// CHECK: 4 error(s) emitted

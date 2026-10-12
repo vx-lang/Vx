@@ -1,0 +1,35 @@
+//===- closure_that_calls_a_void_function.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure whose body is a call to a function that returns `void`. The closure returns
+// nothing too. The flat code generator used to return the call's missing value, which
+// is invalid MLIR.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+fn set_to_5(p : &mut i32) -> void {
+  *p = 5i32;
+}
+
+fn add(p : &mut i32, n : i32) -> void {
+  *p = *p + n;
+}
+
+fn main() -> i32 {
+  let mut x = 0i32;
+  let set = |p : &mut i32| set_to_5(p);
+  set(&mut x);
+  print(x);
+  print(" ");
+  let n = 10;
+  let add_n = |p : &mut i32| add(p, n);
+  add_n(&mut x);
+  print(x);
+  // CHECK: {{^}}5 15{{$}}
+  return 0;
+}

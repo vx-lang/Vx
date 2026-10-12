@@ -932,7 +932,7 @@ pub struct SubspaceInfo {
 /// `func.func private` declaration prepended. Order is load-bearing — the emit records which of
 /// these a function called as a bitmask over this array's indices, so inserting in the middle
 /// renumbers existing entries.
-const RUNTIME_HELPERS: [(&str, &str); 16] = [
+const RUNTIME_HELPERS: [(&str, &str); 18] = [
     ("printMemrefF32", "(memref<*xf32>)"),
     ("printMemrefF64", "(memref<*xf64>)"),
     ("printMemrefI32", "(memref<*xi32>)"),
@@ -949,6 +949,8 @@ const RUNTIME_HELPERS: [(&str, &str); 16] = [
     ("print_str", "(!llvm.ptr) -> i32"),
     ("vx_init_signals", "()"),
     ("print_bool", "(i32) -> i32"),
+    ("printMemrefU32", "(memref<*xi32>)"),
+    ("printMemrefU64", "(memref<*xi64>)"),
 ];
 
 /// Recover the declared memory sub-spaces from a compilation's env, in the shape
@@ -959,6 +961,24 @@ const RUNTIME_HELPERS: [(&str, &str); 16] = [
 /// `Opcode::Transfer` should carry are silently dropped on the flat path. Shared by `vxc`'s
 /// `build_flat_module` and the parallel pipeline's codegen phase, so the two cannot disagree about
 /// what a `vx.transfer` is annotated with (#311).
+/// `, vx.local_devices = array<i32: ...>`, the pairs of `arch::local_device_aliases` that
+/// `vx-to-llvm` sends to the backend at startup, or nothing when there are none.
+pub(crate) fn local_devices_attr(pairs: &[(i32, i32)]) -> String {
+    if pairs.is_empty() {
+        return String::new();
+    }
+    let ids: Vec<String> = pairs
+        .iter()
+        .flat_map(|(declared, builtin)| [declared.to_string(), builtin.to_string()])
+        .collect();
+    format!(", vx.local_devices = array<i32: {}>", ids.join(", "))
+}
+
+/// The `arch::local_device_aliases` of the topologies declared in a compilation's env.
+pub fn local_devices_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i32, i32)> {
+    crate::arch::local_device_aliases(env.topologies.values().map(|d| (&d.name, &d.descriptor)))
+}
+
 /// The declared-arch table for `EmitCtx::topo_archs`, from the per-compilation env: one entry per
 /// user-declared topology that states an `arch:`. A topology that declines to declare one gets no
 /// entry, no `arch` attribute, and therefore no device compilation -- refusing to guess is the
@@ -1160,6 +1180,7 @@ pub fn emit_module_mlir(
     alias_tables: &[&[(usize, usize, Vec<usize>)]],
     subspaces: &[SubspaceInfo],
     topo_archs: &[(i64, String)],
+    local_devices: &[(i32, i32)],
     sched: crate::config::Schedule,
 ) -> Lowered<String> {
     let setup = std::time::Instant::now();
@@ -1281,7 +1302,7 @@ pub fn emit_module_mlir(
         .map(|(name, _)| format!("@{name}("))
         .collect();
 
-    type FnEmission = (String, Vec<(String, Vec<String>, String)>, u16);
+    type FnEmission = (String, Vec<(String, Vec<String>, String)>, u32);
     // An inline block's wrapper is named from a module-wide base, so two functions' do not collide.
     let inline_bases: Vec<usize> = {
         let mut bases = Vec::with_capacity(funcs.len());
@@ -1309,7 +1330,7 @@ pub fn emit_module_mlir(
                 alias_tables.get(fi).copied().unwrap_or(&[]),
                 &mut distinct_ctr,
             )?;
-            let helpers = helper_pats.iter().enumerate().fold(0u16, |m, (i, pat)| {
+            let helpers = helper_pats.iter().enumerate().fold(0u32, |m, (i, pat)| {
                 if text.contains(pat.as_str()) {
                     m | (1 << i)
                 } else {
@@ -1349,7 +1370,7 @@ pub fn emit_module_mlir(
     //
     // A decline is reported for the *first* declining function rather than whichever thread noticed
     // first, so `VX_FLAT_DBG` says the same thing it always did.
-    let mut helper_mask = 0u16;
+    let mut helper_mask = 0u32;
     for (fi, emission) in emitted.iter_mut().enumerate() {
         let (_, fn_calls, helpers) = match emission {
             Ok(e) => e,
@@ -1365,9 +1386,15 @@ pub fn emit_module_mlir(
         };
         calls.append(fn_calls);
         helper_mask |= *helpers;
+        // Only the strings the code takes the address of become globals: an assert message
+        // or a spawn's topology name is written into the op itself.
         let strs = string_tables.get(fi).copied().unwrap_or(&[]);
+        let text = emission.as_ref().map(|(t, _, _)| t.as_str()).unwrap_or("");
         for (li, s) in strs.iter().enumerate() {
-            globals += &emit_string_global(str_bases[fi] + li, s);
+            let n = str_bases[fi] + li;
+            if text.contains(&format!("@\".str.{n}\"")) {
+                globals += &emit_string_global(n, s);
+            }
         }
     }
     for table in &registry.const_tables {
@@ -1418,11 +1445,14 @@ pub fn emit_module_mlir(
     // Emitting the wrapper here rather than leaving it to callers is what removes the last of them:
     // a caller that has to wrap the return value cannot avoid copying it.
     // `vx.drops`: the program frees its tensors at its drops (see convert-vx-to-standard).
-    let open = "module attributes {vx.drops} {\n";
+    let open = format!(
+        "module attributes {{vx.drops{}}} {{\n",
+        local_devices_attr(local_devices)
+    );
     const CLOSE: &str = "}\n";
     let mut module =
         String::with_capacity(open.len() + globals.len() + decls.len() + out_len + CLOSE.len());
-    module.push_str(open);
+    module.push_str(&open);
     module.push_str(&globals);
     module.push_str(&decls);
     for emission in emitted.iter().flatten() {
@@ -1833,7 +1863,8 @@ pub(crate) struct FnEmit<'a> {
     /// The open `vx.spawn` regions, innermost last: each is its topology, for `SpawnEnd` to
     /// stamp the `topology` attribute, and where in `body` its op begins, so a region with a
     /// value can be given its result name when the value is known. Empty outside a spawn.
-    pub(crate) spawn_stack: Vec<(i64, usize)>,
+    /// The third field is the spawn's name index, as its `imm` carries it.
+    pub(crate) spawn_stack: Vec<(i64, usize, u64)>,
     /// Per-function sub-space bump allocator (space dispatch id -> next free byte), mirroring the
     /// AST path's `MeliorGenerator::subspace_offsets`: each `Transfer` into a granule'd space
     /// claims the next granule-rounded `offset` and advances the cursor, so both paths assign
@@ -1889,7 +1920,7 @@ impl<'a> FnEmit<'a> {
             // lifted out of it stops being the kernel's own scratch and becomes
             // a value defined above it -- which outlining captures and passes
             // in, handing a device kernel a host stack pointer. Those stay.
-            Some((t, _)) if *t != 0 => self.body += text,
+            Some((t, _, _)) if *t != 0 => self.body += text,
             // A host region is inlined where it was written, so its slots
             // belong to the enclosing function like any other.
             _ => self.entry += text,
@@ -2433,6 +2464,7 @@ mod tests {
             &inline_tables,
             &agg_layouts,
             &alias_tables,
+            &[],
             &[],
             &[],
             crate::config::Schedule::Parallel,

@@ -440,6 +440,48 @@ pub fn memory_space_dispatch_id(mem: &MemorySpace) -> i32 {
     }
 }
 
+/// Which local device each declared GPU topology, and the memory it declares as its own, is:
+/// `(declared id, built-in id)` pairs, sorted.
+///
+/// A declared id is a hash of the name, so a backend cannot tell from it that `Device` in
+/// fleet/h100-sxm.vx is a GPU, and it allocated that memory on the host. The program sends
+/// these pairs to the backend at startup (`VX_CTRL_LOCAL_DEVICE`). Every declared GPU is GPU 0
+/// for now; a name the fleet manifest lists is still sent to its remote machine.
+pub fn local_device_aliases<'a>(
+    decls: impl Iterator<Item = (&'a crate::symbol::Symbol, &'a TopologyDescriptor)>,
+) -> Vec<(i32, i32)> {
+    let gpu0 = topology_dispatch_id(&Topology::gpu(0));
+    let mut out = Vec::new();
+    for (name, desc) in decls {
+        if desc.arch.as_ref().map(|a| a.as_ref()) != Some("nvptx64") {
+            continue;
+        }
+        out.push((topology_dispatch_id(&Topology::Custom(name.clone())), gpu0));
+        if matches!(desc.default_space, MemorySpace::Custom(_)) {
+            out.push((memory_space_dispatch_id(&desc.default_space), gpu0));
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The name of the built-in memory space whose dispatch id is `id`, if one has it. A declared
+/// space's id is a hash of its name and cannot be turned back.
+pub fn builtin_memory_space_name(id: u64) -> Option<String> {
+    [
+        MemorySpace::CPUDRAM,
+        MemorySpace::NPUHBM,
+        MemorySpace::LocalSRAM,
+        MemorySpace::GpuHbm,
+        MemorySpace::NicRam,
+        MemorySpace::RemoteHbm,
+    ]
+    .into_iter()
+    .find(|m| memory_space_dispatch_id(m) as u64 == id)
+    .map(|m| m.name())
+}
+
 /// A target-independent address space: what the memory *is*, not what number a particular GPU
 /// ISA gives it. Codegen maps this to a concrete annotation per target (`nvptx_addrspace` today;
 /// the `#gpu.address_space<..>` attribute spelling when a GPU backend lands, #251), so the

@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h> /* vx_payload_topology: strtol */
-#include <string.h> /* vx_payload_field: strlen, memcmp */
+#include <string.h> /* vx_payload_field: strlen, memcmp, memchr */
 
 #ifdef __cplusplus
 extern "C" {
@@ -254,25 +254,25 @@ vx_payload_field(const void *payload, size_t payload_size, const char *key) {
 
   const char *base = (const char *)payload;
   size_t key_len = strlen(key);
-  size_t pos = 0;
 
-  /* Skip the kernel name, then walk the remaining NUL-terminated entries. */
-  while (pos < payload_size && base[pos] != '\0') {
-    ++pos;
+  /* Skip the kernel name, then walk the remaining NUL-terminated entries. memchr rather
+     than a byte loop: an `image=` entry holds a whole module's PTX, and looking up a field
+     that is absent walks all of it, on every launch. */
+  const char *name_end = (const char *)memchr(base, '\0', payload_size);
+  if (!name_end) {
+    return NULL;
   }
-  ++pos;
+  size_t pos = (size_t)(name_end - base) + 1;
 
   while (pos < payload_size) {
     const char *entry = base + pos;
     size_t remaining = payload_size - pos;
-    size_t len = 0;
-    while (len < remaining && entry[len] != '\0') {
-      ++len;
-    }
-    if (len == remaining) {
+    const char *end = (const char *)memchr(entry, '\0', remaining);
+    if (!end) {
       /* Unterminated: refuse rather than read past the blob. */
       return NULL;
     }
+    size_t len = (size_t)(end - entry);
     if (len > key_len && memcmp(entry, key, key_len) == 0) {
       return entry + key_len;
     }
@@ -387,6 +387,13 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload);
 #define VX_CTRL_SHUTDOWN 0x02
 #define VX_CTRL_GET_DEVICE_COUNT                                               \
   0x03 // Returns number of valid Topology::NPU[i] indices
+// A topology or memory space declared in a machine file is a local device.
+// `payload` points to two int32_t: the declared id, then the built-in id it
+// stands for (500 is GPU 0). A declared id is a hash of its name, so without
+// this a backend cannot tell that it names a GPU. Programs send it at the
+// start of `main`. A name the fleet manifest lists is still remote. Returns 1
+// if kept.
+#define VX_CTRL_LOCAL_DEVICE 0x04
 #define VX_CTRL_VENDOR_BASE 0x1000 // Vendors start their custom opcodes here
 
 #ifdef __cplusplus

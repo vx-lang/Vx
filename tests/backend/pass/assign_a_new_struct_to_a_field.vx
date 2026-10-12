@@ -1,0 +1,44 @@
+//===- assign_a_new_struct_to_a_field.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A field that holds a struct, given a new struct literal: `o.inner = Inner { .. }`. The flat
+// code generator used to refuse it, so the whole program went to the AST path.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --check-prefix=VALUES
+// CHECK-NOT: flat-codegen
+// CHECK: {{^}}5 6 3{{$}}
+// VALUES: {{^}}5 6 3{{$}}
+
+struct Inner {
+  n : i32,
+  m : i64,
+}
+
+struct Outer {
+  inner : Inner,
+  k : i32,
+}
+
+fn main() -> i32 {
+  let mut o = Outer {
+    inner: Inner {
+      n: 1, m: 2i64
+    }, k: 3
+  };
+  o.inner = Inner {
+    n: 5, m: 6i64
+  };
+  print(o.inner.n);
+  print!(" ");
+  print(o.inner.m);
+  print!(" ");
+  print(o.k);
+  print!("
+");
+  return 0;
+}
