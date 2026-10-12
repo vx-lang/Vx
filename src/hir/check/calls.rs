@@ -2153,8 +2153,8 @@ impl<'a> TypeChecker<'a> {
                 ));
             }
             // `unsafe` is where a program says it writes every element of `::uninit()` storage
-            // before reading it.
-            if resolved_name == "Tensor::uninit" && !self.in_unsafe_block && !self.speculating {
+            // before reading it, so the call is what an `unsafe` block around it is for (W1010).
+            if resolved_name == "Tensor::uninit" && self.unsafe_is_missing() {
                 self.errors.warn(
                     crate::diagnostic::DiagnosticCode::W1032,
                     "`::uninit()` storage is not written: reading an element before writing it \
