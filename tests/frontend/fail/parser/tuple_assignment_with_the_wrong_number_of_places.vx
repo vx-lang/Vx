@@ -1,0 +1,19 @@
+//===- tuple_assignment_with_the_wrong_number_of_places.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A tuple assigned to a tuple of places needs one place per element.
+//
+// CHECK: the left side has 2 elements, but the tuple has 3
+
+fn main() -> i32 {
+  let mut a : i32 = 0;
+  let mut b : i32 = 0;
+  (a, b) = (1, 2, 3);
+  return a + b;
+}

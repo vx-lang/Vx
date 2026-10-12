@@ -658,6 +658,15 @@ impl<'r> Lowerer<'r> {
         }
     }
 
+    /// A `print` operand without the cast the checker puts on a tensor of `u32` or `u64` for
+    /// the AST code generator. Here the print reads the element type from the tensor's own type.
+    fn print_operand(arg: &Expr) -> &Expr {
+        match arg {
+            Expr::AsCast(c) if matches!(c.target_ty, Type::Tensor(..)) => &c.expr,
+            other => other,
+        }
+    }
+
     fn emit_print(&mut self, v: Val) -> Lowered<()> {
         // A rank-0 tensor prints as a bare scalar on the AST path (its `vx.transfer` never
         // materializes the buffer); the flat memref print would render differently, so the
@@ -747,7 +756,7 @@ impl<'r> Lowerer<'r> {
             .ok_or(missing)?;
             return Ok(());
         }
-        let v = self.lower_expr(arg)?;
+        let v = self.lower_expr(Self::print_operand(arg))?;
         self.emit_print(v)?;
         Ok(())
     }
@@ -5207,7 +5216,7 @@ impl<'r> Lowerer<'r> {
                     Ok(())
                 }
                 Expr::FunctionCall(fc) if fc.name.as_ref() == "print" && fc.args.len() == 1 => {
-                    let v = self.lower_expr(&fc.args[0])?;
+                    let v = self.lower_expr(Self::print_operand(&fc.args[0]))?;
                     self.emit_print(v)?;
                     Ok(())
                 }
