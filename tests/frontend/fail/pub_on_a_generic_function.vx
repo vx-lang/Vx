@@ -6,7 +6,7 @@
 pub fn first<T>(a : T, b : T) -> T {
   return a;
 }
-// CHECK: Error at [[@LINE-3]]:1: a generic function cannot be `pub` yet
+// CHECK: Error at {{.*}}pub_on_a_generic_function.vx:[[@LINE-3]]:1: a generic function cannot be `pub` yet
 
 fn main() -> i32 {
   return first(1, 2);

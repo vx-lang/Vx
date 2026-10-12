@@ -12,10 +12,10 @@
 // again, so the size may not call a function. Each function gets E6032.
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
-// CHECK: Error[E6032] at 23:{{.*}}the lanes of a block share a tensor that the code of the block makes
-// CHECK: Error[E6032] at 36:{{.*}}the lanes of a block share a tensor that the code of the block makes
-// CHECK: Error[E6032] at 50:{{.*}}a subgroup has no memory of its own
-// CHECK: Error[E6032] at 67:{{.*}}So the size may not call a function
+// CHECK: Error[E6032] at {{.*}}across_block_tensors_and_sizes_that_are_not_allowed.vx:23:{{.*}}the lanes of a block share a tensor that the code of the block makes
+// CHECK: Error[E6032] at {{.*}}across_block_tensors_and_sizes_that_are_not_allowed.vx:36:{{.*}}the lanes of a block share a tensor that the code of the block makes
+// CHECK: Error[E6032] at {{.*}}across_block_tensors_and_sizes_that_are_not_allowed.vx:50:{{.*}}a subgroup has no memory of its own
+// CHECK: Error[E6032] at {{.*}}across_block_tensors_and_sizes_that_are_not_allowed.vx:67:{{.*}}So the size may not call a function
 
 pub fn tensor_in_default_memory(o : &mut Tensor<f32, [?, 8], Memory::HBM>, n : i32) -> void {
   spawn on(Topology::Device) {

@@ -9,10 +9,10 @@
 // when compiling. Each function below indexes one with something else.
 //
 // RUN: not vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
-// CHECK: Error[E6033] at 22:6: the register tensor 'acc' needs an index that is known when compiling: 'n' is not a constant or the variable of a `for` loop. A tensor in a `scope: thread` space stays in registers, which have no address
-// CHECK: Error[E6033] at 28:8: the register tensor 'acc' needs an index that is known when compiling: the bounds of the loop of 'i' are not constants, so the compiler cannot unroll it
-// CHECK: Error[E6033] at 35:8: the register tensor 'acc' needs an index that is known when compiling: the loop of 'i' has 2000 passes, and the compiler unrolls at most 1024
-// CHECK: Error[E6033] at 41:6: the register tensor 'acc' needs an index that is known when compiling: the index uses a value that is not a constant or a loop variable
+// CHECK: Error[E6033] at {{.*}}register_tensor_indexes_not_known_when_compiling.vx:22:6: the register tensor 'acc' needs an index that is known when compiling: 'n' is not a constant or the variable of a `for` loop. A tensor in a `scope: thread` space stays in registers, which have no address
+// CHECK: Error[E6033] at {{.*}}register_tensor_indexes_not_known_when_compiling.vx:28:8: the register tensor 'acc' needs an index that is known when compiling: the bounds of the loop of 'i' are not constants, so the compiler cannot unroll it
+// CHECK: Error[E6033] at {{.*}}register_tensor_indexes_not_known_when_compiling.vx:35:8: the register tensor 'acc' needs an index that is known when compiling: the loop of 'i' has 2000 passes, and the compiler unrolls at most 1024
+// CHECK: Error[E6033] at {{.*}}register_tensor_indexes_not_known_when_compiling.vx:41:6: the register tensor 'acc' needs an index that is known when compiling: the index uses a value that is not a constant or a loop variable
 
 fn three() on Topology::Device -> i32 {
   return 3;

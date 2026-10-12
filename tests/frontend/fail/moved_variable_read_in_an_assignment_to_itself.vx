@@ -23,7 +23,7 @@ fn take_p(p : P) -> void {}
 fn whole() -> void {
   let mut o = Vec<i32>::new();
   take(o);
-  // CHECK: Error[E4001] at [[# @LINE + 1]]:7: Use of moved or consumed linear variable: o
+  // CHECK: Error[E4001] at {{.*}}moved_variable_read_in_an_assignment_to_itself.vx:[[# @LINE + 1]]:7: Use of moved or consumed linear variable: o
   o = o;
   print(o.len());
 }
@@ -33,7 +33,7 @@ fn field() -> void {
     x : 1, v : Vec<i32>::new()
   };
   take_p(origin);
-  // CHECK-NEXT: Error[E4001] at [[# @LINE + 2]]:17: Use of moved or consumed linear variable: origin
+  // CHECK-NEXT: Error[E4001] at {{.*}}moved_variable_read_in_an_assignment_to_itself.vx:[[# @LINE + 2]]:17: Use of moved or consumed linear variable: origin
   origin = P {
     x : 10, v : origin.v
   };

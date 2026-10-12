@@ -61,7 +61,7 @@ fn shift() -> f32 {
     for k in 0..2048 {
       let mut s : f32 = 0.0;
       for p in 0..2 {
-        // CHECK: Warning[W1033] at [[@LINE+1]]:
+        // CHECK: Warning[W1033] at {{.*}}spawn_loop_reading_and_writing_different_columns_runs_in_parallel.vx:[[@LINE+1]]:
         s = s + d[k + p][2];
       }
       d[k][2] = s / 2.0;

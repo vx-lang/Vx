@@ -28,7 +28,7 @@ enum Outer {
 
 fn by_value(b : Box2) -> i32 {
   match b {
-    // CHECK-DAG: Error[E3050] at [[@LINE+1]]:5: a payload of `Val` can be matched only by a name or `_`
+    // CHECK-DAG: Error[E3050] at {{.*}}payload_pattern_with_a_value_or_variant.vx:[[@LINE+1]]:5: a payload of `Val` can be matched only by a name or `_`
     Box2::Val(3) => {
       return 100;
     }
@@ -43,7 +43,7 @@ fn by_value(b : Box2) -> i32 {
 
 fn nested(o : Outer) -> i32 {
   match o {
-    // CHECK-DAG: Error[E3050] at [[@LINE+1]]:5: a payload of `Wrap` can be matched only by a name or `_`
+    // CHECK-DAG: Error[E3050] at {{.*}}payload_pattern_with_a_value_or_variant.vx:[[@LINE+1]]:5: a payload of `Wrap` can be matched only by a name or `_`
     Outer::Wrap(Inner::A(v)) => {
       return v;
     }

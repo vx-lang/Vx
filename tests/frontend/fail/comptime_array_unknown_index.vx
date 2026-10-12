@@ -23,7 +23,7 @@ fn main() -> i32 {
   comptime {
     let mut a : Tensor<i64, [3]> = [ 3i64, 1i64, 2i64 ];
     a[one()] = 7i64;
-    // CHECK: Error[E3033] at [[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert depends on a value known only when the program runs
+    // CHECK: Error[E3033] at {{.*}}comptime_array_unknown_index.vx:[[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert depends on a value known only when the program runs
     assert(a[0] != 3, "the array kept its old contents after an unknown store");
   }
   return 0;

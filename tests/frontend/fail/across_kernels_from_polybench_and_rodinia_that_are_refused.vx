@@ -11,12 +11,12 @@
 // does not see it: it wants each read of a tensor that the loop writes to use the write's index.
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
-// CHECK: Error[E6032] at 28:{{.*}}a pass of this block loop may read an element of `a` that another pass writes: the read
-// CHECK: Error[E6032] at 28:{{.*}}a pass of this lane loop may read an element of `a` that another pass writes: the read
-// CHECK: Error[E6032] at 68:{{.*}}two passes of this block loop may write the same element of `dst`: an index of the write
-// CHECK: Error[E6032] at 86:{{.*}}a pass of this block loop may read an element of `score` that another pass writes: the
-// CHECK: Error[E6032] at 87:{{.*}}two passes of this lane loop may write the same element of `cells`: the writes must use
-// CHECK: Error[E6032] at 95:{{.*}}a pass of this lane loop may read an element of `cells` that another pass writes: the
+// CHECK: Error[E6032] at {{.*}}across_kernels_from_polybench_and_rodinia_that_are_refused.vx:28:{{.*}}a pass of this block loop may read an element of `a` that another pass writes: the read
+// CHECK: Error[E6032] at {{.*}}across_kernels_from_polybench_and_rodinia_that_are_refused.vx:28:{{.*}}a pass of this lane loop may read an element of `a` that another pass writes: the read
+// CHECK: Error[E6032] at {{.*}}across_kernels_from_polybench_and_rodinia_that_are_refused.vx:68:{{.*}}two passes of this block loop may write the same element of `dst`: an index of the write
+// CHECK: Error[E6032] at {{.*}}across_kernels_from_polybench_and_rodinia_that_are_refused.vx:86:{{.*}}a pass of this block loop may read an element of `score` that another pass writes: the
+// CHECK: Error[E6032] at {{.*}}across_kernels_from_polybench_and_rodinia_that_are_refused.vx:87:{{.*}}two passes of this lane loop may write the same element of `cells`: the writes must use
+// CHECK: Error[E6032] at {{.*}}across_kernels_from_polybench_and_rodinia_that_are_refused.vx:95:{{.*}}a pass of this lane loop may read an element of `cells` that another pass writes: the
 
 import core::num;
 

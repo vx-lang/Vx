@@ -31,7 +31,7 @@ fn in_an_if() -> i32 {
       r : &x
     };
   }
-  // CHECK: Error[E4009] at [[@LINE+1]]:3: `x` is assigned while it is borrowed
+  // CHECK: Error[E4009] at {{.*}}borrow_given_to_an_outer_variable_inside_a_block.vx:[[@LINE+1]]:3: `x` is assigned while it is borrowed
   x = 5;
   return *outer.r;
 }
@@ -43,7 +43,7 @@ fn in_an_unsafe_block() -> i32 {
     r : &y
   };
   unsafe { outer = W { r : &x }; }
-  // CHECK: Error[E4009] at [[@LINE+1]]:3: `x` is assigned while it is borrowed
+  // CHECK: Error[E4009] at {{.*}}borrow_given_to_an_outer_variable_inside_a_block.vx:[[@LINE+1]]:3: `x` is assigned while it is borrowed
   x = 5;
   return *outer.r;
 }
@@ -62,7 +62,7 @@ fn in_a_match_arm(e : E) -> i32 {
     }
     E::B => {}
   }
-  // CHECK: Error[E4009] at [[@LINE+1]]:3: `x` is assigned while it is borrowed
+  // CHECK: Error[E4009] at {{.*}}borrow_given_to_an_outer_variable_inside_a_block.vx:[[@LINE+1]]:3: `x` is assigned while it is borrowed
   x = 5;
   return *outer.r;
 }
@@ -80,7 +80,7 @@ fn in_a_while_loop() -> i32 {
     };
     i = i + 1;
   }
-  // CHECK: Error[E4009] at [[@LINE+1]]:3: `x` is assigned while it is borrowed
+  // CHECK: Error[E4009] at {{.*}}borrow_given_to_an_outer_variable_inside_a_block.vx:[[@LINE+1]]:3: `x` is assigned while it is borrowed
   x = 5;
   return *outer.r;
 }
@@ -96,7 +96,7 @@ fn in_a_for_loop() -> i32 {
       r : &x
     };
   }
-  // CHECK: Error[E4009] at [[@LINE+1]]:3: `x` is assigned while it is borrowed
+  // CHECK: Error[E4009] at {{.*}}borrow_given_to_an_outer_variable_inside_a_block.vx:[[@LINE+1]]:3: `x` is assigned while it is borrowed
   x = 5;
   return *outer.r;
 }
@@ -114,7 +114,7 @@ fn a_slice_of_a_vec_kept_past_a_push() -> i32 {
       r : v.as_slice()
     };
   }
-  // CHECK: Error[E4003] at [[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+  // CHECK: Error[E4003] at {{.*}}borrow_given_to_an_outer_variable_inside_a_block.vx:[[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
   v.push(8);
   return *outer.r;
 }
@@ -129,7 +129,7 @@ fn a_reference_returned_by_a_method_kept_past_a_push() -> i32 {
   if true {
     outer = v.as_slice();
   }
-  // CHECK: Error[E4003] at [[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+  // CHECK: Error[E4003] at {{.*}}borrow_given_to_an_outer_variable_inside_a_block.vx:[[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
   v.push(8);
   return *outer;
 }
@@ -142,7 +142,7 @@ fn a_reference_returned_by_a_method_with_its_type_inferred() -> i32 {
   if true {
     outer = v.as_slice();
   }
-  // CHECK: Error[E4003] at [[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+  // CHECK: Error[E4003] at {{.*}}borrow_given_to_an_outer_variable_inside_a_block.vx:[[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
   v.push(8);
   return *outer;
 }
@@ -157,7 +157,7 @@ fn a_borrow_of_the_vec_kept_past_a_push() -> i32 {
   if true {
     outer = &v;
   }
-  // CHECK: Error[E4003] at [[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+  // CHECK: Error[E4003] at {{.*}}borrow_given_to_an_outer_variable_inside_a_block.vx:[[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
   v.push(8);
   return outer.len();
 }

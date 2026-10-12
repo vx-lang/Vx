@@ -11,11 +11,11 @@
 // task in the program, the error used to come from MLIR, with no position.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: Error[E3059] at 23:3: extern fn `malloc` does not have the type of C's `malloc`. Declare it as `fn malloc(size : usize) -> *mut i8`.
-// CHECK: Error[E3059] at 24:3: extern fn `calloc` does not have the type of C's `calloc`. Declare it as `fn calloc(count : usize, size : usize) -> *mut i8`.
-// CHECK: Error[E3059] at 25:3: extern fn `realloc` does not have the type of C's `realloc`. Declare it as `fn realloc(ptr : *mut i8, size : usize) -> *mut i8`.
-// CHECK: Error[E3059] at 26:3: extern fn `aligned_alloc` does not have the type of C's `aligned_alloc`. Declare it as `fn aligned_alloc(alignment : usize, size : usize) -> *mut i8`.
-// CHECK: Error[E3059] at 27:3: extern fn `free` does not have the type of C's `free`. Declare it as `fn free(ptr : *mut i8) -> void`.
+// CHECK: Error[E3059] at {{.*}}c_allocator_declared_with_another_type.vx:23:3: extern fn `malloc` does not have the type of C's `malloc`. Declare it as `fn malloc(size : usize) -> *mut i8`.
+// CHECK: Error[E3059] at {{.*}}c_allocator_declared_with_another_type.vx:24:3: extern fn `calloc` does not have the type of C's `calloc`. Declare it as `fn calloc(count : usize, size : usize) -> *mut i8`.
+// CHECK: Error[E3059] at {{.*}}c_allocator_declared_with_another_type.vx:25:3: extern fn `realloc` does not have the type of C's `realloc`. Declare it as `fn realloc(ptr : *mut i8, size : usize) -> *mut i8`.
+// CHECK: Error[E3059] at {{.*}}c_allocator_declared_with_another_type.vx:26:3: extern fn `aligned_alloc` does not have the type of C's `aligned_alloc`. Declare it as `fn aligned_alloc(alignment : usize, size : usize) -> *mut i8`.
+// CHECK: Error[E3059] at {{.*}}c_allocator_declared_with_another_type.vx:27:3: extern fn `free` does not have the type of C's `free`. Declare it as `fn free(ptr : *mut i8) -> void`.
 
 // A 32-bit size, a 32-bit second size, a 32-bit unsigned size, a result that is not a pointer,
 // and a result where C's `free` has none.

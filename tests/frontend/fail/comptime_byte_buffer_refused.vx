@@ -23,7 +23,7 @@ fn depends_on(k : i32) -> i32 {
     } else {
       unsafe { buf[0i64] = 66i8; }
     }
-    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
+    // CHECK: Error[E3033] at {{.*}}comptime_byte_buffer_refused.vx:[[@LINE+1]]:{{.*}}cannot be evaluated
     buf as *const i8
   };
   print!(s);
@@ -35,7 +35,7 @@ fn main() -> i32 {
   let a = comptime {
     let buf = "ab" as *mut i8;
     unsafe { buf[5i64] = 0i8; }
-    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}a statement the evaluator cannot run
+    // CHECK: Error[E3033] at {{.*}}comptime_byte_buffer_refused.vx:[[@LINE+1]]:{{.*}}a statement the evaluator cannot run
     buf as *const i8
   };
 
@@ -43,7 +43,7 @@ fn main() -> i32 {
   let b = comptime {
     let buf = "ab" as *mut i8;
     unsafe { buf[2i64] = 65i8; }
-    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}not one that can be written as a constant
+    // CHECK: Error[E3033] at {{.*}}comptime_byte_buffer_refused.vx:[[@LINE+1]]:{{.*}}not one that can be written as a constant
     buf as *const i8
   };
 
@@ -58,7 +58,7 @@ fn main() -> i32 {
       last = fresh();
       i = i + 1i64;
     }
-    // CHECK: Error[E3033] at [[@LINE+1]]:{{.*}}cannot be evaluated
+    // CHECK: Error[E3033] at {{.*}}comptime_byte_buffer_refused.vx:[[@LINE+1]]:{{.*}}cannot be evaluated
     last as *const i8
   };
   return 0;

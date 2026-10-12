@@ -30,7 +30,7 @@ fn outer_reference_into_an_inner_slot() -> i32 {
     let mut q = &short;
     let mut qq = &mut q;
     // CHECK-NOT: Error
-    // CHECK: Error[E3004] at [[# @LINE + 1]]:5: Type mismatch in assignment: both sides are &mut &i32, but they are valid in different blocks
+    // CHECK: Error[E3004] at {{.*}}mut_reference_to_a_reference_must_match_its_lifetime.vx:[[# @LINE + 1]]:5: Type mismatch in assignment: both sides are &mut &i32, but they are valid in different blocks
     qq = &mut p;
     print(**qq);
   }

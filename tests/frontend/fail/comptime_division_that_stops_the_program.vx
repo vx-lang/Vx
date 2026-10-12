@@ -15,14 +15,14 @@
 fn main(argc : i32) -> i32 {
   // A division by zero on a path that always runs.
   let a = comptime {
-    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:25: this `comptime` block cannot be evaluated: this division stops the program: it divides by zero, or it divides the minimum value by -1
+    // CHECK-DAG: Error[E3033] at {{.*}}comptime_division_that_stops_the_program.vx:[[@LINE+1]]:25: this `comptime` block cannot be evaluated: this division stops the program: it divides by zero, or it divides the minimum value by -1
     let _q : i64 = 1i64 / 0i64;
     3i32
   };
   // The minimum `i32` divided by -1, with `%`.
   let b = comptime {
     let min : i32 = 0i32 - 2147483647i32 - 1i32;
-    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:24: this `comptime` block cannot be evaluated: this division stops the program: it divides by zero, or it divides the minimum value by -1
+    // CHECK-DAG: Error[E3033] at {{.*}}comptime_division_that_stops_the_program.vx:[[@LINE+1]]:24: this `comptime` block cannot be evaluated: this division stops the program: it divides by zero, or it divides the minimum value by -1
     let _r : i32 = min % (0i32 - 1i32);
     3i32
   };
@@ -30,14 +30,14 @@ fn main(argc : i32) -> i32 {
   let c = comptime {
     let mut z : i64 = 1i64;
     if argc > 1i32 {
-      // CHECK-DAG: Error[E3033] at [[@LINE+1]]:7: this `comptime` block cannot be evaluated: this division stops the program on a path that depends on a value known only when the program runs
+      // CHECK-DAG: Error[E3033] at {{.*}}comptime_division_that_stops_the_program.vx:[[@LINE+1]]:7: this `comptime` block cannot be evaluated: this division stops the program on a path that depends on a value known only when the program runs
       z /= 0i64;
     };
     3i32
   };
   // A division by `argc`, which may be zero.
   let d = comptime {
-    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:27: this `comptime` block cannot be evaluated: this division depends on a value known only when the program runs, and it may stop the program
+    // CHECK-DAG: Error[E3033] at {{.*}}comptime_division_that_stops_the_program.vx:[[@LINE+1]]:27: this `comptime` block cannot be evaluated: this division depends on a value known only when the program runs, and it may stop the program
     let _q : i32 = 100i32 / argc;
     3i32
   };

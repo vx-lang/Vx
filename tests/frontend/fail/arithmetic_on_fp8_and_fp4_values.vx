@@ -18,19 +18,19 @@ fn main() -> i32 {
   let x : f32 = 2.0;
   let t = Tensor<f4e2m1, [2, 2]>::new();
   let u = Tensor<f4e2m1, [2, 2]>::new();
-  // CHECK-DAG: Error[E3052] at [[@LINE+1]]:{{[0-9]+}}: `*` on `f8e4m3` values needs a written result type, such as `let c : f32 = ...`. The compiler computes in f32, and rounds once to that type
+  // CHECK-DAG: Error[E3052] at {{.*}}arithmetic_on_fp8_and_fp4_values.vx:[[@LINE+1]]:{{[0-9]+}}: `*` on `f8e4m3` values needs a written result type, such as `let c : f32 = ...`. The compiler computes in f32, and rounds once to that type
   let p = a * a;
-  // CHECK-DAG: Error[E3052] at [[@LINE+1]]:{{[0-9]+}}: `-` on `f4e2m1` values needs a written result type
+  // CHECK-DAG: Error[E3052] at {{.*}}arithmetic_on_fp8_and_fp4_values.vx:[[@LINE+1]]:{{[0-9]+}}: `-` on `f4e2m1` values needs a written result type
   print(-b);
-  // CHECK-DAG: Error[E3052] at [[@LINE+2]]:{{[0-9]+}}: `+` on `f8e4m3` values gives a float, and the written result type is `i32`. Write a float type, and convert the result with `as i32`
-  // CHECK-DAG: Error[E3001] at [[@LINE+1]]:{{[0-9]+}}: 'i' is declared i32 but its initializer is f8e4m3
+  // CHECK-DAG: Error[E3052] at {{.*}}arithmetic_on_fp8_and_fp4_values.vx:[[@LINE+2]]:{{[0-9]+}}: `+` on `f8e4m3` values gives a float, and the written result type is `i32`. Write a float type, and convert the result with `as i32`
+  // CHECK-DAG: Error[E3001] at {{.*}}arithmetic_on_fp8_and_fp4_values.vx:[[@LINE+1]]:{{[0-9]+}}: 'i' is declared i32 but its initializer is f8e4m3
   let i : i32 = a + a;
-  // CHECK-DAG: Error[E3052] at [[@LINE+1]]:{{[0-9]+}}: `+=` on `f8e4m3` values is not supported. Write `x = x + y`, which computes in f32 and rounds once to the type of `x`
+  // CHECK-DAG: Error[E3052] at {{.*}}arithmetic_on_fp8_and_fp4_values.vx:[[@LINE+1]]:{{[0-9]+}}: `+=` on `f8e4m3` values is not supported. Write `x = x + y`, which computes in f32 and rounds once to the type of `x`
   c += a;
-  // CHECK-DAG: Error[E3004] at [[@LINE+2]]:{{[0-9]+}}: Type mismatch in binary operation: f8e4m3 vs f32
-  // CHECK-DAG: Error[E3001] at [[@LINE+1]]:{{[0-9]+}}: 'm' is declared f32 but its initializer is f8e4m3
+  // CHECK-DAG: Error[E3004] at {{.*}}arithmetic_on_fp8_and_fp4_values.vx:[[@LINE+2]]:{{[0-9]+}}: Type mismatch in binary operation: f8e4m3 vs f32
+  // CHECK-DAG: Error[E3001] at {{.*}}arithmetic_on_fp8_and_fp4_values.vx:[[@LINE+1]]:{{[0-9]+}}: 'm' is declared f32 but its initializer is f8e4m3
   let m : f32 = a * x;
-  // CHECK-DAG: Error[E3052] at [[@LINE+1]]:{{[0-9]+}}: The compiler cannot compute `@` on tensors of `f4e2m1` yet. Convert the elements with `as f32`
+  // CHECK-DAG: Error[E3052] at {{.*}}arithmetic_on_fp8_and_fp4_values.vx:[[@LINE+1]]:{{[0-9]+}}: The compiler cannot compute `@` on tensors of `f4e2m1` yet. Convert the elements with `as f32`
   let mm = t @ u;
   let q : f32 = a * b;
   print(q);

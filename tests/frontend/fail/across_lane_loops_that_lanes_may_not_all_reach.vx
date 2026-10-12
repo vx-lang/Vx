@@ -12,19 +12,19 @@
 // values that it does not write (L10). Each function below breaks one of these rules.
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
-// CHECK: Error[E6032] at 32:{{.*}}this condition decides whether the lanes reach the end of a lane loop or a lane reduction, so it must be the same for every lane of the block. {{.*}} but it reads memory
-// CHECK: Error[E6032] at 46:{{.*}}this condition {{.*}} but `m` is not one of these
-// CHECK: Error[E6032] at 60:{{.*}}the bound of this loop decides whether the lanes reach {{.*}} but `m` is not one of these
-// CHECK: Error[E6032] at 75:{{.*}}this condition {{.*}} every lane of the subgroup. {{.*}} but `m` is not one of these
-// CHECK: Error[E6032] at 90:{{.*}}this condition {{.*}} but it reads memory
-// CHECK: Error[E6032] at 113:{{.*}}this lane loop reads `total`, which only lane 0 has
-// CHECK: Error[E6032] at 122:{{.*}}before the `across` nest of blocks, a region may only declare values with `let`
-// CHECK: Error[E6032] at 136:{{.*}}before the `across` nest of blocks, every lane runs the code, so a `let` there may only compute a value
-// CHECK: Error[E6032] at 146:{{.*}}before the `across` nest of blocks, this reads `y`, which the blocks write
-// CHECK: Error[E6032] at 164:{{.*}}this lane loop reads `m`, which only lane 0 has
-// CHECK: Error[E6032] at 179:{{.*}}this condition decides whether the lanes reach {{.*}} but it reads memory
-// CHECK: Error[E6032] at 196:{{.*}}the passes of this block loop change `c` with atomic operations
-// CHECK: Error[E6032] at 213:{{.*}}this condition {{.*}} but `m` is not one of these
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:32:{{.*}}this condition decides whether the lanes reach the end of a lane loop or a lane reduction, so it must be the same for every lane of the block. {{.*}} but it reads memory
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:46:{{.*}}this condition {{.*}} but `m` is not one of these
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:60:{{.*}}the bound of this loop decides whether the lanes reach {{.*}} but `m` is not one of these
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:75:{{.*}}this condition {{.*}} every lane of the subgroup. {{.*}} but `m` is not one of these
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:90:{{.*}}this condition {{.*}} but it reads memory
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:113:{{.*}}this lane loop reads `total`, which only lane 0 has
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:122:{{.*}}before the `across` nest of blocks, a region may only declare values with `let`
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:136:{{.*}}before the `across` nest of blocks, every lane runs the code, so a `let` there may only compute a value
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:146:{{.*}}before the `across` nest of blocks, this reads `y`, which the blocks write
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:164:{{.*}}this lane loop reads `m`, which only lane 0 has
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:179:{{.*}}this condition decides whether the lanes reach {{.*}} but it reads memory
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:196:{{.*}}the passes of this block loop change `c` with atomic operations
+// CHECK: Error[E6032] at {{.*}}across_lane_loops_that_lanes_may_not_all_reach.vx:213:{{.*}}this condition {{.*}} but `m` is not one of these
 
 pub fn if_on_memory(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
   spawn on(Topology::Device) {

@@ -10,7 +10,7 @@
 // A `"` is the last character of the file. It opens a string with no end, which used to crash
 // the compiler.
 //
-// CHECK: Error at 18:1: this string has no closing `"`: the file ends inside it
+// CHECK: Error at {{.*}}quote_at_the_end_of_a_file.vx:18:1: this string has no closing `"`: the file ends inside it
 
 fn main() -> i32 {
   return 0;

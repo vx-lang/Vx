@@ -11,6 +11,6 @@
 // placeholder like `T`.
 
 trait Get {
-  // CHECK: Error at [[@LINE+1]]:10: `self` needs a type. Write `self : &Self`, `self : &mut Self` or `self : Self`.
+  // CHECK: Error at {{.*}}self_needs_a_type_in_a_trait.vx:[[@LINE+1]]:10: `self` needs a type. Write `self : &Self`, `self : &mut Self` or `self : Self`.
   fn get(self) -> i64;
 }

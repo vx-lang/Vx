@@ -14,9 +14,9 @@
 // becomes an `unsafe` block the compiler writes, which never warns or counts as an outer block.
 
 // CHECK-NOT: Warning[W1010]
-// CHECK: Warning[W1010] at 51:11: this `unsafe` block holds nothing that needs `unsafe`
+// CHECK: Warning[W1010] at {{.*}}warning_for_unsafe_with_nothing_unsafe.vx:51:11: this `unsafe` block holds nothing that needs `unsafe`
 // CHECK-NOT: Warning[W1010]
-// CHECK: Warning[W1010] at 59:12: this `unsafe` block is inside another one
+// CHECK: Warning[W1010] at {{.*}}warning_for_unsafe_with_nothing_unsafe.vx:59:12: this `unsafe` block is inside another one
 // CHECK-NOT: Warning[W1010]
 
 import std::vec;

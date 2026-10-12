@@ -14,8 +14,8 @@ fn take(v : Vec<i32>) -> void {}
 
 fn unknown_name() -> i32 {
   return 0;
-  // CHECK: Warning[W1003] at [[# @LINE + 2]]:3: Unreachable code
-  // CHECK: Error[E2001] at [[# @LINE + 1]]:17: Undefined variable 'undefined_name'
+  // CHECK: Warning[W1003] at {{.*}}code_after_return_is_checked.vx:[[# @LINE + 2]]:3: Unreachable code
+  // CHECK: Error[E2001] at {{.*}}code_after_return_is_checked.vx:[[# @LINE + 1]]:17: Undefined variable 'undefined_name'
   let y : i32 = undefined_name;
   return y;
 }
@@ -25,7 +25,7 @@ fn moved_twice() -> i32 {
   loop {
     break;
     take(v);
-    // CHECK: Error[E4001] at [[# @LINE + 1]]:21: Use of moved or consumed linear variable: v
+    // CHECK: Error[E4001] at {{.*}}code_after_return_is_checked.vx:[[# @LINE + 1]]:21: Use of moved or consumed linear variable: v
     let f = || take(v);
     f();
   }

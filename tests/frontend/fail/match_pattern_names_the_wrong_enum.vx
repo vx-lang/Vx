@@ -23,11 +23,11 @@ enum Other {
 
 fn by_value(c : Color) -> i64 {
   match c {
-    // CHECK-DAG: Error[E3051] at [[@LINE+1]]:5: this pattern is a variant of `Other`, but the value matched is a `Color`; write `Color::Red`
+    // CHECK-DAG: Error[E3051] at {{.*}}match_pattern_names_the_wrong_enum.vx:[[@LINE+1]]:5: this pattern is a variant of `Other`, but the value matched is a `Color`; write `Color::Red`
     Other::Red => {
       return 1;
     }
-    // CHECK-DAG: Error[E2003] at [[@LINE+1]]:5: Unknown enum Nonsense
+    // CHECK-DAG: Error[E2003] at {{.*}}match_pattern_names_the_wrong_enum.vx:[[@LINE+1]]:5: Unknown enum Nonsense
     Nonsense::Blue(n) => {
       return n;
     }
@@ -39,7 +39,7 @@ fn missing_variant(c : Color) -> i64 {
     Color::Red => {
       return 1;
     }
-    // CHECK-DAG: Error[E2004] at [[@LINE+1]]:5: Enum Color does not have variant Green
+    // CHECK-DAG: Error[E2004] at {{.*}}match_pattern_names_the_wrong_enum.vx:[[@LINE+1]]:5: Enum Color does not have variant Green
     Color::Green => {
       return 2;
     }
@@ -51,7 +51,7 @@ fn missing_variant(c : Color) -> i64 {
 
 fn by_reference(c : &Color) -> i64 {
   match c {
-    // CHECK-DAG: Error[E3051] at [[@LINE+1]]:5: this pattern is a variant of `Other`, but the value matched is a `Color`; write `Color::Red`
+    // CHECK-DAG: Error[E3051] at {{.*}}match_pattern_names_the_wrong_enum.vx:[[@LINE+1]]:5: this pattern is a variant of `Other`, but the value matched is a `Color`; write `Color::Red`
     Other::Red => {
       return 1;
     }

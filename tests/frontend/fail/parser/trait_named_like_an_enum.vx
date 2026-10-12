@@ -14,7 +14,7 @@
 enum Shape {
   Square, Circle,
 }
-// CHECK: Error at [[@LINE+1]]:1: the type `Shape` is already defined at 14:1
+// CHECK: Error at {{.*}}trait_named_like_an_enum.vx:[[@LINE+1]]:1: the type `Shape` is already defined at 14:1
 trait Shape {
   fn sides(self : &Self) -> i32;
 }

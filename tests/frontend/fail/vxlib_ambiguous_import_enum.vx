@@ -24,4 +24,4 @@ fn main() -> i32 {
   return geta() + getb();
 }
 
-// CHECK: Error[E2003] at 23:{{[0-9]+}}: Enum 'Color' is defined in more than one imported module
+// CHECK: Error[E2003] at {{.*}}vxlib_ambiguous_import_enum.vx:23:{{[0-9]+}}: Enum 'Color' is defined in more than one imported module

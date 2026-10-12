@@ -11,7 +11,7 @@
 // shape. With a `?` extent the types do not say they are, so the assignment is refused.
 
 fn replace(t : &mut Tensor<f32, [?]>, n : i32) -> void {
-  // CHECK: Error[E3003] at [[@LINE+1]]:{{[0-9]+}}: assigning through a reference writes the new values into the tensor it refers to
+  // CHECK: Error[E3003] at {{.*}}assign_through_a_tensor_reference_with_an_unknown_extent.vx:[[@LINE+1]]:{{[0-9]+}}: assigning through a reference writes the new values into the tensor it refers to
   *t = Tensor<f32>([n]);
   return;
 }

@@ -12,7 +12,7 @@
 fn main() -> i32 {
   let a : Tensor<i64, [3]> = [ 3i64, 1i64, 2i64 ];
   let f = ||
-  // CHECK: E8003] at [[@LINE+1]]:{{.*}}index 5 is out of range
+  // CHECK: E8003] at {{.*}}tensor_index_out_of_range_in_closure.vx:[[@LINE+1]]:{{.*}}index 5 is out of range
   a[5];
   println!(f());
   return 0;

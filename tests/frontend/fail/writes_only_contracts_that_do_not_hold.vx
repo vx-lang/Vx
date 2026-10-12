@@ -11,12 +11,12 @@
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: not vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: Error[E8007] at 32:9: `takes_a_tensor` says `writes_only()`, so it may take no tensor, reference or pointer, but `t` is `&mut Tensor<i32, [?], Memory::HBM>`
-// CHECK: Error[E8007] at 38:9: `writes_only` takes no arguments here: `writes_only()` says that `names_a_tensor` writes no memory
-// CHECK: Error[E8007] at 46:10: `block_without_the_clause` says `writes_only()`, so each `mlir!` block in it must say `ensures : [writes_only()]`
-// CHECK: Error[E8007] at 56:10: `calls_a_function_without_the_clause` says `writes_only()`, so it may call only a function that says it too, but `seven` does not
-// CHECK: Error[E8007] at 64:10: a block that says `writes_only()` may take no memref or pointer input, but `%t` is `memref<?xi32>`
-// CHECK: Error[E6032] at 75:18: the call to `seven` may write through an argument, and the checker does not read its body. Write its work in the loop
+// CHECK: Error[E8007] at {{.*}}writes_only_contracts_that_do_not_hold.vx:32:9: `takes_a_tensor` says `writes_only()`, so it may take no tensor, reference or pointer, but `t` is `&mut Tensor<i32, [?], Memory::HBM>`
+// CHECK: Error[E8007] at {{.*}}writes_only_contracts_that_do_not_hold.vx:38:9: `writes_only` takes no arguments here: `writes_only()` says that `names_a_tensor` writes no memory
+// CHECK: Error[E8007] at {{.*}}writes_only_contracts_that_do_not_hold.vx:46:10: `block_without_the_clause` says `writes_only()`, so each `mlir!` block in it must say `ensures : [writes_only()]`
+// CHECK: Error[E8007] at {{.*}}writes_only_contracts_that_do_not_hold.vx:56:10: `calls_a_function_without_the_clause` says `writes_only()`, so it may call only a function that says it too, but `seven` does not
+// CHECK: Error[E8007] at {{.*}}writes_only_contracts_that_do_not_hold.vx:64:10: a block that says `writes_only()` may take no memref or pointer input, but `%t` is `memref<?xi32>`
+// CHECK: Error[E6032] at {{.*}}writes_only_contracts_that_do_not_hold.vx:75:18: the call to `seven` may write through an argument, and the checker does not read its body. Write its work in the loop
 
 fn quiet() on Topology::Device -> void
 ensures writes_only()

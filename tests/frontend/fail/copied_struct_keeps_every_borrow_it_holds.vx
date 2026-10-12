@@ -28,7 +28,7 @@ fn main() -> i32 {
     x : &q.a, y : &q.b
   };
   let t2 = t;
-  // CHECK: Error[E4009] at [[@LINE+1]]:5: `q.b` is assigned while it is borrowed
+  // CHECK: Error[E4009] at {{.*}}copied_struct_keeps_every_borrow_it_holds.vx:[[@LINE+1]]:5: `q.b` is assigned while it is borrowed
   q.b = 5;
   return *t2.y;
 }

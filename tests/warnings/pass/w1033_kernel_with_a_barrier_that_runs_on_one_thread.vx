@@ -1,9 +1,9 @@
 // W1033 for a `spawn` region that calls `barrier()`: the program asks for blocks and threads,
 // but the region runs on one thread. The warning points at the first thing that stopped the
 // compiler from splitting the region.
-// WARN: Warning[W1033] at 40:15: this `spawn` region calls `barrier()`, but it runs on one thread: the compiler cannot show that each pass of the loop over `z` writes a different element of `out`
-// WARN: Warning[W1033] at 56:11: this `spawn` region calls `barrier()`, but it runs on one thread: a `break` or `continue` leaves a loop that holds a `barrier()`
-// WARN: Warning[W1033] at 69:7: this `spawn` region calls `barrier()`, but it runs on one thread: a loop writes the block-shared tensor `part`, and the next statement is not `barrier()`
+// WARN: w1033_kernel_with_a_barrier_that_runs_on_one_thread.vx:40:15: this `spawn` region calls `barrier()`, but it runs on one thread: the compiler cannot show that each pass of the loop over `z` writes a different element of `out`
+// WARN: w1033_kernel_with_a_barrier_that_runs_on_one_thread.vx:56:11: this `spawn` region calls `barrier()`, but it runs on one thread: a `break` or `continue` leaves a loop that holds a `barrier()`
+// WARN: w1033_kernel_with_a_barrier_that_runs_on_one_thread.vx:69:7: this `spawn` region calls `barrier()`, but it runs on one thread: a loop writes the block-shared tensor `part`, and the next statement is not `barrier()`
 
 Memory CPU_DRAM {}
 Memory GPU_HBM {

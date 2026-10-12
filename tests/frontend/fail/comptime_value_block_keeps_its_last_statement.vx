@@ -17,11 +17,11 @@ fn bump(v : &mut i32) -> void {
 
 fn main() -> i32 {
   let mut hits : i32 = 0i32;
-  // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: it writes to 'hits'
+  // CHECK-DAG: Error[E3033] at {{.*}}comptime_value_block_keeps_its_last_statement.vx:[[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: it writes to 'hits'
   let _call = comptime {
     bump(&mut hits);
   };
-  // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: it writes to 'hits'
+  // CHECK-DAG: Error[E3033] at {{.*}}comptime_value_block_keeps_its_last_statement.vx:[[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: it writes to 'hits'
   let _branch = comptime {
     let k : i32 = 1i32;
     if k == 1i32 {

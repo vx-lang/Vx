@@ -35,7 +35,7 @@ fn main() -> i32 {
     v : Vec<i32>::new()
   };
   let r = a.view(&b);
-  // CHECK: Error[E4007] at [[@LINE+1]]:11: `b` is moved while it is borrowed
+  // CHECK: Error[E4007] at {{.*}}method_returning_a_reference_in_a_struct_keeps_its_argument_borrowed.vx:[[@LINE+1]]:11: `b` is moved while it is borrowed
   let c = b;
   return (r.r.v.len() + c.v.len()) as i32;
 }

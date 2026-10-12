@@ -12,18 +12,18 @@
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: not vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: Error[E8007] at 51:{{.*}}`atomic(u)` names no parameter of `names_no_parameter`
-// CHECK: Error[E8007] at 57:{{.*}}`atomic(t)` must name a `&` tensor of `i32`, `u32`, `i64`, `u64`, `f32` or `f64`, but `t` is `&mut Tensor<i32, [?], Memory::HBM>`
-// CHECK: Error[E8007] at 63:{{.*}}`atomic(t)` must name a `&` tensor{{.*}} but `t` is `i32`
-// CHECK: Error[E8007] at 69:{{.*}}`atomic` takes one parameter of `names_two_things`
-// CHECK: Error[E8007] at 77:{{.*}}`reads_an_element` says `atomic(t)`, so it may use `t` only in an atomic operation
-// CHECK: Error[E8007] at 83:{{.*}}`passes_it_to_a_block_without_a_clause` says `atomic(t)`
-// CHECK: Error[E8007] at 94:{{.*}}`passes_it_to_a_function_without_a_contract` says `atomic(t)`
-// CHECK: Error[E8007] at 98:{{.*}}an `atomic` clause of an `mlir!` block names one of its inputs
-// CHECK: Error[E8007] at 104:{{.*}}the block says `atomic(t)`, but `%v = memref.load %t[%k] : memref<?xi32>` reads or writes `%t` without an atomic operation
-// CHECK: Error[E8007] at 112:{{.*}}`memref.store %i, %u[%k] : memref<?xi32>` writes `%u`, which the clauses of the block do not name
-// CHECK: Error[E6032] at 124:{{.*}}the passes of this block loop change `count` with atomic operations, so every access to it in the loop must be one
-// CHECK: Error[E6032] at 135:{{.*}}the call to `add_one_plain` may write through an argument
+// CHECK: Error[E8007] at {{.*}}atomic_contracts_that_do_not_hold.vx:51:{{.*}}`atomic(u)` names no parameter of `names_no_parameter`
+// CHECK: Error[E8007] at {{.*}}atomic_contracts_that_do_not_hold.vx:57:{{.*}}`atomic(t)` must name a `&` tensor of `i32`, `u32`, `i64`, `u64`, `f32` or `f64`, but `t` is `&mut Tensor<i32, [?], Memory::HBM>`
+// CHECK: Error[E8007] at {{.*}}atomic_contracts_that_do_not_hold.vx:63:{{.*}}`atomic(t)` must name a `&` tensor{{.*}} but `t` is `i32`
+// CHECK: Error[E8007] at {{.*}}atomic_contracts_that_do_not_hold.vx:69:{{.*}}`atomic` takes one parameter of `names_two_things`
+// CHECK: Error[E8007] at {{.*}}atomic_contracts_that_do_not_hold.vx:77:{{.*}}`reads_an_element` says `atomic(t)`, so it may use `t` only in an atomic operation
+// CHECK: Error[E8007] at {{.*}}atomic_contracts_that_do_not_hold.vx:83:{{.*}}`passes_it_to_a_block_without_a_clause` says `atomic(t)`
+// CHECK: Error[E8007] at {{.*}}atomic_contracts_that_do_not_hold.vx:94:{{.*}}`passes_it_to_a_function_without_a_contract` says `atomic(t)`
+// CHECK: Error[E8007] at {{.*}}atomic_contracts_that_do_not_hold.vx:98:{{.*}}an `atomic` clause of an `mlir!` block names one of its inputs
+// CHECK: Error[E8007] at {{.*}}atomic_contracts_that_do_not_hold.vx:104:{{.*}}the block says `atomic(t)`, but `%v = memref.load %t[%k] : memref<?xi32>` reads or writes `%t` without an atomic operation
+// CHECK: Error[E8007] at {{.*}}atomic_contracts_that_do_not_hold.vx:112:{{.*}}`memref.store %i, %u[%k] : memref<?xi32>` writes `%u`, which the clauses of the block do not name
+// CHECK: Error[E6032] at {{.*}}atomic_contracts_that_do_not_hold.vx:124:{{.*}}the passes of this block loop change `count` with atomic operations, so every access to it in the loop must be one
+// CHECK: Error[E6032] at {{.*}}atomic_contracts_that_do_not_hold.vx:135:{{.*}}the call to `add_one_plain` may write through an argument
 
 // A correct contract, for the kernels below.
 fn add_one(t : &Tensor<i32, [?], Memory::HBM>, i : i32) on Topology::Device -> i32

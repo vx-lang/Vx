@@ -11,7 +11,7 @@
 // A second impl of a trait for a type that already has one is an error at the impls, even
 // when nothing calls the method: a call could not choose between them.
 //
-// CHECK: Error[E3049]: `impl Describe for Point` is written twice in '{{.*}}two_impls_of_a_trait_for_one_type.vx'
+// CHECK: Error[E3049] in {{.*}}two_impls_of_a_trait_for_one_type.vx: `impl Describe for Point` is written twice in '{{.*}}two_impls_of_a_trait_for_one_type.vx'
 
 struct Point {
   x : i32,

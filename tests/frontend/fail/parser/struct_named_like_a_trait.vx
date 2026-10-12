@@ -14,7 +14,7 @@
 trait Shape {
   fn sides(self : &Self) -> i32;
 }
-// CHECK: Error at [[@LINE+1]]:1: the type `Shape` is already defined at 14:1
+// CHECK: Error at {{.*}}struct_named_like_a_trait.vx:[[@LINE+1]]:1: the type `Shape` is already defined at 14:1
 struct Shape {
   sides : i32,
 }

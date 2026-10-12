@@ -11,7 +11,7 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 fn main() -> i32 {
   let a : Tensor<i64, [3]> = [ 3i64, 1i64, 2i64 ];
-  // CHECK: E8003] at [[@LINE+1]]:{{.*}}index 5 is out of range: this dimension has 3 elements
+  // CHECK: E8003] at {{.*}}tensor_literal_index_out_of_range_once.vx:[[@LINE+1]]:{{.*}}index 5 is out of range: this dimension has 3 elements
   let v = a[5];
   println!(v);
   return 0;

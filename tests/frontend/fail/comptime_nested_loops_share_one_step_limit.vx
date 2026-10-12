@@ -15,7 +15,7 @@
 fn main() -> i32 {
   let value = comptime {
     let mut n = 0i32;
-    // CHECK: Error[E8005] at [[@LINE+1]]:5: compile-time evaluation ran more than 1000000 loop iterations
+    // CHECK: Error[E8005] at {{.*}}comptime_nested_loops_share_one_step_limit.vx:[[@LINE+1]]:5: compile-time evaluation ran more than 1000000 loop iterations
     for i in 0..1500 {
       for j in 0..1500 {
         n = n + 1i32;

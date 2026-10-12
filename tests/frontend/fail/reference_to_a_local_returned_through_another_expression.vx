@@ -26,7 +26,7 @@ struct V {
 
 fn through_the_else_of_an_if(p : &i32, c : bool) -> V {
   let local : i32 = 5;
-  // CHECK: Error[E4005] at [[@LINE+1]]:3: this returns a value that points into this function's stack frame
+  // CHECK: Error[E4005] at {{.*}}reference_to_a_local_returned_through_another_expression.vx:[[@LINE+1]]:3: this returns a value that points into this function's stack frame
   return if c {
     V {
       r : p
@@ -40,7 +40,7 @@ fn through_the_else_of_an_if(p : &i32, c : bool) -> V {
 
 fn through_the_second_arm_of_a_match(p : &i32, e : E) -> V {
   let local : i32 = 5;
-  // CHECK: Error[E4005] at [[@LINE+1]]:3: this returns a value that points into this function's stack frame
+  // CHECK: Error[E4005] at {{.*}}reference_to_a_local_returned_through_another_expression.vx:[[@LINE+1]]:3: this returns a value that points into this function's stack frame
   return match e {
     E::A => {
       V {
@@ -57,7 +57,7 @@ fn through_the_second_arm_of_a_match(p : &i32, e : E) -> V {
 
 fn from_an_unsafe_block(k : i32) -> V {
   let local : i32 = k + 4;
-  // CHECK: Error[E4005] at [[@LINE+1]]:3: this returns a value that points into this function's stack frame
+  // CHECK: Error[E4005] at {{.*}}reference_to_a_local_returned_through_another_expression.vx:[[@LINE+1]]:3: this returns a value that points into this function's stack frame
   return unsafe { V { r : &local } };
 }
 
@@ -65,20 +65,20 @@ fn through_a_dereference(k : i32) -> &i32 {
   let local : i32 = k + 4;
   let r = &local;
   let p = &r;
-  // CHECK: Error[E4005] at [[@LINE+1]]:3: this returns a value that points into this function's stack frame
+  // CHECK: Error[E4005] at {{.*}}reference_to_a_local_returned_through_another_expression.vx:[[@LINE+1]]:3: this returns a value that points into this function's stack frame
   return *p;
 }
 
 fn in_an_enum_payload(k : i32) -> Slot {
   let local : i32 = k + 4;
-  // CHECK: Error[E4005] at [[@LINE+1]]:3: this returns a value that points into this function's stack frame
+  // CHECK: Error[E4005] at {{.*}}reference_to_a_local_returned_through_another_expression.vx:[[@LINE+1]]:3: this returns a value that points into this function's stack frame
   return Slot::Full(&local);
 }
 
 fn from_a_closure_call(k : i32) -> &i32 {
   let local : i32 = k + 4;
   let f = || &local;
-  // CHECK: Error[E4005] at [[@LINE+1]]:3: this returns a value that points into this function's stack frame
+  // CHECK: Error[E4005] at {{.*}}reference_to_a_local_returned_through_another_expression.vx:[[@LINE+1]]:3: this returns a value that points into this function's stack frame
   return f();
 }
 

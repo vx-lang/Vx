@@ -18,18 +18,18 @@ fn half_of_next(a : i32) -> i32 {
 }
 
 fn neg_div(a : i32, b : i32) -> i32 {
-  // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: this division stops the program: it divides by zero, or it divides the minimum value by -1
+  // CHECK-DAG: Error[E3033] at {{.*}}comptime_called_function_overflows_its_type.vx:[[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: this division stops the program: it divides by zero, or it divides the minimum value by -1
   return a / b;
 }
 
 fn main() -> i32 {
   let x = comptime {
-    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
+    // CHECK-DAG: Error[E3033] at {{.*}}comptime_called_function_overflows_its_type.vx:[[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
     half_of_next(2147483647i32)
   };
   let y = comptime {
     let m : i32 = -2147483647i32 - 1i32;
-    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
+    // CHECK-DAG: Error[E3033] at {{.*}}comptime_called_function_overflows_its_type.vx:[[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
     (-m) / 2i32
   };
   let z = comptime {

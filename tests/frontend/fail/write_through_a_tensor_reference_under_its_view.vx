@@ -26,6 +26,6 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: Error[E4009] at 15:10: `t[0][0]` is assigned while it is borrowed
-// CHECK-DAG: Error[E4009] at 21:7: `t[0][0]` is assigned while it is borrowed
+// CHECK-DAG: Error[E4009] at {{.*}}write_through_a_tensor_reference_under_its_view.vx:15:10: `t[0][0]` is assigned while it is borrowed
+// CHECK-DAG: Error[E4009] at {{.*}}write_through_a_tensor_reference_under_its_view.vx:21:7: `t[0][0]` is assigned while it is borrowed
 // CHECK: 2 error(s) emitted

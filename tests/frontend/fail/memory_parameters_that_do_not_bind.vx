@@ -10,8 +10,8 @@
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: not vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: Error[E3003] at 27:10: Failed to deduce types for generic function 'first_of_each': Expected &Tensor<i32, [?], Memory::M>, got &Tensor<i32, [2], Memory::HBM>
-// CHECK: Error[E3016] at 27:34: Memory parameter 'M' of 'make' is not determined by this call: only a tensor argument of type `Tensor<_, _, Memory::M>` gives it a memory
+// CHECK: Error[E3003] at {{.*}}memory_parameters_that_do_not_bind.vx:27:10: Failed to deduce types for generic function 'first_of_each': Expected &Tensor<i32, [?], Memory::M>, got &Tensor<i32, [2], Memory::HBM>
+// CHECK: Error[E3016] at {{.*}}memory_parameters_that_do_not_bind.vx:27:34: Memory parameter 'M' of 'make' is not determined by this call: only a tensor argument of type `Tensor<_, _, Memory::M>` gives it a memory
 
 fn first_of_each<M : Memory>(a : &Tensor<i32, [?], Memory::M>, b : &Tensor<i32, [?], Memory::M>) -> i32 {
   return a[0] + b[0];

@@ -13,10 +13,10 @@
 // 2^62 bytes is allowed.
 
 fn main() -> i32 {
-  // CHECK-DAG: Error[E6031] at [[@LINE+1]]:11: `Tensor<f32, [2, -3]>` cannot be allocated: one of its extents is negative
+  // CHECK-DAG: Error[E6031] at {{.*}}tensor_size_negative_or_too_large.vx:[[@LINE+1]]:11: `Tensor<f32, [2, -3]>` cannot be allocated: one of its extents is negative
   let b = Tensor<f32, [2, -3]>::new();
   // 2^61 elements of 4 bytes each is 2^63 bytes.
-  // CHECK-DAG: Error[E6031] at [[@LINE+1]]:14: `Tensor<f32, [2305843009213693952]>` cannot be allocated: its size is more than 2^63 - 1 bytes
+  // CHECK-DAG: Error[E6031] at {{.*}}tensor_size_negative_or_too_large.vx:[[@LINE+1]]:14: `Tensor<f32, [2305843009213693952]>` cannot be allocated: its size is more than 2^63 - 1 bytes
   let huge = Tensor<f32, [2305843009213693952]>::new();
   // 2^61 elements of 2 bytes each is 2^62 bytes.
   // FITS-NOT: Tensor<f16

@@ -11,14 +11,14 @@
 // has at most 1024 lanes.
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
-// CHECK: Error[E6032] at 24:{{.*}}an `across` loop is valid only in a `spawn on` region
-// CHECK: Error[E6032] at 32:{{.*}}`across lanes`: the topology `CPU` has no levels
-// CHECK: Error[E6032] at 41:{{.*}}`across warps`: the topology `Device` has the levels `blocks`, `subgroups`, `lanes`
-// CHECK: Error[E6032] at 52:{{.*}}a block loop may not be inside a lane loop
-// CHECK: Error[E6032] at 63:{{.*}}a lane loop is valid only inside the `across` loop of blocks
-// CHECK: Error[E6032] at 73:{{.*}}the `across` loop of blocks is directly in the `spawn on` region
-// CHECK: Error[E6032] at 86:{{.*}}a region has one `across` nest of blocks
-// CHECK: Error[E6032] at 96:{{.*}}reads `n`, which the region declares
+// CHECK: Error[E6032] at {{.*}}across_loops_that_are_not_allowed.vx:24:{{.*}}an `across` loop is valid only in a `spawn on` region
+// CHECK: Error[E6032] at {{.*}}across_loops_that_are_not_allowed.vx:32:{{.*}}`across lanes`: the topology `CPU` has no levels
+// CHECK: Error[E6032] at {{.*}}across_loops_that_are_not_allowed.vx:41:{{.*}}`across warps`: the topology `Device` has the levels `blocks`, `subgroups`, `lanes`
+// CHECK: Error[E6032] at {{.*}}across_loops_that_are_not_allowed.vx:52:{{.*}}a block loop may not be inside a lane loop
+// CHECK: Error[E6032] at {{.*}}across_loops_that_are_not_allowed.vx:63:{{.*}}a lane loop is valid only inside the `across` loop of blocks
+// CHECK: Error[E6032] at {{.*}}across_loops_that_are_not_allowed.vx:73:{{.*}}the `across` loop of blocks is directly in the `spawn on` region
+// CHECK: Error[E6032] at {{.*}}across_loops_that_are_not_allowed.vx:86:{{.*}}a region has one `across` nest of blocks
+// CHECK: Error[E6032] at {{.*}}across_loops_that_are_not_allowed.vx:96:{{.*}}reads `n`, which the region declares
 
 fn not_in_a_region(o : &mut Tensor<f32, [4]>) -> void {
   for i in 0..4 across lanes {

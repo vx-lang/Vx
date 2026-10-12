@@ -17,7 +17,7 @@ fn main(argc : i32) -> i32 {
     x += 5i32;
   }
   let y = comptime {
-    // CHECK: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
+    // CHECK: Error[E3033] at {{.*}}comptime_reads_a_compound_assignment_in_a_branch.vx:[[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
     x * 2i32
   };
   print(y);

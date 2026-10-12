@@ -30,6 +30,7 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: E6009
+// The error names this file even though the host module was read from none.
+// CHECK: Error[E6009] in {{.*}}machine_flag_capacity_reject.vx: transferred tensor
 // CHECK-SAME: needs 4194304 bytes
 // CHECK-SAME: 'HBM' has capacity 1048576 bytes

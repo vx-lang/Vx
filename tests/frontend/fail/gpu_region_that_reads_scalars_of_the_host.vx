@@ -23,7 +23,7 @@ pub fn reads_scalars(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32, k : f32)
   return;
 }
 
-// CHECK: Error[E6003] at [[@LINE+6]]:16: 'count' lives in CPU_DRAM but Device sees only
+// CHECK: Error[E6003] at {{.*}}gpu_region_that_reads_scalars_of_the_host.vx:[[@LINE+6]]:16: 'count' lives in CPU_DRAM but Device sees only
 pub fn reads_a_mut_scalar(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
   let mut count = n;
   count += 1;

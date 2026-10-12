@@ -12,10 +12,10 @@
 // `gemm_shared_tiles` in across_kernels_from_polybench_and_rodinia.vx.
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
-// CHECK: Error[E6032] at 47:{{.*}}the call to `init_barriers` may write through an argument, and the checker does not read
-// CHECK: Error[E6032] at 53:{{.*}}the call to `tma_load` may write through an argument, and the checker does not read its
-// CHECK: Error[E6032] at 61:{{.*}}the call to `wgmma` may write through an argument, and the checker does not read its
-// CHECK: Error[E6032] at 80:{{.*}}an `mlir!` block in an `across` loop may write memory that the checker cannot
+// CHECK: Error[E6032] at {{.*}}across_tensor_core_kernels_that_are_refused.vx:47:{{.*}}the call to `init_barriers` may write through an argument, and the checker does not read
+// CHECK: Error[E6032] at {{.*}}across_tensor_core_kernels_that_are_refused.vx:53:{{.*}}the call to `tma_load` may write through an argument, and the checker does not read its
+// CHECK: Error[E6032] at {{.*}}across_tensor_core_kernels_that_are_refused.vx:61:{{.*}}the call to `wgmma` may write through an argument, and the checker does not read its
+// CHECK: Error[E6032] at {{.*}}across_tensor_core_kernels_that_are_refused.vx:80:{{.*}}an `mlir!` block in an `across` loop may write memory that the checker cannot
 
 import core::num;
 

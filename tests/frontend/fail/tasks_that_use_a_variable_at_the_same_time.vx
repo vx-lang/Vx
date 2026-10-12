@@ -17,7 +17,7 @@
 import core::cell;
 import std::vec;
 
-// CHECK: Error[E4002] at [[@LINE+7]]:13: Cannot access 'x' because it is mutably borrowed. A task that is not joined yet uses it.
+// CHECK: Error[E4002] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+7]]:13: Cannot access 'x' because it is mutably borrowed. A task that is not joined yet uses it.
 fn read_while_a_task_writes() -> i32 {
   let mut x = 0;
   tasks {
@@ -29,7 +29,7 @@ fn read_while_a_task_writes() -> i32 {
   return x;
 }
 
-// CHECK: Error[E4002] at [[@LINE+8]]:7: Cannot access 'x' because it is mutably borrowed. A task that is not joined yet uses it.
+// CHECK: Error[E4002] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+8]]:7: Cannot access 'x' because it is mutably borrowed. A task that is not joined yet uses it.
 fn two_tasks_write() -> i32 {
   let mut x = 0;
   tasks {
@@ -43,7 +43,7 @@ fn two_tasks_write() -> i32 {
   return x;
 }
 
-// CHECK: Error[E4009] at [[@LINE+7]]:5: `v` is assigned while it is borrowed, and the borrow is used after the assignment. A task that is not joined yet uses it.
+// CHECK: Error[E4009] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+7]]:5: `v` is assigned while it is borrowed, and the borrow is used after the assignment. A task that is not joined yet uses it.
 fn change_what_a_task_reads() -> i32 {
   let mut v = Vec<i32>::new();
   tasks {
@@ -56,7 +56,7 @@ fn change_what_a_task_reads() -> i32 {
   return 0;
 }
 
-// CHECK: Error[E4014] at [[@LINE+4]]:5: a task that this loop starts writes 'x'
+// CHECK: Error[E4014] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+4]]:5: a task that this loop starts writes 'x'
 fn task_in_a_loop_writes() -> i32 {
   let mut x = 0;
   tasks {
@@ -69,7 +69,7 @@ fn task_in_a_loop_writes() -> i32 {
   return x;
 }
 
-// CHECK: Error[E4014] at [[@LINE+4]]:5: a task that this loop starts reads 'v'
+// CHECK: Error[E4014] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+4]]:5: a task that this loop starts reads 'v'
 fn loop_changes_what_a_task_reads() -> void {
   let mut v = Vec<i32>::new();
   tasks {
@@ -83,7 +83,7 @@ fn loop_changes_what_a_task_reads() -> void {
 }
 
 // A task moves `v`, because `v` ends before the task's join. So the pass cannot use `v` again.
-// CHECK: Error[E4001] at [[@LINE+9]]:16: Use of moved or consumed linear variable: v
+// CHECK: Error[E4001] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+9]]:16: Use of moved or consumed linear variable: v
 fn use_a_local_that_a_task_moved() -> void {
   tasks {
     for i in 0..3 {
@@ -97,7 +97,7 @@ fn use_a_local_that_a_task_moved() -> void {
   }
 }
 
-// CHECK: Error[E4014] at [[@LINE+6]]:7: the task uses 'r', which points at 'n', but 'n' ends before its `tasks` block does
+// CHECK: Error[E4014] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+6]]:7: the task uses 'r', which points at 'n', but 'n' ends before its `tasks` block does
 fn task_outlives_what_a_reference_points_at() -> void {
   tasks {
     for i in 0..3 {
@@ -110,7 +110,7 @@ fn task_outlives_what_a_reference_points_at() -> void {
   }
 }
 
-// CHECK: Error[E4001] at [[@LINE+9]]:15: Use of moved or consumed linear variable: v
+// CHECK: Error[E4001] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+9]]:15: Use of moved or consumed linear variable: v
 fn use_after_moving_into_a_task() -> i32 {
   let v = Vec<i32>::new();
   tasks {
@@ -123,7 +123,7 @@ fn use_after_moving_into_a_task() -> i32 {
   return 0;
 }
 
-// CHECK: Error[E3055] at [[@LINE+4]]:5: the task reads 'c', which the code around the task can read at the same time, so its type 'SharedCell<i32>' must be `Sync`: 'SharedCell<i32>' is never `Sync`
+// CHECK: Error[E3055] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+4]]:5: the task reads 'c', which the code around the task can read at the same time, so its type 'SharedCell<i32>' must be `Sync`: 'SharedCell<i32>' is never `Sync`
 fn share_a_shared_cell() -> void {
   let c = SharedCell<i32>::new(1);
   tasks {
@@ -133,7 +133,7 @@ fn share_a_shared_cell() -> void {
   }
 }
 
-// CHECK: Error[E3055] at [[@LINE+5]]:5: the task copies 'p' into itself, so its type '*mut i32' must be `Send`: '*mut i32' is a raw pointer, which is not `Send`
+// CHECK: Error[E3055] at {{.*}}tasks_that_use_a_variable_at_the_same_time.vx:[[@LINE+5]]:5: the task copies 'p' into itself, so its type '*mut i32' must be `Send`: '*mut i32' is a raw pointer, which is not `Send`
 fn copy_a_raw_pointer() -> i32 {
   let mut x = 0;
   let p = (&mut x) as *mut i32;

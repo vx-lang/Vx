@@ -12,7 +12,7 @@
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=Error
 // OUT: cpu 3 5
 // OUT-NEXT: region 7
-// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx 2>&1 | FileCheck %s --check-prefix=WARN --implicit-check-not=Warning:
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx 2>&1 | FileCheck %s --check-prefix=WARN --implicit-check-not=Warning: '--implicit-check-not=Warning in'
 // WARN: Warning[W1029]
 // RUN: FileCheck %s --check-prefix=PTX < %t.ptx
 // PTX-LABEL: .entry pick_on_the_gpu(
@@ -20,7 +20,7 @@
 // PTX-DAG: st.global.b32
 // The AST code generator (`--legacy-codegen`) cannot write PTX, so its MLIR is checked. The
 // value that the `if` gives is the value that is stored.
-// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=AST --implicit-check-not=unrealized_conversion_cast --implicit-check-not=Warning:
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=AST --implicit-check-not=unrealized_conversion_cast --implicit-check-not=Warning: '--implicit-check-not=Warning in'
 // AST-LABEL: func.func @pick_on_the_gpu(
 // AST: ^bb{{[0-9]+}}(%[[V:[0-9]+]]: f32):
 // AST: memref.store %[[V]],

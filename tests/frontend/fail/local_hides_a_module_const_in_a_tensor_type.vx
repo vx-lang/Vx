@@ -14,7 +14,7 @@ const N : i32 = 4;
 
 fn main() -> i32 {
   let N = 3;
-  // CHECK: Error[E3001] at [[@LINE+1]]:{{.*}}declared Tensor<f32, [4]> but its initializer is Tensor<f32, [N]>
+  // CHECK: Error[E3001] at {{.*}}local_hides_a_module_const_in_a_tensor_type.vx:[[@LINE+1]]:{{.*}}declared Tensor<f32, [4]> but its initializer is Tensor<f32, [N]>
   let t : Tensor<f32, [4]> = Tensor<f32, [N]>::new();
   return 0;
 }

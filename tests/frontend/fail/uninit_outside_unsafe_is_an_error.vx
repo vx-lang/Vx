@@ -11,7 +11,7 @@
 // held, so the program has to say, with `unsafe`, that it writes each one before reading it.
 
 fn main() -> i32 {
-  // CHECK: Error[E5001] at [[@LINE+1]]:15: `::uninit()` is unsafe and needs an `unsafe` block
+  // CHECK: Error[E5001] at {{.*}}uninit_outside_unsafe_is_an_error.vx:[[@LINE+1]]:15: `::uninit()` is unsafe and needs an `unsafe` block
   let mut t = Tensor<f32, [4]>::uninit();
   t[0] = 1.0;
   return 0;

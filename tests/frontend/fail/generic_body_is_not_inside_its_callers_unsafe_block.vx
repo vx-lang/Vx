@@ -18,32 +18,32 @@ struct Holder<T> {
 impl<T> Holder<T> {
   // A method of a generic struct, called inside `unsafe`.
   fn get(self : &Holder<T>) -> T {
-    // CHECK-DAG: Error[E5002] at [[@LINE+1]]:12: Dereferencing a raw pointer requires an unsafe block
+    // CHECK-DAG: Error[E5002] at {{.*}}generic_body_is_not_inside_its_callers_unsafe_block.vx:[[@LINE+1]]:12: Dereferencing a raw pointer requires an unsafe block
     return *self.p;
   }
 }
 
 // Called only inside `unsafe`.
 fn read_in_unsafe<T>(p : *const T) -> T {
-  // CHECK-DAG: Error[E5002] at [[@LINE+1]]:10: Dereferencing a raw pointer requires an unsafe block
+  // CHECK-DAG: Error[E5002] at {{.*}}generic_body_is_not_inside_its_callers_unsafe_block.vx:[[@LINE+1]]:10: Dereferencing a raw pointer requires an unsafe block
   return *p;
 }
 
 // Called inside `unsafe` first, then outside.
 fn read_unsafe_call_first<T>(p : *const T) -> T {
-  // CHECK-DAG: Error[E5002] at [[@LINE+1]]:10: Dereferencing a raw pointer requires an unsafe block
+  // CHECK-DAG: Error[E5002] at {{.*}}generic_body_is_not_inside_its_callers_unsafe_block.vx:[[@LINE+1]]:10: Dereferencing a raw pointer requires an unsafe block
   return *p;
 }
 
 // Called outside `unsafe` first, then inside.
 fn read_plain_call_first<T>(p : *const T) -> T {
-  // CHECK-DAG: Error[E5002] at [[@LINE+1]]:10: Dereferencing a raw pointer requires an unsafe block
+  // CHECK-DAG: Error[E5002] at {{.*}}generic_body_is_not_inside_its_callers_unsafe_block.vx:[[@LINE+1]]:10: Dereferencing a raw pointer requires an unsafe block
   return *p;
 }
 
 // A generic `unsafe fn`. Every call to it is inside `unsafe`.
 unsafe fn read_in_unsafe_fn<T>(p : *const T) -> T {
-  // CHECK-DAG: Error[E5002] at [[@LINE+1]]:10: Dereferencing a raw pointer requires an unsafe block
+  // CHECK-DAG: Error[E5002] at {{.*}}generic_body_is_not_inside_its_callers_unsafe_block.vx:[[@LINE+1]]:10: Dereferencing a raw pointer requires an unsafe block
   return *p;
 }
 

@@ -24,14 +24,14 @@ fn holder_of(h : &mut Holder) -> &mut Holder {
 
 fn through_a_returned_reference(h : &mut Holder, k : i32) -> i32 {
   let local : i32 = k + 4;
-  // CHECK: Error[E4005] at [[@LINE+1]]:3: this stores a value that points into this function's stack frame where it can outlive the function
+  // CHECK: Error[E4005] at {{.*}}local_stored_through_a_returned_reference.vx:[[@LINE+1]]:3: this stores a value that points into this function's stack frame where it can outlive the function
   *slot(h) = &local;
   return 0;
 }
 
 fn into_a_field_of_a_returned_reference(h : &mut Holder, k : i32) -> i32 {
   let local : i32 = k + 4;
-  // CHECK: Error[E4005] at [[@LINE+1]]:16: this stores a value that points into this function's stack frame where it can outlive the function
+  // CHECK: Error[E4005] at {{.*}}local_stored_through_a_returned_reference.vx:[[@LINE+1]]:16: this stores a value that points into this function's stack frame where it can outlive the function
   holder_of(h).r = &local;
   return 0;
 }

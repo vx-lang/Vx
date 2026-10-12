@@ -25,7 +25,7 @@ fn main() -> i32 {
     v : 1
   };
   let r = c.get_mut();
-  // CHECK: Error[E4004] at [[@LINE+1]]:11: Cannot borrow 'c' because it is already borrowed as mutable.
+  // CHECK: Error[E4004] at {{.*}}method_returning_mut_keeps_its_receiver_borrowed_mutably.vx:[[@LINE+1]]:11: Cannot borrow 'c' because it is already borrowed as mutable.
   let s = &c;
   *r = 5;
   return s.v;

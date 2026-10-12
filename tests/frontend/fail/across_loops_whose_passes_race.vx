@@ -11,23 +11,23 @@
 // cast, or by a product that wraps, does not keep two passes apart.
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
-// CHECK: Error[E6032] at 35:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
-// CHECK: Error[E6032] at 45:{{.*}}a pass of this lane loop may read an element of `a` that another pass writes
-// CHECK: Error[E6032] at 57:{{.*}}each pass writes `total`, which is declared outside the loop
-// CHECK: Error[E6032] at 71:{{.*}}two passes of this lane loop may write the same element of `y`: an index of the write must fix `l`
-// CHECK: Error[E6032] at 84:{{.*}}two passes of this lane loop may write the same element of `o`: the writes must use the same index
-// CHECK: Error[E6032] at 100:{{.*}}the call to `scale` may write through an argument
-// CHECK: Error[E6032] at 110:{{.*}}printing in an `across` loop
-// CHECK: Error[E6032] at 122:{{.*}}a `&mut` borrow in an `across` loop may write any element
-// CHECK: Error[E6032] at 134:{{.*}}a pass uses all of `o`, which the passes of this {{block|lane}} loop write
-// CHECK: Error[E6032] at 146:{{.*}}`barrier()` may not be in an `across` loop
-// CHECK: Error[E6032] at 157:{{.*}}an `mlir!` block in an `across` loop may write memory that the checker cannot see
-// CHECK: Error[E6032] at 172:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
-// CHECK: Error[E6032] at 183:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
-// CHECK: Error[E6032] at 193:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
-// CHECK: Error[E6032] at 203:{{.*}}two passes of this lane loop may write the same element of `out`: an index of the write must fix `l`
-// CHECK: Error[E6032] at 214:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
-// CHECK: Error[E6032] at 224:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:35:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:45:{{.*}}a pass of this lane loop may read an element of `a` that another pass writes
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:57:{{.*}}each pass writes `total`, which is declared outside the loop
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:71:{{.*}}two passes of this lane loop may write the same element of `y`: an index of the write must fix `l`
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:84:{{.*}}two passes of this lane loop may write the same element of `o`: the writes must use the same index
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:100:{{.*}}the call to `scale` may write through an argument
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:110:{{.*}}printing in an `across` loop
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:122:{{.*}}a `&mut` borrow in an `across` loop may write any element
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:134:{{.*}}a pass uses all of `o`, which the passes of this {{block|lane}} loop write
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:146:{{.*}}`barrier()` may not be in an `across` loop
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:157:{{.*}}an `mlir!` block in an `across` loop may write memory that the checker cannot see
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:172:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:183:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:193:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:203:{{.*}}two passes of this lane loop may write the same element of `out`: an index of the write must fix `l`
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:214:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:224:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
 
 pub fn every_block_adds_to_one_element(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
   spawn on(Topology::Device) {

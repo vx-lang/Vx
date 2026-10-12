@@ -11,9 +11,9 @@
 // the checker cannot see.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: Error[E4002] at 28:3: Cannot access 'x' because it is mutably borrowed.
-// CHECK: Error[E4002] at 37:3: Cannot access 'x' because it is mutably borrowed.
-// CHECK: Error[E4002] at 46:3: Cannot access 'x' because it is mutably borrowed.
+// CHECK: Error[E4002] at {{.*}}raw_pointer_made_from_a_borrow_keeps_it_through_core_ptr.vx:28:3: Cannot access 'x' because it is mutably borrowed.
+// CHECK: Error[E4002] at {{.*}}raw_pointer_made_from_a_borrow_keeps_it_through_core_ptr.vx:37:3: Cannot access 'x' because it is mutably borrowed.
+// CHECK: Error[E4002] at {{.*}}raw_pointer_made_from_a_borrow_keeps_it_through_core_ptr.vx:46:3: Cannot access 'x' because it is mutably borrowed.
 // CHECK: {{^}}Semantic check failed on {{.*}}: 3 error(s) emitted
 import core::ptr;
 

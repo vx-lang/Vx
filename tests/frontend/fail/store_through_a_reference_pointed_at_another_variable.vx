@@ -21,7 +21,7 @@ fn pointed_by_a_new_borrow() -> i32 {
   rr = &mut b;
   *rr = &mut y;
   // CHECK-NOT: Error
-  // CHECK: Error[E4002] at [[# @LINE + 1]]:11: Cannot access 'y' because it is mutably borrowed.
+  // CHECK: Error[E4002] at {{.*}}store_through_a_reference_pointed_at_another_variable.vx:[[# @LINE + 1]]:11: Cannot access 'y' because it is mutably borrowed.
   let w = y;
   *b = 4;
   return w;
@@ -37,7 +37,7 @@ fn pointed_by_a_copy_of_another_reference() -> i32 {
   let rb = &mut b;
   rr = rb;
   *rr = &mut y;
-  // CHECK-NEXT: Error[E4002] at [[# @LINE + 1]]:11: Cannot access 'y' because it is mutably borrowed.
+  // CHECK-NEXT: Error[E4002] at {{.*}}store_through_a_reference_pointed_at_another_variable.vx:[[# @LINE + 1]]:11: Cannot access 'y' because it is mutably borrowed.
   let w = y;
   *b = 4;
   return w;
@@ -53,7 +53,7 @@ fn pointed_through_a_dereference() -> i32 {
   let rb = &mut b;
   rr = &mut *rb;
   *rr = &mut y;
-  // CHECK-NEXT: Error[E4002] at [[# @LINE + 1]]:11: Cannot access 'y' because it is mutably borrowed.
+  // CHECK-NEXT: Error[E4002] at {{.*}}store_through_a_reference_pointed_at_another_variable.vx:[[# @LINE + 1]]:11: Cannot access 'y' because it is mutably borrowed.
   let w = y;
   *b = 4;
   return w;
@@ -70,7 +70,7 @@ fn second_mut_after_the_store() -> i32 {
   let rb = &mut b;
   rr = rb;
   *rr = &mut y;
-  // CHECK-NEXT: Error[E4004] at [[# @LINE + 1]]:11: Cannot borrow 'y' because it is already borrowed as mutable.
+  // CHECK-NEXT: Error[E4004] at {{.*}}store_through_a_reference_pointed_at_another_variable.vx:[[# @LINE + 1]]:11: Cannot borrow 'y' because it is already borrowed as mutable.
   let w = &mut y;
   *w = 3;
   **rr = 20;

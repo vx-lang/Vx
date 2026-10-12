@@ -11,7 +11,7 @@
 // `tasks` block, and a task handle must not leave it: its only use is `h.join()`. A task body
 // ends with its result, so a `return` or `break` must not leave it.
 
-// CHECK: Error[E3056] at [[@LINE+2]]:11: `spawn { .. }` must be in a `tasks { .. }` block
+// CHECK: Error[E3056] at {{.*}}spawn_outside_a_tasks_block_and_handles_that_leave_it.vx:[[@LINE+2]]:11: `spawn { .. }` must be in a `tasks { .. }` block
 fn no_tasks_block() -> i32 {
   let h = spawn {
     1
@@ -19,7 +19,7 @@ fn no_tasks_block() -> i32 {
   return h.join();
 }
 
-// CHECK: Error[E3056] at [[@LINE+3]]:23: a `spawn` in a closure is not in a `tasks` block
+// CHECK: Error[E3056] at {{.*}}spawn_outside_a_tasks_block_and_handles_that_leave_it.vx:[[@LINE+3]]:23: a `spawn` in a closure is not in a `tasks` block
 fn spawn_in_a_closure() -> void {
   tasks {
     let f = |x : i32| spawn {
@@ -28,7 +28,7 @@ fn spawn_in_a_closure() -> void {
   }
 }
 
-// CHECK: Error[E3056] at [[@LINE+4]]:7: a `spawn` directly in a task is not in a `tasks` block
+// CHECK: Error[E3056] at {{.*}}spawn_outside_a_tasks_block_and_handles_that_leave_it.vx:[[@LINE+4]]:7: a `spawn` directly in a task is not in a `tasks` block
 fn spawn_directly_in_a_task() -> void {
   tasks {
     spawn {
@@ -39,7 +39,7 @@ fn spawn_directly_in_a_task() -> void {
   }
 }
 
-// CHECK: Error[E3057] at [[@LINE+6]]:5: 'h' is a task handle
+// CHECK: Error[E3057] at {{.*}}spawn_outside_a_tasks_block_and_handles_that_leave_it.vx:[[@LINE+6]]:5: 'h' is a task handle
 fn handle_is_the_value_of_the_block() -> i32 {
   return tasks {
     let h = spawn {
@@ -49,7 +49,7 @@ fn handle_is_the_value_of_the_block() -> i32 {
   };
 }
 
-// CHECK: Error[E3057] at [[@LINE+6]]:13: 'h' is a task handle
+// CHECK: Error[E3057] at {{.*}}spawn_outside_a_tasks_block_and_handles_that_leave_it.vx:[[@LINE+6]]:13: 'h' is a task handle
 fn handle_given_to_a_variable() -> void {
   tasks {
     let h = spawn {
@@ -59,7 +59,7 @@ fn handle_given_to_a_variable() -> void {
   }
 }
 
-// CHECK: Error[E3057] at [[@LINE+3]]:11: a task must not leave its `tasks` block, so a `spawn` must be the value of a `let` or a statement of its own
+// CHECK: Error[E3057] at {{.*}}spawn_outside_a_tasks_block_and_handles_that_leave_it.vx:[[@LINE+3]]:11: a task must not leave its `tasks` block, so a `spawn` must be the value of a `let` or a statement of its own
 fn spawn_as_an_argument() -> void {
   tasks {
     print(spawn {
@@ -68,7 +68,7 @@ fn spawn_as_an_argument() -> void {
   }
 }
 
-// CHECK: Error[E3001] at [[@LINE+3]]:5: 'h' is a task handle of type 'Task<i32>', not 'i32'
+// CHECK: Error[E3001] at {{.*}}spawn_outside_a_tasks_block_and_handles_that_leave_it.vx:[[@LINE+3]]:5: 'h' is a task handle of type 'Task<i32>', not 'i32'
 fn handle_with_a_wrong_type() -> void {
   tasks {
     let h : i32 = spawn {
@@ -78,7 +78,7 @@ fn handle_with_a_wrong_type() -> void {
   }
 }
 
-// CHECK: Error[E3058] at [[@LINE+4]]:7: a `return` cannot leave a task
+// CHECK: Error[E3058] at {{.*}}spawn_outside_a_tasks_block_and_handles_that_leave_it.vx:[[@LINE+4]]:7: a `return` cannot leave a task
 fn return_from_a_task() -> i32 {
   tasks {
     spawn {
@@ -88,7 +88,7 @@ fn return_from_a_task() -> i32 {
   return 0;
 }
 
-// CHECK: Error[E3058] at [[@LINE+5]]:9: a `break` cannot leave a task
+// CHECK: Error[E3058] at {{.*}}spawn_outside_a_tasks_block_and_handles_that_leave_it.vx:[[@LINE+5]]:9: a `break` cannot leave a task
 fn break_out_of_a_task() -> void {
   tasks {
     for i in 0..3 {
@@ -99,7 +99,7 @@ fn break_out_of_a_task() -> void {
   }
 }
 
-// CHECK: Error[E3058] at [[@LINE+7]]:9: a task cannot join another task yet
+// CHECK: Error[E3058] at {{.*}}spawn_outside_a_tasks_block_and_handles_that_leave_it.vx:[[@LINE+7]]:9: a task cannot join another task yet
 fn task_joins_a_task() -> void {
   tasks {
     let a = spawn {
@@ -112,7 +112,7 @@ fn task_joins_a_task() -> void {
   }
 }
 
-// CHECK: Error[E4001] at [[@LINE+7]]:5: Use of moved or consumed linear variable: h
+// CHECK: Error[E4001] at {{.*}}spawn_outside_a_tasks_block_and_handles_that_leave_it.vx:[[@LINE+7]]:5: Use of moved or consumed linear variable: h
 fn joined_twice() -> void {
   tasks {
     let h = spawn {

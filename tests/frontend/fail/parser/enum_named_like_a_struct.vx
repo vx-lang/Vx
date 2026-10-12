@@ -14,7 +14,7 @@
 struct Shape {
   sides : i32,
 }
-// CHECK: Error at [[@LINE+1]]:1: the type `Shape` is already defined at 14:1
+// CHECK: Error at {{.*}}enum_named_like_a_struct.vx:[[@LINE+1]]:1: the type `Shape` is already defined at 14:1
 enum Shape {
   Square, Circle,
 }

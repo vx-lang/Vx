@@ -20,8 +20,8 @@
 // RUN: not vxc %t/twice.vx 2>&1 | FileCheck %s --check-prefix=TWICE
 // RUN: not vxc %t/lanes_fact.vx 2>&1 | FileCheck %s --check-prefix=LANES
 // RUN: not vxc %t/max_fact.vx 2>&1 | FileCheck %s --check-prefix=MAXFACT
-// SMALL: Error[E6032] at 16:{{.*}}this loop asks for 512 lanes, but a block of `Dev` has at most 256
-// SMALL: Error[E6032] at 27:{{.*}}`across subgroups`: the topology `Dev` has the levels `blocks`, `lanes`
+// SMALL: Error[E6032] at {{.*}}small.vx:16:{{.*}}this loop asks for 512 lanes, but a block of `Dev` has at most 256
+// SMALL: Error[E6032] at {{.*}}small.vx:27:{{.*}}`across subgroups`: the topology `Dev` has the levels `blocks`, `lanes`
 // MAX: `max_lanes: 2048` is more than a block of `nvptx64` can have, which is 1024
 // WIDTH: `lanes: 64`: a subgroup of `nvptx64` has 32 lanes
 // ONE: `levels:` has 1 entries. It needs two (blocks and lanes) or three (blocks, subgroups and lanes)

@@ -32,7 +32,7 @@ fn moved_in_else(c : bool) -> i32 {
   } else {
     take(s);
   }
-  // CHECK: Error[E4001] at [[@LINE+1]]:15: Use of moved or consumed linear variable: s
+  // CHECK: Error[E4001] at {{.*}}moved_in_one_branch_then_used.vx:[[@LINE+1]]:15: Use of moved or consumed linear variable: s
   return take(s);
 }
 
@@ -48,7 +48,7 @@ fn moved_in_second_match_arm(e : E) -> i32 {
       take(s);
     }
   }
-  // CHECK: Error[E4001] at [[@LINE+1]]:15: Use of moved or consumed linear variable: s
+  // CHECK: Error[E4001] at {{.*}}moved_in_one_branch_then_used.vx:[[@LINE+1]]:15: Use of moved or consumed linear variable: s
   return take(s);
 }
 

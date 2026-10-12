@@ -20,7 +20,7 @@ fn declare_with_the_shared_type(shared : &i32) -> i32 {
   let mut dummy = 0;
   let mut slot : &mut i32 = &mut dummy;
   // CHECK-NOT: Error
-  // CHECK: Error[E3001] at [[# @LINE + 1]]:3: 'forged' is declared &mut &i32 but its initializer is &mut &mut i32
+  // CHECK: Error[E3001] at {{.*}}mut_reference_to_a_mut_reference_cannot_become_shared.vx:[[# @LINE + 1]]:3: 'forged' is declared &mut &i32 but its initializer is &mut &mut i32
   let forged : &mut &i32 = &mut slot;
   *forged = shared;
   *slot = 99;
@@ -30,7 +30,7 @@ fn declare_with_the_shared_type(shared : &i32) -> i32 {
 fn pass_to_a_parameter(shared : &i32) -> i32 {
   let mut dummy = 0;
   let mut slot : &mut i32 = &mut dummy;
-  // CHECK: Error[E3003] at [[# @LINE + 1]]:11: Type mismatch in argument 1 for function 'store_shared'. Expected &mut &i32, got &mut &mut i32
+  // CHECK: Error[E3003] at {{.*}}mut_reference_to_a_mut_reference_cannot_become_shared.vx:[[# @LINE + 1]]:11: Type mismatch in argument 1 for function 'store_shared'. Expected &mut &i32, got &mut &mut i32
   let _ = store_shared(&mut slot, shared);
   *slot = 99;
   return *shared;

@@ -16,7 +16,7 @@ ensures return > 0 {
   let mut y = x;
   assert(y > 0, "y is positive");
   y = 0 - 5;
-  // CHECK: Error[E8001] at [[@LINE+1]]:3: Function 'pos' cannot prove postcondition (ensures) at compile time
+  // CHECK: Error[E8001] at {{.*}}prover_fact_does_not_outlive_an_assignment.vx:[[@LINE+1]]:3: Function 'pos' cannot prove postcondition (ensures) at compile time
   return y;
 }
 
@@ -25,7 +25,7 @@ ensures return > 0 {
   let mut y = x;
   if y > 0 {
     y = 0 - 5;
-    // CHECK: Error[E8001] at [[@LINE+1]]:5: Function 'pos_in_branch' cannot prove postcondition (ensures) at compile time
+    // CHECK: Error[E8001] at {{.*}}prover_fact_does_not_outlive_an_assignment.vx:[[@LINE+1]]:5: Function 'pos_in_branch' cannot prove postcondition (ensures) at compile time
     return y;
   }
   return 1;

@@ -13,10 +13,10 @@
 // RUN: not vxc %s --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
 // RUN: not vxc %s -fauto-schedule-levels -fno-auto-schedule-levels --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
 // RUN: not vxc %s -fauto-schedule-levels --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=AUTO --implicit-check-not=E6032
-// CHECK-DAG: Error[E6032] at 38:{{.*}}`across blocks`: no code generator can launch the levels of the topology `Cores`, whose arch is `x86_64`. Pass `-fauto-schedule-levels`
-// CHECK-DAG: Error[E6032] at 49:{{.*}}`across blocks`: no code generator can launch the levels of the topology `Plain`, which has no `arch:`
-// CHECK-DAG: Error[E6032] at 60:{{.*}}`across blocks`: the topology `GPU[0]` has no levels. Give its fleet file `levels:`
-// AUTO: Error[E6032] at 60:{{.*}}`across blocks`: the topology `GPU[0]` has no levels
+// CHECK-DAG: Error[E6032] at {{.*}}across_loops_on_a_topology_that_cannot_launch_them.vx:38:{{.*}}`across blocks`: no code generator can launch the levels of the topology `Cores`, whose arch is `x86_64`. Pass `-fauto-schedule-levels`
+// CHECK-DAG: Error[E6032] at {{.*}}across_loops_on_a_topology_that_cannot_launch_them.vx:49:{{.*}}`across blocks`: no code generator can launch the levels of the topology `Plain`, which has no `arch:`
+// CHECK-DAG: Error[E6032] at {{.*}}across_loops_on_a_topology_that_cannot_launch_them.vx:60:{{.*}}`across blocks`: the topology `GPU[0]` has no levels. Give its fleet file `levels:`
+// AUTO: Error[E6032] at {{.*}}across_loops_on_a_topology_that_cannot_launch_them.vx:60:{{.*}}`across blocks`: the topology `GPU[0]` has no levels
 
 Memory DRAM {}
 

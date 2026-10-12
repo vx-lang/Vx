@@ -11,7 +11,7 @@
 //
 // RUN: not vxc %s --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: not vxc %s -j 2 --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: Error[E8007] at 19:10: `reads_an_element` says `atomic(t)`, so it may use `t` only in an atomic operation
+// CHECK: Error[E8007] at {{.*}}atomic_contract_in_a_generic_function.vx:19:10: `reads_an_element` says `atomic(t)`, so it may use `t` only in an atomic operation
 
 fn reads_an_element<M : Memory>(t : &Tensor<i32, [?], Memory::M>, i : i32) -> i32
 ensures atomic(t)

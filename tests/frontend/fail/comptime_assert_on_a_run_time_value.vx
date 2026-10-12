@@ -13,8 +13,8 @@
 // asserts without a word.
 
 fn is_zero(v : i64) -> bool {
-  // CHECK-DAG: Error[E3033] at [[@LINE+2]]:3: this `comptime` block cannot be evaluated: this assert is false on a path that depends on a value known only when the program runs
-  // CHECK-DAG: Error[E3033] at [[@LINE+1]]:3: this `comptime` block cannot be evaluated: this assert is false on a path that depends on a value known only when the program runs
+  // CHECK-DAG: Error[E3033] at {{.*}}comptime_assert_on_a_run_time_value.vx:[[@LINE+2]]:3: this `comptime` block cannot be evaluated: this assert is false on a path that depends on a value known only when the program runs
+  // CHECK-DAG: Error[E3033] at {{.*}}comptime_assert_on_a_run_time_value.vx:[[@LINE+1]]:3: this `comptime` block cannot be evaluated: this assert is false on a path that depends on a value known only when the program runs
   assert(v == 0i64, "v is not zero");
   return true;
 }
@@ -23,13 +23,13 @@ fn is_zero(v : i64) -> bool {
 fn main(argc : i32) -> i32 {
   // The condition reads `argc`.
   comptime {
-    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert depends on a value known only when the program runs
+    // CHECK-DAG: Error[E3033] at {{.*}}comptime_assert_on_a_run_time_value.vx:[[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert depends on a value known only when the program runs
     assert(argc > 100i32, "argc is a run-time value");
   }
   // The assert is false, and runs only when `argc > 1`.
   let a = comptime {
     if argc > 1i32 {
-      // CHECK-DAG: Error[E3033] at [[@LINE+1]]:7: this `comptime` block cannot be evaluated: this assert is false on a path that depends on a value known only when the program runs
+      // CHECK-DAG: Error[E3033] at {{.*}}comptime_assert_on_a_run_time_value.vx:[[@LINE+1]]:7: this `comptime` block cannot be evaluated: this assert is false on a path that depends on a value known only when the program runs
       assert(1i64 == 2i64, "false on one path");
     };
     3i32
@@ -50,7 +50,7 @@ fn main(argc : i32) -> i32 {
     3i32
   };
   // The loop runs `argc` times, which may be none.
-  // CHECK-DAG: Error[E3033] at [[@LINE+1]]:11: this `comptime` block cannot be evaluated: it holds a statement the evaluator cannot run
+  // CHECK-DAG: Error[E3033] at {{.*}}comptime_assert_on_a_run_time_value.vx:[[@LINE+1]]:11: this `comptime` block cannot be evaluated: it holds a statement the evaluator cannot run
   let d = comptime {
     for _i in 0..argc {
       assert(1i64 == 2i64, "false in a loop that may not run");
@@ -58,7 +58,7 @@ fn main(argc : i32) -> i32 {
     3i32
   };
   // The arm runs only when `argc` is 1.
-  // CHECK-DAG: Error[E3033] at [[@LINE+1]]:11: this `comptime` block cannot be evaluated: it holds a statement the evaluator cannot run
+  // CHECK-DAG: Error[E3033] at {{.*}}comptime_assert_on_a_run_time_value.vx:[[@LINE+1]]:11: this `comptime` block cannot be evaluated: it holds a statement the evaluator cannot run
   let e = comptime {
     match argc {
       1 => {

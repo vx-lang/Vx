@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 // The error names the two branch types as they are written in Vx.
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error[E3007] at {{[0-9]+}}:{{[0-9]+}}: If expression branches have incompatible types: i32 and f32{{$}}
-// CHECK: Error[E3007] at {{[0-9]+}}:{{[0-9]+}}: If expression branches have incompatible types: Tensor<f32, [4]> and Tensor<f32, [8]>{{$}}
+// CHECK: Error[E3007] at {{.*}}if_branches_of_different_types.vx:{{[0-9]+}}:{{[0-9]+}}: If expression branches have incompatible types: i32 and f32{{$}}
+// CHECK: Error[E3007] at {{.*}}if_branches_of_different_types.vx:{{[0-9]+}}:{{[0-9]+}}: If expression branches have incompatible types: Tensor<f32, [4]> and Tensor<f32, [8]>{{$}}
 // CHECK: 2 error(s) emitted
 
 fn main() -> i32 {

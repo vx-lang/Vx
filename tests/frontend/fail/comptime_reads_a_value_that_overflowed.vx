@@ -17,7 +17,7 @@ const BIG : i32 = 2147483647 + 1;
 fn let_that_overflowed() -> i32 {
   let a : i32 = 2147483647i32 + 1i32;
   let x = comptime {
-    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
+    // CHECK-DAG: Error[E3033] at {{.*}}comptime_reads_a_value_that_overflowed.vx:[[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
     a / 2i32
   };
   return x;
@@ -25,7 +25,7 @@ fn let_that_overflowed() -> i32 {
 
 fn if_comptime_on_an_i8() -> i32 {
   let a : i8 = 127i8 + 1i8;
-  // CHECK-DAG: Error: Cannot statically evaluate comptime if condition
+  // CHECK-DAG: Error in {{.*}}comptime_reads_a_value_that_overflowed.vx: Cannot statically evaluate comptime if condition
   if comptime a > 0i8 {
     return 1i32;
   }

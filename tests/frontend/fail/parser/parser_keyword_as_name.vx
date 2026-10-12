@@ -13,7 +13,7 @@
 // fixture.
 //
 fn main() -> i32 {
-  // CHECK: Error at [[@LINE+1]]:11: `across` is a keyword and cannot be used as a name
+  // CHECK: Error at {{.*}}parser_keyword_as_name.vx:[[@LINE+1]]:11: `across` is a keyword and cannot be used as a name
   let mut across = 3;
   return 0;
 }

@@ -11,9 +11,9 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 
 fn main() -> i32 {
-  // CHECK-DAG: Error[E3018] at [[@LINE+1]]:28: the rows of a nested array literal must all have the same type; the first row is Tensor<f32, [2]>, but this one is Tensor<f32, [1]>
+  // CHECK-DAG: Error[E3018] at {{.*}}nested_array_literal_rows_differ.vx:[[@LINE+1]]:28: the rows of a nested array literal must all have the same type; the first row is Tensor<f32, [2]>, but this one is Tensor<f32, [1]>
   let short = [[1.0, 2.0], [3.0]];
-  // CHECK-DAG: Error[E3018] at [[@LINE+1]]:28: the rows of a nested array literal must all have the same type; the first row is Tensor<f32, [2]>, but this one is Tensor<i32, [2]>
+  // CHECK-DAG: Error[E3018] at {{.*}}nested_array_literal_rows_differ.vx:[[@LINE+1]]:28: the rows of a nested array literal must all have the same type; the first row is Tensor<f32, [2]>, but this one is Tensor<i32, [2]>
   let mixed = [[1.0, 2.0], [3, 4]];
   print(short[0][0] + mixed[0][0]);
   return 0;

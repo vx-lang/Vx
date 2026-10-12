@@ -12,7 +12,7 @@
 // on and returned 9, where the program returns 5.
 
 fn f() -> i64 {
-  // CHECK: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: a `return` in it leaves the function, which a block that runs while compiling cannot do
+  // CHECK: Error[E3033] at {{.*}}comptime_return_in_a_block_inside_a_function.vx:[[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: a `return` in it leaves the function, which a block that runs while compiling cannot do
   let _x = comptime {
     return 5i64;
   };

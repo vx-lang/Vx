@@ -18,7 +18,7 @@ fn if_without_else(argc : i32) -> i64 {
     n = 7i64;
   };
   let x = comptime {
-    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
+    // CHECK-DAG: Error[E3033] at {{.*}}comptime_reads_a_variable_written_in_a_branch.vx:[[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
     n * 10i64
   };
   return x;
@@ -32,7 +32,7 @@ fn if_with_else(argc : i32) -> i64 {
     n = 9i64;
   };
   let x = comptime {
-    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
+    // CHECK-DAG: Error[E3033] at {{.*}}comptime_reads_a_variable_written_in_a_branch.vx:[[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
     n * 10i64
   };
   return x;
@@ -47,7 +47,7 @@ fn match_on_argc(argc : i32) -> i64 {
     _ => {}
   };
   let x = comptime {
-    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
+    // CHECK-DAG: Error[E3033] at {{.*}}comptime_reads_a_variable_written_in_a_branch.vx:[[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
     n * 10i64
   };
   return x;
@@ -60,7 +60,7 @@ fn if_comptime_after_if(argc : i32) -> i64 {
   } else {
     n = 9i64;
   };
-  // CHECK-DAG: Error: Cannot statically evaluate comptime if condition
+  // CHECK-DAG: Error in {{.*}}comptime_reads_a_variable_written_in_a_branch.vx: Cannot statically evaluate comptime if condition
   if comptime n == 9i64 {
     return 9i64;
   }

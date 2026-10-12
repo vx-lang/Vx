@@ -12,13 +12,13 @@
 // RUN: mkdir -p %t.d
 // RUN: printf 'fn abs(x : i32) -> i32 {\n  return x;\n}\nextern "C" {\n  fn abs(x : i32) -> i32;\n}\nfn main() -> i32 {\n  return abs(1);\n}\n' > %t.d/fn_first.vx
 // RUN: not vxc %t.d/fn_first.vx 2>&1 | FileCheck %s --check-prefix=FN-FIRST
-// FN-FIRST: Error at 5:3: `abs` is already defined at 1:1
+// FN-FIRST: Error at {{.*}}fn_first.vx:5:3: `abs` is already defined at 1:1
 
 extern "C" {
   fn abs(x : i32) -> i32;
 }
 
-// EXTERN-FIRST: Error at [[@LINE+1]]:1: `abs` is already defined at [[#@LINE-3]]:3
+// EXTERN-FIRST: Error at {{.*}}function_and_c_function_with_the_same_name.vx:[[@LINE+1]]:1: `abs` is already defined at [[#@LINE-3]]:3
 fn abs(x : i32) -> i32 {
   return x + 100;
 }

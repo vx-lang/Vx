@@ -48,7 +48,7 @@ fn is_sync<T : Sync>(_x : &T) -> i32 {
 
 // A closure type in a signature does not say what the closure captures.
 fn send_a_closure(g : |i32| -> i32) -> void {
-  // CHECK-DAG: Error: Type '{{.*}}' does not implement trait 'Send' required by parameter 'T': '{{.*}}' is a closure type, which does not say what the closure captures
+  // CHECK-DAG: Error in {{.*}}types_that_are_not_send_or_sync.vx: Type '{{.*}}' does not implement trait 'Send' required by parameter 'T': '{{.*}}' is a closure type, which does not say what the closure captures
   print(is_send(&g));
 }
 
@@ -62,17 +62,17 @@ fn main() -> i32 {
     v : 1, next : Option<Box<Node>>::None
   };
   let mut total = is_send(&n) + is_sync(&n) + is_send(&h) + is_send(&c);
-  // CHECK-DAG: Error: Type 'Raw' does not implement trait 'Send' required by parameter 'T': field 'p' of 'Raw' has type '*mut i32', and '*mut i32' is a raw pointer, which is not `Send`
+  // CHECK-DAG: Error in {{.*}}types_that_are_not_send_or_sync.vx: Type 'Raw' does not implement trait 'Send' required by parameter 'T': field 'p' of 'Raw' has type '*mut i32', and '*mut i32' is a raw pointer, which is not `Send`
   total = total + is_send(&r);
-  // CHECK-DAG: Error: Type 'Wrapped' does not implement trait 'Send' required by parameter 'T': field 'r' of 'Wrapped' has type 'Raw', and field 'p' of 'Raw' has type '*mut i32', and '*mut i32' is a raw pointer, which is not `Send`
+  // CHECK-DAG: Error in {{.*}}types_that_are_not_send_or_sync.vx: Type 'Wrapped' does not implement trait 'Send' required by parameter 'T': field 'r' of 'Wrapped' has type 'Raw', and field 'p' of 'Raw' has type '*mut i32', and '*mut i32' is a raw pointer, which is not `Send`
   total = total + is_send(&w);
-  // CHECK-DAG: Error: Type 'Handle' does not implement trait 'Sync' required by parameter 'T': field 'p' of 'Handle' has type '*mut i32', and '*mut i32' is a raw pointer, which is not `Sync`
+  // CHECK-DAG: Error in {{.*}}types_that_are_not_send_or_sync.vx: Type 'Handle' does not implement trait 'Sync' required by parameter 'T': field 'p' of 'Handle' has type '*mut i32', and '*mut i32' is a raw pointer, which is not `Sync`
   total = total + is_sync(&h);
-  // CHECK-DAG: Error: Type 'SharedCell<i32>' does not implement trait 'Sync' required by parameter 'T': 'SharedCell<i32>' is never `Sync`: code can write its value through a shared reference
+  // CHECK-DAG: Error in {{.*}}types_that_are_not_send_or_sync.vx: Type 'SharedCell<i32>' does not implement trait 'Sync' required by parameter 'T': 'SharedCell<i32>' is never `Sync`: code can write its value through a shared reference
   total = total + is_sync(&c);
-  // CHECK-DAG: Error: Type 'Vec<SharedCell<i32>>' does not implement trait 'Sync' required by parameter 'T': `unsafe impl Sync for Vec<T>` needs `T : Sync`, and 'SharedCell<i32>' is never `Sync`
+  // CHECK-DAG: Error in {{.*}}types_that_are_not_send_or_sync.vx: Type 'Vec<SharedCell<i32>>' does not implement trait 'Sync' required by parameter 'T': `unsafe impl Sync for Vec<T>` needs `T : Sync`, and 'SharedCell<i32>' is never `Sync`
   total = total + is_sync(&cells);
-  // CHECK-DAG: Error: Type '&SharedCell<i32>' does not implement trait 'Send' required by parameter 'T': '&SharedCell<i32>' shares a 'SharedCell<i32>', which is not `Sync`
+  // CHECK-DAG: Error in {{.*}}types_that_are_not_send_or_sync.vx: Type '&SharedCell<i32>' does not implement trait 'Send' required by parameter 'T': '&SharedCell<i32>' shares a 'SharedCell<i32>', which is not `Sync`
   let shared = &c;
   total = total + is_send(&shared);
   print(total);

@@ -15,7 +15,7 @@ struct P {
 }
 
 impl P {
-  // CHECK: Error at [[@LINE+1]]:10: `self` needs a type. Write `self : &Self`, `self : &mut Self` or `self : Self`.
+  // CHECK: Error at {{.*}}self_needs_a_type.vx:[[@LINE+1]]:10: `self` needs a type. Write `self : &Self`, `self : &mut Self` or `self : Self`.
   fn get(self) -> i64 {
     return self.a;
   }

@@ -23,7 +23,7 @@ fn first(a : &Tensor<i64, [2]>) -> i64 {
 }
 
 fn positive(v : i64) -> i64 {
-  // CHECK-DAG: Error[E8002] at [[@LINE+1]]:3: Comptime assert failed: v must be positive
+  // CHECK-DAG: Error[E8002] at {{.*}}comptime_false_assert_after_a_write.vx:[[@LINE+1]]:3: Comptime assert failed: v must be positive
   assert(v > 0i64, "v must be positive");
   return v;
 }
@@ -33,7 +33,7 @@ fn after_a_call_through_mut() -> void {
   comptime {
     let mut v : i64 = 1i64;
     bump(&mut v);
-    // CHECK-DAG: Error[E8002] at [[@LINE+1]]:5: Comptime assert failed: v is 2
+    // CHECK-DAG: Error[E8002] at {{.*}}comptime_false_assert_after_a_write.vx:[[@LINE+1]]:5: Comptime assert failed: v is 2
     assert(v == 1i64, "v is 2");
   }
 }
@@ -45,7 +45,7 @@ fn after_a_field_write() -> void {
       x : 1i64
     };
     p.x = 5i64;
-    // CHECK-DAG: Error[E8002] at [[@LINE+1]]:5: Comptime assert failed: p.x is 5
+    // CHECK-DAG: Error[E8002] at {{.*}}comptime_false_assert_after_a_write.vx:[[@LINE+1]]:5: Comptime assert failed: p.x is 5
     assert(p.x == 1i64, "p.x is 5");
   }
 }
@@ -55,7 +55,7 @@ fn after_a_call_with_a_borrowed_tensor() -> void {
   comptime {
     let input : Tensor<i64, [2]> = [ 5i64, 6i64 ];
     let c : i64 = first(&input);
-    // CHECK-DAG: Error[E8002] at [[@LINE+1]]:5: Comptime assert failed: c is 5
+    // CHECK-DAG: Error[E8002] at {{.*}}comptime_false_assert_after_a_write.vx:[[@LINE+1]]:5: Comptime assert failed: c is 5
     assert(c == 999i64, "c is 5");
   }
 }
@@ -63,7 +63,7 @@ fn after_a_call_with_a_borrowed_tensor() -> void {
 // A `comptime` function with a parameter runs at each call, here with -2.
 fn checked(v : i64) -> i64 {
   return comptime {
-    // CHECK-DAG: Error[E8002] at [[@LINE+1]]:5: Comptime assert failed: v must be above zero
+    // CHECK-DAG: Error[E8002] at {{.*}}comptime_false_assert_after_a_write.vx:[[@LINE+1]]:5: Comptime assert failed: v must be above zero
     assert(v > 0i64, "v must be above zero");
     v
   };

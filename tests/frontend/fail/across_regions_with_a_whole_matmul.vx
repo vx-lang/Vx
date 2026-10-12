@@ -11,8 +11,8 @@
 // block made and on operands from outside the region.
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
-// CHECK: Error[E6032] at 29:18:{{.*}}may not have a matmul of whole tensors
-// CHECK: Error[E6032] at 43:17:{{.*}}may not have a matmul of whole tensors
+// CHECK: Error[E6032] at {{.*}}across_regions_with_a_whole_matmul.vx:29:18:{{.*}}may not have a matmul of whole tensors
+// CHECK: Error[E6032] at {{.*}}across_regions_with_a_whole_matmul.vx:43:17:{{.*}}may not have a matmul of whole tensors
 
 pub fn tile_matmul(c : &mut Tensor<f32, [?, 16], Memory::HBM>, a : &Tensor<f32, [16, 16], Memory::HBM>, b : &Tensor<f32, [16, 16], Memory::HBM>, n : i32) -> void {
   spawn on(Topology::Device) {

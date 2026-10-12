@@ -31,7 +31,7 @@ fn right_side_of_an_assignment() -> i32 {
   if true {
     let y = 7;
     // CHECK-NOT: Error
-    // CHECK: Error[E4005] at [[# @LINE + 1]]:9: `r` is given a value that points at a variable of an inner block, and `r` outlives that block.
+    // CHECK: Error[E4005] at {{.*}}a_call_inside_another_expression_is_checked_for_escapes.vx:[[# @LINE + 1]]:9: `r` is given a value that points at a variable of an inner block, and `r` outlives that block.
     t = set(&mut r, &y);
   }
   return *r + t;
@@ -43,7 +43,7 @@ fn field_of_a_struct_literal() -> i32 {
   let mut n = 0;
   if true {
     let y = 7;
-    // CHECK-NEXT: Error[E4005] at [[# @LINE + 2]]:11: `r` is given a value that points at a variable of an inner block, and `r` outlives that block.
+    // CHECK-NEXT: Error[E4005] at {{.*}}a_call_inside_another_expression_is_checked_for_escapes.vx:[[# @LINE + 2]]:11: `r` is given a value that points at a variable of an inner block, and `r` outlives that block.
     let w = Wrap {
       n : set(&mut r, &y)
     };
@@ -58,7 +58,7 @@ fn argument_of_another_call() -> i32 {
   let mut n = 0;
   if true {
     let y = 7;
-    // CHECK-NEXT: Error[E4005] at [[# @LINE + 1]]:15: `r` is given a value that points at a variable of an inner block, and `r` outlives that block.
+    // CHECK-NEXT: Error[E4005] at {{.*}}a_call_inside_another_expression_is_checked_for_escapes.vx:[[# @LINE + 1]]:15: `r` is given a value that points at a variable of an inner block, and `r` outlives that block.
     n = twice(set(&mut r, &y));
   }
   return *r + n;

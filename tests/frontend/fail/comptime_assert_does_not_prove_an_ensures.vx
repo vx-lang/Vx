@@ -18,10 +18,10 @@ fn pick(x : i32) -> i32
 requires x >= 0 && x < 1000
 ensures return > 100 {
   comptime {
-    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert depends on a value known only when the program runs
+    // CHECK-DAG: Error[E3033] at {{.*}}comptime_assert_does_not_prove_an_ensures.vx:[[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert depends on a value known only when the program runs
     assert(x > 100i32, "x is a run-time value");
   }
-  // CHECK-DAG: Error[E8001] at [[@LINE+1]]:3: Function 'pick' cannot prove postcondition (ensures) at compile time
+  // CHECK-DAG: Error[E8001] at {{.*}}comptime_assert_does_not_prove_an_ensures.vx:[[@LINE+1]]:3: Function 'pick' cannot prove postcondition (ensures) at compile time
   return x;
 }
 

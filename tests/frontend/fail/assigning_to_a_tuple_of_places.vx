@@ -10,7 +10,7 @@
 // Assigning a tuple to a tuple of places follows the rules of each assignment: a place that
 // is not `mut` cannot be assigned.
 //
-// CHECK: Error[E4010] at 18:{{.*}}`b`
+// CHECK: Error[E4010] at {{.*}}assigning_to_a_tuple_of_places.vx:18:{{.*}}`b`
 
 fn main() -> i32 {
   let mut a : i32 = 0;

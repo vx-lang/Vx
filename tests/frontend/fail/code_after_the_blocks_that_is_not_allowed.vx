@@ -12,10 +12,10 @@
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: not vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: Error[E6032] at 29:21: the `across` loop of blocks is directly in the `spawn on` region, not in an `if`, a loop or a block
-// CHECK: Error[E6032] at 46:5: code after an `across` nest of blocks with more than one axis is not built yet. Make the blocks one axis, or put the code in the outer loop of blocks, after the inner one, where it runs once for each pass of the outer loop
-// CHECK: Error[E6032] at 55:23: a nest of blocks with code of a group has two axes, not three
-// CHECK: Error[E6032] at 71:21: a block loop inside another one is the whole body of the outer loop
+// CHECK: Error[E6032] at {{.*}}code_after_the_blocks_that_is_not_allowed.vx:29:21: the `across` loop of blocks is directly in the `spawn on` region, not in an `if`, a loop or a block
+// CHECK: Error[E6032] at {{.*}}code_after_the_blocks_that_is_not_allowed.vx:46:5: code after an `across` nest of blocks with more than one axis is not built yet. Make the blocks one axis, or put the code in the outer loop of blocks, after the inner one, where it runs once for each pass of the outer loop
+// CHECK: Error[E6032] at {{.*}}code_after_the_blocks_that_is_not_allowed.vx:55:23: a nest of blocks with code of a group has two axes, not three
+// CHECK: Error[E6032] at {{.*}}code_after_the_blocks_that_is_not_allowed.vx:71:21: a block loop inside another one is the whole body of the outer loop
 
 
 pub fn blocks_in_an_if_after_the_nest(t : &mut Tensor<i32, [?], Memory::HBM>, n : i32) -> void {

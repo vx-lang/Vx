@@ -16,7 +16,7 @@ fn take<T>(_x : T, n : i64) -> i64 {
 
 fn main() -> i32 {
   let small : i32 = 3;
-  // CHECK: Error[E3003] at 20:{{[0-9]+}}: Failed to deduce types for generic function 'take': Expected i64, got i32
+  // CHECK: Error[E3003] at {{.*}}generic_call_with_a_wrong_argument_type.vx:20:{{[0-9]+}}: Failed to deduce types for generic function 'take': Expected i64, got i32
   print!(take(true, small));
   return 0;
 }

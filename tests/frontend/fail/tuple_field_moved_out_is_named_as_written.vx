@@ -33,7 +33,7 @@ fn twice() -> i32 {
     id: 2
   });
   let x = t.0;
-  // CHECK: Error[E4001] at [[@LINE+1]]:{{.*}}`t.0` was moved out of `t` and has no value
+  // CHECK: Error[E4001] at {{.*}}tuple_field_moved_out_is_named_as_written.vx:[[@LINE+1]]:{{.*}}`t.0` was moved out of `t` and has no value
   let y = t.0;
   return 0;
 }
@@ -45,7 +45,7 @@ fn whole() -> i32 {
     id: 4
   });
   let x = t.0;
-  // CHECK: Error[E4001] at [[@LINE+1]]:{{.*}}`t` is used whole, but `t.0` was moved out of it
+  // CHECK: Error[E4001] at {{.*}}tuple_field_moved_out_is_named_as_written.vx:[[@LINE+1]]:{{.*}}`t` is used whole, but `t.0` was moved out of it
   return take(t);
 }
 
