@@ -17,6 +17,7 @@ use super::*;
 pub(crate) fn int_dim_expr(n: usize) -> Expr {
     Expr::Number(NumberExpr {
         value: n.to_string().into(),
+        text: None,
         ty: Some(ElementType::I32),
         span: Span::default(),
     })

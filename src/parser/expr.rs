@@ -107,6 +107,33 @@ pub(crate) fn infer_number_literal(s: &str) -> Result<(String, Option<ElementTyp
     Ok((value.to_string(), el_ty))
 }
 
+/// The number part of a literal token as the program wrote it, without the type suffix:
+/// `0x1FF` from `0x1FFu8`, `42` from `42_u8`. An error message shows this, not the decimal
+/// value [`infer_number_literal`] computes from it.
+pub(crate) fn written_number(s: &str) -> &str {
+    let (base, prefix) = match s.as_bytes() {
+        [b'0', b'x', ..] => (16, 2),
+        [b'0', b'o', ..] => (8, 2),
+        [b'0', b'b', ..] => (2, 2),
+        _ => (10, 0),
+    };
+    // `0bf16` is zero as a `bf16`.
+    if base != 10 && s[1..].parse::<ElementType>().is_ok() {
+        return &s[..1];
+    }
+    let body = &s[prefix..];
+    let end = body
+        .find(|c: char| {
+            if base == 10 {
+                c.is_alphabetic()
+            } else {
+                !(c == '_' || c.is_digit(base))
+            }
+        })
+        .unwrap_or(body.len());
+    s[..prefix + end].trim_end_matches('_')
+}
+
 /// How an error message names a literal's base, with its article: `0x` is "a hex".
 fn base_name(base: u32) -> &'static str {
     match base {
@@ -1229,6 +1256,7 @@ impl<'a> Parser<'a> {
 
                         Expr::Number(NumberExpr {
                             value: num_str.into(),
+                            text: Some(written_number(s).into()),
                             ty: el_ty,
                             span: Span::default(),
                         })
@@ -1771,6 +1799,16 @@ mod tests {
             err.contains("a hex literal cannot have a fraction"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn the_written_number_keeps_the_spelling_and_drops_the_suffix() {
+        assert_eq!(written_number("0x1FFu8"), "0x1FF");
+        assert_eq!(written_number("42_u8"), "42");
+        assert_eq!(written_number("0xFFFF_FFFF"), "0xFFFF_FFFF");
+        assert_eq!(written_number("1_000.5f64"), "1_000.5");
+        assert_eq!(written_number("0bf16"), "0");
+        assert_eq!(written_number("0b1010_1010u8"), "0b1010_1010");
     }
 
     #[test]

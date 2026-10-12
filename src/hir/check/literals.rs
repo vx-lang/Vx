@@ -220,7 +220,7 @@ impl<'a> TypeChecker<'a> {
     /// every downstream consumer — the flat lowerer and the AST codegen alike — sees the concrete
     /// type. A suffixed literal already carries its type and is returned unchanged.
     pub(crate) fn check_number_literal(&mut self, n: &mut NumberExpr) -> Type {
-        let negated = std::mem::take(&mut self.literal_negated);
+        let negated = self.literal_negated.take().unwrap_or(false);
         if let Some(el) = &n.ty {
             let el = el.clone();
             self.check_literal_fits(n, &el, negated);
@@ -244,12 +244,12 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         // A `usize` under a minus is refused as a negation, so only its size is checked here.
-        let text = if negated && *elem != ElementType::USize {
-            format!("-{}", n.value)
-        } else {
-            n.value.to_string()
-        };
-        let message = match elem.accepts_integer_literal(&text) {
+        let negated = negated && *elem != ElementType::USize;
+        let sign = if negated { "-" } else { "" };
+        let value = format!("{sign}{}", n.value);
+        // The message shows the number as written, `0x1FF`, not the 511 it stands for.
+        let text = format!("{sign}{}", n.text.as_deref().unwrap_or(&n.value));
+        let message = match elem.accepts_integer_literal(&value) {
             Some(false) => match integer_range(elem) {
                 Some((low, high)) => {
                     format!("{text} does not fit `{elem}`, which holds {low} up to {high}")

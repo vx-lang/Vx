@@ -102,6 +102,7 @@ impl<'a> TypeChecker<'a> {
             }
             return Some(Expr::Number(NumberExpr {
                 value: n.value.clone(),
+                text: None,
                 ty: Some(elem),
                 span: *span,
             }));
@@ -124,12 +125,14 @@ impl<'a> TypeChecker<'a> {
             })),
             (Value::Int(i), false) => Some(Expr::Number(NumberExpr {
                 value: i.to_string().into(),
+                text: None,
                 ty: Some(elem),
                 span: *span,
             })),
             (Value::Number(f), false) if is_float && f.is_finite() => {
                 Some(Expr::Number(NumberExpr {
                     value: f.to_string().into(),
+                    text: None,
                     ty: Some(elem),
                     span: *span,
                 }))

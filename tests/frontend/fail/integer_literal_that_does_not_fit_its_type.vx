@@ -15,9 +15,9 @@ fn take(n : u8) -> u8 {
 }
 
 fn main() -> i32 {
-  // CHECK: Error[E3045]: 4294967295 does not fit `i32`, which holds -2147483648 up to 2147483647
+  // CHECK: Error[E3045]: 0xFFFF_FFFF does not fit `i32`, which holds -2147483648 up to 2147483647
   let typed : i32 = 0xFFFF_FFFF;
-  // CHECK: Error[E3045]: 511 does not fit `u8`, which holds 0 up to 255
+  // CHECK: Error[E3045]: 0x1FF does not fit `u8`, which holds 0 up to 255
   let suffixed = 0x1FFu8;
   // CHECK: Error[E3045]: -129 does not fit `i8`, which holds -128 up to 127
   let below : i8 = -129;
@@ -27,8 +27,11 @@ fn main() -> i32 {
   let negative : u8 = -1;
   // CHECK: Error[E3045]: 256 does not fit `u8`
   let passed = take(256);
-  // CHECK: Error[E3045]: 18446744073709551616 needs more than 64 bits
+  // CHECK: Error[E3045]: 0x1_0000_0000_0000_0000 needs more than 64 bits
   let wide = 0x1_0000_0000_0000_0000;
+  // Two minuses cancel, so this is 128.
+  // CHECK: Error[E3045]: 128 does not fit `i8`
+  let twice : i8 = --128;
   return 0;
 }
-// CHECK: 7 error(s) emitted
+// CHECK: 8 error(s) emitted

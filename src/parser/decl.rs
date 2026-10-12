@@ -1780,6 +1780,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 // parse time (#240) rather than left untyped like a value-position literal.
                 Topology::NPU(Box::new(Expr::Number(NumberExpr {
                     value: "0".to_string().into(),
+                    text: None,
                     ty: Some(ElementType::I32),
                     span: Span::default()
                 })))
@@ -1864,6 +1865,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                     **start,
                     Expr::Number(NumberExpr {
                         value: "0".to_string().into(),
+                        text: None,
                         ty: None,
                         span: Span::default()
                     })
@@ -1872,6 +1874,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                     **end,
                     Expr::Number(NumberExpr {
                         value: "10".to_string().into(),
+                        text: None,
                         ty: None,
                         span: Span::default()
                     })

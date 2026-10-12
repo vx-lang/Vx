@@ -866,8 +866,14 @@ impl<'a> TypeChecker<'a> {
                 expr: inner,
                 span,
             }) => {
-                self.literal_negated =
-                    matches!(op, UnaryOp::Neg) && matches!(**inner, Expr::Number(_));
+                // The outermost minus of a chain decides the sign: `--128i8` is 128. An inner
+                // minus finds the flag already set and leaves it.
+                if matches!(op, UnaryOp::Neg)
+                    && self.literal_negated.is_none()
+                    && crate::hir::expr::numeric_literal_mut(inner).is_some()
+                {
+                    self.literal_negated = Some(!crate::hir::expr::literal_is_negated(inner));
+                }
                 let inner_ty = self.check_expr_type(inner);
                 // Both would leave `usize`'s range: `-x` is below zero for any `x` but 0, and
                 // `!x` sets the top bit. A tensor of `usize` too, elementwise.

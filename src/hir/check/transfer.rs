@@ -1803,17 +1803,20 @@ impl<'a> TypeChecker<'a> {
         match space {
             MemorySpace::NPUHBM => Topology::NPU(Box::new(Expr::Number(NumberExpr {
                 value: "0".into(),
+                text: None,
                 ty: Some(ElementType::I32),
                 span: Span::default(),
             }))),
             MemorySpace::LocalSRAM => Topology::AccCore(Box::new(Expr::Number(NumberExpr {
                 value: "0".into(),
+                text: None,
                 ty: Some(ElementType::I32),
                 span: Span::default(),
             }))),
             MemorySpace::NicRam | MemorySpace::RemoteHbm => {
                 Topology::NPU(Box::new(Expr::Number(NumberExpr {
                     value: "0".into(),
+                    text: None,
                     ty: Some(ElementType::I32),
                     span: Span::default(),
                 })))

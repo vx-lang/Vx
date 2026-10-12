@@ -1229,6 +1229,7 @@ impl<'a> TypeChecker<'a> {
             };
             **expr = Expr::Number(NumberExpr {
                 value: value.into(),
+                text: None,
                 ty: None,
                 span: Span::default(),
             });
@@ -3411,6 +3412,7 @@ impl<'a> TypeChecker<'a> {
                     let mut new_dims = vec![
                         Dim::Static(Expr::Number(NumberExpr {
                             value: "0".into(),
+                            text: None,
                             ty: Some(ElementType::I32),
                             span: Span::default()
                         }));

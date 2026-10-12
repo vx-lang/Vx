@@ -2240,6 +2240,7 @@ impl<'c> MeliorGenerator<'c> {
             for (i, dim) in dims.iter().enumerate() {
                 if let syntax::Dim::Static(syntax::Expr::Number(NumberExpr {
                     value: n_str,
+                    text: _,
                     ty: _,
                     span: _,
                 })) = dim
@@ -2393,6 +2394,7 @@ impl<'c> MeliorGenerator<'c> {
                                 .map(|n| {
                                     Expr::Number(syntax::NumberExpr {
                                         value: n.to_string().into(),
+                                        text: None,
                                         ty: Some(syntax::ElementType::I32),
                                         span: syntax::Span::default(),
                                     })

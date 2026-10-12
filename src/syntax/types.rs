@@ -1517,6 +1517,7 @@ mod tests {
                 ElementType::F32,
                 vec![Dim::Static(Expr::Number(NumberExpr {
                     value: "4".into(),
+                    text: None,
                     ty: None,
                     span: Span::default(),
                 }))],

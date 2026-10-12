@@ -420,6 +420,7 @@ impl<'a> TypeChecker<'a> {
     fn number_expr(v: i64) -> Expr {
         Expr::Number(NumberExpr {
             value: v.to_string().into(),
+            text: None,
             ty: None,
             span: Span::default(),
         })
@@ -1332,12 +1333,14 @@ impl<'a> TypeChecker<'a> {
                 *c = Expr::RelationalOp(RelationalOpExpr {
                     lhs: Box::new(Expr::Number(NumberExpr {
                         value: "0".to_string().into(),
+                        text: None,
                         ty: None,
                         span: Span::default(),
                     })),
                     op: RelationalOp::Eq,
                     rhs: Box::new(Expr::Number(NumberExpr {
                         value: "0".to_string().into(),
+                        text: None,
                         ty: None,
                         span: Span::default(),
                     })),
