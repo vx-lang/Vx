@@ -201,7 +201,7 @@ macro_rules stamp_atomic_int {
 
       /// A pointer to the value.
       fn as_ptr(self : &mut $name) -> *mut $t {
-        return unsafe { (&mut self.v) as *mut $t };
+        return (&mut self.v) as *mut $t;
       }
 
       /// Reads the value. `order` cannot be `Release` or `AcqRel`.

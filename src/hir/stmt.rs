@@ -378,36 +378,6 @@ impl<'a> TypeChecker<'a> {
 
     /// Check a `let` binding: type the initializer, bind the name (annotation wins), record the
     /// binding's reference provenance (#243), and register an equality constraint for an immutable.
-    /// Refuse a tensor whose sizes are all known while compiling but that no tensor can have: a
-    /// negative size, or more bytes than an allocation can ask for. Its allocation would ask for
-    /// a wrapped-around number of bytes.
-    fn check_tensor_shape_fits(&mut self, ty: &Type, name: &str, span: &crate::syntax::Span) {
-        let Type::Tensor(elem, dims, _) = ty else {
-            return;
-        };
-        if self.speculating {
-            return;
-        }
-        let Some(bad) = crate::hir::memory::bad_static_shape(elem, dims) else {
-            return;
-        };
-        let message = match bad {
-            crate::hir::memory::BadShape::Negative { index, value } => format!(
-                "tensor '{name}' has size {value} in position {}: a size cannot be negative",
-                index + 1
-            ),
-            crate::hir::memory::BadShape::TooLarge => format!(
-                "tensor '{name}' is too large: it takes more than 2^63 - 1 bytes, the most an \
-                 allocation can ask for"
-            ),
-        };
-        self.errors.error_with_code(
-            crate::diagnostic::DiagnosticCode::E3050,
-            message,
-            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-        );
-    }
-
     fn check_let_decl_stmt(&mut self, decl: &mut LetDeclStmt, consume: bool) {
         let LetDeclStmt {
             name,
@@ -425,6 +395,9 @@ impl<'a> TypeChecker<'a> {
         self.current_assignment_target = Some(name.to_string());
         // Forward the annotation as an expected-type hint so a generic call can
         // deduce a return-only topology/type variable from it.
+        if let Some(ann) = ty_ann.as_mut() {
+            self.fold_extents(ann);
+        }
         let prev_expected = self.expected_type.take();
         self.expected_type = ty_ann.clone();
         let ty = self.check_expr_type_flag(expr, consume);
@@ -448,8 +421,10 @@ impl<'a> TypeChecker<'a> {
         // A `transfer(..)` validates its destination and records the tile it lands, at its own
         // site. The binding adds nothing: checking its type as well reported the same overflow
         // twice, counted one tile as two, and re-litigated a destination the transfer had
-        // already accepted.
-        let initializer_places_its_own = matches!(expr, Expr::Transfer(_));
+        // already accepted. A view, such as `t.reshape(..)` or a row `q[i]`, shares the memory
+        // of a tensor already counted, so it is not a second tile either.
+        let initializer_places_its_own =
+            matches!(expr, Expr::Transfer(_)) || self.view_of(expr, &ty).is_some();
         let context = format!("variable '{}'", name);
         let binding_ty = if let Some(ann) = ty_ann {
             // `Unknown` is the poison type of an already-reported failure (an unresolved call, a
@@ -495,7 +470,6 @@ impl<'a> TypeChecker<'a> {
             ty
         };
 
-        self.check_tensor_shape_fits(&binding_ty, name.as_ref(), span);
         self.bind_view(name.as_ref(), *_is_mut, expr, &binding_ty, span);
         if !self.speculating && !Self::views_foreign_memory(expr) {
             self.drops_note_owner(name.as_ref(), &binding_ty);
@@ -1095,6 +1069,7 @@ impl<'a> TypeChecker<'a> {
         consume: bool,
         operand_ty: Option<&mut Option<crate::syntax::ElementType>>,
     ) {
+        self.strip_tensor_deref_at_root(lhs);
         // Assigning to a moved variable gives it a value again. A write does not read what
         // was there, so the move stops being in the way -- and the mark has to go before the
         // left-hand side is checked, which is what would otherwise report it as a use.
@@ -1102,6 +1077,7 @@ impl<'a> TypeChecker<'a> {
         // Only a plain `x = v`. `x op= v` reads `x` first, and `a[i] = v` writes *through* a
         // value the name no longer owns; both stay refused.
         let mut owner_before = None;
+        let mut moved_fields_before = Vec::new();
         if op.is_none() {
             if let Expr::Identifier(id) = lhs {
                 owner_before = self.drops_owner_state(id.name.as_ref());
@@ -1110,6 +1086,7 @@ impl<'a> TypeChecker<'a> {
             // `p.a = v` after `p.a` was moved out gives the field a value again.
             if let Expr::MemberAccess(_) = lhs {
                 if let Some((root, path)) = Self::extract_base_and_path(lhs) {
+                    moved_fields_before = self.drops_moved_fields(&root);
                     self.unconsume_field(&root, &path);
                 }
             }
@@ -1194,6 +1171,8 @@ impl<'a> TypeChecker<'a> {
                             .copy_borrows(from.name.as_ref(), id.name.as_ref(), depth);
                     }
                 }
+            } else {
+                self.drops_note_place_assign(lhs, &lhs_ty, lhs.span().line, &moved_fields_before);
             }
         }
         if let Some(op) = op {

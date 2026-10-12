@@ -408,6 +408,11 @@ pub struct TypeChecker<'a> {
     pub allow_cross_topology: bool,
     pub errors: crate::diagnostic::DiagnosticsVec,
     pub(crate) in_unsafe_block: bool,
+    /// Inside an `unsafe` block someone wrote, not only one the compiler made for `vec![..]`.
+    pub(crate) in_written_unsafe_block: bool,
+    /// Something that needs `unsafe` was checked since the innermost written `unsafe` block
+    /// began. If it stays false, that block warns (W1010).
+    pub(crate) unsafe_op_seen: bool,
     pub(crate) active_topology: Topology,
     pub(crate) active_memory: MemorySpace,
     pub transfer_cost_graph: &'a crate::arch::TransferCostGraph,
@@ -489,6 +494,8 @@ impl<'a> TypeChecker<'a> {
             scopes: vec![HashMap::new()],
             errors: crate::diagnostic::DiagnosticsVec::new(),
             in_unsafe_block: false,
+            in_written_unsafe_block: false,
+            unsafe_op_seen: false,
             allow_cross_topology: false,
             active_topology: Topology::CPU,
             active_memory,
@@ -1413,7 +1420,7 @@ impl<'a> TypeChecker<'a> {
             .collect();
 
         Function {
-            is_unsafe: false,
+            is_unsafe: generic_func.is_unsafe,
             name: mangled_name.into(),
             generics: Vec::new(),
             params: new_params,
@@ -1567,6 +1574,9 @@ impl<'a> TypeChecker<'a> {
         let prev_declared_vars = std::mem::take(&mut self.declared_vars);
         let prev_declared_mut_vars = std::mem::take(&mut self.declared_mut_vars);
         let prev_changed_vars = std::mem::take(&mut self.changed_vars);
+        // The same for W1010: the callee's `unsafe` blocks are not inside the caller's.
+        let prev_written_unsafe = std::mem::take(&mut self.in_written_unsafe_block);
+        let prev_unsafe_op_seen = std::mem::take(&mut self.unsafe_op_seen);
         self.push_scope();
 
         let prev_top = self.active_topology.clone();
@@ -1734,6 +1744,8 @@ impl<'a> TypeChecker<'a> {
         self.declared_vars = prev_declared_vars;
         self.declared_mut_vars = prev_declared_mut_vars;
         self.changed_vars = prev_changed_vars;
+        self.in_written_unsafe_block = prev_written_unsafe;
+        self.unsafe_op_seen = prev_unsafe_op_seen;
     }
 
     pub fn parse_ty_str(&self, s: &str) -> Type {

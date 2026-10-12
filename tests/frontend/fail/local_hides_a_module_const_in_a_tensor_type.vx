@@ -1,0 +1,20 @@
+//===- local_hides_a_module_const_in_a_tensor_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A local with the same name as a module `const` hides it in a tensor's type too: `[N]` below
+// is the local `N`, which is 3, so the tensor is not the `[4]` the annotation asks for.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+const N : i32 = 4;
+
+fn main() -> i32 {
+  let N = 3;
+  // CHECK: Error[E3001] at [[@LINE+1]]:{{.*}}declared Tensor<f32, [4]> but its initializer is Tensor<f32, [N]>
+  let t : Tensor<f32, [4]> = Tensor<f32, [N]>::new();
+  return 0;
+}

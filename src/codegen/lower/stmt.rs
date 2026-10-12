@@ -731,11 +731,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
         }
 
         // The old value's drops run now that the new value is computed, before it is stored.
-        let block = if matches!(lhs, Expr::Identifier(_)) {
-            gen.run_value_drops(block)?
-        } else {
-            block
-        };
+        let block = gen.run_value_drops(block)?;
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
             if let Some((mem_val, mem_ty)) = gen.env.get(name).cloned() {
                 let mem_ty_str = mem_ty.to_string();

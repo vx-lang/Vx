@@ -738,6 +738,7 @@ impl CompilerDriver {
                 return Err(format!("Macro expansion failed: {}", e));
             }
         }
+        crate::resolver::fold_const_extents(&mut program_arr);
         Ok((program_arr, auto_interfaces))
     }
 

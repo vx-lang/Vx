@@ -366,6 +366,7 @@ impl<'a> TypeChecker<'a> {
                      cannot be proven",
                     tile.name
                 );
+                self.unsafe_op_seen = true;
                 if self.in_unsafe_block {
                     self.errors
                         .push_warning(format!("{msg}; asserted, not proven (unsafe)"));
@@ -401,6 +402,7 @@ impl<'a> TypeChecker<'a> {
                  (needs 0 <= index < {extent})",
                 tile.name
             );
+            self.unsafe_op_seen = true;
             if self.in_unsafe_block {
                 self.errors
                     .push_warning(format!("{msg}; asserted, not proven (unsafe)"));

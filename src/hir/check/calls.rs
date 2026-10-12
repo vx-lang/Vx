@@ -697,6 +697,12 @@ impl<'a> TypeChecker<'a> {
                     base_name = resolved_name[..idx].to_string().into();
                 }
                 self.fold_const_generic_args(&mut explicit_generic_args);
+                // The code generators read `Tensor<f32, [N]>::new()`'s type off the call.
+                if let Some(written) = type_args.as_mut() {
+                    if *written != explicit_generic_args {
+                        *written = explicit_generic_args.clone();
+                    }
+                }
 
                 // Mocking built-ins
                 let mut arg_types = Vec::new();
@@ -718,6 +724,9 @@ impl<'a> TypeChecker<'a> {
                 let errors_before_args = self.errors.inner.len();
                 for arg in args.iter_mut() {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume));
+                }
+                if resolved_name == "Tensor".into() {
+                    self.fold_shape_args(args);
                 }
                 // A number literal given to `Tensor<T, ..>::fill` takes the element type `T`.
                 if resolved_name == "Tensor::fill".into() {
@@ -762,7 +771,7 @@ impl<'a> TypeChecker<'a> {
                 {
                     // The contract rides on the type, so a call through a name honours it just
                     // as a call through the declaration does.
-                    if callee_unsafe && !self.in_unsafe_block && !self.speculating {
+                    if callee_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!(
@@ -905,7 +914,7 @@ impl<'a> TypeChecker<'a> {
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
                     }
-                    if *is_unsafe && !self.in_unsafe_block && !self.speculating {
+                    if *is_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name),
@@ -921,7 +930,7 @@ impl<'a> TypeChecker<'a> {
                     );
                     self.check_call_requires(resolved_name.as_ref(), args, span);
                     ret_ty.clone()
-                } else if let Some((mono_topology, param_types, mono_ret)) = self
+                } else if let Some((mono_topology, param_types, mono_ret, mono_unsafe)) = self
                     .mono
                     .functions
                     .iter()
@@ -935,10 +944,23 @@ impl<'a> TypeChecker<'a> {
                                 .map(|(_, t)| t.clone())
                                 .collect::<Vec<Type>>(),
                             func.0.return_type.clone(),
+                            func.0.is_unsafe,
                         )
                     })
                 {
                     self.record_call_edge(resolved_name.as_ref(), span);
+                    // An instance made by an earlier call keeps the template's `unsafe`.
+                    if mono_unsafe && self.unsafe_is_missing() {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E5001,
+                            format!(
+                                "Call to unsafe function '{}' is unsafe and requires unsafe \
+                                 function or block",
+                                resolved_name
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
+                    }
                     if !mono_topology.same_device(&self.active_topology) && !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E6001,
@@ -964,7 +986,7 @@ impl<'a> TypeChecker<'a> {
                 {
                     // A generic `unsafe fn` resolves here rather than through `env.functions`,
                     // so the rule is repeated: being generic does not discharge a contract.
-                    if generic_func.is_unsafe && !self.in_unsafe_block && !self.speculating {
+                    if generic_func.is_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!(
@@ -1005,7 +1027,7 @@ impl<'a> TypeChecker<'a> {
                     // The signature carries the callee's unsafe-ness precisely so an importing
                     // module can refuse the call without seeing the body. Read it here, or the
                     // flag crosses the boundary and means nothing.
-                    if sig.is_unsafe && !self.in_unsafe_block && !self.speculating {
+                    if sig.is_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!(
@@ -1319,6 +1341,29 @@ impl<'a> TypeChecker<'a> {
         })
     }
 
+    /// `Tensor<f32>([R * C])` in an instance of `<const R, const C>` reads `[2 * 3]`. Each extent
+    /// that works out is written as the number, checked like one written there, since the code
+    /// generators take only a number as a static extent.
+    fn fold_shape_args(&mut self, args: &mut [Expr]) {
+        if matches!(args, [Expr::Array(arr)] if arr.initializer_shape().is_some()) {
+            return;
+        }
+        let dims: &mut [Expr] = match args {
+            [Expr::Array(arr)] => &mut arr.elements,
+            _ => args,
+        };
+        for d in dims {
+            if let Some(v) = self.extent_value(d) {
+                *d = Expr::Number(NumberExpr {
+                    value: v.to_string().into(),
+                    ty: None,
+                    span: d.span(),
+                });
+                self.check_expr_type_flag(d, false);
+            }
+        }
+    }
+
     /// Reduce each constant generic argument to the number it works out to.
     ///
     /// `countdown<N - 1>()` inside `countdown<3>` has to become `countdown<2>`, not
@@ -1327,16 +1372,31 @@ impl<'a> TypeChecker<'a> {
     /// case -- it took the compiler's stack down rather than terminating.
     ///
     /// An argument the evaluator cannot work out is left as written, which is what it did
-    /// before this.
+    /// before this. A module `const` is worked out too: `fill<N>()`, where a name parses as a
+    /// type, becomes `fill<4>()`, and the extents of a type argument are folded.
     fn fold_const_generic_args(&mut self, args: &mut [Type]) {
         for arg in args.iter_mut() {
+            if let Type::Struct(name, None) = arg {
+                if !self.env.structs.contains_key(name) && !self.env.enums.contains_key(name) {
+                    if let Some(v) = self.const_int(name) {
+                        *arg = Type::Const(Box::new(Expr::Number(NumberExpr {
+                            value: v.to_string().into(),
+                            ty: None,
+                            span: Span::default(),
+                        })));
+                    }
+                }
+                continue;
+            }
             let Type::Const(expr) = arg else {
+                self.fold_extents(arg);
                 continue;
             };
             if matches!(&**expr, Expr::Number(_)) {
                 continue;
             }
-            let env = self.consteval_snapshot();
+            let mut env = self.consteval_snapshot();
+            self.add_const_ints(expr, &mut env);
             let Some(value) = self.eval_expr(expr, &env).and_then(|v| match v {
                 Value::Int(i) => Some(i.to_string()),
                 Value::Number(n) if n.fract() == 0.0 => Some((n as i64).to_string()),
@@ -1604,6 +1664,18 @@ impl<'a> TypeChecker<'a> {
         }
 
         if let Some(generic_func) = found_generic_func {
+            // `Type::method(..)` calling an `unsafe fn` needs an unsafe context too.
+            if generic_func.is_unsafe && self.unsafe_is_missing() {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E5001,
+                    format!(
+                        "Call to unsafe function '{}' is unsafe and requires unsafe \
+                         function or block",
+                        resolved_name
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            }
             // Whatever the explicit type arguments left open, the arguments may fix, the way a
             // generic free function's call does: `Holder::make(7i32)` binds `T` without `<i32>`.
             // Walk only as far as both lists reach; a count mismatch is reported below.
@@ -2131,6 +2203,9 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
             }
+            if let Type::Tensor(elem, dims, _) = ty {
+                self.refuse_unrepresentable_shape(elem, dims, &call_span);
+            }
             return Some(ty.clone());
         }
         if resolved_name == "Verified" {
@@ -2196,7 +2271,8 @@ impl<'a> TypeChecker<'a> {
                         Dim::Dyn
                     }
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            self.refuse_unrepresentable_shape(&el_ty, &dims, &call_span);
             Some(Type::Tensor(el_ty, dims, None))
         } else if resolved_name.starts_with("Math::") {
             if args.len() != 1 {
@@ -2302,7 +2378,7 @@ impl<'a> TypeChecker<'a> {
                 self.errors
                     .push("Function 'tensor_view_2d' expects (ptr, rows, cols)".to_string());
             }
-            if !self.in_unsafe_block && !self.speculating {
+            if self.unsafe_is_missing() {
                 self.errors
                     .push("Viewing raw memory as a tensor requires an unsafe block".to_string());
             }
@@ -2731,6 +2807,7 @@ impl<'a> TypeChecker<'a> {
                 span: method_span,
             }) => {
                 let method_span = *method_span;
+                self.strip_tensor_deref(obj);
                 // Taking the address of a tensor does not read it, so `on_gpu.as_ptr()` is
                 // allowed from host code even though a host read of `on_gpu` is not. The
                 // pointer it gives carries the tensor's placement, and reading through that
@@ -2936,7 +3013,7 @@ impl<'a> TypeChecker<'a> {
                     // An `unsafe fn` method needs an unsafe context at its call, exactly as a
                     // free function does. Only the resolution differs, so the rule is repeated
                     // here rather than shared: a method never reaches `env.functions`.
-                    if generic_method.is_unsafe && !self.in_unsafe_block && !self.speculating {
+                    if generic_method.is_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!(
@@ -3530,9 +3607,11 @@ impl<'a> TypeChecker<'a> {
         args: &mut [Expr],
         span: &crate::syntax::Span,
     ) -> Option<(Type, bool)> {
-        // `a.reduce(..)` with `a : &Tensor<..>` reads the tensor it points to.
+        // `a.reduce(..)` with `a : &Tensor<..>` reads the tensor it points to, and
+        // `a.reshape(..)` is a view of it.
         if let Type::Borrow { inner, .. } = base_ty {
-            if _method == "reduce" && args.len() == 2 && matches!(**inner, Type::Tensor(..)) {
+            let through = (_method == "reduce" && args.len() == 2) || _method == "reshape";
+            if through && matches!(**inner, Type::Tensor(..)) {
                 return self.resolve_intrinsic_method(inner, _method, args, span);
             }
         }

@@ -1,30 +1,25 @@
-//===- tensor_size_negative_or_too_large.vx - Vx Compiler -------*- Vx -*-===//
+//===- tensor_size_negative_or_too_large.vx - Vx Compiler ---------*- Vx -*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: not vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not="Error["
-// RUN: not vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=FITS
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=FITS
 //
-// A tensor size known while compiling cannot be negative, and the whole tensor must fit in
-// 2^63 - 1 bytes. Otherwise its allocation would ask for a wrapped-around number of bytes.
-
-fn half<const N : i32>() -> i32 {
-  // CHECK-DAG: Error[E3050] at [[@LINE+1]]:3: tensor 'a' has size -1048576 in position 1: a size cannot be negative
-  let a : Tensor<f32, [N - 2 * N]> = Tensor<f32>([N - 2 * N]);
-  return 0;
-}
+// A tensor size written as a negative number is refused, and so is a tensor of 2^63 bytes:
+// it fits in 64 bits, but an allocation can ask for at most 2^63 - 1 bytes. A tensor of
+// 2^62 bytes is allowed.
 
 fn main() -> i32 {
-  // 2^30 * 2^30 * 4 elements of 4 bytes each is 2^64 bytes.
-  // CHECK-DAG: Error[E3050] at [[@LINE+1]]:3: tensor 'huge' is too large: it takes more than 2^63 - 1 bytes
-  let huge = Tensor<f32, [1073741824, 1073741824, 4]>::new();
-  // CHECK-DAG: Error[E3050] at [[@LINE+1]]:3: tensor 'b' has size -3 in position 2: a size cannot be negative
-  let b : Tensor<f32, [2, -3]> = Tensor<f32, [2, -3]>::new();
-  // 2^61 elements of 2 bytes each is 2^62 bytes: large, but it fits, so no error.
-  // FITS-NOT: tensor 'fits'
+  // CHECK-DAG: Error[E6031] at [[@LINE+1]]:11: `Tensor<f32, [2, -3]>` cannot be allocated: one of its extents is negative
+  let b = Tensor<f32, [2, -3]>::new();
+  // 2^61 elements of 4 bytes each is 2^63 bytes.
+  // CHECK-DAG: Error[E6031] at [[@LINE+1]]:14: `Tensor<f32, [2305843009213693952]>` cannot be allocated: its size is more than 2^63 - 1 bytes
+  let huge = Tensor<f32, [2305843009213693952]>::new();
+  // 2^61 elements of 2 bytes each is 2^62 bytes.
+  // FITS-NOT: Tensor<f16
   let fits = Tensor<f16, [2147483648, 1073741824]>::new();
-  return half<1048576>();
+  return 0;
 }

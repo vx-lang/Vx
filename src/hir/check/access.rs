@@ -158,6 +158,91 @@ impl<'a> TypeChecker<'a> {
         self.eval_expr(expr, &env)
     }
 
+    /// The value of the module `const` `name` where a type uses it: an integer `const` that no
+    /// local of the same name hides.
+    pub(crate) fn const_int(&self, name: &crate::symbol::Symbol) -> Option<i64> {
+        if self.lookup(name.as_ref()).is_some() {
+            return None;
+        }
+        let decl = self.env.consts.get(name).copied()?;
+        if !matches!(&decl.ty, Type::Scalar(e) if e.int_bits().is_some() && *e != ElementType::Bool)
+            || !matches!(crate::registry::ConstTable::from_decl(decl), Ok(None))
+        {
+            return None;
+        }
+        match self.const_value(&decl.expr, &mut vec![name.clone()])? {
+            Value::Int(i) => Some(i),
+            _ => None,
+        }
+    }
+
+    /// Add to `env` the module `const`s `expr` names that `env` does not already hold.
+    pub(crate) fn add_const_ints(
+        &self,
+        expr: &Expr,
+        env: &mut HashMap<crate::symbol::Symbol, Value>,
+    ) {
+        let mut names = Vec::new();
+        Self::collect_identifiers(expr, &mut names);
+        for name in names {
+            if let std::collections::hash_map::Entry::Vacant(slot) = env.entry(name) {
+                if let Some(v) = self.const_int(slot.key()) {
+                    slot.insert(Value::Int(v));
+                }
+            }
+        }
+    }
+
+    /// Write each extent of `ty` that is a module `const`, or arithmetic on numbers and such
+    /// `const`s, as its value. `fold_const_extents` does this for signatures before checking; a
+    /// type written in a function body is folded here, where the local names are known, and
+    /// so is `[R * C]` once a generic instance has put numbers in place of `R` and `C`.
+    pub(crate) fn fold_extents(&self, ty: &mut Type) {
+        match ty {
+            Type::Tensor(_, dims, _) => {
+                for dim in dims {
+                    if let Dim::Static(e) = dim {
+                        if let Some(v) = self.extent_value(e) {
+                            *e = extent_literal(v, e.span());
+                        }
+                    }
+                }
+            }
+            Type::Pointer(inner, ..)
+            | Type::Ref(inner, _)
+            | Type::Borrow { inner, .. }
+            | Type::Verified(inner)
+            | Type::Pinned(inner, _) => self.fold_extents(inner),
+            Type::GenericInstance(base, args) => {
+                self.fold_extents(base);
+                for arg in args {
+                    self.fold_extents(arg);
+                }
+            }
+            Type::Function(params, ret, _) | Type::Closure(params, ret) => {
+                for p in params {
+                    self.fold_extents(p);
+                }
+                self.fold_extents(ret);
+            }
+            _ => {}
+        }
+    }
+
+    /// The value of an extent that is not yet a number, when it is a whole number of at least
+    /// zero worked out from numbers and module `const`s alone. A local stays a name.
+    pub(crate) fn extent_value(&self, e: &Expr) -> Option<i64> {
+        if matches!(e, Expr::Number(_)) {
+            return None;
+        }
+        let mut env = HashMap::new();
+        self.add_const_ints(e, &mut env);
+        match self.eval_expr(e, &env)? {
+            Value::Int(i) if i >= 0 => Some(i),
+            _ => None,
+        }
+    }
+
     /// Every identifier `expr` mentions, for `const_value`.
     fn collect_identifiers(expr: &Expr, out: &mut Vec<crate::symbol::Symbol>) {
         match expr {
@@ -565,7 +650,7 @@ impl<'a> TypeChecker<'a> {
     /// or that anything lives at it. `*p`, `p[i]` and `p.field` are one operation with three
     /// spellings, so they answer to one rule.
     fn require_unsafe_raw_access(&mut self, what: &str, span: &Span) {
-        if self.in_unsafe_block || self.speculating {
+        if !self.unsafe_is_missing() {
             return;
         }
         self.errors.error_with_code(
@@ -927,6 +1012,30 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
+    /// `(*t)[i]` and `(*t).reshape(..)`, with `t` a tensor reference, are `t[i]` and
+    /// `t.reshape(..)`: both code generators hold a `&Tensor` as the tensor's own buffer, so the
+    /// `*` names the same memory. Rewritten before the base is checked.
+    pub(crate) fn strip_tensor_deref(&self, base: &mut Expr) {
+        if let Expr::Dereference(d) = base {
+            if matches!(
+                self.check_expr_type_probe(&d.expr),
+                Type::Borrow { ref inner, .. } if matches!(**inner, Type::Tensor(..))
+            ) {
+                *base = (*d.expr).clone();
+            }
+        }
+    }
+
+    /// The same at the root of a place: `(*t)[i][j] = x` writes `t[i][j]`, and the place is
+    /// rooted at `t` for the borrow checks.
+    pub(crate) fn strip_tensor_deref_at_root(&self, place: &mut Expr) {
+        match place {
+            Expr::IndexAccess(ix) => self.strip_tensor_deref_at_root(&mut ix.base),
+            Expr::MemberAccess(m) => self.strip_tensor_deref_at_root(&mut m.base),
+            other => self.strip_tensor_deref(other),
+        }
+    }
+
     /// `t[i]` where the compiler knows both the extent of `t`'s first axis and the largest
     /// value `i` can take: an index past the end is an error. This holds for a row too, so
     /// `t[0][j]` cannot reach into the next row.
@@ -1024,6 +1133,7 @@ impl<'a> TypeChecker<'a> {
             base, index, span, ..
         }) = expr
         {
+            self.strip_tensor_deref(base);
             let method = if self.checking_assign_lhs {
                 "index_mut"
             } else {
@@ -2112,6 +2222,16 @@ impl<'a> TypeChecker<'a> {
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
     }
+}
+
+/// An extent of `value`, typed as the parser types a number written in a tensor's shape.
+pub(crate) fn extent_literal(value: i64, span: Span) -> Expr {
+    let value = value.to_string();
+    Expr::Number(NumberExpr {
+        ty: Some(crate::parser::expr::default_number_elem(&value)),
+        value: value.into(),
+        span,
+    })
 }
 
 /// The member-access "unknown struct" message, upgraded when the name is *ambiguous* rather than
