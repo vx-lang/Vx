@@ -882,7 +882,9 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The largest value an index can take, when the compiler knows it: a constant, or a
-    /// variable with a known upper limit, such as the variable of `for j in 0..6`.
+    /// variable with a known upper limit, such as the variable of `for j in 0..6`. `None` for
+    /// a variable that can take no value at all, such as that of `for j in 0..0`, since the
+    /// code that indexes with it never runs.
     fn largest_index_value(
         &self,
         idx: &Expr,
@@ -894,23 +896,36 @@ impl<'a> TypeChecker<'a> {
         let Expr::Identifier(id) = idx else {
             return None;
         };
-        self.consteval
-            .constraints
-            .iter()
-            .filter_map(|c| match c {
-                Expr::RelationalOp(r) => match (&*r.lhs, &r.op) {
-                    (Expr::Identifier(l), op) if l.name == id.name => {
-                        match (op, self.eval_expr(&r.rhs, env)?) {
-                            (RelationalOp::Lt, Value::Int(hi)) => Some(hi - 1),
-                            (RelationalOp::Le | RelationalOp::Eq, Value::Int(hi)) => Some(hi),
-                            _ => None,
-                        }
-                    }
-                    _ => None,
-                },
-                _ => None,
-            })
-            .min()
+        let (mut lo, mut hi) = (None::<i64>, None::<i64>);
+        for c in &self.consteval.constraints {
+            let Expr::RelationalOp(r) = c else { continue };
+            let Expr::Identifier(l) = &*r.lhs else {
+                continue;
+            };
+            if l.name != id.name {
+                continue;
+            }
+            let Some(Value::Int(v)) = self.eval_expr(&r.rhs, env) else {
+                continue;
+            };
+            let (low, high) = match r.op {
+                RelationalOp::Lt => (None, Some(v - 1)),
+                RelationalOp::Le => (None, Some(v)),
+                RelationalOp::Eq => (Some(v), Some(v)),
+                RelationalOp::Ge => (Some(v), None),
+                RelationalOp::Gt => (Some(v + 1), None),
+                _ => (None, None),
+            };
+            lo = lo.max(low);
+            hi = match (hi, high) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+        }
+        match (lo, hi) {
+            (Some(lo), Some(hi)) if lo > hi => None,
+            (_, hi) => hi,
+        }
     }
 
     pub(crate) fn check_indexaccess_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
