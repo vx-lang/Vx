@@ -439,7 +439,7 @@ visits every position `t[i]` accepts. A rank-0 tensor has no `len()`.
 | Type | Example |
 |------|---------|
 | `Tensor<T, Shape>` | `let a : Tensor<f32, []> = 1.0;` |
-| `Tensor<T, Shape, Memory>` | `let d = Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit();` |
+| `Tensor<T, Shape, Memory>` | `let d = unsafe { Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit() };` |
 | `Matrix` | `let m : Matrix = ...;` |
 | `Verified<T>` | `let v : Verified<Tensor<f32, [4, 4]>> = ...;` |
 | `Pinned<T, Topology>` | `let p : Pinned<Tensor<f32, [4, 4]>, Topology::NPU[0]> = ...;` |
