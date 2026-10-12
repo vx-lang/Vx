@@ -1,0 +1,44 @@
+//===- result_with_a_void_success_type.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// `Result<void, E>` is Rust's `Result<(), E>`: `Ok()` holds nothing, so it takes no
+// argument. It used to be refused with "Result::Ok expects a payload".
+
+import core::result;
+
+fn f(fail : bool) -> Result<void, i32> {
+  if fail {
+    return Result<void, i32>::Err(7);
+  }
+  return Result<void, i32>::Ok();
+}
+
+fn code(r : Result<void, i32>) -> i32 {
+  match r {
+    Result<void, i32>::Ok(_) => {
+      return 0;
+    }
+    Result<void, i32>::Err(e) => {
+      return e;
+    }
+  }
+}
+
+fn main() -> i32 {
+  print(code(f(true)));
+  print!(" ");
+  print(code(f(false)));
+  print!(" ");
+  if f(false).is_ok() {
+    print!("ok");
+  }
+  // CHECK: {{^}}7 0 ok{{$}}
+  return 0;
+}
