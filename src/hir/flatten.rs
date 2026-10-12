@@ -4592,6 +4592,19 @@ impl<'r> Lowerer<'r> {
             self.emit_effect(store, place.reg, value.reg, 0);
             return Ok(());
         }
+        // `*t = v` with `t : &mut Tensor<..>`: the new tensor's elements are written into the one
+        // `t` refers to, as a row store writes into its row.
+        if let Expr::Dereference(d) = lhs {
+            if matches!(
+                self.infer_ast_type(&d.expr),
+                Some(Type::Borrow { ref inner, .. }) if matches!(**inner, Type::Tensor(..))
+            ) {
+                let place = self.lower_expr(&d.expr)?;
+                let value = self.lower_expr(rhs)?;
+                self.emit_effect(Opcode::TensorStore, place.reg, value.reg, 0);
+                return Ok(());
+            }
+        }
         // A raw-pointer dereference store `*p = val` (`Box`'s `*p = val`): the place is `p[0]` (always a
         // pointer, so always a `PtrStore`). (#242)
         if let Expr::Dereference(_) = lhs {

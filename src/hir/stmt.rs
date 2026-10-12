@@ -1143,7 +1143,26 @@ impl<'a> TypeChecker<'a> {
         // Check the RHS expecting the target's type, so an untyped literal is born at that
         // type (`a[i] = 1.0` into a bf16 tensor, `r = 5` into an i64 slot) rather than
         // defaulting and mismatching (#240).
-        let mut rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume);
+        // `*t = v` with `t : &mut Tensor<..>` copies `v`'s elements into the tensor `t` refers
+        // to, so it reads `v` rather than moving it. The copy needs the shapes to match, which a
+        // `?` extent does not promise.
+        let copies_into_tensor =
+            matches!(lhs, Expr::Dereference(_)) && matches!(lhs_ty, Type::Tensor(..));
+        if let (true, Type::Tensor(_, dims, _)) = (copies_into_tensor, &lhs_ty) {
+            if dims.iter().any(|d| d.as_static().is_none()) && !self.speculating {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3003,
+                    format!(
+                        "assigning through a reference writes the new values into the tensor it \
+                         refers to, so the shapes have to match, and a `?` extent in `{lhs_ty}` \
+                         does not say they do; write the elements one by one"
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&lhs.span())),
+                );
+            }
+        }
+        let mut rhs_ty =
+            self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume && !copies_into_tensor);
         self.current_assignment_target = None;
         if let Some(borrows) = lhs_borrows {
             self.borrow.forget(&borrows);

@@ -2472,7 +2472,7 @@ fn lower_tensor_view_2d<'c>(
 /// descriptor, so it is loaded here and the operand's type updated to match.
 /// Anything else passes through untouched, so the by-value spelling is
 /// unaffected.
-pub(super) fn load_tensor_slot<'c>(
+pub(crate) fn load_tensor_slot<'c>(
     gen: &MeliorGenerator<'c>,
     block: &melior::ir::BlockRef<'c, 'c>,
     val: Value<'c, 'c>,
