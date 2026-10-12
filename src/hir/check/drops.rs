@@ -1106,7 +1106,7 @@ impl<'a> TypeChecker<'a> {
         if parts.is_empty() {
             return;
         }
-        if printing() {
+        if self.printing() {
             eprintln!(
                 "drop in {}: the old value of {}{}, before the assignment on line {line}",
                 self.current_function,
