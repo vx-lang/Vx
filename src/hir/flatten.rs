@@ -7827,6 +7827,45 @@ mod tests {
     }
 
     #[test]
+    fn a_shared_tile_made_inside_unsafe_gets_the_two_level_plan() {
+        // The region above, with its shared tile made inside `unsafe { .. }`, where
+        // `::uninit()` belongs: the same allocation, so the same plan.
+        let (did, w) = lower_with_registry(
+            "fn main() -> i32 {\n\
+               let mut q = Tensor<f32>([8, 4]);\n\
+               let mut o = Tensor<f32>([8, 4]);\n\
+               spawn on (Topology::GPU) {\n\
+                 let mut qs = unsafe { Tensor<f32, [2, 4], Memory::SMEM>::uninit() };\n\
+                 for bq in 0..4 {\n\
+                   for qi in 0..2 {\n\
+                     qs[qi] = q[bq * 2 + qi] * 1.0;\n\
+                   }\n\
+                   barrier();\n\
+                   for qi in 0..2 {\n\
+                     o[bq * 2 + qi] = qs[qi] * 1.0;\n\
+                   }\n\
+                   barrier();\n\
+                 }\n\
+               };\n\
+               return 0;\n\
+             }",
+            "main",
+        );
+        assert!(did, "lowers");
+        let end = w
+            .local_hir_stream
+            .iter()
+            .find(|i| i.opcode == Opcode::SpawnEnd)
+            .expect("a SpawnEnd");
+        assert_ne!(
+            end.imm & SPAWN_TWO_LEVEL,
+            0,
+            "two-level fired: imm={:#x}",
+            end.imm
+        );
+    }
+
+    #[test]
     fn a_block_thread_region_gets_the_two_level_plan() {
         // The Vx#379 shape in miniature: a block loop of 2, a thread loop of 4 whose captured
         // write leads with `bq * 4 + qi` (multiplier == the thread trip), and a barrier. The

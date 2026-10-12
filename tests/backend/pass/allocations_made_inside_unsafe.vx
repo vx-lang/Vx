@@ -1,0 +1,42 @@
+//===- allocations_made_inside_unsafe.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor made with `::uninit()` inside `unsafe { .. }`, where it belongs, is the allocation
+// it would be without the `unsafe`: a `spawn` region can hand it out, and `c = a @ b` writes
+// into it.
+//
+// EXPECT: handed_out=2;
+// EXPECT: product=6;
+
+fn make() -> Tensor<f32, [4, 4]> {
+  let t = spawn on(Topology::GPU) {
+    let mut x = unsafe { Tensor<f32, [4, 4]>::uninit() };
+    x[0][0] = 2.0;
+    x
+  };
+  return transfer(t, Memory::CPU_DRAM);
+}
+
+fn product() -> f32 {
+  let mut a = Tensor<f32, [2, 2]>::new();
+  let mut b = Tensor<f32, [2, 2]>::new();
+  a[0][0] = 2.0;
+  b[0][0] = 3.0;
+  let mut c = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  c = a @ b;
+  return c[0][0];
+}
+
+fn main() -> i32 {
+  let t = make();
+  print!("handed_out=");
+  print(t[0][0]);
+  print!("; product=");
+  print(product());
+  print!(";");
+  return 0;
+}
