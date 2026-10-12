@@ -696,10 +696,15 @@ impl<'a> TypeChecker<'a> {
                 ..
             } = source
             {
-                if target_mem == source_mem
-                    && (!*target_mut || *source_mut)
-                    && self.is_assignable(target_inner, source_inner)
-                {
+                // A reference inside `&mut` is invariant: a write through the outer reference
+                // stores it, so the two inner references must fit each other both ways,
+                // lifetimes included. `&mut Tensor<f32, [4]>` still passes as `[?]`.
+                let inner_is_reference = matches!(**target_inner, Type::Borrow { .. });
+                let inner_fits = self.is_assignable(target_inner, source_inner)
+                    && (!*target_mut
+                        || !inner_is_reference
+                        || self.is_assignable(source_inner, target_inner));
+                if target_mem == source_mem && (!*target_mut || *source_mut) && inner_fits {
                     // Hook up 256-bit FastPath Borrow Checker algorithm from src/borrow.rs
                     let id_target = self.lower_to_type_id(target);
                     let id_source = self.lower_to_type_id(source);

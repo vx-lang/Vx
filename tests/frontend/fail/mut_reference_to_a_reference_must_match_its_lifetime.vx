@@ -1,0 +1,58 @@
+//===- mut_reference_to_a_reference_must_match_its_lifetime.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A write through a `&mut &i32` stores a `&i32`. So a `&mut &i32` made for a reference
+// from an inner block must not point at a reference from an outer block: a write through
+// it could put a reference to the inner block into the outer variable.
+
+fn read_through(pp : &mut &i32) -> i32 {
+  return **pp;
+}
+
+// A parameter type names no block, so it accepts a `&mut &i32` from any block.
+fn pass_to_a_parameter() -> i32 {
+  let a = 1;
+  let mut p = &a;
+  return read_through(&mut p);
+}
+
+fn outer_reference_into_an_inner_slot() -> i32 {
+  let long = 1;
+  let mut p = &long;
+  if true {
+    let short = 2;
+    let mut q = &short;
+    let mut qq = &mut q;
+    // CHECK-NOT: Error
+    // CHECK: Error[E3004] at [[# @LINE + 1]]:5:
+    qq = &mut p;
+    print(**qq);
+  }
+  return *p;
+}
+
+// A shared reference cannot write, so the inner type may live longer than needed.
+fn shared_reference_may_point_at_a_longer_lived_reference() -> i32 {
+  let long = 1;
+  let p = &long;
+  if true {
+    let short = 2;
+    let q = &short;
+    let mut r = &q;
+    r = &p;
+    print(**r);
+  }
+  return *p;
+}
+// CHECK-NOT: Error
+
+fn main() -> i32 {
+  return pass_to_a_parameter() + outer_reference_into_an_inner_slot()
+  + shared_reference_may_point_at_a_longer_lived_reference();
+}
