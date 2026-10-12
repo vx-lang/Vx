@@ -6982,6 +6982,9 @@ struct ParallelScan {
     /// `continue` whose innermost loop synchronizes would let one thread leave while the
     /// others wait at the bar forever.
     loop_barrier_stack: Vec<bool>,
+    /// How many loops inside the region's loop the statement being walked is: 0 in its body.
+    /// An `if` in that statement is at the same depth.
+    depth: u32,
 }
 
 impl ParallelScan {
@@ -7000,6 +7003,7 @@ impl ParallelScan {
             coop: false,
             barrier_ok: false,
             loop_barrier_stack: Vec::new(),
+            depth: 0,
         }
     }
 
@@ -7059,6 +7063,7 @@ impl ParallelScan {
 
     fn stmt(&mut self, s: &Statement, depth: u32) -> bool {
         use crate::syntax::stmt::Statement as S;
+        self.depth = depth;
         match s {
             S::LetDecl(d) => self.expr(&d.expr) && self.declare(&d.name),
             S::Assign(a) => self.target(&a.lhs) && self.expr(&a.rhs),
@@ -7426,15 +7431,15 @@ impl ParallelScan {
                 self.expr(&mc.base) && mc.args.iter().all(|a| self.expr(a))
             }
             Expr::If(i) => {
-                // If-expression blocks execute at the enclosing loop depth; a `break` inside them
-                // still targets that loop, which `stmt` scores against depth 0 correctly because
-                // an if-block introduces no loop. Threads may disagree about entering a branch,
-                // so no barrier position inside one is uniform.
+                // An `if` is no loop, so its blocks are at the loop depth of the statement it is
+                // in, and a `break` in them leaves that loop. Threads may disagree about entering
+                // a branch, so no barrier position inside one is uniform.
+                let depth = self.depth;
                 let saved = self.barrier_ok;
                 self.barrier_ok = false;
                 let ok = self.expr(&i.cond)
-                    && self.stmts(&i.then_block, 1)
-                    && i.else_block.as_ref().is_none_or(|b| self.stmts(b, 1));
+                    && self.stmts(&i.then_block, depth)
+                    && i.else_block.as_ref().is_none_or(|b| self.stmts(b, depth));
                 self.barrier_ok = saved;
                 ok
             }
