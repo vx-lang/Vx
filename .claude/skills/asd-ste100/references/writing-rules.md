@@ -15,7 +15,6 @@ ASD-STE100 is a controlled natural language, first released in 1986 (as AECMA Do
 ## Rule Categories (Paraphrased)
 
 **Word choice**
-
 - Use approved words only in their approved meaning and part of speech.
 - Each word maps to exactly one meaning — don't rely on context to disambiguate a word that has several dictionary senses.
 - Prefer the plainer, shorter, more common word over a formal or rare synonym.
@@ -23,18 +22,15 @@ ASD-STE100 is a controlled natural language, first released in 1986 (as AECMA Do
 - Do not make phrasal verbs by putting a verb and a preposition together (Rule 9.3). Their meaning is not predictable from the parts, and non-native readers and translation systems both mishandle them.
 
 **Verb forms**
-
 - Permitted forms: infinitive, imperative, simple present, simple past, simple future, and past participle used only as an adjective.
 - No present perfect, past perfect, or other compound/auxiliary constructions. "We have received" is not allowed. "We received" is allowed.
 - "-ing" forms are permitted only as a technical noun or as part of a technical noun, not as a verb form.
 
 **Voice**
-
 - Active voice is required for procedures and instructions.
 - Passive voice is allowed only in descriptive text, and only when the actor performing the action is genuinely unknown or irrelevant to the reader.
 
 **Sentence structure**
-
 - One instruction per sentence.
 - Maximum ~20 words per sentence for procedures and instructions. Maximum ~25 words for descriptive text.
 - Do not omit sentence parts (verb, subject, article) just to shorten the sentence — the standard explicitly warns that this creates ambiguity rather than clarity.
@@ -42,13 +38,11 @@ ASD-STE100 is a controlled natural language, first released in 1986 (as AECMA Do
 - Semicolons are not permitted at all (Rule 8.1): "You can use all standard English punctuation marks but not the semicolon (;)." Write separate sentences instead. Every other standard mark, including the em dash, remains permitted.
 
 **Paragraph and document structure**
-
 - One topic per paragraph.
 - Maximum ~6 sentences per paragraph.
 - Use vertical (numbered or bulleted) lists for sequences, conditions, or complex enumerations instead of burying them in prose.
 
 **Safety instructions**
-
 - Safety-critical instructions must open with a clear command or condition, not be buried mid-sentence.
 
 ## Why This Skill Repurposes STE for Agent Output

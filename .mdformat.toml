@@ -1,0 +1,3 @@
+# The skills in .claude/skills/ are copied unchanged from upstream. mdformat would turn their
+# front matter into a heading, and Claude Code would no longer load them.
+exclude = [".claude/skills/**"]

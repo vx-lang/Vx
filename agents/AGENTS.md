@@ -10,31 +10,28 @@ should understand what a test checks from the test file alone, without reading t
 - Use the words a programmer already knows: "a function with a type error", "a function the
   program uses", "generates code". Do not invent terms from the implementation ("flawed
   function", "reached", "emitted") and then use them as if the reader knew them.
-
 - Explain a compiler term the first time the reader needs it, or use a plainer one: "a normal
   compile and a parallel compile (`-j`)" rather than "the sequential and parallel drivers".
-
 - Name test files and the functions inside them for what they are: `wrong_field`, `add_one`,
   `unused_imported_functions_with_type_errors.vx`.
-
 - Read the draft again as someone who has seen only that file. Another agent (for example
   `agy -p "<text and question>"`) can review the wording; it is good at catching double
   negatives, internal terms and ambiguous words like "output".
 
-- Follow the structural rules of Simplified Technical English (ASD-STE100):
+Follow the structural rules of Simplified Technical English (ASD-STE100):
 
-  - Use the active voice.
-  - Write one instruction per sentence.
-  - Keep a sentence to at most 20 words for an instruction and 25 words for a description.
-  - Do not use semicolons or phrasal verbs ("spin up", "take off").
-  - Use the simple past, not the present perfect ("the test failed", not "has failed").
-  - Give one thing one name, and use that name every time.
-  - Keep every hedge: "may have failed" must not become "failed".
+- Use the active voice.
+- Write one instruction per sentence.
+- Keep a sentence to at most 20 words for an instruction and 25 words for a description.
+- Do not use semicolons or phrasal verbs ("spin up", "take off").
+- Use the simple past, not the present perfect ("the test failed", not "has failed").
+- Give one thing one name, and use that name every time.
+- Keep every hedge: "may have failed" must not become "failed".
 
-  Apply all of these to error messages and instructions. In commit messages, PR descriptions
-  and docs, keep the sentence rules and be less strict about word choice. The
-  `asd-ste100` skill in `.claude/skills/` has the full rules and examples. Its
-  `scripts/ste-lint.py` checks a draft for most of them.
+Apply all of these to error messages and instructions. In commit messages, PR descriptions and
+docs, keep the sentence rules and be less strict about word choice. The `asd-ste100` skill in
+`.claude/skills/` has the full rules and examples. Its `scripts/ste-lint.py` checks a draft for
+most of them.
 
 ## Tool usage
 
