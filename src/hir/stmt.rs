@@ -1185,13 +1185,26 @@ impl<'a> TypeChecker<'a> {
             // Named types and a location, like every other type error: this fires on a
             // narrowing store into half storage, where the fix is to write the `as` the
             // language requires rather than to guess what was meant.
-            self.errors.error_with_code(
-                crate::diagnostic::DiagnosticCode::E3004,
+            // A type is printed without its lifetimes, so two references that differ only
+            // there print the same, and a cast cannot help.
+            let message = if matches!(lhs_ty, Type::Borrow { .. })
+                && lhs_ty.to_string() == rhs_ty.to_string()
+            {
+                format!(
+                    "Type mismatch in assignment: both sides are {}, but they are valid in \
+                     different blocks. A cast cannot change how long a reference is valid",
+                    lhs_ty
+                )
+            } else {
                 format!(
                     "Type mismatch in assignment: cannot assign {} to {}; write an explicit \
                      `as` cast if the conversion is intended",
                     rhs_ty, lhs_ty
-                ),
+                )
+            };
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3004,
+                message,
                 Some(crate::diagnostic::SourceSpan::from_ast_span(&lhs.span())),
             );
         }
