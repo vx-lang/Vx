@@ -1071,10 +1071,18 @@ impl<'a> TypeChecker<'a> {
         // Only a plain `x = v`. `x op= v` reads `x` first, and `a[i] = v` writes *through* a
         // value the name no longer owns; both stay refused.
         let mut owner_before = None;
+        let mut moved_fields_before = Vec::new();
         if op.is_none() {
             if let Expr::Identifier(id) = lhs {
                 owner_before = self.drops_owner_state(id.name.as_ref());
                 self.unconsume(id.name.as_ref());
+            }
+            // `p.a = v` after `p.a` was moved out gives the field a value again.
+            if let Expr::MemberAccess(_) = lhs {
+                if let Some((root, path)) = Self::extract_base_and_path(lhs) {
+                    moved_fields_before = self.drops_moved_fields(&root);
+                    self.unconsume_field(&root, &path);
+                }
             }
         }
 
@@ -1158,7 +1166,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             } else {
-                self.drops_note_place_assign(lhs, &lhs_ty, lhs.span().line);
+                self.drops_note_place_assign(lhs, &lhs_ty, lhs.span().line, &moved_fields_before);
             }
         }
         if let Some(op) = op {

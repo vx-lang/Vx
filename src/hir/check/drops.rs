@@ -59,6 +59,45 @@ struct Owner {
     flag: Option<String>,
     /// What dropping it does, in order.
     glue: Vec<GluePart>,
+    /// Fields moved out of it, `let x = p.a`: their parts of `glue` are not dropped with it.
+    fields: Vec<FieldMove>,
+}
+
+/// A field's path, whether it was moved out, and the flag that says so when it may have been.
+pub(crate) type MovedField = (Vec<String>, Moved, Option<String>);
+
+/// A field moved out of an owner, with the same states the owner itself has.
+struct FieldMove {
+    path: Vec<String>,
+    moved: Moved,
+    moved_at: Option<usize>,
+    flag: Option<String>,
+}
+
+impl Owner {
+    /// The move state of the owner, or with `field`, of that field of it.
+    fn state(
+        &mut self,
+        field: Option<&[String]>,
+    ) -> (&mut Moved, &mut Option<usize>, &mut Option<String>) {
+        let Some(path) = field else {
+            return (&mut self.moved, &mut self.moved_at, &mut self.flag);
+        };
+        let k = match self.fields.iter().position(|f| f.path == path) {
+            Some(k) => k,
+            None => {
+                self.fields.push(FieldMove {
+                    path: path.to_vec(),
+                    moved: Moved::No,
+                    moved_at: None,
+                    flag: None,
+                });
+                self.fields.len() - 1
+            }
+        };
+        let f = &mut self.fields[k];
+        (&mut f.moved, &mut f.moved_at, &mut f.flag)
+    }
 }
 
 /// One step of dropping a value: a `Drop` impl's `drop` to call, or a tensor to free, at a
@@ -214,7 +253,34 @@ fn owner_drop(owner: &Owner) -> Vec<Statement> {
         Moved::Maybe => owner.flag.as_deref(),
         _ => None,
     };
-    glue_drops(&owner.name, &owner.glue, flag)
+    owner_glue_drops(owner, flag)
+}
+
+/// The drops of what `owner` still holds: a field moved out is left out, and one that may
+/// have been is dropped under its own flag.
+fn owner_glue_drops(owner: &Owner, flag: Option<&str>) -> Vec<Statement> {
+    let mut out = Vec::new();
+    for part in &owner.glue {
+        let moved = owner.fields.iter().find(|f| {
+            f.moved != Moved::No
+                && part.path.len() >= f.path.len()
+                && part
+                    .path
+                    .iter()
+                    .zip(&f.path)
+                    .all(|((field, _), moved)| field.as_ref() == moved)
+        });
+        match moved {
+            Some(f) if f.moved == Moved::Yes => {}
+            Some(f) => out.extend(glue_drops(
+                &owner.name,
+                std::slice::from_ref(part),
+                f.flag.as_deref(),
+            )),
+            None => out.extend(glue_drops(&owner.name, std::slice::from_ref(part), flag)),
+        }
+    }
+    out
 }
 
 /// `match place { E::V(p0, _) => { drops of p0 } .. _ => {} }`: the active variant's payload
@@ -526,7 +592,7 @@ impl<'a> TypeChecker<'a> {
 
     /// The mangled name of `ty`'s `Drop::drop`, instantiated for `ty` when the impl is
     /// generic, or `None` when `ty` does not implement `Drop`.
-    fn drops_impl_call(&mut self, ty: &Type) -> Option<crate::symbol::Symbol> {
+    pub(crate) fn drops_impl_call(&mut self, ty: &Type) -> Option<crate::symbol::Symbol> {
         let impls: Vec<&decl::ImplBlock> = self.env.impls.get("Drop")?.clone();
         let base_name = |t: &Type| -> Option<String> {
             match t {
@@ -627,6 +693,7 @@ impl<'a> TypeChecker<'a> {
                 moved_at: None,
                 flag: None,
                 glue,
+                fields: Vec::new(),
             })
             .collect();
         d.frames.push(FrameKind::Block {
@@ -685,19 +752,29 @@ impl<'a> TypeChecker<'a> {
                 moved_at: None,
                 flag: None,
                 glue,
+                fields: Vec::new(),
             });
         }
     }
 
     /// `name` was moved, or (`again`) given a new value after a move.
     pub(crate) fn drops_note_move(&mut self, name: &str, again: bool) {
+        self.drops_note_move_at(name, None, again);
+    }
+
+    /// The field `name.path` was moved out, or (`again`) given a new value after that.
+    pub(crate) fn drops_note_field_move(&mut self, name: &str, path: &[String], again: bool) {
+        self.drops_note_move_at(name, Some(path), again);
+    }
+
+    fn drops_note_move_at(&mut self, name: &str, field: Option<&[String]>, again: bool) {
         // A speculative check only asks what a type is; it moves nothing.
         if self.speculating {
             return;
         }
         let here = self.scopes.len() - 1;
         let rewriting = self.drops_rewriting();
-        if !again {
+        if !again && field.is_none() {
             self.borrow.drops.moved_now.insert(name.to_string());
         }
         let top = self.borrow.drops.frames.len();
@@ -708,21 +785,29 @@ impl<'a> TypeChecker<'a> {
                 FrameKind::Loop => {}
                 FrameKind::Block { owners, stmt, .. } => {
                     if let Some(o) = owners.iter_mut().rev().find(|o| o.name == name) {
+                        let (scope, decl) = (o.scope, o.decl);
+                        // `o.p = v` after `let y = o.p.a`: the new `o.p` holds an `a` of its own.
+                        if let (true, Some(path)) = (again && scope == here, field) {
+                            o.fields.retain(|f| {
+                                f.path.len() <= path.len() || !f.path.starts_with(path)
+                            });
+                        }
+                        let (moved, moved_at, flag) = o.state(field);
                         // A value given in a nested block only reaches the paths through it:
                         // a move before it stays possible.
-                        o.moved = if again {
-                            if o.scope == here || o.moved == Moved::No {
+                        *moved = if again {
+                            if scope == here || *moved == Moved::No {
                                 Moved::No
                             } else {
                                 Moved::Maybe
                             }
-                        } else if o.scope == here {
-                            o.moved_at = Some(*stmt);
+                        } else if scope == here {
+                            *moved_at = Some(*stmt);
                             Moved::Yes
                         } else {
                             Moved::Maybe
                         };
-                        found = Some((k, o.moved, o.flag.clone(), o.decl, o.moved_at));
+                        found = Some((k, *moved, flag.clone(), decl, *moved_at));
                         break;
                     }
                 }
@@ -742,7 +827,7 @@ impl<'a> TypeChecker<'a> {
                 let declare = let_stmt(&f, true, Type::Scalar(ElementType::Bool), ident("false"));
                 if let FrameKind::Block { owners, edits, .. } = &mut self.borrow.drops.frames[k] {
                     if let Some(o) = owners.iter_mut().rev().find(|o| o.name == name) {
-                        o.flag = Some(f.clone());
+                        *o.state(field).2 = Some(f.clone());
                     }
                     match decl {
                         Some(i) => edits.after.entry(i).or_default().push(declare),
@@ -810,6 +895,36 @@ impl<'a> TypeChecker<'a> {
     /// to it clears the mark.
     pub(crate) fn drops_owner_state(&self, name: &str) -> Option<Moved> {
         self.drops_owner(name).map(|o| o.moved)
+    }
+
+    /// `name` holds a whole new value: none of its fields is moved out any more.
+    fn drops_clear_fields(&mut self, name: &str) {
+        for f in self.borrow.drops.frames.iter_mut().rev() {
+            match f {
+                FrameKind::Function { .. } | FrameKind::Spawn => return,
+                FrameKind::Loop => {}
+                FrameKind::Block { owners, .. } => {
+                    if let Some(o) = owners.iter_mut().rev().find(|o| o.name == name) {
+                        o.fields.clear();
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The fields of `name` moved out of it, or that may have been, with the flag of each.
+    /// Read before `p.a = v` gives one of them a value again, which clears its mark.
+    pub(crate) fn drops_moved_fields(&self, name: &str) -> Vec<MovedField> {
+        self.drops_owner(name)
+            .map(|o| {
+                o.fields
+                    .iter()
+                    .filter(|f| f.moved != Moved::No)
+                    .map(|f| (f.path.clone(), f.moved, f.flag.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn drops_owner(&self, name: &str) -> Option<&Owner> {
@@ -910,20 +1025,27 @@ impl<'a> TypeChecker<'a> {
         let old_flag = flag
             .as_deref()
             .filter(|_| moved == Moved::Maybe && !operand_drop);
-        let drop_old: Vec<Statement> = glue_drops(name, &owner.glue, old_flag)
+        let drop_old: Vec<Statement> = owner_glue_drops(owner, old_flag)
             .into_iter()
             .map(after_value)
             .collect();
         if let Some(FrameKind::Block { stmt, edits, .. }) = self.borrow.drops.frames.last_mut() {
             edits.assign.insert(*stmt, (drop_old, flag));
         }
+        self.drops_clear_fields(name);
     }
 
     /// `place = rhs` where `place` is a field (`b.v`, `r.v`) or a dereference (`*out`): the
     /// value it held is dropped once `rhs` is computed, before it is stored, as for a variable.
     /// A tensor is left alone, since a store into one may write into its buffer, and so is a
     /// place behind a raw pointer, whose memory may hold no value yet.
-    pub(crate) fn drops_note_place_assign(&mut self, place: &Expr, ty: &Type, line: usize) {
+    pub(crate) fn drops_note_place_assign(
+        &mut self,
+        place: &Expr,
+        ty: &Type,
+        line: usize,
+        moved_before: &[MovedField],
+    ) {
         if self.speculating || matches!(ty, Type::Tensor(..)) {
             return;
         }
@@ -957,8 +1079,25 @@ impl<'a> TypeChecker<'a> {
                 _ => return,
             }
         };
-        let glue = self.drops_glue(ty);
-        if glue.is_empty() {
+        // A part of the old value moved out (`let x = p.a; p.a = v;`) is not dropped again, and
+        // one that may have been is dropped under its own flag.
+        let mut parts = Vec::new();
+        for part in self.drops_glue(ty) {
+            let at: Vec<&str> = fields
+                .iter()
+                .map(String::as_str)
+                .chain(part.path.iter().map(|(field, _)| field.as_ref()))
+                .collect();
+            let moved = moved_before.iter().find(|(path, _, _)| {
+                at.len() >= path.len() && at.iter().zip(path).all(|(a, m)| *a == m)
+            });
+            match moved {
+                Some((_, Moved::Yes, _)) => {}
+                Some((_, _, f)) => parts.push((part, f.clone())),
+                None => parts.push((part, flag.clone())),
+            }
+        }
+        if parts.is_empty() {
             return;
         }
         if printing() {
@@ -972,8 +1111,11 @@ impl<'a> TypeChecker<'a> {
         if !self.drops_rewriting() {
             return;
         }
-        let drop_old: Vec<Statement> = glue_drops_at(&name, Some(place), &glue, flag.as_deref())
-            .into_iter()
+        let drop_old: Vec<Statement> = parts
+            .iter()
+            .flat_map(|(part, f)| {
+                glue_drops_at(&name, Some(place), std::slice::from_ref(part), f.as_deref())
+            })
             .map(after_value)
             .collect();
         if let Some(FrameKind::Block { stmt, edits, .. }) = self.borrow.drops.frames.last_mut() {
