@@ -1,4 +1,4 @@
-//===- library_with_a_generic_flaw.vx - Vx Compiler -------------*- Vx -*-===//
+//===- library_with_a_generic_function_with_a_type_error.vx - Vx Compiler -*- Vx -*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.

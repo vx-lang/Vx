@@ -64,6 +64,7 @@ pub fn warn_functions_nothing_calls(program: &Program, errors: &mut DiagnosticsV
         }
     }
 
+    let prev_file = errors.file.clone();
     for f in &program.functions {
         let name: &str = f.name.as_ref();
         if !used.contains(name) && !name.starts_with('_') {
@@ -81,6 +82,7 @@ pub fn warn_functions_nothing_calls(program: &Program, errors: &mut DiagnosticsV
             );
         }
     }
+    errors.file = prev_file;
 }
 
 /// Every name `f` mentions that could be a function: in its body, its contracts and its topology.

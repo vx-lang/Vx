@@ -1,6 +1,6 @@
 // W1009 on a trait default that an impl copies: the copy is built in memory, so it has no
 // position of its own. The warning names the file and nothing else, not `0:0`.
-// WARN: Unused function parameter 'unused'
+// WARN: w1009_on_a_copied_trait_default_names_the_file_only.vx: Unused function parameter 'unused'
 // NO-WARN: :0:0
 trait Greet {
   fn greet(self : &Self, unused : i32) -> i32 {

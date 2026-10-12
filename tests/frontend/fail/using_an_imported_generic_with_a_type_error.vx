@@ -1,7 +1,7 @@
 //===- using_an_imported_generic_with_a_type_error.vx - Vx Compiler -*- Vx -*-===//
 // RUN: not vxc --emit-mlir %s 2>&1 | FileCheck %s --check-prefixes=CHECK,SEQ
 // RUN: not vxc -j 4 --emit-mlir %s 2>&1 | FileCheck %s
-import tests::modules::library_with_a_generic_flaw;
+import tests::modules::library_with_a_generic_function_with_a_type_error;
 
 // `first` is generic, so its body is checked when this call creates the `first<i32>`
 // instance, from inside `main`. Its warning and its error still name the library's file,
@@ -12,6 +12,5 @@ fn main() -> i32 {
   return n as i32;
 }
 
-// SEQ: Warning[W1009] at {{.*}}library_with_a_generic_flaw.vx:16:4: Unused function parameter 'v'
-// CHECK: in {{.*}}library_with_a_generic_flaw.vx: Struct 'Point' has no field 'y'
-// CHECK-NOT: using_an_imported_generic_with_a_type_error.vx: Struct 'Point'
+// SEQ: Warning[W1009] at {{.*}}library_with_a_generic_function_with_a_type_error.vx:16:4: Unused function parameter 'v'
+// CHECK: in {{.*}}library_with_a_generic_function_with_a_type_error.vx: Struct 'Point' has no field 'y'

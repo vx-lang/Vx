@@ -242,7 +242,7 @@ fn report_overflow(
         available_bytes: budget.cap,
         tiles: None,
     };
-    errors.file = nodes[n].file.clone();
+    let prev_file = std::mem::replace(&mut errors.file, nodes[n].file.clone());
     if budget.overcommit {
         errors
             .warn(
@@ -256,6 +256,7 @@ fn report_overflow(
             .error_with_code(crate::diagnostic::DiagnosticCode::E6027, msg, span)
             .facts = Some(facts);
     }
+    errors.file = prev_file;
 }
 
 /// A cycle in the call graph. Depth is unknown at compile time, so any residency
@@ -329,7 +330,10 @@ fn fold_cycle(
             tiles: None,
         };
         // The cycle is reported once; it is named from its first function's file.
-        errors.file = scc.first().and_then(|&i| nodes[i].file.clone());
+        let prev_file = std::mem::replace(
+            &mut errors.file,
+            scc.first().and_then(|&i| nodes[i].file.clone()),
+        );
         if budget.overcommit {
             errors
                 .warn(
@@ -343,6 +347,7 @@ fn fold_cycle(
                 .error_with_code(crate::diagnostic::DiagnosticCode::E6028, msg, None)
                 .facts = Some(facts);
         }
+        errors.file = prev_file;
     }
 }
 
