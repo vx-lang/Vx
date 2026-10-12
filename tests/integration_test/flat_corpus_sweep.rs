@@ -38,6 +38,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // `let u = if c { ..; };`: the flat path declines a `let` of a `void` value, with or
     // without `: void` ("a let with no type annotation"). The file is about the AST path.
     "backend/pass/if_else_with_no_value_bound_by_let.vx",
+    // A function returning `Result<void, E>`: the flat path has no layout for a payload of type
+    // `void` ("a callee return type").
+    "backend/pass/result_with_a_void_success_type.vx",
     // `Result<void, i32>`: the flat path has no layout for a `void` payload ("an enum payload
     // type that is not modelled").
     "backend/pass/result_of_void.vx",

@@ -98,7 +98,12 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
                     }
                 }
 
-                if is_unsafe_block {
+                // A line comment inside runs to the end of its line, so a block holding one is
+                // never put on one line: the comment would swallow the code after it.
+                let holds_comment = tokens[lb_idx..=rb_idx]
+                    .iter()
+                    .any(|t| matches!(t.kind, TokenType::Comment(_) | TokenType::DocComment(_)));
+                if is_unsafe_block && !holds_comment {
                     // Try to measure the total length if we collapsed it to a single line
                     let mut collapsed_len = 0;
                     for j in (0..new_tokens.len()).rev() {
@@ -457,6 +462,12 @@ mod tests {
         let input = "const T : Tensor<i64, [3]> = [\n1,\n2,\n3\n];\n\nfn main() -> i32 {\n  let a : Tensor<i64, [3]> = [\n  1, 2,\n  3\n  ];\n  let b = [ 1, 2 ];\n  return a[0] + b[1];\n}";
         let expected = "const T : Tensor<i64, [3]> = [\n  1,\n  2,\n  3\n];\n\nfn main() -> i32 {\n  let a : Tensor<i64, [3]> = [\n    1, 2,\n    3\n  ];\n  let b = [ 1, 2 ];\n  return a[0] + b[1];\n}";
         assert_eq!(format_file(input, 2), expected);
+    }
+
+    #[test]
+    fn a_short_block_with_a_comment_stays_on_several_lines() {
+        let input = "fn main() -> i32 {\n  let mut x = 1;\n  unsafe {\n    // set x\n    x = 2;\n  }\n  return x;\n}";
+        assert_eq!(format_file(input, 2), input);
     }
 
     #[test]
