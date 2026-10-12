@@ -128,6 +128,11 @@ pub enum DiagnosticCode {
     /// Call it inside `unsafe { .. }` to say that every element is written first, or use `::new()`
     /// for zeroed storage. A later version makes this an error.
     W1032,
+    /// The loop of a `spawn` region runs on one thread although each pass writes only memory of
+    /// its own, so its passes could run at the same time. The warning points at what stops it: a
+    /// call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass
+    /// writes, bounds not known when compiling, and the like.
+    W1033,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token

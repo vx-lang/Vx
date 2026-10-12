@@ -1760,6 +1760,11 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // W1033: a `spawn` loop that runs on one thread although its passes could run at once.
+        if !self.speculating {
+            self.warn_serial_spawn_loops(&func.body);
+        }
+
         // The whole function has been checked; verify the working set of each memory space
         // it places tiles into fits (or is `overcommit`). Clears the per-function placement map.
         self.check_cumulative_capacity();
