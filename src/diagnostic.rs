@@ -404,9 +404,10 @@ pub enum DiagnosticCode {
     /// value is dropped, so calling it as well would run it twice. Write `drop(x)`, from
     /// `core::mem`, to drop a value early.
     E4012,
-    /// A field moved out of a struct by value: `let x = p.a`, where `p.a` is a struct or enum
-    /// that is not `Copy`. `p` still owns the field and drops it, so the moved value would be
-    /// dropped twice. Clone the field (`p.a.clone()`) or borrow it (`&p.a`).
+    /// A field moved out of a value that must keep it: `let x = p.a` where `p`'s type
+    /// implements `Drop`, whose `drop` needs every field, or `let x = make().a`, where the
+    /// value has no name and drops all its fields at the end of the statement. Borrow the
+    /// field (`&p.a`), clone it, or bind the value to a variable first.
     E4013,
 
     // --- Safety Errors (E5xxx) ---
@@ -555,6 +556,9 @@ pub enum DiagnosticCode {
     /// `::uninit()`, with no type annotation, a size that uses nothing the region computes, and
     /// a name nothing outside the region already uses.
     E6030,
+    /// A tensor shape that folds to a negative extent, or whose size in bytes does not fit in 64
+    /// bits. The size is known, and it is not one the generated code can allocate: it would wrap.
+    E6031,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

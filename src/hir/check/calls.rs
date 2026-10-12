@@ -921,7 +921,7 @@ impl<'a> TypeChecker<'a> {
                     );
                     self.check_call_requires(resolved_name.as_ref(), args, span);
                     ret_ty.clone()
-                } else if let Some((mono_topology, param_types, mono_ret)) = self
+                } else if let Some((mono_topology, param_types, mono_ret, mono_unsafe)) = self
                     .mono
                     .functions
                     .iter()
@@ -935,10 +935,23 @@ impl<'a> TypeChecker<'a> {
                                 .map(|(_, t)| t.clone())
                                 .collect::<Vec<Type>>(),
                             func.0.return_type.clone(),
+                            func.0.is_unsafe,
                         )
                     })
                 {
                     self.record_call_edge(resolved_name.as_ref(), span);
+                    // An instance made by an earlier call keeps the template's `unsafe`.
+                    if mono_unsafe && !self.in_unsafe_block && !self.speculating {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E5001,
+                            format!(
+                                "Call to unsafe function '{}' is unsafe and requires unsafe \
+                                 function or block",
+                                resolved_name
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
+                    }
                     if !mono_topology.same_device(&self.active_topology) && !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E6001,
@@ -1604,6 +1617,18 @@ impl<'a> TypeChecker<'a> {
         }
 
         if let Some(generic_func) = found_generic_func {
+            // `Type::method(..)` calling an `unsafe fn` needs an unsafe context too.
+            if generic_func.is_unsafe && !self.in_unsafe_block && !self.speculating {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E5001,
+                    format!(
+                        "Call to unsafe function '{}' is unsafe and requires unsafe \
+                         function or block",
+                        resolved_name
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            }
             // Whatever the explicit type arguments left open, the arguments may fix, the way a
             // generic free function's call does: `Holder::make(7i32)` binds `T` without `<i32>`.
             // Walk only as far as both lists reach; a count mismatch is reported below.
@@ -2131,6 +2156,9 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
             }
+            if let Type::Tensor(elem, dims, _) = ty {
+                self.refuse_unrepresentable_shape(elem, dims, &call_span);
+            }
             return Some(ty.clone());
         }
         if resolved_name == "Verified" {
@@ -2196,7 +2224,8 @@ impl<'a> TypeChecker<'a> {
                         Dim::Dyn
                     }
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            self.refuse_unrepresentable_shape(&el_ty, &dims, &call_span);
             Some(Type::Tensor(el_ty, dims, None))
         } else if resolved_name.starts_with("Math::") {
             if args.len() != 1 {

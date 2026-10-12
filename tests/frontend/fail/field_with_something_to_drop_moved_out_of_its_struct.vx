@@ -7,9 +7,10 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 //
-// Moving a field out of a struct by value is refused (E4013) when the field has something to
-// drop: the struct still owns the field and drops it, so it would be dropped twice. Each
-// function moves such a field in a different way.
+// Reading a field that has something to drop moves it out of its struct. Two such moves are
+// refused, because nothing could stop the field being dropped twice: one out of a value with no
+// name (E4013), which drops all its fields at the end of the statement, and one through a
+// reference (E4008), which does not own the field.
 
 import core::ops;
 
@@ -28,22 +29,6 @@ struct Pair {
   b : Noisy,
 }
 
-struct Frame {
-  pair : Pair,
-}
-
-struct Holder {
-  t : Tensor<f32, [?]>,
-}
-
-struct Outer {
-  h : Holder,
-}
-
-fn take(n : Noisy) -> i32 {
-  return n.id;
-}
-
 fn make() -> Pair {
   return Pair {
     a : Noisy {
@@ -55,44 +40,15 @@ fn make() -> Pair {
   };
 }
 
-fn moved_by_let() -> i32 {
-  let p = make();
-  let x = p.a;
-  return x.id;
-}
-
-fn moved_into_a_call() -> i32 {
-  let p = make();
-  return take(p.a);
-}
-
-fn moved_by_return() -> Noisy {
-  let p = make();
-  return p.a;
-}
-
-fn nested_field() -> i32 {
-  let f = Frame {
-    pair : make()
-  };
-  let x = f.pair.b;
-  return x.id;
-}
-
-// A struct with a tensor field has something to drop too: the tensor's memory.
-fn field_that_holds_a_tensor() -> i32 {
-  let o = Outer {
-    h : Holder {
-      t : Tensor<f32>([4])
-    }
-  };
-  let h = o.h;
-  return 0;
-}
-
-// The call's result has no name and is dropped at the end of the statement.
 fn field_of_a_call_result() -> i32 {
+  // CHECK-DAG: Error[E4013] at [[@LINE+1]]:18: this field cannot be moved out of a value with no name
   let x = make().a;
+  return x.id;
+}
+
+fn field_through_a_reference(r : &Pair) -> i32 {
+  // CHECK-DAG: Error[E4008] at [[@LINE+1]]:16: this field cannot be moved out through a reference
+  let x = (*r).a;
   return x.id;
 }
 
@@ -100,10 +56,4 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: Error[E4013] at 60:13: `p.a` cannot be moved out of the struct that holds it
-// CHECK-DAG: Error[E4013] at 66:17: `p.a` cannot be moved out of the struct that holds it
-// CHECK-DAG: Error[E4013] at 71:12: `p.a` cannot be moved out of the struct that holds it
-// CHECK-DAG: Error[E4013] at 78:18: `f.pair.b` cannot be moved out of the struct that holds it
-// CHECK-DAG: Error[E4013] at 89:13: `o.h` cannot be moved out of the struct that holds it
-// CHECK-DAG: Error[E4013] at 95:18: this field cannot be moved out of the struct that holds it
-// CHECK: 6 error(s) emitted
+// CHECK: 2 error(s) emitted

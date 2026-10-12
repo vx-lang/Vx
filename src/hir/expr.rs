@@ -270,7 +270,7 @@ impl<'a> TypeChecker<'a> {
             Expr::MemberAccess(..) => {
                 let ty = self.check_memberaccess_expr(expr);
                 if consume {
-                    self.refuse_field_move(expr, &ty);
+                    self.move_field_out(expr, &ty);
                 }
                 ty
             }

@@ -1,0 +1,96 @@
+//===- fields_moved_out_by_return_or_from_a_nested_struct.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// A field moved out by `return`, or out of a struct inside a struct, is dropped once, by its
+// new owner. The struct it came from drops only the fields it still holds.
+//
+// CHECK: returned: 2 | 1 nested: 2 1 holder: done
+
+import core::ops;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print(self.id);
+    print!(" ");
+  }
+}
+
+struct Pair {
+  a : Noisy,
+  b : Noisy,
+}
+
+struct Frame {
+  pair : Pair,
+}
+
+struct Holder {
+  t : Tensor<f32, [?]>,
+}
+
+struct Outer {
+  h : Holder,
+}
+
+fn make() -> Pair {
+  return Pair {
+    a : Noisy {
+      id : 1
+    },
+    b : Noisy {
+      id : 2
+    }
+  };
+}
+
+// `p` drops `b` (2) here; the caller drops `a` (1).
+fn moved_by_return() -> Noisy {
+  let p = make();
+  return p.a;
+}
+
+// The caller keeps `a` (1) and drops it at its end.
+fn returned() -> void {
+  let _r = moved_by_return();
+  print!("| ");
+}
+
+// `_x` is `b` (2) and is dropped first; then `f` drops `a` (1).
+fn nested_field() -> void {
+  let f = Frame {
+    pair : make()
+  };
+  let _x = f.pair.b;
+}
+
+// A struct with a tensor field has something to drop too: the tensor's memory.
+fn field_that_holds_a_tensor() -> void {
+  let o = Outer {
+    h : Holder {
+      t : Tensor<f32>([4])
+    }
+  };
+  let _h = o.h;
+}
+
+fn main() -> i32 {
+  print!("returned: ");
+  returned();
+  print!("nested: ");
+  nested_field();
+  print!("holder: ");
+  field_that_holds_a_tensor();
+  print!("done");
+  return 0;
+}
