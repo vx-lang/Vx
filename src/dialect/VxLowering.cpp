@@ -3967,6 +3967,34 @@ struct ReorderableReductionsPass
   }
 };
 
+// A function the program defines is hidden: the linked executable does not
+// export it. An exported `write` replaced libc's for the shared runtime
+// library too, so `print`, which calls `write`, called the program's function
+// instead. `main` stays visible, and so does each `_mlir_ciface_` entry point,
+// which the dispatch runtime looks up by name.
+struct HideProgramSymbolsPass
+    : public PassWrapper<HideProgramSymbolsPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(HideProgramSymbolsPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-hide-program-symbols";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Gives the functions a program defines hidden visibility";
+  }
+
+  void runOnOperation() override {
+    getOperation().walk([](LLVM::LLVMFuncOp func) {
+      llvm::StringRef name = func.getSymName();
+      if (func.isExternal() || name == "main" ||
+          name.starts_with("_mlir_ciface_"))
+        return;
+      func.setVisibility_(LLVM::Visibility::Hidden);
+    });
+  }
+};
+
 } // namespace
 
 namespace mlir {
@@ -3989,6 +4017,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<ReorderableReductionsPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<HideProgramSymbolsPass>();
   });
 }
 } // namespace vx

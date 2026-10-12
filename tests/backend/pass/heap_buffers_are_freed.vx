@@ -32,13 +32,13 @@
 // MALLOC-COUNT-4: llvm.call @malloc
 // MALLOC-NOT: llvm.call @malloc
 
-// FREE-LABEL: llvm.func @main(
+// FREE-LABEL: llvm.func {{(hidden )?}}@main(
 // FREE: llvm.call @free
-// FREE-LABEL: llvm.func @pick(
+// FREE-LABEL: llvm.func {{(hidden )?}}@pick(
 // FREE: llvm.call @free
-// FREE-LABEL: llvm.func @make(
+// FREE-LABEL: llvm.func {{(hidden )?}}@make(
 // FREE-NOT: llvm.call @free
-// FREE-LABEL: llvm.func @fill_and_read(
+// FREE-LABEL: llvm.func {{(hidden )?}}@fill_and_read(
 // FREE: llvm.call @free
 
 // Every read happens before its tensor is freed, so every answer is the value that was written:

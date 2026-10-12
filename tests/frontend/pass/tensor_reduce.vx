@@ -20,7 +20,7 @@
 // CHECK: func.call @Closure_1_call(%{{.*}}, %[[RUNNING]], %[[X]])
 // CHECK: memref.load %[[ACC]][] : memref<f32>
 //
-// LLVM-LABEL: llvm.func @Closure_1_call
+// LLVM-LABEL: llvm.func {{(hidden )?}}@Closure_1_call
 // LLVM: llvm.fadd {{.*}}fastmath<reassoc>
 
 fn main() -> i32 {

@@ -214,7 +214,7 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     // the promoted allocation a frame slot instead of per-iteration stack growth (#641). What
     // stays on the heap is freed at its drop, by convert-vx-to-standard.
     // See the fuller note on the copy of this pipeline in src/driver.rs.
-    pipeline.push_str("symbol-dce,func.func(convert-linalg-to-loops,lower-affine),convert-scf-to-cf,expand-strided-metadata,func.func(vx-promote-buffers-to-stack),func.func(vx-normalize-stack-buffers),func.func(lower-affine),convert-vector-to-llvm,finalize-memref-to-llvm,convert-func-to-llvm,convert-index-to-llvm,convert-math-to-llvm,convert-math-to-libm,convert-func-to-llvm,convert-cf-to-llvm,convert-arith-to-llvm,convert-ub-to-llvm,reconcile-unrealized-casts)");
+    pipeline.push_str("symbol-dce,func.func(convert-linalg-to-loops,lower-affine),convert-scf-to-cf,expand-strided-metadata,func.func(vx-promote-buffers-to-stack),func.func(vx-normalize-stack-buffers),func.func(lower-affine),convert-vector-to-llvm,finalize-memref-to-llvm,convert-func-to-llvm,convert-index-to-llvm,convert-math-to-llvm,convert-math-to-libm,convert-func-to-llvm,convert-cf-to-llvm,convert-arith-to-llvm,convert-ub-to-llvm,reconcile-unrealized-casts,vx-hide-program-symbols)");
 
     melior::utility::parse_pass_pipeline(pass_manager.as_operation_pass_manager(), &pipeline)
         .map_err(|e| format!("Failed to parse pass pipeline: {}", e))?;
