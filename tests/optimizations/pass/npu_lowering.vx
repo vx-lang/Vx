@@ -35,7 +35,12 @@ fn process(t : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
 // string that carries the kernel name, its topology id and the topology's name -- the ABI a
 // worker reads. The kernel itself becomes an ordinary exported function.
 // VXLLVM: llvm.func @vx_plugin_dispatch_async(!llvm.ptr, i64, !llvm.ptr, !llvm.ptr, i64) -> i64
-// VXLLVM: llvm.mlir.global internal constant @[[S:[a-z0-9_]+]]_str("vx_npu_kernel_0\00topo=100\00toponame=NPU[0]\00")
+// The keys the dispatch ABI is built on, not the whole entry list. The payload grows by design
+// -- a version key, a kernel kind, an image format (docs/gpu_backends.md, "Shared work before a
+// second backend", item 2) -- so a byte-exact check here goes red on each addition while
+// asserting nothing this fixture is about, which is that the name, the topology id and the
+// topology's name reach the worker.
+// VXLLVM: llvm.mlir.global internal constant @[[S:[a-z0-9_]+]]_str("vx_npu_kernel_0\00{{[^"]*}}topo=100\00toponame=NPU[0]\00")
 // VXLLVM: %[[D:.*]] = llvm.mlir.addressof @[[S]]_str : !llvm.ptr
 // VXLLVM: llvm.call @vx_plugin_dispatch_async(%[[D]], %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i64, !llvm.ptr, !llvm.ptr, i64) -> i64
 // VXLLVM: @vx_npu_kernel_0(%arg0: {{.*}}) attributes {llvm.emit_c_interface}
