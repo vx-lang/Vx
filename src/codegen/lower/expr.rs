@@ -176,6 +176,61 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
 }
 
 /// The aligned data pointer of a scalar memref, as a bare `!llvm.ptr`.
+/// A `memref<memref<..>>` whose storage is the slot `slot` points at: the rank-0 descriptor
+/// `{allocated, aligned, offset}` with both pointers set to `slot` and offset 0.
+fn field_borrow<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    slot: Value<'c, 'c>,
+    box_ty: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let desc_ty = Type::parse(gen.context, "!llvm.struct<(ptr, ptr, i64)>")
+        .ok_or_else(|| LowerError::from("a rank-0 memref descriptor".to_string()))?;
+    let op = |name: &str| OperationBuilder::new(name, gen.loc());
+    let mut desc: Value = block
+        .append_operation(op("llvm.mlir.undef").add_results(&[desc_ty]).build()?)
+        .result(0)?
+        .into();
+    let zero: Value = block
+        .append_operation(
+            op("llvm.mlir.constant")
+                .add_results(&[gen.i64_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(gen.i64_ty, 0).into(),
+                )])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    for (pos, part) in [(0, slot), (1, slot), (2, zero)] {
+        desc = block
+            .append_operation(
+                op("llvm.insertvalue")
+                    .add_operands(&[desc, part])
+                    .add_results(&[desc_ty])
+                    .add_attributes(&[(
+                        Identifier::new(gen.context, "position"),
+                        Attribute::parse(gen.context, &format!("array<i64: {pos}>")).ok_or_else(
+                            || LowerError::from("an insertvalue position".to_string()),
+                        )?,
+                    )])
+                    .build()?,
+            )
+            .result(0)?
+            .into();
+    }
+    Ok(block
+        .append_operation(
+            op("builtin.unrealized_conversion_cast")
+                .add_operands(&[desc])
+                .add_results(&[box_ty])
+                .build()?,
+        )
+        .result(0)?
+        .into())
+}
+
 fn memref_data_pointer<'c>(
     gen: &MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
@@ -454,6 +509,19 @@ impl<'c> LowerToMelior<'c> for BorrowExpr {
         let (val, ty, block) = gen.generate_expr(expr, block)?;
         gen.is_lvalue_context = prev_lvalue;
         let ptr_ty = gen.ptr_ty;
+        // `&mut s.t`, a struct's tensor field: a borrowed tensor is a `memref<memref<..>>`, whose
+        // descriptor is `{ptr, ptr, offset}`. Pointing both at the field makes it a borrow of the
+        // field itself, so a callee that writes the tensor writes the struct's.
+        if ty == ptr_ty && matches!(&**expr, Expr::MemberAccess(_)) {
+            if let Some(field_ty @ syntax::Type::Tensor(..)) = gen.infer_ast_type(expr) {
+                let tensor_ty = gen.lower_type(&field_ty)?;
+                let box_ty =
+                    Type::parse(gen.context, &format!("memref<{tensor_ty}>")).ok_or_else(|| {
+                        LowerError::from("a borrowed tensor field's type".to_string())
+                    })?;
+                return Ok((field_borrow(gen, block, val, box_ty)?, box_ty, block));
+            }
+        }
         // A place lowered to its address. A value that is itself a pointer, `&a` in `&(&a)`,
         // gets a slot below like any other value, or the outer `&` would be lost.
         if ty == ptr_ty && is_place {
