@@ -939,6 +939,50 @@ impl CompilerDriver {
         Ok((ast, module_syntaxes))
     }
 
+    /// The enums of the loaded `.vxlib` files, as declarations the type checker can look up. A
+    /// `.vxlib` is never parsed, so without these `Color::Green` is an unknown enum. A `.vxlib`
+    /// saves only enums whose variants hold no data.
+    fn interface_enums(
+        registry: &crate::registry::ImmutableGlobalRegistry,
+        programs: &[crate::syntax::Program],
+    ) -> Option<crate::syntax::Program> {
+        let defined: std::collections::HashSet<&crate::symbol::Symbol> = programs
+            .iter()
+            .flat_map(|p| p.enums.iter().map(|e| &e.name))
+            .collect();
+        let mut enums: Vec<crate::syntax::EnumDecl> = registry
+            .enum_variants
+            .iter()
+            .filter(|(name, _)| !defined.contains(name))
+            .map(|(name, variants)| crate::syntax::EnumDecl {
+                name: name.clone(),
+                generics: Vec::new(),
+                variants: variants.iter().map(|v| (v.clone(), None)).collect(),
+                doc_comment: None,
+            })
+            .collect();
+        if enums.is_empty() {
+            return None;
+        }
+        enums.sort_by(|a, b| a.name.as_ref().cmp(b.name.as_ref()));
+        Some(crate::syntax::Program {
+            item_macros: Vec::new(),
+            module_path: "<interfaces>".into(),
+            imports: Vec::new(),
+            macros: Vec::new(),
+            externs: Vec::new(),
+            structs: Vec::new(),
+            enums,
+            traits: Vec::new(),
+            impls: Vec::new(),
+            functions: Vec::new(),
+            consts: Vec::new(),
+            topologies: Vec::new(),
+            memories: Vec::new(),
+            transfer_impls: Vec::new(),
+        })
+    }
+
     fn run_semantic_analysis(
         &self,
         ast: &mut crate::syntax::Program,
@@ -958,6 +1002,9 @@ impl CompilerDriver {
         // monomorphized instance names.
         let mut env_progs: Vec<crate::syntax::Program> = other_asts.values().cloned().collect();
         env_progs.push(ast.clone_signature());
+        if let Some(p) = Self::interface_enums(&global_session.registry, &env_progs) {
+            env_progs.push(p);
+        }
         let mut env = GlobalAstEnv::build(&env_progs);
         // The entry module was pushed signature-stripped; refill its return-provenance summaries
         // from the full module so intra-module calls get per-parameter precision (#243). The
