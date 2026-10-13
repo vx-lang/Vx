@@ -239,7 +239,7 @@ A `?` marks a dimension that is only known at runtime:
 ```rust
 fn matmul(a : Tensor<f32, [?, ?]>, b : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
     let mut result : Tensor<f32, [?, ?]> =
-        Tensor<f32, [?, ?]>::uninit([a.extent(0), b.extent(1)]);
+        unsafe { Tensor<f32, [?, ?]>::uninit([a.extent(0), b.extent(1)]) };
 
     for i in 0..a.extent(0) {
         for j in 0..b.extent(1) {

@@ -95,7 +95,7 @@ Memory GPU_HBM {
 }
 
 fn main() -> i32 {
-  let mut a_h = Tensor<f32, [2, 2]>::uninit();
+  let mut a_h = unsafe { Tensor<f32, [2, 2]>::uninit() };
   for i in 0..2 {
     for j in 0..2 {
       a_h[i][j] = 1.0;

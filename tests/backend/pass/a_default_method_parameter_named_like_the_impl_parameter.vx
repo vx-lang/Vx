@@ -1,0 +1,33 @@
+//===- a_default_method_parameter_named_like_the_impl_parameter.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A trait's default method `other<U>` used through `impl<U> Pick for Holder<U>`. The two `U`s
+// are different types: `Holder<i64>.other(2.5)` takes and returns an f64, so this prints 7.
+
+trait Pick {
+  fn other<U>(self : &Self, given : U) -> U {
+    let kept : U = given;
+    return kept;
+  }
+}
+
+struct Holder<U> {
+  value : U,
+}
+
+impl<U> Pick for Holder<U> {}
+
+fn main() -> i32 {
+  let h = Holder<i64> {
+    value : 4i64
+  };
+  let x : f64 = h.other(2.5f64);
+  print((x * 2.0f64) as i64 + 2i64);
+  return 0;
+}
+
+// EXPECT: 7

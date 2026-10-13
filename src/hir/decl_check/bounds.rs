@@ -60,7 +60,12 @@ impl TypeChecker<'_> {
             };
             collect(&owner, &block.generics);
             let impl_params: Vec<&str> = block.generics.iter().map(|g| g.name()).collect();
-            for m in &block.methods {
+            // A trait default copied into the impl is reported on the trait.
+            for m in block
+                .methods
+                .iter()
+                .filter(|m| !block.copied_defaults.contains(&m.name))
+            {
                 // A method is also given its impl's parameters, already reported above.
                 let own: Vec<decl::GenericParam> = m
                     .generics

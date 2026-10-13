@@ -37,9 +37,9 @@ fn scale_twice(out : &mut Tensor<f32, [1024, 1], Memory::HBM>, a : &Tensor<f32, 
 }
 
 fn main() -> i32 {
-  let ha = Tensor<f32, [1024, 1]>::uninit();
+  let ha = unsafe { Tensor<f32, [1024, 1]>::uninit() };
   let a = transfer(ha, Memory::HBM);
-  let ho = Tensor<f32, [1024, 1]>::uninit();
+  let ho = unsafe { Tensor<f32, [1024, 1]>::uninit() };
   let mut o = transfer(ho, Memory::HBM);
   scale_twice(&mut o, &a);
   return 0;

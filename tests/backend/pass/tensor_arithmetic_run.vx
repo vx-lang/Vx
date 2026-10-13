@@ -39,7 +39,7 @@
 
 // A 2x2 written out position by position.
 fn t2(v00 : f32, v01 : f32, v10 : f32, v11 : f32) -> Tensor<f32, [2, 2]> {
-  let mut t = Tensor<f32, [2, 2]>::uninit();
+  let mut t = unsafe { Tensor<f32, [2, 2]>::uninit() };
   t[0][0] = v00;
   t[0][1] = v01;
   t[1][0] = v10;
@@ -49,7 +49,7 @@ fn t2(v00 : f32, v01 : f32, v10 : f32, v11 : f32) -> Tensor<f32, [2, 2]> {
 
 // A 2x3 of 1..6, laid out row by row.
 fn wide() -> Tensor<f32, [2, 3]> {
-  let mut x = Tensor<f32, [2, 3]>::uninit();
+  let mut x = unsafe { Tensor<f32, [2, 3]>::uninit() };
   for i in 0..2 {
     for j in 0..3 {
       x[i][j] = (i * 3 + j + 1) as f32;
@@ -61,7 +61,7 @@ fn wide() -> Tensor<f32, [2, 3]> {
 // A 3x2 of 1..6. Not the transpose of `wide`, so multiplying the two in the
 // wrong order or transposing either one gives different numbers.
 fn tall() -> Tensor<f32, [3, 2]> {
-  let mut y = Tensor<f32, [3, 2]>::uninit();
+  let mut y = unsafe { Tensor<f32, [3, 2]>::uninit() };
   for i in 0..3 {
     for j in 0..2 {
       y[i][j] = (i * 2 + j + 1) as f32;
