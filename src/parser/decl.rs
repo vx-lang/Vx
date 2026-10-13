@@ -1108,6 +1108,7 @@ impl<'a> Parser<'a> {
         };
 
         self.consume(&TokenType::LeftBrace, "Expected '{' after impl target")?;
+        let outer_self = self.impl_self.replace(target_type.clone());
         let mut methods = Vec::new();
         let mut assoc_bindings: Vec<(crate::symbol::Symbol, Type)> = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -1162,6 +1163,7 @@ impl<'a> Parser<'a> {
             methods.push(method);
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        self.impl_self = outer_self;
 
         for _ in 0..generics.len() {
             self.generic_params.pop();
