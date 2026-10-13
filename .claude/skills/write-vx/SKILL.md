@@ -1,6 +1,7 @@
-______________________________________________________________________
-
-## name: write-vx description: Write, fix or explain a Vx program (a .vx file). Use when adding a test fixture, an example, a benchmark or library code in Vx, or when a .vx file does not compile.
+---
+name: write-vx
+description: Write, fix or explain a Vx program (a .vx file). Use when adding a test fixture, an example, a benchmark or library code in Vx, or when a .vx file does not compile.
+---
 
 # Writing Vx
 
