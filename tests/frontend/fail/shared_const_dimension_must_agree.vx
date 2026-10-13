@@ -21,8 +21,8 @@ fn same_len<const N : i32>(a : Tensor<f32, [N]>, b : Tensor<f32, [N]>) -> i32 {
 }
 
 fn main() -> i32 {
-  let x = Tensor<f32, [4]>::uninit();
-  let y = Tensor<f32, [7]>::uninit();
+  let x = unsafe { Tensor<f32, [4]>::uninit() };
+  let y = unsafe { Tensor<f32, [7]>::uninit() };
   // No `N` satisfies both arguments, so there is no instance to call.
   print(same_len(x, y));
   return 0;

@@ -940,6 +940,50 @@ impl CompilerDriver {
         Ok((ast, module_syntaxes))
     }
 
+    /// The enums of the loaded `.vxlib` files, as declarations the type checker can look up. A
+    /// `.vxlib` is never parsed, so without these `Color::Green` is an unknown enum. A `.vxlib`
+    /// saves only enums whose variants hold no data.
+    fn interface_enums(
+        registry: &crate::registry::ImmutableGlobalRegistry,
+        programs: &[crate::syntax::Program],
+    ) -> Option<crate::syntax::Program> {
+        let defined: std::collections::HashSet<&crate::symbol::Symbol> = programs
+            .iter()
+            .flat_map(|p| p.enums.iter().map(|e| &e.name))
+            .collect();
+        let mut enums: Vec<crate::syntax::EnumDecl> = registry
+            .enum_variants
+            .iter()
+            .filter(|(name, _)| !defined.contains(name))
+            .map(|(name, variants)| crate::syntax::EnumDecl {
+                name: name.clone(),
+                generics: Vec::new(),
+                variants: variants.iter().map(|v| (v.clone(), None)).collect(),
+                doc_comment: None,
+            })
+            .collect();
+        if enums.is_empty() {
+            return None;
+        }
+        enums.sort_by(|a, b| a.name.as_ref().cmp(b.name.as_ref()));
+        Some(crate::syntax::Program {
+            item_macros: Vec::new(),
+            module_path: "<interfaces>".into(),
+            imports: Vec::new(),
+            macros: Vec::new(),
+            externs: Vec::new(),
+            structs: Vec::new(),
+            enums,
+            traits: Vec::new(),
+            impls: Vec::new(),
+            functions: Vec::new(),
+            consts: Vec::new(),
+            topologies: Vec::new(),
+            memories: Vec::new(),
+            transfer_impls: Vec::new(),
+        })
+    }
+
     fn run_semantic_analysis(
         &self,
         ast: &mut crate::syntax::Program,
@@ -959,6 +1003,9 @@ impl CompilerDriver {
         // monomorphized instance names.
         let mut env_progs: Vec<crate::syntax::Program> = other_asts.values().cloned().collect();
         env_progs.push(ast.clone_signature());
+        if let Some(p) = Self::interface_enums(&global_session.registry, &env_progs) {
+            env_progs.push(p);
+        }
         let mut env = GlobalAstEnv::build(&env_progs);
         // The entry module was pushed signature-stripped; refill its return-provenance summaries
         // from the full module so intra-module calls get per-parameter precision (#243). The
@@ -1487,6 +1534,29 @@ impl CompilerDriver {
                 print_program_output(&out);
             }
             Action::EmitObj => {
+                let output_path = self.options.output.clone().unwrap_or_else(|| {
+                    let mut p = main_file.to_path_buf();
+                    p.set_extension("o");
+                    p
+                });
+
+                // `grad`, `vjp` and `jvp` are calls that the Enzyme pass in `opt` fills in.
+                // The execution engine below never runs it, so such a program is built the
+                // way `run-jit` builds one.
+                let mlir_str = format!("{}", module.as_operation());
+                if mlir_str.contains("__enzyme_") {
+                    let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+                    let obj = crate::jit::compile_mlir_to_object(
+                        &mlir_str,
+                        temp_dir.path(),
+                        self.options.opt_level,
+                        self.options.disable_llvm_optimizations,
+                    )?;
+                    std::fs::copy(&obj, &output_path)
+                        .map_err(|e| format!("could not write '{}': {e}", output_path.display()))?;
+                    return Ok(());
+                }
+
                 // One resolution, shared with the JIT. This arm used to build its own list from
                 // bare filenames, which MLIR resolves against the process CWD, so it looked for
                 // `libmlir_runner_utils` in the repo root; and for the dispatch plugin under
@@ -1494,12 +1564,6 @@ impl CompilerDriver {
                 // and producing no object.
                 let engine =
                     crate::jit::ObjectEmitter::new(&module, self.options.opt_level as usize)?;
-
-                let output_path = self.options.output.clone().unwrap_or_else(|| {
-                    let mut p = main_file.to_path_buf();
-                    p.set_extension("o");
-                    p
-                });
 
                 // Whether an object was actually written is the only thing that says this
                 // succeeded. `dump_to_object_file` returns nothing and the arm returned `Ok(())`

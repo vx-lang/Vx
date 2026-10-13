@@ -28,7 +28,7 @@
 //   `AcqRel` as a failure ordering, `Relaxed` for a fence) fails an `assert` here.
 // - Vx has no threads yet, so nothing here has been run by more than one thread.
 //
-// Not here: `AtomicPtr<T>` (an `mlir!` block in a generic impl cannot answer `*mut T`),
+// Not here: `AtomicPtr<T>` (not written yet),
 // `AtomicIsize` (Vx has no `isize`), `AtomicI128`/`AtomicU128` (unstable in Rust),
 // `as_ptr` and `get_mut` on `AtomicBool` (it is held as a byte), `from_ptr` and the
 // `from_mut`/`get_mut_slice` family (want turning a pointer into a reference, and slices),

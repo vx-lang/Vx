@@ -39,20 +39,20 @@
 // CHECK: arith.mulf %{{.*}}, %{{.*}} : vector<10xf64>
 
 fn tensor_add() -> void {
-  let a = Tensor<f32, [4, 4]>::uninit();
-  let b = Tensor<f32, [4, 4]>::uninit();
+  let a = unsafe { Tensor<f32, [4, 4]>::uninit() };
+  let b = unsafe { Tensor<f32, [4, 4]>::uninit() };
   let c = a + b;
 }
 
 fn matmul_basic() -> void {
-  let x = Tensor<f32, [2, 3]>::uninit();
-  let y = Tensor<f32, [3, 4]>::uninit();
+  let x = unsafe { Tensor<f32, [2, 3]>::uninit() };
+  let y = unsafe { Tensor<f32, [3, 4]>::uninit() };
   let z = x @ y;
 }
 
 fn elementwise_f64() -> void {
-  let t1 = Tensor<f64, [10]>::uninit();
-  let t2 = Tensor<f64, [10]>::uninit();
+  let t1 = unsafe { Tensor<f64, [10]>::uninit() };
+  let t2 = unsafe { Tensor<f64, [10]>::uninit() };
   let s = t1 * t2;
 }
 

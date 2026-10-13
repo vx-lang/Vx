@@ -24,7 +24,7 @@
 // LLVM: llvm.fadd {{.*}}fastmath<reassoc>
 
 fn main() -> i32 {
-  let mut a = Tensor<f32, [2, 3]>::uninit();
+  let mut a = unsafe { Tensor<f32, [2, 3]>::uninit() };
   for i in 0..2 {
     for j in 0..3 {
       a[i][j] = (i * 3 + j + 1) as f32;

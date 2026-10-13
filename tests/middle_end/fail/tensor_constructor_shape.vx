@@ -20,7 +20,7 @@
 // CHECK-DAG: every extent has to be known at compile time
 
 fn shape_written_twice() -> i32 {
-  let t = Tensor<f32, [ 2, 2 ]>::uninit([ 2, 2 ]);
+  let t = unsafe { Tensor<f32, [ 2, 2 ]>::uninit([ 2, 2 ]) };
   return 0;
 }
 
@@ -30,7 +30,7 @@ fn shape_written_nowhere() -> i32 {
 }
 
 fn shape_not_known_until_run_time(n : i32) -> i32 {
-  let t = Tensor<f32, [ n, n ]>::uninit();
+  let t = unsafe { Tensor<f32, [ n, n ]>::uninit() };
   return 0;
 }
 

@@ -514,11 +514,11 @@ impl<'a> TypeChecker<'a> {
             // `raw::extent(t)` folds to its literal element count first: the prover cannot
             // lower a function call, so `let n = raw::extent(src)` would otherwise record
             // an unlowerable fact and every bound written against `n` would be unprovable
-            // (Vx#353).
+            // (Vx#353). An `unsafe` block holding only a value is that value.
             let eq_expr = Expr::RelationalOp(RelationalOpExpr {
                 lhs: Box::new(id_expr),
                 op: RelationalOp::Eq,
-                rhs: Box::new(self.fold_raw_extent(expr)),
+                rhs: Box::new(self.fold_raw_extent(crate::syntax::bare_unsafe_value(expr))),
                 span: Span::default(),
                 operand_ty: None,
             });
@@ -1143,7 +1143,26 @@ impl<'a> TypeChecker<'a> {
         // Check the RHS expecting the target's type, so an untyped literal is born at that
         // type (`a[i] = 1.0` into a bf16 tensor, `r = 5` into an i64 slot) rather than
         // defaulting and mismatching (#240).
-        let mut rhs_ty = self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume);
+        // `*t = v` with `t : &mut Tensor<..>` copies `v`'s elements into the tensor `t` refers
+        // to, so it reads `v` rather than moving it. The copy needs the shapes to match, which a
+        // `?` extent does not promise.
+        let copies_into_tensor =
+            matches!(lhs, Expr::Dereference(_)) && matches!(lhs_ty, Type::Tensor(..));
+        if let (true, Type::Tensor(_, dims, _)) = (copies_into_tensor, &lhs_ty) {
+            if dims.iter().any(|d| d.as_static().is_none()) && !self.speculating {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3003,
+                    format!(
+                        "assigning through a reference writes the new values into the tensor it \
+                         refers to, so the shapes have to match, and a `?` extent in `{lhs_ty}` \
+                         does not say they do; write the elements one by one"
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&lhs.span())),
+                );
+            }
+        }
+        let mut rhs_ty =
+            self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume && !copies_into_tensor);
         self.current_assignment_target = None;
         if let Some(borrows) = lhs_borrows {
             self.borrow.forget(&borrows);
@@ -1185,13 +1204,26 @@ impl<'a> TypeChecker<'a> {
             // Named types and a location, like every other type error: this fires on a
             // narrowing store into half storage, where the fix is to write the `as` the
             // language requires rather than to guess what was meant.
-            self.errors.error_with_code(
-                crate::diagnostic::DiagnosticCode::E3004,
+            // A type is printed without its lifetimes, so two references that differ only
+            // there print the same, and a cast cannot help.
+            let message = if matches!(lhs_ty, Type::Borrow { .. })
+                && lhs_ty.to_string() == rhs_ty.to_string()
+            {
+                format!(
+                    "Type mismatch in assignment: both sides are {}, but they are valid in \
+                     different blocks. A cast cannot change how long a reference is valid",
+                    lhs_ty
+                )
+            } else {
                 format!(
                     "Type mismatch in assignment: cannot assign {} to {}; write an explicit \
                      `as` cast if the conversion is intended",
                     rhs_ty, lhs_ty
-                ),
+                )
+            };
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3004,
+                message,
                 Some(crate::diagnostic::SourceSpan::from_ast_span(&lhs.span())),
             );
         }

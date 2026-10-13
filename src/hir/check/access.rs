@@ -353,6 +353,7 @@ impl<'a> TypeChecker<'a> {
                     .then(|| self.moved_field(name.as_ref(), &[]))
                     .flatten();
                 if let Some(field) = moved_field {
+                    let field = crate::hir::places::display_dotted(&field);
                     if !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E4001,
@@ -780,6 +781,7 @@ impl<'a> TypeChecker<'a> {
                         path.push(member.to_string());
                         if let Some(field) = self.moved_field(&root, &path).filter(|_| !base_moved)
                         {
+                            let field = crate::hir::places::display_dotted(&field);
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E4001,
                                 format!("`{field}` was moved out of `{root}` and has no value"),
@@ -1027,11 +1029,20 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The same at the root of a place: `(*t)[i][j] = x` writes `t[i][j]`, and the place is
-    /// rooted at `t` for the borrow checks.
+    /// rooted at `t` for the borrow checks. A bare `*t = x` keeps its `*`: it replaces the
+    /// tensor `t` refers to, not `t`.
     pub(crate) fn strip_tensor_deref_at_root(&self, place: &mut Expr) {
         match place {
-            Expr::IndexAccess(ix) => self.strip_tensor_deref_at_root(&mut ix.base),
-            Expr::MemberAccess(m) => self.strip_tensor_deref_at_root(&mut m.base),
+            Expr::IndexAccess(ix) => self.strip_tensor_deref_under(&mut ix.base),
+            Expr::MemberAccess(m) => self.strip_tensor_deref_under(&mut m.base),
+            _ => {}
+        }
+    }
+
+    fn strip_tensor_deref_under(&self, base: &mut Expr) {
+        match base {
+            Expr::IndexAccess(ix) => self.strip_tensor_deref_under(&mut ix.base),
+            Expr::MemberAccess(m) => self.strip_tensor_deref_under(&mut m.base),
             other => self.strip_tensor_deref(other),
         }
     }

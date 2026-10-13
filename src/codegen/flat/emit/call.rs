@@ -232,6 +232,9 @@ impl FnEmit<'_> {
             } else if let Some(agg) = self.ctx.aggs.get(&gid) {
                 self.agg_val_of[idx] = Some(gid);
                 Some(agg.struct_ty.clone())
+            } else if gid == ptr_gid() {
+                self.ptr_of[idx] = true;
+                Some("!llvm.ptr".to_string())
             } else {
                 return Err(crate::emitter_gap!());
             }

@@ -153,7 +153,7 @@ fn other_widths() -> i32 {
 }
 
 fn static_shapes() -> i32 {
-  let mut m = Tensor<f32, [2, 3]>::uninit();
+  let mut m = unsafe { Tensor<f32, [2, 3]>::uninit() };
   for i in 0..2 {
     for j in 0..3 {
       m[i][j] = (i * 3 + j) as f32;
@@ -164,8 +164,8 @@ fn static_shapes() -> i32 {
   let rows = m.sum_axis(1);
   print(rows[1]);
   print!(" | ");
-  let mut v = Tensor<f32, [8]>::uninit();
-  let mut ones = Tensor<f32, [8]>::uninit();
+  let mut v = unsafe { Tensor<f32, [8]>::uninit() };
+  let mut ones = unsafe { Tensor<f32, [8]>::uninit() };
   for i in 0..8 {
     v[i] = i as f32;
     ones[i] = 1.0;
