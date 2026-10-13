@@ -192,9 +192,15 @@ impl<'a> TypeChecker<'a> {
                         );
                     }
                 } else if !self.speculating {
+                    let poisoned = self.worker.global.registry.poisoned_reason(enum_name)
+                        == Some(crate::registry::PoisonKind::EnumVariant);
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E2003,
-                        format!("Unknown enum {}", enum_name),
+                        if poisoned {
+                            crate::registry::ambiguous_import_message("Enum", enum_name)
+                        } else {
+                            format!("Unknown enum {}", enum_name)
+                        },
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 }

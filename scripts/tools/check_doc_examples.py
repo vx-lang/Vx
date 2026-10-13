@@ -19,6 +19,13 @@ not skipped by one of the rules below. To exempt a block deliberately, put
 
 on the line before its fence, ideally with a reason.
 
+Most blocks are only parsed. A block marked
+
+    <!-- vx-doctest: run -->
+
+is compiled and run instead, and what it prints must equal the ```text block that follows it
+(one short line, such as "It prints:", may come between them).
+
 The hand-written pages under `www/` are checked as well, through their `<pre><code>` blocks. The
 landing page carries the most-read Vx code on the site and was the only code on it that nothing
 compiled -- everything in the book is covered because the book is markdown. The same skip comment
@@ -37,7 +44,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-FENCE = re.compile(r"(?:(<!--\s*vx-doctest:\s*skip.*?-->)\s*\n)?```(vx|rust)\n(.*?)```", re.S)
+FENCE = re.compile(
+    r"(?:<!--\s*vx-doctest:\s*(skip|run).*?-->\s*\n)?```(vx|rust)\n(.*?)```", re.S
+)
+# The expected output, after at most one short line such as "It prints:".
+OUTPUT = re.compile(r"\s*(?:[^`\n]+\n\s*)?```text\n(.*?)```", re.S)
 
 # The same idea for the hand-written pages: a <pre><code> block, optionally preceded by the skip
 # comment. Their code carries syntax highlighting as <span> tags, which are stripped before the
@@ -78,13 +89,19 @@ def blocks(path):
             # then stripped.
             body = html.unescape(TAG.sub("", body))
             line = text[: m.start()].count("\n") + 1
-            yield line, "vx", body, bool(skip_marker)
+            yield line, "vx", body, bool(skip_marker), None
         return
 
     for m in FENCE.finditer(text):
-        skip_marker, lang, body = m.group(1), m.group(2), m.group(3)
+        marker, lang, body = m.group(1), m.group(2), m.group(3)
         line = text[: m.start()].count("\n") + 1
-        yield line, lang, body, bool(skip_marker)
+        expected = None
+        if marker == "run":
+            out = OUTPUT.match(text, m.end())
+            if not out:
+                raise SystemExit(f"{path}:{line}: a `run` block needs a ```text block after it")
+            expected = out.group(1)
+        yield line, lang, body, marker == "skip", expected
 
 
 def classify(body, lang, skipped):
@@ -96,6 +113,22 @@ def classify(body, lang, skipped):
         return "contains an elision"
     if RUST_ONLY.search(body):
         return "Rust, not Vx"
+    return None
+
+
+def run_and_compare(vxc, source, expected):
+    """Compile and run one program; an error message, or None when it printed `expected`."""
+    ran = subprocess.run([vxc, source], capture_output=True, text=True)
+    # The compiler's own progress lines are printed beside the program's output.
+    printed = "".join(
+        l for l in ran.stdout.splitlines(keepends=True) if not l.startswith(("[JIT]", "[flat-codegen]"))
+    )
+    if ran.returncode != 0:
+        lines = (ran.stdout + ran.stderr).strip().splitlines()
+        return next((l for l in lines if re.search(r"\berror\b", l, re.I)), lines[-1] if lines else "failed")
+    # The runner ends with an empty line of its own.
+    if printed.rstrip("\n") != expected.rstrip("\n"):
+        return f"printed {printed!r}, the text block after it says {expected!r}"
     return None
 
 
@@ -125,7 +158,7 @@ def main():
     for path in sorted(files):
         if not path.exists():
             continue
-        for line, lang, body, marked in blocks(path):
+        for line, lang, body, marked, expected in blocks(path):
             reason = classify(body, lang, marked)
             if reason:
                 skipped += 1
@@ -142,6 +175,11 @@ def main():
                 fh.write(body)
                 tmp = fh.name
             try:
+                if expected is not None:
+                    err = run_and_compare(vxc, tmp, expected)
+                    if err:
+                        failures.append((path, line, err.replace(tmp, f"{path}:{line}")))
+                    continue
                 proc = subprocess.run(
                     [vxc, "--parse-only", tmp], capture_output=True, text=True
                 )

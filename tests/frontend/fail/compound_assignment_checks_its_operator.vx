@@ -12,8 +12,8 @@
 // -- an assignment statement records a span and a binary expression does not yet.
 
 fn tensors() -> i32 {
-  let mut a = Tensor<f32, [4]>::uninit();
-  let b = Tensor<f32, [4]>::uninit();
+  let mut a = unsafe { Tensor<f32, [4]>::uninit() };
+  let b = unsafe { Tensor<f32, [4]>::uninit() };
   a %= b;
   return 0;
 }

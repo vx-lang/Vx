@@ -41,9 +41,9 @@ fn use_both<A, B>(_p : A, _q : B) on Topology::Dev -> i32 {
 }
 
 fn main() -> i32 {
-  let x = Tensor<f32, [1024, 768]>::uninit();
+  let x = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let sx = transfer(x, Memory::W);
-  let y = Tensor<f32, [1024, 768]>::uninit();
+  let y = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let sy = transfer(y, Memory::W);
   spawn on(Topology::Dev) {
     use_both(sx, sy);

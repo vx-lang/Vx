@@ -24,6 +24,7 @@ pub mod escape;
 pub mod imported_errors;
 pub mod literals;
 pub mod operators;
+pub mod parallel;
 pub mod projection;
 pub mod raw;
 pub mod region_traffic;

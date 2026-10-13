@@ -1,0 +1,57 @@
+//===- assign_through_a_tensor_reference.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `*t = v` with `t : &mut Tensor<..>` writes `v`'s elements into the tensor `t` refers to, as
+// `*r = 5` writes an `i32` through `r`. Printed: an `i32` set through a reference; an element
+// after a tensor made in the assignment was written in; and one after a named tensor was.
+//
+// EXPECT: 5 9 7
+//
+// The tensor written in is freed in each function, on both code generators: the one made for
+// the assignment once it is copied, the named one where its scope ends.
+//
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s --check-prefix=TEMP
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s --check-prefix=NAMED
+// RUN: vxc %s --legacy-codegen --emit-mlir 2>&1 | FileCheck %s --check-prefix=TEMP
+// RUN: vxc %s --legacy-codegen --emit-mlir 2>&1 | FileCheck %s --check-prefix=NAMED
+//
+// TEMP-LABEL: func.func @replace(
+// TEMP-NOT: {{^  [}]$}}
+// TEMP: vx.drop
+// NAMED-LABEL: func.func @replace_with_named(
+// NAMED-NOT: {{^  [}]$}}
+// NAMED: vx.drop
+
+fn set(r : &mut i32) -> void {
+  *r = 5;
+  return;
+}
+
+fn replace(t : &mut Tensor<f32, [4]>) -> void {
+  *t = Tensor<f32, [4]>::fill(9.0);
+  return;
+}
+
+fn replace_with_named(t : &mut Tensor<f32, [4]>) -> void {
+  let n = Tensor<f32, [4]>::fill(7.0);
+  *t = n;
+  return;
+}
+
+fn main() -> i32 {
+  let mut x = 1;
+  set(&mut x);
+  print(x);
+  print!(" ");
+  let mut a = Tensor<f32, [4]>::new();
+  replace(&mut a);
+  print(a[3]);
+  print!(" ");
+  replace_with_named(&mut a);
+  print(a[0]);
+  return 0;
+}

@@ -40,12 +40,12 @@ Topology Dev {
 }
 
 fn main() -> i32 {
-  let host = Tensor<f32, [4, 4]>::uninit();
+  let host = unsafe { Tensor<f32, [4, 4]>::uninit() };
   let device = transfer(host, Memory::GPU_HBM);
   spawn on(Topology::Dev) {
     // A row of the HBM tensor is not a row of the shared-memory tile: the only
     // way across is `transfer`, along an edge the machine file declared.
-    let mut tile = Tensor<f32, [4, 4], Memory::SMEM>::uninit();
+    let mut tile = unsafe { Tensor<f32, [4, 4], Memory::SMEM>::uninit() };
     tile[0] = device[0];
   }
   return 0;

@@ -121,7 +121,9 @@ Each tool's path can be overridden by an environment variable — `MLIR_TRANSLAT
 whatever is on `PATH`.
 
 `--action emit-obj` does not use that chain. It builds an MLIR execution engine in process and asks
-it to write an object file (`ObjectEmitter` in `src/jit.rs`).
+it to write an object file (`ObjectEmitter` in `src/jit.rs`). A program that calls `grad`, `vjp` or
+`jvp` is the exception: those calls are filled in by the Enzyme pass in `opt`, so its object is built
+by the chain up to `llc`.
 
 ## What `vxc` can be asked to do
 
