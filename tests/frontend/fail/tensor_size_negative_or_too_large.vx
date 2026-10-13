@@ -1,0 +1,25 @@
+//===- tensor_size_negative_or_too_large.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=FITS
+//
+// A tensor size written as a negative number is refused, and so is a tensor of 2^63 bytes:
+// it fits in 64 bits, but an allocation can ask for at most 2^63 - 1 bytes. A tensor of
+// 2^62 bytes is allowed.
+
+fn main() -> i32 {
+  // CHECK-DAG: Error[E6031] at [[@LINE+1]]:11: `Tensor<f32, [2, -3]>` cannot be allocated: one of its extents is negative
+  let b = Tensor<f32, [2, -3]>::new();
+  // 2^61 elements of 4 bytes each is 2^63 bytes.
+  // CHECK-DAG: Error[E6031] at [[@LINE+1]]:14: `Tensor<f32, [2305843009213693952]>` cannot be allocated: its size is more than 2^63 - 1 bytes
+  let huge = Tensor<f32, [2305843009213693952]>::new();
+  // 2^61 elements of 2 bytes each is 2^62 bytes.
+  // FITS-NOT: Tensor<f16
+  let fits = Tensor<f16, [2147483648, 1073741824]>::new();
+  return 0;
+}

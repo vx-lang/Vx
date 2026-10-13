@@ -10,8 +10,6 @@
 // returns a copy of it. 10 + 12 = 22.
 //
 // EXPECT: 22
-// The legacy code generator still fails on this program (#1186).
-// REQUIRES: flat-codegen
 
 fn second_row(q : &Tensor<f32, [2, ?]>) -> Tensor<f32, [?]> {
   return q[1];

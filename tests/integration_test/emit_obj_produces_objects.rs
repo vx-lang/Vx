@@ -103,3 +103,52 @@ fn the_backend_corpus_emits_object_files() {
         unexpectedly_fine.join("\n")
     );
 }
+
+/// A program that calls `grad`, `vjp` or `jvp` needs the Enzyme pass, which `run-jit` runs and
+/// the execution engine behind `emit-obj` does not. Its object has to exist and call no
+/// `__enzyme_` function, which nothing defines. Skipped without `ENZYME_LIB`, like the other
+/// autodiff tests.
+#[test]
+fn autodiff_programs_emit_object_files() {
+    if std::env::var("ENZYME_LIB").is_err() {
+        println!("Skipping: ENZYME_LIB is not set.");
+        return;
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let out = std::env::temp_dir().join("vx_emit_obj_autodiff");
+    std::fs::create_dir_all(&out).unwrap();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(root.join("tests/backend/pass/autodiff"))
+        .expect("tests/backend/pass/autodiff is missing")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "vx"))
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "no autodiff programs found");
+
+    let mut bad = Vec::new();
+    for f in &files {
+        let obj = out.join(format!("{}.o", f.file_stem().unwrap().to_string_lossy()));
+        let _ = std::fs::remove_file(&obj);
+        Command::new(env!("CARGO_BIN_EXE_vxc"))
+            .current_dir(&root)
+            .args([f.to_str().unwrap(), "--action", "emit-obj", "-o"])
+            .arg(&obj)
+            .output()
+            .expect("failed to run vxc");
+        let name = f.file_name().unwrap().to_string_lossy().into_owned();
+        match std::fs::read(&obj) {
+            Ok(bytes) if bytes.is_empty() => bad.push(format!("  {name}: empty object")),
+            Ok(bytes) if bytes.windows(9).any(|w| w == b"__enzyme_") => bad.push(format!(
+                "  {name}: the object still calls an __enzyme_ function"
+            )),
+            Ok(_) => {}
+            Err(_) => bad.push(format!("  {name}: no object")),
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "emit-obj on autodiff programs:\n{}",
+        bad.join("\n")
+    );
+}

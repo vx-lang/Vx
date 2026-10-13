@@ -30,9 +30,9 @@
 // EXEC_RUN: %t | FileCheck %s --check-prefix=DISPATCH
 
 fn main() -> i32 {
-  let mut x_host = Tensor<f32, [3, 3]>::uninit();
-  let mut w_host = Tensor<f32, [2, 2]>::uninit();
-  let mut result_host = Tensor<f32, [2, 2]>::uninit();
+  let mut x_host = unsafe { Tensor<f32, [3, 3]>::uninit() };
+  let mut w_host = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  let mut result_host = unsafe { Tensor<f32, [2, 2]>::uninit() };
 
   for i in 0..3 {
     for j in 0..3 {
@@ -47,9 +47,9 @@ fn main() -> i32 {
   }
 
   // im2col: Flatten 4 patches of 2x2 into a 4x4 matrix
-  let mut im2col_host = Tensor<f32, [4, 4]>::uninit();
-  let mut w_flat_host = Tensor<f32, [4, 4]>::uninit();
-  let mut matmul_res_host = Tensor<f32, [4, 4]>::uninit();
+  let mut im2col_host = unsafe { Tensor<f32, [4, 4]>::uninit() };
+  let mut w_flat_host = unsafe { Tensor<f32, [4, 4]>::uninit() };
+  let mut matmul_res_host = unsafe { Tensor<f32, [4, 4]>::uninit() };
   // The multiply below adds into this tensor, so it starts at zero.
   for i in 0..4 {
     for j in 0..4 {

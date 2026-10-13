@@ -16,6 +16,7 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -1392,6 +1393,30 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
 /// someone has decided what that op means on a GPU. The other direction fails
 /// late and quietly -- an image that compiles but cannot load, blamed at the
 /// far end on whatever the worker says last.
+/// A `linalg.fill` of a buffer, as loops over its dimensions storing the value
+/// in each element, in the `scf` and `memref` a device kernel can hold. A fill
+/// of a buffer with no dimensions is one store.
+static void fillToDeviceLoops(linalg::FillOp fill) {
+  Value buffer = fill.getOutputs()[0];
+  auto type = dyn_cast<MemRefType>(buffer.getType());
+  if (!type)
+    return;
+  OpBuilder b(fill);
+  Location loc = fill.getLoc();
+  Value value = fill.getInputs()[0];
+  SmallVector<Value> lower, upper, step;
+  for (int64_t d = 0; d < type.getRank(); ++d) {
+    lower.push_back(b.create<arith::ConstantIndexOp>(loc, 0));
+    upper.push_back(b.createOrFold<memref::DimOp>(loc, buffer, d));
+    step.push_back(b.create<arith::ConstantIndexOp>(loc, 1));
+  }
+  scf::buildLoopNest(b, loc, lower, upper, step,
+                     [&](OpBuilder &nested, Location at, ValueRange ivs) {
+                       nested.create<memref::StoreOp>(at, value, buffer, ivs);
+                     });
+  fill.erase();
+}
+
 static bool isDeviceLowerableDialect(StringRef ns) {
   // `vector` entered the list with Vx#378 R1: the flat path's slice ops
   // (`o[i] = o[i] + v[j] * p`) emit vector.load / elementwise vector arith,
@@ -2072,6 +2097,14 @@ struct ConvertVxToStandardPass
       // Skipping leaves such a program exactly as it was. Nothing downstream
       // requires a twin; a launch without an image simply carries no `image=`
       // field, as every launch did before this.
+      // A fill writes one value into a tensor the kernel makes, as `::new()`
+      // does, and has a plain loop form a device can run. Lowered here, so the
+      // `linalg` rule below keeps only a matmul, the plugin's route, off the
+      // device.
+      SmallVector<linalg::FillOp> fills;
+      k.getBody().walk([&](linalg::FillOp f) { fills.push_back(f); });
+      for (linalg::FillOp f : fills)
+        fillToDeviceLoops(f);
       bool deviceReady = true;
       k.getBody().walk([&](Operation *op) {
         // Rewritten to `gpu.return` below, so it is not a foreign dialect here.

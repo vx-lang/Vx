@@ -1,0 +1,54 @@
+//===- tuple_field_moved_out_is_named_as_written.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A field of a tuple that holds something to drop is moved out by `let x = t.0`. The errors
+// for using it again name it `t.0`, as the program writes it.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+import core::ops;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print(self.id);
+  }
+}
+
+fn take(t : (Noisy, Noisy)) -> i32 {
+  return 0;
+}
+
+fn twice() -> i32 {
+  let t = (Noisy {
+    id: 1
+  }, Noisy {
+    id: 2
+  });
+  let x = t.0;
+  // CHECK: Error[E4001] at [[@LINE+1]]:{{.*}}`t.0` was moved out of `t` and has no value
+  let y = t.0;
+  return 0;
+}
+
+fn whole() -> i32 {
+  let t = (Noisy {
+    id: 3
+  }, Noisy {
+    id: 4
+  });
+  let x = t.0;
+  // CHECK: Error[E4001] at [[@LINE+1]]:{{.*}}`t` is used whole, but `t.0` was moved out of it
+  return take(t);
+}
+
+fn main() -> i32 {
+  return twice() + whole();
+}

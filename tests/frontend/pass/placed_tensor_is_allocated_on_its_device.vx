@@ -41,7 +41,7 @@
 // LLVM: llvm.call @vx_plugin_alloc_and_transfer(%{{.*}}, %[[NULL]], %{{.*}}, %{{.*}})
 
 fn uninit_on_gpu() -> f32 {
-  let mut r = Tensor<f32, [4], Memory::GPU_HBM>::uninit();
+  let mut r = unsafe { Tensor<f32, [4], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
     for i in 0..4 {
       r[i] = i as f32;
@@ -58,7 +58,7 @@ fn new_on_gpu() -> f32 {
 }
 
 fn uninit_on_host() -> f32 {
-  let mut c = Tensor<f32, [4], Memory::CPU_DRAM>::uninit();
+  let mut c = unsafe { Tensor<f32, [4], Memory::CPU_DRAM>::uninit() };
   for i in 0..4 {
     c[i] = 2.0;
   }
