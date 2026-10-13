@@ -1,0 +1,29 @@
+//===- macro_type_name_longer_than_its_placeholder_in_mlir.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A macro writes `$t to $u` inside an `mlir!` block, and `f16` and `f64` are each longer than
+// `$t` and `$u`. The block must still read `f16 to f64 loc(unknown)`, with the spaces kept.
+macro_rules stamp_widen {
+  ($t : ident, $u : ident) => {
+    fn widen(x : $t) -> $u {
+      return mlir!( inputs : (%x = x : $t), returns : $u, dialects : ["arith"]) {
+        %y = arith.extf %x : $t to $u loc(unknown)
+        macro.yield %y : $u
+      };
+    }
+  };
+}
+
+stamp_widen!(f16, f64);
+
+fn main() -> i32 {
+  let h : f16 = 1.5;
+  print(widen(h) * 2.0f64);
+  return 0;
+}
+
+// EXPECT: 3

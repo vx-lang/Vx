@@ -335,7 +335,8 @@ greppable when a garbage-value bug is being hunted.
 
 `::uninit()` belongs inside `unsafe`, because the compiler cannot check that every element is
 written before it is read. Outside `unsafe` it is warned about (W1032), and a later version will
-refuse it.
+refuse it. The older spelling, `Tensor<f32>([8, 8])`, which passes the shape as an argument,
+starts at zero, as `::new()` does.
 
 A `Tensor`'s extents are part of its type, so every one of them has to be known at compile time —
 a literal or a const generic. An extent that is a run-time value is refused, naming the `?` spelling,
@@ -439,7 +440,7 @@ visits every position `t[i]` accepts. A rank-0 tensor has no `len()`.
 | Type | Example |
 |------|---------|
 | `Tensor<T, Shape>` | `let a : Tensor<f32, []> = 1.0;` |
-| `Tensor<T, Shape, Memory>` | `let d = Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit();` |
+| `Tensor<T, Shape, Memory>` | `let d = unsafe { Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit() };` |
 | `Matrix` | `let m : Matrix = ...;` |
 | `Verified<T>` | `let v : Verified<Tensor<f32, [4, 4]>> = ...;` |
 | `Pinned<T, Topology>` | `let p : Pinned<Tensor<f32, [4, 4]>, Topology::NPU[0]> = ...;` |

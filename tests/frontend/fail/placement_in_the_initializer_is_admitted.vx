@@ -29,6 +29,6 @@
 // FITS: func.func @main
 
 fn main() -> i32 {
-  let big = Tensor<f32, [120000, 125000], Memory::HBM>::uninit();
+  let big = unsafe { Tensor<f32, [120000, 125000], Memory::HBM>::uninit() };
   return 0;
 }

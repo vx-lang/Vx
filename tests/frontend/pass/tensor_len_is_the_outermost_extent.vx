@@ -32,6 +32,6 @@ fn four(a : Tensor<f32, [4]>) -> i32 {
 }
 
 fn main() -> i32 {
-  let a = Tensor<f32, [4]>::uninit();
+  let a = unsafe { Tensor<f32, [4]>::uninit() };
   return four(a) - 4;
 }
