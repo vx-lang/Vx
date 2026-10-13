@@ -30,7 +30,7 @@ Topology Dev {
 }
 
 fn main() -> i32 {
-  let h = Tensor<f32, [4, 4]>::uninit();
+  let h = unsafe { Tensor<f32, [4, 4]>::uninit() };
   let o = transfer(h, Memory::GPU_HBM);
   let home = transfer(o, Memory::CPU_DRAM);
   print(home);

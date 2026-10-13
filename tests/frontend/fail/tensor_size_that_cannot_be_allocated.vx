@@ -47,7 +47,7 @@ fn main() -> i32 {
   return size_past_64_bits() + negative_extent<1048576>() + negative_extent_never_placed<1048576>();
 }
 
-// CHECK-DAG: Error[E6031] at 27:11: `Tensor<f32, [1073741824, 1073741824, 4]>` cannot be allocated: its size in bytes does not fit in 64 bits
+// CHECK-DAG: Error[E6031] at 27:11: `Tensor<f32, [1073741824, 1073741824, 4]>` cannot be allocated: its size is more than 2^63 - 1 bytes, the most an allocation can ask for
 // CHECK-DAG: Error[E6031] at 34:38: `Tensor<f32, [-1048576]>` cannot be allocated: one of its extents is negative
 // CHECK-DAG: Error[E6031] at 42:12: `Tensor<f32, [-2097152]>` cannot be allocated: one of its extents is negative
 // CHECK: 3 error(s) emitted

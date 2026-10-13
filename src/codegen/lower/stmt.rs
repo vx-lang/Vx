@@ -856,6 +856,47 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             // from the RHS value, so there's no pointee-type guesswork. (#242)
             let (ptr_val, ptr_ty, new_b) =
                 crate::codegen::lower::expr::deref_target(gen, d.expr.as_ref(), block)?;
+            // `*t = v` with `t : &mut Tensor<..>`: the new tensor's elements are copied into the
+            // tensor `t` refers to.
+            if matches!(
+                gen.infer_ast_type(d.expr.as_ref()),
+                Some(syntax::Type::Borrow { ref inner, .. }) if matches!(**inner, syntax::Type::Tensor(..))
+            ) && gen.is_memref(&rhs_ty)
+            {
+                let mut dst_ty = ptr_ty;
+                let dst = crate::codegen::lower::expr::load_tensor_slot(
+                    gen,
+                    &new_b,
+                    ptr_val,
+                    &mut dst_ty,
+                )?;
+                let src = crate::codegen::lower::cast_memref(gen, &new_b, rhs_val, rhs_ty, dst_ty)?;
+                new_b.append_operation(
+                    OperationBuilder::new("memref.copy", gen.loc())
+                        .add_operands(&[src, dst])
+                        .build()?,
+                );
+                // A tensor made for this assignment is freed once copied. A named one is only
+                // read here, and is freed where its scope ends.
+                if !matches!(
+                    rhs,
+                    Expr::Identifier(_)
+                        | Expr::MemberAccess(_)
+                        | Expr::IndexAccess(_)
+                        | Expr::Dereference(_)
+                ) {
+                    new_b.append_operation(
+                        OperationBuilder::new("vx.drop", gen.loc())
+                            .add_operands(&[rhs_val])
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "owned_only"),
+                                melior::ir::attribute::Attribute::unit(gen.context),
+                            )])
+                            .build()?,
+                    );
+                }
+                return Ok(Some(new_b));
+            }
             // A `&mut` to a mutable local holds that local's scalar memref.
             let ptr_ty_str = ptr_ty.to_string();
             let op_name = if ptr_ty_str.starts_with("memref<") && !ptr_ty_str.contains('x') {

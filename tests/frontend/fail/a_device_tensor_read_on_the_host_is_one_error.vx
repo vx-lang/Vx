@@ -23,7 +23,7 @@ Topology Dev {
 }
 
 fn main() -> i32 {
-  let c = Tensor<f32, [4, 4], Memory::Extra>::uninit();
+  let c = unsafe { Tensor<f32, [4, 4], Memory::Extra>::uninit() };
   print(c[0][0]);
   return 0;
 }

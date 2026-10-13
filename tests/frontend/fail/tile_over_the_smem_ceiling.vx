@@ -20,7 +20,7 @@ Memory Local_SRAM {
 }
 
 fn main() -> i32 {
-  let mut t = Tensor<f32, [128, 64]>::uninit();
+  let mut t = unsafe { Tensor<f32, [128, 64]>::uninit() };
   for i in 0..128 {
     for j in 0..64 {
       t[i][j] = 1.0;

@@ -10,7 +10,7 @@
 // `reduce` keeps one running value of the element type, so its closure has to return one. `acc > x` is a `bool`.
 
 fn main() -> i32 {
-  let mut a = Tensor<f32, [3]>::uninit();
+  let mut a = unsafe { Tensor<f32, [3]>::uninit() };
   a[0] = 1.0;
   a[1] = 2.0;
   a[2] = 3.0;

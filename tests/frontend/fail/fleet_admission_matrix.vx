@@ -11,7 +11,7 @@
 // if a SKU declaration, the capacity math, or the const-folding of model-shape
 // arithmetic regresses.
 //
-// The configuration in fleet/admit.vx is a 70B-class model at f16: ~120 GiB of
+// The configuration in fleet/admit.vx is Llama-3.1-70B at f16: ~131 GiB of
 // weights alone, which does not fit an 80 GB card and does fit a 192 GB one.
 //
 // The RUN lines below reference `fleet/` relative to the repository root, which
@@ -40,7 +40,7 @@ fn main() -> i32 {
 // REJECT: "verdict": "rejected"
 // REJECT: "code": "E6009"
 // REJECT-SAME: "space": "HBM"
-// REJECT-SAME: "required_bytes": 128849018880
+// REJECT-SAME: "required_bytes": 141104775168
 // REJECT-SAME: "available_bytes": 85899345920
 
 // ADMIT: "verdict": "admitted"
