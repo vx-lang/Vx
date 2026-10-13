@@ -26,8 +26,7 @@ echo "======================================"
 
 # Rule 1: Markdown Formatting
 echo "[1/6] Checking Markdown Formatting (mdformat)..."
-# A skill file starts with YAML front matter, which mdformat turns into a heading.
-STAGED_MD=$(git diff --cached --name-only --diff-filter=ACM | grep '\.md$' | grep -v '^\.claude/skills/' || true)
+STAGED_MD=$(git diff --cached --name-only --diff-filter=ACM | grep '\.md$' || true)
 if [ -n "$STAGED_MD" ]; then
     if git diff --name-only | grep -q '\.md$'; then
         echo "⚠️  Unstaged Markdown changes detected. Skipping mdformat to prevent accidental data loss."
