@@ -28,6 +28,7 @@
 
 # Reference
 
+- [Vx in one page](quick-reference.md)
 - [Standard library](stdlib-reference.md)
 - [Diagnostic index](error-index.md)
 
