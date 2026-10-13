@@ -28,7 +28,7 @@ Topology Dev {
 }
 
 fn deep(n: i32) -> i32 {
-  let x = Tensor<f32, [1024, 768]>::uninit();
+  let x = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let _sx = transfer(x, Memory::W);
   if n <= 0 {
     return 0;

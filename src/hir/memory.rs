@@ -135,14 +135,15 @@ pub fn element_bytes(elem: &ElementType) -> Option<u64> {
 /// What a statically written tensor shape comes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StaticSize {
-    /// Every extent is a compile-time constant, and the size in bytes fits a `u64`.
+    /// Every extent is a compile-time constant, and the size in bytes is at most `i64::MAX`.
     Bytes(u64),
     /// Some extent is not a compile-time constant: a run-time value, `?`, or a call. The caller
     /// reports such a shape as unverified (W1029) rather than inventing a size.
     NotConstant,
     /// Every extent is a constant, but one of them is negative.
     NegativeExtent,
-    /// Every extent is a constant, but the size in bytes does not fit a `u64`.
+    /// Every extent is a constant, but the size in bytes is more than an allocation can ask
+    /// for: `i64::MAX`, since the size reaches `malloc` as a signed 64-bit `index`.
     Overflows,
 }
 
@@ -201,6 +202,7 @@ fn const_dim(e: &Expr) -> Result<i128, Unfolded> {
             };
             folded.ok_or(Unfolded::Overflows)
         }
+        Expr::UnaryOp(u) if u.op == crate::syntax::UnaryOp::Neg => Ok(-const_dim(&u.expr)?),
         _ => Err(Unfolded::NotConstant),
     }
 }
@@ -211,7 +213,7 @@ fn const_dim(e: &Expr) -> Result<i128, Unfolded> {
 /// is arithmetic -- a KV cache is `2 * layers * context` by `heads * head_dim` -- and requiring a
 /// bare literal meant every such placement was silently reported "unverified" (W1029) instead of
 /// admitted or rejected, which would have made an admission matrix over realistic configs vacuous.
-/// A shape that does fold, but to a negative extent or a size past `u64`, is an error the caller
+/// A shape that does fold, but to a negative extent or a size past `i64::MAX`, is an error the caller
 /// reports, not an unknown size.
 pub fn static_tensor_size(elem: &ElementType, dims: &[Dim]) -> StaticSize {
     if dims.is_empty() {
@@ -243,8 +245,8 @@ pub fn static_tensor_size(elem: &ElementType, dims: &[Dim]) -> StaticSize {
         bytes = bytes.and_then(|b| u64::try_from(v).ok().and_then(|v| b.checked_mul(v)));
     }
     match bytes {
-        Some(b) => StaticSize::Bytes(b),
-        None => StaticSize::Overflows,
+        Some(b) if b <= i64::MAX as u64 => StaticSize::Bytes(b),
+        _ => StaticSize::Overflows,
     }
 }
 

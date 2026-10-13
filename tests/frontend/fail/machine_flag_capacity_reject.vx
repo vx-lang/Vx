@@ -23,7 +23,9 @@
 // RUN: vxc --host default --machine %t.d/big.vx %s --action emit-mlir -o /dev/null
 
 fn main() -> i32 {
-  let kv : Tensor<f32, [1024, 1024]> = Tensor<f32, [1024, 1024]>::uninit();
+  let kv : Tensor<f32, [1024, 1024]> = unsafe {
+    Tensor<f32, [1024, 1024]>::uninit()
+  };
   let _staged = transfer(kv, Memory::HBM);
   return 0;
 }

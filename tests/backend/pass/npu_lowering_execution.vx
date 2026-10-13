@@ -20,8 +20,8 @@
 // EXPECT:  [0,   0,   0,   0]]
 
 fn main() -> i32 {
-  let mut a = Tensor<i32, [4, 4]>::uninit();
-  let mut b = Tensor<i32, [4, 4]>::uninit();
+  let mut a = unsafe { Tensor<i32, [4, 4]>::uninit() };
+  let mut b = unsafe { Tensor<i32, [4, 4]>::uninit() };
   // Every element is printed, so every element is set.
   for i in 0..4 {
     for j in 0..4 {

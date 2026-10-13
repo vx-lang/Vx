@@ -1,0 +1,73 @@
+//===- older_tensor_spelling_starts_at_zero.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor made with the older spelling, `Tensor<T>([..])`, starts at zero, as `::new()` does.
+// Only `::uninit()`, which belongs inside `unsafe`, leaves storage as it was found.
+//
+// Each `fresh_` function is called right after a `dirty_` one that fills and frees a tensor of
+// the same size, so a tensor that is not zeroed would most likely get that memory back, still
+// holding 7s.
+//
+// EXPECT: fixed_size=0;
+// EXPECT: run_time_size=0;
+// EXPECT: initializer=3;
+
+fn dirty_fixed() -> f32 {
+  let mut t = Tensor<f32>([1024]);
+  for i in 0..1024 {
+    t[i] = 7.0;
+  }
+  return t[0];
+}
+
+fn fresh_fixed() -> f32 {
+  let t = Tensor<f32>([1024]);
+  let mut s = 0.0;
+  for i in 0..1024 {
+    s = s + t[i];
+  }
+  return s;
+}
+
+fn dirty_run_time(n : i64) -> f32 {
+  let mut t = Tensor<f32>([n]);
+  for i in 0..1024 {
+    t[i] = 7.0;
+  }
+  return t[0];
+}
+
+fn fresh_run_time(n : i64) -> f32 {
+  let t = Tensor<f32>([n]);
+  let mut s = 0.0;
+  for i in 0..1024 {
+    s = s + t[i];
+  }
+  return s;
+}
+
+// An initializer list holds its values, and is not zeroed over them.
+fn initializer() -> f32 {
+  let t = Tensor<f32>([[1.0, 2.0]]);
+  return t[0][0] + t[0][1];
+}
+
+fn main() -> i32 {
+  // Nothing runs between a `dirty_` call and its `fresh_` one, so nothing else takes the memory.
+  let d1 = dirty_fixed();
+  let fixed = fresh_fixed();
+  let d2 = dirty_run_time(1024);
+  let run_time = fresh_run_time(1024);
+  print!("fixed_size=");
+  print(fixed);
+  print!("; run_time_size=");
+  print(run_time);
+  print!("; initializer=");
+  print(initializer());
+  print!(";");
+  return 0;
+}

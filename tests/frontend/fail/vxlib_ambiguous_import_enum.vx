@@ -1,0 +1,27 @@
+//===- vxlib_ambiguous_import_enum.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two imported .vxlib libraries both define an enum `Color`, so `Color::Green` cannot
+// pick one. The error says so, rather than calling the enum unknown.
+//
+// RUN: mkdir -p %t.d
+// RUN: printf 'enum Color { Red, Green }\nfn geta() -> i32 { return 1; }\n' > %t.d/ca.vx
+// RUN: vxc %t.d/ca.vx --action emit-interface -o %t.d/ca.vxlib
+// RUN: printf 'enum Color { Cyan, Green }\nfn getb() -> i32 { return 2; }\n' > %t.d/cb.vx
+// RUN: vxc %t.d/cb.vx --action emit-interface -o %t.d/cb.vxlib
+// RUN: rm %t.d/ca.vx %t.d/cb.vx
+// RUN: VX_STD_PATH=%t.d not vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
+
+import ca;
+import cb;
+
+fn main() -> i32 {
+  let c = Color::Green;
+  return geta() + getb();
+}
+
+// CHECK: Error[E2003] at 23:{{[0-9]+}}: Enum 'Color' is defined in more than one imported module

@@ -46,7 +46,7 @@ Two things the compiler checks here:
 
 ```rust
 fn main() -> i32 {
-    let mut host : Tensor<f32, [4, 4]> = Tensor<f32, [4, 4]>::uninit();
+    let mut host : Tensor<f32, [4, 4]> = unsafe { Tensor<f32, [4, 4]>::uninit() };
     for i in 0..4 {
         for j in 0..4 {
             host[i][j] = 1.0;
@@ -121,7 +121,7 @@ fn custom_matmul(a : Pinned<Tensor<f32, [4, 4]>, Topology::NPU[0]>,
                  b : Pinned<Tensor<f32, [4, 4]>, Topology::NPU[0]>)
     -> Verified<Tensor<f32, [4, 4], Memory::NPU_HBM>> {
 
-    let mut result = Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit();
+    let mut result = unsafe { Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit() };
 
     spawn on(Topology::NPU[0]) {
         for i in 0..4 {

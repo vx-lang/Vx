@@ -59,6 +59,16 @@ impl Value {
     }
 }
 
+/// Two impls of the same trait for the same type — see [`GlobalAstEnv::duplicate_impls`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct DuplicateImpl {
+    /// How the impl is written: `Describe for Point`.
+    pub what: String,
+    /// The module of the impl indexed first, and of the one that repeats it.
+    pub first: crate::symbol::Symbol,
+    pub second: crate::symbol::Symbol,
+}
+
 /// One `Memory`/`Topology` name declared by two modules with *different* declarations — see
 /// [`GlobalAstEnv::duplicate_decls`].
 #[derive(Debug, Clone, PartialEq)]
@@ -111,6 +121,9 @@ pub struct GlobalAstEnv<'a> {
     /// iteration, so the machine model actually in force would vary between runs. Recorded here
     /// and reported as E6012 by `check_declaration_conflicts` (#281).
     pub duplicate_decls: Vec<DuplicateDecl>,
+    /// A second impl of a trait for a type that already has one, reported as E3049 by
+    /// `check_declaration_conflicts`. A call to one of its methods could not choose.
+    pub duplicate_impls: Vec<DuplicateImpl>,
     /// Per-function return-provenance summary (#243): which parameter slot(s) a reference-returning
     /// function's result roots in. A read-only, precomputed artifact of the immutable env, consulted
     /// at call sites to make the reborrow-persistence decision per argument. Filled from *present*
@@ -152,6 +165,7 @@ impl<'a> GlobalAstEnv<'a> {
             memories: HashMap::new(),
             topologies: HashMap::new(),
             duplicate_decls: Vec::new(),
+            duplicate_impls: Vec::new(),
             transfer_impls: Vec::new(),
             externs: Vec::new(),
             return_provenances: HashMap::new(),
@@ -159,6 +173,8 @@ impl<'a> GlobalAstEnv<'a> {
             consts: HashMap::new(),
         };
 
+        // Where each trait impl was first written, to report a second one for the same type.
+        let mut impl_modules: HashMap<String, (crate::symbol::Symbol, &ImplBlock)> = HashMap::new();
         for &module in modules {
             let module_hash = crate::hash::compute_module_hash(&module.module_path);
             for s in &module.structs {
@@ -213,6 +229,29 @@ impl<'a> GlobalAstEnv<'a> {
                     Some(name) => name.clone(),
                     None => "_inherent".to_string().into(),
                 };
+                if i.trait_name.is_some() {
+                    let args: Vec<String> = i.trait_args.iter().map(|a| a.to_string()).collect();
+                    let what = if args.is_empty() {
+                        format!("{} for {}", trait_name, i.target_type)
+                    } else {
+                        format!("{}<{}> for {}", trait_name, args.join(", "), i.target_type)
+                    };
+                    match impl_modules.get(&what) {
+                        // The same impl under another module name is one module given twice,
+                        // by its file and by its import path, not a second impl.
+                        Some((first, block)) if *first == module.module_path || *block != i => {
+                            env.duplicate_impls.push(DuplicateImpl {
+                                what: what.clone(),
+                                first: first.clone(),
+                                second: module.module_path.clone(),
+                            })
+                        }
+                        Some(_) => {}
+                        None => {
+                            impl_modules.insert(what, (module.module_path.clone(), i));
+                        }
+                    }
+                }
                 env.impls.entry(trait_name).or_default().push(i);
             }
             for ext in &module.externs {
@@ -1723,6 +1762,11 @@ impl<'a> TypeChecker<'a> {
                     Some(crate::diagnostic::SourceSpan::from_ast_span(&var_span)),
                 );
             }
+        }
+
+        // W1033: a `spawn` loop that runs on one thread although its passes could run at once.
+        if !self.speculating {
+            self.warn_serial_spawn_loops(&func.body);
         }
 
         // The whole function has been checked; verify the working set of each memory space

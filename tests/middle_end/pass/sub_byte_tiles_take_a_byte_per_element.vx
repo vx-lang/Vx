@@ -23,8 +23,8 @@ Topology Npu {
 }
 
 fn main() -> i32 {
-  let first = transfer(Tensor<bool, [2048]>::uninit(), Memory::TILES);
-  let second = transfer(Tensor<bool, [2048]>::uninit(), Memory::TILES);
+  let first = transfer(unsafe { Tensor<bool, [2048]>::uninit() }, Memory::TILES);
+  let second = transfer(unsafe { Tensor<bool, [2048]>::uninit() }, Memory::TILES);
   return 0;
 }
 
