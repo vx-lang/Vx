@@ -14,7 +14,7 @@ the test suite has one, a program that triggers it.
 
 ## Contents
 
-- [Warnings](#warnings) — `W1001`–`W1033` (25 codes)
+- [Warnings](#warnings) — `W1001`–`W1034` (26 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3049` (48 codes)
@@ -55,6 +55,7 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1031`](/errors/W1031/) | A proof obligation could not be discharged because no SMT solver was available, so the property is **unverified** rather than proved. Distinct from W1027, which means the solver ran and found a violation. Emitted only under `VX_ALLOW_UNVERIFIED`; without it a missing solver is an error, because silence used to be indistinguishable from success (Vx#374). |
 | [`W1032`](/errors/W1032/) | `Tensor<..>::uninit()` called outside an `unsafe` block. Its elements hold whatever the memory held before, so reading one before writing it reads data the program never wrote. Call it inside `unsafe { .. }` to say that every element is written first, or use `::new()` for zeroed storage. A later version makes this an error. |
 | [`W1033`](/errors/W1033/) | The loop of a `spawn` region runs on one thread although each pass writes only memory of its own, so its passes could run at the same time. The warning points at what stops it: a call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass writes, bounds not known when compiling, and the like. |
+| [`W1034`](/errors/W1034/) | Code on the built-in `Topology::GPU` uses a tensor that lives in host memory (`CPU_DRAM`). The built-in GPU lists host memory as visible, so this compiles. A matmul sent to cuBLAS has its operands copied to the device, but a kernel the compiler generates is given the host pointer as it is, and what it does with it depends on the driver: it may reach host memory over the link, one access at a time, or fault. Transfer the tensor to `Memory::GPU_HBM` before the region. Reported once per tensor per region. A later version may make this an error. |
 
 ## Parser Errors
 
@@ -238,4 +239,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-149 diagnostics.
+150 diagnostics.
