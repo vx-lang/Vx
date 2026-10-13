@@ -70,7 +70,7 @@
 fn gemm(a : Tensor<f32, [?, ?]>, b : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
   // `a @ b` over run-time extents has run-time extents, and a `[2, 3]` binding would be a
   // narrowing nothing checks; the accumulator says what it is.
-  let mut c = Tensor<f32, [?, ?]>::uninit([2, 3]);
+  let mut c = unsafe { Tensor<f32, [?, ?]>::uninit([2, 3]) };
   spawn on(Topology::GPU) {
     c = a @b;
   }

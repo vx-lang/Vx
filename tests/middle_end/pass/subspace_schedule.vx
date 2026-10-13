@@ -25,8 +25,8 @@ Memory SMEM {
 }
 
 fn main() -> i32 {
-  let a = Tensor<f32, [128, 128]>::uninit();
-  let b = Tensor<f32, [128, 128]>::uninit();
+  let a = unsafe { Tensor<f32, [128, 128]>::uninit() };
+  let b = unsafe { Tensor<f32, [128, 128]>::uninit() };
   let sa = transfer(a, Memory::SMEM);
   let sb = transfer(b, Memory::SMEM);
   return 0;

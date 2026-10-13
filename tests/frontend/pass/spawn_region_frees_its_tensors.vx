@@ -25,7 +25,7 @@ Memory GPU_HBM {
 }
 
 fn main() -> i32 {
-  let mut o_h = Tensor<f32, [4, 4]>::uninit();
+  let mut o_h = unsafe { Tensor<f32, [4, 4]>::uninit() };
   for i in 0..4 {
     for j in 0..4 {
       o_h[i][j] = 0.0;
@@ -34,7 +34,7 @@ fn main() -> i32 {
   let mut o = transfer(o_h, Memory::GPU_HBM);
   let n = 4;
   spawn on(Topology::GPU) {
-    let mut row = Tensor<f32, [4]>::uninit();
+    let mut row = unsafe { Tensor<f32, [4]>::uninit() };
     for j in 0..4 {
       row[j] = 1.0;
     }

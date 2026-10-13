@@ -28,7 +28,7 @@ fn made() -> f32 {
 }
 
 fn given() -> f32 {
-  let mut a = Tensor<f32, [4]>::uninit();
+  let mut a = unsafe { Tensor<f32, [4]>::uninit() };
   for i in 0..4 {
     a[i] = 2.5;
   }
