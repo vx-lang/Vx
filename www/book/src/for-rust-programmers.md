@@ -25,6 +25,8 @@ lists what to change. Each item shows the Rust form and the Vx form.
 - **No turbofish.** `Vec::<i32>::new()` is `Vec<i32>::new()`.
 - **An enum variant is written with its type.** `Some(3)` is `Option<i64>::Some(3)`, and `None` is
   `Option<i64>::None()`. `Option` comes from `import core::option;`.
+- **An integer variable with no written type is `i32`.** Rust reads `let mut total = 0;` as an
+  `i64` when `i64`s are added to it later. Vx does not, so write `let mut total : i64 = 0;`.
 - **Arrays are tensors.** `[i32; 4]` is `Tensor<i32, [4]>`. The shape is part of the type, and a
   `?` marks a size known only at run time: `Tensor<f32, [?, ?]>`.
 - **Uninitialized storage is `unsafe`.** `MaybeUninit` has no equivalent. Write
