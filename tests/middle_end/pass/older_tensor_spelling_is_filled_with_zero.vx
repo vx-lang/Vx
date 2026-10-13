@@ -1,0 +1,41 @@
+//===- older_tensor_spelling_is_filled_with_zero.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor made with the older spelling, `Tensor<T>([..])`, is filled with zero right after it
+// is allocated, on both code generators: with a size known when compiling, a size known only
+// when running, and no size at all (one element).
+// `::uninit()` is not filled: it is the one way to skip the fill, inside `unsafe`.
+//
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-mlir --legacy-codegen 2>&1 | FileCheck %s
+//
+// CHECK-LABEL: func.func @three
+// CHECK: %[[SKIPPED:.*]] = memref.alloc
+// CHECK-NOT: linalg.fill
+// CHECK: %[[FIXED:.*]] = memref.alloc
+// CHECK-NEXT: %[[Z1:.*]] = arith.constant 0.000000e+00 : f32
+// CHECK-NEXT: linalg.fill ins(%[[Z1]] : f32) outs(%[[FIXED]] :
+// CHECK: %[[RUN_TIME:.*]] = memref.alloc
+// CHECK-NEXT: %[[Z2:.*]] = arith.constant 0.000000e+00 : f32
+// CHECK-NEXT: linalg.fill ins(%[[Z2]] : f32) outs(%[[RUN_TIME]] :
+// CHECK: %[[ONE:.*]] = memref.alloc
+// CHECK-NEXT: %[[Z3:.*]] = arith.constant 0.000000e+00 : f32
+// CHECK-NEXT: linalg.fill ins(%[[Z3]] : f32) outs(%[[ONE]] :
+
+fn three(n : i64) -> f32 {
+  let skipped = unsafe { Tensor<f32, [4]>::uninit() };
+  let fixed = Tensor<f32>([4]);
+  let run_time = Tensor<f32>([n]);
+  // One element, with no extents at all.
+  let one = Tensor<f32>();
+  return skipped[0] + fixed[0] + run_time[0];
+}
+
+fn main() -> i32 {
+  print(three(4));
+  return 0;
+}

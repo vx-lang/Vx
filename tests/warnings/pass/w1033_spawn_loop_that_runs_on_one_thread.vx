@@ -1,0 +1,74 @@
+// W1033: a `spawn` loop runs on one thread although each pass writes only its own rows, so its
+// passes could run at the same time. The warning points at what keeps the loop serial.
+// WARN: Warning[W1033] at 17:17: this `spawn` loop runs on one thread: it calls `scale`
+// WARN: Warning[W1033] at 28:24: this `spawn` loop runs on one thread: it holds inline MLIR
+// WARN: Warning[W1033] at 41:25: this `spawn` loop runs on one thread: a pass reads a row of `o` that another pass writes
+// WARN: Warning[W1033] at 50:15: this `spawn` loop runs on one thread: its bounds are not numbers known when compiling
+// WARN: Warning[W1033] at 62:9: this `spawn` loop runs on one thread: a `break` would stop only one thread's share
+
+fn scale(x : f32) on Topology::GPU -> f32 {
+  return x * 2.0;
+}
+
+fn calls_a_function() -> f32 {
+  let mut o = Tensor<f32, [64, 1]>::new();
+  spawn on(Topology::GPU) {
+    for r in 0..64 {
+      o[r][0] = scale(1.0);
+    }
+  }
+  return o[0][0];
+}
+
+fn holds_inline_mlir() -> f32 {
+  let mut o = Tensor<f32, [64, 1]>::new();
+  spawn on(Topology::GPU) {
+    for r in 0..64 {
+      let x = o[r][0];
+      o[r][0] = mlir!( inputs : (%a = x : f32), returns : f32, dialects : ["math"]) {
+        %e = math.exp %a : f32
+        macro.yield %e : f32
+      };
+    }
+  }
+  return o[0][0];
+}
+
+fn reads_the_next_row() -> f32 {
+  let mut o = Tensor<f32, [64, 1]>::new();
+  spawn on(Topology::GPU) {
+    for r in 0..63 {
+      o[r][0] = o[r + 1][0];
+    }
+  }
+  return o[0][0];
+}
+
+fn bound_known_only_when_running(n : i32) -> f32 {
+  let mut o = Tensor<f32, [64, 1]>::new();
+  spawn on(Topology::GPU) {
+    for r in 0..n {
+      o[r][0] = 1.0;
+    }
+  }
+  return o[0][0];
+}
+
+fn breaks_out_of_the_loop() -> f32 {
+  let mut o = Tensor<f32, [64, 1]>::new();
+  spawn on(Topology::GPU) {
+    for r in 0..64 {
+      if r == 10 {
+        break;
+      }
+      o[r][0] = 1.0;
+    }
+  }
+  return o[0][0];
+}
+
+fn main() -> i32 {
+  let a = calls_a_function() + holds_inline_mlir() + reads_the_next_row();
+  print(a + bound_known_only_when_running(8) + breaks_out_of_the_loop());
+  return 0;
+}

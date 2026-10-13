@@ -36,7 +36,7 @@
 // DROPS: Drop result
 
 fn double(a : Pinned<Tensor<f32, [4]>, Topology::NPU[0]>) -> Verified<Tensor<f32, [4], Memory::NPU_HBM>> {
-  let mut r = Tensor<f32, [4], Memory::NPU_HBM>::uninit();
+  let mut r = unsafe { Tensor<f32, [4], Memory::NPU_HBM>::uninit() };
   spawn on(Topology::NPU[0]) {
     for i in 0..4 {
       r[i] = a[i] * 2.0;
@@ -46,7 +46,7 @@ fn double(a : Pinned<Tensor<f32, [4]>, Topology::NPU[0]>) -> Verified<Tensor<f32
 }
 
 fn main() -> i32 {
-  let mut h = Tensor<f32, [4]>::uninit();
+  let mut h = unsafe { Tensor<f32, [4]>::uninit() };
   for i in 0..4 {
     h[i] = i as f32;
   }

@@ -1,7 +1,9 @@
 // No W1032 for `::uninit()` inside `unsafe`, as a statement or as the block's value, nor for
-// `::new()`, whose storage starts at zero. The one warning is that `c` is not used.
+// `::new()`, whose storage starts at zero. Nor W1010: `::uninit()` is what those `unsafe`
+// blocks are for. The one warning is that `c` is not used.
 // WARN: Unused variable 'c'
 // NO-WARN: W1032
+// NO-WARN: W1010
 
 fn main() -> i32 {
   let mut a = unsafe { Tensor<f32, [4]>::uninit() };

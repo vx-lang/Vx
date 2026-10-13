@@ -1,0 +1,38 @@
+//===- two_impls_of_a_trait_for_one_type.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s -j 4 2>&1 | FileCheck %s
+//
+// A second impl of a trait for a type that already has one is an error at the impls, even
+// when nothing calls the method: a call could not choose between them.
+//
+// CHECK: Error[E3049]: `impl Describe for Point` is written twice in '{{.*}}two_impls_of_a_trait_for_one_type.vx'
+
+struct Point {
+  x : i32,
+}
+
+trait Describe {
+  fn describe(self : &Self) -> i32;
+}
+
+impl Describe for Point {
+  fn describe(self : &Point) -> i32 {
+    return 1;
+  }
+}
+
+impl Describe for Point {
+  fn describe(self : &Point) -> i32 {
+    return 2;
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

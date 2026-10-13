@@ -1,0 +1,23 @@
+//===- assign_through_a_tensor_reference_with_an_unknown_extent.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `*t = v` writes `v`'s elements into the tensor `t` refers to, so the two have to be the same
+// shape. With a `?` extent the types do not say they are, so the assignment is refused.
+
+fn replace(t : &mut Tensor<f32, [?]>, n : i32) -> void {
+  // CHECK: Error[E3003] at [[@LINE+1]]:{{[0-9]+}}: assigning through a reference writes the new values into the tensor it refers to
+  *t = Tensor<f32>([n]);
+  return;
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<f32>([4]);
+  replace(&mut a, 4);
+  return 0;
+}

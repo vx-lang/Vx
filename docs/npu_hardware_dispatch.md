@@ -82,7 +82,7 @@ Consider this snippet from `tests/backend/pass/ane_matmul.vx`:
 
 ```rust
 // 1. Allocated in standard RAM, then given a home in NPU_HBM
-let mut result_host = Tensor<f32, [4, 4]>::uninit();
+let mut result_host = unsafe { Tensor<f32, [4, 4]>::uninit() };
 let mut result = transfer(result_host, Memory::NPU_HBM);
 
 // 2. Execution dynamically offloaded to AMX

@@ -36,7 +36,7 @@
 // CHECK-SAME: space = "PEER_HBM"
 
 fn main() -> i32 {
-  let t : Tensor<f32, [64, 64]> = Tensor<f32, [64, 64]>::uninit();
+  let t : Tensor<f32, [64, 64]> = unsafe { Tensor<f32, [64, 64]>::uninit() };
   let near = transfer(t, Memory::HBM);
   let far = transfer(near, Memory::PEER_HBM);
   return 0;

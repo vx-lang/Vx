@@ -68,7 +68,8 @@ pub fn paths_may_alias<T: AsRef<str>>(a: &[T], b: &[T]) -> bool {
 }
 
 /// How a place reads in a message: `q[0].x`, with a dot before each field and none before an
-/// index.
+/// index. A tuple's fields, which the parser names `_0`, `_1`, .., read as the program writes
+/// them: `t.0`.
 pub fn display_place<T: AsRef<str>>(root: &str, path: &[T]) -> String {
     let mut out = root.to_string();
     for p in path {
@@ -76,7 +77,18 @@ pub fn display_place<T: AsRef<str>>(root: &str, path: &[T]) -> String {
         if !p.starts_with('[') {
             out.push('.');
         }
-        out.push_str(p);
+        match p.strip_prefix('_') {
+            Some(n) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => out.push_str(n),
+            _ => out.push_str(p),
+        }
     }
     out
+}
+
+/// A moved place as the checker records it, `p.a` or `t._0`, as it reads in a message.
+pub fn display_dotted(place: &str) -> String {
+    let mut parts = place.split('.');
+    let root = parts.next().unwrap_or_default();
+    let path: Vec<&str> = parts.collect();
+    display_place(root, &path)
 }

@@ -57,6 +57,7 @@ pub(crate) fn numeric_literal_mut(e: &mut Expr) -> Option<&mut NumberExpr> {
 
 /// Whether an expression is a numeric literal that has no type of its own yet -- the one that
 /// takes its type from the other operand of a binary op, or from the position it sits in.
+/// Arithmetic on such literals, `2 * 3`, counts as one.
 pub(crate) fn is_untyped_numeric_literal(e: &Expr) -> bool {
     match e {
         Expr::Number(n) => n.ty.is_none(),
@@ -65,6 +66,11 @@ pub(crate) fn is_untyped_numeric_literal(e: &Expr) -> bool {
             expr: inner,
             ..
         }) => is_untyped_numeric_literal(inner),
+        Expr::BinaryOp(BinaryOpExpr { lhs, op, rhs, .. }) => {
+            *op != BinaryOp::MatMul
+                && is_untyped_numeric_literal(lhs)
+                && is_untyped_numeric_literal(rhs)
+        }
         _ => false,
     }
 }
@@ -79,6 +85,10 @@ pub(crate) fn clear_literal_type(e: &mut Expr) {
             expr: inner,
             ..
         }) => clear_literal_type(inner),
+        Expr::BinaryOp(BinaryOpExpr { lhs, rhs, .. }) => {
+            clear_literal_type(lhs);
+            clear_literal_type(rhs);
+        }
         _ => {}
     }
 }
@@ -696,10 +706,15 @@ impl<'a> TypeChecker<'a> {
                 ..
             } = source
             {
-                if target_mem == source_mem
-                    && (!*target_mut || *source_mut)
-                    && self.is_assignable(target_inner, source_inner)
-                {
+                // A reference inside `&mut` is invariant: a write through the outer reference
+                // stores it, so the two inner references must fit each other both ways,
+                // lifetimes included. `&mut Tensor<f32, [4]>` still passes as `[?]`.
+                let inner_is_reference = matches!(**target_inner, Type::Borrow { .. });
+                let inner_fits = self.is_assignable(target_inner, source_inner)
+                    && (!*target_mut
+                        || !inner_is_reference
+                        || self.is_assignable(source_inner, target_inner));
+                if target_mem == source_mem && (!*target_mut || *source_mut) && inner_fits {
                     // Hook up 256-bit FastPath Borrow Checker algorithm from src/borrow.rs
                     let id_target = self.lower_to_type_id(target);
                     let id_source = self.lower_to_type_id(source);
