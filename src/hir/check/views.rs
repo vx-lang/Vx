@@ -201,7 +201,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.view_owners_by_let.insert(*span, owners);
         if let Some(RefProvenance::Local(depth)) = view.provenance {
             if depth > self.current_scope_depth() {
-                self.report_block_escape(name, span);
+                self.report_block_escape(name, depth, span);
             }
         }
         for (owner, _) in &view.owners {

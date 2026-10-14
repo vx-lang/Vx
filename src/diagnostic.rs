@@ -396,7 +396,9 @@ pub enum DiagnosticCode {
     /// struct), stored through a reference, or passed to a call that could store it there.
     /// What it points at is gone once the function returns. The same holds inside a function
     /// for a block: a variable declared outside a block cannot be given a value that points
-    /// at a variable declared inside it.
+    /// at a variable declared inside it. Nor can a variable keep a reference into a value with
+    /// no name, such as `make_vec()` in `let r = &make_vec();`, when that value is dropped at
+    /// the end of its statement.
     E4005,
     /// An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where
     /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`.

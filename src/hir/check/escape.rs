@@ -143,7 +143,7 @@ impl<'a> TypeChecker<'a> {
         span: &crate::syntax::Span,
     ) {
         if depth > self.scope_depth_of(&root) {
-            self.report_block_escape(&root, span);
+            self.report_block_escape(&root, depth, span);
             return;
         }
         let mut held = RefProvenance::Local(depth);
@@ -155,14 +155,29 @@ impl<'a> TypeChecker<'a> {
         self.borrow.ref_provenance.insert(root, held);
     }
 
-    pub(crate) fn report_block_escape(&mut self, root: &str, span: &crate::syntax::Span) {
-        self.errors.error_with_code(
-            crate::diagnostic::DiagnosticCode::E4005,
+    /// `root` is given a value pointing into the block at `depth`, which ends before `root` does.
+    pub(crate) fn report_block_escape(
+        &mut self,
+        root: &str,
+        depth: usize,
+        span: &crate::syntax::Span,
+    ) {
+        let message = if depth == RefProvenance::STATEMENT_END {
+            format!(
+                "`{root}` is given a reference into a value with no name, which is dropped at \
+                 the end of this statement. What it points at is gone once the statement ends. \
+                 Put the value in a variable first, with `let`, so it lives as long as `{root}`"
+            )
+        } else {
             format!(
                 "`{root}` is given a value that points at a variable of an inner block, and \
                  `{root}` outlives that block. What it points at is gone once the block ends. \
                  Declare that variable outside the block, where `{root}` is"
-            ),
+            )
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E4005,
+            message,
             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
         );
     }

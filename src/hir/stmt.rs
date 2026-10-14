@@ -490,7 +490,7 @@ impl<'a> TypeChecker<'a> {
                 // `let r = if c { let t = 1; &t } else { .. }`: `t`'s block has ended.
                 if let crate::hir::env::RefProvenance::Local(depth) = prov {
                     if depth > self.current_scope_depth() && !self.speculating {
-                        self.report_block_escape(name.as_ref(), span);
+                        self.report_block_escape(name.as_ref(), depth, span);
                     }
                 }
                 self.borrow.ref_provenance.insert(name.clone(), prov);

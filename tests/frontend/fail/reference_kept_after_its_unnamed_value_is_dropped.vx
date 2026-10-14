@@ -1,0 +1,79 @@
+//===- reference_kept_after_its_unnamed_value_is_dropped.vx -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A value with no name, such as the `Vec` that `Vec<f32>::with_capacity(8)` makes, is dropped
+// at the end of its statement, as in Rust. A variable cannot keep a reference into it.
+import std::vec;
+
+struct Holder {
+  v : Vec<f32>,
+}
+
+impl Holder {
+  fn first(self : &mut Holder) -> &mut f32 {
+    return self.v.as_mut_slice();
+  }
+}
+
+fn make_holder() -> Holder {
+  let mut v = Vec<f32>::with_capacity(8);
+  v.push(1.0);
+  return Holder {
+    v : v
+  };
+}
+
+fn make_vec() -> Vec<f32> {
+  let mut v = Vec<f32>::with_capacity(8);
+  v.push(1.0);
+  return v;
+}
+
+fn pass(p : &mut f32) -> &mut f32 {
+  return p;
+}
+
+fn slice_of_a_new_vec() -> f32 {
+  // CHECK: Error[E4005] at [[@LINE+1]]:3: `s` is given a reference into a value with no name, which is dropped at the end of this statement
+  let s = Vec<f32>::with_capacity(8).as_mut_slice();
+  *s = 2.5;
+  return *s;
+}
+
+fn passed_through_a_function() -> f32 {
+  // CHECK: Error[E4005] at [[@LINE+1]]:3: `s` is given a reference into a value with no name
+  let s = pass(Vec<f32>::with_capacity(8).as_mut_slice());
+  *s = 2.5;
+  return *s;
+}
+
+fn assigned_to_a_variable() -> f32 {
+  let mut v = make_vec();
+  let mut s = v.as_mut_slice();
+  // CHECK: Error[E4005] at [[@LINE+1]]:3: `s` is given a reference into a value with no name
+  s = Vec<f32>::with_capacity(8).as_mut_slice();
+  *s = 2.5;
+  return *s;
+}
+
+fn borrow_of_a_returned_vec() -> i32 {
+  // CHECK: Error[E4005] at [[@LINE+1]]:3: `r` is given a reference into a value with no name
+  let r = &make_vec();
+  return r.len();
+}
+
+fn method_on_a_returned_struct() -> f32 {
+  // CHECK: Error[E4005] at [[@LINE+1]]:3: `s` is given a reference into a value with no name
+  let s = make_holder().first();
+  return *s;
+}
+
+fn main() -> i32 {
+  return 0;
+}

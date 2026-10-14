@@ -1713,7 +1713,10 @@ impl<'a> TypeChecker<'a> {
     /// `None` when `expr` is not a reference (nothing to check). `External` when it roots in a
     /// caller-owned reference parameter (safe to return); `Local` when it roots in a
     /// function-local slot, a by-value binding, or a temporary (returning it would dangle).
-    pub(crate) fn ref_provenance_of(&self, expr: &Expr) -> Option<crate::hir::env::RefProvenance> {
+    pub(crate) fn ref_provenance_of(
+        &mut self,
+        expr: &Expr,
+    ) -> Option<crate::hir::env::RefProvenance> {
         use crate::hir::env::RefProvenance;
         match expr {
             // `&base` / `&base.field`: a fresh borrow. It is safe to return only when it reborrows
@@ -1738,6 +1741,9 @@ impl<'a> TypeChecker<'a> {
                         Some(pty) if Self::is_ref_type(pty) => Some(RefProvenance::External),
                         _ => Some(RefProvenance::Local(self.scope_depth_of(&base))),
                     }
+                } else if self.drops_frees_borrowed_temporary(place) {
+                    // `&make()` of a struct that is dropped at the end of the statement.
+                    Some(RefProvenance::Local(RefProvenance::STATEMENT_END))
                 } else {
                     // `&5`, `&(a + b)`, `&f()` — borrows an unnamed temporary.
                     Some(RefProvenance::Local(self.current_scope_depth()))
@@ -1848,7 +1854,7 @@ impl<'a> TypeChecker<'a> {
     /// if any part is known and none is local, nothing if nothing is known. Unlike a call's
     /// arguments, a value with no known part is not assumed to point anywhere.
     fn join_value_provenance<'e>(
-        &self,
+        &mut self,
         parts: impl Iterator<Item = &'e Expr>,
     ) -> Option<crate::hir::env::RefProvenance> {
         Self::join_provenances(parts.map(|e| self.ref_provenance_of(e)).collect())
@@ -1880,7 +1886,7 @@ impl<'a> TypeChecker<'a> {
     /// The provenance of each value a block can end with: a `return`, or a final expression
     /// with no `;`. Nested branches are looked into through `ref_provenance_of`.
     fn block_value_provenance(
-        &self,
+        &mut self,
         stmts: &[Statement],
     ) -> Vec<Option<crate::hir::env::RefProvenance>> {
         stmts
@@ -1894,7 +1900,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn block_value_provenance_joined(
-        &self,
+        &mut self,
         stmts: &[Statement],
     ) -> Option<crate::hir::env::RefProvenance> {
         Self::join_provenances(self.block_value_provenance(stmts))
@@ -2021,7 +2027,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn join_arg_provenance(
-        &self,
+        &mut self,
         args: &[Expr],
     ) -> Option<crate::hir::env::RefProvenance> {
         let refs: Vec<&Expr> = args.iter().collect();
@@ -2032,7 +2038,7 @@ impl<'a> TypeChecker<'a> {
     /// `External` (a correct callee returns a reference derived from its reference inputs; a
     /// callee that fabricates one from a local is caught when *it* is checked).
     pub(crate) fn join_arg_provenance_exprs(
-        &self,
+        &mut self,
         args: &[&Expr],
     ) -> Option<crate::hir::env::RefProvenance> {
         use crate::hir::env::RefProvenance;

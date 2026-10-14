@@ -429,6 +429,10 @@ pub enum RefProvenance {
 }
 
 impl RefProvenance {
+    /// The depth of a value with no name that is dropped at the end of its statement: it is
+    /// gone before any block ends.
+    pub(crate) const STATEMENT_END: usize = usize::MAX;
+
     /// Of two values, the one gone soonest: local beats external, a deeper block beats a
     /// shallower one.
     pub(crate) fn join(a: Self, b: Self) -> Self {

@@ -1418,6 +1418,17 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Whether `e`, a call or struct literal borrowed with no name (`&make()`), is dropped at
+    /// the end of its statement, as `drops_scan_temps` arranges for a struct that needs it.
+    pub(crate) fn drops_frees_borrowed_temporary(&mut self, e: &Expr) -> bool {
+        let ty = match e {
+            Expr::FunctionCall(fc) => self.drops_return_type(&fc.name),
+            Expr::StructInit(si) => Some(Type::Struct(si.name.clone(), None)),
+            _ => None,
+        };
+        ty.is_some_and(|t| !matches!(t, Type::Tensor(..)) && !self.drops_glue(&t).is_empty())
+    }
+
     /// The declared return type of the function `name`, once the checker has resolved it.
     fn drops_return_type(&self, name: &crate::symbol::Symbol) -> Option<Type> {
         if let Some(f) = self.env.functions.get(name) {
