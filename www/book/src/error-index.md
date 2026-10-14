@@ -17,7 +17,7 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1033` (25 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3050` (49 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3051` (50 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4013` (13 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6031` (31 codes)
@@ -145,6 +145,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3048`](/errors/E3048/) | An `if` with no `else` whose value is used, as in `let u = if c { .. };`. When the condition is false there is no branch to give a value. Add an `else`, or use the `if` as a statement. |
 | [`E3049`](/errors/E3049/) | Two impls of the same trait for the same type: `impl Describe for Point` written twice, in one module or in two. A type has one impl of a trait, so a call could not choose between them. Remove one. |
 | [`E3050`](/errors/E3050/) | A pattern inside a variant's payload that is not a name or `_`, such as the `3` in `Val(3)` or the `Inner::A(v)` in `Wrap(Inner::A(v))`. The compiler does not test such a pattern when it chooses an arm, so the arm would be taken for any payload. Bind the payload to a name and test it in the arm, with an `if` or another `match`. |
+| [`E3051`](/errors/E3051/) | A `match` pattern that names a variant of another enum than the value matched, such as `Other::Red` in a `match` on a `Color`. Write the variant with the matched value's enum. |
 
 ## Borrow/Ownership Errors
 
@@ -239,4 +240,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-150 diagnostics.
+151 diagnostics.

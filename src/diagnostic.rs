@@ -373,6 +373,9 @@ pub enum DiagnosticCode {
     /// pattern when it chooses an arm, so the arm would be taken for any payload. Bind the
     /// payload to a name and test it in the arm, with an `if` or another `match`.
     E3050,
+    /// A `match` pattern that names a variant of another enum than the value matched, such as
+    /// `Other::Red` in a `match` on a `Color`. Write the variant with the matched value's enum.
+    E3051,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
