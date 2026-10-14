@@ -131,7 +131,7 @@ For `Topology::CPU` the body of `spawn on` is inlined where it stands; there is
 nothing to dispatch to. For accelerator topologies
 (NPU / ANE / GPU) the body is outlined into a function `vx_npu_kernel_N` carrying
 the `llvm.emit_c_interface` attribute, so MLIR additionally emits a C-interface
-wrapper `_mlir_ciface_vx_npu_kernel_N`. The captured values become the kernel's
+wrapper, which Vx exports as `_vx_ciface_vx_npu_kernel_N` (see §4). The captured values become the kernel's
 parameters, and memref-backed captures are passed as pointers to their memref
 descriptor structs (consistent with §2).
 
@@ -155,7 +155,7 @@ vx_plugin_dispatch_async(name, payload_size, device_args, arg_tags, num_args);
   `runtime/npu_dispatch.mm` — keep the two in sync).
 
 The runtime builds an `ffi_cif` from the tags and `ffi_call`s
-`_mlir_ciface_<name>`. libffi places each argument in the correct GP/FP register
+`_vx_ciface_<name>`. libffi places each argument in the correct GP/FP register
 or stack slot, so this is correct for **all** argument types, including by-value
 `f32`/`f64`.
 
@@ -214,9 +214,20 @@ Accelerate. The whole thing — runtime compilation, the libffi link, and the
   `<ffi.h>` (from `libffi-dev`), not macOS's `<ffi/ffi.h>`, and `-lffi` must stay
   gated to targets that actually link the runtime.
 
-## 4. Related
+## 4. Symbol names
 
-- `docs/npu_hardware_dispatch.md` — the `_mlir_ciface` dispatch mechanism.
+- A function the program defines keeps its name, and is `hidden` and `dso_local`.
+  The executable does not export it, so a program's `fn write` does not replace
+  libc's `write` for the runtime library.
+- Apart from `main`, every symbol Vx exports starts with `_vx_`. The kernel entry
+  points `_vx_ciface_<kernel>` are the only ones today. The dispatch runtime
+  finds them with `dlsym`.
+- `main` keeps its C name, because the C runtime calls it.
+- A function in an `extern` block keeps its C name and C linkage.
+
+## 5. Related
+
+- `docs/npu_hardware_dispatch.md` — the C-interface dispatch mechanism.
 - `docs/spawn_on.md` — `spawn on(...)` semantics and outlining.
 - `src/dialect/VxLowering.cpp` — `SpawnOpLowering` / `LaunchOpLowering`.
 - `runtime/npu_dispatch.mm` — the runtime dispatcher.

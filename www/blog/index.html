@@ -43,6 +43,14 @@
 
   <ul class="posts">
     <li>
+      <a href="/blog/what-the-borrow-checker-let-through.html">What the borrow checker let through</a>
+      <time datetime="2026-10-14">14 October 2026</time>
+      <p>A review of Vx's borrow checker found ten programs that compiled and should not have. One
+      printed a different number with optimization on, and one, sent by a reader, changed a
+      variable not declared <code>mut</code>. Rust's checker has open bugs of the same two kinds,
+      one of them reported this week.</p>
+    </li>
+    <li>
       <a href="/blog/build-order-should-not-change-a-program.html">When the build order changes the program</a>
       <time datetime="2026-10-09">9 October 2026</time>
       <p>C++ generates a copy assignment or a template instance only in the files that use it,

@@ -713,6 +713,66 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// A variant pattern must name the matched value's enum and one of its variants. An arm
+    /// is chosen by its variant name alone, so `Other::Red` was taken for a `Color::Red`.
+    fn check_variant_pattern(&mut self, pattern: &Pattern, expr_ty: &Type, span: &Span) {
+        let Pattern::EnumVariant(enum_name, variant, _) = pattern else {
+            return;
+        };
+        if self.speculating {
+            return;
+        }
+        let at = Some(crate::diagnostic::SourceSpan::from_ast_span(span));
+        let base = |name: &str| -> crate::symbol::Symbol {
+            name.find('<').map_or(name, |i| &name[..i]).into()
+        };
+        let pattern_enum = base(enum_name);
+        let Some(decl) = self.env.enums.get(pattern_enum.as_ref()) else {
+            let poisoned = self.worker.global.registry.poisoned_reason(&pattern_enum)
+                == Some(crate::registry::PoisonKind::EnumVariant);
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E2003,
+                if poisoned {
+                    crate::registry::ambiguous_import_message("Enum", &pattern_enum)
+                } else {
+                    format!("Unknown enum {}", enum_name)
+                },
+                at,
+            );
+            return;
+        };
+        if !decl.variants.iter().any(|v| v.0 == *variant) {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E2004,
+                format!("Enum {} does not have variant {}", pattern_enum, variant),
+                at,
+            );
+            return;
+        }
+        let mut matched = expr_ty;
+        while let Type::Borrow { inner, .. } = matched {
+            matched = inner;
+        }
+        let matched_enum = match matched {
+            Type::Enum(n, _) | Type::Struct(n, _) => base(n),
+            Type::GenericInstance(inner, _) => match &**inner {
+                Type::Enum(n, _) | Type::Struct(n, _) => base(n),
+                _ => return,
+            },
+            _ => return,
+        };
+        if matched_enum != pattern_enum && self.env.enums.contains_key(matched_enum.as_ref()) {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3051,
+                format!(
+                    "this pattern is a variant of `{pattern_enum}`, but the value matched is a \
+                     `{matched_enum}`; write `{matched_enum}::{variant}`"
+                ),
+                at,
+            );
+        }
+    }
+
     pub(crate) fn bind_pattern_variables(&mut self, pattern: &Pattern, expr_ty: &Type) {
         match pattern {
             Pattern::Identifier(name) => {
@@ -807,6 +867,7 @@ impl<'a> TypeChecker<'a> {
                         );
                     }
                     self.refuse_payload_subpattern(&arm.pattern, &arm.span);
+                    self.check_variant_pattern(&arm.pattern, &expr_ty, &arm.span);
                     self.push_scope();
                     self.check_literal_pattern_range(&arm.pattern, &expr_ty);
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);

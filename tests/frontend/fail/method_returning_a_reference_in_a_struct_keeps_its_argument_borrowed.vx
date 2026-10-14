@@ -1,0 +1,41 @@
+//===- method_returning_a_reference_in_a_struct_keeps_its_argument_borrowed.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `a.view(&b)` returns a struct holding `&b`, so `b` stays borrowed while `r` is used, and
+// moving `b` is refused.
+import std::vec;
+
+struct N {
+  v : Vec<i32>,
+}
+
+struct R {
+  r : &N,
+}
+
+impl N {
+  fn view(self : &N, b : &N) -> R {
+    return R {
+      r : b
+    };
+  }
+}
+
+fn main() -> i32 {
+  let a = N {
+    v : Vec<i32>::new()
+  };
+  let b = N {
+    v : Vec<i32>::new()
+  };
+  let r = a.view(&b);
+  // CHECK: Error[E4007] at [[@LINE+1]]:11: `b` is moved while it is borrowed
+  let c = b;
+  return (r.r.v.len() + c.v.len()) as i32;
+}
