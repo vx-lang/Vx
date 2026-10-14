@@ -1,0 +1,28 @@
+//===- store_through_a_reference_to_a_variable_of_the_same_function.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+//
+// `rr` points at `r`, so `*rr = &mut y` gives `r` a new value, as `r = &mut y` would.
+// `x`, `y` and `r` are in the same block, so nothing outlives what it points at.
+
+fn main() -> i32 {
+  let mut x = 5;
+  let mut y = 7;
+  let mut r = &mut x;
+  let rr = &mut r;
+  *rr = &mut y;
+  **rr = 20;
+  // CHECK-NOT: Error
+  // CHECK: {{^}}20{{$}}
+  print(y);
+  print!("\n");
+  // CHECK-NEXT: {{^}}5{{$}}
+  print(x);
+  print!("\n");
+  return 0;
+}

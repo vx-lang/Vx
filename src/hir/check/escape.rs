@@ -16,7 +16,8 @@
 // reference, and a call given a reference the callee could store it through. Vx has no
 // written lifetimes, so the call rule is conservative: it may refuse a correct program, and
 // does not accept a wrong one. A value that holds a `&mut` and a reference gets the same
-// rule, since any method or its `drop` can store one through the other.
+// rule, since any method or its `drop` can store one through the other. A store through a
+// local bound to `&mut x` is a store into `x`.
 //
 //===----------------------------------------------------------------------===//
 
@@ -38,6 +39,10 @@ impl<'a> TypeChecker<'a> {
                 let span = lhs.span();
                 let retargeted = self.retarget_on_assign(lhs, rhs);
                 let held = self.check_store_escape(lhs, rhs, &span);
+                if let Expr::Identifier(id) = lhs {
+                    let depth = self.scope_depth_of(&id.name);
+                    self.set_store_target_var(&id.name, rhs, depth);
+                }
                 if let Some(root) = held.or(retargeted) {
                     self.check_writes_against_holds(Some(&root), &span);
                 }
@@ -95,6 +100,11 @@ impl<'a> TypeChecker<'a> {
         // reference; only a path through a field, an index or a `*` writes into
         // whatever the reference points at.
         let is_path = !matches!(lhs, Expr::Identifier(_));
+        // `*r = v`, where `r` was bound to `&mut x`, gives `x` a new value.
+        if let Some(var) = self.store_target_var_of(lhs) {
+            self.hold_in_local(var.clone(), depth, false, span);
+            return Some(var);
+        }
         match Self::place_root_through(lhs) {
             Some((root, through_deref)) => {
                 if through_deref || (is_path && self.is_reference_variable(&root)) {
@@ -378,8 +388,56 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Record the variable that `name`, declared at `depth`, now points at, when `value` is
+    /// `&mut` of a variable.
+    pub(crate) fn set_store_target_var(
+        &mut self,
+        name: &crate::symbol::Symbol,
+        value: &Expr,
+        depth: usize,
+    ) {
+        match value {
+            Expr::Borrow(b) if b.is_mut => match &*b.expr {
+                Expr::Identifier(v) if v.name != *name => {
+                    self.borrow
+                        .store_target_vars
+                        .insert(name.clone(), (v.name.clone(), depth));
+                }
+                _ => {
+                    self.borrow.store_target_vars.remove(name);
+                }
+            },
+            _ => {
+                self.borrow.store_target_vars.remove(name);
+            }
+        }
+    }
+
+    /// The variable that `lhs` writes, when `lhs` is `*r` and `r` is a local bound to
+    /// `&mut` of that variable.
+    pub(crate) fn store_target_var_of(&self, lhs: &Expr) -> Option<crate::symbol::Symbol> {
+        let Expr::Dereference(d) = lhs else {
+            return None;
+        };
+        let Expr::Identifier(id) = &*d.expr else {
+            return None;
+        };
+        // An entry made in a block that has ended is about another variable of that name.
+        let (var, depth) = self.borrow.store_target_vars.get(&id.name)?;
+        (*depth == self.scope_depth_of(&id.name)).then(|| var.clone())
+    }
+
     /// For `lhs = rhs`: record the `&mut` that `rhs` puts into a local. Returns that local.
     fn retarget_on_assign(&mut self, lhs: &Expr, rhs: &Expr) -> Option<crate::symbol::Symbol> {
+        if let Some(var) = self.store_target_var_of(lhs) {
+            match self.store_target_of(rhs) {
+                Some(target) => self.add_store_target(&var, target, false),
+                None => {
+                    self.borrow.store_targets.remove(&var);
+                }
+            }
+            return Some(var);
+        }
         let (root, through_deref) = Self::place_root_through(lhs)?;
         let is_path = !matches!(lhs, Expr::Identifier(_));
         if through_deref || (is_path && self.is_reference_variable(&root)) {

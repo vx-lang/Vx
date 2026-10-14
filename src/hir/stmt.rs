@@ -507,6 +507,12 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+        // A `&mut` bound before this line points at the earlier variable of this name.
+        self.borrow
+            .store_target_vars
+            .retain(|_, (v, _)| *v != *name);
+        self.set_store_target_var(name, expr, self.current_scope_depth());
+        self.reach_borrows_of(name, expr, self.current_scope_depth());
 
         // Shadowing: this binding hides any earlier one with the same name, so earlier
         // facts about the name are now about a dead binding and must not participate in
@@ -1036,6 +1042,19 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `name = &v` or `&mut v`: a use of `name` reaches what `v` borrows, so `name` holds
+    /// those borrows too.
+    fn reach_borrows_of(&mut self, name: &crate::symbol::Symbol, value: &Expr, depth: usize) {
+        if let Expr::Borrow(b) = value {
+            if let Expr::Identifier(v) = &*b.expr {
+                if v.name != *name && !self.speculating {
+                    self.borrow
+                        .copy_borrows(v.name.as_ref(), name.as_ref(), depth);
+                }
+            }
+        }
+    }
+
     /// Refuse writing to a variable, or a field or element of it, while a `&` borrow of that
     /// part is still used afterwards (E4009): the borrow would see the value change under it.
     /// A live `&mut` borrow is already refused as a use of the variable (E4002).
@@ -1146,6 +1165,9 @@ impl<'a> TypeChecker<'a> {
             if let Expr::Identifier(id) = &*ma.base {
                 self.current_assignment_target = Some(id.name.to_string());
             }
+        } else if let Some(var) = self.store_target_var_of(lhs) {
+            // `*r = &mut y`, with `r` bound to `&mut x`: `x` holds the new borrow.
+            self.current_assignment_target = Some(var.to_string());
         }
 
         // Check the RHS expecting the target's type, so an untyped literal is born at that
@@ -1172,6 +1194,16 @@ impl<'a> TypeChecker<'a> {
         let mut rhs_ty =
             self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume && !copies_into_tensor);
         self.current_assignment_target = None;
+        // `*r = &mut y`, with `r` bound to `&mut x`: `r` reaches the borrows `x` now holds.
+        if let (Some(var), Expr::Dereference(d)) = (self.store_target_var_of(lhs), &*lhs) {
+            if let Expr::Identifier(r) = &*d.expr {
+                if !self.speculating {
+                    let depth = self.scope_depth_of(&r.name);
+                    self.borrow
+                        .copy_borrows(var.as_ref(), r.name.as_ref(), depth);
+                }
+            }
+        }
         if let Some(borrows) = lhs_borrows {
             self.borrow.forget(&borrows);
         }
@@ -1198,6 +1230,8 @@ impl<'a> TypeChecker<'a> {
                             .copy_borrows(from.name.as_ref(), id.name.as_ref(), depth);
                     }
                 }
+                let depth = self.scope_depth_of(&id.name);
+                self.reach_borrows_of(&id.name, rhs, depth);
             } else {
                 self.drops_note_place_assign(lhs, &lhs_ty, lhs.span().line, &moved_fields_before);
             }

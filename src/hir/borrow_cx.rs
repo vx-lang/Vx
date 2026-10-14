@@ -43,6 +43,9 @@ pub(crate) struct BorrowCx {
     /// write through it lands. `Local(depth)` is the block of the variable it points at, and
     /// `External` is memory the caller owns. Reset per function.
     pub(crate) store_targets: HashMap<Symbol, RefProvenance>,
+    /// For each local bound to `&mut v`: the variable `v`, and the block depth of the local.
+    /// A store through the local is then a store into `v`. Reset per function.
+    pub(crate) store_target_vars: HashMap<Symbol, (Symbol, usize)>,
     /// Parameters (name -> declared type) of the function currently being checked (#243). Reset per
     /// function; lets the return-escape analysis tell a caller-owned reference parameter apart from a
     /// local binding of the same reference type.
@@ -92,6 +95,7 @@ impl Default for BorrowCx {
             mutable_vars: vec![HashSet::new()],
             ref_provenance: HashMap::new(),
             store_targets: HashMap::new(),
+            store_target_vars: HashMap::new(),
             current_params: HashMap::new(),
             loop_exits: Vec::new(),
             views: HashMap::new(),
