@@ -5533,9 +5533,9 @@ fn expr_has_control_flow(e: &Expr) -> bool {
         Expr::ComptimeBlock(c) => {
             body_has_control_flow(&c.stmts) || c.ret.as_deref().is_some_and(expr_has_control_flow)
         }
-        Expr::SpawnOn(sp) => {
-            body_has_control_flow(&sp.stmts) || sp.ret.as_deref().is_some_and(expr_has_control_flow)
-        }
+        // A spawn body is a separate MLIR region. A value assigned in it is not visible after
+        // it, so an outer variable it assigns must live in a stack slot.
+        Expr::SpawnOn(_) => true,
         // Everything below only forwards the question to its operands: a value-`if` nested in a
         // call argument (`g(if c { y = 7; 1 } else { 0 })`) creates blocks exactly as a bare one
         // does, and not recursing here left the function looking straight-line -- the branch's
