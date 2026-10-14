@@ -1,0 +1,41 @@
+//===- bf16_subnormals_are_kept.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A bf16 subnormal (a number too small for the normal exponent range) keeps its value. On an x86
+// CPU with AVX512-BF16, LLVM's bf16 conversion instruction turns it into zero. Printed, as bf16
+// bits: the smallest subnormal after it is passed to a function and returned from one; 2^-133
+// converted from f32 with `as bf16`, which is that same subnormal; and 1e-38 converted the same
+// way, which rounds to 109 times it.
+//
+// EXPECT: 1 1 109
+
+fn to_bits(x : bf16) -> u16 {
+  return mlir!( inputs : (%a = x : bf16), returns : u16, dialects : ["arith"]) {
+    %r = arith.bitcast %a : bf16 to i16
+    macro.yield %r : i16
+  };
+}
+
+fn from_bits(v : u16) -> bf16 {
+  return mlir!( inputs : (%v = v : i16), returns : bf16, dialects : ["arith"]) {
+    %r = arith.bitcast %v : i16 to bf16
+    macro.yield %r : bf16
+  };
+}
+
+fn narrow(x : f32) -> bf16 {
+  return x as bf16;
+}
+
+fn main() -> i32 {
+  print(to_bits(from_bits(1u16)));
+  print!(" ");
+  print(to_bits(narrow(0.000000000000000000000000000000000000000091835496f32)));
+  print!(" ");
+  print(to_bits(narrow(0.00000000000000000000000000000000000001f32)));
+  return 0;
+}

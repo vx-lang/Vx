@@ -15,7 +15,7 @@
 // CHECK-NOT: memref<?x?xf32>
 
 fn make() -> Tensor<f32, [?, 8]> {
-  let a = Tensor<f32, [512, 8]>::uninit();
+  let a = unsafe { Tensor<f32, [512, 8]>::uninit() };
   return a;
 }
 
@@ -24,7 +24,7 @@ fn norm(x : Tensor<f32, [?, 8]>) -> i32 {
 }
 
 fn main() -> i32 {
-  let a = Tensor<f32, [512, 8]>::uninit();
+  let a = unsafe { Tensor<f32, [512, 8]>::uninit() };
   let r = norm(a);
   let c = make();
   return r + c.extent(0) - 1024;

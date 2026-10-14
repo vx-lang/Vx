@@ -65,7 +65,7 @@ Topology Dev {
 
 // A single tile the exact size of the space it is placed in.
 fn fills_the_space() -> i32 {
-  let whole = Tensor<f32, [4096, 4096]>::uninit();
+  let whole = unsafe { Tensor<f32, [4096, 4096]>::uninit() };
   let _w = transfer(whole, Memory::W);
   return 0;
 }
@@ -73,19 +73,19 @@ fn fills_the_space() -> i32 {
 // The larger placement first, so that the peak and the last placement are
 // different numbers and the difference is what is asserted.
 fn peak_is_not_the_last() -> i32 {
-  let big = Tensor<f32, [2048, 2048]>::uninit();
+  let big = unsafe { Tensor<f32, [2048, 2048]>::uninit() };
   let s = transfer(big, Memory::W);
-  let small = Tensor<f32, [64, 64]>::uninit();
+  let small = unsafe { Tensor<f32, [64, 64]>::uninit() };
   let s = transfer(small, Memory::W);
   return 0;
 }
 
 fn main() -> i32 {
-  let whole = Tensor<f32, [4096, 4096]>::uninit();
+  let whole = unsafe { Tensor<f32, [4096, 4096]>::uninit() };
   let s = transfer(whole, Memory::W);
-  let big = Tensor<f32, [2048, 2048]>::uninit();
+  let big = unsafe { Tensor<f32, [2048, 2048]>::uninit() };
   let s = transfer(big, Memory::W);
-  let small = Tensor<f32, [64, 64]>::uninit();
+  let small = unsafe { Tensor<f32, [64, 64]>::uninit() };
   let s = transfer(small, Memory::W);
   return fills_the_space() + peak_is_not_the_last();
 }

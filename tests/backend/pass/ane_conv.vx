@@ -30,9 +30,9 @@
 // EXEC_RUN: %t | FileCheck %s --check-prefix=DISPATCH
 
 fn main() -> i32 {
-  let mut x_host = Tensor<f32, [3, 3]>::uninit();
-  let mut w_host = Tensor<f32, [2, 2]>::uninit();
-  let mut result_host = Tensor<f32, [2, 2]>::uninit();
+  let mut x_host = unsafe { Tensor<f32, [3, 3]>::uninit() };
+  let mut w_host = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  let mut result_host = unsafe { Tensor<f32, [2, 2]>::uninit() };
 
   for i in 0..3 {
     for j in 0..3 {
@@ -47,9 +47,9 @@ fn main() -> i32 {
   }
 
   // im2col: Flatten 4 patches of 2x2 into a 4x4 matrix
-  let mut im2col_host = Tensor<f32, [4, 4]>::uninit();
-  let mut w_flat_host = Tensor<f32, [4, 4]>::uninit();
-  let mut matmul_res_host = Tensor<f32, [4, 4]>::uninit();
+  let mut im2col_host = unsafe { Tensor<f32, [4, 4]>::uninit() };
+  let mut w_flat_host = unsafe { Tensor<f32, [4, 4]>::uninit() };
+  let mut matmul_res_host = unsafe { Tensor<f32, [4, 4]>::uninit() };
   // The multiply below adds into this tensor, so it starts at zero.
   for i in 0..4 {
     for j in 0..4 {
@@ -124,7 +124,7 @@ fn main() -> i32 {
 
 // vx-to-llvm replaces the launch with the vendor-neutral plugin call and a descriptor string
 // carrying the kernel name, its topology id and the topology's name -- the ABI a worker reads.
-// LLVM: llvm.func @vx_plugin_dispatch_async(!llvm.ptr, i64, !llvm.ptr, !llvm.ptr, i64) -> i64
+// LLVM: llvm.func {{(hidden )?}}@vx_plugin_dispatch_async(!llvm.ptr, i64, !llvm.ptr, !llvm.ptr, i64) -> i64
 // LLVM: llvm.mlir.global internal constant @[[K:[a-z0-9_]+]]_str("[[K]]\00topo=100\00toponame=NPU[0]\00")
 // LLVM: llvm.call @vx_plugin_dispatch_async(
-// LLVM: llvm.func @[[K]](
+// LLVM: llvm.func {{(hidden )?}}@[[K]](

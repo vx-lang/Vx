@@ -13,6 +13,8 @@
 //   340            `Option::zip` of two values, then of a value and nothing
 //   024            a `for` loop over struct items, which a tuple item is; the loop read the
 //                  payload's type from the option's printed type, which it failed to parse
+//   23             `zip` of two `map`s: the third pair is (3, 20). `zip<U>` was given `Map`'s
+//                  own `U`, an i64, as the type of its argument
 import core::iter;
 import core::option;
 
@@ -53,8 +55,12 @@ fn main() -> i32 {
   for p in ps {
     print(p.b);
   }
+  print!(" ");
+  let mut zm = range(0i64, 3i64).map(| x : i64 | x + 1i64).zip(range(0i64, 3i64).map(| x : i64 | x * 10i64));
+  let third = zm.nth(2i64).unwrap();
+  print(third.0 + third.1);
   print!(" end");
   return 0;
 }
 
-// EXPECT: 010,111,212, 010,112,214, 14 340 024 end
+// EXPECT: 010,111,212, 010,112,214, 14 340 024 23 end

@@ -18,6 +18,21 @@ should understand what a test checks from the test file alone, without reading t
   `agy -p "<text and question>"`) can review the wording; it is good at catching double
   negatives, internal terms and ambiguous words like "output".
 
+Follow the structural rules of Simplified Technical English (ASD-STE100):
+
+- Use the active voice.
+- Write one instruction per sentence.
+- Keep a sentence to at most 20 words for an instruction and 25 words for a description.
+- Do not use semicolons or phrasal verbs ("spin up", "take off").
+- Use the simple past, not the present perfect ("the test failed", not "has failed").
+- Give one thing one name, and use that name every time.
+- Keep every hedge: "may have failed" must not become "failed".
+
+Apply all of these to error messages and instructions. In commit messages, PR descriptions and
+docs, keep the sentence rules and be less strict about word choice. The `asd-ste100` skill in
+`.claude/skills/` has the full rules and examples. Its `scripts/ste-lint.py` checks a draft for
+most of them.
+
 ## Tool usage
 
 These keep commands clean and avoid unnecessary permission prompts:

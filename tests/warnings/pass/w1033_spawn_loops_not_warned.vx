@@ -1,0 +1,50 @@
+// No W1033 for a `spawn` loop that runs in parallel, nor for one whose passes write memory
+// another pass writes too, which is not meant to run in parallel: a scalar every pass adds to,
+// and one row every pass writes, even after a call that alone would be warned about. The one
+// warning is that `unused` is not used.
+// WARN: Unused variable 'unused'
+// NO-WARN: W1033
+
+import core::num;
+
+fn scale(x : f32) on Topology::GPU -> f32 {
+  return x * 2.0;
+}
+
+fn each_pass_writes_its_own_row() -> f32 {
+  let mut o = Tensor<f32, [64, 1]>::new();
+  spawn on(Topology::GPU) {
+    for r in 0..64 {
+      o[r][0] = (r as f32).sqrt();
+    }
+  }
+  return o[0][0];
+}
+
+fn every_pass_adds_to_one_scalar() -> f32 {
+  let mut sum = 0.0;
+  let x = Tensor<f32, [64, 1]>::new();
+  spawn on(Topology::GPU) {
+    for r in 0..64 {
+      sum = sum + x[r][0];
+    }
+  }
+  return sum;
+}
+
+fn every_pass_writes_row_zero() -> f32 {
+  let mut o = Tensor<f32, [64, 1]>::new();
+  spawn on(Topology::GPU) {
+    for r in 0..64 {
+      let y = scale(1.0);
+      o[0][0] = y;
+    }
+  }
+  return o[0][0];
+}
+
+fn main() -> i32 {
+  let unused = 1;
+  print(each_pass_writes_its_own_row() + every_pass_adds_to_one_scalar() + every_pass_writes_row_zero());
+  return 0;
+}

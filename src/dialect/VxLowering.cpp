@@ -1,6 +1,7 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #include "VxDialect.h"
+#include "mlir/Analysis/CallGraph.h"
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Pass.h"
@@ -16,6 +17,7 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -34,7 +36,9 @@
 #include "mlir/Target/LLVMIR/Dialect/All.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/Inliner.h"
 #include "mlir/Transforms/Mem2Reg.h"
+#include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringMap.h"
@@ -1392,6 +1396,30 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
 /// someone has decided what that op means on a GPU. The other direction fails
 /// late and quietly -- an image that compiles but cannot load, blamed at the
 /// far end on whatever the worker says last.
+/// A `linalg.fill` of a buffer, as loops over its dimensions storing the value
+/// in each element, in the `scf` and `memref` a device kernel can hold. A fill
+/// of a buffer with no dimensions is one store.
+static void fillToDeviceLoops(linalg::FillOp fill) {
+  Value buffer = fill.getOutputs()[0];
+  auto type = dyn_cast<MemRefType>(buffer.getType());
+  if (!type)
+    return;
+  OpBuilder b(fill);
+  Location loc = fill.getLoc();
+  Value value = fill.getInputs()[0];
+  SmallVector<Value> lower, upper, step;
+  for (int64_t d = 0; d < type.getRank(); ++d) {
+    lower.push_back(b.create<arith::ConstantIndexOp>(loc, 0));
+    upper.push_back(b.createOrFold<memref::DimOp>(loc, buffer, d));
+    step.push_back(b.create<arith::ConstantIndexOp>(loc, 1));
+  }
+  scf::buildLoopNest(b, loc, lower, upper, step,
+                     [&](OpBuilder &nested, Location at, ValueRange ivs) {
+                       nested.create<memref::StoreOp>(at, value, buffer, ivs);
+                     });
+  fill.erase();
+}
+
 static bool isDeviceLowerableDialect(StringRef ns) {
   // `vector` entered the list with Vx#378 R1: the flat path's slice ops
   // (`o[i] = o[i] + v[j] * p`) emit vector.load / elementwise vector arith,
@@ -2072,6 +2100,14 @@ struct ConvertVxToStandardPass
       // Skipping leaves such a program exactly as it was. Nothing downstream
       // requires a twin; a launch without an image simply carries no `image=`
       // field, as every launch did before this.
+      // A fill writes one value into a tensor the kernel makes, as `::new()`
+      // does, and has a plain loop form a device can run. Lowered here, so the
+      // `linalg` rule below keeps only a matmul, the plugin's route, off the
+      // device.
+      SmallVector<linalg::FillOp> fills;
+      k.getBody().walk([&](linalg::FillOp f) { fills.push_back(f); });
+      for (linalg::FillOp f : fills)
+        fillToDeviceLoops(f);
       bool deviceReady = true;
       k.getBody().walk([&](Operation *op) {
         // Rewritten to `gpu.return` below, so it is not a foreign dialect here.
@@ -3967,6 +4003,81 @@ struct ReorderableReductionsPass
   }
 };
 
+// A function the program defines is hidden: the linked executable does not
+// export it. An exported `write` replaced libc's for the shared runtime
+// library too, so `print`, which calls `write`, called the program's function
+// instead. `main` stays visible, and so does each `_mlir_ciface_` entry point,
+// which the dispatch runtime looks up by name.
+struct HideProgramSymbolsPass
+    : public PassWrapper<HideProgramSymbolsPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(HideProgramSymbolsPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-hide-program-symbols";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Gives the functions a program defines hidden visibility";
+  }
+
+  void runOnOperation() override {
+    getOperation().walk([](LLVM::LLVMFuncOp func) {
+      llvm::StringRef name = func.getSymName();
+      if (func.isExternal() || name == "main" ||
+          name.starts_with("_mlir_ciface_"))
+        return;
+      func.setVisibility_(LLVM::Visibility::Hidden);
+    });
+  }
+};
+
+// Upstream's `inline` pass inlines every call it can. A function that calls
+// another three times, which calls another three times, and so on, then holds
+// 3^depth copies of the innermost one, and compile time grows the same way.
+//
+// This pass inlines a call only when the function called has at most
+// `kMaxInlinedOps` operations. The inliner works from callees up to callers,
+// so a callee is measured after its own calls were inlined, and every inlined
+// call adds at most that many operations. LLVM's inliner still runs
+// afterwards, at -O1 and above, and weighs the remaining calls itself.
+struct BoundedInlinerPass
+    : public PassWrapper<BoundedInlinerPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(BoundedInlinerPass)
+
+  static constexpr unsigned kMaxInlinedOps = 200;
+
+  llvm::StringRef getArgument() const override { return "vx-inline"; }
+
+  llvm::StringRef getDescription() const override {
+    return "Inlines calls to small functions";
+  }
+
+  static LogicalResult runNested(Pass &pass, OpPassManager &pipeline,
+                                 Operation *op) {
+    return static_cast<BoundedInlinerPass &>(pass).runPipeline(pipeline, op);
+  }
+
+  static bool worthInlining(const Inliner::ResolvedCall &call) {
+    Region *body = call.targetNode->getCallableRegion();
+    if (!body)
+      return false;
+    unsigned ops = 0;
+    body->walk([&](Operation *) { ++ops; });
+    return ops <= kMaxInlinedOps;
+  }
+
+  void runOnOperation() override {
+    InlinerConfig config;
+    config.setDefaultPipeline(
+        [](OpPassManager &pm) { pm.addPass(createCanonicalizerPass()); });
+    config.setMaxInliningIterations(4);
+    Inliner inliner(getOperation(), getAnalysis<CallGraph>(), *this,
+                    getAnalysisManager(), runNested, config, worthInlining);
+    if (failed(inliner.doInlining()))
+      signalPassFailure();
+  }
+};
+
 } // namespace
 
 namespace mlir {
@@ -3989,6 +4100,12 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<ReorderableReductionsPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<HideProgramSymbolsPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<BoundedInlinerPass>();
   });
 }
 } // namespace vx

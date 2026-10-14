@@ -1009,13 +1009,28 @@ fn substitute_words(text: &str, mapping: &std::collections::HashMap<Symbol, Type
     result
 }
 
+/// An `mlir!` block's `returns` type is parsed without the enclosing function's type
+/// parameters in scope, so `returns : T` reads as a type named `T`. A name the substitution
+/// binds is that parameter, so it is substituted like one.
+fn substitute_mlir_returns(ty: &Type, mapping: &std::collections::HashMap<Symbol, Type>) -> Type {
+    match ty {
+        Type::Struct(name, None) if mapping.contains_key(name) => mapping[name].clone(),
+        Type::Pointer(inner, mem, is_mut) => Type::Pointer(
+            Box::new(substitute_mlir_returns(inner, mapping)),
+            mem.clone(),
+            *is_mut,
+        ),
+        _ => ty.substitute(mapping),
+    }
+}
+
 /// Is this a tensor construction -- storage the compiler allocated?
 ///
 /// A view built with `tensor_view_2d` has the same type and a shape the checker enforces, but
 /// names memory the compiler does not control: two views over one pointer are two names for one
 /// buffer, which no rule about names can see.
 pub fn is_tensor_construction(e: &Expr) -> bool {
-    match e {
+    match bare_unsafe_value(e) {
         Expr::FunctionCall(fc) => {
             let n = fc.name.as_ref();
             if matches!(n, "Tensor::new" | "Tensor::uninit" | "Tensor::fill") {
@@ -1025,6 +1040,19 @@ pub fn is_tensor_construction(e: &Expr) -> bool {
         }
         _ => false,
     }
+}
+
+/// `unsafe { e }` with nothing else in it, as `e`, so code that recognises a shape sees
+/// `unsafe { Tensor<..>::uninit() }` as the allocation it is. Peels any number of them.
+pub fn bare_unsafe_value(e: &Expr) -> &Expr {
+    let mut e = e;
+    while let Expr::UnsafeBlock(u) = e {
+        match (u.stmts.is_empty(), u.ret.as_deref()) {
+            (true, Some(r)) => e = r,
+            _ => break,
+        }
+    }
+    e
 }
 
 /// The local an `@` operand reads, when the operand is a bare name or a borrow of one.
@@ -1525,7 +1553,10 @@ impl Expr {
                     })
                     .collect(),
                 clobbers: e.clobbers.iter().map(|ex| ex.substitute(mapping)).collect(),
-                returns: e.returns.as_ref().map(|t| t.substitute(mapping)),
+                returns: e
+                    .returns
+                    .as_ref()
+                    .map(|t| substitute_mlir_returns(t, mapping)),
                 dialects: e.dialects.clone(),
                 block_str: substitute_words(&e.block_str, mapping),
                 span: e.span,

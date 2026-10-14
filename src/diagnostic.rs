@@ -128,6 +128,11 @@ pub enum DiagnosticCode {
     /// Call it inside `unsafe { .. }` to say that every element is written first, or use `::new()`
     /// for zeroed storage. A later version makes this an error.
     W1032,
+    /// The loop of a `spawn` region runs on one thread although each pass writes only memory of
+    /// its own, so its passes could run at the same time. The warning points at what stops it: a
+    /// call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass
+    /// writes, bounds not known when compiling, and the like.
+    W1033,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
@@ -359,6 +364,10 @@ pub enum DiagnosticCode {
     /// condition is false there is no branch to give a value. Add an `else`, or use the `if`
     /// as a statement.
     E3048,
+    /// Two impls of the same trait for the same type: `impl Describe for Point` written twice,
+    /// in one module or in two. A type has one impl of a trait, so a call could not choose
+    /// between them. Remove one.
+    E3049,
     /// A pattern inside a variant's payload that is not a name or `_`, such as the `3` in
     /// `Val(3)` or the `Inner::A(v)` in `Wrap(Inner::A(v))`. The compiler does not test such a
     /// pattern when it chooses an arm, so the arm would be taken for any payload. Bind the
@@ -561,8 +570,9 @@ pub enum DiagnosticCode {
     /// `::uninit()`, with no type annotation, a size that uses nothing the region computes, and
     /// a name nothing outside the region already uses.
     E6030,
-    /// A tensor shape that folds to a negative extent, or whose size in bytes does not fit in 64
-    /// bits. The size is known, and it is not one the generated code can allocate: it would wrap.
+    /// A tensor shape that folds to a negative extent, or whose size is more than 2^63 - 1 bytes,
+    /// the most an allocation can ask for. The size is known, and it is not one the generated
+    /// code can allocate: it would wrap.
     E6031,
 
     // --- Tensor/Math Errors (E7xxx) ---

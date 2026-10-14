@@ -50,11 +50,11 @@ Topology Unstated {
 
 fn main() -> i32 {
   // Declared by Narrow: accepted.
-  let a = Tensor<f32, [4, 4]>::uninit();
+  let a = unsafe { Tensor<f32, [4, 4]>::uninit() };
   let _on_narrow = transfer(a, Memory::HBM);
 
   // f64 is exactly what Narrow refuses, onto the machine that states nothing.
-  let b = Tensor<f64, [4, 4]>::uninit();
+  let b = unsafe { Tensor<f64, [4, 4]>::uninit() };
   let _on_unstated = transfer(b, Memory::SRAM);
 
   print(7);

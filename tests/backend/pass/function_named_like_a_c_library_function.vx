@@ -1,0 +1,27 @@
+//===- function_named_like_a_c_library_function.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program can define functions named like C library functions. `print` calls the C
+// library's `write` and `free` itself, and still reaches those, while the program's calls
+// reach its own: `write(21)` is 42 and `free(5)` is 6.
+//
+// EXPECT: 42 6
+
+fn write(x : i32) -> i32 {
+  return x * 2;
+}
+
+fn free(x : i32) -> i32 {
+  return x + 1;
+}
+
+fn main() -> i32 {
+  print(write(21));
+  print!(" ");
+  print(free(5));
+  return 0;
+}

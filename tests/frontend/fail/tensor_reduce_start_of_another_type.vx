@@ -10,7 +10,7 @@
 // `reduce` starts from a value of the tensor's element type. `0i32` is an `i32`, and the elements are `f32`.
 
 fn main() -> i32 {
-  let mut a = Tensor<f32, [3]>::uninit();
+  let mut a = unsafe { Tensor<f32, [3]>::uninit() };
   a[0] = 1.0;
   a[1] = 2.0;
   a[2] = 3.0;
