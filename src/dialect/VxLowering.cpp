@@ -4076,11 +4076,14 @@ struct CheckIntegerDivisionPass
   }
 };
 
-// A function the program defines is hidden: the linked executable does not
-// export it. An exported `write` replaced libc's for the shared runtime
-// library too, so `print`, which calls `write`, called the program's function
-// instead. `main` stays visible, and so does each `_mlir_ciface_` entry point,
-// which the dispatch runtime looks up by name.
+// A function the program defines is hidden and dso_local: the linked
+// executable does not export it. An exported `write` replaced libc's for the
+// shared runtime library too, so `print`, which calls `write`, called the
+// program's function instead. `main` keeps its C name. Each kernel entry point
+// `_mlir_ciface_<kernel>`, which the dispatch runtime looks up by name, stays
+// exported as `_vx_ciface_<kernel>`, so every symbol Vx exports starts with
+// `_vx_`. Functions in an `extern` block are declarations, and keep their C
+// names.
 struct HideProgramSymbolsPass
     : public PassWrapper<HideProgramSymbolsPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(HideProgramSymbolsPass)
@@ -4090,17 +4093,36 @@ struct HideProgramSymbolsPass
   }
 
   llvm::StringRef getDescription() const override {
-    return "Gives the functions a program defines hidden visibility";
+    return "Hides the functions a program defines, and names the ones it "
+           "exports `_vx_...`";
   }
 
   void runOnOperation() override {
-    getOperation().walk([](LLVM::LLVMFuncOp func) {
+    ModuleOp module = getOperation();
+    llvm::SmallVector<LLVM::LLVMFuncOp> entryPoints;
+    module.walk([&](LLVM::LLVMFuncOp func) {
       llvm::StringRef name = func.getSymName();
-      if (func.isExternal() || name == "main" ||
-          name.starts_with("_mlir_ciface_"))
+      if (func.isExternal() || name == "main")
         return;
+      if (name.starts_with("_mlir_ciface_")) {
+        entryPoints.push_back(func);
+        return;
+      }
       func.setVisibility_(LLVM::Visibility::Hidden);
+      func.setDsoLocal(true);
     });
+    for (LLVM::LLVMFuncOp func : entryPoints) {
+      std::string exported =
+          ("_vx_ciface_" + func.getSymName().drop_front(
+                               llvm::StringRef("_mlir_ciface_").size()))
+              .str();
+      auto newName = StringAttr::get(module.getContext(), exported);
+      if (failed(SymbolTable::replaceAllSymbolUses(func, newName, module))) {
+        func.emitError("cannot rename the kernel entry point to ") << exported;
+        return signalPassFailure();
+      }
+      func.setSymName(exported);
+    }
   }
 };
 

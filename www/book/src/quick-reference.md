@@ -20,8 +20,9 @@ when writing Vx with Rust habits.
 - `struct Point { x : i64, y : i64 }`, built with `Point { x : 1, y : 2 }`.
 - `enum Shape { Square(i64), Rect(i64, i64) }`, built with `Shape::Square(3)`.
 - `trait Describe { fn size(self : &Self) -> i64; }`. A trait method can have a default body.
-- `impl Point { .. }` and `impl Describe for Shape { .. }`. Each method names its receiver's
-  type: `self : &Point`, `self : &mut Point` or `self : Point`.
+- `impl Point { .. }` and `impl Describe for Shape { .. }`. Each method writes its receiver's
+  type: `self : &Self`, `self : &mut Self` or `self : Self`. Inside an impl, `Self` is the impl's
+  type.
 - Generics: `struct Pair<T>`, `fn largest<T : Describe>(a : &T) -> i64`, `impl<T> Pair<T>`. A
   generic type is always written with its arguments: `Pair<i64> { .. }`, `Vec<i64>::new()`,
   `Option<i64>::Some(3)`.

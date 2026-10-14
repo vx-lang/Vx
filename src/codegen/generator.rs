@@ -1402,7 +1402,7 @@ impl<'c> MeliorGenerator<'c> {
         // every program that reached this path.
         //
         // Nothing wanted the wrapper. The ciface convention is how the dispatcher finds an
-        // *outlined kernel* -- `runtime/vx_host_call.h` builds `_mlir_ciface_<kernel>` and the
+        // *outlined kernel* -- `runtime/vx_host_call.h` builds `_vx_ciface_<kernel>` and the
         // attribute is set for that in `KernelOpLowering` -- and `main` is entered through its
         // ordinary symbol.
         let _ = is_main;

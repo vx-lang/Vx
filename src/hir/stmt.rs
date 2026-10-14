@@ -498,6 +498,14 @@ impl<'a> TypeChecker<'a> {
                 // A new binding of the name holds something else now.
                 self.borrow.ref_provenance.remove(name.as_ref());
             }
+            match self.store_target_of(expr) {
+                Some(target) => {
+                    self.borrow.store_targets.insert(name.clone(), target);
+                }
+                None => {
+                    self.borrow.store_targets.remove(name.as_ref());
+                }
+            }
         }
 
         // Shadowing: this binding hides any earlier one with the same name, so earlier

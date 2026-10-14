@@ -104,7 +104,7 @@ static inline void vx_host_refuse_coop(const void *payload,
 /// differs between backends.
 static inline void *vx_host_kernel_symbol(const char *kernel_name) {
   char ciface_name[256];
-  snprintf(ciface_name, sizeof(ciface_name), "_mlir_ciface_%s", kernel_name);
+  snprintf(ciface_name, sizeof(ciface_name), "_vx_ciface_%s", kernel_name);
   return dlsym(RTLD_DEFAULT, ciface_name);
 }
 

@@ -577,7 +577,7 @@ pub fn execute_mlir_streams(
         clang_cmd.arg("-lffi");
 
         // The dispatcher resolves the outlined kernel with
-        // dlsym(RTLD_DEFAULT, "_mlir_ciface_..."), which searches the running
+        // dlsym(RTLD_DEFAULT, "_vx_ciface_..."), which searches the running
         // executable's dynamic symbol table. Mach-O exports those symbols
         // anyway; ELF does not unless asked, so without this the lookup fails
         // at run time on Linux.

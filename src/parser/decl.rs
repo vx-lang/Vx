@@ -809,6 +809,24 @@ impl<'a> Parser<'a> {
         Ok(name)
     }
 
+    /// Refuse a second struct, enum or trait named `name`; `start` is where it was written. Two
+    /// of them used to be accepted, and `name` then meant whichever was found first.
+    fn declare_type(
+        &self,
+        defined_at: &mut std::collections::HashMap<crate::symbol::Symbol, (usize, usize)>,
+        name: &crate::symbol::Symbol,
+        start: &Token<'a>,
+    ) -> ParseResult<'a, ()> {
+        if let Some((line, column)) = defined_at.get(name) {
+            return Err(self.error_at(
+                start,
+                &format!("the type `{name}` is already defined at {line}:{column}"),
+            ));
+        }
+        defined_at.insert(name.clone(), (start.line, start.column));
+        Ok(())
+    }
+
     pub(crate) fn parse_struct_decl(&mut self) -> ParseResult<'a, StructDecl> {
         self.consume(&TokenType::Struct, "Expected 'struct'")?;
 
@@ -1108,6 +1126,7 @@ impl<'a> Parser<'a> {
         };
 
         self.consume(&TokenType::LeftBrace, "Expected '{' after impl target")?;
+        let outer_self = self.impl_self.replace(target_type.clone());
         let mut methods = Vec::new();
         let mut assoc_bindings: Vec<(crate::symbol::Symbol, Type)> = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -1162,6 +1181,7 @@ impl<'a> Parser<'a> {
             methods.push(method);
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        self.impl_self = outer_self;
 
         for _ in 0..generics.len() {
             self.generic_params.pop();
@@ -1335,6 +1355,9 @@ impl<'a> Parser<'a> {
         // Where each function was written, to report a second one with the same name.
         let mut defined_at: std::collections::HashMap<crate::symbol::Symbol, (usize, usize)> =
             std::collections::HashMap::new();
+        // The same for each struct, enum and trait, which share one namespace.
+        let mut type_defined_at: std::collections::HashMap<crate::symbol::Symbol, (usize, usize)> =
+            std::collections::HashMap::new();
         let mut consts = Vec::new();
         let mut macros = Vec::new();
         let mut transfer_impls = Vec::new();
@@ -1359,7 +1382,10 @@ impl<'a> Parser<'a> {
             } else if self.check(&TokenType::Extern) {
                 externs.extend(self.parse_extern_block()?);
             } else if self.check(&TokenType::Trait) {
-                traits.push(self.parse_trait_decl()?);
+                let start = self.peek().clone();
+                let t = self.parse_trait_decl()?;
+                self.declare_type(&mut type_defined_at, &t.name, &start)?;
+                traits.push(t);
             } else if self.check(&TokenType::Impl) {
                 // `impl Transfer<Memory::A, Memory::B> for Topology::X { ... }` is a transfer
                 // lowering, not an ordinary trait impl. The trait name `Transfer` is reserved for
@@ -1380,11 +1406,15 @@ impl<'a> Parser<'a> {
                     impls.push(self.parse_impl_block()?);
                 }
             } else if self.check(&TokenType::Struct) {
+                let start = self.peek().clone();
                 let mut s = self.parse_struct_decl()?;
+                self.declare_type(&mut type_defined_at, &s.name, &start)?;
                 s.doc_comment = doc_comment;
                 structs.push(s);
             } else if self.check(&TokenType::Enum) {
+                let start = self.peek().clone();
                 let mut e = self.parse_enum_decl()?;
+                self.declare_type(&mut type_defined_at, &e.name, &start)?;
                 e.doc_comment = doc_comment;
                 enums.push(e);
             } else if self.at_const_item() {

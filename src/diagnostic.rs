@@ -133,6 +133,14 @@ pub enum DiagnosticCode {
     /// call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass
     /// writes, bounds not known when compiling, and the like.
     W1033,
+    /// Code on the built-in `Topology::GPU` uses a tensor that lives in host memory (`CPU_DRAM`).
+    /// The built-in GPU lists host memory as visible, so this compiles. A matmul sent to cuBLAS
+    /// has its operands copied to the device, but a kernel the compiler generates is given the
+    /// host pointer as it is, and what it does with it depends on the driver: it may reach host
+    /// memory over the link, one access at a time, or fault. Transfer the tensor to
+    /// `Memory::GPU_HBM` before the region. Reported once per tensor per region. A later version
+    /// may make this an error.
+    W1034,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token

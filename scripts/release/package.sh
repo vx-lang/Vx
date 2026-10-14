@@ -48,7 +48,7 @@ case "$os/$arch" in
 esac
 
 # A CUDA build is a separate toolchain, not a variant of the portable one, and its name has to say
-# so. The dispatch backend links -lcudart, -lcublas and -lcuda and carries an rpath into the build
+# so. The dispatch backend links -lcudart and -lcublas and carries an rpath into the build
 # host's toolkit, so this tarball cannot even be loaded on a machine with no CUDA -- it is for
 # NVIDIA hosts and nothing else. The portable tarball keeps the plain triple and runs anywhere.
 #
