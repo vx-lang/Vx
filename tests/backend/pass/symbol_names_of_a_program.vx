@@ -1,0 +1,42 @@
+//===- symbol_names_of_a_program.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The names a compiled program gives its functions. `add_one` and the device kernel keep their
+// names and are not exported. `main` and the C function `abs` keep their C names. The kernel's
+// entry point is exported as `_vx_ciface_...`, and the runtime finds it by that name to run the
+// kernel: the program prints 4 2.
+//
+// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --implicit-check-not=_mlir_ciface_
+// EXPECT: 4 2
+
+// CHECK-DAG: llvm.func @abs(i32) -> i32
+// CHECK-DAG: llvm.func @main() -> i32 {
+// CHECK-DAG: llvm.func hidden @add_one({{.*}}) -> i32 attributes {dso_local} {
+// CHECK-DAG: llvm.func hidden @vx_npu_kernel_0({{.*}}) attributes {dso_local,
+// CHECK-DAG: llvm.func @_vx_ciface_vx_npu_kernel_0(
+
+extern "C" {
+  fn abs(x : i32) -> i32;
+}
+
+fn add_one(x : i32) -> i32 {
+  return x + 1;
+}
+
+fn main() -> i32 {
+  let h : Tensor<f32, [4]> = Tensor<f32, [4]>::new();
+  let mut t = transfer(h, Memory::NPU_HBM);
+  spawn on(Topology::NPU[0]) {
+    for i in 0..4 {
+      t[i] = 2.0;
+    }
+  }
+  let a = unsafe { abs(-3) };
+  let back = transfer(t, Memory::CPU_DRAM);
+  println!("{} {}", add_one(a), back[3]);
+  return 0;
+}
