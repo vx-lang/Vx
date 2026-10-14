@@ -19,7 +19,7 @@
 // `main` frees `a` and the tensor `ones(5)` makes, which nothing names. `b`, `f` and `g` are
 // freed by the functions they are given to. `f` and `g` come back in buffers `main` allocates,
 // on the heap because the functions they are given to free them.
-// CHECK-LABEL: llvm.func @main(
+// CHECK-LABEL: llvm.func {{(hidden )?}}@main(
 // CHECK: llvm.call @first_two
 // CHECK: llvm.call @first_two
 // CHECK-NOT: llvm.call @malloc
@@ -31,24 +31,24 @@
 // CHECK: llvm.call @sum_of_four(%[[G]],
 // CHECK: llvm.call @free
 // CHECK-NOT: llvm.call @free
-// CHECK-LABEL: llvm.func @total(
+// CHECK-LABEL: llvm.func {{(hidden )?}}@total(
 // CHECK: llvm.call @free(%arg0)
-// CHECK-LABEL: llvm.func @sum_of_four(
+// CHECK-LABEL: llvm.func {{(hidden )?}}@sum_of_four(
 // CHECK: llvm.call @free(%arg0)
 // `passed` copies its parameter into its caller's buffer, then frees it.
-// CHECK-LABEL: llvm.func @passed(
+// CHECK-LABEL: llvm.func {{(hidden )?}}@passed(
 // CHECK: llvm.call @free(%arg5)
 // `ones` returns its tensor, so it frees nothing.
-// CHECK-LABEL: llvm.func @ones(
+// CHECK-LABEL: llvm.func {{(hidden )?}}@ones(
 // CHECK-NOT: llvm.call @free
 // `t` is freed only when it was not given to `total`: after a branch on `give`, a second
 // branch on the flag that records the move.
-// CHECK-LABEL: llvm.func @maybe_moved(
+// CHECK-LABEL: llvm.func {{(hidden )?}}@maybe_moved(
 // CHECK: llvm.cond_br %arg1
 // CHECK: llvm.cond_br
 // CHECK: llvm.call @free
 // `first_two` only borrows.
-// CHECK-LABEL: llvm.func @first_two(
+// CHECK-LABEL: llvm.func {{(hidden )?}}@first_two(
 // CHECK-NOT: llvm.call @free
 //
 // The legacy code generator frees the same tensors. It writes the functions in source order,
@@ -56,23 +56,23 @@
 // keeps `a`, which is `mut`, in a cell, and passes `&a` as the cell.
 // RUN: vxc --legacy-codegen %s 2>&1 | FileCheck %s --check-prefix=OUT
 // RUN: vxc --legacy-codegen %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=LEGACY
-// LEGACY-LABEL: llvm.func @total(
+// LEGACY-LABEL: llvm.func {{(hidden )?}}@total(
 // LEGACY: llvm.call @free(%arg0)
-// LEGACY-LABEL: llvm.func @first_two(
+// LEGACY-LABEL: llvm.func {{(hidden )?}}@first_two(
 // LEGACY-NOT: llvm.call @free
-// LEGACY-LABEL: llvm.func @ones(
+// LEGACY-LABEL: llvm.func {{(hidden )?}}@ones(
 // LEGACY-NOT: llvm.call @free
-// LEGACY-LABEL: llvm.func @four(
+// LEGACY-LABEL: llvm.func {{(hidden )?}}@four(
 // LEGACY: llvm.call @free
-// LEGACY-LABEL: llvm.func @passed(
+// LEGACY-LABEL: llvm.func {{(hidden )?}}@passed(
 // LEGACY: llvm.call @free(%arg5)
-// LEGACY-LABEL: llvm.func @sum_of_four(
+// LEGACY-LABEL: llvm.func {{(hidden )?}}@sum_of_four(
 // LEGACY: llvm.call @free(%arg0)
-// LEGACY-LABEL: llvm.func @maybe_moved(
+// LEGACY-LABEL: llvm.func {{(hidden )?}}@maybe_moved(
 // LEGACY: llvm.cond_br %arg1
 // LEGACY: llvm.cond_br
 // LEGACY: llvm.call @free
-// LEGACY-LABEL: llvm.func @main(
+// LEGACY-LABEL: llvm.func {{(hidden )?}}@main(
 // LEGACY: llvm.call @first_two
 // LEGACY: llvm.call @first_two
 // LEGACY-NOT: llvm.call @malloc

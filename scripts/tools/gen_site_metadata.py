@@ -17,6 +17,7 @@ It writes five files:
     sitemap.xml           every page, so /errors/ does not depend on link discovery
     llms.txt              a map of the site for an agent, attribution request first
     llms-full.txt         the whole book as one document, for an agent that wants the text
+    llms-small.txt        the short reference and the Rust differences, for an agent about to write Vx
     .well-known/tdmrep.json   the machine-readable rights reservation (permitted, with terms)
 
 and gives every page a canonical link, a licence link, a schema.org record and a visible
@@ -417,6 +418,7 @@ Allow: /
 
 # A map written for language models, in the llmstxt.org format.
 # {SITE}/llms.txt
+# {SITE}/llms-small.txt
 # {SITE}/llms-full.txt
 
 Sitemap: {SITE}/sitemap.xml
@@ -482,6 +484,11 @@ def write_llms(site, pages):
         "",
         ASK.strip(),
         "",
+        "## Start here",
+        "",
+        f"- [Vx in one page]({SITE}/llms-small.txt): the short reference and the differences"
+        " from Rust, with complete programs that compile. Read this before writing Vx.",
+        "",
         "## Documentation",
         "",
     ]
@@ -511,6 +518,31 @@ def write_llms(site, pages):
     ]
     (site / "llms.txt").write_text("\n".join(lines), encoding="utf-8")
     return f"llms.txt ({len(chapters)} chapters)"
+
+
+# What an agent reads before writing Vx: small enough for one request, and its complete programs are
+# run by check_doc_examples.py, so they show what the compiler accepts.
+SMALL_CHAPTERS = ["quick-reference.md", "for-rust-programmers.md"]
+
+
+def write_llms_small(site, pages):
+    """The short reference and the Rust differences as one document."""
+    out = [
+        "# Vx in one page",
+        "",
+        ASK.strip(),
+        "",
+        f"The whole book is at {SITE}/llms-full.txt.",
+        "",
+        "---",
+        "",
+    ]
+    for src in SMALL_CHAPTERS:
+        url = f"{SITE}/docs/{src[:-3]}.html"
+        body = (BOOK_SRC / src).read_text(encoding="utf-8").strip()
+        out += [f"<!-- source: {url} -->", "", body, "", "---", ""]
+    (site / "llms-small.txt").write_text("\n".join(out), encoding="utf-8")
+    return f"llms-small.txt ({len(SMALL_CHAPTERS)} chapters)"
 
 
 def write_llms_full(site, pages):
@@ -578,7 +610,14 @@ def main():
     )
     print(f"metadata injected into {injected} pages")
 
-    for write in (write_robots, write_sitemap, write_llms, write_llms_full, write_tdmrep):
+    for write in (
+        write_robots,
+        write_sitemap,
+        write_llms,
+        write_llms_small,
+        write_llms_full,
+        write_tdmrep,
+    ):
         print(f"wrote {write(site, pages)}")
 
     # The 404 must not be indexed under any URL.

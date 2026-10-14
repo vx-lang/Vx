@@ -36,7 +36,7 @@
 // HOST-NOT: vx.free
 // HOST: memref.dealloc %[[C]]
 
-// LLVM-LABEL: llvm.func @uninit_on_gpu
+// LLVM-LABEL: llvm.func {{(hidden )?}}@uninit_on_gpu
 // LLVM: %[[NULL:.*]] = llvm.mlir.zero : !llvm.ptr
 // LLVM: llvm.call @vx_plugin_alloc_and_transfer(%{{.*}}, %[[NULL]], %{{.*}}, %{{.*}})
 

@@ -9,7 +9,7 @@
 // differentiate the core::libm function itself, which reads the float's bits, so it is marked to be
 // differentiated as the C `erff`.
 //
-// CHECK-DAG: llvm.func @libm_erff({{.*}}passthrough = {{\[\[}}"enzyme_math", "erff"{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_erff({{.*}}passthrough = {{\[\[}}"enzyme_math", "erff"{{\]\]}}
 // EXPECT: 878782
 import core::num;
 

@@ -12,7 +12,7 @@
 // RUN: vxc %s -O2 2>&1 | FileCheck %s
 // RUN: vxc %s -O2 --action emit-llvm 2>&1 | FileCheck %s --check-prefix=SLOTS
 // CHECK: 15000004000000
-// SLOTS-LABEL: llvm.func @main
+// SLOTS-LABEL: llvm.func {{(hidden )?}}@main
 // SLOTS: llvm.alloca
 // SLOTS: llvm.br ^bb1
 // SLOTS-NOT: llvm.alloca

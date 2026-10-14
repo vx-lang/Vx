@@ -1,0 +1,45 @@
+//===- reborrows_and_writes_through_references.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Writes through `&mut` references, and through reborrows `&mut *r`, reach the variable they
+// refer to. Printed: `x` after `*rx = 5`; `y` after `*ry = *ry + 5`; `z` after a write through a
+// reborrow of `rz`; `w` after a write through a reborrow and then one through `rw`; and an
+// element of a tensor written through a reborrow of a reference to it.
+//
+// EXPECT: 5 6 2 5 2
+
+fn main() -> i32 {
+  let mut x = 1;
+  let rx = &mut x;
+  *rx = 5;
+  print(x);
+  print!(" ");
+  let mut y = 1;
+  let ry = &mut y;
+  *ry = *ry + 5;
+  print(y);
+  print!(" ");
+  let mut z = 1;
+  let rz = &mut z;
+  let n = &mut *rz;
+  *n = 2;
+  print(z);
+  print!(" ");
+  let mut w = 0;
+  let rw = &mut w;
+  let m = &mut *rw;
+  *m = 2;
+  *rw = *rw + 3;
+  print(w);
+  print!(" ");
+  let mut q = Tensor<f32, [2, 4]>::new();
+  let rq = &mut q;
+  let t = &mut *rq;
+  t[0][0] = 2.0;
+  print(q[0][0]);
+  return 0;
+}

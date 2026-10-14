@@ -1,13 +1,13 @@
 //===- autodiff_math_exp.vx - Vx Compiler -------------------*- Vx -*-===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-DAG: llvm.func @libm_expf(
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_expf(
 // CHECK-DAG: llvm.intr.fabs(
-// CHECK-DAG: llvm.func @__enzyme_autodiff_grad_test_func(
-// CHECK-LABEL: llvm.func @f32$exp(%arg0: f32) -> f32
-// CHECK-LABEL: llvm.func @f32$abs(%arg0: f32) -> f32
-// CHECK-LABEL: llvm.func @test_func(%arg0: f32) -> f32
+// CHECK-DAG: llvm.func {{(hidden )?}}@__enzyme_autodiff_grad_test_func(
+// CHECK-LABEL: llvm.func {{(hidden )?}}@f32$exp(%arg0: f32) -> f32
+// CHECK-LABEL: llvm.func {{(hidden )?}}@f32$abs(%arg0: f32) -> f32
+// CHECK-LABEL: llvm.func {{(hidden )?}}@test_func(%arg0: f32) -> f32
 // CHECK: llvm.call @f32$exp(%{{.*}}) : {{.*}}
-// CHECK-LABEL: llvm.func @main() -> i32
+// CHECK-LABEL: llvm.func {{(hidden )?}}@main() -> i32
 // CHECK: llvm.call @__enzyme_autodiff_grad_test_func(%{{.*}}, %{{.*}}) : {{.*}}
 // CHECK: llvm.call @f32$abs(%{{.*}}) : {{.*}}
 import core::num;
