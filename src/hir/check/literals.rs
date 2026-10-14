@@ -501,10 +501,12 @@ impl<'a> TypeChecker<'a> {
                 };
                 let order = std::iter::once(lead).chain((0..elements.len()).filter(|&i| i != lead));
                 let mut elem_ty = ElementType::F32;
+                let mut first_row = Type::Unknown;
                 for i in order {
                     let el = &mut elements[i];
                     if i == lead {
                         let first = self.check_expr_type(el);
+                        first_row = first.clone();
                         match (first, nested) {
                             (Type::Scalar(e), false) => elem_ty = e,
                             // A nested row reports `Tensor<e, [?, ?]>`; the initializer's element type
@@ -539,7 +541,20 @@ impl<'a> TypeChecker<'a> {
                             );
                             return Type::Unknown;
                         }
-                        self.check_expr_type(el);
+                        // Later rows take the first row's type, so their literals adopt its
+                        // element type. A row of another length or type has no place in the shape.
+                        let row = self.check_expr_expecting(el, Some(first_row.clone()), true);
+                        if row != Type::Unknown && row != first_row {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E3018,
+                                format!(
+                                    "the rows of a nested array literal must all have the same \
+                                     type; the first row is {first_row}, but this one is {row}"
+                                ),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&el.span())),
+                            );
+                            return Type::Unknown;
+                        }
                     } else {
                         let ty = self.check_expr_expecting(
                             el,
@@ -578,7 +593,8 @@ impl<'a> TypeChecker<'a> {
                             crate::syntax::expr::NumberExpr::new(
                                 n.to_string(),
                                 Some(ElementType::I32),
-                                span,
+                                // No span: spans take part in comparing types.
+                                crate::syntax::Span::default(),
                             ),
                         ))
                     })

@@ -1007,6 +1007,11 @@ impl<'a> Parser<'a> {
             }
             TokenType::LeftBracket => {
                 self.advance();
+                let span = Span {
+                    line: peeked_token.line,
+                    column: peeked_token.column,
+                    length: peeked_token.length,
+                };
                 let mut elements = Vec::new();
                 if !self.check(&TokenType::RightBracket) {
                     loop {
@@ -1017,10 +1022,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.consume(&TokenType::RightBracket, "Expected ']'")?;
-                Expr::Array(ArrayExpr {
-                    elements,
-                    span: Span::default(),
-                })
+                Expr::Array(ArrayExpr { elements, span })
             }
             TokenType::Memory => Expr::MemorySpace(MemorySpaceExpr {
                 space: self.parse_memory_space()?,

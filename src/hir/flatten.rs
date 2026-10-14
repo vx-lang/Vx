@@ -3966,6 +3966,23 @@ impl<'r> Lowerer<'r> {
                 what: "an empty array literal",
             }); // an empty array has no element type to size the buffer
         }
+        // A nested literal `[[1, 2], [3, 4]]` is a tensor with one dimension per level.
+        if let Some(shape) = arr.initializer_shape() {
+            let first = arr
+                .initializer_values()
+                .first()
+                .and_then(|v| self.infer_ast_type(v));
+            let Some(Type::Scalar(elem)) = first else {
+                return Err(Decline::TypeNotModelled {
+                    what: "a nested array literal of non-scalar values",
+                });
+            };
+            return self
+                .lower_tensor_initializer(&elem, &shape, arr)
+                .ok_or(Decline::Unsupported {
+                    what: "a nested array literal",
+                });
+        }
         let mut vals = Vec::with_capacity(arr.elements.len());
         for el in &arr.elements {
             vals.push(self.lower_expr(el)?);

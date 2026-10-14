@@ -2178,15 +2178,33 @@ impl<'c> LowerToMelior<'c> for MemberAccessExpr {
 /// the dynamic `memref<?x..xT>` type (with constant sizes) that the rest of codegen expects.
 fn lower_tensor_initializer<'c>(
     gen: &mut MeliorGenerator<'c>,
-    elem_ty_str: &str,
+    elem_ty_str: Option<&str>,
     shape: &[usize],
     arr: &ArrayExpr,
     block: melior::ir::BlockRef<'c, 'c>,
 ) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
     let index_ty = Type::index(gen.context);
-    let elem_ty = Type::parse(gen.context, elem_ty_str)
-        .ok_or_else(|| LowerError::ParseType(elem_ty_str.to_string()))?;
     let rank = shape.len();
+
+    // With no written element type, the first value gives it, so it is lowered first.
+    let values = arr.initializer_values();
+    let mut cur = block;
+    let mut first = None;
+    let elem_ty = match elem_ty_str {
+        Some(s) => {
+            Type::parse(gen.context, s).ok_or_else(|| LowerError::ParseType(s.to_string()))?
+        }
+        None => {
+            let leaf = values.first().ok_or_else(|| {
+                LowerError::from("a nested array literal with no values".to_string())
+            })?;
+            let (v, vty, nb) = gen.generate_expr(leaf, cur)?;
+            cur = nb;
+            first = Some((v, vty));
+            vty
+        }
+    };
+    let elem_ty_str = elem_ty.to_string();
 
     let a_const = |gen: &mut MeliorGenerator<'c>, b: melior::ir::BlockRef<'c, 'c>, n: usize| {
         let op = OperationBuilder::new("arith.constant", gen.loc())
@@ -2202,6 +2220,7 @@ fn lower_tensor_initializer<'c>(
     // A dynamic `memref<?x..xT>` sized by constants -- matches how plain `Tensor<T>([n, m])`
     // buffers are typed, so transfers / slices downstream are unaffected.
     let ty_str = format!("memref<{}{}>", "?x".repeat(rank), elem_ty_str);
+    let block = cur;
     let tensor_ty =
         Type::parse(gen.context, &ty_str).ok_or_else(|| LowerError::ParseType(ty_str.clone()))?;
     let mut size_vals = Vec::with_capacity(rank);
@@ -2218,11 +2237,15 @@ fn lower_tensor_initializer<'c>(
         .build()?;
     let buf: Value = block.append_operation(alloc_op).result(0)?.into();
 
-    let values = arr.initializer_values();
-    let mut cur = block;
     for (flat, val_expr) in values.iter().enumerate() {
-        let (v, vty, nb) = gen.generate_expr(val_expr, cur)?;
-        cur = nb;
+        let (v, vty) = match first.take() {
+            Some(lowered) => lowered,
+            None => {
+                let (v, vty, nb) = gen.generate_expr(val_expr, cur)?;
+                cur = nb;
+                (v, vty)
+            }
+        };
         let v = gen.coerce_type(&cur, v, vty, elem_ty)?;
         // Row-major flat index -> per-dimension coordinates.
         let mut rem = flat;
@@ -2887,7 +2910,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             // constant values in place, so no fill loop is needed.
             if let Some(Expr::Array(arr)) = args.first() {
                 if let Some(shape) = arr.initializer_shape() {
-                    return lower_tensor_initializer(gen, &mlir_ty_str, &shape, arr, block);
+                    return lower_tensor_initializer(gen, Some(&mlir_ty_str), &shape, arr, block);
                 }
             }
             let mut dynamic_sizes = Vec::new();
@@ -3760,6 +3783,9 @@ impl<'c> LowerToMelior<'c> for ArrayExpr {
             return Err(LowerError::from(
                 "an empty array literal has no element type to lower".to_string(),
             ));
+        }
+        if let Some(shape) = self.initializer_shape() {
+            return lower_tensor_initializer(gen, None, &shape, self, block);
         }
         let mut vals = Vec::new();
         let mut el_ty = None;
