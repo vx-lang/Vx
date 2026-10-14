@@ -3927,7 +3927,24 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
     ) -> Self::Output {
         // Read before the scrutinee is generated, which may set it for its own operands.
         let outer_expected = gen.expected_type;
-        let (match_val, match_ty, block) = gen.generate_expr(&self.expr, block)?;
+        let (mut match_val, mut match_ty, block) = gen.generate_expr(&self.expr, block)?;
+        // `match self` with `self : &Op`: the scrutinee is a pointer, and the arms read the
+        // tag out of the enum it points at.
+        if match_ty == gen.ptr_ty {
+            if let Some(syntax::Type::Borrow { inner, .. }) = gen.infer_ast_type(&self.expr) {
+                let enum_ty = gen.lower_type(&inner)?;
+                match_val = block
+                    .append_operation(
+                        OperationBuilder::new("llvm.load", gen.loc())
+                            .add_operands(&[match_val])
+                            .add_results(&[enum_ty])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+                match_ty = enum_ty;
+            }
+        }
 
         // The match yields a value exactly when an arm ends in a tail expression -- the same
         // rule the checker uses to type it. The merge block then takes that value as a block

@@ -93,6 +93,8 @@ pub struct Parser<'a> {
     /// Set by `parse_statement_into` when the statement starts with `match`, and taken by that
     /// `match`: only a `match` that is a whole statement may put a temporary before it.
     match_is_statement: bool,
+    /// Inside an impl block, the type the impl is for: what `Self` means there.
+    impl_self: Option<crate::syntax::Type>,
 }
 
 impl<'a> Parser<'a> {
@@ -118,6 +120,7 @@ impl<'a> Parser<'a> {
             tuple_lets: 0,
             prefix_stmts: Vec::new(),
             match_is_statement: false,
+            impl_self: None,
         }
     }
 

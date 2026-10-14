@@ -406,6 +406,11 @@ impl<'a> Parser<'a> {
             TokenType::Identifier(s) => {
                 let mut enum_name = s.to_string();
                 self.advance();
+                if enum_name == "Self" {
+                    if let Some(target) = &self.impl_self {
+                        enum_name = target.to_string();
+                    }
+                }
                 if self.check(&TokenType::LeftAngle) {
                     // A list, not one argument: `Result<T, E>::Ok(v)` has two. Each is a whole
                     // type, so `Option<Pair<i64, i64>>::Some(p)` parses; it is printed back the
@@ -453,11 +458,34 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// After a name, `::Item::` follows when the name owns an associated type.
+    fn is_associated_type_path(&self) -> bool {
+        matches!(
+            (
+                self.tokens.get(self.pos).map(|t| &t.kind),
+                self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                self.tokens.get(self.pos + 2).map(|t| &t.kind),
+            ),
+            (
+                Some(TokenType::DoubleColon),
+                Some(TokenType::Identifier(_)),
+                Some(TokenType::DoubleColon)
+            )
+        )
+    }
+
     pub(crate) fn parse_identifier_expr(
         &mut self,
         mut call_name: String,
         span: Span,
     ) -> ParseResult<'a, Expr> {
+        // In an impl, `Self { .. }`, `Self::new()` and `Self::Variant` name the impl's type,
+        // spelled as the type prints: `Pair<T>`. `Self::Item::default()` keeps its `Self`.
+        if call_name == "Self" && !self.is_associated_type_path() {
+            if let Some(target) = &self.impl_self {
+                call_name = target.to_string();
+            }
+        }
         if call_name == "sizeof" {
             self.consume(&TokenType::LeftAngle, "Expected '<' after sizeof")?;
             let target_ty = self.parse_type()?;

@@ -1,0 +1,110 @@
+//===- struct_holding_a_mut_reference_and_a_reference_to_an_inner_block.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `Leak`'s `drop` stores `val` through `out`. So a `Leak` must not hold a `&mut` to an outer
+// variable and a reference to a variable of an inner block: when the block ends, the outer
+// variable would point at freed memory.
+
+import core::ops;
+import std::vec;
+
+struct Leak {
+  out : &mut &Vec<i32>,
+  val : &Vec<i32>,
+}
+
+impl Drop for Leak {
+  fn drop(self : &mut Leak) -> void {
+    *self.out = self.val;
+  }
+}
+
+fn set_val(q : &mut Leak, v : &Vec<i32>) -> void {
+  q.val = v;
+}
+
+fn given_by_a_field_assignment() -> i32 {
+  let empty : Vec<i32> = Vec<i32>::new();
+  let mut me_out : &Vec<i32> = &empty;
+  if true {
+    let l : Vec<i32> = Vec<i32>::new();
+    let mut q = Leak {
+      out : &mut me_out, val : &empty
+    };
+    // CHECK-NOT: Error
+    // CHECK: Error[E4005] at [[# @LINE + 1]]:7: `q` holds a `&mut` to a variable of an outer block and a reference to a variable of an inner block. A write through the `&mut` can store that reference where it outlives its block. Declare both variables in the same block
+    q.val = &l;
+  }
+  return me_out.len();
+}
+
+fn given_when_the_struct_is_built() -> i32 {
+  let empty : Vec<i32> = Vec<i32>::new();
+  let mut me_out : &Vec<i32> = &empty;
+  if true {
+    let l : Vec<i32> = Vec<i32>::new();
+    // CHECK-NOT: Error
+    // CHECK: Error[E4005] at [[# @LINE + 2]]:13: this value holds a `&mut` to a variable of an outer block and a reference to a variable of an inner block
+    let _q = Leak {
+      out : &mut me_out, val : &l
+    };
+  }
+  return me_out.len();
+}
+
+fn mut_reference_given_last() -> i32 {
+  let empty : Vec<i32> = Vec<i32>::new();
+  let mut me_out : &Vec<i32> = &empty;
+  if true {
+    let l : Vec<i32> = Vec<i32>::new();
+    let mut other : &Vec<i32> = &empty;
+    let mut q = Leak {
+      out : &mut other, val : &l
+    };
+    // CHECK-NOT: Error
+    // CHECK: Error[E4005] at [[# @LINE + 1]]:7: `q` holds a `&mut` to a variable of an outer block
+    q.out = &mut me_out;
+    print(other.len());
+  }
+  return me_out.len();
+}
+
+fn given_by_a_call() -> i32 {
+  let empty : Vec<i32> = Vec<i32>::new();
+  let mut me_out : &Vec<i32> = &empty;
+  if true {
+    let l : Vec<i32> = Vec<i32>::new();
+    let mut q = Leak {
+      out : &mut me_out, val : &empty
+    };
+    // CHECK-NOT: Error
+    // CHECK: Error[E4005] at [[# @LINE + 1]]:5: `q` holds a `&mut` to a variable of an outer block
+    set_val(&mut q, &l);
+  }
+  return me_out.len();
+}
+
+fn mut_reference_into_the_caller(out : &mut &Vec<i32>) -> i32 {
+  let l : Vec<i32> = Vec<i32>::new();
+  // CHECK-NOT: Error
+  // CHECK: Error[E4005] at [[# @LINE + 2]]:11: this value holds a `&mut` to memory the caller owns and a reference to a variable of this function. A write through the `&mut` can store that reference where it outlives the function
+  let _q = Leak {
+    out : out, val : &l
+  };
+  return 0;
+}
+// CHECK-NOT: Error
+
+fn main() -> i32 {
+  let empty : Vec<i32> = Vec<i32>::new();
+  let mut me_out : &Vec<i32> = &empty;
+  return given_by_a_field_assignment() + given_when_the_struct_is_built()
+  + mut_reference_given_last() + given_by_a_call()
+  + mut_reference_into_the_caller(&mut me_out);
+}

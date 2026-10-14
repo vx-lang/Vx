@@ -396,6 +396,12 @@ impl<'a> Parser<'a> {
             TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected type identifier")),
         };
+        // `Self::Item` stays a path, and the impl binds it later.
+        if ident == "Self" && !self.check(&TokenType::DoubleColon) {
+            if let Some(target) = &self.impl_self {
+                return Ok(target.clone());
+            }
+        }
 
         // Qualified nominal path: `Mod::Sub::Name`. The leading segments name the *defining* module
         // and the leaf is the type; name resolution (`resolve_names`, #194) splits it back and

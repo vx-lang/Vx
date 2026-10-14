@@ -471,6 +471,9 @@ pub struct TypeChecker<'a> {
     /// Identifiers already reported as unreadable from the active topology, so the indexing of
     /// the same read (`c[0][0]`) does not report it again.
     pub(crate) unreadable_reported: std::collections::HashSet<crate::syntax::Span>,
+    /// Host tensors already reported with W1034 in the region being checked, so a tensor read
+    /// in a loop is reported once.
+    pub(crate) host_reads_warned: std::collections::HashSet<crate::symbol::Symbol>,
     /// The name being indexed while the base of `name[i]` is checked: the one place a `const`
     /// table may be named.
     pub(crate) indexed_name: Option<crate::symbol::Symbol>,
@@ -542,6 +545,7 @@ impl<'a> TypeChecker<'a> {
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
             speculating: false,
             unreadable_reported: Default::default(),
+            host_reads_warned: Default::default(),
             indexed_name: None,
             value_unused: false,
             checking_assign_lhs: false,
@@ -1634,6 +1638,7 @@ impl<'a> TypeChecker<'a> {
         // clobber the enclosing function's view.
         let prev_params = std::mem::take(&mut self.borrow.current_params);
         let prev_provenance = std::mem::take(&mut self.borrow.ref_provenance);
+        let prev_store_targets = std::mem::take(&mut self.borrow.store_targets);
         let prev_views = std::mem::take(&mut self.borrow.views);
         let prev_view_owners = std::mem::take(&mut self.borrow.view_owners_by_let);
         // The borrow table too. A function's body can be checked from inside another's: a
@@ -1786,6 +1791,7 @@ impl<'a> TypeChecker<'a> {
         self.active_memory = prev_mem;
         self.borrow.current_params = prev_params;
         self.borrow.ref_provenance = prev_provenance;
+        self.borrow.store_targets = prev_store_targets;
         self.borrow.views = prev_views;
         self.borrow.view_owners_by_let = prev_view_owners;
         self.borrow.restore(prev_borrows);
