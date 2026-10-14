@@ -3314,7 +3314,21 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
                 let field_ty = arg_tys[i];
                 let prev_expected = gen.expected_type;
                 gen.expected_type = Some(field_ty);
-                let (mut arg_val, expr_ty, new_b) = gen.generate_expr(arg, current_b)?;
+                // A name that holds a reference to a tensor is passed on as that reference.
+                // Reading the name would give the tensor itself.
+                let reference = match arg {
+                    Expr::Identifier(id) if !gen.allocs.contains(id.name.as_ref()) => {
+                        gen.env.get(&id.name).copied().filter(|(_, ty)| {
+                            ty.to_string().starts_with("memref<memref<")
+                                && field_ty.to_string().starts_with("memref<memref<")
+                        })
+                    }
+                    _ => None,
+                };
+                let (mut arg_val, expr_ty, new_b) = match reference {
+                    Some((val, ty)) => (val, ty, current_b),
+                    None => gen.generate_expr(arg, current_b)?,
+                };
                 current_b = new_b;
                 gen.expected_type = prev_expected;
                 if expr_ty != field_ty {
