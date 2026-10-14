@@ -5,16 +5,16 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-10-14T18:00:00Z</updated>
+  <updated>2026-10-14T20:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
 
   <entry>
     <title>What the borrow checker let through</title>
     <link href="https://vxlang.org/blog/what-the-borrow-checker-let-through.html"/>
     <id>https://vxlang.org/blog/what-the-borrow-checker-let-through.html</id>
-    <updated>2026-10-14T18:00:00Z</updated>
+    <updated>2026-10-14T20:00:00Z</updated>
     <author><name>Aditya Kumar</name></author>
-    <summary>A review of Vx's borrow checker found ten programs that compiled and then did something they should not. Two of them get most of the post. One gave 2 without optimization and 1 with it, because two &amp;mut to one variable inside an if arm were not checked against each other, and LLVM trusted the noalias marking. The other, sent by a reader, changed a variable not declared mut, because the checker let the inside of a &amp;mut change type the way the inside of a &amp; may; &amp;mut T must be invariant in T. Both are fixed. Rust's checker has open bugs of the same two kinds: rust-lang/rust#164250, reported on 13 October and eleven years old, gets past a struct's lifetime bounds by assigning to a field, and three 2026 bugs put a borrow where the checker seldom looks. Vx had a bug of the same shape as #164250, with a different cause, fixed on 14 October.</summary>
+    <summary>A review of Vx's borrow checker found eleven programs that compiled and then did something they should not, and all are now fixed. Two of them get most of the post. One gave 2 without optimization and 1 with it, because two &amp;mut to one variable inside an if arm were not checked against each other, and LLVM trusted the noalias marking. The other, sent by a reader, changed a variable not declared mut, because the checker let the inside of a &amp;mut change type the way the inside of a &amp; may; &amp;mut T must be invariant in T. Both are fixed. Rust's checker has open bugs of the same two kinds: rust-lang/rust#164250, reported on 13 October and eleven years old, gets past a struct's lifetime bounds by assigning to a field, and three 2026 bugs put a borrow where the checker seldom looks. Vx had a bug of the same shape as #164250, with a different cause, fixed on 14 October. A reference into a value with no name, which Rust refuses as E0716, read freed memory in Vx until the same day.</summary>
   </entry>
 
   <entry>
