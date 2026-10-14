@@ -461,45 +461,53 @@ impl<'a> TypeChecker<'a> {
             .iter()
             .map(|(base, path, is_mut)| {
                 // An argument that is a reference variable, `a` after `let a = &mut x`, also
-                // reaches `x`: the call's other arguments must not borrow `x` either.
-                let mut places = vec![(base.clone(), path.clone())];
+                // reaches `x`: the call's other arguments must not borrow `x` either. It
+                // reaches `x` mutably only if it is mutable and borrows `x` mutably: `&mut s`,
+                // where `s` holds `&x`, cannot change `x`.
+                let mut places = vec![(base.clone(), path.clone(), *is_mut)];
                 for (borrowed, records) in snapshots {
                     for record in records.iter().flatten() {
                         if record.borrower_name.as_deref() == Some(base.as_str()) {
                             let mut through = record.path.clone();
                             through.extend(path.iter().cloned());
-                            places.push((borrowed.clone(), through));
+                            places.push((borrowed.clone(), through, *is_mut && record.is_mut));
                         }
                     }
                 }
-                (places, *is_mut)
+                places
             })
             .collect::<Vec<_>>();
-        for (i, (places, is_mut)) in borrows.iter().enumerate() {
-            for (other_places, other_is_mut) in &borrows[i + 1..] {
-                let shared = places.iter().find(|(base, path)| {
-                    other_places.iter().any(|(other_base, other_path)| {
-                        base == other_base && crate::hir::places::paths_may_alias(path, other_path)
+        for (i, places) in borrows.iter().enumerate() {
+            for other_places in &borrows[i + 1..] {
+                // Of the places both arguments reach, the one where the most is mutable.
+                let shared = places
+                    .iter()
+                    .flat_map(|(base, path, is_mut)| {
+                        other_places.iter().filter_map(
+                            move |(other_base, other_path, other_is_mut)| {
+                                (base == other_base
+                                    && crate::hir::places::paths_may_alias(path, other_path))
+                                .then_some((base, *is_mut as u8 + *other_is_mut as u8))
+                            },
+                        )
                     })
-                });
-                let Some((base, _)) = shared else {
+                    .max_by_key(|&(_, muts)| muts);
+                let Some((base, muts)) = shared else {
                     continue;
                 };
-                let (code, message) = if *is_mut && *other_is_mut {
-                    (
+                let (code, message) = match muts {
+                    2 => (
                         crate::diagnostic::DiagnosticCode::E4004,
                         format!("Cannot borrow '{}' as mutable twice in one call.", base),
-                    )
-                } else if *is_mut || *other_is_mut {
-                    (
+                    ),
+                    1 => (
                         crate::diagnostic::DiagnosticCode::E4003,
                         format!(
                             "Cannot borrow '{}' as mutable and as immutable in one call.",
                             base
                         ),
-                    )
-                } else {
-                    continue;
+                    ),
+                    _ => continue,
                 };
                 // A borrow still held after this statement is already reported by the argument's
                 // own borrow check.
