@@ -398,6 +398,11 @@ impl<'a> TypeChecker<'a> {
         if let Some(ann) = ty_ann.as_mut() {
             self.fold_extents(ann);
         }
+        let bare = match &*expr {
+            Expr::UnaryOp(u) if u.op == UnaryOp::Neg => &*u.expr,
+            e => e,
+        };
+        let from_literal = ty_ann.is_none() && matches!(bare, Expr::Number(n) if n.ty.is_none());
         let prev_expected = self.expected_type.take();
         self.expected_type = ty_ann.clone();
         let ty = self.check_expr_type_flag(expr, consume);
@@ -467,6 +472,12 @@ impl<'a> TypeChecker<'a> {
                 self.check_type_placement(&ty, &context, span);
             }
             self.insert(name.to_string(), ty.clone());
+            let depth = self.current_scope_depth();
+            if from_literal {
+                self.literal_typed_lets.insert(name.to_string(), depth);
+            } else if self.literal_typed_lets.get(name.as_ref()) == Some(&depth) {
+                self.literal_typed_lets.remove(name.as_ref());
+            }
             ty
         };
 
@@ -1223,11 +1234,16 @@ impl<'a> TypeChecker<'a> {
                     lhs_ty
                 )
             } else {
-                format!(
-                    "Type mismatch in assignment: cannot assign {} to {}; write an explicit \
-                     `as` cast if the conversion is intended",
-                    rhs_ty, lhs_ty
-                )
+                match self.literal_default_note(lhs, &lhs_ty, &rhs_ty) {
+                    Some(note) => {
+                        format!("Type mismatch in assignment: cannot assign {rhs_ty} to {lhs_ty}; {note}")
+                    }
+                    None => format!(
+                        "Type mismatch in assignment: cannot assign {} to {}; write an explicit \
+                         `as` cast if the conversion is intended",
+                        rhs_ty, lhs_ty
+                    ),
+                }
             };
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E3004,

@@ -506,6 +506,10 @@ pub struct TypeChecker<'a> {
     pub(crate) declared_vars: Vec<(crate::symbol::Symbol, crate::syntax::Span)>,
     /// The current function's `let mut` bindings, for the warning about a `mut` never needed.
     pub(crate) declared_mut_vars: Vec<(crate::symbol::Symbol, crate::syntax::Span)>,
+    /// The `let`s with no type whose value is a bare number literal, by name, with the depth of
+    /// their scope. Such a variable gets the literal's default type, and a type error on it
+    /// says to write the type.
+    pub(crate) literal_typed_lets: std::collections::HashMap<String, usize>,
     /// The variables the current function changes: assigns, borrows `&mut`, or calls a
     /// `&mut self` method on.
     pub(crate) changed_vars: std::collections::HashSet<String>,
@@ -561,6 +565,7 @@ impl<'a> TypeChecker<'a> {
             used_vars: std::collections::HashSet::new(),
             declared_vars: Vec::new(),
             declared_mut_vars: Vec::new(),
+            literal_typed_lets: std::collections::HashMap::new(),
             changed_vars: std::collections::HashSet::new(),
             expected_type: None,
             consteval: Default::default(),
@@ -616,6 +621,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.moved_vars.pop();
         self.borrow.mutable_vars.pop();
         self.consteval.env.pop();
+        self.literal_typed_lets.retain(|_, d| *d + 1 < depth);
 
         // Lexical Lifetime cleanup: Remove borrows originating in this scope
         self.borrow.retain_scope(depth);
@@ -1624,6 +1630,7 @@ impl<'a> TypeChecker<'a> {
         let prev_used_vars = std::mem::take(&mut self.used_vars);
         let prev_declared_vars = std::mem::take(&mut self.declared_vars);
         let prev_declared_mut_vars = std::mem::take(&mut self.declared_mut_vars);
+        let prev_literal_typed_lets = std::mem::take(&mut self.literal_typed_lets);
         let prev_changed_vars = std::mem::take(&mut self.changed_vars);
         // The same for W1010: the callee's `unsafe` blocks are not inside the caller's.
         let prev_written_unsafe = std::mem::take(&mut self.in_written_unsafe_block);
@@ -1803,6 +1810,7 @@ impl<'a> TypeChecker<'a> {
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;
         self.declared_mut_vars = prev_declared_mut_vars;
+        self.literal_typed_lets = prev_literal_typed_lets;
         self.changed_vars = prev_changed_vars;
         self.in_written_unsafe_block = prev_written_unsafe;
         self.unsafe_op_seen = prev_unsafe_op_seen;

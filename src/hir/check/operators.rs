@@ -660,10 +660,15 @@ impl<'a> TypeChecker<'a> {
                     && lhs_ty != Type::Unknown
                     && rhs_ty != Type::Unknown
                 {
+                    let note = self
+                        .literal_default_note(lhs, &lhs_ty, &rhs_ty)
+                        .or_else(|| self.literal_default_note(rhs, &rhs_ty, &lhs_ty))
+                        .map(|n| format!("; {n}"))
+                        .unwrap_or_default();
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3004,
                         format!(
-                            "Type mismatch in binary operation: {} vs {}",
+                            "Type mismatch in binary operation: {} vs {}{note}",
                             lhs_ty, rhs_ty
                         ),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),

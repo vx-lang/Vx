@@ -1,0 +1,44 @@
+//===- untyped_let_from_a_literal_says_to_write_the_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// `let mut s = 0;` makes `s` an i32, and `let f = 1.0;` makes `f` an f32. When such a variable
+// meets a value of another width, the error says to write the type on the `let`. A variable
+// whose value is not a literal gets the usual `as` advice, also when it hides one that is.
+
+fn widen(x : i64) -> i64 {
+  return x;
+}
+
+fn main() -> i32 {
+  let x : i64 = 5;
+  let mut s = 0;
+  // CHECK-DAG: Error[E3004] at [[@LINE+1]]:3: Type mismatch in assignment: cannot assign i64 to i32; `s` is i32 because its `let` has no type and starts from a literal; write `let s : i64 = ...`
+  s += x;
+  let mut n = -1;
+  // CHECK-DAG: Error[E3004] at [[@LINE+1]]:3: Type mismatch in assignment: cannot assign i64 to i32; `n` is i32 because its `let` has no type and starts from a literal; write `let n : i64 = ...`
+  n = x;
+  let y : f64 = 2.0;
+  let f = 1.0;
+  // CHECK-DAG: Error[E3004] at [[@LINE+1]]:13: Type mismatch in binary operation: f64 vs f32; `f` is f32 because its `let` has no type and starts from a literal; write `let f : f64 = ...`
+  let g = y + f;
+  let mut t = 0;
+  if t == 0 {
+    let mut t = s;
+    // CHECK-DAG: Error[E3004] at [[@LINE+1]]:5: Type mismatch in assignment: cannot assign i64 to i32; write an explicit `as` cast if the conversion is intended
+    t = x;
+    print(t);
+  }
+  let mut copy = s;
+  // CHECK-DAG: Error[E3004] at [[@LINE+1]]:3: Type mismatch in assignment: cannot assign i64 to i32; write an explicit `as` cast if the conversion is intended
+  copy = widen(x);
+  print(g);
+  return 0;
+}
+
+// CHECK: 5 error(s) emitted

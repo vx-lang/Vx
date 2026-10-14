@@ -236,6 +236,33 @@ impl<'a> TypeChecker<'a> {
         Type::Scalar(elem)
     }
 
+    /// A note for a type error on a variable whose `let` has no type and starts from a bare
+    /// number literal, when `wanted` is a number of the same kind. The literal took its default
+    /// type, and the fix is to write the type on the `let`.
+    pub(crate) fn literal_default_note(
+        &self,
+        e: &Expr,
+        got: &Type,
+        wanted: &Type,
+    ) -> Option<String> {
+        let Expr::Identifier(id) = e else {
+            return None;
+        };
+        let (Type::Scalar(g), Type::Scalar(w)) = (got, wanted) else {
+            return None;
+        };
+        let is_int = |t: &ElementType| *t != ElementType::Bool && t.int_bits().is_some();
+        let same_kind = (g.is_float() && w.is_float()) || (is_int(g) && is_int(w));
+        let depth = self.literal_typed_lets.get(id.name.as_ref())?;
+        (same_kind && *depth == self.scope_depth_of(&id.name)).then(|| {
+            format!(
+                "`{0}` is {g} because its `let` has no type and starts from a literal; write \
+                 `let {0} : {w} = ...`",
+                id.name
+            )
+        })
+    }
+
     /// A `usize` never has its top bit set, which is what lets its arithmetic be marked as
     /// never wrapping, so a literal past the largest `i64` is refused rather than stored.
     pub(crate) fn check_usize_literal(&mut self, n: &NumberExpr, elem: &ElementType) {
