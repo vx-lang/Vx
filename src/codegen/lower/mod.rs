@@ -13,8 +13,8 @@
 use super::*;
 use melior::ir::{
     attribute::{
-        ArrayAttribute, Attribute, DenseI32ArrayAttribute, FlatSymbolRefAttribute,
-        IntegerAttribute, StringAttribute, TypeAttribute,
+        ArrayAttribute, Attribute, DenseI32ArrayAttribute, DenseI64ArrayAttribute,
+        FlatSymbolRefAttribute, IntegerAttribute, StringAttribute, TypeAttribute,
     },
     operation::OperationBuilder,
     Identifier,
@@ -1176,7 +1176,13 @@ pub(crate) fn lower_print_call<'c>(
         }
     }
 
-    let (mut arg_val, arg_ty, block) = gen.generate_expr(print_arg, block)?;
+    let previous_expected = gen.expected_type;
+    if matches!(print_arg, Expr::StringLiteral(_)) {
+        gen.expected_type = Some(gen.ptr_ty);
+    }
+    let generated = gen.generate_expr(print_arg, block);
+    gen.expected_type = previous_expected;
+    let (mut arg_val, arg_ty, block) = generated?;
 
     // Scalar fast-path (#185): `printMemref*` only accepts ranked memrefs/tensors, so a
     // bare scalar must route through the scalar `print_*` runtime helpers instead.
@@ -1285,6 +1291,19 @@ pub(crate) fn pick_scalar_print<'c>(
     arg_ty: Type<'c>,
 ) -> Result<Option<(&'static str, Value<'c, 'c>, String)>, LowerError> {
     use crate::syntax::types::{ElementType, Type as VxType};
+    let ty_str = arg_ty.to_string();
+    if ty_str.starts_with("!llvm.struct<\"Str\",") {
+        let extract = OperationBuilder::new("llvm.extractvalue", gen.loc())
+            .add_operands(&[arg_val])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "position"),
+                DenseI64ArrayAttribute::new(gen.context, &[0]).into(),
+            )])
+            .add_results(&[gen.ptr_ty])
+            .build()?;
+        let ptr = block.append_operation(extract).result(0)?.into();
+        return Ok(Some(("print_str", ptr, "!llvm.ptr".to_string())));
+    }
     let arg = match arg {
         Expr::Borrow(b) => &*b.expr,
         other => other,
@@ -1299,7 +1318,6 @@ pub(crate) fn pick_scalar_print<'c>(
         },
         _ => false,
     };
-    let ty_str = arg_ty.to_string();
     let (fn_name, widen): (&'static str, Option<(&str, &str)>) = match (ty_str.as_str(), unsigned) {
         ("i8", true) => ("print_u8", None),
         ("i16", true) => ("print_u16", None),

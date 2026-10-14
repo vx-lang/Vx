@@ -68,6 +68,7 @@ pub enum TokenTypeBase<S, C> {
     Identifier(S),
     Number(S),
     StringLiteral(C),
+    CharLiteral(char),
 
     // Symbols
     LeftParen,
@@ -180,6 +181,7 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::Identifier(s) => write!(f, "{}", s),
             TokenTypeBase::Number(s) => write!(f, "{}", s),
             TokenTypeBase::StringLiteral(s) => write!(f, "\"{}\"", s),
+            TokenTypeBase::CharLiteral(c) => write!(f, "'{c}'"),
 
             TokenTypeBase::LeftParen => write!(f, "("),
             TokenTypeBase::RightParen => write!(f, ")"),
@@ -552,6 +554,51 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    fn char_literal(&mut self, start_byte: usize, start_col: usize) -> Token<'a> {
+        let value = match self.advance().map(|(_, c)| c) {
+            Some('\\') => match self.advance().map(|(_, c)| c) {
+                Some('n') => '\n',
+                Some('t') => '\t',
+                Some('r') => '\r',
+                Some('0') => '\0',
+                Some('\'') => '\'',
+                Some('\\') => '\\',
+                Some(c) => {
+                    return TokenBase {
+                        kind: TokenTypeBase::Unknown(c),
+                        line: self.line,
+                        column: start_col,
+                        length: self.current_byte_offset() - start_byte,
+                    }
+                }
+                None => '\0',
+            },
+            Some(c) => c,
+            None => '\0',
+        };
+        if self.peek_char() != Some('\'') {
+            while let Some(c) = self.peek_char() {
+                self.advance();
+                if c == '\'' || c == '\n' {
+                    break;
+                }
+            }
+            return TokenBase {
+                kind: TokenTypeBase::Unknown('\''),
+                line: self.line,
+                column: start_col,
+                length: self.current_byte_offset() - start_byte,
+            };
+        }
+        self.advance();
+        TokenBase {
+            kind: TokenTypeBase::CharLiteral(value),
+            line: self.line,
+            column: start_col,
+            length: self.current_byte_offset() - start_byte,
+        }
+    }
+
     fn lex_comment(&mut self, start_byte: usize, start_col: usize, is_doc: bool) -> Token<'a> {
         while let Some(next_c) = self.peek_char() {
             if next_c == '\n' {
@@ -650,6 +697,9 @@ impl<'a> Lexer<'a> {
 
         if c == '"' {
             return self.string_literal(start_byte, start_col);
+        }
+        if c == '\'' {
+            return self.char_literal(start_byte, start_col);
         }
 
         let kind = match c {
@@ -866,6 +916,7 @@ impl<'a> Token<'a> {
             }
             TokenTypeBase::Number(s) => TokenTypeBase::Number(crate::symbol::Symbol::from(s)),
             TokenTypeBase::StringLiteral(s) => TokenTypeBase::StringLiteral(s.into_owned()),
+            TokenTypeBase::CharLiteral(c) => TokenTypeBase::CharLiteral(c),
             TokenTypeBase::LeftParen => TokenTypeBase::LeftParen,
             TokenTypeBase::RightParen => TokenTypeBase::RightParen,
             TokenTypeBase::LeftBrace => TokenTypeBase::LeftBrace,
@@ -980,6 +1031,7 @@ impl OwnedToken {
             TokenTypeBase::StringLiteral(s) => {
                 TokenTypeBase::StringLiteral(std::borrow::Cow::Borrowed(s.as_str()))
             }
+            TokenTypeBase::CharLiteral(c) => TokenTypeBase::CharLiteral(*c),
             TokenTypeBase::LeftParen => TokenTypeBase::LeftParen,
             TokenTypeBase::RightParen => TokenTypeBase::RightParen,
             TokenTypeBase::LeftBrace => TokenTypeBase::LeftBrace,
@@ -1148,6 +1200,20 @@ mod tests {
         } else {
             panic!("Expected StringLiteral, got {:?}", kind);
         }
+    }
+
+    #[test]
+    fn test_lex_character_literals() {
+        assert_eq!(lex_first("'a'"), TokenTypeBase::CharLiteral('a'));
+        assert_eq!(lex_first("'λ'"), TokenTypeBase::CharLiteral('λ'));
+        assert_eq!(lex_first("'\\n'"), TokenTypeBase::CharLiteral('\n'));
+        assert_eq!(lex_first("'\\\''"), TokenTypeBase::CharLiteral('\''));
+    }
+
+    #[test]
+    fn test_rejects_character_literals_with_wrong_arity() {
+        assert!(matches!(lex_first("''"), TokenTypeBase::Unknown('\'')));
+        assert!(matches!(lex_first("'ab'"), TokenTypeBase::Unknown('\'')));
     }
 
     #[test]

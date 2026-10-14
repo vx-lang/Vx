@@ -1,0 +1,27 @@
+//===- char.vx - Vx Standard Library ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+import core::marker;
+
+/// One Unicode scalar value. A character literal constructs this ordinary value type.
+struct Char {
+  code : u32,
+}
+
+impl Copy for Char {}
+
+impl Char {
+  /// The Unicode scalar value as an integer.
+  fn as_u32(self : Char) -> u32 {
+    return self.code;
+  }
+
+  /// Whether this character is in the seven-bit ASCII range.
+  fn is_ascii(self : Char) -> bool {
+    return self.code <= 127u32;
+  }
+}

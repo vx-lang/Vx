@@ -487,6 +487,23 @@ impl<'c> MeliorGenerator<'c> {
             return Ok(val);
         }
 
+        // Preserve the source compatibility string literals historically had with C byte-pointer
+        // APIs. A stored literal is now `Str { ptr, len }`; in a pointer checking position it
+        // decays to the first field, while ordinary value positions retain the length.
+        if to_ty == self.ptr_ty && from_ty.to_string().starts_with("!llvm.struct<\"Str\",") {
+            let extract =
+                melior::ir::operation::OperationBuilder::new("llvm.extractvalue", self.loc())
+                    .add_operands(&[val])
+                    .add_attributes(&[(
+                        melior::ir::Identifier::new(self.context, "position"),
+                        melior::ir::attribute::DenseI64ArrayAttribute::new(self.context, &[0])
+                            .into(),
+                    )])
+                    .add_results(&[self.ptr_ty])
+                    .build()?;
+            return Ok(block.append_operation(extract).result(0)?.into());
+        }
+
         // Scalar -> tensor: broadcast the scalar across a fresh buffer (fill),
         // rather than emitting an invalid f32->memref bitcast. Handles static,
         // identity-layout memrefs whose element type matches the scalar. See #148.
@@ -2324,6 +2341,7 @@ impl<'c> MeliorGenerator<'c> {
             // A cast's value has the target type by definition (`my_closure as ||->i32`), and the
             // indirect-call path needs it in `ast_env` to rebuild the callee signature.
             Expr::AsCast(c) => Some(c.target_ty.clone()),
+            Expr::StringLiteral(_) => Some(syntax::Type::Struct("Str".into(), None)),
             // An `unsafe { .. }` block has the type of its tail expression. Without this arm an
             // unannotated `let` over one records nothing in `ast_env`, so every consumer is blind
             // to a type the checker already computed -- and a redundant annotation then decides

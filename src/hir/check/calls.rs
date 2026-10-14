@@ -233,6 +233,13 @@ impl<'a> TypeChecker<'a> {
         param_ty: &Type,
         arg_ty: &Type,
     ) -> Type {
+        if (matches!(arg, Expr::StringLiteral(_))
+            || matches!(arg_ty, Type::Struct(name, _) if name.as_ref() == "Str"))
+            && matches!(param_ty, Type::Pointer(inner, _, false)
+                if matches!(inner.as_ref(), Type::Scalar(ElementType::I8 | ElementType::U8)))
+        {
+            return param_ty.clone();
+        }
         if let Some(n) = crate::hir::expr::numeric_literal_mut(arg) {
             if let Some(elem) = expected_numeric_elem(param_ty, &n.value) {
                 n.ty = Some(elem.clone());
@@ -2339,7 +2346,7 @@ impl<'a> TypeChecker<'a> {
             if args.len() != 1 {
                 self.errors
                     .push("Function 'panic' expects 1 argument, the message".to_string());
-            } else if arg_types[0] != c_string {
+            } else if !matches!(args[0], Expr::StringLiteral(_)) && arg_types[0] != c_string {
                 self.errors.push(format!(
                     "Function 'panic' expects a string message, got {}",
                     arg_types[0]

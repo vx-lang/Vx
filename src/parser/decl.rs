@@ -1486,6 +1486,24 @@ impl<'a> Parser<'a> {
                 path: vec!["core".into(), "tuple".into()],
             });
         }
+        if self.uses_chars
+            && !imports.iter().any(|i: &ImportDecl| {
+                i.path.len() == 2 && &*i.path[0] == "core" && &*i.path[1] == "char"
+            })
+        {
+            imports.push(ImportDecl {
+                path: vec!["core".into(), "char".into()],
+            });
+        }
+        if self.uses_strings
+            && !imports.iter().any(|i: &ImportDecl| {
+                i.path.len() == 2 && &*i.path[0] == "core" && &*i.path[1] == "str"
+            })
+        {
+            imports.push(ImportDecl {
+                path: vec!["core".into(), "str".into()],
+            });
+        }
         Ok(Program {
             module_path: self.source.to_string().into(), // Default fallback, should be overridden by pipeline
             item_macros,

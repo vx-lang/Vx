@@ -71,6 +71,14 @@ pub fn ptr_gid() -> TypeId {
     TypeId::new(0, sym, 0, 0)
 }
 
+/// Stable fallback identity for the compiler-known `core::str::Str` layout. Normal module builds
+/// use the registry's real nominal GID; small in-memory lowering tests do not load imports, so they
+/// still need an unambiguous aggregate identity for literal values.
+fn builtin_str_gid() -> TypeId {
+    let sym = crate::hash::DefPath::Named("$core::str::Str").compute_symbol_hash();
+    TypeId::new(0, sym, 0, 0)
+}
+
 /// The stable per-instance GID of a monomorphized data-carrying enum (`Option<i32>`): module 0 +
 /// a content hash of the base name and mangled type arguments, so `Option<i32>` and `Option<i64>` are
 /// distinct aggregates and the same instance hashes identically in a signature and a body. Distinct
@@ -101,7 +109,7 @@ fn comptime_survivor(e: &crate::syntax::IfExpr) -> Option<&[Statement]> {
 /// an `unsafe`/`comptime` block whose trailing value is one.
 fn construction_tail(e: &Expr) -> bool {
     match e {
-        Expr::StructInit(_) | Expr::EnumVariant(_) => true,
+        Expr::StructInit(_) | Expr::EnumVariant(_) | Expr::StringLiteral(_) => true,
         Expr::UnsafeBlock(u) => u.ret.as_deref().is_some_and(construction_tail),
         Expr::ComptimeBlock(c) => c.ret.as_deref().is_some_and(construction_tail),
         _ => false,
@@ -718,12 +726,99 @@ impl<'r> Lowerer<'r> {
         )
     }
 
+    fn ensure_builtin_str_layout(&mut self) -> TypeId {
+        let gid = builtin_str_gid();
+        self.instance_layouts
+            .entry(gid)
+            .or_insert_with(|| crate::registry::TypeDefinition {
+                id: gid,
+                name: "Str".to_string(),
+                size_bytes: 16,
+                align_bytes: 8,
+                fields: vec![
+                    crate::layout::FieldLayout {
+                        name: "ptr".into(),
+                        offset: 0,
+                        size: 8,
+                        ty: FieldTy::Opaque,
+                    },
+                    crate::layout::FieldLayout {
+                        name: "len".into(),
+                        offset: 8,
+                        size: 8,
+                        ty: FieldTy::Scalar(ElementType::I64),
+                    },
+                ],
+                by_value_dependencies: Vec::new(),
+            });
+        if !self.agg_layouts.iter().any(|(known, _, _)| *known == gid) {
+            self.agg_layouts.push((
+                gid,
+                vec![0, 8],
+                vec!["!llvm.ptr".to_string(), "i64".to_string()],
+            ));
+        }
+        gid
+    }
+
+    /// Materialize the ordinary `Str { ptr, len }` value for a literal. The global remains
+    /// NUL-terminated for C interop, while the recorded length deliberately excludes that byte.
+    fn emit_str_const(&mut self, s: &str) -> Lowered<Val> {
+        let str_name: Symbol = "Str".into();
+        let (gid, fields) = if let Some(gid) = self.struct_gid_by_name(&str_name) {
+            let fields = self
+                .layout_of(&gid)
+                .ok_or(Decline::TypeNotModelled {
+                    what: "the Str layout",
+                })?
+                .fields
+                .iter()
+                .map(|f| (f.name.clone(), f.offset as u64))
+                .collect();
+            (gid, fields)
+        } else {
+            // `lower_with_registry` unit tests intentionally parse one module without resolving
+            // imports. Preserve their production-equivalent literal semantics with the fixed ABI.
+            let gid = self.ensure_builtin_str_layout();
+            (gid, vec![("ptr".into(), 0), ("len".into(), 8)])
+        };
+        let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
+        let ptr = self.emit_string_const(s);
+        let len = self.emit_value(
+            Opcode::Const,
+            Register(0),
+            Register(0),
+            ElementType::I64,
+            s.as_bytes().len() as u64,
+        );
+        for (name, offset) in fields {
+            let value = if name.as_ref() == "ptr" { &ptr } else { &len };
+            self.emit_effect(Opcode::FieldStore, slot.reg, value.reg, offset);
+        }
+        Ok(slot)
+    }
+
     /// Lower one `print!`/`println!` argument: a string literal emits a `PrintStr`; any other argument
     /// is lowered as a value and `print`ed (routing to the scalar/tensor `print_*` helper by type).
     fn lower_print_arg(&mut self, arg: &Expr) -> Lowered<()> {
         if let Expr::StringLiteral(sl) = arg {
             self.emit_print_str(sl.value.as_ref());
             return Ok(());
+        }
+        let is_str = self.infer_ast_type(arg).is_some_and(
+            |t| matches!(deref_to_pointee(&t), Type::Struct(n, _) if n.as_ref() == "Str"),
+        );
+        if is_str {
+            let (base, gid) = self.lower_agg_base(arg)?;
+            let off = self
+                .layout_of(&gid)
+                .and_then(|d| d.fields.iter().find(|f| f.name.as_ref() == "ptr"))
+                .map(|f| f.offset as u64)
+                .ok_or(Decline::TypeNotModelled {
+                    what: "a Str with no ptr field",
+                })?;
+            let ptr = self.emit_typed(Opcode::FieldLoad, base, Register(0), LoweredTy::Ptr, off);
+            return self.emit_print(ptr);
         }
         // A `String` value prints its bytes: the runtime hands out a C copy of the handle in
         // the `ptr` field, `print_str` prints it, and the copy is freed. The runtime's entry
@@ -1174,6 +1269,13 @@ impl<'r> Lowerer<'r> {
             }
             // A scalar `as` cast: the result carries the (scalar) target type.
             Expr::AsCast(c) => {
+                // An explicitly byte-pointer-cast literal asks for its C-string backing pointer,
+                // not the default length-carrying `Str` aggregate.
+                if matches!(c.target_ty, Type::Pointer(..)) {
+                    if let Expr::StringLiteral(sl) = &*c.expr {
+                        return Ok(self.emit_string_const(sl.value.as_ref()));
+                    }
+                }
                 let v = self.lower_expr(&c.expr)?;
                 // An integer cast to a pointer (`0 as *mut T`, the null-pointer idiom): the
                 // result is a bare `!llvm.ptr` value, spelled with the pointer GID so codegen
@@ -1308,6 +1410,45 @@ impl<'r> Lowerer<'r> {
                             }); // index must be a scalar
                         }
                         Ok(self.emit_typed(Opcode::PtrIndex, base.reg, index.reg, elem, 0))
+                    }
+                    LoweredTy::Aggregate(gid)
+                        if self
+                            .layout_of(&gid)
+                            .is_some_and(|layout| layout.name == "Str") =>
+                    {
+                        let (slot, gid) = self.lower_agg_base(&ix.base)?;
+                        let ptr_offset = self
+                            .layout_of(&gid)
+                            .and_then(|layout| {
+                                layout
+                                    .fields
+                                    .iter()
+                                    .find(|field| field.name.as_ref() == "ptr")
+                            })
+                            .map(|field| field.offset as u64)
+                            .ok_or(Decline::TypeNotModelled {
+                                what: "a Str value without its pointer field",
+                            })?;
+                        let ptr = self.emit_typed(
+                            Opcode::FieldLoad,
+                            slot,
+                            Register(0),
+                            LoweredTy::Ptr,
+                            ptr_offset,
+                        );
+                        let index = self.lower_expr(&ix.index)?;
+                        if !matches!(index.ty, LoweredTy::Scalar(_)) {
+                            return Err(Decline::TypeNotModelled {
+                                what: "a string index that is not a scalar",
+                            });
+                        }
+                        Ok(self.emit_typed(
+                            Opcode::PtrIndex,
+                            ptr.reg,
+                            index.reg,
+                            LoweredTy::Scalar(ElementType::U8),
+                            0,
+                        ))
                     }
                     _ => Err(Decline::TypeNotModelled {
                         what: "a member access the flat path has no layout for",
@@ -1638,7 +1779,7 @@ impl<'r> Lowerer<'r> {
             // shape the AST path's `StringLiteralExpr` produces. Backs the string-passing FFI programs
             // (`vx_stdout_write(msg, 14)`). A print-*position* string never reaches here; it takes the
             // `PrintStr` effect path in `lower_print_arg`. (#231)
-            Expr::StringLiteral(sl) => Ok(self.emit_string_const(sl.value.as_ref())),
+            Expr::StringLiteral(sl) => self.emit_str_const(sl.value.as_ref()),
             // `*p`: a raw-pointer dereference read, lowered as `p[0]` (`let v = *p`, a `Box`'s heap
             // cell). The store form (`*p = val`) is in `lower_stmt`'s assignment. (#242)
             Expr::Dereference(d) => {
@@ -1807,6 +1948,7 @@ impl<'r> Lowerer<'r> {
             // and a nested `**rr` can recover the pointee element. Without this the chain breaks at the
             // literal and only single-level refs (which take the place shortcut) worked. (#275 nested refs)
             Expr::Number(n) => Some(Type::Scalar(number_elem(n)?)),
+            Expr::StringLiteral(_) => Some(Type::Struct("Str".into(), None)),
             // `t.as_ptr()` on a tensor: a pointer to its elements, in the tensor's memory, as the
             // checker types it. Through a borrow of the tensor as well.
             Expr::MethodCall(mc) if matches!(mc.method_name.as_ref(), "as_ptr" | "as_mut_ptr") => {
@@ -3034,6 +3176,11 @@ impl<'r> Lowerer<'r> {
     /// call's return (`VecIter::next -> Option<i32>`), a `let` binding. Falls back to `lowered_ty`
     /// for everything else. (#242)
     fn lower_ty_synth(&mut self, ty: &Type) -> Option<LoweredTy> {
+        if matches!(ty, Type::Struct(name, _) if name.as_ref() == "Str")
+            && self.struct_gid_by_name(&"Str".into()).is_none()
+        {
+            return Some(LoweredTy::Aggregate(self.ensure_builtin_str_layout()));
+        }
         // A data-carrying enum with no generics (`Result { Ok(i32), Err(i32) }`) is the instance
         // with no arguments: the same synthesized `{ tag, payload }` layout. A parameter spells
         // it as a bare nominal, which is a `Struct` until resolution says otherwise.
@@ -3109,6 +3256,9 @@ impl<'r> Lowerer<'r> {
     fn agg_gid_synth(&mut self, ty: &Type) -> Option<TypeId> {
         if let Some(gid) = agg_gid_of_ty(ty, self.registry) {
             return Some(gid);
+        }
+        if matches!(deref_to_pointee(ty), Type::Struct(name, _) if name.as_ref() == "Str") {
+            return Some(self.ensure_builtin_str_layout());
         }
         if let Type::GenericInstance(base, args) = deref_to_pointee(ty) {
             if let Type::Struct(n, _) = base.as_ref() {
@@ -4360,9 +4510,66 @@ impl<'r> Lowerer<'r> {
         for (n, arg) in fc.args.iter().enumerate() {
             // A closure literal passed where a nominal `ClosureK` is expected (`.map(adder)`) is
             // adapted to the `{ env, func }` fat struct; any other argument lowers normally. (#242)
-            let v = match self.try_adapt_closure_arg(arg) {
-                Ok(v) => v,
-                Err(_) => self.lower_expr(arg)?,
+            let pointer_literal = matches!(arg, Expr::StringLiteral(_))
+                && matches!(sig.params.get(n), Some(Type::Pointer(inner, _, false))
+                    if matches!(inner.as_ref(), Type::Scalar(ElementType::I8 | ElementType::U8)));
+            let v = if pointer_literal {
+                let Expr::StringLiteral(sl) = arg else {
+                    unreachable!()
+                };
+                self.emit_string_const(sl.value.as_ref())
+            } else {
+                match self.try_adapt_closure_arg(arg) {
+                    Ok(v) => v,
+                    Err(_) => self.lower_expr(arg)?,
+                }
+            };
+            let byte_pointer_param = matches!(sig.params.get(n), Some(Type::Pointer(inner, _, false))
+                if matches!(inner.as_ref(), Type::Scalar(ElementType::I8 | ElementType::U8)));
+            let v = if byte_pointer_param
+                && matches!(&v.ty, LoweredTy::Aggregate(gid)
+                    if self.layout_of(gid).is_some_and(|layout| layout.name == "Str"))
+            {
+                let gid = match v.ty {
+                    LoweredTy::Aggregate(gid) => gid,
+                    _ => unreachable!(),
+                };
+                let slot = match arg {
+                    Expr::Identifier(id) => match self.scope.get(&id.name) {
+                        Some(Binding::Slot { reg, .. }) => *reg,
+                        _ => {
+                            let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
+                            self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
+                            slot.reg
+                        }
+                    },
+                    _ => {
+                        let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
+                        self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
+                        slot.reg
+                    }
+                };
+                let ptr_offset = self
+                    .layout_of(&gid)
+                    .and_then(|layout| {
+                        layout
+                            .fields
+                            .iter()
+                            .find(|field| field.name.as_ref() == "ptr")
+                    })
+                    .map(|field| field.offset as u64)
+                    .ok_or(Decline::TypeNotModelled {
+                        what: "a Str value without its pointer field",
+                    })?;
+                self.emit_typed(
+                    Opcode::FieldLoad,
+                    slot,
+                    Register(0),
+                    LoweredTy::Ptr,
+                    ptr_offset,
+                )
+            } else {
+                v
             };
             // A construction (`Option<i32>::Some(7)`, `Pair { .. }`) lowers to its slot, and the
             // callee takes the aggregate by value: load it off the slot here, the load a nested
@@ -4974,7 +5181,17 @@ impl<'r> Lowerer<'r> {
                     );
                     return Ok(());
                 }
-                let v = self.lower_expr(&l.expr)?;
+                let v = if matches!((&l.expr, l.ty_ann.as_ref()),
+                    (Expr::StringLiteral(_), Some(Type::Pointer(inner, _, false)))
+                    if matches!(inner.as_ref(), Type::Scalar(ElementType::I8 | ElementType::U8)))
+                {
+                    let Expr::StringLiteral(sl) = &l.expr else {
+                        unreachable!()
+                    };
+                    self.emit_string_const(sl.value.as_ref())
+                } else {
+                    self.lower_expr(&l.expr)?
+                };
                 // A construction reached through a block's tail (`let w = unsafe { .. W { .. } }`)
                 // already sits in a slot: bind the local to it, as the bare form above does.
                 if construction_tail(&l.expr) && matches!(v.ty, LoweredTy::Aggregate(_)) {
@@ -5098,7 +5315,16 @@ impl<'r> Lowerer<'r> {
                     self.emit_effect(Opcode::Ret, Register(0), Register(0), 0);
                     return Ok(());
                 };
-                let v = self.lower_expr(ret_expr)?;
+                let pointer_literal = matches!(ret_expr, Expr::StringLiteral(_))
+                    && matches!(self.ret_ty, Some(LoweredTy::Ptr));
+                let v = if pointer_literal {
+                    let Expr::StringLiteral(sl) = ret_expr else {
+                        unreachable!()
+                    };
+                    self.emit_string_const(sl.value.as_ref())
+                } else {
+                    self.lower_expr(ret_expr)?
+                };
                 if self.ret_void {
                     if !self.block_terminated() {
                         self.run_value_drops()?;
@@ -5256,9 +5482,7 @@ impl<'r> Lowerer<'r> {
                     Ok(())
                 }
                 Expr::FunctionCall(fc) if fc.name.as_ref() == "print" && fc.args.len() == 1 => {
-                    let v = self.lower_expr(Self::print_operand(&fc.args[0]))?;
-                    self.emit_print(v)?;
-                    Ok(())
+                    self.lower_print_arg(&fc.args[0])
                 }
                 // The `print!` macro form (`Expr::Print`): prints each argument in sequence via the same
                 // `print_*` / `print_str` helpers, no separators — matching the AST codegen. A
@@ -5610,7 +5834,7 @@ fn body_constructs_struct(stmts: &[Statement]) -> bool {
 /// branch. The same blind spots `expr_has_control_flow` had, closed the same way.
 fn expr_constructs_struct(e: &Expr) -> bool {
     match e {
-        Expr::StructInit(_) => true,
+        Expr::StructInit(_) | Expr::StringLiteral(_) => true,
         Expr::UnsafeBlock(u) => {
             body_constructs_struct(&u.stmts) || u.ret.as_deref().is_some_and(expr_constructs_struct)
         }
