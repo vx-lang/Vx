@@ -1,0 +1,93 @@
+//===- struct_holding_a_mut_reference_and_a_reference_it_may_store.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+//
+// A struct may hold a `&mut` and a reference when the `&mut`'s target lives no longer than
+// what the reference points at, or when the `&mut` cannot store a reference.
+
+import core::ops;
+import std::vec;
+
+struct Leak {
+  out : &mut &Vec<i32>,
+  val : &Vec<i32>,
+}
+
+impl Drop for Leak {
+  fn drop(self : &mut Leak) -> void {
+    *self.out = self.val;
+  }
+}
+
+struct Count {
+  n : &mut i32,
+  val : &Vec<i32>,
+}
+
+// Built in an inner block, but both references point at the outer block.
+fn both_point_outside_the_block() -> i32 {
+  let mut one : Vec<i32> = Vec<i32>::new();
+  one.push(7);
+  let empty : Vec<i32> = Vec<i32>::new();
+  let mut me_out : &Vec<i32> = &empty;
+  if true {
+    let _q = Leak {
+      out : &mut me_out, val : &one
+    };
+  }
+  return me_out.len();
+}
+
+// Everything is declared in one block.
+fn all_in_one_block() -> i32 {
+  let empty : Vec<i32> = Vec<i32>::new();
+  let mut n = 0;
+  if true {
+    let mut l : Vec<i32> = Vec<i32>::new();
+    l.push(1);
+    l.push(2);
+    let mut me_out : &Vec<i32> = &empty;
+    if true {
+      let _q = Leak {
+        out : &mut me_out, val : &l
+      };
+    }
+    n = me_out.len();
+  }
+  return n;
+}
+
+// `&mut i32` cannot store a reference.
+fn mut_reference_to_plain_data() -> i32 {
+  let mut n = 0;
+  if true {
+    let mut l : Vec<i32> = Vec<i32>::new();
+    l.push(1);
+    l.push(2);
+    l.push(3);
+    let c = Count {
+      n : &mut n, val : &l
+    };
+    *c.n = c.val.len();
+  }
+  return n;
+}
+
+fn main() -> i32 {
+  // CHECK-NOT: Error
+  // CHECK: {{^}}1{{$}}
+  print(both_point_outside_the_block());
+  print!("\n");
+  // CHECK-NEXT: {{^}}2{{$}}
+  print(all_in_one_block());
+  print!("\n");
+  // CHECK-NEXT: {{^}}3{{$}}
+  print(mut_reference_to_plain_data());
+  print!("\n");
+  return 0;
+}

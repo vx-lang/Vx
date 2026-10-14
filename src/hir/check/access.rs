@@ -1931,7 +1931,11 @@ impl<'a> TypeChecker<'a> {
 
     /// The field types of a struct, or the payload types of an enum, by base name, with the
     /// declaration's type parameters replaced by `args` when given.
-    fn declared_part_types(&self, name: &crate::symbol::Symbol, args: &[Type]) -> Vec<Type> {
+    pub(crate) fn declared_part_types(
+        &self,
+        name: &crate::symbol::Symbol,
+        args: &[Type],
+    ) -> Vec<Type> {
         let base = name.split('<').next().unwrap_or(name);
         let (generics, parts): (Vec<String>, Vec<Type>) =
             if let Some(s) = self.env.structs.get(base) {
