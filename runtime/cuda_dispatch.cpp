@@ -62,6 +62,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 
 #include <cublas_v2.h>
@@ -71,6 +72,7 @@
 // creates lazily -- `run_device_image` forces it with the usual `cudaFree(0)`.
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <dlfcn.h>
 
 namespace {
 
@@ -108,6 +110,50 @@ bool verbose() {
     }                                                                          \
   } while (0)
 
+/// The driver API functions this file calls. They come from libcuda.so.1
+/// through dlopen, not from a link: only the NVIDIA driver installs that
+/// library, and a build server with the toolkit but no driver must still link
+/// every program.
+struct DriverApi {
+  decltype(&cuGetErrorName) GetErrorName;
+  decltype(&cuModuleLoadData) ModuleLoadData;
+  decltype(&cuModuleLoadDataEx) ModuleLoadDataEx;
+  decltype(&cuModuleGetFunction) ModuleGetFunction;
+  decltype(&cuOccupancyMaxActiveBlocksPerMultiprocessor)
+      OccupancyMaxActiveBlocksPerMultiprocessor;
+  decltype(&cuLaunchKernel) LaunchKernel;
+};
+
+/// Loads the driver API once. Returns null and says why if it cannot.
+const DriverApi *load_driver_api() {
+  static const DriverApi *api = []() -> const DriverApi * {
+    void *lib = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
+    if (!lib) {
+      fprintf(stderr, "[Vx CUDA] cannot load the CUDA driver: %s\n", dlerror());
+      return nullptr;
+    }
+    static DriverApi d;
+    bool ok = true;
+    auto find = [&](auto &slot, const char *name) {
+      slot = reinterpret_cast<std::remove_reference_t<decltype(slot)>>(
+          dlsym(lib, name));
+      if (!slot) {
+        fprintf(stderr, "[Vx CUDA] the CUDA driver has no %s\n", name);
+        ok = false;
+      }
+    };
+    find(d.GetErrorName, "cuGetErrorName");
+    find(d.ModuleLoadData, "cuModuleLoadData");
+    find(d.ModuleLoadDataEx, "cuModuleLoadDataEx");
+    find(d.ModuleGetFunction, "cuModuleGetFunction");
+    find(d.OccupancyMaxActiveBlocksPerMultiprocessor,
+         "cuOccupancyMaxActiveBlocksPerMultiprocessor");
+    find(d.LaunchKernel, "cuLaunchKernel");
+    return ok ? &d : nullptr;
+  }();
+  return api;
+}
+
 /// Whether a usable device exists, decided once.
 ///
 /// A build with the CUDA backend compiled in can still run on a machine with no
@@ -123,9 +169,24 @@ bool cuda_available() {
               err == cudaSuccess ? "none present" : cudaGetErrorString(err));
       return false;
     }
+    if (!load_driver_api()) {
+      fprintf(stderr, "[Vx CUDA] kernels will run on the host\n");
+      return false;
+    }
     return true;
   }();
   return available;
+}
+
+/// The driver API. Call it only after `cuda_available()` returned true.
+const DriverApi &driver() {
+  const DriverApi *api = load_driver_api();
+  if (!api) {
+    fprintf(stderr, "[Vx CUDA] FATAL: the driver API was used before "
+                    "cuda_available() found a device\n");
+    abort();
+  }
+  return *api;
 }
 
 /// Declared ids the program said are local devices (VX_CTRL_LOCAL_DEVICE),
@@ -230,9 +291,10 @@ cublasHandle_t cublas_handle() {
   const char *tf32 = getenv("VX_TF32");
   if (tf32 && *tf32 && *tf32 != '0') {
     VX_CUBLAS_CHECK(cublasSetMathMode(h, CUBLAS_TF32_TENSOR_OP_MATH));
-    fprintf(stderr,
-            "[Vx CUDA] cuBLAS math mode: TF32 tensor ops (VX_TF32, device %d)\n",
-            device);
+    fprintf(
+        stderr,
+        "[Vx CUDA] cuBLAS math mode: TF32 tensor ops (VX_TF32, device %d)\n",
+        device);
   }
   handles.emplace(device, h);
   return h;
@@ -760,16 +822,16 @@ bool run_device_image(const void *payload, size_t payload_size,
       unsigned int cap = (unsigned int)atoi(maxrreg);
       CUjit_option opts[1] = {CU_JIT_MAX_REGISTERS};
       void *vals[1] = {(void *)(uintptr_t)cap};
-      rc = cuModuleLoadDataEx(&mod, image, 1, opts, vals);
+      rc = driver().ModuleLoadDataEx(&mod, image, 1, opts, vals);
       if (verbose()) {
         fprintf(stderr, "[Vx CUDA] JIT register cap: %u (VX_MAXRREG)\n", cap);
       }
     } else {
-      rc = cuModuleLoadData(&mod, image);
+      rc = driver().ModuleLoadData(&mod, image);
     }
     if (rc != CUDA_SUCCESS) {
       const char *name = nullptr;
-      cuGetErrorName(rc, &name);
+      driver().GetErrorName(rc, &name);
       fprintf(stderr,
               "[Vx CUDA] FATAL: the device image for %s did not load: %s.\n"
               "          It was compiled for %s. Two known causes: an "
@@ -786,7 +848,7 @@ bool run_device_image(const void *payload, size_t payload_size,
                   : "sm_80");
       abort();
     }
-    rc = cuModuleGetFunction(&fn, mod, kernel_name);
+    rc = driver().ModuleGetFunction(&fn, mod, kernel_name);
     if (rc != CUDA_SUCCESS) {
       fprintf(stderr,
               "[Vx CUDA] FATAL: the device image loaded but has no entry "
@@ -840,8 +902,7 @@ bool run_device_image(const void *payload, size_t payload_size,
      enough blocks to cover the rest; the grid stride absorbs any remainder
      and any cap. */
   unsigned grid = 1, block = 1;
-  if (const char *launch =
-          vx_payload_field(payload, payload_size, "launch=")) {
+  if (const char *launch = vx_payload_field(payload, payload_size, "launch=")) {
     char *rest = nullptr;
     long trip = strtol(launch, &rest, 10);
     if (rest && *rest == ',') {
@@ -873,8 +934,8 @@ bool run_device_image(const void *payload, size_t payload_size,
        the driver's decision or contention, without a profiler (rented pods
        refuse the performance counters: ERR_NVGPUCTRPERM). */
     int resident = 0;
-    if (cuOccupancyMaxActiveBlocksPerMultiprocessor(&resident, fn, (int)block,
-                                                    0) == CUDA_SUCCESS) {
+    if (driver().OccupancyMaxActiveBlocksPerMultiprocessor(
+            &resident, fn, (int)block, 0) == CUDA_SUCCESS) {
       fprintf(stderr,
               "[Vx CUDA] %s occupancy: %d block(s) of %u threads per SM\n",
               kernel_name, resident, block);
@@ -883,11 +944,11 @@ bool run_device_image(const void *payload, size_t payload_size,
     cudaEventCreate(&t1);
     cudaEventRecord(t0);
   }
-  CUresult rc = cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, nullptr,
-                               params.params, nullptr);
+  CUresult rc = driver().LaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, nullptr,
+                                      params.params, nullptr);
   if (rc != CUDA_SUCCESS) {
     const char *name = nullptr;
-    cuGetErrorName(rc, &name);
+    driver().GetErrorName(rc, &name);
     fprintf(stderr, "[Vx CUDA] FATAL: launching %s failed: %s\n", kernel_name,
             name ? name : "?");
     abort();
@@ -1015,9 +1076,9 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
             kernel_name);
     abort();
   }
-  if (!vx_host_call_kernel(kernel, device_args, arg_tags, num_args,
-                           vx_host_worker_count_for(binary_payload,
-                                                    payload_size))) {
+  if (!vx_host_call_kernel(
+          kernel, device_args, arg_tags, num_args,
+          vx_host_worker_count_for(binary_payload, payload_size))) {
     fprintf(stderr, "[Vx CUDA] FATAL: could not build a call for %s\n",
             kernel_name);
     abort();
