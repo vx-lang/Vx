@@ -527,12 +527,22 @@ impl<'a> TypeChecker<'a> {
                         .unwrap_or(0)
                 };
                 let order = std::iter::once(lead).chain((0..elements.len()).filter(|&i| i != lead));
+                // An annotation such as `Tensor<f64, [2]>` gives the literals their element type.
+                let wanted = match &self.expected_type {
+                    Some(Type::Tensor(e, dims, _)) if nested && dims.len() > 1 => {
+                        Some(Type::Tensor(e.clone(), dims[1..].to_vec(), None))
+                    }
+                    Some(Type::Tensor(e, _, _)) if !nested => Some(Type::Scalar(e.clone())),
+                    _ => None,
+                };
                 let mut elem_ty = ElementType::F32;
                 let mut first_row = Type::Unknown;
                 for i in order {
                     let el = &mut elements[i];
                     if i == lead {
+                        let prev = std::mem::replace(&mut self.expected_type, wanted.clone());
                         let first = self.check_expr_type(el);
+                        self.expected_type = prev;
                         first_row = first.clone();
                         match (first, nested) {
                             (Type::Scalar(e), false) => elem_ty = e,
