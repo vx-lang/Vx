@@ -489,8 +489,8 @@ impl<'a> Parser<'a> {
                 // the shape from the arguments and so built a tensor with no dimensions.
                 Ok(ty) if self.check(&TokenType::LeftParen) => {
                     return Err(self.error(&format!(
-                        "`{ty}` is built with `{ty}::new()` for zeroed storage or `{ty}::uninit()` \
-                         for storage left as it was found"
+                        "`{ty}` is built with `{ty}::new()` for zeroed storage, or \
+                         `unsafe {{ {ty}::uninit() }}` for storage left as it was found"
                     )));
                 }
                 _ => self.pos = saved,
@@ -673,8 +673,8 @@ impl<'a> Parser<'a> {
         let ctor = self.expect_identifier("Expected a constructor after a tensor type")?;
         if ctor != "new" && ctor != "uninit" && ctor != "fill" {
             return Err(self.error(
-                "A tensor type is built with `::new()` for zeroed storage or `::uninit()` for \
-                 storage left as it was found",
+                "A tensor type is built with `::new()` for zeroed storage, or with `::uninit()` \
+                 inside `unsafe` for storage left as it was found",
             ));
         }
         let head = "Tensor";

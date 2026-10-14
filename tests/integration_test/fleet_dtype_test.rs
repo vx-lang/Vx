@@ -72,7 +72,7 @@ fn the_fleet_admits_exactly_the_element_types_its_sources_claim() {
             &src,
             format!(
                 "fn main() -> i32 {{\n  \
-                 let t = Tensor<{elem}, [8, 8]>::uninit();\n  \
+                 let t = unsafe {{ Tensor<{elem}, [8, 8]>::uninit() }};\n  \
                  let _s = transfer(t, Memory::HBM);\n  \
                  return 0;\n}}\n"
             ),

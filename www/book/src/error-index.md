@@ -14,7 +14,7 @@ the test suite has one, a program that triggers it.
 
 ## Contents
 
-- [Warnings](#warnings) — `W1001`–`W1033` (25 codes)
+- [Warnings](#warnings) — `W1001`–`W1033` (24 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3049` (48 codes)
@@ -53,7 +53,6 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1029`](/errors/W1029/) | A tensor placed in a memory space that declares a `capacity` has a *dynamic* (non- literal) shape, so the capacity check (E6009/E6010) could not run — the placement is unverified. Silence by making the shape static, or bounding it. Emitted only when the destination space actually declares a capacity. |
 | [`W1030`](/errors/W1030/) | A topology's device index is not a compile-time constant (`GPU[i]` for a runtime `i`), so it cannot be resolved to a device instance and falls back to index 0. Every such spawn therefore targets the same device. Vx models one representative device per declared kind (#284), so a fleet program should index with constants or const generics. |
 | [`W1031`](/errors/W1031/) | A proof obligation could not be discharged because no SMT solver was available, so the property is **unverified** rather than proved. Distinct from W1027, which means the solver ran and found a violation. Emitted only under `VX_ALLOW_UNVERIFIED`; without it a missing solver is an error, because silence used to be indistinguishable from success (Vx#374). |
-| [`W1032`](/errors/W1032/) | `Tensor<..>::uninit()` called outside an `unsafe` block. Its elements hold whatever the memory held before, so reading one before writing it reads data the program never wrote. Call it inside `unsafe { .. }` to say that every element is written first, or use `::new()` for zeroed storage. A later version makes this an error. |
 | [`W1033`](/errors/W1033/) | The loop of a `spawn` region runs on one thread although each pass writes only memory of its own, so its passes could run at the same time. The warning points at what stops it: a call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass writes, bounds not known when compiling, and the like. |
 
 ## Parser Errors
@@ -171,7 +170,7 @@ Raised where an operation needs an `unsafe` context and does not have one.
 
 | Code | Meaning |
 | --- | --- |
-| [`E5001`](/errors/E5001/) | Unsafe function call outside unsafe block |
+| [`E5001`](/errors/E5001/) | Unsafe function call outside unsafe block. `Tensor<..>::uninit()` is one: its elements hold whatever the memory held, so the program says with `unsafe` that it writes each one before reading it. |
 | [`E5002`](/errors/E5002/) | Unsafe memory operation outside unsafe block |
 
 ## Topology/Hardware Errors
@@ -209,7 +208,7 @@ Raised by the placement and capacity rules — the checks that make Vx different
 | [`E6027`](/errors/E6027/) | A working set that overflows a space only across call boundaries: the peak along some call path -- what each caller still holds when it calls, plus the deepest callee's own peak -- exceeds the space's declared capacity, while every function on the path fits by itself (that case is E6010's). Computed by folding per-function capacity summaries over the call graph, after the per-function checks. Downgraded to W1028 when the space is declared `overcommit`. |
 | [`E6028`](/errors/E6028/) | A recursive cycle that places tiles in a space with a declared capacity. The recursion depth is not known at compile time, so the true peak is unbounded and the placement is refused conservatively. Downgraded to W1028 when the space is declared `overcommit`. |
 | [`E6029`](/errors/E6029/) | A pointer argument into one memory passed to a parameter that wants a pointer into another: a host `*mut f32` where `*mut f32 in Memory::GPU_HBM` is declared, or the reverse. The two are different types, and the C library or kernel behind the parameter reads the memory the declaration names, so the spaces must match exactly. |
-| [`E6030`](/errors/E6030/) | A `spawn` region on a device hands out a tensor it makes, which the host could not free. The compiler makes such a tensor before the region instead, in the device's memory, when the region hands it out as a variable created with `Tensor<..>(..)`, `::new()` or `::uninit()`, with no type annotation, a size that uses nothing the region computes, and a name nothing outside the region already uses. |
+| [`E6030`](/errors/E6030/) | A `spawn` region on a device hands out a tensor it makes, which the host could not free. The compiler makes such a tensor before the region instead, in the device's memory, when the region hands it out as a variable created with `Tensor<..>(..)`, `::new()` or `unsafe { ..::uninit() }`, with no type annotation, a size that uses nothing the region computes, and a name nothing outside the region already uses. |
 | [`E6031`](/errors/E6031/) | A tensor shape that folds to a negative extent, or whose size is more than 2^63 - 1 bytes, the most an allocation can ask for. The size is known, and it is not one the generated code can allocate: it would wrap. |
 
 ## Tensor/Math Errors
@@ -238,4 +237,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-149 diagnostics.
+148 diagnostics.

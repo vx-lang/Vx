@@ -100,7 +100,7 @@ spawn on(Topology::NPU[0]) {
 print(result);
 ```
 
-A tensor can also be born in a space, written `Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit()`. The
+A tensor can also be born in a space, written `Tensor<f32, [4, 4], Memory::NPU_HBM>::new()`. The
 file uses `transfer` because it fills the buffer on the host first, and a transfer is what carries
 an existing value across.
 

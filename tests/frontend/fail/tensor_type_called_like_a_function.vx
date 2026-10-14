@@ -9,7 +9,7 @@
 // build a tensor with no dimensions, dropping the shape written in the type.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error at 15:30: `Tensor<f32, [2, 2]>` is built with `Tensor<f32, [2, 2]>::new()` for zeroed storage or `Tensor<f32, [2, 2]>::uninit()` for storage left as it was found
+// CHECK: Error at 15:30: `Tensor<f32, [2, 2]>` is built with `Tensor<f32, [2, 2]>::new()` for zeroed storage, or `unsafe { Tensor<f32, [2, 2]>::uninit() }` for storage left as it was found
 
 fn main() -> i32 {
   let t = Tensor<f32, [2, 2]>();

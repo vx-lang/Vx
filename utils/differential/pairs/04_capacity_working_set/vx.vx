@@ -27,9 +27,15 @@
 // CHECK: E6010
 
 fn main() -> i32 {
-  let q : Tensor<f32, [ 131072, 65536 ]> = Tensor<f32, [ 131072, 65536 ]>::uninit();
-  let k : Tensor<f32, [ 131072, 65536 ]> = Tensor<f32, [ 131072, 65536 ]>::uninit();
-  let v : Tensor<f32, [ 131072, 65536 ]> = Tensor<f32, [ 131072, 65536 ]>::uninit();
+  let q : Tensor<f32, [ 131072, 65536 ]> = unsafe {
+    Tensor<f32, [ 131072, 65536 ]>::uninit()
+  };
+  let k : Tensor<f32, [ 131072, 65536 ]> = unsafe {
+    Tensor<f32, [ 131072, 65536 ]>::uninit()
+  };
+  let v : Tensor<f32, [ 131072, 65536 ]> = unsafe {
+    Tensor<f32, [ 131072, 65536 ]>::uninit()
+  };
   let dq = transfer(q, Memory::HBM);
   let dk = transfer(k, Memory::HBM);
   let dv = transfer(v, Memory::HBM);

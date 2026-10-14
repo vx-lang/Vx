@@ -334,9 +334,8 @@ reach for otherwise: a name that promises a valid value should deliver one, and 
 greppable when a garbage-value bug is being hunted.
 
 `::uninit()` belongs inside `unsafe`, because the compiler cannot check that every element is
-written before it is read. Outside `unsafe` it is warned about (W1032), and a later version will
-refuse it. The older spelling, `Tensor<f32>([8, 8])`, which passes the shape as an argument,
-starts at zero, as `::new()` does.
+written before it is read. Outside `unsafe` it is refused (E5001). The older spelling,
+`Tensor<f32>([8, 8])`, which passes the shape as an argument, starts at zero, as `::new()` does.
 
 A `Tensor`'s extents are part of its type, so every one of them has to be known at compile time —
 a literal or a const generic. An extent that is a run-time value is refused, naming the `?` spelling,

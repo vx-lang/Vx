@@ -2193,7 +2193,7 @@ impl<'a> TypeChecker<'a> {
                         "this `spawn` region makes a tensor on the device and hands it out, but \
                          the compiler cannot make it before the region; hand out a variable, \
                          create it with \
-                         `Tensor<..>(..)`, `::new()` or `::uninit()`, without a type \
+                         `Tensor<..>(..)`, `::new()` or `unsafe { ..::uninit() }`, without a type \
                          annotation, with a size known before the region and a name not already \
                          in use, or make it before the region yourself"
                             .to_string(),

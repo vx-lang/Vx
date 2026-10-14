@@ -54,7 +54,7 @@ fn main() -> i32 {
   // 1. Allocate and initialize host matrices
   let a = Tensor<f32, [4, 4]>::fill(2.0);
   let b = Tensor<f32, [4, 4]>::fill(3.0);
-  let mut c = Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit();
+  let mut c = Tensor<f32, [4, 4], Memory::NPU_HBM>::new();
 
   // 2. Explicitly stage data across the interconnect into accelerator HBM
   let a_npu = transfer(a, Memory::NPU_HBM);

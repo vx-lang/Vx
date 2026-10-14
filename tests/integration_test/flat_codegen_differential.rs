@@ -955,7 +955,7 @@ fn flat_matches_ast_placed_tensor() {
     // device-placement transfer *methods* (`to_device`/`to_host`) are a different thing and are
     // rewritten to `Expr::Transfer` by the type checker.
     assert_output_parity(
-        "fn main() -> i32 { let mut c = Tensor<f32, [2], Memory::NPU_HBM>::uninit(); \
+        "fn main() -> i32 { let mut c = unsafe { Tensor<f32, [2], Memory::NPU_HBM>::uninit() }; \
          c[0] = 3.0; c[1] = 4.0; print(c[0]); return 0; }",
     );
 }
@@ -968,8 +968,8 @@ fn flat_matches_ast_two_tensors_differing_only_in_placement() {
     // space is not a property the type carries into codegen, and this pins that it is not
     // one the type needs to.
     assert_output_parity(
-        "fn main() -> i32 { let mut h = Tensor<f32, [2]>::uninit(); \
-         let mut d = Tensor<f32, [2], Memory::NPU_HBM>::uninit(); \
+        "fn main() -> i32 { let mut h = unsafe { Tensor<f32, [2]>::uninit() }; \
+         let mut d = unsafe { Tensor<f32, [2], Memory::NPU_HBM>::uninit() }; \
          h[0] = 1.0; h[1] = 2.0; d[0] = 3.0; d[1] = 4.0; \
          print(h[1]); print(d[0]); return 0; }",
     );
@@ -1053,7 +1053,7 @@ fn flat_matches_ast_spawn_regions_with_a_value_a_tail_and_nesting() {
     // A trailing `if` with no semicolon is the region's tail as the parser reads it, and in
     // statement position it is the last thing the region does, not a value.
     assert_parity(
-        "fn main() -> i32 { let mut a = Tensor<f32, [1, 1]>::uninit(); a[0][0] = 0.0; \
+        "fn main() -> i32 { let mut a = unsafe { Tensor<f32, [1, 1]>::uninit() }; a[0][0] = 0.0; \
            let x : f32 = 2.0; \
            spawn on(Topology::CPU) { a[0][0] = 1.0; if x > 1.0 { a[0][0] = 3.0; } } \
            return a[0][0] as i32; }",
@@ -1069,7 +1069,7 @@ fn flat_matches_ast_spawn_regions_with_a_value_a_tail_and_nesting() {
     // A nested region: the inner one is the outer's tail, and each closes with its own
     // topology.
     assert_parity(
-        "fn main() -> i32 { let mut a = Tensor<f32, [1, 1]>::uninit(); a[0][0] = 0.0; \
+        "fn main() -> i32 { let mut a = unsafe { Tensor<f32, [1, 1]>::uninit() }; a[0][0] = 0.0; \
            spawn on(Topology::CPU) { let y = 1; spawn on(Topology::CPU) { a[0][0] = 5.0; } } \
            return a[0][0] as i32; }",
         5,
@@ -2572,7 +2572,7 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
     // this test used before, now lowers on the flat path.)
     std::fs::write(
         &app,
-        "fn main() -> i32 { let n = 3; let mut a = Tensor<f32, [n, n]>::uninit(); \
+        "fn main() -> i32 { let n = 3; let mut a = unsafe { Tensor<f32, [n, n]>::uninit() }; \
            a[0][0] = 1.0; return double(10) + (a[0][0] as i32); }\n",
     )
     .unwrap();

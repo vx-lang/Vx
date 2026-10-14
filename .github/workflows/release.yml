@@ -330,7 +330,7 @@ jobs:
           # new one, and hello.vx never needed the library so nothing noticed.
           cat > spawned.vx <<'EOF'
           fn main() -> i32 {
-              let mut c = Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit();
+              let mut c = unsafe { Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit() };
               spawn on(Topology::NPU[0]) {
                   c[0][0] = 1.0;
               }

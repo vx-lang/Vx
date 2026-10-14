@@ -2179,12 +2179,12 @@ impl<'a> TypeChecker<'a> {
             // `unsafe` is where a program says it writes every element of `::uninit()` storage
             // before reading it, so the call is what an `unsafe` block around it is for (W1010).
             if resolved_name == "Tensor::uninit" && self.unsafe_is_missing() {
-                self.errors.warn(
-                    crate::diagnostic::DiagnosticCode::W1032,
-                    "`::uninit()` storage is not written: reading an element before writing it \
-                     reads whatever the memory held. Call it inside `unsafe { .. }` to say every \
-                     element is written first, or use `::new()` for zeroed storage. This will \
-                     become an error",
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E5001,
+                    "`::uninit()` is unsafe and needs an `unsafe` block: its elements hold \
+                     whatever the memory held, so reading one before writing it reads data the \
+                     program never wrote. Call it inside `unsafe { .. }` to say every element is \
+                     written first, or use `::new()` for zeroed storage",
                     Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span)),
                 );
             }
@@ -2221,7 +2221,7 @@ impl<'a> TypeChecker<'a> {
                 }) {
                     self.errors.push(
                         "a Tensor's shape is part of its type, so every extent has to be known \
-                         at compile time; write `Tensor<T, [?, ?]>::uninit([..])` for a shape \
+                         at compile time; write `Tensor<T, [?, ?]>::new([..])` for a shape \
                          that is not"
                             .to_string(),
                     );

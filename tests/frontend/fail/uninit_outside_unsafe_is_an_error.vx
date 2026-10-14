@@ -1,0 +1,20 @@
+//===- uninit_outside_unsafe_is_an_error.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `Tensor<..>::uninit()` outside `unsafe` is an error. Its elements hold whatever the memory
+// held, so the program has to say, with `unsafe`, that it writes each one before reading it.
+
+fn main() -> i32 {
+  // CHECK: Error[E5001] at [[@LINE+1]]:15: `::uninit()` is unsafe and needs an `unsafe` block
+  let mut t = Tensor<f32, [4]>::uninit();
+  t[0] = 1.0;
+  return 0;
+}
+
+// CHECK: 1 error(s) emitted

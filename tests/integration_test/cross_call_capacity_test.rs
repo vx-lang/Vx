@@ -48,12 +48,12 @@ fn the_parallel_frontend_refuses_a_tile_held_across_a_call() {
         "nested.vx",
         r#"
 fn g() -> i32 {
-  let y = Tensor<f32, [1024, 768]>::uninit();
+  let y = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let _sy = transfer(y, Memory::W);
   return 1;
 }
 fn f() -> i32 {
-  let x = Tensor<f32, [1024, 768]>::uninit();
+  let x = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let sx = transfer(x, Memory::W);
   let r = g();
   let _back = transfer(sx, Memory::CPU_DRAM);
@@ -77,12 +77,12 @@ fn the_parallel_frontend_still_admits_sequential_calls() {
         "sequential.vx",
         r#"
 fn g() -> i32 {
-  let y = Tensor<f32, [1024, 768]>::uninit();
+  let y = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let _sy = transfer(y, Memory::W);
   return 1;
 }
 fn f() -> i32 {
-  let x = Tensor<f32, [1024, 768]>::uninit();
+  let x = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let _sx = transfer(x, Memory::W);
   return 2;
 }

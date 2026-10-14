@@ -123,11 +123,6 @@ pub enum DiagnosticCode {
     /// ran and found a violation. Emitted only under `VX_ALLOW_UNVERIFIED`; without it a missing
     /// solver is an error, because silence used to be indistinguishable from success (Vx#374).
     W1031,
-    /// `Tensor<..>::uninit()` called outside an `unsafe` block. Its elements hold whatever the
-    /// memory held before, so reading one before writing it reads data the program never wrote.
-    /// Call it inside `unsafe { .. }` to say that every element is written first, or use `::new()`
-    /// for zeroed storage. A later version makes this an error.
-    W1032,
     /// The loop of a `spawn` region runs on one thread although each pass writes only memory of
     /// its own, so its passes could run at the same time. The warning points at what stops it: a
     /// call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass
@@ -420,7 +415,9 @@ pub enum DiagnosticCode {
     E4013,
 
     // --- Safety Errors (E5xxx) ---
-    /// Unsafe function call outside unsafe block
+    /// Unsafe function call outside unsafe block. `Tensor<..>::uninit()` is one: its elements
+    /// hold whatever the memory held, so the program says with `unsafe` that it writes each one
+    /// before reading it.
     E5001,
     /// Unsafe memory operation outside unsafe block
     E5002,
@@ -562,8 +559,8 @@ pub enum DiagnosticCode {
     /// A `spawn` region on a device hands out a tensor it makes, which the host could not free.
     /// The compiler makes such a tensor before the region instead, in the device's memory, when
     /// the region hands it out as a variable created with `Tensor<..>(..)`, `::new()` or
-    /// `::uninit()`, with no type annotation, a size that uses nothing the region computes, and
-    /// a name nothing outside the region already uses.
+    /// `unsafe { ..::uninit() }`, with no type annotation, a size that uses nothing the region
+    /// computes, and a name nothing outside the region already uses.
     E6030,
     /// A tensor shape that folds to a negative extent, or whose size is more than 2^63 - 1 bytes,
     /// the most an allocation can ask for. The size is known, and it is not one the generated

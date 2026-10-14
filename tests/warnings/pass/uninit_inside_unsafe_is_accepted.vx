@@ -1,8 +1,8 @@
-// No W1032 for `::uninit()` inside `unsafe`, as a statement or as the block's value, nor for
-// `::new()`, whose storage starts at zero. Nor W1010: `::uninit()` is what those `unsafe`
+// `::uninit()` inside `unsafe` is accepted, as a statement or as the block's value, and so is
+// `::new()`, whose storage starts at zero. No W1010 either: `::uninit()` is what those `unsafe`
 // blocks are for. The one warning is that `c` is not used.
 // WARN: Unused variable 'c'
-// NO-WARN: W1032
+// NO-WARN: E5001
 // NO-WARN: W1010
 
 fn main() -> i32 {
