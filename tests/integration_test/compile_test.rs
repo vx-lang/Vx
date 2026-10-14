@@ -1129,6 +1129,7 @@ fn test_frontend_pass_modules() -> Result<(), String> {
     for dir in [
         "tests/frontend/pass/modules_basic",
         "tests/frontend/pass/modules_nested",
+        "tests/frontend/pass/modules_c_function",
     ] {
         run_directory_tests(Path::new(env!("CARGO_MANIFEST_DIR")).join(dir), |path| {
             println!("Running test_frontend_pass_modules on {:?}", path);

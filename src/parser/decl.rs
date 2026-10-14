@@ -1380,7 +1380,19 @@ impl<'a> Parser<'a> {
             } else if self.check(&TokenType::MacroRules) {
                 macros.push(self.parse_macro_def()?);
             } else if self.check(&TokenType::Extern) {
-                externs.extend(self.parse_extern_block()?);
+                let mut at = self.peek().clone();
+                let block = self.parse_extern_block()?;
+                // A C function keeps its name, so a Vx function cannot share it.
+                for e in &block {
+                    if let Some((line, column)) = defined_at.get(&e.name) {
+                        (at.line, at.column) = (e.span.line, e.span.column);
+                        return Err(self.error_at(
+                            &at,
+                            &format!("`{}` is already defined at {line}:{column}", e.name),
+                        ));
+                    }
+                }
+                externs.extend(block);
             } else if self.check(&TokenType::Trait) {
                 let start = self.peek().clone();
                 let t = self.parse_trait_decl()?;
@@ -1426,7 +1438,11 @@ impl<'a> Parser<'a> {
                 let mut f = self.parse_function()?;
                 f.doc_comment = doc_comment;
                 // Vx has no overloading: a second `fn foo` replaced the first without a word.
-                if let Some((line, column)) = defined_at.get(&f.name) {
+                let earlier = defined_at.get(&f.name).copied().or_else(|| {
+                    let e = externs.iter().find(|e: &&ExternDecl| e.name == f.name)?;
+                    Some((e.span.line, e.span.column))
+                });
+                if let Some((line, column)) = earlier {
                     return Err(self.error_at(
                         &start,
                         &format!("`{}` is already defined at {line}:{column}", f.name),

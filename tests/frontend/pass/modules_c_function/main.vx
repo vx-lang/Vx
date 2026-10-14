@@ -1,0 +1,18 @@
+//===- main.vx - Vx Compiler -------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+// This program imports `plus` and `cside`. It sees only `plus`'s `abs`, while `cside` calls C's
+// `abs`. It prints 101 (from `plus`) and 3 (from C).
+// CHECK: 101 3
+import tests::frontend::pass::modules_c_function::plus;
+import tests::frontend::pass::modules_c_function::cside;
+
+fn main() -> i32 {
+  println!("{} {}", abs(1), c_abs(-3));
+  return 0;
+}

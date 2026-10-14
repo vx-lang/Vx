@@ -1,0 +1,29 @@
+//===- function_with_the_name_of_a_c_function.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `std::alloc` declares C's `malloc` in an `extern` block, and `Box::new` calls it. This program
+// also has its own `malloc`. The C function keeps its name, so the program's function gets a new
+// one, and each call reaches the function it names. The program prints 5 and 42.
+//
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s
+// CHECK-DAG: func.func @function_with_the_name_of_a_c_function__malloc(
+// CHECK-DAG: func.func private @malloc(i64) -> !llvm.ptr
+// EXPECT: 5
+// EXPECT: 42
+
+import std::box;
+
+fn malloc(n : i64) -> i64 {
+  return n + 1;
+}
+
+fn main() -> i32 {
+  println!("{}", malloc(4));
+  let b = Box<i32>::new (42);
+  unsafe { println!("{}", *b.ptr); }
+  return 0;
+}
