@@ -239,6 +239,64 @@ pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &T
             {
                 continue;
             }
+            // A method of a generic impl has the block's parameters in scope, which the
+            // parser arranges for a hand-written one. A default arrives here after that,
+            // so it is done again: without it the copied body is checked with `I`
+            // unbound and reports "Method 'next' not found on type I". A method parameter
+            // named like one of the block's is renamed, or `zip<U>` copied into
+            // `impl<I, U> Iterator for Map<I, ..U..>` would make the two `U`s one type.
+            let in_block = |n: &str| block.generics.iter().any(|b| b.name() == n);
+            let taken = |n: &str| in_block(n) || signature.generics.iter().any(|g| g.name() == n);
+            let mut renames = std::collections::HashMap::new();
+            for g in &signature.generics {
+                if in_block(g.name()) {
+                    assert!(
+                        matches!(g, crate::syntax::GenericParam::Type { .. }),
+                        "a const parameter of a trait default is named like one of the impl's"
+                    );
+                    let mut fresh = format!("{}_{}", g.name(), signature.name.as_ref());
+                    while taken(&fresh) {
+                        fresh.push('_');
+                    }
+                    renames.insert(
+                        crate::symbol::Symbol::from(g.name()),
+                        crate::syntax::Type::Generic(fresh.as_str().into(), None),
+                    );
+                }
+            }
+            let mut generics: Vec<crate::syntax::GenericParam> = block.generics.clone();
+            generics.extend(signature.generics.iter().map(|g| {
+                match g {
+                    crate::syntax::GenericParam::Type { name, bounds } => {
+                        crate::syntax::GenericParam::Type {
+                            name: match renames.get(name) {
+                                Some(crate::syntax::Type::Generic(fresh, _)) => fresh.clone(),
+                                _ => name.clone(),
+                            },
+                            bounds: bounds
+                                .iter()
+                                .map(|b| crate::syntax::TraitBound {
+                                    trait_name: b.trait_name.clone(),
+                                    args: b.args.iter().map(|a| a.substitute(&renames)).collect(),
+                                    bindings: b
+                                        .bindings
+                                        .iter()
+                                        .map(|(n, t)| (n.clone(), t.substitute(&renames)))
+                                        .collect(),
+                                })
+                                .collect(),
+                        }
+                    }
+                    other => other.clone(),
+                }
+            }));
+            // Renamed first, because `Self` names the block's own `U`.
+            let signature_type = |t: &crate::syntax::Type| {
+                substitute_self(
+                    &t.substitute(&renames).substitute(&trait_subst),
+                    &block.target_type,
+                )
+            };
             // `Self` in the body too, where an adaptor names its own type: `Map<Self, ..> {..}`,
             // and the trait's own parameters, as the signature gets them: `Option<Item>::None()`.
             let mut self_subst = trait_subst.clone();
@@ -248,20 +306,8 @@ pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &T
                 .clone()
                 .expect("only methods with a default body are collected")
                 .iter()
-                .map(|s| s.substitute(&self_subst))
+                .map(|s| s.substitute(&renames).substitute(&self_subst))
                 .collect();
-            // A method of a generic impl has the block's parameters in scope, which the
-            // parser arranges for a hand-written one. A default arrives here after that,
-            // so it is done again: without it the copied body is checked with `I`
-            // unbound and reports "Method 'next' not found on type I".
-            let own: Vec<&str> = signature.generics.iter().map(|g| g.name()).collect();
-            let mut generics: Vec<crate::syntax::GenericParam> = block
-                .generics
-                .iter()
-                .filter(|g| !own.contains(&g.name()))
-                .cloned()
-                .collect();
-            generics.extend(signature.generics.iter().cloned());
             block.copied_defaults.push(signature.name.clone());
             block.methods.push(crate::syntax::Function {
                 name: signature.name.clone(),
@@ -269,19 +315,11 @@ pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &T
                 params: signature
                     .params
                     .iter()
-                    .map(|(n, t)| {
-                        (
-                            n.clone(),
-                            substitute_self(&t.substitute(&trait_subst), &block.target_type),
-                        )
-                    })
+                    .map(|(n, t)| (n.clone(), signature_type(t)))
                     .collect(),
                 mut_params: signature.mut_params.clone(),
                 topology: crate::syntax::Topology::CPU,
-                return_type: substitute_self(
-                    &signature.return_type.substitute(&trait_subst),
-                    &block.target_type,
-                ),
+                return_type: signature_type(&signature.return_type),
                 requires: Vec::new(),
                 ensures: Vec::new(),
                 where_transfers: Vec::new(),

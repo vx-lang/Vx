@@ -661,6 +661,30 @@ fn kernel_local_scratch_is_not_counted_as_device_traffic() {
     );
 }
 
+/// A placed tile made with `::uninit()` inside `unsafe { .. }`, where it belongs, is the same
+/// tile as one made without it, and is counted the same. Before, the `unsafe` hid it: the region
+/// still said its count was exact, without the tile.
+#[test]
+fn a_placed_tile_made_inside_unsafe_is_counted() {
+    let src = one_pass_kernel(
+        "    let mut ts = unsafe { Tensor<f32, [2, 2], Memory::GPU_HBM>::uninit() };
+    for i in 0..2 {
+      for d in 0..2 {
+        ts[i][d] = ad[i][d];
+        od[i][d] = ts[i][d];
+      }
+    }",
+    );
+    let region = spawn_region(&record_source("region_unsafe_tile", &src), "main");
+    assert!(
+        region.contains(
+            "{\"buffer\": \"ts\", \"space\": \"GPU_HBM\", \"read_bytes\": 16, \
+             \"written_bytes\": 16}"
+        ),
+        "the placed tile is read and written once per element:\n{region}"
+    );
+}
+
 /// The honesty rule, three ways. A region the counter cannot weigh exactly is
 /// reported as absent WITH A REASON -- never as zero, and never partially. A
 /// consumer that cannot tell "uncountable" from "moved nothing" would read a

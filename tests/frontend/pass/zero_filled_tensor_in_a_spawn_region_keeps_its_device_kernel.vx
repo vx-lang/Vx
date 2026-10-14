@@ -1,0 +1,45 @@
+//===- zero_filled_tensor_in_a_spawn_region_keeps_its_device_kernel.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+//
+// CHECK-LABEL: gpu.module @vx_kernels
+// CHECK-NOT: linalg.fill
+// CHECK: gpu.func @vx_npu_kernel_0
+// CHECK: %[[ROW:.*]] = memref.alloca() : memref<4xf32>
+// CHECK: scf.for %[[I:[a-z0-9]+]] =
+// CHECK-NEXT: memref.store %{{.*}}, %[[ROW]][%[[I]]] : memref<4xf32>
+// CHECK: %[[SCRATCH:.*]] = memref.alloc(%{{.*}}) : memref<?xf32>
+// CHECK: scf.for %[[J:[a-z0-9]+]] =
+// CHECK-NEXT: memref.store %{{.*}}, %[[SCRATCH]][%[[J]]] : memref<?xf32>
+// CHECK-NOT: linalg.fill
+//
+// A tensor a `spawn` region makes with `::new()` starts at zero, and the zeroing is a fill. A
+// fill used to keep the whole region off the GPU, as a matmul does on purpose, so the region
+// ran on the host. It is now a loop of stores, which the device kernel holds.
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+
+fn main() -> i32 {
+  let o_h = Tensor<f32, [4, 4]>::new();
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+  let n = 4;
+  spawn on(Topology::GPU) {
+    let row = Tensor<f32, [4]>::new();
+    for i in 0..4 {
+      let scratch = Tensor<f32, [?]>::new([n]);
+      for j in 0..4 {
+        o[i][j] = scratch[j] + row[j];
+      }
+    }
+  }
+  print(o);
+  return 0;
+}

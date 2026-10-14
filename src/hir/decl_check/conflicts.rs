@@ -32,5 +32,20 @@ impl TypeChecker<'_> {
                 None,
             );
         }
+        for dup in &self.env.duplicate_impls {
+            let place = if dup.first == dup.second {
+                format!("twice in '{}'", dup.first)
+            } else {
+                format!("in '{}' and in '{}'", dup.first, dup.second)
+            };
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3049,
+                format!(
+                    "`impl {}` is written {place}; a type has one impl of a trait, so remove one",
+                    dup.what
+                ),
+                None,
+            );
+        }
     }
 }

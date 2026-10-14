@@ -1755,7 +1755,7 @@ impl<'a> TypeChecker<'a> {
         origin_hash: u64,
         resolved_name: &str,
         name: &mut crate::symbol::Symbol,
-        args: &[Expr],
+        args: &mut [Expr],
         arg_types: &[Type],
         explicit_generic_args: &[Type],
         span: &crate::syntax::Span,
@@ -1794,6 +1794,24 @@ impl<'a> TypeChecker<'a> {
         result
     }
 
+    /// A parameter whose type the generic types already fix, `n : i64` or `p : *const T` once
+    /// `T` is known, takes what a call to a plain function takes there: a literal of that type,
+    /// or a `*mut` for a `*const`.
+    fn accepts_like_a_plain_call(
+        &mut self,
+        param_ty: &Type,
+        mapping: &HashMap<crate::symbol::Symbol, Type>,
+        arg: &mut Expr,
+        arg_ty: &Type,
+    ) -> bool {
+        let param_ty = param_ty.substitute(mapping);
+        if param_ty.has_generic_params() {
+            return false;
+        }
+        let arg_ty = self.refine_literal_arg(arg, &param_ty, arg_ty);
+        self.is_assignable(&param_ty, &arg_ty)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn instantiate_generic_function_call_inner(
         &mut self,
@@ -1801,7 +1819,7 @@ impl<'a> TypeChecker<'a> {
         origin_hash: u64,
         resolved_name: &str,
         name: &mut crate::symbol::Symbol,
-        args: &[Expr],
+        args: &mut [Expr],
         arg_types: &[Type],
         explicit_generic_args: &[Type],
         span: &crate::syntax::Span,
@@ -1844,19 +1862,25 @@ impl<'a> TypeChecker<'a> {
             // because no argument bound them.
             let explicit: Vec<crate::symbol::Symbol> = mapping.keys().cloned().collect();
             let mut bound_by: HashMap<crate::symbol::Symbol, usize> = HashMap::new();
-            for (i, _arg) in args.iter().enumerate() {
+            for (i, arg) in args.iter_mut().enumerate() {
                 let arg_ty = arg_types[i].clone();
                 let param_ty = &generic_func.params[i].1;
-                if !self.unify_types(param_ty, &arg_ty, &mut mapping) {
+                if !self.unify_types(param_ty, &arg_ty, &mut mapping)
+                    && !self.accepts_like_a_plain_call(param_ty, &mapping, arg, &arg_ty)
+                {
                     if !self.speculating {
-                        self.errors.push(format!(
-                            "Failed to deduce types for generic function '{}': Expected {}, got {}{}{}",
-                            name,
-                            param_ty,
-                            arg_ty,
-                            Self::const_extent_note(param_ty, &arg_ty),
-                            Self::dim_conflict_note(param_ty, &arg_ty, &mapping, &bound_by, i + 1)
-                        ));
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E3003,
+                            format!(
+                                "Failed to deduce types for generic function '{}': Expected {}, got {}{}{}",
+                                name,
+                                param_ty,
+                                arg_ty,
+                                Self::const_extent_note(param_ty, &arg_ty),
+                                Self::dim_conflict_note(param_ty, &arg_ty, &mapping, &bound_by, i + 1)
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
                     }
                     success = false;
                 } else {
@@ -2153,8 +2177,8 @@ impl<'a> TypeChecker<'a> {
                 ));
             }
             // `unsafe` is where a program says it writes every element of `::uninit()` storage
-            // before reading it.
-            if resolved_name == "Tensor::uninit" && !self.in_unsafe_block && !self.speculating {
+            // before reading it, so the call is what an `unsafe` block around it is for (W1010).
+            if resolved_name == "Tensor::uninit" && self.unsafe_is_missing() {
                 self.errors.warn(
                     crate::diagnostic::DiagnosticCode::W1032,
                     "`::uninit()` storage is not written: reading an element before writing it \

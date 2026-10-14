@@ -411,7 +411,7 @@ inferred from the nesting. This replaces an explicit fill loop:
 let q = Tensor<f32>([[1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.0]]);
 
 // Storage of the same shape and nothing in it -- the shape is written in the type:
-let z = Tensor<f32, [2, 4]>::uninit();
+let z = unsafe { Tensor<f32, [2, 4]>::uninit() };
 ```
 
 The initializer list is the one construction still written the older way, because it supplies

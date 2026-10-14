@@ -1,0 +1,46 @@
+//===- borrow_of_a_struct_tensor_field.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A borrow of a struct's tensor field can be passed to a function, and what the function writes
+// lands in the struct. Printed: the last element of `b` after a generic `fill` wrote 4.0 to it,
+// the sum of `b` read through a shared borrow, and an element of `a` after `fill` wrote 2.0.
+//
+// EXPECT: 4 32 2
+
+struct Pair {
+  a : Tensor<f32, [4]>,
+  b : Tensor<f32, [8]>,
+}
+
+fn fill<const R : i32>(t : &mut Tensor<f32, [R]>, v : f32) -> void {
+  for i in 0..R {
+    t[i] = v;
+  }
+  return;
+}
+
+fn sum(t : &Tensor<f32, [8]>) -> f32 {
+  let mut s = 0.0;
+  for i in 0..8 {
+    s = s + t[i];
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  let mut p = Pair {
+    a: Tensor<f32, [4]>::new(), b: Tensor<f32, [8]>::new()
+  };
+  fill(&mut p.b, 4.0);
+  fill(&mut p.a, 2.0);
+  print(p.b[7]);
+  print!(" ");
+  print(sum(&p.b));
+  print!(" ");
+  print(p.a[3]);
+  return 0;
+}

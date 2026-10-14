@@ -28,12 +28,12 @@ fn main() -> i32 {
   return (widen(narrow(1.5f32)) as i32) - 1;
 }
 
-// NARROW-LABEL: llvm.func @narrow(
+// NARROW-LABEL: llvm.func {{(hidden )?}}@narrow(
 // NARROW-NOT: llvm.fptrunc
 // NARROW: llvm.bitcast %{{.*}} : i16 to bf16
 // NARROW-NEXT: llvm.return
 
-// WIDEN-LABEL: llvm.func @widen(
+// WIDEN-LABEL: llvm.func {{(hidden )?}}@widen(
 // WIDEN-NOT: llvm.fpext
 // WIDEN: llvm.bitcast %{{.*}} : i32 to f32
 // WIDEN-NEXT: llvm.return

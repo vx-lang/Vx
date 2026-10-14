@@ -26,10 +26,10 @@ Memory GPU_HBM {
 }
 
 fn main() -> i32 {
-  let mut a_h = Tensor<f32, [8, 4]>::uninit();
-  let mut b_h = Tensor<f32, [8, 4]>::uninit();
-  let mut c_h = Tensor<f32, [8, 4]>::uninit();
-  let mut o_h = Tensor<f32, [8, 4]>::uninit();
+  let mut a_h = unsafe { Tensor<f32, [8, 4]>::uninit() };
+  let mut b_h = unsafe { Tensor<f32, [8, 4]>::uninit() };
+  let mut c_h = unsafe { Tensor<f32, [8, 4]>::uninit() };
+  let mut o_h = unsafe { Tensor<f32, [8, 4]>::uninit() };
 
   // Values that vary along both axes, so no operand can be dropped without
   // changing the result.

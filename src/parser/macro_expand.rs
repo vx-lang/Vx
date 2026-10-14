@@ -720,9 +720,16 @@ impl<'a> MacroExpander<'a> {
             transcriber_tokens.extend(self.flatten_tt(tt));
         }
 
+        // A capture wider than its `$name` moves the rest of that line right, so `$t to`
+        // with `f16` reads `f16 to`, not `f16to`: (line, columns moved).
+        let mut shift: (usize, isize) = (0, 0);
         let mut j = 0;
         while j < transcriber_tokens.len() {
-            let m_tok = &transcriber_tokens[j];
+            let mut m_tok = transcriber_tokens[j].clone();
+            if m_tok.line != 0 && m_tok.line == shift.0 {
+                m_tok.column = m_tok.column.saturating_add_signed(shift.1);
+            }
+            let m_tok = &m_tok;
             if m_tok.kind == OwnedTokenType::Dollar && j + 1 < transcriber_tokens.len() {
                 let name_tok = &transcriber_tokens[j + 1];
                 if let OwnedTokenType::Identifier(name) = &name_tok.kind {
@@ -748,6 +755,15 @@ impl<'a> MacroExpander<'a> {
                                 }
                             }
                             tokens.push(placed);
+                        }
+                        let one_line = captured.iter().all(|t| t.line == 0)
+                            || captured.iter().all(|t| t.line == anchor.map_or(0, |a| a.0));
+                        if let (true, Some(last)) = (one_line, tokens.last()) {
+                            if m_tok.line != 0 && last.line == m_tok.line {
+                                let name_end = (name_tok.column + name_tok.length) as isize;
+                                let capture_end = (last.column + last.length) as isize;
+                                shift = (m_tok.line, capture_end - name_end);
+                            }
                         }
                         j += 2;
                         continue;

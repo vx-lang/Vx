@@ -2,14 +2,14 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // Enzyme cannot differentiate libm_cosf itself, which reads the float's bits, so the
 // function is marked to be differentiated as the C `cosf`.
-// CHECK-DAG: llvm.func @libm_cosf({{.*}}passthrough = {{\[\[}}"enzyme_math", "cosf"{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_cosf({{.*}}passthrough = {{\[\[}}"enzyme_math", "cosf"{{\]\]}}
 // CHECK-DAG: llvm.intr.fabs(
-// CHECK-DAG: llvm.func @__enzyme_autodiff_grad_test_func(
-// CHECK-LABEL: llvm.func @f32$cos(%arg0: f32) -> f32
-// CHECK-LABEL: llvm.func @f32$abs(%arg0: f32) -> f32
-// CHECK-LABEL: llvm.func @test_func(%arg0: f32) -> f32
+// CHECK-DAG: llvm.func {{(hidden )?}}@__enzyme_autodiff_grad_test_func(
+// CHECK-LABEL: llvm.func {{(hidden )?}}@f32$cos(%arg0: f32) -> f32
+// CHECK-LABEL: llvm.func {{(hidden )?}}@f32$abs(%arg0: f32) -> f32
+// CHECK-LABEL: llvm.func {{(hidden )?}}@test_func(%arg0: f32) -> f32
 // CHECK: llvm.call @f32$cos(%{{.*}}) : {{.*}}
-// CHECK-LABEL: llvm.func @main() -> i32
+// CHECK-LABEL: llvm.func {{(hidden )?}}@main() -> i32
 // CHECK: llvm.call @__enzyme_autodiff_grad_test_func(%{{.*}}, %{{.*}}) : {{.*}}
 // CHECK: llvm.call @f32$abs(%{{.*}}) : {{.*}}
 import core::num;

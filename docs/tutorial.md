@@ -72,7 +72,7 @@ value it touches has to already live in a memory that topology can address — w
 
 ```vx
 fn main() -> i32 {
-    let mut host : Tensor<f32, [4, 4]> = Tensor<f32, [4, 4]>::uninit();
+    let mut host : Tensor<f32, [4, 4]> = unsafe { Tensor<f32, [4, 4]>::uninit() };
     for i in 0..4 {
         for j in 0..4 {
             host[i][j] = 1.0;

@@ -11,6 +11,7 @@
 # The language
 
 - [A tour of Vx](tour.md)
+- [Vx for Rust programmers](for-rust-programmers.md)
 - [Control flow](control-flow.md)
 - [Ownership and borrowing](ownership.md)
 - [Generics and traits](generics.md)
@@ -27,6 +28,7 @@
 
 # Reference
 
+- [Vx in one page](quick-reference.md)
 - [Standard library](stdlib-reference.md)
 - [Diagnostic index](error-index.md)
 
