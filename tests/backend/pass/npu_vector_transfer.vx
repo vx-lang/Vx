@@ -55,6 +55,6 @@ fn main() -> i32 {
 
 // --emit-llvm stops at the LLVM dialect, where the same function is an llvm.func and the
 // buffers are raw allocations rather than memrefs.
-// LLVM-LABEL: llvm.func @test_f32() -> i32
+// LLVM-LABEL: llvm.func {{(hidden )?}}@test_f32() -> i32
 // LLVM: llvm.call @malloc
-// LLVM: llvm.func @main() -> i32
+// LLVM: llvm.func {{(hidden )?}}@main() -> i32

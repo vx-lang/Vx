@@ -1,0 +1,63 @@
+//===- payload_pattern_with_a_value_or_variant.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// Inside a variant's payload, a pattern can be only a name or `_`. A value, as in `Val(3)`, or
+// another variant, as in `Wrap(Inner::A(v))`, is refused (E3050): the compiler does not test
+// it, so `Val(3)` used to be chosen for `Val(7)` too. `Val(x)` and `Val(_)` are accepted.
+
+enum Box2 {
+  Val(i32),
+  Empty,
+}
+
+enum Inner {
+  A(i32),
+  B,
+}
+
+enum Outer {
+  Wrap(Inner),
+  Nothing,
+}
+
+fn by_value(b : Box2) -> i32 {
+  match b {
+    // CHECK-DAG: Error[E3050] at [[@LINE+1]]:5: a payload of `Val` can be matched only by a name or `_`
+    Box2::Val(3) => {
+      return 100;
+    }
+    Box2::Val(x) => {
+      return x;
+    }
+    Box2::Empty => {
+      return 0;
+    }
+  }
+}
+
+fn nested(o : Outer) -> i32 {
+  match o {
+    // CHECK-DAG: Error[E3050] at [[@LINE+1]]:5: a payload of `Wrap` can be matched only by a name or `_`
+    Outer::Wrap(Inner::A(v)) => {
+      return v;
+    }
+    Outer::Wrap(_) => {
+      return 1;
+    }
+    Outer::Nothing => {
+      return 0;
+    }
+  }
+}
+
+fn main() -> i32 {
+  return by_value(Box2::Val(7)) + nested(Outer::Nothing);
+}
+
+// CHECK: 2 error(s) emitted

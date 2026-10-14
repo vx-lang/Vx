@@ -1,0 +1,24 @@
+//===- trait_named_like_an_enum.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A trait is given the name of an enum declared before it. Structs, enums and
+// traits share one set of names, so the second declaration is refused, and the error points
+// at it.
+
+enum Shape {
+  Square, Circle,
+}
+// CHECK: Error at [[@LINE+1]]:1: the type `Shape` is already defined at 14:1
+trait Shape {
+  fn sides(self : &Self) -> i32;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -25,7 +25,8 @@ use std::process::Command;
 
 /// Roomy on purpose. The matrix below measures the peak the checker computes, so every
 /// shape in it has to compile -- a refusal would stop the figure being reported at all
-/// and the case would say nothing about which tiles coexist.
+/// and the case would say nothing about which tiles coexist. `H` holds a tile in a field,
+/// for the case that views one.
 const MACHINE: &str = "\
 Memory CPU_DRAM {}
 Memory W {
@@ -37,6 +38,9 @@ Topology Dev {
   visible: [Memory::W],
   transfer Memory::CPU_DRAM -> Memory::W : 10,
   transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+struct H {
+  t : Tensor<f32, [1024, 768], Memory::W>,
 }
 ";
 
@@ -227,6 +231,73 @@ const CASES: &[Case] = &[
     let bT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
     let b = transfer(bT, Memory::W);
     let _rb = transfer(b, Memory::CPU_DRAM);
+  }
+  let _ra = transfer(a, Memory::CPU_DRAM);
+",
+        tiles: 2,
+    },
+    // A view (a row, a reshape, a field, a view of a view) is memory its owner's tile already
+    // holds, so it adds nothing. W is not readable from the host, so each view is read on Dev.
+    Case {
+        what: "a row of a tile is part of that tile, not a tile of its own",
+        body: "
+  let aT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
+  let a = transfer(aT, Memory::W);
+  spawn on(Topology::Dev) {
+    let r = a[1];
+    let _x = r[0];
+  }
+  let _ra = transfer(a, Memory::CPU_DRAM);
+",
+        tiles: 1,
+    },
+    Case {
+        what: "a reshape of a tile is the same tile",
+        body: "
+  let aT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
+  let a = transfer(aT, Memory::W);
+  spawn on(Topology::Dev) {
+    let f = a.reshape([768, 1024]);
+    let _x = f[0][0];
+  }
+  let _ra = transfer(a, Memory::CPU_DRAM);
+",
+        tiles: 1,
+    },
+    Case {
+        what: "a field that holds a tile, bound to a name, is that tile",
+        body: "
+  let aT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
+  let h = H { t : transfer(aT, Memory::W) };
+  spawn on(Topology::Dev) {
+    let t = h.t;
+    let _x = t[0][0];
+  }
+",
+        tiles: 1,
+    },
+    Case {
+        what: "a view of a view is still part of the first tile",
+        body: "
+  let aT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
+  let a = transfer(aT, Memory::W);
+  spawn on(Topology::Dev) {
+    let r = a[1];
+    let s = r;
+    let _x = s[0];
+  }
+  let _ra = transfer(a, Memory::CPU_DRAM);
+",
+        tiles: 1,
+    },
+    Case {
+        what: "a copy of a tile is a tile of its own",
+        body: "
+  let aT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
+  let a = transfer(aT, Memory::W);
+  spawn on(Topology::Dev) {
+    let c = a.clone();
+    let _x = c[0][0];
   }
   let _ra = transfer(a, Memory::CPU_DRAM);
 ",

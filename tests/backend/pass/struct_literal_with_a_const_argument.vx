@@ -1,0 +1,36 @@
+//===- struct_literal_with_a_const_argument.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A struct literal of a struct with a const generic parameter, `Grid { .. }`, has the type
+// `Grid<4>` that a parameter writes out. Printed: the first cell read through a borrow, then
+// through a copy passed by value.
+//
+// EXPECT: 7 7
+
+struct Grid<const S : i32> {
+  cells : Tensor<f32, [S]>,
+}
+
+fn first(g : &Grid<4>) -> f32 {
+  return g.cells[0];
+}
+
+fn first_of_copy(g : Grid<4>) -> f32 {
+  return g.cells[0];
+}
+
+fn main() -> i32 {
+  let mut cells = Tensor<f32, [4]>::new();
+  cells[0] = 7.0;
+  let g = Grid {
+    cells: cells
+  };
+  print(first(&g));
+  print!(" ");
+  print(first_of_copy(g));
+  return 0;
+}

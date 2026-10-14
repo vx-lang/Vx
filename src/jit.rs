@@ -119,6 +119,15 @@ fn host_target_triple() -> Result<String, String> {
     Ok(triple)
 }
 
+/// The `-mattr` that leaves off the x86 features with which LLVM converts to bf16 through
+/// `vcvtneps2bf16`. That instruction reads a subnormal input as zero and flushes a subnormal
+/// result to zero, and LLVM uses it even where a bf16 is only passed to a function. Without
+/// them it rounds exactly, with integer operations. Nothing for another target.
+pub(crate) fn no_bf16_convert(triple: &str) -> Option<String> {
+    (triple.starts_with("x86_64") || triple.starts_with("i686"))
+        .then(|| "-mattr=-avx512bf16,-avxneconvert".to_string())
+}
+
 /// The Enzyme plugin `opt` should load for this LLVM IR, given `ENZYME_LIB`. Only a program that
 /// uses `grad`, `vjp` or `jvp` calls an `__enzyme_` function, so no other program loads the plugin.
 fn enzyme_plugin_for(llvm_ir: &[u8], enzyme_lib: Option<String>) -> Result<Option<String>, String> {
@@ -392,6 +401,8 @@ pub fn compile_mlir_to_object(
     let triple = host_target_triple()?;
     opt_args.push(format!("-mtriple={triple}"));
     opt_args.push("-mcpu=native".to_string());
+    let mattr = no_bf16_convert(&triple);
+    opt_args.extend(mattr.clone());
 
     let mut passes = format!("default<O{}>", actual_opt_level);
 
@@ -431,6 +442,7 @@ pub fn compile_mlir_to_object(
         "-o",
         &temp_obj,
     ]);
+    llc_cmd.args(&mattr);
     run_cmd(llc_cmd, "llc")?;
     Ok(temp_obj)
 }

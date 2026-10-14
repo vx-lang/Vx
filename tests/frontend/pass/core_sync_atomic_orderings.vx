@@ -13,7 +13,7 @@
 // `cas_release_acquire` shows `compare_exchange` using one ordering that covers both of its
 // orderings: Release on success and Acquire on failure become AcqRel and Acquire.
 //
-// CHECK-LABEL: llvm.func @main()
+// CHECK-LABEL: llvm.func {{(hidden )?}}@main()
 // CHECK-NOT: {{atomic|cmpxchg|fence}}
 // CHECK: llvm.atomicrmw add {{.*}} monotonic : !llvm.ptr, i32
 // CHECK-NOT: {{atomic|cmpxchg|fence}}

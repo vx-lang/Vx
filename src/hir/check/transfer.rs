@@ -2120,6 +2120,7 @@ impl<'a> TypeChecker<'a> {
 
                 let prev_top = self.active_topology.clone();
                 let prev_mem = self.active_memory.clone();
+                let prev_warned = std::mem::take(&mut self.host_reads_warned);
                 self.active_topology = actual_top.clone();
                 self.active_memory = self.transfer_cost_graph.default_memory_for(&actual_top);
 
@@ -2230,6 +2231,7 @@ impl<'a> TypeChecker<'a> {
 
                 self.active_topology = prev_top;
                 self.active_memory = prev_mem;
+                self.host_reads_warned = prev_warned;
 
                 // The result of a device kernel is located ON that device: return
                 // `Pinned<ret_ty, d>` so reading it on another topology re-triggers the USE

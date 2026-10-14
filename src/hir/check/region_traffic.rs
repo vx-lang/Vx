@@ -118,9 +118,20 @@ type Placed = Result<(MemorySpace, u64), String>;
 /// precisely the undercount this stage must never produce. Found by probing, not by review.
 type PlacedMap = std::collections::HashMap<String, Placed>;
 
-/// Names bound inside the region body: `Some` when the binding is placed, `None` when the walk
-/// has determined it is not. A body-local `let` shadows an outer name of the same spelling.
-type Bindings = std::collections::HashMap<String, Option<Placed>>;
+/// What a name bound inside the region body denotes.
+#[derive(Clone)]
+struct Binding {
+    /// `Some` when the binding is placed, `None` when the walk has determined it is not.
+    placed: Option<Placed>,
+    /// The tensors a view may be part of: `g` for `let r = g[1]`, and `g` and `k` for
+    /// `let r = if c { g[0] } else { k[0] }`. Reads through `r` are reads of these. Empty for a
+    /// binding that is not a view.
+    charge_to: Vec<String>,
+}
+
+/// Names bound inside the region body. A body-local `let` shadows an outer name of the same
+/// spelling.
+type Bindings = std::collections::HashMap<String, Binding>;
 
 /// Does this subtree contain any index access at all?
 ///
@@ -242,13 +253,15 @@ impl<'a> TypeChecker<'a> {
     /// then the snapshot of the enclosing scopes.
     fn region_placed(&self, name: &str, outer: &PlacedMap, binds: &Bindings) -> Option<Placed> {
         if let Some(entry) = binds.get(name) {
-            return entry.clone();
+            return entry.placed.clone();
         }
         outer.get(name).cloned()
     }
 
-    /// The placed buffer an index expression ultimately touches, as
-    /// `(name, space, element bytes)`. `Ok(None)` when the base is not a placed buffer.
+    /// The placed buffers an index expression ultimately touches, as
+    /// `(names, space, element bytes)`. `Ok(None)` when the base is not a placed buffer. There
+    /// is more than one name only for a view that may be part of several tensors; one run
+    /// touches just one of them, so a caller that books all of them marks the count inexact.
     ///
     /// `a[i][d]` nests: the outer `IndexAccess`'s base is another `IndexAccess`. Peeling to
     /// the identifier is what makes a rank-2 access ONE touch rather than two.
@@ -257,7 +270,7 @@ impl<'a> TypeChecker<'a> {
         e: &Expr,
         outer: &PlacedMap,
         binds: &Bindings,
-    ) -> Result<Option<(String, MemorySpace, u64)>, String> {
+    ) -> Result<Option<(Vec<String>, MemorySpace, u64)>, String> {
         let mut cur = e;
         loop {
             match cur {
@@ -281,12 +294,125 @@ impl<'a> TypeChecker<'a> {
                     .to_string(),
             );
         };
-        let name = id.name.as_ref().to_string();
-        match self.region_placed(&name, outer, binds) {
-            Some(Ok((space, elem))) => Ok(Some((name, space, elem))),
+        let reached = id.name.as_ref();
+        // A view (`r` in `let r = g[1]`) is part of its owners' memory, so a read through it
+        // is booked against them. Every other name is booked against itself.
+        let charge = binds
+            .get(reached)
+            .map(|b| b.charge_to.clone())
+            .filter(|names| !names.is_empty())
+            .unwrap_or_else(|| vec![reached.to_string()]);
+
+        match self.region_placed(reached, outer, binds) {
+            Some(Ok((space, elem))) => Ok(Some((charge, space, elem))),
             Some(Err(why)) => Err(why),
             None => Ok(None),
         }
+    }
+
+    /// When `let` makes a view (`let r = g[1]`, `g.reshape(..)`, `h.t`, or an `if` or `match`
+    /// choosing one), the tensors it may be part of; empty when it makes no view. Recorded by the
+    /// checker by the `let`'s position, since a nested block's scope is gone by this walk.
+    fn region_view_owners(&self, l: &LetDeclStmt) -> Vec<String> {
+        let mut owners = self
+            .borrow
+            .view_owners_by_let
+            .get(&l.span)
+            .cloned()
+            .unwrap_or_default();
+        owners.sort();
+        owners.dedup();
+        owners
+    }
+
+    /// The reads a view's own expression makes: its subscripts (`p[0]` in `g[p[0]]`), the
+    /// arguments of `reshape`, and the condition of an `if` or the value a `match` looks at.
+    /// The tensor it views is not read.
+    #[allow(clippy::too_many_arguments)]
+    fn region_view_subscripts(
+        &self,
+        e: &Expr,
+        mult: u64,
+        acc: &mut RegionAcc,
+        exact: &mut bool,
+        outer: &PlacedMap,
+        binds: &mut Bindings,
+    ) -> Result<(), String> {
+        match e {
+            Expr::IndexAccess(ix) => {
+                self.region_expr(&ix.index, mult, acc, exact, outer, binds)?;
+                self.region_view_subscripts(&ix.base, mult, acc, exact, outer, binds)
+            }
+            Expr::MemberAccess(m) => {
+                self.region_view_subscripts(&m.base, mult, acc, exact, outer, binds)
+            }
+            Expr::MethodCall(mc) => {
+                for a in &mc.args {
+                    self.region_expr(a, mult, acc, exact, outer, binds)?;
+                }
+                self.region_view_subscripts(&mc.base, mult, acc, exact, outer, binds)
+            }
+            // The condition runs every time; each arm's value is a view.
+            Expr::If(ifx) => {
+                self.region_expr(&ifx.cond, mult, acc, exact, outer, binds)?;
+                let arms = [
+                    &ifx.then_block[..],
+                    ifx.else_block.as_deref().unwrap_or(&[]),
+                ];
+                self.region_view_arms(&arms, mult, acc, exact, outer, binds)
+            }
+            Expr::Match(m) => {
+                self.region_expr(&m.expr, mult, acc, exact, outer, binds)?;
+                let arms: Vec<&[Statement]> = m.arms.iter().map(|a| &a.body[..]).collect();
+                self.region_view_arms(&arms, mult, acc, exact, outer, binds)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The reads in the views an `if` or `match` chooses between. One run takes one arm, so
+    /// each arm is counted on its own and the larger count per buffer is kept, as a runtime
+    /// `if` in `region_expr` does; the count is inexact when the arms differ.
+    #[allow(clippy::too_many_arguments)]
+    fn region_view_arms(
+        &self,
+        arms: &[&[Statement]],
+        mult: u64,
+        acc: &mut RegionAcc,
+        exact: &mut bool,
+        outer: &PlacedMap,
+        binds: &mut Bindings,
+    ) -> Result<(), String> {
+        let mut largest: Option<RegionAcc> = None;
+        for arm in arms {
+            let mut arm_acc = acc.clone();
+            match arm {
+                [] => {}
+                [Statement::ExprStmt(e)] if !e.has_semi => {
+                    self.region_view_subscripts(&e.expr, mult, &mut arm_acc, exact, outer, binds)?
+                }
+                _ => {
+                    return Err(
+                        "an arm that chooses a view runs statements before its value, and this \
+                         counter does not count them"
+                            .to_string(),
+                    )
+                }
+            }
+            largest = Some(match largest {
+                None => arm_acc,
+                Some(prev) => {
+                    if prev != arm_acc {
+                        *exact = false;
+                    }
+                    prev.max_with(&arm_acc)
+                }
+            });
+        }
+        if let Some(largest) = largest {
+            *acc = largest;
+        }
+        Ok(())
     }
 
     /// A bound that folds to an integer, in exact `i64` arithmetic; `None` when it does not.
@@ -412,7 +538,13 @@ impl<'a> TypeChecker<'a> {
         for s in stmts {
             match s {
                 Statement::LetDecl(l) => {
-                    self.region_expr(&l.expr, mult, acc, exact, outer, binds)?;
+                    // Making a view loads nothing; only the reads in its subscripts count.
+                    let owners = self.region_view_owners(l);
+                    if !owners.is_empty() {
+                        self.region_view_subscripts(&l.expr, mult, acc, exact, outer, binds)?;
+                    } else {
+                        self.region_expr(&l.expr, mult, acc, exact, outer, binds)?;
+                    }
                     // Record what this name now denotes, so a later index through it is
                     // attributed to the right space -- and so a scratch tile declared in the
                     // body is remembered as unplaced rather than resolved against an outer
@@ -427,8 +559,12 @@ impl<'a> TypeChecker<'a> {
                     // walk time and a name lookup could hit an OUTER same-name binding, so
                     // the honest verdict is Err -- uncountable, with a reason -- not a guess
                     // in either direction.
-                    let placed = self
-                        .region_binding_placed(&l.expr, outer, binds)
+                    //
+                    // A view is in its tensor's memory.
+                    let placed = owners
+                        .first()
+                        .and_then(|owner| self.region_placed(owner, outer, binds))
+                        .or_else(|| self.region_binding_placed(&l.expr, outer, binds))
                         .or_else(|| {
                             if !Self::init_can_carry_placement(crate::syntax::bare_unsafe_value(
                                 &l.expr,
@@ -474,7 +610,13 @@ impl<'a> TypeChecker<'a> {
                                 ))
                             }
                         });
-                    binds.insert(l.name.as_ref().to_string(), placed);
+                    binds.insert(
+                        l.name.as_ref().to_string(),
+                        Binding {
+                            placed,
+                            charge_to: owners,
+                        },
+                    );
                 }
                 Statement::Return(r) => {
                     if let Some(e) = &r.expr {
@@ -493,7 +635,7 @@ impl<'a> TypeChecker<'a> {
                     // `o` that the program never performs.
                     self.region_expr(&a.rhs, mult, acc, exact, outer, binds)?;
                     self.region_subscripts(&a.lhs, mult, acc, exact, outer, binds)?;
-                    self.region_write(&a.lhs, mult, acc, outer, binds)?;
+                    self.region_write(&a.lhs, mult, acc, outer, binds, exact)?;
                 }
                 Statement::CompoundAssign(c) => {
                     // `x += y` reads the destination, then writes it. Missing the read is the
@@ -506,7 +648,7 @@ impl<'a> TypeChecker<'a> {
                     // subscript is itself a read of a placed buffer.
                     self.region_expr(&c.rhs, mult, acc, exact, outer, binds)?;
                     self.region_expr(&c.lhs, mult, acc, exact, outer, binds)?;
-                    self.region_write(&c.lhs, mult, acc, outer, binds)?;
+                    self.region_write(&c.lhs, mult, acc, outer, binds, exact)?;
                 }
                 Statement::Assert(a) => {
                     self.region_expr(&a.expr, mult, acc, exact, outer, binds)?
@@ -524,7 +666,13 @@ impl<'a> TypeChecker<'a> {
                     // The induction variable is a fresh scalar, and the body's own bindings
                     // must not leak out of the loop.
                     let mut inner = binds.clone();
-                    inner.insert(fl.iter.clone(), None);
+                    inner.insert(
+                        fl.iter.clone(),
+                        Binding {
+                            placed: None,
+                            charge_to: Vec::new(),
+                        },
+                    );
                     self.region_stmts(&fl.body, next, acc, exact, outer, &mut inner, false)?;
                 }
                 Statement::Loop(_) => {
@@ -656,6 +804,7 @@ impl<'a> TypeChecker<'a> {
         acc: &mut RegionAcc,
         outer: &PlacedMap,
         binds: &Bindings,
+        exact: &mut bool,
     ) -> Result<(), String> {
         // A write THROUGH a dereference reaches whatever the reference points at, and this
         // walk cannot follow a reference to its referent. `let q = &mut ad[i][d]; *q = 3.0;`
@@ -672,9 +821,14 @@ impl<'a> TypeChecker<'a> {
         if !matches!(lhs, Expr::IndexAccess(_)) {
             return Ok(());
         }
-        if let Some((name, space, elem)) = self.indexed_buffer(lhs, outer, binds)? {
+        if let Some((names, space, elem)) = self.indexed_buffer(lhs, outer, binds)? {
             let bytes = elem.checked_mul(mult).ok_or_else(overflowed)?;
-            acc.add_written(&name, &space, bytes)?;
+            if names.len() > 1 {
+                *exact = false;
+            }
+            for name in names {
+                acc.add_written(&name, &space, bytes)?;
+            }
         }
         Ok(())
     }
@@ -698,9 +852,14 @@ impl<'a> TypeChecker<'a> {
                     self.region_expr(&inner.index, mult, acc, exact, outer, binds)?;
                     base = &inner.base;
                 }
-                if let Some((name, space, elem)) = self.indexed_buffer(e, outer, binds)? {
+                if let Some((names, space, elem)) = self.indexed_buffer(e, outer, binds)? {
                     let bytes = elem.checked_mul(mult).ok_or_else(overflowed)?;
-                    acc.add_read(&name, &space, bytes)?;
+                    if names.len() > 1 {
+                        *exact = false;
+                    }
+                    for name in names {
+                        acc.add_read(&name, &space, bytes)?;
+                    }
                 } else {
                     // Not a placed buffer, but the base may still contain one
                     // (`scratch[q[i]]` reads q through an unplaced base).
@@ -866,7 +1025,7 @@ impl<'a> TypeChecker<'a> {
                 let placed_names = outer.keys().cloned().chain(
                     binds
                         .iter()
-                        .filter(|(_, v)| v.is_some())
+                        .filter(|(_, v)| v.placed.is_some())
                         .map(|(k, _)| k.clone()),
                 );
                 if mentions_any(other, placed_names) {
@@ -974,7 +1133,7 @@ impl<'a> TypeChecker<'a> {
             .chain(
                 binds
                     .iter()
-                    .filter(|(_, v)| v.is_some())
+                    .filter(|(_, v)| v.placed.is_some())
                     .map(|(k, _)| k.clone()),
             )
             .collect();

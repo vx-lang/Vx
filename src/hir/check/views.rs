@@ -194,8 +194,11 @@ impl<'a> TypeChecker<'a> {
             }
         }
         let Some(view) = self.view_of(expr, ty) else {
+            self.borrow.view_owners_by_let.remove(span);
             return;
         };
+        let owners = view.owners.iter().map(|(owner, _)| owner.clone()).collect();
+        self.borrow.view_owners_by_let.insert(*span, owners);
         if let Some(RefProvenance::Local(depth)) = view.provenance {
             if depth > self.current_scope_depth() {
                 self.report_block_escape(name, span);
