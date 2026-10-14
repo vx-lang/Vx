@@ -24,6 +24,19 @@ fn holds_a_reference(gen: &MeliorGenerator<'_>, name: &crate::symbol::Symbol) ->
     )
 }
 
+/// Whether this name holds a reference to a reference, such as `rr` in `let rr = &mut r`.
+/// Its value is the address of `r`'s slot, so reading `rr` does not load from it.
+fn holds_a_reference_to_a_reference(
+    gen: &MeliorGenerator<'_>,
+    name: &crate::symbol::Symbol,
+) -> bool {
+    matches!(
+        gen.ast_env.get(name),
+        Some(syntax::Type::Borrow { inner, .. } | syntax::Type::Ref(inner, _))
+            if matches!(**inner, syntax::Type::Borrow { .. } | syntax::Type::Ref(..))
+    )
+}
+
 /// The one value of a rank-0 tensor, for an operation on scalars; any other value as it is.
 fn load_rank_zero<'c>(
     gen: &MeliorGenerator<'c>,
@@ -103,7 +116,9 @@ impl<'c> LowerToMelior<'c> for IdentifierExpr {
                     return Ok((load_ref.result(0)?.into(), elem_ty, block));
                 }
             }
-            if ty_str.starts_with("memref<memref<") {
+            if ty_str.starts_with("memref<memref<") && holds_a_reference_to_a_reference(gen, name) {
+                Ok((*val, *ty, block))
+            } else if ty_str.starts_with("memref<memref<") {
                 let inner_ty_str = &ty_str[7..ty_str.len() - 1];
                 let inner_ty = Type::parse(gen.context, inner_ty_str).ok_or_else(|| {
                     crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
@@ -776,6 +791,14 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
 
         // A `&mut` to a mutable local holds that local's scalar memref, not a bare pointer.
         if ptr_ty_str.starts_with("memref<") && !ptr_ty_str.contains('x') {
+            // A slot of a reference variable holds that reference's memref.
+            let inner_ty = if ptr_ty_str.starts_with("memref<memref<") {
+                let elem = &ptr_ty_str[7..ptr_ty_str.len() - 1];
+                Type::parse(gen.context, elem)
+                    .ok_or_else(|| LowerError::ParseType(elem.to_string()))?
+            } else {
+                inner_ty
+            };
             let load_op = OperationBuilder::new("memref.load", gen.loc())
                 .add_operands(&[ptr_val])
                 .add_results(&[inner_ty])

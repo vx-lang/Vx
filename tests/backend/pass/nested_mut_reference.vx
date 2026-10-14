@@ -5,15 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// #278 Defect 2: a *mutable* nested reference (`&mut &mut i32`). `let mut x`
-// makes `x` a `memref<i32>`, so `&mut x` binds `r` to that descriptor; `&mut r`
-// used to `memref.load` (dereferencing `r`) instead of taking its address, and
-// `**rr` segfaulted. `BorrowExpr` now extracts the memref's aligned data pointer
-// and materializes a bare `!llvm.ptr` slot, so `rr` is a real `&mut &mut i32`.
-// Writing `**rr = 10` mutates `x` through the pointer-to-pointer; `x` then prints 10.
-// `r` has to be `let mut` to be borrowed `&mut`, and the AST path then gives the wrong
-// pointer (#936), so this runs on the flat path only.
-// REQUIRES: flat-codegen
+// A reference to a reference variable (`rr : &mut &mut i32`). Writing `**rr = 10`
+// changes `x` through `r`, so `x` prints 10. Both code generators run this file.
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-DAG: func.func private @print_i32(
 // CHECK-LABEL: func.func @main() -> i32

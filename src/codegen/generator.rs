@@ -2329,6 +2329,8 @@ impl<'c> MeliorGenerator<'c> {
             // to a type the checker already computed -- and a redundant annotation then decides
             // which code is generated. The flat path's inference already sees through it.
             Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
+            // A number has the type the checker gave it.
+            Expr::Number(n) => n.ty.clone().map(syntax::Type::Scalar),
             // `let p = &mut x` binds a reference. Recording that is what tells a later read of
             // `p` to hand the reference back rather than load through it; an unannotated binding
             // recorded nothing, so the read could not tell `p` from a scalar local of its own.
