@@ -480,6 +480,10 @@ pub struct TypeChecker<'a> {
     /// statement `match` whose arms yield nothing has no value rather than the function's
     /// return type. Every expression check takes it back to `false` on entry.
     pub(crate) value_unused: bool,
+    /// Set by the outermost minus in front of a number literal: whether the literal is negated
+    /// once the minuses cancel, so that its range check sees `-128` and not `128`. The
+    /// literal's check takes it back to `None`.
+    pub(crate) literal_negated: Option<bool>,
     /// Set while checking the left-hand side of an assignment (plain or compound): a container
     /// index there is a *store* place, so the `v[i]` -> `v.get(i)` read rewrite must not fire.
     pub(crate) checking_assign_lhs: bool,
@@ -544,6 +548,7 @@ impl<'a> TypeChecker<'a> {
             unreadable_reported: Default::default(),
             indexed_name: None,
             value_unused: false,
+            literal_negated: None,
             checking_assign_lhs: false,
             checking_field_base: false,
             next_id: 1,

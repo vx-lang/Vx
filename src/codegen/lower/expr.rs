@@ -3872,6 +3872,7 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
             value: val_str,
             ty: ast_ty_opt,
             span: _,
+            text: _,
         } = self;
         let ty = if let Some(ast_ty) = ast_ty_opt {
             gen.lower_type(&syntax::Type::Scalar(ast_ty.clone()))
@@ -4274,6 +4275,7 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
                 if let Some(syntax::Type::Struct(s, _)) =
                     gen.infer_ast_type(self.elements.first().unwrap_or(&Expr::Number(NumberExpr {
                         value: "0".into(),
+                        text: None,
                         ty: None,
                         span: Span::default(),
                     })))

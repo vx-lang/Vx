@@ -17,6 +17,24 @@ use super::super::*;
 use crate::hir::expr::expected_numeric_elem;
 use std::collections::HashMap;
 
+/// The smallest and largest value an integer type holds, as text for an error message.
+fn integer_range(elem: &ElementType) -> Option<(String, String)> {
+    if *elem == ElementType::USize {
+        return Some(("0".to_string(), i64::MAX.to_string()));
+    }
+    let bits = elem.bits()?;
+    let signed = elem.accepts_integer_literal("-1")?;
+    Some(match (signed, bits) {
+        (true, 128) => (i128::MIN.to_string(), i128::MAX.to_string()),
+        (false, 128) => ("0".to_string(), u128::MAX.to_string()),
+        (true, _) => (
+            (-(1i128 << (bits - 1))).to_string(),
+            ((1i128 << (bits - 1)) - 1).to_string(),
+        ),
+        (false, _) => ("0".to_string(), ((1u128 << bits) - 1).to_string()),
+    })
+}
+
 impl<'a> TypeChecker<'a> {
     /// An enum expression's name read back as a type. The parser re-serializes the turbofish
     /// arguments into the name (`Option<*mut i8>`), so recovering them needs the type parser
@@ -221,9 +239,10 @@ impl<'a> TypeChecker<'a> {
     /// every downstream consumer — the flat lowerer and the AST codegen alike — sees the concrete
     /// type. A suffixed literal already carries its type and is returned unchanged.
     pub(crate) fn check_number_literal(&mut self, n: &mut NumberExpr) -> Type {
+        let negated = self.literal_negated.take().unwrap_or(false);
         if let Some(el) = &n.ty {
             let el = el.clone();
-            self.check_usize_literal(n, &el);
+            self.check_literal_fits(n, &el, negated);
             return Type::Scalar(el);
         }
         let elem = self
@@ -232,26 +251,40 @@ impl<'a> TypeChecker<'a> {
             .and_then(|t| expected_numeric_elem(t, &n.value))
             .unwrap_or_else(|| crate::parser::expr::default_number_elem(&n.value));
         n.ty = Some(elem.clone());
-        self.check_usize_literal(n, &elem);
+        self.check_literal_fits(n, &elem, negated);
         Type::Scalar(elem)
     }
 
-    /// A `usize` never has its top bit set, which is what lets its arithmetic be marked as
-    /// never wrapping, so a literal past the largest `i64` is refused rather than stored.
-    pub(crate) fn check_usize_literal(&mut self, n: &NumberExpr, elem: &ElementType) {
-        if *elem != ElementType::USize
-            || self.speculating
-            || elem.accepts_integer_literal(n.value.as_ref()) != Some(false)
-        {
+    /// Refuse an integer literal that its type cannot hold, such as `0x1FFu8`, rather than
+    /// store its low bits. `negated` says the literal sits under a unary minus, so `-128i8` is
+    /// checked as -128 and not as 128.
+    pub(crate) fn check_literal_fits(&mut self, n: &NumberExpr, elem: &ElementType, negated: bool) {
+        if self.speculating {
             return;
         }
+        // A `usize` under a minus is refused as a negation, so only its size is checked here.
+        let negated = negated && *elem != ElementType::USize;
+        let sign = if negated { "-" } else { "" };
+        let value = format!("{sign}{}", n.value);
+        // The message shows the number as written, `0x1FF`, not the 511 it stands for.
+        let text = format!("{sign}{}", n.text.as_deref().unwrap_or(&n.value));
+        let message = match elem.accepts_integer_literal(&value) {
+            Some(false) => match integer_range(elem) {
+                Some((low, high)) => {
+                    format!("{text} does not fit `{elem}`, which holds {low} up to {high}")
+                }
+                None => format!("{text} does not fit `{elem}`"),
+            },
+            // Both code generators hold an integer constant in 64 bits.
+            Some(true) if n.value.parse::<u64>().is_err() => format!(
+                "{text} needs more than 64 bits, and an integer literal that wide is not \
+                 supported yet"
+            ),
+            _ => return,
+        };
         self.errors.error_with_code(
             crate::diagnostic::DiagnosticCode::E3045,
-            format!(
-                "{} does not fit `usize`, which holds 0 up to {}",
-                n.value,
-                i64::MAX
-            ),
+            message,
             // A number literal has no span of its own: spans take part in comparing types,
             // and a literal is also a tensor dimension.
             None,

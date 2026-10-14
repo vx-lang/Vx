@@ -85,15 +85,27 @@ impl EnumVariantExpr {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone)]
 pub struct NumberExpr {
     pub value: Symbol,
     pub ty: Option<ElementType>,
     pub span: Span,
+    /// The number as the program wrote it, such as `0x1FF`, for an error message. `None` for
+    /// a literal the compiler made. Left out of `==`: a parsed `0xA` and a synthesised `10`
+    /// are the same dimension.
+    pub text: Option<Symbol>,
 }
+
+impl PartialEq for NumberExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value && self.ty == other.ty && self.span == other.span
+    }
+}
+
 impl NumberExpr {
     pub fn new(value: String, ty: Option<ElementType>, span: Span) -> Self {
         Self {
+            text: None,
             value: value.into(),
             ty,
             span,
@@ -1469,6 +1481,7 @@ impl Expr {
                         if val_str.parse::<f64>().is_ok() {
                             return Expr::Number(syntax::NumberExpr {
                                 value: val_str.to_string().into(),
+                                text: None,
                                 ty: None,
                                 span: id.span,
                             });

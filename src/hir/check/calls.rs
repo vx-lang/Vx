@@ -233,11 +233,12 @@ impl<'a> TypeChecker<'a> {
         param_ty: &Type,
         arg_ty: &Type,
     ) -> Type {
+        let negated = crate::hir::expr::literal_is_negated(arg);
         if let Some(n) = crate::hir::expr::numeric_literal_mut(arg) {
             if let Some(elem) = expected_numeric_elem(param_ty, &n.value) {
                 n.ty = Some(elem.clone());
                 let n = n.clone();
-                self.check_usize_literal(&n, &elem);
+                self.check_literal_fits(&n, &elem, negated);
                 return Type::Scalar(elem);
             }
         }
@@ -1406,6 +1407,7 @@ impl<'a> TypeChecker<'a> {
             };
             **expr = Expr::Number(NumberExpr {
                 value: value.into(),
+                text: None,
                 ty: None,
                 span: Span::default(),
             });
@@ -3740,6 +3742,7 @@ impl<'a> TypeChecker<'a> {
                     let mut new_dims = vec![
                         Dim::Static(Expr::Number(NumberExpr {
                             value: "0".into(),
+                            text: None,
                             ty: Some(ElementType::I32),
                             span: Span::default()
                         }));

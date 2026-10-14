@@ -1,0 +1,16 @@
+//===- number_literal_prefix_with_no_digits.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `0x` on its own is not a number. The `_` separators do not count as digits either.
+
+fn main() -> i32 {
+  // CHECK: '0x_' needs at least one digit after '0x'
+  let a : i32 = 0x_;
+  return a;
+}
