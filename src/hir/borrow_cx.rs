@@ -39,6 +39,10 @@ pub(crate) struct BorrowCx {
     /// Provenance of each reference-typed *local* binding (#243): does it root in caller memory
     /// (`External`) or a function-local slot (`Local`)? Reset per function.
     pub(crate) ref_provenance: HashMap<Symbol, RefProvenance>,
+    /// For each local that holds a `&mut` to something that can hold a reference: where a
+    /// write through it lands. `Local(depth)` is the block of the variable it points at, and
+    /// `External` is memory the caller owns. Reset per function.
+    pub(crate) store_targets: HashMap<Symbol, RefProvenance>,
     /// Parameters (name -> declared type) of the function currently being checked (#243). Reset per
     /// function; lets the return-escape analysis tell a caller-owned reference parameter apart from a
     /// local binding of the same reference type.
@@ -52,6 +56,9 @@ pub(crate) struct BorrowCx {
     pub(crate) drops: crate::hir::check::drops::DropFrames,
     /// What each view variable (`let r = q[i]`) borrows. Reset per function.
     pub(crate) views: HashMap<Symbol, crate::hir::check::views::View>,
+    /// The tensors each view-making `let` may be part of, keyed by the `let`'s position. The
+    /// traffic count reads it after the `let`'s scope has closed.
+    pub(crate) view_owners_by_let: HashMap<crate::syntax::Span, Vec<String>>,
 }
 
 /// What the borrow checker needs to know about a block to decide when a borrow made in or
@@ -84,9 +91,11 @@ impl Default for BorrowCx {
             moved_vars: vec![HashSet::new()],
             mutable_vars: vec![HashSet::new()],
             ref_provenance: HashMap::new(),
+            store_targets: HashMap::new(),
             current_params: HashMap::new(),
             loop_exits: Vec::new(),
             views: HashMap::new(),
+            view_owners_by_let: HashMap::new(),
             borrowers_ever: HashMap::new(),
             drops: Default::default(),
         }

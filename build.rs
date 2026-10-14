@@ -36,6 +36,9 @@ use std::process::Command;
 ///
 /// Set VX_DISABLE_CUDA to build the host shim on a machine that has CUDA.
 fn cuda_root() -> Option<(PathBuf, PathBuf)> {
+    for var in ["VX_DISABLE_CUDA", "CUDA_HOME", "CUDA_PATH"] {
+        println!("cargo:rerun-if-env-changed={}", var);
+    }
     if env::var_os("VX_DISABLE_CUDA").is_some() {
         return None;
     }
@@ -489,14 +492,9 @@ fn main() {
             clang_shared_cmd.arg(format!("-I{}/include", root.display()));
             clang_shared_cmd.arg(format!("-L{}", libdir.display()));
             clang_shared_cmd.arg(format!("-Wl,-rpath,{}", libdir.display()));
-            // `-lcuda` is the driver API, for loading a device image the
-            // compiler emitted (#251). It is linked from the toolkit's stubs
-            // and resolved at run time against the real driver -- which is why
-            // the stub directory is on -L and deliberately not on the rpath: an
-            // rpath to it would find the stub first, and the stub's entry
-            // points do nothing.
-            clang_shared_cmd.arg(format!("-L{}/stubs", libdir.display()));
-            clang_shared_cmd.args(["-lcudart", "-lcublas", "-lcuda"]);
+            // No `-lcuda`: the driver API comes from libcuda.so.1 through dlopen,
+            // because only a driver installs that library.
+            clang_shared_cmd.args(["-lcudart", "-lcublas", "-ldl"]);
         }
 
         let status = clang_shared_cmd

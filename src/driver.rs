@@ -1886,6 +1886,8 @@ fn get_optimization_pipeline(
 
     if opt_level > 0 || llvm_lower {
         passes.push("convert-vx-to-standard".to_string());
+        // Before any optimization, so none can remove or move a division before it is checked.
+        passes.push("vx-check-integer-division".to_string());
         // Before linalg is lowered, while each reduce is still one `linalg.generic`.
         passes.push("vx-reorderable-reductions".to_string());
     }
@@ -1893,8 +1895,9 @@ fn get_optimization_pipeline(
     if opt_level > 0 && !disable_mlir_optimizations {
         // Inlining puts each `mlir!` block in its caller, and lowering linalg to affine loops
         // lets the affine passes below fuse the library's linalg code with what is around it.
-        // Fusion and tiling run only where no two buffers can alias; see the pass.
-        passes.push("inline".to_string());
+        // Fusion and tiling run only where no two buffers can alias; see the pass. Only small
+        // functions are inlined, so deeply nested calls do not multiply the code.
+        passes.push("vx-inline".to_string());
         passes.push("canonicalize".to_string());
         passes.push("cse".to_string());
         passes.push(
@@ -1907,6 +1910,10 @@ fn get_optimization_pipeline(
     }
 
     if llvm_lower {
+        // A conversion to bf16 becomes integer operations that round exactly. Left to LLVM, an
+        // x86 CPU with AVX512-BF16 converts with `vcvtneps2bf16`, which flushes a subnormal to
+        // zero.
+        passes.push("arith-expand{include-bf16=true}".to_string());
         passes.push("vx-to-llvm".to_string());
         passes.push("func.func(convert-linalg-to-loops,lower-affine)".to_string());
         passes.push("convert-scf-to-cf".to_string());

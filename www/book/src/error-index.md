@@ -14,10 +14,10 @@ the test suite has one, a program that triggers it.
 
 ## Contents
 
-- [Warnings](#warnings) — `W1001`–`W1033` (25 codes)
+- [Warnings](#warnings) — `W1001`–`W1034` (26 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3049` (48 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3050` (49 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4013` (13 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6031` (31 codes)
@@ -55,6 +55,7 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1031`](/errors/W1031/) | A proof obligation could not be discharged because no SMT solver was available, so the property is **unverified** rather than proved. Distinct from W1027, which means the solver ran and found a violation. Emitted only under `VX_ALLOW_UNVERIFIED`; without it a missing solver is an error, because silence used to be indistinguishable from success (Vx#374). |
 | [`W1032`](/errors/W1032/) | `Tensor<..>::uninit()` called outside an `unsafe` block. Its elements hold whatever the memory held before, so reading one before writing it reads data the program never wrote. Call it inside `unsafe { .. }` to say that every element is written first, or use `::new()` for zeroed storage. A later version makes this an error. |
 | [`W1033`](/errors/W1033/) | The loop of a `spawn` region runs on one thread although each pass writes only memory of its own, so its passes could run at the same time. The warning points at what stops it: a call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass writes, bounds not known when compiling, and the like. |
+| [`W1034`](/errors/W1034/) | Code on the built-in `Topology::GPU` uses a tensor that lives in host memory (`CPU_DRAM`). The built-in GPU lists host memory as visible, so this compiles. A matmul sent to cuBLAS has its operands copied to the device, but a kernel the compiler generates is given the host pointer as it is, and what it does with it depends on the driver: it may reach host memory over the link, one access at a time, or fault. Transfer the tensor to `Memory::GPU_HBM` before the region. Reported once per tensor per region. A later version may make this an error. |
 
 ## Parser Errors
 
@@ -144,6 +145,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3047`](/errors/E3047/) | A `reshape` call the compiler cannot check: the new shape has a different number of elements than the tensor (without `PadMode::Pad` or `PadMode::Trim`), a size is not known while compiling, or the arguments are not a shape such as `[4, 4]` and an optional `PadMode`. |
 | [`E3048`](/errors/E3048/) | An `if` with no `else` whose value is used, as in `let u = if c { .. };`. When the condition is false there is no branch to give a value. Add an `else`, or use the `if` as a statement. |
 | [`E3049`](/errors/E3049/) | Two impls of the same trait for the same type: `impl Describe for Point` written twice, in one module or in two. A type has one impl of a trait, so a call could not choose between them. Remove one. |
+| [`E3050`](/errors/E3050/) | A pattern inside a variant's payload that is not a name or `_`, such as the `3` in `Val(3)` or the `Inner::A(v)` in `Wrap(Inner::A(v))`. The compiler does not test such a pattern when it chooses an arm, so the arm would be taken for any payload. Bind the payload to a name and test it in the arm, with an `if` or another `match`. |
 
 ## Borrow/Ownership Errors
 
@@ -238,4 +240,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-149 diagnostics.
+151 diagnostics.

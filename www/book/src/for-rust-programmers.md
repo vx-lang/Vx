@@ -14,9 +14,9 @@ lists what to change. Each item shows the Rust form and the Vx form.
 
 - **The return type is always written.** `fn log(x : i32)` is `fn log(x : i32) -> void`, and
   `main` returns `i32`: `fn main() -> i32 { .. return 0; }`.
-- **`self` has a type, and it names the impl's type.** `fn get(&self)` is
-  `fn get(self : &Point)`, and `&mut self` is `self : &mut Point`. Inside a trait declaration,
-  write `self : &Self`. Inside an impl, `Self` does not work yet, so write the type's name.
+- **`self` has a type.** `fn get(&self)` is `fn get(self : &Self)`, `&mut self` is
+  `self : &mut Self`, and `self` is `self : Self`. The type's own name works too:
+  `self : &Point`.
 - **Closure parameters have types.** `|x| x + 1` is `| x : i64 | x + 1`.
 - **No `impl Trait` parameters.** `fn show(g : &impl Area)` is `fn show<T : Area>(g : &T)`.
 

@@ -714,6 +714,29 @@ fn deref_pointee_type(ty: &syntax::Type) -> Option<syntax::Type> {
     }
 }
 
+/// What `*r` reads or writes through. A reference local, `let r = &mut x`, is bound to `x`'s own
+/// slot, a scalar memref, and has no slot of its own (it is not in `allocs`). Lowered as a value,
+/// `r` would be loaded from `x`'s slot, and `*r` would then use `x`'s value as an address.
+pub(crate) fn deref_target<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    expr: &Expr,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    if let Expr::Identifier(id) = expr {
+        if let Some((val, ty)) = gen.env.get(&*id.name).copied() {
+            let ty_str = ty.to_string();
+            if !gen.allocs.contains(&*id.name)
+                && ty_str.starts_with("memref<")
+                && !ty_str.contains('x')
+                && !ty_str.starts_with("memref<memref<")
+            {
+                return Ok((val, ty, block));
+            }
+        }
+    }
+    gen.generate_expr(expr, block)
+}
+
 impl<'c> LowerToMelior<'c> for DereferenceExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
@@ -721,7 +744,7 @@ impl<'c> LowerToMelior<'c> for DereferenceExpr {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        let (ptr_val, ptr_ty, block) = gen.generate_expr(&self.expr, block)?;
+        let (ptr_val, ptr_ty, block) = deref_target(gen, &self.expr, block)?;
         let ptr_ty_str = ptr_ty.to_string();
 
         // The pointee (loaded) type: the checker-set `self.ty` when present; else the pointee recovered
@@ -2596,11 +2619,9 @@ fn retype_tensor_reference<'c>(
         desc = move_view_pointer(gen, block, desc, src_ty, desc_ty)?;
     }
     if desc_ty != dst_ty {
-        let cast = OperationBuilder::new("memref.cast", gen.loc())
-            .add_operands(&[desc])
-            .add_results(&[dst_ty])
-            .build()?;
-        desc = block.append_operation(cast).result(0)?.into();
+        // Through a space cast when the parameter names a memory: `&mut d` of a placed local
+        // into `&mut Tensor<f32, [1024], Memory::HBM>`.
+        desc = super::cast_memref(gen, block, desc, desc_ty, dst_ty)?;
     }
     let slot: Value = block
         .append_operation(
@@ -3906,7 +3927,24 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
     ) -> Self::Output {
         // Read before the scrutinee is generated, which may set it for its own operands.
         let outer_expected = gen.expected_type;
-        let (match_val, match_ty, block) = gen.generate_expr(&self.expr, block)?;
+        let (mut match_val, mut match_ty, block) = gen.generate_expr(&self.expr, block)?;
+        // `match self` with `self : &Op`: the scrutinee is a pointer, and the arms read the
+        // tag out of the enum it points at.
+        if match_ty == gen.ptr_ty {
+            if let Some(syntax::Type::Borrow { inner, .. }) = gen.infer_ast_type(&self.expr) {
+                let enum_ty = gen.lower_type(&inner)?;
+                match_val = block
+                    .append_operation(
+                        OperationBuilder::new("llvm.load", gen.loc())
+                            .add_operands(&[match_val])
+                            .add_results(&[enum_ty])
+                            .build()?,
+                    )
+                    .result(0)?
+                    .into();
+                match_ty = enum_ty;
+            }
+        }
 
         // The match yields a value exactly when an arm ends in a tail expression -- the same
         // rule the checker uses to type it. The merge block then takes that value as a block

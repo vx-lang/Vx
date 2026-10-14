@@ -854,7 +854,8 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             // assignment fell through to the no-op tail below and was **silently dropped** (`Box`'s
             // `*p = val` never wrote, so a read-back saw uninitialized memory). The store type comes
             // from the RHS value, so there's no pointee-type guesswork. (#242)
-            let (ptr_val, ptr_ty, new_b) = gen.generate_expr(d.expr.as_ref(), block)?;
+            let (ptr_val, ptr_ty, new_b) =
+                crate::codegen::lower::expr::deref_target(gen, d.expr.as_ref(), block)?;
             // `*t = v` with `t : &mut Tensor<..>`: the new tensor's elements are copied into the
             // tensor `t` refers to.
             if matches!(

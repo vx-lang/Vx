@@ -691,6 +691,28 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// E3050: a pattern inside a variant's payload other than a name or `_`. Neither code
+    /// generator tests it, so `Val(3)` was taken for every `Val`.
+    fn refuse_payload_subpattern(&mut self, pattern: &Pattern, span: &Span) {
+        let Pattern::EnumVariant(_, variant, Some(parts)) = pattern else {
+            return;
+        };
+        let refutable = parts
+            .iter()
+            .any(|p| !matches!(p, Pattern::Identifier(_) | Pattern::Wildcard));
+        if refutable && !self.speculating {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3050,
+                format!(
+                    "a payload of `{variant}` can be matched only by a name or `_`; a value or \
+                     variant inside it is not tested, so the arm would be taken for any payload. \
+                     Bind the payload to a name and test it in the arm"
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        }
+    }
+
     pub(crate) fn bind_pattern_variables(&mut self, pattern: &Pattern, expr_ty: &Type) {
         match pattern {
             Pattern::Identifier(name) => {
@@ -713,15 +735,13 @@ impl<'a> TypeChecker<'a> {
                                     }
                                 }
                             }
+                            // A pattern inside a payload is refused (E3050), but its names
+                            // are still bound, so that error is the only one.
                             for (i, p) in payloads.iter().enumerate() {
-                                if let Pattern::Identifier(name) = p {
-                                    if i < payload_types.len() {
-                                        let p_ty = payload_types[i].substitute(&mapping);
-                                        self.insert(name.to_string(), p_ty);
-                                    } else {
-                                        self.insert(name.to_string(), Type::Unknown);
-                                    }
-                                }
+                                let p_ty = payload_types
+                                    .get(i)
+                                    .map_or(Type::Unknown, |t| t.substitute(&mapping));
+                                self.bind_pattern_variables(p, &p_ty);
                             }
                         }
                     }
@@ -786,6 +806,7 @@ impl<'a> TypeChecker<'a> {
                             Some(crate::diagnostic::SourceSpan::from_ast_span(&arm.span)),
                         );
                     }
+                    self.refuse_payload_subpattern(&arm.pattern, &arm.span);
                     self.push_scope();
                     self.check_literal_pattern_range(&arm.pattern, &expr_ty);
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);

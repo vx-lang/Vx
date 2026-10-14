@@ -1,0 +1,37 @@
+//===- mut_reference_to_a_struct_next_to_what_it_only_reads.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+//
+// `p` holds `&mut n` and `&v`. `&mut p` can change `n` but not `v`, so a call may also be
+// given `&v`.
+
+import std::vec;
+
+struct Pair {
+  count : &mut i32,
+  val : &Vec<i32>,
+}
+
+fn add_lengths(p : &mut Pair, v : &Vec<i32>) -> i32 {
+  *p.count = v.len() + p.val.len();
+  return *p.count;
+}
+
+fn main() -> i32 {
+  let mut v : Vec<i32> = Vec<i32>::new();
+  v.push(1);
+  let mut n = 0;
+  let mut p = Pair {
+    count : &mut n, val : &v
+  };
+  // CHECK-NOT: Error
+  // CHECK: {{^}}2{{$}}
+  print(add_lengths(&mut p, &v));
+  print!("\n");
+  return 0;
+}
