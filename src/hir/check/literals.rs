@@ -790,6 +790,16 @@ impl<'a> TypeChecker<'a> {
                                     f_expr,
                                     &f_type,
                                 );
+                                if let (Expr::Identifier(id), Some(holder)) =
+                                    (&*f_expr, self.current_assignment_target.clone())
+                                {
+                                    self.borrow.copy_borrows(
+                                        id.name.as_ref(),
+                                        &holder,
+                                        self.scopes.len(),
+                                    );
+                                    self.reborrow_mut_variable(id.name.as_ref(), &holder);
+                                }
                                 if !self.is_assignable(expected_type, &f_type) && !self.speculating
                                 {
                                     self.errors.push(format!(

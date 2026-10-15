@@ -1451,6 +1451,29 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `holder` gets a copy of the `&mut` in `from`, as in `let b = a` or `H { r : a }`. That
+    /// reborrows `*from`, so `from` cannot be used while `holder` is.
+    pub(crate) fn reborrow_mut_variable(&mut self, from: &str, holder: &str) {
+        if self.speculating
+            || from == holder
+            || !matches!(
+                self.lookup(from),
+                Some((Type::Borrow { is_mut: true, .. }, _))
+            )
+        {
+            return;
+        }
+        self.borrow.record(
+            from,
+            BorrowRecord {
+                is_mut: true,
+                scope_depth: self.scopes.len(),
+                borrower_name: Some(holder.to_string()),
+                path: Vec::new(),
+            },
+        );
+    }
+
     pub(crate) fn check_borrow_expr(&mut self, expr: &mut Expr) -> Type {
         match expr {
             Expr::Borrow(BorrowExpr {
@@ -1506,7 +1529,11 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 let direct = Self::extract_base_and_path(inner);
-                let is_reborrow = direct.is_none();
+                // `&t.v` with `t : &S` borrows through `t`, as `&*rq` does.
+                let through_ref = direct.as_ref().is_some_and(|(name, path)| {
+                    !path.is_empty() && matches!(self.lookup(name), Some((Type::Borrow { .. }, _)))
+                });
+                let is_reborrow = direct.is_none() || through_ref;
                 let place = direct.or_else(|| self.reborrow_base_and_path(inner));
                 if let Some((name, path)) = place {
                     if *is_mut {

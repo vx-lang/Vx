@@ -489,6 +489,16 @@ impl<'a> TypeChecker<'a> {
             if !self.speculating {
                 self.borrow
                     .copy_borrows(from.name.as_ref(), name.as_ref(), self.scopes.len());
+                self.reborrow_mut_variable(from.name.as_ref(), name.as_ref());
+            }
+        }
+        // `let w = h.r` copies a reference out of `h`, so `w` holds what `h` holds.
+        if let Expr::MemberAccess(_) = &*expr {
+            if let Some((root, _)) = Self::extract_base_and_path(expr) {
+                if !self.speculating && Self::is_ref_type(&binding_ty) {
+                    self.borrow
+                        .copy_borrows(&root, name.as_ref(), self.scopes.len());
+                }
             }
         }
 
