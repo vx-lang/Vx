@@ -1,0 +1,30 @@
+//===- gpu_kernel_given_a_host_tensor.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A GPU kernel writes `o`, which was never given to `transfer`, so it is in host
+// memory. A GPU that cannot read host memory must not run the kernel: it runs on
+// the host instead, and the program prints the right answer.
+//
+// EXPECT: 1 2 3 4
+
+fn main() -> i32 {
+  let mut o = Tensor<f32, [4]>::fill(0.0);
+  spawn on(Topology::GPU) {
+    for i in 0..4 {
+      o[i] = (i + 1) as f32;
+    }
+  }
+  print(o[0]);
+  print!(" ");
+  print(o[1]);
+  print!(" ");
+  print(o[2]);
+  print!(" ");
+  print(o[3]);
+  print!("\n");
+  return 0;
+}

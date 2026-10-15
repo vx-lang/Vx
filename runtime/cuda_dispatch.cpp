@@ -319,6 +319,27 @@ bool is_device_ptr(const void *ptr) {
          attrs.type == cudaMemoryTypeManaged;
 }
 
+/// True when a kernel on `device` can read the pointer: device or managed
+/// memory, pinned host memory, or any host memory on a device that reads
+/// pageable memory (HMM, or a coherent host link).
+bool gpu_can_read(const void *ptr, int device) {
+  if (is_device_ptr(ptr)) {
+    return true;
+  }
+  int pageable = 0;
+  if (cudaDeviceGetAttribute(&pageable, cudaDevAttrPageableMemoryAccess,
+                             device) == cudaSuccess &&
+      pageable) {
+    return true;
+  }
+  cudaPointerAttributes attrs;
+  if (cudaPointerGetAttributes(&attrs, ptr) != cudaSuccess) {
+    cudaGetLastError();
+    return false;
+  }
+  return attrs.type == cudaMemoryTypeHost && attrs.devicePointer != nullptr;
+}
+
 cudaDataType_t cuda_dtype(int32_t dtype) {
   switch (dtype) {
   case VX_DTYPE_F32:
@@ -871,6 +892,26 @@ bool run_device_image(const void *payload, size_t payload_size,
               kernel_name);
     }
     return false;
+  }
+
+  /* A tensor the program never moved with `transfer` is ordinary host memory,
+     and the kernel would fault on its address. Run such a kernel on the host,
+     as a machine without a GPU does. */
+  for (int64_t i = 0; i < num_args; ++i) {
+    if (VX_ABI_KIND(arg_tags[i]) != VX_ABI_KIND_MEMREF) {
+      continue;
+    }
+    const void *desc = *(const void **)device_args[i];
+    const void *data = vx_memref_data(desc, (int32_t)VX_ABI_ELEM(arg_tags[i]));
+    if (data && !gpu_can_read(data, device)) {
+      if (verbose()) {
+        fprintf(stderr,
+                "[Vx CUDA] %s: argument %lld at %p is host memory that GPU %d "
+                "cannot read; running on the host\n",
+                kernel_name, (long long)i, data, device);
+      }
+      return false;
+    }
   }
 
   /* The signature is right here in the image, so there is no reason to launch
