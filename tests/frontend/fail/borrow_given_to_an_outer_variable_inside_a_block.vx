@@ -119,8 +119,8 @@ fn a_slice_of_a_vec_kept_past_a_push() -> i32 {
   return *outer.r;
 }
 
-// The same with a plain reference. One made with `&` inside the block is refused for its
-// lifetime (E3004), but one a method returns is not.
+// The same with a plain reference, which a method returns. Its type is written out here and
+// inferred in the next function.
 fn a_reference_returned_by_a_method_kept_past_a_push() -> i32 {
   let mut v = Vec<i32>::new();
   v.push(7);
@@ -132,6 +132,34 @@ fn a_reference_returned_by_a_method_kept_past_a_push() -> i32 {
   // CHECK: Error[E4003] at [[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
   v.push(8);
   return *outer;
+}
+
+fn a_reference_returned_by_a_method_with_its_type_inferred() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(7);
+  let y : i32 = 2;
+  let mut outer = &y;
+  if true {
+    outer = v.as_slice();
+  }
+  // CHECK: Error[E4003] at [[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+  v.push(8);
+  return *outer;
+}
+
+// `&v` made inside the block. With `outer`'s type inferred from a borrow, it is refused first for
+// its lifetime (E3004); with the type written out, as here, only the borrow check sees it.
+fn a_borrow_of_the_vec_kept_past_a_push() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(7);
+  let w = Vec<i32>::new();
+  let mut outer : &Vec<i32> = &w;
+  if true {
+    outer = &v;
+  }
+  // CHECK: Error[E4003] at [[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+  v.push(8);
+  return outer.len();
 }
 
 fn main() -> i32 {
