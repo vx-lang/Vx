@@ -182,7 +182,7 @@ A `Pinned<T, TopologyA>` value can only be accessed from topologies that have vi
 | Active Topology | Default space | Directly visible memory spaces |
 |---|---|---|
 | CPU | CPU_DRAM | CPU_DRAM, NPU_HBM |
-| GPU | GPU_HBM | GPU_HBM, CPU_DRAM |
+| GPU | GPU_HBM | GPU_HBM |
 | NPU[i] | NPU_HBM | NPU_HBM |
 | ANE | NPU_HBM | NPU_HBM, CPU_DRAM |
 | AMX | CPU_DRAM | CPU_DRAM |
@@ -196,6 +196,11 @@ A `Pinned<T, TopologyA>` value can only be accessed from topologies that have vi
 > `transfer(...)` (the `NeedsSeam` verdict); only a space with no path at all is truly
 > `Unreachable`. User-defined `Topology` declarations (see [syntax.md](./syntax.md#31-user-defined-topologies))
 > contribute their own visibility sets and transfer edges to this matrix.
+>
+> The built-in GPU is a discrete GPU, so it cannot read host memory. A tensor goes to
+> `Memory::GPU_HBM` with `transfer` before code on the GPU uses it. A number or a pointer from
+> the host is copied to the GPU, so code on the GPU can use it without a transfer. A machine
+> whose GPU can read host memory lists `CPU_DRAM` in its `visible:` set.
 
 **Example — rejected at compile time:**
 

@@ -1,0 +1,28 @@
+//===- host_tensor_used_on_gpu.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A GPU cannot read host memory, so code on the GPU cannot use a tensor or a
+// borrow that is still in host memory. A number from the host is copied to the
+// GPU, and a tensor given to `transfer` is in GPU memory, so both are allowed.
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn main() -> i32 {
+  let mut h = Tensor<f32, [4]>::new();
+  let k = Tensor<f32, [4]>::new();
+  let g = &k;
+  let scale : f32 = 2.0;
+  let mut d = transfer(Tensor<f32, [4]>::new(), Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    // CHECK: Error[E6003] at [[# @LINE + 1]]:5: 'h' lives in CPU_DRAM but GPU[0] sees only [GPU_HBM]
+    h[0] = 1.0;
+    // CHECK: Error[E6003] at [[# @LINE + 1]]:5: 'g' lives in CPU_DRAM
+    g[1];
+    d[0] = scale;
+  }
+  let back = transfer(d, Memory::CPU_DRAM);
+  return back[0] as i32;
+}

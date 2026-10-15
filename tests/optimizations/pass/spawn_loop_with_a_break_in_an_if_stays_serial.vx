@@ -23,7 +23,7 @@
 // ANSWER: written=10;
 
 fn rows_written() -> f32 {
-  let mut o = Tensor<f32, [64, 1]>::new();
+  let mut o = Tensor<f32, [64, 1], Memory::GPU_HBM>::new();
   spawn on(Topology::GPU) {
     for r in 0..64 {
       if r == 10 {
@@ -32,9 +32,10 @@ fn rows_written() -> f32 {
       o[r][0] = 1.0;
     }
   }
+  let back = transfer(o, Memory::CPU_DRAM);
   let mut written = 0.0;
   for r in 0..64 {
-    written = written + o[r][0];
+    written = written + back[r][0];
   }
   return written;
 }

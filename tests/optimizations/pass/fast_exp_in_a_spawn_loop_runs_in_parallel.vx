@@ -30,16 +30,17 @@
 import core::num;
 
 fn probe() -> f32 {
-  let mut o = Tensor<f32, [256, 1]>::new();
+  let mut o = Tensor<f32, [256, 1], Memory::GPU_HBM>::new();
   spawn on(Topology::GPU) {
     for r in 0..256 {
       let x = o[r][0];
       o[r][0] = x.fast_exp() + x.fast_tanh();
     }
   }
+  let back = transfer(o, Memory::CPU_DRAM);
   let mut sum = 0.0;
   for r in 0..256 {
-    sum = sum + o[r][0];
+    sum = sum + back[r][0];
   }
   return sum;
 }

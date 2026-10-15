@@ -52,11 +52,12 @@
 // PAYLOAD: \00kind=matmul\00roles=a:1,b:2,out:0\00outkind=buffer\00
 
 fn local_gemm() -> f32 {
-  let mut a = unsafe { Tensor<f32, [2, 2]>::uninit() };
-  let mut b = unsafe { Tensor<f32, [2, 2]>::uninit() };
-  let mut c = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  let mut a = unsafe { Tensor<f32, [2, 2], Memory::GPU_HBM>::uninit() };
+  let mut b = unsafe { Tensor<f32, [2, 2], Memory::GPU_HBM>::uninit() };
+  let mut c = unsafe { Tensor<f32, [2, 2], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
     c = a @b;
   }
-  return c[0][0];
+  let back = transfer(c, Memory::CPU_DRAM);
+  return back[0][0];
 }

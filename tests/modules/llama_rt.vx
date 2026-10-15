@@ -30,6 +30,8 @@ extern {
   fn vx_load_weights(filepath : *const i8) -> *mut f32;
   fn vx_advance_ptr_const(ptr : *const f32, offset : i32) -> *const f32;
   fn vx_advance_ptr(ptr : *mut f32, offset : i32) -> *mut f32;
+  // The same offset, for a pointer into GPU memory. Only the address changes.
+  fn vx_advance_ptr_f32(ptr : *mut f32 in Memory::GPU_HBM, offset : i32) -> *mut f32 in Memory::GPU_HBM;
 
   // Move a weight blob into the memory of the topology that will read it, once,
   // and get back a pointer into that memory. The plugin ABI
@@ -45,7 +47,7 @@ extern {
   // memory the host cannot read. These calls are hand-written FFI with no
   // declared space behind them, so they pass 0 -- "unknown", checked nowhere.
   fn vx_plugin_alloc_and_transfer(bytes : i64, host_ptr : *mut f32,
-  topology_id : i32, space_access : i32) -> *mut f32;
+  topology_id : i32, space_access : i32) -> *mut f32 in Memory::GPU_HBM;
 
   // The three calls a disaggregated run is made of (#347).
   //
@@ -63,11 +65,11 @@ extern {
   //
   // `free` returns the allocation to the topology that made it, which is why it
   // takes one: freeing on the wrong device is not a leak but an error.
-  fn vx_plugin_transfer_peer(src_device_ptr : *mut f32, src_topology_id : i32,
-  dst_topology_id : i32, bytes : i64) -> *mut f32;
-  fn vx_plugin_transfer_device_to_host(device_ptr : *mut f32,
+  fn vx_plugin_transfer_peer(src_device_ptr : *mut f32 in Memory::GPU_HBM, src_topology_id : i32,
+  dst_topology_id : i32, bytes : i64) -> *mut f32 in Memory::GPU_HBM;
+  fn vx_plugin_transfer_device_to_host(device_ptr : *mut f32 in Memory::GPU_HBM,
   host_ptr : *mut f32, bytes : i64, topology_id : i32) -> i32;
-  fn vx_plugin_free(device_ptr : *mut f32, topology_id : i32) -> void;
+  fn vx_plugin_free(device_ptr : *mut f32 in Memory::GPU_HBM, topology_id : i32) -> void;
   fn vx_build_tokenizer(filepath : *const i8, vocab_size : i32) -> *mut i8;
   fn vx_decode_token(tokenizer_ptr : *mut i8, prev_token : i32, token : i32)
   -> *mut i8;

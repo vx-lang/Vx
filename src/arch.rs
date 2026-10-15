@@ -753,7 +753,7 @@ fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescrip
     };
     let mut m = HashMap::new();
     m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM]));
-    m.insert(K::GPU, d(GpuHbm, &[GpuHbm, CPUDRAM]));
+    m.insert(K::GPU, d(GpuHbm, &[GpuHbm]));
     m.insert(K::NPU, d(NPUHBM, &[NPUHBM]));
     m.insert(K::ANE, d(NPUHBM, &[NPUHBM, CPUDRAM]));
     m.insert(K::AMX, d(CPUDRAM, &[CPUDRAM]));
@@ -1100,9 +1100,27 @@ impl TransferCostGraph {
             if *var_topology == Topology::CPU && desc.visibility.contains(&MemorySpace::CPUDRAM) {
                 return true;
             }
+            // A GPU kernel launch copies a host number or pointer into the kernel's arguments,
+            // so the GPU does not read host memory to use it.
+            if *var_topology == Topology::CPU
+                && active_kind == crate::syntax::TopologyKind::GPU
+                && Self::passed_by_value(ty)
+            {
+                return true;
+            }
         }
 
         false
+    }
+
+    /// Whether a value of type `ty` is all in its bits, so a copy of it is the value: a number,
+    /// a pointer or a function. A tensor, a borrow or a struct can hold data in memory.
+    fn passed_by_value(ty: &Type) -> bool {
+        match ty {
+            Type::Scalar(_) | Type::Pointer(..) | Type::Simd(..) | Type::Function(..) => true,
+            Type::Verified(inner) => Self::passed_by_value(inner),
+            _ => false,
+        }
     }
 
     /// The memory space where a value of type `ty` owned by `var_topology` lives.
@@ -1617,11 +1635,14 @@ mod tests {
     fn test_accessibility_host_unified_memory() {
         let graph = TransferCostGraph::default();
         let ty = make_tensor();
-        // AMX, ANE, GPU can read variables stored in Host topology (unified-memory
-        // fallback: each has a visibility edge to CPUDRAM).
+        // AMX and ANE can read a host tensor: each has a visibility edge to CPUDRAM.
         assert!(graph.is_type_accessible(&Topology::AMX, &Topology::CPU, &ty));
         assert!(graph.is_type_accessible(&Topology::ANE, &Topology::CPU, &ty));
-        assert!(graph.is_type_accessible(&Topology::gpu(0), &Topology::CPU, &ty));
+        // The built-in GPU is a discrete GPU, which cannot read host memory.
+        assert!(!graph.is_type_accessible(&Topology::gpu(0), &Topology::CPU, &ty));
+        // A host number is copied to the GPU, so the GPU can use it.
+        let scalar = Type::Scalar(syntax::ElementType::F32);
+        assert!(graph.is_type_accessible(&Topology::gpu(0), &Topology::CPU, &scalar));
 
         // ANE defaults to NPUHBM, which Host can see, so Host can read an ANE var.
         assert!(graph.is_type_accessible(&Topology::CPU, &Topology::ANE, &ty));
@@ -1656,10 +1677,10 @@ mod tests {
         assert!(graph.is_type_accessible(&Topology::CPU, &Topology::CPU, &ref_hbm));
         assert!(!graph.is_type_accessible(&make_acc_core(), &Topology::CPU, &ref_hbm)); // AccCore has LocalSRAM
 
-        // DRAM reachable by Host, AMX, GPU, ANE
+        // DRAM reachable by Host, AMX, ANE, but not by the GPU
         assert!(graph.is_type_accessible(&Topology::CPU, &Topology::ANE, &ref_dram));
         assert!(graph.is_type_accessible(&Topology::AMX, &Topology::ANE, &ref_dram));
-        assert!(graph.is_type_accessible(&Topology::gpu(0), &Topology::ANE, &ref_dram));
+        assert!(!graph.is_type_accessible(&Topology::gpu(0), &Topology::ANE, &ref_dram));
         assert!(graph.is_type_accessible(&Topology::ANE, &Topology::CPU, &ref_dram));
         // NPU doesn't directly reach DRAM in this default unified memory model
         assert!(!graph.is_type_accessible(&make_npu(), &Topology::CPU, &ref_dram));
@@ -2112,7 +2133,7 @@ mod tests {
         let gpu = g.descriptor(&syntax::TopologyKind::GPU).unwrap();
         assert_eq!(gpu.default_space, MemorySpace::GpuHbm);
         assert!(gpu.visibility.contains(&MemorySpace::GpuHbm)); // its own device memory
-        assert!(gpu.visibility.contains(&MemorySpace::CPUDRAM)); // unified-memory reach
+        assert!(!gpu.visibility.contains(&MemorySpace::CPUDRAM)); // a discrete GPU
 
         let npu = g.descriptor(&syntax::TopologyKind::NPU).unwrap();
         assert_eq!(npu.default_space, MemorySpace::NPUHBM);

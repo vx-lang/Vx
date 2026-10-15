@@ -9,7 +9,8 @@
 // point for, and at a size past the one a 2x2 example can hide mistakes in
 // (#321). Like gpu_matmul_roles.vx, the expected numbers are the answer and say
 // nothing about which backend produced them: the host loop nest and cuBLAS have
-// to agree.
+// to agree. The GPU sees only GPU memory, so the operands are copied there and
+// the results are copied back.
 //
 // The dtypes matter because the routing splits on them -- cublasSgemm and
 // cublasDgemm are different calls, and a plugin that reads an f64 buffer as f32
@@ -54,10 +55,13 @@ fn main() -> i32 {
     }
   }
 
-  let mut cd = unsafe { Tensor<f64, [2, 2]>::uninit() };
+  let adg = transfer(ad, Memory::GPU_HBM);
+  let bdg = transfer(bd, Memory::GPU_HBM);
+  let mut cdg = unsafe { Tensor<f64, [2, 2], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
-    cd = ad @bd;
+    cdg = adg @bdg;
   }
+  let cd = transfer(cdg, Memory::CPU_DRAM);
 
   print(cd[0][0]);
   print!(" ");
@@ -78,10 +82,13 @@ fn main() -> i32 {
     e[i][i] = 1.0;
   }
 
-  let mut r = unsafe { Tensor<f32, [64, 64]>::uninit() };
+  let eg = transfer(e, Memory::GPU_HBM);
+  let bg = transfer(b, Memory::GPU_HBM);
+  let mut rg = unsafe { Tensor<f32, [64, 64], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
-    r = e @b;
+    rg = eg @bg;
   }
+  let r = transfer(rg, Memory::CPU_DRAM);
 
   print(r[3][5]);
   print!(" ");

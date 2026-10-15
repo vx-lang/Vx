@@ -14,7 +14,7 @@
 // CHECK: launch=64
 
 fn probe() -> f32 {
-  let mut o = Tensor<f32, [64, 4]>::new();
+  let mut o = Tensor<f32, [64, 4], Memory::GPU_HBM>::new();
   spawn on(Topology::GPU) {
     let mut s = unsafe { Tensor<f32, [1, 4]>::uninit() };
     for r in 0..64 {
@@ -22,7 +22,8 @@ fn probe() -> f32 {
       o[r][0] = s[0][0];
     }
   }
-  return o[0][0];
+  let h = transfer(o, Memory::CPU_DRAM);
+  return h[0][0];
 }
 
 fn main() -> i32 {

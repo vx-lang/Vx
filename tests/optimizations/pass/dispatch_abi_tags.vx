@@ -46,8 +46,8 @@
 // CHECK-DAG: llvm.mlir.constant(16909824 : i32)
 // CHECK-DAG: llvm.mlir.constant(132608 : i32)
 
-fn half_kernel(a : Tensor<f16, [?, ?]>) -> Tensor<f16, [?, ?]> {
-  let mut c = unsafe { Tensor<f16, [2, 2]>::uninit() };
+fn half_kernel(a : Tensor<f16, [?, ?], Memory::GPU_HBM>) -> Tensor<f16, [?, ?]> {
+  let mut c = unsafe { Tensor<f16, [2, 2], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
     for i in 0..2 {
       for j in 0..2 {
@@ -55,11 +55,11 @@ fn half_kernel(a : Tensor<f16, [?, ?]>) -> Tensor<f16, [?, ?]> {
       }
     }
   }
-  return c;
+  return transfer(c, Memory::CPU_DRAM);
 }
 
-fn single_kernel(a : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
-  let mut c = unsafe { Tensor<f32, [2, 2]>::uninit() };
+fn single_kernel(a : Tensor<f32, [?, ?], Memory::GPU_HBM>) -> Tensor<f32, [?, ?]> {
+  let mut c = unsafe { Tensor<f32, [2, 2], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
     for i in 0..2 {
       for j in 0..2 {
@@ -67,5 +67,5 @@ fn single_kernel(a : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
       }
     }
   }
-  return c;
+  return transfer(c, Memory::CPU_DRAM);
 }

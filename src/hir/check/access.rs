@@ -299,48 +299,6 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
-    /// W1034: code on the built-in GPU uses `name`, a tensor in host memory. The built-in GPU
-    /// lists host memory as visible, so the use is allowed, but a kernel given a host pointer
-    /// may reach it over the host link or fault, depending on the driver.
-    fn warn_host_tensor_on_gpu(
-        &mut self,
-        name: &crate::symbol::Symbol,
-        ty: &Type,
-        top: &Topology,
-        span: &crate::syntax::Span,
-    ) {
-        if !matches!(self.active_topology, Topology::GPU(_)) {
-            return;
-        }
-        let space = match ty {
-            Type::Tensor(..) => self.value_memory_space(ty, top),
-            Type::Borrow {
-                inner, mem_space, ..
-            } if matches!(**inner, Type::Tensor(..)) => match mem_space {
-                Some(m) => m.clone(),
-                None => self.value_memory_space(inner, top),
-            },
-            _ => return,
-        };
-        if space != crate::syntax::MemorySpace::CPUDRAM
-            || !self.host_reads_warned.insert(name.clone())
-        {
-            return;
-        }
-        self.errors.warn(
-            crate::diagnostic::DiagnosticCode::W1034,
-            format!(
-                "'{}' lives in host memory (CPU_DRAM) but is used on {}; a GPU kernel may reach it \
-                 over the host link or fault, depending on the driver. Transfer it first: \
-                 `transfer({}, Memory::GPU_HBM)`",
-                name,
-                self.active_topology.display_name(),
-                name
-            ),
-            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-        );
-    }
-
     pub(crate) fn check_identifier_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         match expr {
             Expr::Identifier(id) => {
@@ -533,9 +491,6 @@ impl<'a> TypeChecker<'a> {
                                 &ty,
                             );
 
-                        if is_valid && !self.speculating {
-                            self.warn_host_tensor_on_gpu(&name, &ty, &top, &span);
-                        }
                         if !is_valid {
                             let is_pinned_on_host = matches!(ty, Type::Pinned(_, _))
                                 && matches!(self.active_topology, Topology::CPU);

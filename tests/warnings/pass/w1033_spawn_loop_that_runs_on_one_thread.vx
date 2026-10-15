@@ -11,17 +11,17 @@ fn scale(x : f32) on Topology::GPU -> f32 {
 }
 
 fn calls_a_function() -> f32 {
-  let mut o = Tensor<f32, [64, 1]>::new();
+  let mut o = Tensor<f32, [64, 1], Memory::GPU_HBM>::new();
   spawn on(Topology::GPU) {
     for r in 0..64 {
       o[r][0] = scale(1.0);
     }
   }
-  return o[0][0];
+  return transfer(o, Memory::CPU_DRAM)[0][0];
 }
 
 fn holds_inline_mlir() -> f32 {
-  let mut o = Tensor<f32, [64, 1]>::new();
+  let mut o = Tensor<f32, [64, 1], Memory::GPU_HBM>::new();
   spawn on(Topology::GPU) {
     for r in 0..64 {
       let x = o[r][0];
@@ -31,31 +31,31 @@ fn holds_inline_mlir() -> f32 {
       };
     }
   }
-  return o[0][0];
+  return transfer(o, Memory::CPU_DRAM)[0][0];
 }
 
 fn reads_the_next_row() -> f32 {
-  let mut o = Tensor<f32, [64, 1]>::new();
+  let mut o = Tensor<f32, [64, 1], Memory::GPU_HBM>::new();
   spawn on(Topology::GPU) {
     for r in 0..63 {
       o[r][0] = o[r + 1][0];
     }
   }
-  return o[0][0];
+  return transfer(o, Memory::CPU_DRAM)[0][0];
 }
 
 fn bound_known_only_when_running(n : i32) -> f32 {
-  let mut o = Tensor<f32, [64, 1]>::new();
+  let mut o = Tensor<f32, [64, 1], Memory::GPU_HBM>::new();
   spawn on(Topology::GPU) {
     for r in 0..n {
       o[r][0] = 1.0;
     }
   }
-  return o[0][0];
+  return transfer(o, Memory::CPU_DRAM)[0][0];
 }
 
 fn breaks_out_of_the_loop() -> f32 {
-  let mut o = Tensor<f32, [64, 1]>::new();
+  let mut o = Tensor<f32, [64, 1], Memory::GPU_HBM>::new();
   spawn on(Topology::GPU) {
     for r in 0..64 {
       if r == 10 {
@@ -64,7 +64,7 @@ fn breaks_out_of_the_loop() -> f32 {
       o[r][0] = 1.0;
     }
   }
-  return o[0][0];
+  return transfer(o, Memory::CPU_DRAM)[0][0];
 }
 
 fn main() -> i32 {
