@@ -1,0 +1,83 @@
+//===- store_through_a_reference_pointed_at_another_variable.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `rr` first points at `a`, then at `b`. So `*rr = &mut y` gives `b` the borrow of `y`, not
+// `a`. Each function points `rr` at `b` a different way, then breaks a rule about that borrow.
+
+// `b` holds `&mut y` and is used after `y` is read.
+fn pointed_by_a_new_borrow() -> i32 {
+  let mut x = 1;
+  let mut z = 2;
+  let mut y = 3;
+  let mut a = &mut x;
+  let mut b = &mut z;
+  let mut rr = &mut a;
+  rr = &mut b;
+  *rr = &mut y;
+  // CHECK-NOT: Error
+  // CHECK: Error[E4002] at [[# @LINE + 1]]:11: Cannot access 'y' because it is mutably borrowed.
+  let w = y;
+  *b = 4;
+  return w;
+}
+
+fn pointed_by_a_copy_of_another_reference() -> i32 {
+  let mut x = 1;
+  let mut z = 2;
+  let mut y = 3;
+  let mut a = &mut x;
+  let mut b = &mut z;
+  let mut rr = &mut a;
+  let rb = &mut b;
+  rr = rb;
+  *rr = &mut y;
+  // CHECK-NEXT: Error[E4002] at [[# @LINE + 1]]:11: Cannot access 'y' because it is mutably borrowed.
+  let w = y;
+  *b = 4;
+  return w;
+}
+
+fn pointed_through_a_dereference() -> i32 {
+  let mut x = 1;
+  let mut z = 2;
+  let mut y = 3;
+  let mut a = &mut x;
+  let mut b = &mut z;
+  let mut rr = &mut a;
+  let rb = &mut b;
+  rr = &mut *rb;
+  *rr = &mut y;
+  // CHECK-NEXT: Error[E4002] at [[# @LINE + 1]]:11: Cannot access 'y' because it is mutably borrowed.
+  let w = y;
+  *b = 4;
+  return w;
+}
+
+// `rr` reaches `&mut y` through `b`, so `w` would be a second `&mut y`.
+fn second_mut_after_the_store() -> i32 {
+  let mut x = 1;
+  let mut z = 2;
+  let mut y = 3;
+  let mut a = &mut x;
+  let mut b = &mut z;
+  let mut rr = &mut a;
+  let rb = &mut b;
+  rr = rb;
+  *rr = &mut y;
+  // CHECK-NEXT: Error[E4004] at [[# @LINE + 1]]:11: Cannot borrow 'y' because it is already borrowed as mutable.
+  let w = &mut y;
+  *w = 3;
+  **rr = 20;
+  return y;
+}
+
+// CHECK-NEXT: 4 error(s) emitted
+fn main() -> i32 {
+  return 0;
+}
