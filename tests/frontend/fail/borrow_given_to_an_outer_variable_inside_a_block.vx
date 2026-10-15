@@ -119,6 +119,21 @@ fn a_slice_of_a_vec_kept_past_a_push() -> i32 {
   return *outer.r;
 }
 
+// The same with a plain reference. One made with `&` inside the block is refused for its
+// lifetime (E3004), but one a method returns is not.
+fn a_reference_returned_by_a_method_kept_past_a_push() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(7);
+  let y : i32 = 2;
+  let mut outer : &i32 = &y;
+  if true {
+    outer = v.as_slice();
+  }
+  // CHECK: Error[E4003] at [[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+  v.push(8);
+  return *outer;
+}
+
 fn main() -> i32 {
   return 0;
 }
