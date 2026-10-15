@@ -418,7 +418,7 @@ impl<'a> TypeChecker<'a> {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3007,
                         format!(
-                            "If expression branches have incompatible types: {:?} and {:?}",
+                            "If expression branches have incompatible types: {} and {}",
                             then_ty, else_ty
                         ),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(&if_expr.span)),
