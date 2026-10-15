@@ -1,0 +1,87 @@
+//===- reference_to_a_local_returned_through_another_expression.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A value that points at a local cannot be returned, whatever expression it comes out of: a
+// branch of an `if` or a `match`, an `unsafe` block, a `*`, an enum payload, or a closure.
+
+enum E {
+  A,
+  B,
+}
+
+enum Slot {
+  Full(&i32),
+  Empty,
+}
+
+struct V {
+  r : &i32,
+}
+
+fn through_the_else_of_an_if(p : &i32, c : bool) -> V {
+  let local : i32 = 5;
+  // CHECK: Error[E4005] at [[@LINE+1]]:3: this returns a value that points into this function's stack frame
+  return if c {
+    V {
+      r : p
+    }
+  } else {
+    V {
+      r : &local
+    }
+  };
+}
+
+fn through_the_second_arm_of_a_match(p : &i32, e : E) -> V {
+  let local : i32 = 5;
+  // CHECK: Error[E4005] at [[@LINE+1]]:3: this returns a value that points into this function's stack frame
+  return match e {
+    E::A => {
+      V {
+        r : p
+      }
+    }
+    E::B => {
+      V {
+        r : &local
+      }
+    }
+  };
+}
+
+fn from_an_unsafe_block(k : i32) -> V {
+  let local : i32 = k + 4;
+  // CHECK: Error[E4005] at [[@LINE+1]]:3: this returns a value that points into this function's stack frame
+  return unsafe { V { r : &local } };
+}
+
+fn through_a_dereference(k : i32) -> &i32 {
+  let local : i32 = k + 4;
+  let r = &local;
+  let p = &r;
+  // CHECK: Error[E4005] at [[@LINE+1]]:3: this returns a value that points into this function's stack frame
+  return *p;
+}
+
+fn in_an_enum_payload(k : i32) -> Slot {
+  let local : i32 = k + 4;
+  // CHECK: Error[E4005] at [[@LINE+1]]:3: this returns a value that points into this function's stack frame
+  return Slot::Full(&local);
+}
+
+fn from_a_closure_call(k : i32) -> &i32 {
+  let local : i32 = k + 4;
+  let f = || &local;
+  // CHECK: Error[E4005] at [[@LINE+1]]:3: this returns a value that points into this function's stack frame
+  return f();
+}
+
+fn main() -> i32 {
+  return 0;
+}
