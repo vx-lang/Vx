@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-10-14T20:00:00Z</updated>
+  <updated>2026-10-15T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Breaking the borrow checker on purpose</title>
+    <link href="https://vxlang.org/blog/breaking-the-borrow-checker-on-purpose.html"/>
+    <id>https://vxlang.org/blog/breaking-the-borrow-checker-on-purpose.html</id>
+    <updated>2026-10-15T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>In five days, Vx's borrow checker had twelve fixes for programs it accepted and should have refused, and five for correct programs it refused. Then we tested the tests: each part of the checker was broken on purpose, behind a switch, and the tests ran once per break, 108 times. They caught 93. Of the 15 they missed, 11 were rules no test checked, and those tests are now added; three changed code that no Vx program reaches today; and one led to a real bug. A borrow given to a variable declared outside an if, match, unsafe, while or for block was forgotten when the block ended, and a program read freed memory. This method cannot find a rule that was never written, so we then translated 78 of Rust's borrow checker bug reports into Vx. Vx was right on 38, could not express 15, refused 13 correct programs, and accepted programs it should refuse for 12, which led to 14 new issues. Two correct programs that rustc 1.95 still refuses compile in Vx.</summary>
+  </entry>
 
   <entry>
     <title>What the borrow checker let through</title>
