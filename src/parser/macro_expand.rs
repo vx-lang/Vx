@@ -525,7 +525,51 @@ impl<'a> MacroExpander<'a> {
                 }
                 *j_expr.tangent = self.expand_expr(take_expr(&mut j_expr.tangent))?;
             }
-            _ => {}
+            expr::Expr::AsCast(c) => {
+                *c.expr = self.expand_expr(take_expr(&mut c.expr))?;
+            }
+            expr::Expr::Transfer(t) => {
+                *t.expr = self.expand_expr(take_expr(&mut t.expr))?;
+            }
+            expr::Expr::IndirectCall(c) => {
+                *c.callee = self.expand_expr(take_expr(&mut c.callee))?;
+                for arg in &mut c.args {
+                    *arg = self.expand_expr(take_expr(arg))?;
+                }
+            }
+            expr::Expr::Print(p) => {
+                for arg in &mut p.args {
+                    *arg = self.expand_expr(take_expr(arg))?;
+                }
+            }
+            expr::Expr::Println(p) => {
+                for arg in &mut p.args {
+                    *arg = self.expand_expr(take_expr(arg))?;
+                }
+            }
+            expr::Expr::EnumVariant(e) => {
+                for arg in e.payload.iter_mut().flatten() {
+                    *arg = self.expand_expr(take_expr(arg))?;
+                }
+            }
+            expr::Expr::InlineMlir(m) => {
+                for (_, input, _) in &mut m.inputs {
+                    *input = self.expand_expr(take_expr(input))?;
+                }
+                for clobber in &mut m.clobbers {
+                    *clobber = self.expand_expr(take_expr(clobber))?;
+                }
+            }
+            // These hold no expression. A new kind of expression must be listed here or walked
+            // above, so that a macro call inside it is expanded.
+            expr::Expr::Identifier(_)
+            | expr::Expr::Number(_)
+            | expr::Expr::StringLiteral(_)
+            | expr::Expr::TransferPredicate(_)
+            | expr::Expr::MemorySpace(_)
+            | expr::Expr::Topology(_)
+            | expr::Expr::SizeOf(_) => {}
+            expr::Expr::MacroCall(_) => unreachable!("expanded above"),
         }
         Ok(expr)
     }
