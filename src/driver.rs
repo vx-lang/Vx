@@ -48,8 +48,13 @@ pub enum Action {
     EmitInterface,
 }
 
+/// What `vxc --version` prints after the name: the package version, then the commit the
+/// compiler was built from when it was built from a git checkout, as `0.0.3 (f1fb0333)`.
+/// A build from a checkout with uncommitted changes says so: `0.0.3 (f1fb0333-dirty)`.
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), env!("VX_VERSION_SUFFIX"));
+
 #[derive(Parser, Debug, Clone)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version = VERSION, about, long_about = None)]
 pub struct DriverOptions {
     /// Action to perform
     #[arg(short = 'a', long = "action", value_enum, default_value_t = Action::RunJit)]
@@ -2229,5 +2234,27 @@ mod tests {
             Ok(None),
             "unparseable MLIR did not hand the compile back to the sequential driver"
         );
+    }
+
+    #[test]
+    fn version_is_the_package_version_then_the_build_commit() {
+        let package = env!("CARGO_PKG_VERSION");
+        let suffix = VERSION
+            .strip_prefix(package)
+            .expect("the version starts with the package version");
+        // Built from a git checkout: ` (f1fb0333)`, or ` (f1fb0333-dirty)` with uncommitted
+        // changes. Built from an unpacked source archive: nothing after the package version.
+        if !suffix.is_empty() {
+            let inner = suffix
+                .strip_prefix(" (")
+                .and_then(|s| s.strip_suffix(')'))
+                .expect("the commit is in parentheses after a space");
+            let hash = inner.strip_suffix("-dirty").unwrap_or(inner);
+            assert_eq!(hash.len(), 8, "a short hash: {VERSION}");
+            assert!(
+                hash.chars().all(|c| c.is_ascii_hexdigit()),
+                "a hex hash: {VERSION}"
+            );
+        }
     }
 }

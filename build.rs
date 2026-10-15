@@ -67,7 +67,38 @@ fn cuda_root() -> Option<(PathBuf, PathBuf)> {
     None
 }
 
+/// What `vxc --version` prints after the package version: ` (f1fb0333)` for a build from a
+/// git checkout, ` (f1fb0333-dirty)` when that checkout has uncommitted changes, and nothing
+/// outside a checkout or without git on the path.
+///
+/// Two builds from the same package version can produce different output, so the records a
+/// project keeps beside its generated files need the commit to tell them apart.
+fn version_suffix() -> String {
+    let run = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let Some(commit) = run(&["rev-parse", "--short=8", "HEAD"]) else {
+        return String::new();
+    };
+    let dirty = match run(&["status", "--porcelain", "--untracked-files=no"]) {
+        Some(changes) if !changes.is_empty() => "-dirty",
+        _ => "",
+    };
+    format!(" ({commit}{dirty})")
+}
+
 fn main() {
+    // The commit for `vxc --version`. Read again when the checked-out commit or the index
+    // changes, so a build after a commit or a checkout does not report the previous one.
+    println!("cargo:rustc-env=VX_VERSION_SUFFIX={}", version_suffix());
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/index");
+
     // Ensure llvm-config is in PATH because the `melior` and `tblgen` dependencies require it.
     let llvm_configs = [
         "llvm-config-22",
