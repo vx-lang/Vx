@@ -3777,7 +3777,13 @@ struct PromoteBuffersToStackPass
           } else if (auto call = dyn_cast<func::CallOp>(user)) {
             escapes |= takesOwnership(call, use.getOperandNumber());
           } else if (isa<func::ReturnOp, BranchOpInterface,
-                         memref::ExtractAlignedPointerAsIndexOp>(user)) {
+                         RegionBranchTerminatorOpInterface,
+                         memref::ExtractAlignedPointerAsIndexOp>(user) ||
+                     llvm::any_of(user->getResultTypes(), [](Type t) {
+                       return isa<BaseMemRefType>(t);
+                     })) {
+            // A select or a region result can carry the buffer to a dealloc
+            // that this loop does not see.
             escapes = true;
           }
         }
