@@ -30,8 +30,8 @@
 // is the implicit form, which no type in the program mentions.
 //
 // A matmul is exempt because the runtime does have a device implementation for
-// it, and #251 -- general kernel emission -- is what makes this program legal
-// rather than what makes it fail differently.
+// it. So is a region the compiler makes a PTX kernel for. The call to `print`
+// keeps this region off the device, because a kernel cannot call the runtime.
 //
 // RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s
 // CHECK: cannot emit a device kernel
@@ -62,13 +62,15 @@ fn main() -> i32 {
   let q = transfer(q_h, Memory::GPU_HBM);
   let mut o = transfer(o_h, Memory::GPU_HBM);
 
-  // Not a matmul, so nothing routes it; and it loads, so the host fallback
-  // would read GPU_HBM. Both halves are needed -- a region that only yielded its
-  // capture would move no data and is left alone.
+  // Not a matmul, so nothing routes it; it calls `print`, so it gets no PTX
+  // kernel; and it loads, so the host fallback would read GPU_HBM. All three are
+  // needed -- a region that only yielded its capture would move no data and is
+  // left alone.
   spawn on(Topology::GPU) {
     for i in 0..4 {
       for j in 0..4 {
         o[i][j] = q[i][j] * 2.0;
+        print(o[i][j]);
       }
     }
   }

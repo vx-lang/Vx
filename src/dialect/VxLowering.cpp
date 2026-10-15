@@ -1315,9 +1315,10 @@ static LogicalResult diagnoseHostSharedMemoryTransfers(Operation *root) {
 
 /// Reject a placed region the target cannot run and the host cannot either.
 ///
-/// `kernelKindOf` deciding it cannot classify a region is not an error on its
-/// own: routing is an optimisation, and anything unrecognised falls back to the
-/// host. That reasoning holds exactly while the operands are host memory, and
+/// A region runs on the device when it is a matmul the plugin routes
+/// (`kernelKindOf`) or when it gets a device twin (`spawnRunsOnDevice`). Any
+/// other region falls back to the host, which is not an error on its own. That
+/// reasoning holds exactly while the operands are host memory, and
 /// stops the moment one has been transferred into a space declared
 /// `managed: explicit` -- because the fallback then *is* a host read of memory
 /// the declaration says the host cannot read. It is the same access the checker
@@ -1340,6 +1341,8 @@ static LogicalResult diagnoseHostSharedMemoryTransfers(Operation *root) {
 /// question is whether this *program* can execute as written, and one asking
 /// for a kernel the compiler cannot emit for the device it named cannot, on any
 /// machine. Answering it differently per build box is how the fault hid.
+static bool spawnRunsOnDevice(vx::SpawnOp spawn);
+
 static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
   bool failed = false;
   root->walk([&](vx::SpawnOp spawn) {
@@ -1356,7 +1359,7 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
     Region &body = spawn.getBody();
     if (body.empty())
       return;
-    if (!kernelKindOf(body).empty())
+    if (!kernelKindOf(body).empty() || spawnRunsOnDevice(spawn))
       return;
     if (!regionTouchesMemory(body))
       return;
@@ -1481,6 +1484,72 @@ static bool collectDeviceCallees(Operation *op, ModuleOp module, bool inCallee,
     return false;
   Dialect *dialect = op->getDialect();
   return dialect && isDeviceLowerableDialect(dialect->getNamespace());
+}
+
+/// Whether a kernel placed on `topology` gets a device twin: the declared
+/// `arch` when `placed` carries one, the GPU band of `topology_dispatch_id`
+/// when it does not. NPU, AccCore and a declared arch such as `applegpu` reach
+/// their devices through a different backend, so they get no NVVM twin.
+static bool hasDevicePipeline(Operation *placed, int32_t topology) {
+  if (auto arch = placed->getAttrOfType<StringAttr>("arch"))
+    return arch.getValue() == "nvptx64";
+  return topology >= 500 && topology < 600;
+}
+
+/// Whether `op`, in the body of a placed region, can run on the device.
+/// A call or a constant table is added to `callees` when it can come along.
+static bool runsOnDevice(Operation *op, ModuleOp module,
+                         DeviceCallees &callees) {
+  // Rewritten to `gpu.return` and `gpu.barrier` in the device clone (Vx#379).
+  if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp>(op))
+    return true;
+  // A DYNAMIC shared-memory tile cannot become a `.shared` global (those
+  // need a static shape), and leaving the alloca as-is ships a kernel that
+  // faults: measured on an A100 as ILLEGAL_ADDRESS, because the stack slot
+  // the alloca lowers to is then accessed through shared-typed pointers.
+  // Refusing keeps the program on the host path, which computes the right
+  // answer.
+  if (auto alloca = dyn_cast<memref::AllocaOp>(op)) {
+    auto t = dyn_cast<MemRefType>(alloca.getType());
+    auto space =
+        t ? dyn_cast_or_null<IntegerAttr>(t.getMemorySpace()) : nullptr;
+    if (space && space.getInt() == 3 && !t.hasStaticShape())
+      return false;
+  }
+  if (isa<func::CallOp, memref::GetGlobalOp>(op)) {
+    llvm::SmallPtrSet<Operation *, 8> onStack;
+    return collectDeviceCallees(op, module, /*inCallee=*/false, callees,
+                                onStack);
+  }
+  Dialect *dialect = op->getDialect();
+  return dialect && isDeviceLowerableDialect(dialect->getNamespace());
+}
+
+/// Whether the kernel outlined from `spawn` will get a device twin, by the
+/// rules `materializeGpuKernels` applies to it later.
+static bool spawnRunsOnDevice(vx::SpawnOp spawn) {
+  if (!hasDevicePipeline(spawn, spawn.getTopology()))
+    return false;
+  auto module = spawn->getParentOfType<ModuleOp>();
+  DeviceCallees callees;
+  WalkResult r = spawn.getBody().walk<WalkOrder::PreOrder>([&](Operation *op) {
+    // A region that yields a value hands it back through a host slot.
+    if (auto y = dyn_cast<vx::YieldOp>(op); y && y.getNumOperands() > 0)
+      return WalkResult::interrupt();
+    // A fill becomes loops before the device clone is made.
+    if (isa<linalg::FillOp>(op))
+      return WalkResult::skip();
+    // A drop of a tensor the region made becomes a `memref.dealloc`.
+    if (auto drop = dyn_cast<vx::DropOp>(op)) {
+      Operation *def = drop.getBuffer().getDefiningOp();
+      return def && isa<memref::AllocOp>(def) && spawn->isProperAncestor(def)
+                 ? WalkResult::advance()
+                 : WalkResult::interrupt();
+    }
+    return runsOnDevice(op, module, callees) ? WalkResult::advance()
+                                             : WalkResult::interrupt();
+  });
+  return !r.wasInterrupted();
 }
 
 // Turn each cell that holds a buffer into plain values. The AST code generator
@@ -2063,15 +2132,8 @@ struct ConvertVxToStandardPass
       // AST-codegen path (which does not stamp). A declared arch we have no
       // device pipeline for -- `applegpu` reaches its device through the plugin
       // ABI, not NVVM -- is excluded here exactly like NPU/AccCore below.
-      if (auto arch = k->getAttrOfType<StringAttr>("arch")) {
-        if (arch.getValue() != "nvptx64")
-          return;
-      } else if (topo < 500 || topo >= 600) {
-        // The GPU band from `topology_dispatch_id`. NPU and AccCore outline the
-        // same way but reach their devices through a different backend, and
-        // giving them an NVVM twin would be claiming something untrue.
+      if (!hasDevicePipeline(k, topo))
         return;
-      }
       // A kernel that hands back a value writes it into a host stack slot,
       // which a GPU cannot address; the runtime runs it on the host instead.
       if (k->hasAttr("vx.result_slot"))
@@ -2111,38 +2173,7 @@ struct ConvertVxToStandardPass
         fillToDeviceLoops(f);
       bool deviceReady = true;
       k.getBody().walk([&](Operation *op) {
-        // Rewritten to `gpu.return` below, so it is not a foreign dialect here.
-        if (isa<vx::ReturnOp>(op))
-          return WalkResult::advance();
-        // Rewritten to `gpu.barrier` in the device clone below (Vx#379).
-        if (isa<vx::BarrierOp>(op))
-          return WalkResult::advance();
-        // A DYNAMIC shared-memory tile cannot become a `.shared` global (those
-        // need a static shape), and leaving the alloca as-is ships a kernel
-        // that faults: measured on an A100 as ILLEGAL_ADDRESS, because the
-        // stack slot the alloca lowers to is then accessed through
-        // shared-typed pointers. Refusing materialization keeps the program on
-        // the host path, which computes the right answer.
-        if (auto alloca = dyn_cast<memref::AllocaOp>(op)) {
-          auto t = dyn_cast<MemRefType>(alloca.getType());
-          auto space =
-              t ? dyn_cast_or_null<IntegerAttr>(t.getMemorySpace()) : nullptr;
-          if (space && space.getInt() == 3 && !t.hasStaticShape()) {
-            deviceReady = false;
-            return WalkResult::interrupt();
-          }
-        }
-        // A call, or a constant table: brought along when it can be.
-        if (isa<func::CallOp, memref::GetGlobalOp>(op)) {
-          llvm::SmallPtrSet<Operation *, 8> onStack;
-          if (collectDeviceCallees(op, module, /*inCallee=*/false, callees[k],
-                                   onStack))
-            return WalkResult::advance();
-          deviceReady = false;
-          return WalkResult::interrupt();
-        }
-        Dialect *dialect = op->getDialect();
-        if (dialect && isDeviceLowerableDialect(dialect->getNamespace()))
+        if (runsOnDevice(op, module, callees[k]))
           return WalkResult::advance();
         deviceReady = false;
         return WalkResult::interrupt();
