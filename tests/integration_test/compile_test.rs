@@ -977,6 +977,9 @@ fn run_lit_test(path: &Path, force_legacy: bool) -> Result<(), String> {
         hash
     ));
 
+    // A file that names `--legacy-codegen` on one RUN line wants its other RUN lines on the
+    // default path.
+    let names_legacy = run_lines.iter().any(|l| l.contains("--legacy-codegen"));
     for run_line in run_lines {
         let mut cmd = run_line
             .split_once("RUN:")
@@ -988,11 +991,7 @@ fn run_lit_test(path: &Path, force_legacy: bool) -> Result<(), String> {
 
         // `// REQUIRES: flat-codegen` opts a file out: some constructs exist ONLY on the flat
         // path, and forcing legacy there tests a lowering that deliberately does not exist.
-        // Skip a command that already names the flag: clap rejects it twice.
-        if force_legacy
-            && !cmd.contains("--legacy-codegen")
-            && !source.contains("// REQUIRES: flat-codegen")
-        {
+        if force_legacy && !names_legacy && !source.contains("// REQUIRES: flat-codegen") {
             let split = cmd.find('|').unwrap_or(cmd.len());
             let (head, tail) = cmd.split_at(split);
             let mut words = head.split_whitespace();
