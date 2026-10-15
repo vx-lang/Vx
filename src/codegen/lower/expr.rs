@@ -1950,6 +1950,8 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
             .build()?;
         let mut current_struct = block.append_operation(undef_op).result(0)?.into();
 
+        // A field such as `a && b` ends in a new block, and the next field goes there.
+        let mut block = block;
         for (field_name, f_expr) in fields {
             let field_idx = struct_decl
                 .fields
@@ -1961,7 +1963,8 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
             let field_ty = gen.lower_type(&sub_ty)?;
             let prev_expected = gen.expected_type;
             gen.expected_type = Some(field_ty);
-            let (mut field_val, expr_ty, block) = gen.generate_expr(f_expr, block)?;
+            let (mut field_val, expr_ty, next) = gen.generate_expr(f_expr, block)?;
+            block = next;
             gen.expected_type = prev_expected;
 
             if expr_ty != field_ty
