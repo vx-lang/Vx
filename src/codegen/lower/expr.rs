@@ -4467,8 +4467,11 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
+        // An argument such as `a && b` ends in a new block, and the next argument goes there.
+        let mut block = block;
         for arg in &self.args {
-            let (arg_val, arg_ty, block) = gen.generate_expr(arg, block)?;
+            let (arg_val, arg_ty, next) = gen.generate_expr(arg, block)?;
+            block = next;
             if let Some((fn_name, arg_val, arg_ty_str)) =
                 super::pick_scalar_print(gen, block, arg, arg_val, arg_ty)?
             {
@@ -4541,12 +4544,13 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintlnExpr {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         // First, reuse PrintExpr logic for arguments
+        let mut block = block;
         if !self.args.is_empty() {
             let print_expr = syntax::expr::PrintExpr {
                 args: self.args.clone(),
                 span: self.span,
             };
-            print_expr.lower(gen, block)?;
+            block = print_expr.lower(gen, block)?.2;
         }
 
         // Then emit a call to println()

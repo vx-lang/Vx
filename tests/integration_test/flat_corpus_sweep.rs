@@ -182,6 +182,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // A call through a pointer to a `void` function: the flat path declines it ("an indirect
     // callee returning a non-scalar").
     "backend/pass/generic_call_of_a_void_function.vx",
+    // `a && b` in a `print!` argument: the flat path declines it ("a logical operator lowers only
+    // in memory mode"). The file is about the AST path.
+    "frontend/pass/print_argument_with_and_or.vx",
 ];
 
 /// Every `.vx` file under `dir`, recursively, sorted for a stable report.
