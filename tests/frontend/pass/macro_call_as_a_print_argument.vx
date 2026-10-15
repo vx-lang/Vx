@@ -1,0 +1,24 @@
+//===- macro_call_as_a_print_argument.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A macro call can be an argument of `print!` and of `println!`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s
+// CHECK: print 14
+// CHECK-NEXT: println 21
+
+macro_rules times_seven {
+  ($x:expr) => {
+    ($x) * 7
+  };
+}
+
+fn main() -> i32 {
+  print!("print ", times_seven!(2), "\n");
+  println!("println {}", times_seven!(3));
+  return 0;
+}

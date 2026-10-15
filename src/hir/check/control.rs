@@ -372,6 +372,8 @@ impl<'a> TypeChecker<'a> {
         // moved if a branch that reaches the code after the `if` moved it; a branch that
         // returns or breaks does not count.
         let marks_before = self.moved_snapshot();
+        // The same for borrows: the `else` branch does not see what the `then` branch borrowed.
+        let borrows_before = self.borrow.snapshot();
         // The prover's facts follow the paths: the `then` branch knows the condition and the
         // `else` branch its negation, and what a branch learns ends with it.
         let facts_before = self.consteval.constraints.len();
@@ -395,6 +397,8 @@ impl<'a> TypeChecker<'a> {
         }
         let marks_after_then = self.branch_end(&if_expr.then_block);
         self.restore_moved(marks_before.clone());
+        let then_borrows = self.borrow.added_since(&borrows_before);
+        self.borrow.forget(&then_borrows);
         let mut marks_after_else = Some(marks_before.clone());
 
         let mut else_ty = Type::Struct("void".into(), None);
@@ -463,6 +467,7 @@ impl<'a> TypeChecker<'a> {
             (None, None) => marks_before,
         };
         self.restore_moved(joined);
+        self.borrow.add_back(then_borrows);
 
         // If it was comptime evaluated to false, the return type should just be the else block type
         if if_expr.is_comptime {
@@ -841,6 +846,8 @@ impl<'a> TypeChecker<'a> {
                 // Each arm starts from the moves made before the `match`; afterwards a
                 // variable is moved if an arm that reaches the following code moved it.
                 let marks_before = self.moved_snapshot();
+                let borrows_before = self.borrow.snapshot();
+                let mut arm_borrows = Vec::new();
                 let mut joined: Option<Vec<std::collections::HashSet<String>>> = None;
                 // What an arm learns ends with it: the prover does not model the patterns, so
                 // it cannot say which arm the code after the `match` came through.
@@ -849,6 +856,9 @@ impl<'a> TypeChecker<'a> {
                 for arm in arms {
                     self.consteval.constraints.truncate(facts_before);
                     self.restore_moved(marks_before.clone());
+                    let added = self.borrow.added_since(&borrows_before);
+                    self.borrow.forget(&added);
+                    arm_borrows.extend(added);
                     match &arm.pattern {
                         Pattern::Wildcard | Pattern::Identifier(_) => has_wildcard = true,
                         Pattern::EnumVariant(_, variant, _) => covered.push(variant.clone()),
@@ -912,6 +922,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 self.restore_moved(joined.unwrap_or(marks_before));
+                self.borrow.add_back(arm_borrows);
                 self.consteval.constraints.truncate(facts_before);
                 if every_arm_ends {
                     self.consteval

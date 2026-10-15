@@ -1,0 +1,57 @@
+//===- moved_in_one_branch_then_used.vx ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A value moved in any branch of an `if` or a `match` may be moved after it, so using it there
+// is refused. Each function moves `s` in a branch other than the first.
+
+enum E {
+  A,
+  B,
+}
+
+struct S {
+  v : i32,
+}
+
+fn take(s : S) -> i32 {
+  return s.v;
+}
+
+fn moved_in_else(c : bool) -> i32 {
+  let s = S {
+    v : 1
+  };
+  if c {
+    print!(1);
+  } else {
+    take(s);
+  }
+  // CHECK: Error[E4001] at [[@LINE+1]]:15: Use of moved or consumed linear variable: s
+  return take(s);
+}
+
+fn moved_in_second_match_arm(e : E) -> i32 {
+  let s = S {
+    v : 1
+  };
+  match e {
+    E::A => {
+      print!(1);
+    }
+    E::B => {
+      take(s);
+    }
+  }
+  // CHECK: Error[E4001] at [[@LINE+1]]:15: Use of moved or consumed linear variable: s
+  return take(s);
+}
+
+fn main() -> i32 {
+  return 0;
+}
