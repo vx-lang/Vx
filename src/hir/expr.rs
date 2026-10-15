@@ -175,7 +175,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     ret_ty = ty;
                 }
-                self.borrow.restore(saved_borrows);
+                self.restore_borrows_keeping_held(saved_borrows);
                 self.settle_mut_borrow_call(expr, &before, &scopes);
                 // `check_statement` asks this of every other statement.
                 self.check_frame_escape(s);
