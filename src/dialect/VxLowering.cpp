@@ -1483,6 +1483,39 @@ static bool collectDeviceCallees(Operation *op, ModuleOp module, bool inCallee,
   return dialect && isDeviceLowerableDialect(dialect->getNamespace());
 }
 
+// Read a buffer cell once before a `vx.spawn` when the region only reads it.
+// A kernel that captured the cell would read the buffer through a host stack
+// slot, which a GPU cannot read. After this, the cell has no uses in the
+// region, so `promoteBufferCells` can turn it into a plain value.
+static void readCellsBeforeSpawns(ModuleOp module) {
+  module.walk([](vx::SpawnOp spawn) {
+    llvm::MapVector<Value, SmallVector<memref::LoadOp>> reads;
+    llvm::SmallPtrSet<Value, 4> written;
+    spawn.getBody().walk([&](Operation *op) {
+      for (Value v : op->getOperands()) {
+        auto cell = v.getDefiningOp<memref::AllocaOp>();
+        if (!cell || !isa<BaseMemRefType>(cell.getType().getElementType()) ||
+            spawn->isAncestor(cell))
+          continue;
+        if (auto load = dyn_cast<memref::LoadOp>(op))
+          reads[v].push_back(load);
+        else
+          written.insert(v);
+      }
+    });
+    OpBuilder builder(spawn);
+    for (auto &[cell, loads] : reads) {
+      if (written.contains(cell))
+        continue;
+      Value buffer = memref::LoadOp::create(builder, spawn.getLoc(), cell);
+      for (memref::LoadOp load : loads) {
+        load.getResult().replaceAllUsesWith(buffer);
+        load.erase();
+      }
+    }
+  });
+}
+
 // Turn each cell that holds a buffer into plain values. The AST code generator
 // keeps a tensor local in a cell (`memref<memref<..>>`), which the buffer
 // deallocation analysis cannot follow, and which stops being promotable once
@@ -2463,6 +2496,7 @@ struct ConvertVxToStandardPass
 
     lowerHostAllocs(getOperation());
     placeTransferFrees(getOperation());
+    readCellsBeforeSpawns(getOperation());
     promoteBufferCells(getOperation());
     // After the cells are promoted, so that most buffers a drop names are
     // plain values again.
