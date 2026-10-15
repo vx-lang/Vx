@@ -2421,6 +2421,11 @@ impl<'a> TypeChecker<'a> {
                 },
                 _ => None,
             };
+            // A view of device memory is in device memory.
+            let place = match arg_types.first() {
+                Some(Type::Pointer(_, place, _)) => place.clone(),
+                _ => None,
+            };
             match elem {
                 // The extents are ordinary arguments, so the same rule the constructor gets
                 // applies: a view whose rows and cols evaluate at compile time is statically
@@ -2445,7 +2450,7 @@ impl<'a> TypeChecker<'a> {
                             .collect(),
                         _ => vec![Dim::Dyn, Dim::Dyn],
                     };
-                    Some(Type::Tensor(e, dims, None))
+                    Some(Type::Tensor(e, dims, place))
                 }
                 None => {
                     if !self.speculating {
