@@ -64,6 +64,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <vector>
 
 #include <cublas_v2.h>
 // The driver API, for loading a module the compiler emitted. The runtime API
@@ -1034,38 +1035,61 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   // with a GPU the loop dereferences device memory and the process dies inside
   // the outlined kernel, three frames below anything that names the reason.
   //
-  // Copying the operands back, running, and copying them out again would make
-  // the fallback honest, and is the right fix. Until then this refuses in a way
-  // that says what happened, because a segmentation fault inside
-  // vx_npu_kernel_0 does not.
-  for (int64_t i = 0; i < num_args; ++i) {
+  // So each operand in device memory is copied to the host for the call, and
+  // copied back after it.
+  struct HostCopy {
+    void **desc; // {allocated, aligned, ...}, pointed at the copy for the call
+    void *allocated;
+    void *aligned;
+    void *host;
+    size_t bytes;
+  };
+  // The descriptor argument i refers to, or null. A slot holds a pointer to
+  // one.
+  auto arg_desc = [&](int64_t i) -> void * {
     if (VX_ABI_KIND(arg_tags[i]) != VX_ABI_KIND_MEMREF || !device_args[i]) {
-      continue;
+      return nullptr;
     }
-    const void *desc = *(const void **)device_args[i];
+    void *desc = *(void **)device_args[i];
+    if (desc && VX_ABI_IS_SLOT(arg_tags[i])) {
+      desc = vx_memref_aligned(desc);
+    }
+    return desc;
+  };
+  std::vector<HostCopy> copies;
+  for (int64_t i = 0; i < num_args; ++i) {
+    void *desc = arg_desc(i);
     if (!desc) {
       continue;
     }
-    if (VX_ABI_IS_SLOT(arg_tags[i])) {
-      desc = (const void *)vx_memref_aligned(desc);
-      if (!desc) {
-        continue;
-      }
+    void *aligned = vx_memref_aligned(desc);
+    if (!aligned || !is_device_ptr(aligned)) {
+      continue;
     }
-    const void *data = vx_memref_data(desc, (int32_t)VX_ABI_ELEM(arg_tags[i]));
-    if (data && is_device_ptr(data)) {
+    const int32_t rank = (int32_t)VX_ABI_RANK(arg_tags[i]);
+    const int64_t *sizes = vx_memref_sizes(desc);
+    const int64_t *strides = vx_memref_strides(desc, rank);
+    const int64_t span = rank > 0 ? sizes[0] * strides[0] : 1;
+    const size_t bytes = (size_t)(vx_memref_offset(desc) + span) *
+                         vx_dtype_bytes((int32_t)VX_ABI_ELEM(arg_tags[i]));
+    void *host = malloc(bytes ? bytes : 1);
+    if (!host) {
       fprintf(stderr,
-              "[Vx CUDA] FATAL: %s was not routed, so it would run on the "
-              "host,\n"
-              "          but argument %lld at %p is in device memory -- a "
-              "`transfer`\n"
-              "          into a device memory space put it there. The host "
-              "cannot read it.\n"
-              "          Either the kernel needs a device implementation "
-              "(#251), or its\n"
-              "          operands must stay in host memory.\n",
-              kernel_name, (long long)i, data);
+              "[Vx CUDA] FATAL: out of host memory copying %zu bytes "
+              "for %s\n",
+              bytes, kernel_name);
       abort();
+    }
+    VX_CUDA_CHECK(cudaMemcpy(host, aligned, bytes, cudaMemcpyDeviceToHost));
+    void **ptrs = (void **)desc;
+    copies.push_back({ptrs, ptrs[0], aligned, host, bytes});
+    ptrs[0] = host;
+    ptrs[1] = host;
+    if (verbose()) {
+      fprintf(stderr,
+              "[Vx CUDA] %s runs on the host; argument %lld (%zu bytes) is "
+              "copied from device memory and back\n",
+              kernel_name, (long long)i, bytes);
     }
   }
 
@@ -1082,6 +1106,22 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     fprintf(stderr, "[Vx CUDA] FATAL: could not build a call for %s\n",
             kernel_name);
     abort();
+  }
+  // A region that ends in an operand publishes that operand's descriptor, so
+  // every descriptor still pointing at a copy gets the device memory back.
+  for (const HostCopy &c : copies) {
+    VX_CUDA_CHECK(
+        cudaMemcpy(c.aligned, c.host, c.bytes, cudaMemcpyHostToDevice));
+    c.desc[0] = c.allocated;
+    c.desc[1] = c.aligned;
+    for (int64_t i = 0; i < num_args; ++i) {
+      void **d = (void **)arg_desc(i);
+      if (d && d[1] == c.host) {
+        d[0] = c.allocated;
+        d[1] = c.aligned;
+      }
+    }
+    free(c.host);
   }
   return 1;
 }
