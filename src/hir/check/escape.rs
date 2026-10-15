@@ -269,7 +269,10 @@ impl<'a> TypeChecker<'a> {
             }
             // No root means a temporary: nothing outlives the statement through it.
             if let Some((root, through_deref)) = Self::place_root_through(arg) {
-                if through_deref || self.is_reference_variable(&root) {
+                // `&mut r` borrows the variable `r`, as in `store_target_of`.
+                let borrows_the_variable =
+                    matches!(arg, Expr::Borrow(b) if matches!(&*b.expr, Expr::Identifier(_)));
+                if through_deref || (!borrows_the_variable && self.is_reference_variable(&root)) {
                     self.report_frame_escape(
                         &format!(
                             "this call is given a value that points into this function's \
