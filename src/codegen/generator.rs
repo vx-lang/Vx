@@ -614,7 +614,10 @@ impl<'c> MeliorGenerator<'c> {
             t == self.f32_ty || t == self.f64_ty || t == self.f16_ty || t == self.bf16_ty
         };
 
-        if (from_ty == self.i32_ty || from_ty == self.i64_ty) && is_float(to_ty) {
+        // A `bool` is `i1`, and `sitofp` would make `true` into -1.0.
+        let is_number_int = |t: Type<'c>| melior::ir::TypeLike::is_integer(&t) && t != self.i1_ty;
+
+        if is_number_int(from_ty) && is_float(to_ty) {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.sitofp", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])
@@ -623,7 +626,7 @@ impl<'c> MeliorGenerator<'c> {
             return Ok(block.append_operation(cast_op).result(0)?.into());
         }
 
-        if is_float(from_ty) && (to_ty == self.i32_ty || to_ty == self.i64_ty) {
+        if is_float(from_ty) && is_number_int(to_ty) {
             let cast_op = melior::ir::operation::OperationBuilder::new("arith.fptosi", self.loc())
                 .add_operands(&[val])
                 .add_results(&[to_ty])

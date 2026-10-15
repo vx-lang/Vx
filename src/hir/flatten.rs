@@ -5098,6 +5098,16 @@ impl<'r> Lowerer<'r> {
                     self.emit_effect(Opcode::Ret, Register(0), Register(0), 0);
                     return Ok(());
                 };
+                // A `void` function that ends in an `if` returns it, but its branches give no value.
+                if let (true, Expr::If(iff)) = (self.ret_void, ret_expr) {
+                    self.lower_if(iff)?;
+                    if !self.block_terminated() {
+                        self.run_value_drops()?;
+                        self.drop_temps_here(None);
+                        self.emit_effect(Opcode::Ret, Register(0), Register(0), 0);
+                    }
+                    return Ok(());
+                }
                 let v = self.lower_expr(ret_expr)?;
                 if self.ret_void {
                     if !self.block_terminated() {

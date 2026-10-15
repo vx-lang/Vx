@@ -1309,6 +1309,8 @@ pub(crate) fn pick_scalar_print<'c>(
         ("i8" | "i16", false) => ("print_i32", Some(("arith.extsi", "i32"))),
         ("i32", false) => ("print_i32", None),
         ("i64", false) => ("print_i64", None),
+        // A `for` variable over a range is an `index` here.
+        ("index", _) => ("print_i64", Some(("arith.index_cast", "i64"))),
         ("f16" | "bf16", _) => ("print_f32", Some(("arith.extf", "f32"))),
         ("f32", _) => ("print_f32", None),
         ("f64", _) => ("print_f64", None),
