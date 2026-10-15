@@ -2609,12 +2609,80 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
         "linking an import into an out-of-flat-subset program must fail, got success:\n{out}"
     );
     assert!(
-        out.contains("flat-coverage") || out.contains("outside the flat-codegen subset"),
-        "expected a clean flat-coverage error, got:\n{out}"
+        out.contains("the default code generator does not support yet"),
+        "expected a clean error about the construct, got:\n{out}"
     );
     assert!(
         !out.contains("Internal Error") && !out.contains("panicked"),
         "must be a clean error, not an ICE, got:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--legacy-codegen` cannot link the functions of a `.vxlib`. A program that imports one fails
+/// with a message that names the option, even when the default code generator compiles it.
+#[test]
+fn legacy_codegen_names_itself_when_a_program_imports_a_vxlib() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("vx_legacy_vxlib_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (lib, app, vxlib) = (
+        dir.join("reflib.vx"),
+        dir.join("refapp.vx"),
+        dir.join("reflib.vxlib"),
+    );
+    std::fs::write(&lib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
+    std::fs::write(&app, "fn main() -> i32 { print(double(21)); return 0; }\n").unwrap();
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    assert!(Command::new(vxc)
+        .args([
+            "--emit-interface",
+            lib.to_str().unwrap(),
+            "-o",
+            vxlib.to_str().unwrap(),
+        ])
+        .output()
+        .expect("emit")
+        .status
+        .success());
+
+    let run = |extra: &[&str]| {
+        let out = Command::new(vxc)
+            .args([
+                "--link-interface",
+                vxlib.to_str().unwrap(),
+                app.to_str().unwrap(),
+            ])
+            .args(extra)
+            .arg("--run")
+            .output()
+            .expect("run");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.success(), text)
+    };
+    let (ok, out) = run(&[]);
+    assert!(
+        ok && out.contains("42"),
+        "the default code generator must run it, got:\n{out}"
+    );
+    let (ok, out) = run(&["--legacy-codegen"]);
+    assert!(
+        !ok,
+        "--legacy-codegen cannot link a .vxlib, but it succeeded:\n{out}"
+    );
+    assert!(
+        out.contains("with `--legacy-codegen`, because it imports a `.vxlib`"),
+        "expected the message to name --legacy-codegen, got:\n{out}"
+    );
+    assert!(
+        !out.contains("does not support yet"),
+        "the message must not blame a construct in the program, got:\n{out}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

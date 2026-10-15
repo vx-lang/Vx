@@ -1402,12 +1402,18 @@ impl CompilerDriver {
                 // is a hard, clean error — never an AST-fallback ICE ("Function … not found"). The
                 // frontend type/borrow check (incl. cross-module provenance) already succeeded; only
                 // codegen is blocked, by the flat subset's current coverage.
+                if self.options.legacy_codegen {
+                    return Err(format!(
+                        "Cannot compile '{filename}' with `--legacy-codegen`, because it imports a \
+                         `.vxlib`. Only the default code generator can link the functions of a \
+                         `.vxlib`. Compile it without `--legacy-codegen`."
+                    ));
+                }
                 return Err(format!(
-                    "Cannot codegen '{}' with a linked module interface: it uses constructs outside \
-                     the flat-codegen subset, and an imported body links only on the flat path (the \
-                     AST codegen has no AST for it). The frontend check passed; this is a flat-coverage \
-                     limit.",
-                    filename
+                    "Cannot compile '{filename}': it imports a `.vxlib`, and it uses a construct \
+                     that the default code generator does not support yet. Only that code \
+                     generator can link the functions of a `.vxlib`. The `[flat-codegen]` line above \
+                     names the construct."
                 ));
             }
             None => {
