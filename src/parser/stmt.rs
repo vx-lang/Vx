@@ -121,10 +121,7 @@ impl<'a> Parser<'a> {
                         length: token_len,
                     });
                 }
-                let name = match &self.advance().kind {
-                    TokenType::Identifier(s) => s.to_string(),
-                    _ => return Err(self.error("Expected identifier after let")),
-                };
+                let name = self.expect_identifier("Expected identifier after let")?;
                 let mut type_annotation = None;
                 if self.match_token(&TokenType::Colon) {
                     type_annotation = Some(self.parse_type()?);
@@ -301,10 +298,7 @@ impl<'a> Parser<'a> {
                     length: token_len,
                 };
                 self.advance();
-                let iter = match &self.advance().kind {
-                    TokenType::Identifier(s) => s.to_string(),
-                    _ => return Err(self.error("Expected identifier after 'for'")),
-                };
+                let iter = self.expect_identifier("Expected identifier after 'for'")?;
                 self.consume(&TokenType::In, "Expected 'in' after for iterator")?;
                 let iterable = self.parse_expr()?;
                 let mut invariants = Vec::new();

@@ -14,10 +14,17 @@ use super::*;
 
 impl<'a> Parser<'a> {
     pub(crate) fn expect_identifier(&mut self, msg: &str) -> ParseResult<'a, String> {
-        match self.advance().kind {
+        let token = self.advance();
+        match &token.kind {
             TokenType::Identifier(s) => Ok(s.to_string()),
+            // `transfer` names the built-in that moves values between memories; it is also
+            // accepted as an identifier so `impl Transfer for ...` and calls can parse.
             TokenType::Transfer => Ok("transfer".to_string()),
-            _ => Err(self.error(msg)),
+            other if other.is_keyword() => Err(self.error_at(
+                token,
+                &format!("`{}` is a keyword and cannot be used as a name", other),
+            )),
+            _ => Err(self.error_at(token, msg)),
         }
     }
 
@@ -1887,6 +1894,21 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         } else {
             panic!("Expected LetDecl");
         }
+    }
+
+    #[test]
+    fn test_keyword_as_let_name_names_the_keyword() {
+        let input = "fn main() -> i32 { let mut across = 3; return across; }";
+        let tokens = crate::lexer::Lexer::new(input).tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let err = parser
+            .parse_function()
+            .expect_err("keyword as name should fail");
+        let msg = err.format(input);
+        assert!(
+            msg.contains("`across` is a keyword and cannot be used as a name"),
+            "message was: {msg}"
+        );
     }
 
     #[test]

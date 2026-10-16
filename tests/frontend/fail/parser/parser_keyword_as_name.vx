@@ -1,0 +1,14 @@
+//===- parser_keyword_as_name.vx - Vx Compiler ---------------*- Vx -*-===//
+// CHECK: `across` is a keyword and cannot be used as a name
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn main() -> i32 {
+  let mut across = 3;
+  return across;
+}
