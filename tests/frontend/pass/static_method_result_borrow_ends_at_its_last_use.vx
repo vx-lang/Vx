@@ -1,0 +1,42 @@
+//===- static_method_result_borrow_ends_at_its_last_use.vx - Vx ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+//
+// The result of `Unit::same(r)` borrows `v` only until its last use. A static method that
+// returns a number keeps no borrow after the call.
+
+import std::vec;
+
+struct Unit {
+  n : i32,
+}
+
+impl Unit {
+  fn same(y : &Vec<i32>) -> &Vec<i32> {
+    return y;
+  }
+
+  fn count(y : &Vec<i32>) -> i32 {
+    return y.len();
+  }
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(11);
+  let r = &v;
+  let s = Unit::same(r);
+  // CHECK: 1
+  println!("{}", s.len());
+  v.push(5);
+  let n = Unit::count(&v);
+  v.push(6);
+  // CHECK-NEXT: 2 3
+  println!("{} {}", n, v.len());
+  return 0;
+}
