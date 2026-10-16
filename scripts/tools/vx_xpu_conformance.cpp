@@ -310,7 +310,7 @@ static double inputC(const Op op, size_t i, size_t j) {
 // ---------------------------------------------------------------- helpers
 
 static uint64_t parseSize(const char *name, const char *text) {
-  return parseByteCount(name, text, (uint64_t)1 << 60);
+  return parseCount(name, text, "counts", (uint64_t)1 << 60);
 }
 
 static std::vector<char> readFile(const char *path) {
