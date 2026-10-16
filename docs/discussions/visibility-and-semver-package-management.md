@@ -2,7 +2,7 @@
 
 *Chat export, October 2026*
 
----
+______________________________________________________________________
 
 ## 1. Shipping llvm-project with Vx
 
@@ -28,7 +28,7 @@ Yes, bundling a pinned LLVM is the right call, but the issue as written isn't re
 
 What does `jit.rs` actually use clang for: only linking, or compiling C as well? That decides whether clang stays in the release.
 
----
+______________________________________________________________________
 
 ## 2. Dialect C++, runtime, and developer build times
 
@@ -58,7 +58,7 @@ If the runtime has templates or headers that user programs instantiate, clang ha
 
 **Two small things.** Publish an assertions-enabled variant of the dev toolchain (costs test runtime, not build time). Keep the `config.local` override so anyone working on LLVM itself can point at their own build.
 
----
+______________________________________________________________________
 
 ## 3. Runtime is built only when Vx is built
 
@@ -91,7 +91,7 @@ Suggestion: ORC for JIT, system `cc` for AOT in v0.0.3, embedded lld later if ne
 
 `opt`, `llc` and `mlir-translate` move to the dev side once `vxc` runs those passes in-process.
 
----
+______________________________________________________________________
 
 ## 4. The real reason: llvm-sass
 
@@ -113,7 +113,7 @@ That makes bundling LLVM required, not just convenient. A system LLVM will never
 
 On clang as the linker: llvm-sass doesn't depend on it. Use the system `cc` as linker driver in v0.0.3, possibly embedded lld later.
 
----
+______________________________________________________________________
 
 ## 5. Keeping llvm-sass inside Vx only
 
@@ -136,7 +136,7 @@ The key design rule: Vx should never offer an entry point that turns `vxc` into 
 
 **Publication.** Artifact-evaluation "available" badges usually require public availability.
 
----
+______________________________________________________________________
 
 ## 6. Open sourcing llvm-sass in a combined toolchain
 
@@ -157,12 +157,12 @@ I'd open source it, as part of the combined toolchain in the vx-lang org rather 
 **Before announcing:**
 
 1. **Legal read on the ISA question.** SASS encodings come from reverse engineering; NVIDIA's CUDA license terms restrict reverse engineering of the SDK. Get advice from a software-licensing lawyer before the code goes public.
-2. **Make the claim precise.** Mesa's NAK already compiles to native NVIDIA ISA without ptxas (for Vulkan shaders). Google's gpucc still relied on ptxas. Defensible claim: "an open path from a general-purpose language to complete CUDA binaries, with ptxas becoming optional per kernel," ideally with a measured coverage number.
-3. **Don't tie the release to the talk** (15-minute slot). A live demo plus "code lands with v0.0.3" is strong.
+1. **Make the claim precise.** Mesa's NAK already compiles to native NVIDIA ISA without ptxas (for Vulkan shaders). Google's gpucc still relied on ptxas. Defensible claim: "an open path from a general-purpose language to complete CUDA binaries, with ptxas becoming optional per kernel," ideally with a measured coverage number.
+1. **Don't tie the release to the talk** (15-minute slot). A live demo plus "code lands with v0.0.3" is strong.
 
 Motivation example: the LLVM tracker has a ptxas miscompile involving divergent branches and convergent operations that was hard to diagnose without ptxas source.
 
----
+______________________________________________________________________
 
 ## 7. What to build next for a larger audience
 
@@ -182,7 +182,7 @@ Start from the GLM prototype and generalize it.
 
 **Order:** GLM on GPU with logit checks → extract kernel library + second model family → wheel → hybrid offload with admission verdicts → honest benchmarks vs llama.cpp and vLLM.
 
----
+______________________________________________________________________
 
 ## 8. Plan / GitHub issue for GPU bring-up
 
@@ -271,7 +271,7 @@ verdicts to decide placement.
 
 Packaging (`pip install vx` wheel with DLPack interop) is better as its own linked issue.
 
----
+______________________________________________________________________
 
 ## 9. Problems with Rust's `pub` visibility
 
@@ -291,7 +291,7 @@ The levels are fine; the problems are where the boundaries fall, and that `pub` 
 
 For Vx: explicit package-level export semantics, a package/workspace visibility level, read-only fields, and a sanctioned way for macros and generated code to reach internals.
 
----
+______________________________________________________________________
 
 ## 10. Proposed Vx visibility syntax and semantics
 
@@ -339,7 +339,7 @@ A `pkg impl` still claims its coherence slot globally, so nobody can write a com
 
 Alternative: an explicit export list in the package root (Haskell, Go internal packages). Recommendation: the reachability error plus `vx api` for the overall view.
 
----
+______________________________________________________________________
 
 ## 11. Visibility at the ABI level
 
@@ -369,7 +369,7 @@ Static libraries are bundles of object files; the same package may be built as a
 
 Rule of thumb: language visibility sets the most a symbol may be exported; build mode can only narrow it.
 
----
+______________________________________________________________________
 
 ## 12. Covariance between visibility and versioning
 
@@ -397,8 +397,8 @@ Prior art at source level: Elm's `elm bump`.
 **Three algorithms.**
 
 1. **Export set as a least fixed point:** start from `pub` symbols, add everything reachable from bodies consumers instantiate or inline (Swift's `@usableFromInline`). Cross-DSO inlining trades speed for exports/ABI surface.
-2. **Per-symbol version tags:** ELF symbol versioning (`compile@VX_1.2`, `compile@@VX_1.3`); keeping compat symbols turns some breaking changes into minor ones; the compiler can generate shims.
-3. **Inferred version requirements:** a binary's minimum required version = max version of the symbols it imports (as with glibc). Resolution stays NP-complete in general, but false conflicts largely disappear.
+1. **Per-symbol version tags:** ELF symbol versioning (`compile@VX_1.2`, `compile@@VX_1.3`); keeping compat symbols turns some breaking changes into minor ones; the compiler can generate shims.
+1. **Inferred version requirements:** a binary's minimum required version = max version of the symbols it imports (as with glibc). Resolution stays NP-complete in general, but false conflicts largely disappear.
 
 **On benefits 1 and 2.** GNU hash lookups are near constant time; load time depends more on relocations/imports. The bigger win: hidden symbols can't be interposed, enabling direct calls, inlining, and dropping PLT stubs (see Drepper, *How to Write Shared Libraries*). Load-time wins show mainly in very large DSOs.
 
