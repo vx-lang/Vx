@@ -24,14 +24,11 @@
 //                cannot see the shape, and that kernel went from 306
 //                instructions of unrolled arithmetic to 149 with 19 branches.
 //
-// A third, `memref.alloc` for a region's own scratch, is not checked here and
-// cannot be: this directory forces `--legacy-codegen`, and on the AST path a
-// `Tensor` is `memref<?x?xf32>`. The rewrite deliberately declines a dynamic
-// extent, because a variable-length stack allocation is not something to hand a
-// device. The flat path -- the default, and what the placed-kernel test
-// compiles through -- gives static shapes and does get the stack slot; that is
-// asserted end to end by the device-image test, which fails if `malloc`
-// reappears among the kernel's externals.
+//   scratch      a region's own buffer was a `memref.alloc`, which calls
+//                malloc on the device. It is now a stack slot, `memref.alloca`.
+//                The rewrite declines a dynamic extent, so a program compiled
+//                with `--legacy-codegen` (where a `Tensor` is `memref<?x?xf32>`)
+//                keeps the `memref.alloc`.
 //
 // The pass pipeline is pinned to the vx lowering alone, since that is the pass
 // that prepares the kernel.
@@ -42,12 +39,15 @@
 // The launch carries the one buffer the region touches and nothing else. The
 // loop bounds, the exponent's operand and the scratch extents were all
 // constants, and none of them is an operand here.
-// CHECK: vx.launch @vx_npu_kernel_0(%alloca) {topology = 500 : i32, vx.topology_name = "GPU[0]"} : (memref<memref<?x?xf32>>) -> ()
+// CHECK: vx.launch @vx_npu_kernel_0(%alloc) {topology = 500 : i32, {{.*}}} : (memref<4x4xf32>) -> ()
 
-// CHECK: vx.kernel @vx_npu_kernel_0(500) : (memref<memref<?x?xf32>>) -> ()
+// CHECK: vx.kernel @vx_npu_kernel_0(500) {{.*}}: (memref<4x4xf32>) -> ()
 
 // The bounds are inside the kernel, so the shape is visible to the backend.
 // CHECK: arith.constant 4 : index
+
+// The scratch tensor is on the kernel's stack.
+// CHECK: memref.alloca() : memref<1x4xf32>
 
 // The transcendental is a call to Vx's own `expf`, not to the host's libm.
 // CHECK: func.call @f32$exp

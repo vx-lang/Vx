@@ -6,19 +6,23 @@
 //
 //===----------------------------------------------------------------------===//
 // A function taking a statically shaped tensor by reference. This did not compile at all
-// (Vx#417): the checker answered `t[i][j]` with the row rather than the element, and this
-// backend named the parameter `memref<memref<2x2xf32>>` while every tensor it allocates is
-// dynamically shaped, so the call site was left casting between two memref element types --
-// which `memref.cast` cannot do.
+// (Vx#417): the checker answered `t[i][j]` with the row rather than the element, and the
+// call site cast between two memref types that `memref.cast` cannot convert.
 //
-// The parameter is the slot holding the descriptor, and its shape is erased to match what a
-// slot actually holds. The shape is still in the Vx type, which is what indexing reads.
+// The reference is passed as the tensor's buffer. The call site and the function use the
+// same static shape, so no cast is needed.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-LABEL: func.func @fill(%arg0: memref<memref<?x?xf32>>, %arg1: f32) -> i32
-// CHECK-LABEL: func.func @total(%arg0: memref<memref<?x?xf32>>) -> f32
-// CHECK: %[[BUF:.*]] = memref.load %arg0[] : memref<memref<?x?xf32>>
-// CHECK: memref.load %[[BUF]]
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: %[[A:.*]] = memref.alloc() : memref<2x2xf32>
+// CHECK: call @fill(%[[A]], %{{.*}})
+// CHECK: call @total(%[[A]])
+// CHECK-LABEL: func.func @total(%arg0: memref<2x2xf32>{{[^,)]*}}) -> f32
+// CHECK: %[[ROW:.*]] = memref.reinterpret_cast %arg0
+// CHECK: memref.load %[[ROW]]
+// CHECK-LABEL: func.func @fill(%arg0: memref<2x2xf32>{{[^,)]*}}, %arg1: f32) -> i32
+// CHECK: %[[ROW0:.*]] = memref.reinterpret_cast %arg0
+// CHECK: memref.store %arg1, %[[ROW0]]
 //
 // `fill` writes through the borrow and `main` reads the result, so a parameter that had
 // somehow become a copy would show up as 0 rather than 7.

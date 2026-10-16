@@ -179,7 +179,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     // what makes the header mean what it says. XFAIL files come along because that marker is
     // itself an assertion -- that the RUN line still cannot pass.
     if source.lines().any(|l| l.trim().starts_with("// CHECK")) || source.contains("// XFAIL: *") {
-        run_lit_test(path, false)?;
+        run_lit_test(path)?;
     }
     Ok(())
 }
@@ -902,8 +902,7 @@ fn test_warnings() -> Result<(), String> {
 
 // Optimization Test Runner
 fn run_optimization_test(path: &Path) -> Result<(), String> {
-    // These files pin the AST codegen's MLIR structure, so they force the legacy path.
-    run_lit_test(path, true)
+    run_lit_test(path)
 }
 
 /// Execute a file's `// RUN:` lines through a shell, so `| FileCheck %s` runs the real
@@ -914,12 +913,9 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
 /// `CHECK-NOT:`, which meant the pipe in the RUN line was decoration -- anything else a
 /// file wrote had to be refused, or it would pass while asserting nothing (Vx#407).
 ///
-/// `force_legacy` pins the AST codegen, which the optimizations and backend tests want
-/// because they assert that path's exact IR. The frontend tests run the default path
-/// instead: they assert what a user actually gets, and forcing legacy there would report
-/// the AST path's own bugs as frontend failures (three such programs are recorded on
-/// Vx#398).
-fn run_lit_test(path: &Path, force_legacy: bool) -> Result<(), String> {
+/// A RUN line runs exactly the command it names. It uses the AST code generator only when
+/// it says `--legacy-codegen`.
+fn run_lit_test(path: &Path) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
     // Same lit-style gate the middle-end and backend runners apply. A check against IR that
@@ -977,29 +973,14 @@ fn run_lit_test(path: &Path, force_legacy: bool) -> Result<(), String> {
         hash
     ));
 
-    // A file that names `--legacy-codegen` on one RUN line wants its other RUN lines on the
-    // default path.
-    let names_legacy = run_lines.iter().any(|l| l.contains("--legacy-codegen"));
     for run_line in run_lines {
-        let mut cmd = run_line
+        let cmd = run_line
             .split_once("RUN:")
             .unwrap()
             .1
             .trim()
             .replace("%s", path.to_str().unwrap())
             .replace("%t", t_val.to_str().unwrap());
-
-        // `// REQUIRES: flat-codegen` opts a file out: some constructs exist ONLY on the flat
-        // path, and forcing legacy there tests a lowering that deliberately does not exist.
-        if force_legacy && !names_legacy && !source.contains("// REQUIRES: flat-codegen") {
-            let split = cmd.find('|').unwrap_or(cmd.len());
-            let (head, tail) = cmd.split_at(split);
-            let mut words = head.split_whitespace();
-            let first = words.next();
-            if first == Some("vxc") || (first == Some("not") && words.next() == Some("vxc")) {
-                cmd = format!("{} --legacy-codegen {}", head.trim_end(), tail);
-            }
-        }
 
         // pipefail, because a RUN line fails if any stage fails. A shell reports only the
         // last stage, so a compiler that crashed would still pass whenever its stderr
@@ -1493,10 +1474,9 @@ where
     Ok(())
 }
 
-// The fail tiers name their own command, so nothing is pinned for them; everything else
-// the lit runner does -- the real FileCheck, pipefail, %s/%t -- applies here too.
+// The fail tiers get everything the lit runner does: the real FileCheck, pipefail, %s/%t.
 fn run_shell_tests(path: &Path) -> Result<(), String> {
-    run_lit_test(path, false)
+    run_lit_test(path)
 }
 
 #[test]

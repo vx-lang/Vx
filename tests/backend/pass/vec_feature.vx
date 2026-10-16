@@ -6,14 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// The three Vec entry points are reached by call, and `push` and the drop at the end of
-// `main` take the address of the stack slot the constructed value was stored into.
+// `main` calls the three Vec functions. `push` and the drop at the end of `main` take the
+// address of the stack slot that holds the constructed value.
 // CHECK-LABEL: func.func @main
-// CHECK: %[[V:.*]] = call @"Vec::with_capacity$f32"(%{{.*}}) : (i32) -> !llvm.struct<"Vec_f32", (ptr, i32, i32)>
-// CHECK: %[[SLOT:.*]] = llvm.alloca %{{.*}} x !llvm.struct<"Vec_f32", (ptr, i32, i32)> : (i32) -> !llvm.ptr
-// CHECK: llvm.store %[[V]], %[[SLOT]] : !llvm.struct<"Vec_f32", (ptr, i32, i32)>, !llvm.ptr
+// CHECK: %[[SLOT:.*]] = llvm.alloca %{{.*}} x !llvm.struct<(ptr, i32, i32)> : (i32) -> !llvm.ptr
+// CHECK: %[[V:.*]] = call @"Vec::with_capacity$f32"(%{{.*}}) : (i32) -> !llvm.struct<(ptr, i32, i32)>
+// CHECK: llvm.store %[[V]], %[[SLOT]] : !llvm.struct<(ptr, i32, i32)>, !llvm.ptr
 // CHECK: call @Vec$f32$push$f32(%[[SLOT]], %{{.*}}) : (!llvm.ptr, f32) -> i32
 // CHECK: call @Vec$f32$drop$f32(%[[SLOT]]) : (!llvm.ptr) -> ()
+// CHECK-LABEL: func.func @"Vec::{{[a-z_]+}}$f32"
 
 import std::io;
 import std::vec;

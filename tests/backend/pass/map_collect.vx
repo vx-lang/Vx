@@ -4,22 +4,28 @@
 // the segment -- `impl Math for f32` is still `f32$abs`. The trait is declared here because
 // that is the only thing asked of it: the standard iterator's `Item` is associated now, so
 // it has no arguments to contribute.
-// CHECK-LABEL: func.func @Range$Stream$Range$i32$next(%arg0: !llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
-// CHECK: %[[C0:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : i32
-// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
-// CHECK-LABEL: func.func @Map$Stream$Map$i32$next(%arg0: !llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
-// CHECK: call @Range$Stream$Range$i32$next(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
-// CHECK-LABEL: func.func @map_range(%arg0: !llvm.struct<"Range", (i32, i32)>, %arg1: !llvm.ptr) -> !llvm.struct<"Map", (struct<"Range", (i32, i32)>, ptr)>
-// CHECK: llvm.mlir.undef : !llvm.struct<"Map", (struct<"Range", (i32, i32)>, ptr)>
-// CHECK: llvm.insertvalue %{{.*}}, %{{.*}} : !llvm.struct<"Map", (struct<"Range", (i32, i32)>, ptr)>
-// CHECK: %[[V0:.*]] = llvm.insertvalue %{{.*}}, %{{.*}} : !llvm.struct<"Map", (struct<"Range", (i32, i32)>, ptr)>
-// CHECK: return %[[V0]] : !llvm.struct<"Map", (struct<"Range", (i32, i32)>, ptr)>
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK: call @map_range(%{{.*}}, %{{.*}}) : (!llvm.struct<(i32, i32)>, !llvm.ptr) -> !llvm.struct<(struct<(i32, i32)>, ptr)>
+// CHECK: call @Map$Stream$Map$i32$next(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<(i32, i32)>
 // CHECK-LABEL: func.func @square(%arg0: i32) -> i32
 // CHECK: %[[V0:.*]] = arith.muli %{{.*}}, %{{.*}} : i32
 // CHECK: return %[[V0]] : i32
-// CHECK-LABEL: func.func @main() -> i32
-// CHECK: call @map_range(%{{.*}}, %{{.*}}) : (!llvm.struct<"Range", (i32, i32)>, !llvm.ptr) -> !llvm.struct<"Map", (struct<"Range", (i32, i32)>, ptr)>
-// CHECK: call @Map$Stream$Map$i32$next(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<"Option_i32", (i32, i32)>
+// CHECK-LABEL: func.func @map_range(%arg0: !llvm.struct<(i32, i32)>, %arg1: !llvm.ptr) -> !llvm.struct<(struct<(i32, i32)>, ptr)>
+// CHECK-NOT: return
+// CHECK: %[[MAP:.*]] = llvm.alloca %{{.*}} x !llvm.struct<(struct<(i32, i32)>, ptr)>
+// CHECK: llvm.store %arg0, %[[ARG0:.*]] : !llvm.struct<(i32, i32)>, !llvm.ptr
+// CHECK: %[[RANGE:.*]] = llvm.load %[[ARG0]] : !llvm.ptr -> !llvm.struct<(i32, i32)>
+// CHECK: %[[ITER:.*]] = llvm.getelementptr %[[MAP]][0, 0]
+// CHECK: llvm.store %[[RANGE]], %[[ITER]] : !llvm.struct<(i32, i32)>, !llvm.ptr
+// CHECK: %[[F:.*]] = llvm.getelementptr %[[MAP]][0, 1]
+// CHECK: llvm.store %arg1, %[[F]] : !llvm.ptr, !llvm.ptr
+// CHECK: %[[V0:.*]] = llvm.load %[[MAP]] : !llvm.ptr -> !llvm.struct<(struct<(i32, i32)>, ptr)>
+// CHECK: return %[[V0]] : !llvm.struct<(struct<(i32, i32)>, ptr)>
+// CHECK-LABEL: func.func @Map$Stream$Map$i32$next(%arg0: !llvm.ptr {llvm.noalias}) -> !llvm.struct<(i32, i32)>
+// CHECK: call @Range$Stream$Range$i32$next(%{{.*}}) : (!llvm.ptr) -> !llvm.struct<(i32, i32)>
+// CHECK-LABEL: func.func @Range$Stream$Range$i32$next(%arg0: !llvm.ptr {llvm.noalias}) -> !llvm.struct<(i32, i32)>
+// CHECK: %[[C0:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : i32
+// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
 import core::option;
 
 trait Stream<T, Item> {

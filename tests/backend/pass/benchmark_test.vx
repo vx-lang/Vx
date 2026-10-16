@@ -31,10 +31,10 @@ fn main() -> i32 {
 
 // The four externs are called in order, and their signatures are scalars -- a timestamp is not
 // a tensor, which is what the dims-less spelling used to make them (Vx#399).
-// MLIR: func.func private @start_benchmark() -> f32
-// MLIR: func.func private @end_benchmark() -> i32
-// MLIR: func.func private @trace_start() -> i32
-// MLIR: func.func private @trace_end() -> i32
+// MLIR-DAG: func.func private @start_benchmark() -> f32
+// MLIR-DAG: func.func private @end_benchmark() -> i32
+// MLIR-DAG: func.func private @trace_start() -> i32
+// MLIR-DAG: func.func private @trace_end() -> i32
 // MLIR-LABEL: func.func @main() -> i32 {
 // MLIR: call @trace_start() : () -> i32
 // MLIR: call @start_benchmark() : () -> f32
