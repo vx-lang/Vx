@@ -1,0 +1,45 @@
+//===- tensor_ranges_borrow_their_owner.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `q[0..2]` is rows 0 and 1 of `q`. Like a single row `q[1]`, it is a view of `q`, not a
+// copy, so it borrows `q`. Each function below breaks one rule of that borrow.
+
+// The tensor is written while its range is still used. Row 3 is not in the range, but it is
+// refused too: the checker does not compare the two ends.
+fn owner_written() -> f32 {
+  let mut q = Tensor<f32, [4, 2]>::new();
+  let r = q[0..2];
+  q[3][0] = 5.0;
+  return r[0][0];
+}
+
+// The tensor is read while a range that can write it is still used.
+fn owner_read() -> f32 {
+  let mut q = Tensor<f32, [4, 2]>::new();
+  let mut r = q[0..2];
+  let x = q[3][0];
+  r[0][0] = 5.0;
+  return x + r[0][0];
+}
+
+// A range that can write is taken from a tensor that is not `mut`.
+fn range_of_read_only() -> f32 {
+  let q = Tensor<f32, [4, 2]>::new();
+  let mut r = q[0..2];
+  r[0][0] = 5.0;
+  return r[0][0];
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: Error[E4009] at 18:7: `q[3][0]` is assigned while it is borrowed
+// CHECK-DAG: Error[E4002] at 26:11: Cannot access 'q' because it is mutably borrowed.
+// CHECK-DAG: Error[E4010] at 34:3: `q` is not declared `mut`, so a view of it cannot be declared `mut`
