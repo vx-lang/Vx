@@ -1420,6 +1420,14 @@ impl<'c> MeliorGenerator<'c> {
             ));
         }
 
+        // A `pub fn` stays exported: `vx-hide-program-symbols` skips a function with `vx.pub`.
+        if func.is_pub {
+            func_attributes.push((
+                melior::ir::Identifier::new(self.context, "vx.pub"),
+                melior::ir::Attribute::unit(self.context),
+            ));
+        }
+
         let func_op = melior::ir::operation::OperationBuilder::new("func.func", func_loc)
             .add_attributes(&func_attributes)
             .add_regions([region])

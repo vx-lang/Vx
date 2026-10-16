@@ -4154,7 +4154,7 @@ struct CheckIntegerDivisionPass
 // `_mlir_ciface_<kernel>`, which the dispatch runtime looks up by name, stays
 // exported as `_vx_ciface_<kernel>`, so every symbol Vx exports starts with
 // `_vx_`. Functions in an `extern` block are declarations, and keep their C
-// names.
+// names. A `pub fn` carries `vx.pub` and stays exported under its own name.
 struct HideProgramSymbolsPass
     : public PassWrapper<HideProgramSymbolsPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(HideProgramSymbolsPass)
@@ -4179,6 +4179,8 @@ struct HideProgramSymbolsPass
         entryPoints.push_back(func);
         return;
       }
+      if (func->removeAttr("vx.pub"))
+        return;
       func.setVisibility_(LLVM::Visibility::Hidden);
       func.setDsoLocal(true);
     });

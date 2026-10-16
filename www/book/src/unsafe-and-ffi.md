@@ -81,6 +81,26 @@ pointer and a length would not qualify, because passing a mismatched pair breaks
 Use `safe` sparingly. It is a promise the compiler cannot verify, and it is the one place in an
 `extern` block where a mistake is silent.
 
+## Calling Vx from C
+
+An object file exports only the functions marked `pub`. Every other function the program defines
+is hidden, so C cannot call it.
+
+```rust
+pub fn add_one(x : i32) -> i32 {
+    return x + 1;
+}
+```
+
+```sh
+vxc add_one.vx --action emit-obj -o add_one.o
+cc -shared -o libadd_one.so add_one.o
+```
+
+C, or Python's `ctypes`, can now load `libadd_one.so` and call `add_one`. Give a `pub` function
+parameters and a result that C can pass: numbers, `bool` and raw pointers. Only a top-level
+function that is not generic can be `pub` for now.
+
 ## What unsafe does not unlock
 
 `unsafe` covers operations the type system cannot justify. It does **not** override placement.

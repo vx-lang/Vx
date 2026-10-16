@@ -1,0 +1,13 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A generic function cannot be `pub` yet. The compiler makes one copy of it for each type it
+// is called with, and each copy has a different name, so there is no one name to export.
+
+pub fn first<T>(a : T, b : T) -> T {
+  return a;
+}
+// CHECK: Error at [[@LINE-3]]:1: a generic function cannot be `pub` yet
+
+fn main() -> i32 {
+  return first(1, 2);
+}

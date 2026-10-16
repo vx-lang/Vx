@@ -2155,6 +2155,7 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
         .clone();
     let synth = Function {
         is_unsafe: false,
+        is_pub: false,
         name: body.name.clone(),
         generics: vec![],
         params: body

@@ -8,10 +8,10 @@
 //
 // The warning for a function in the program's own file that nothing calls (W1002).
 //
-// A function is used when `main` names it, or a used function does: in a call, as a value, as a
-// `grad`/`vjp`/`jvp` target or as a symbol in an `mlir!` block. Methods are called through types
-// and traits, which this does not follow, so every method body, trait default, transfer lowering
-// and `const` initializer in the file counts as used too.
+// A function is used when `main` or a `pub fn` names it, or a used function does: in a call, as a
+// value, as a `grad`/`vjp`/`jvp` target or as a symbol in an `mlir!` block. Methods are called
+// through types and traits, which this does not follow, so every method body, trait default,
+// transfer lowering and `const` initializer in the file counts as used too.
 //
 // It reads the syntax after macro expansion, so a call a macro wrote counts, and before type
 // checking, which renames calls to generic instances.
@@ -33,7 +33,15 @@ pub fn warn_functions_nothing_calls(program: &Program, errors: &mut DiagnosticsV
         return;
     }
 
+    // A `pub fn` is exported, so code outside the program can call it, like `main`.
     let mut to_visit: Vec<String> = vec!["main".to_string()];
+    to_visit.extend(
+        program
+            .functions
+            .iter()
+            .filter(|f| f.is_pub)
+            .map(|f| f.name.to_string()),
+    );
     for i in &program.impls {
         i.methods
             .iter()
