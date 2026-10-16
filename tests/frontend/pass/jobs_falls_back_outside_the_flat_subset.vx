@@ -13,8 +13,9 @@
 // Draining it when the parallel frontend declined printed the half that was thrown away, and
 // the sequential compile that emitted the program went unreported.
 //
-// RUN: (vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
-// RUN: (VX_PIPELINE_PHASES=1 vxc -j 2 --emit-mlir %s 2>&1 >/dev/null) | FileCheck --check-prefix=PHASES %s
+// This test checks the fallback, so it unsets VX_NO_AST_FALLBACK, which the test runner sets.
+// RUN: (env -u VX_NO_AST_FALLBACK vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
+// RUN: (VX_PIPELINE_PHASES=1 env -u VX_NO_AST_FALLBACK vxc -j 2 --emit-mlir %s 2>&1 >/dev/null) | FileCheck --check-prefix=PHASES %s
 
 fn seven_or_nine(n : i32) -> i32 {
   return match n {

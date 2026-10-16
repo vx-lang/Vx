@@ -12,7 +12,8 @@
 // Until a write through a `&` is refused (#897), the output alone cannot tell `iter()` from
 // `iter_mut()`, so the calls are checked too: `total`'s loop, then `main`'s two.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// The default code generator does not support a pointer whose type it cannot infer yet, so this uses the AST one.
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: call @ref$const$Vec$i64$iter$i64
 // CHECK: call @Vec$i64$iter$i64
 // CHECK: call @Vec$i64$iter_mut$i64

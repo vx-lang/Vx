@@ -1,0 +1,29 @@
+//===- default_code_generator_does_not_fall_back.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The test runner sets VX_NO_AST_FALLBACK for every RUN line. Then vxc stops with an error
+// when the default code generator does not support a program. It does not use the AST code
+// generator in its place. A `match` whose arms give the returned value is not supported yet.
+// RUN: not vxc %s --emit-mlir 2>&1 | FileCheck %s
+// CHECK: [flat-codegen] declined seven_or_nine
+// CHECK: Cannot compile '{{.*}}default_code_generator_does_not_fall_back.vx' with the default code generator.
+// CHECK-NOT: func.func
+
+fn seven_or_nine(n : i32) -> i32 {
+  return match n {
+    0 => {
+      7
+    }
+    _ => {
+      9
+    }
+  };
+}
+
+fn main() -> i32 {
+  return seven_or_nine(0);
+}
