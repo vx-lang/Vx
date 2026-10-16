@@ -8,24 +8,15 @@
 // The operand roles have to resolve for tensors declared inside a function, not
 // only for parameters (#325).
 //
-// A parameter arrives as a buffer and is captured as one, so the matmul's
-// operand is the captured value itself. A local lives in a slot --
-// `memref<memref<?x?xf32>>` -- and the region loads the descriptor out of that
-// slot before use, so the captured value is the slot and the matmul's operand
-// is the load. Resolving only the first case left roles absent on every
-// ordinary program, with nothing to say why: a plugin would see `kind=matmul`,
-// find no roles, and fall back to the outlined loop nest. Silently, and
-// forever.
+// On the AST code generator a local lives in a slot, `memref<memref<?x?xf32>>`.
+// The region only reads the slots, so the lowering reads each one before the
+// spawn, and the launch gets the three buffers themselves. A GPU cannot read a
+// slot on the host stack. `kernel_kind_matmul.vx` covers the parameter case.
 //
-// Both operands here are locals, so all three launch operands are slots and the
-// roles are read through the loads. `kernel_kind_matmul.vx` covers the
-// parameter case; between them the two forms of the same program are pinned.
-//
-// The out kind is `buffer` even though the destination is a slot: `c = a @ b`
-// fills the buffer `c` already names rather than allocating a second one and
-// publishing a descriptor (Vx#391), and the runtime follows the one
-// indirection to reach it. `kernel_kind_matmul.vx` and `matvec_roles.vx` keep
-// the `slot` kind, whose operands carry no shape to compare against.
+// The out kind is `buffer`: `c = a @ b` fills the buffer `c` already names
+// rather than allocating a second one and publishing a descriptor (Vx#391).
+// `kernel_kind_matmul.vx` and `matvec_roles.vx` keep the `slot` kind, whose
+// operands carry no shape to compare against.
 //
 // The pass pipeline is pinned to the vx lowering alone, since that is where the
 // attribute is created and the later conversion consumes it.
@@ -45,10 +36,7 @@
 // CHECK: vx.kernel_kind = "matmul"
 // CHECK: vx.kernel_out_kind = "buffer"
 // CHECK: vx.kernel_roles = "a:1,b:2,out:0"
-//
-// The operands really are slots, which is what makes the indirection necessary
-// rather than incidental.
-// CHECK: memref<memref<?x?xf32>>, memref<memref<?x?xf32>>
+// CHECK-SAME: : (memref<{{[^<>]*}}xf32>, memref<{{[^<>]*}}xf32>, memref<{{[^<>]*}}xf32>) -> ()
 //
 // The flat code generator passes the local buffers directly. The roles must
 // still resolve.

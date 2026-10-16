@@ -209,7 +209,9 @@ impl<'a> TypeChecker<'a> {
                 for sub in Self::value_parts(expr) {
                     self.check_escape_in_calls(sub);
                 }
-                if matches!(expr, Expr::StructInit(_) | Expr::EnumVariant(_)) {
+                if matches!(expr, Expr::StructInit(_) | Expr::EnumVariant(_))
+                    && self.type_can_hold_reference(&self.check_expr_type_probe(expr))
+                {
                     // A literal may carry no position of its own; its parts do.
                     let span = std::iter::once(expr.span())
                         .chain(Self::value_parts(expr).iter().map(|e| e.span()))
@@ -392,24 +394,31 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Record the variable that `name`, declared at `depth`, now points at, when `value` is
-    /// `&mut` of a variable.
+    /// `&mut` of a variable, or a reference that points at one (`rb` or `&mut *rb`).
     pub(crate) fn set_store_target_var(
         &mut self,
         name: &crate::symbol::Symbol,
         value: &Expr,
         depth: usize,
     ) {
-        match value {
+        let var = match value {
             Expr::Borrow(b) if b.is_mut => match &*b.expr {
-                Expr::Identifier(v) if v.name != *name => {
-                    self.borrow
-                        .store_target_vars
-                        .insert(name.clone(), (v.name.clone(), depth));
-                }
-                _ => {
-                    self.borrow.store_target_vars.remove(name);
-                }
+                Expr::Identifier(v) => Some(v.name.clone()),
+                Expr::Dereference(d) => match &*d.expr {
+                    Expr::Identifier(r) => self.store_target_var_of_name(&r.name),
+                    _ => None,
+                },
+                _ => None,
             },
+            Expr::Identifier(r) => self.store_target_var_of_name(&r.name),
+            _ => None,
+        };
+        match var {
+            Some(v) if v != *name => {
+                self.borrow
+                    .store_target_vars
+                    .insert(name.clone(), (v, depth));
+            }
             _ => {
                 self.borrow.store_target_vars.remove(name);
             }
@@ -425,9 +434,14 @@ impl<'a> TypeChecker<'a> {
         let Expr::Identifier(id) = &*d.expr else {
             return None;
         };
+        self.store_target_var_of_name(&id.name)
+    }
+
+    /// The variable that the local `r` points at, when it is bound to `&mut` of one.
+    fn store_target_var_of_name(&self, r: &crate::symbol::Symbol) -> Option<crate::symbol::Symbol> {
         // An entry made in a block that has ended is about another variable of that name.
-        let (var, depth) = self.borrow.store_target_vars.get(&id.name)?;
-        (*depth == self.scope_depth_of(&id.name)).then(|| var.clone())
+        let (var, depth) = self.borrow.store_target_vars.get(r)?;
+        (*depth == self.scope_depth_of(r)).then(|| var.clone())
     }
 
     /// For `lhs = rhs`: record the `&mut` that `rhs` puts into a local. Returns that local.
@@ -446,7 +460,13 @@ impl<'a> TypeChecker<'a> {
         if through_deref || (is_path && self.is_reference_variable(&root)) {
             return None;
         }
-        match self.store_target_of(rhs) {
+        // A place whose type holds no reference cannot hold a `&mut` either.
+        let target = if self.type_can_hold_reference(&self.check_expr_type_probe(lhs)) {
+            self.store_target_of(rhs)
+        } else {
+            None
+        };
+        match target {
             Some(target) => {
                 self.add_store_target(&root, target, is_path);
                 Some(root)

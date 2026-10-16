@@ -1,0 +1,68 @@
+//===- each_branch_borrows_into_the_same_outer_variable.vx -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// Only one branch of an `if` or a `match` runs, so each branch can give `outer` its own
+// `&mut x`: a branch does not see what the branches before it borrowed.
+//
+// CHECK-NOT: Error
+// CHECK-LABEL: func.func @main
+
+enum E {
+  A,
+  B,
+}
+
+struct M {
+  r : &mut i32,
+}
+
+fn in_each_branch_of_an_if(c : bool) -> i32 {
+  let mut x : i32 = 1;
+  let mut y : i32 = 2;
+  let mut outer = M {
+    r : &mut y
+  };
+  if c {
+    outer = M {
+      r : &mut x
+    };
+  } else {
+    outer = M {
+      r : &mut x
+    };
+  }
+  *outer.r = 5;
+  return 0;
+}
+
+fn in_each_arm_of_a_match(e : E) -> i32 {
+  let mut x : i32 = 1;
+  let mut y : i32 = 2;
+  let mut outer = M {
+    r : &mut y
+  };
+  match e {
+    E::A => {
+      outer = M {
+        r : &mut x
+      };
+    }
+    E::B => {
+      outer = M {
+        r : &mut x
+      };
+    }
+  }
+  *outer.r = 5;
+  return 0;
+}
+
+fn main() -> i32 {
+  return in_each_branch_of_an_if(1 > 2) + in_each_arm_of_a_match(E::A);
+}

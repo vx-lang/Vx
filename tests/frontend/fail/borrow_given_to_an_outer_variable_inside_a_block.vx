@@ -1,0 +1,167 @@
+//===- borrow_given_to_an_outer_variable_inside_a_block.vx -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `outer` is declared before a block and given a borrow of `x` inside it. The borrow lasts as
+// long as `outer` is used, after the block too, so `x` cannot change before `*outer.r` is read.
+import std::vec;
+
+enum E {
+  A,
+  B,
+}
+
+struct W {
+  r : &i32,
+}
+
+fn in_an_if() -> i32 {
+  let mut x : i32 = 1;
+  let y : i32 = 2;
+  let mut outer = W {
+    r : &y
+  };
+  if true {
+    outer = W {
+      r : &x
+    };
+  }
+  // CHECK: Error[E4009] at [[@LINE+1]]:3: `x` is assigned while it is borrowed
+  x = 5;
+  return *outer.r;
+}
+
+fn in_an_unsafe_block() -> i32 {
+  let mut x : i32 = 1;
+  let y : i32 = 2;
+  let mut outer = W {
+    r : &y
+  };
+  unsafe { outer = W { r : &x }; }
+  // CHECK: Error[E4009] at [[@LINE+1]]:3: `x` is assigned while it is borrowed
+  x = 5;
+  return *outer.r;
+}
+
+fn in_a_match_arm(e : E) -> i32 {
+  let mut x : i32 = 1;
+  let y : i32 = 2;
+  let mut outer = W {
+    r : &y
+  };
+  match e {
+    E::A => {
+      outer = W {
+        r : &x
+      };
+    }
+    E::B => {}
+  }
+  // CHECK: Error[E4009] at [[@LINE+1]]:3: `x` is assigned while it is borrowed
+  x = 5;
+  return *outer.r;
+}
+
+fn in_a_while_loop() -> i32 {
+  let mut x : i32 = 1;
+  let y : i32 = 2;
+  let mut outer = W {
+    r : &y
+  };
+  let mut i : i32 = 0;
+  while i < 1 {
+    outer = W {
+      r : &x
+    };
+    i = i + 1;
+  }
+  // CHECK: Error[E4009] at [[@LINE+1]]:3: `x` is assigned while it is borrowed
+  x = 5;
+  return *outer.r;
+}
+
+fn in_a_for_loop() -> i32 {
+  let mut x : i32 = 1;
+  let y : i32 = 2;
+  let mut outer = W {
+    r : &y
+  };
+  for i in 0..1 {
+    outer = W {
+      r : &x
+    };
+  }
+  // CHECK: Error[E4009] at [[@LINE+1]]:3: `x` is assigned while it is borrowed
+  x = 5;
+  return *outer.r;
+}
+
+// Growing `v` moves its elements, so `outer.r` would point at freed memory.
+fn a_slice_of_a_vec_kept_past_a_push() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(7);
+  let y : i32 = 2;
+  let mut outer = W {
+    r : &y
+  };
+  if true {
+    outer = W {
+      r : v.as_slice()
+    };
+  }
+  // CHECK: Error[E4003] at [[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+  v.push(8);
+  return *outer.r;
+}
+
+// The same with a plain reference, which a method returns. Its type is written out here and
+// inferred in the next function.
+fn a_reference_returned_by_a_method_kept_past_a_push() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(7);
+  let y : i32 = 2;
+  let mut outer : &i32 = &y;
+  if true {
+    outer = v.as_slice();
+  }
+  // CHECK: Error[E4003] at [[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+  v.push(8);
+  return *outer;
+}
+
+fn a_reference_returned_by_a_method_with_its_type_inferred() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(7);
+  let y : i32 = 2;
+  let mut outer = &y;
+  if true {
+    outer = v.as_slice();
+  }
+  // CHECK: Error[E4003] at [[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+  v.push(8);
+  return *outer;
+}
+
+// `&v` made inside the block. With `outer`'s type inferred from a borrow, it is refused first for
+// its lifetime (E3004); with the type written out, as here, only the borrow check sees it.
+fn a_borrow_of_the_vec_kept_past_a_push() -> i32 {
+  let mut v = Vec<i32>::new();
+  v.push(7);
+  let w = Vec<i32>::new();
+  let mut outer : &Vec<i32> = &w;
+  if true {
+    outer = &v;
+  }
+  // CHECK: Error[E4003] at [[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+  v.push(8);
+  return outer.len();
+}
+
+fn main() -> i32 {
+  return 0;
+}

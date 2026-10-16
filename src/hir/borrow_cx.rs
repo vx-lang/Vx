@@ -274,10 +274,27 @@ impl BorrowCx {
     // --- scope + save/restore bookkeeping ---
 
     /// Lexical-lifetime cleanup at scope exit: drop every record borrowed in a scope at or below
-    /// `depth` (the depth being popped).
-    pub(crate) fn retain_scope(&mut self, depth: usize) {
+    /// `depth` (the depth being popped), unless a variable still in scope holds it, such as
+    /// `outer` after `if c { outer = W { r : &x }; }`. `holder_depth` gives the depth of such a
+    /// variable's block, where the record then moves, to last as long as the variable does.
+    pub(crate) fn retain_scope(
+        &mut self,
+        depth: usize,
+        holder_depth: impl Fn(&str) -> Option<usize>,
+    ) {
         for borrows in self.active_borrows.values_mut() {
-            borrows.retain(|b| b.scope_depth < depth);
+            borrows.retain_mut(|b| {
+                if b.scope_depth < depth {
+                    return true;
+                }
+                match b.borrower_name.as_deref().and_then(&holder_depth) {
+                    Some(held_at) => {
+                        b.scope_depth = held_at;
+                        true
+                    }
+                    None => false,
+                }
+            });
         }
     }
 
@@ -348,6 +365,20 @@ impl BorrowCx {
             }
         }
         shared
+    }
+
+    /// Add back each of `records`, as [`Self::added_since`] returned them, that is not there
+    /// now: the borrows one branch made, joined with the other branches'.
+    pub(crate) fn add_back(&mut self, records: Vec<(Symbol, BorrowRecord)>) {
+        for (base, record) in records {
+            let present = self
+                .active_borrows
+                .get(&base)
+                .is_some_and(|list| list.contains(&record));
+            if !present {
+                self.record(&base, record);
+            }
+        }
     }
 
     /// Drop each of `records`, as [`Self::added_since`] returned them.

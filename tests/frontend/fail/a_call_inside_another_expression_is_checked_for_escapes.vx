@@ -1,0 +1,70 @@
+//===- a_call_inside_another_expression_is_checked_for_escapes.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `set(&mut r, &y)` stores `&y` into `r`, and `r` outlives `y`. The call is refused
+// wherever it is written. Each function puts it in a different place. The result of `set`
+// is an `i32`, so the variable or field it is given holds no reference.
+
+struct Wrap {
+  n : i32,
+}
+
+fn set(slot : &mut &i32, v : &i32) -> i32 {
+  *slot = v;
+  return 0;
+}
+
+fn twice(n : i32) -> i32 {
+  return n * 2;
+}
+
+fn right_side_of_an_assignment() -> i32 {
+  let x = 5;
+  let mut r = &x;
+  let mut t = 0;
+  if true {
+    let y = 7;
+    // CHECK-NOT: Error
+    // CHECK: Error[E4005] at [[# @LINE + 1]]:9: `r` is given a value that points at a variable of an inner block, and `r` outlives that block.
+    t = set(&mut r, &y);
+  }
+  return *r + t;
+}
+
+fn field_of_a_struct_literal() -> i32 {
+  let x = 5;
+  let mut r = &x;
+  let mut n = 0;
+  if true {
+    let y = 7;
+    // CHECK-NEXT: Error[E4005] at [[# @LINE + 2]]:11: `r` is given a value that points at a variable of an inner block, and `r` outlives that block.
+    let w = Wrap {
+      n : set(&mut r, &y)
+    };
+    n = w.n;
+  }
+  return *r + n;
+}
+
+fn argument_of_another_call() -> i32 {
+  let x = 5;
+  let mut r = &x;
+  let mut n = 0;
+  if true {
+    let y = 7;
+    // CHECK-NEXT: Error[E4005] at [[# @LINE + 1]]:15: `r` is given a value that points at a variable of an inner block, and `r` outlives that block.
+    n = twice(set(&mut r, &y));
+  }
+  return *r + n;
+}
+
+// CHECK-NEXT: 3 error(s) emitted
+fn main() -> i32 {
+  return 0;
+}
