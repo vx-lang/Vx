@@ -9,7 +9,8 @@
 // panic in generate_expr. Here a range used as a value: the compiler reports it and
 // fails cleanly (exit non-zero) instead of crashing.
 //
-// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// The default code generator does not support a range used as a value yet, so this uses the AST one.
+// RUN: not vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
 
 fn main() -> i32 {
   let r = 0..4;

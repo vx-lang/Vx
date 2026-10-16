@@ -990,6 +990,9 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
             .arg(format!("set -o pipefail; {}", cmd))
             .env("PATH", &path_var)
             .env("RUST_BACKTRACE", "1")
+            // A RUN line without `--legacy-codegen` tests the default code generator. If that
+            // code generator declines the program, vxc fails, and does not use the AST one.
+            .env("VX_NO_AST_FALLBACK", "1")
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .output()
             .expect("Failed to execute RUN line");
