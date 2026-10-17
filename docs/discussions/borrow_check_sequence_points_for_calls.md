@@ -1,6 +1,6 @@
 # Evaluation order and sequence points
 
-Status: proposal. Issues: #1800, #1795, #1847, #1848. Tracking: #1501.
+Status: proposal. Issues: #1800, #1795, #1847, #1848. Tracking: #1850, #1501.
 
 This note specifies the order in which Vx evaluates expressions and statements, and the borrow
 check rules that follow from that order. Both code generators, the comptime interpreter and the
@@ -178,35 +178,28 @@ extends to tasks, and nothing has to be taken back. This is not the parallel com
 
 ### What earlier memory models teach
 
-| Model | Rule | Lesson for Vx | | --- | --- | --- | | C++11 | *Happens-before* is sequenced-before
-plus *synchronizes-with* (a release write read by an acquire read). A data race is undefined
-behavior. | Build the order between tasks from the order inside a task. But undefined behavior for a
-race is not acceptable in safe code. | | C++ `memory_order_consume` | An ordering that follows data
-dependencies. No compiler implemented it as specified, and C++26 deprecates it (P3475). | Do not
-specify an ordering that a compiler cannot check. | | C++ and Java relaxed accesses | Neither model
-rules out *out-of-thin-air* values for relaxed or racy accesses, and that problem is still open. |
-Nothing that the checker relies on may depend on relaxed accesses. | | Java (JSR-133) | A race is
-defined behavior, not undefined. Ševčík and Aspinall (2008) showed that the causality rules forbid
-common compiler optimizations. | It is very hard to give a racy program a meaning. Forbid races when
-compiling instead. | | Go | A race on a value larger than one word, such as a slice, can corrupt
-memory. | No middle ground exists: a language allows memory corruption from races, or prevents
-races. | | Rust | `Send`, `Sync` and borrows make safe code free of data races. `thread::scope` lets
-a task borrow a local, because the scope ends with a join. Atomics follow C++20. | Exclusivity
-across tasks gives freedom from races. A join that the program structure guarantees lets a task's
-borrows end like a call's borrows. | | Cilk, OpenMP tasks | *Serial elision*: a program without
-races means the same as the program with the parallel keywords removed. | A parallel construct can
-have a sequential meaning. `spawn on` already has one. | | CUDA, HSA, Vulkan | Synchronization has a
-*scope*: a block, a device or the system. Vulkan separates ordering from *availability* and
-*visibility* in memory that is not coherent. | On a machine with many memories, happens-before needs
-a scope, and visibility is a separate step. Vx memory spaces and `transfer` already make visibility
-explicit. | | Swift 6 (SE-0414) | *Region-based isolation*: a value can move to another task when
-the sender does not use its region after that. | The checker can prove that a value moves into a
-task, with few annotations. |
+| Model | Rule | Lesson for Vx |
+| --- | --- | --- |
+| C++11 | *Happens-before* is sequenced-before plus *synchronizes-with* (a release write read by an acquire read). A data race is undefined behavior. | Build the order between tasks from the order inside a task. But undefined behavior for a race is not acceptable in safe code. |
+| C++ `memory_order_consume` | An ordering that follows data dependencies. No compiler implemented it as specified, and C++26 deprecates it (P3475). | Do not specify an ordering that a compiler cannot check. |
+| C++ and Java relaxed accesses | Neither model rules out *out-of-thin-air* values for relaxed or racy accesses, and that problem is still open. | Nothing that the checker relies on may depend on relaxed accesses. |
+| Java (JSR-133) | A race is defined behavior, not undefined. Ševčík and Aspinall (2008) showed that the causality rules forbid common compiler optimizations. | It is very hard to give a racy program a meaning. Forbid races when compiling instead. |
+| Go | A race on a value larger than one word, such as a slice, can corrupt memory. | No middle ground exists: a language allows memory corruption from races, or prevents races. |
+| Rust | `Send`, `Sync` and borrows make safe code free of data races. `thread::scope` lets a task borrow a local, because the scope ends with a join. Atomics follow C++20. | Exclusivity across tasks gives freedom from races. A join that the program structure guarantees lets a task's borrows end like a call's borrows. |
+| Cilk, OpenMP tasks | *Serial elision*: a program without races means the same as the program with the parallel keywords removed. | A parallel construct can have a sequential meaning. `spawn on` already has one. |
+| CUDA, HSA, Vulkan | Synchronization has a *scope*: a block, a device or the system. Vulkan separates ordering from *availability* and *visibility* in memory that is not coherent. | On a machine with many memories, happens-before needs a scope, and visibility is a separate step. Vx memory spaces and `transfer` already make visibility explicit. |
+| CUDA since Volta | Each thread of a warp has its own program counter. Code that assumed the lanes of a warp run in lockstep broke, and `__syncwarp` became necessary. | Do not specify lockstep. Name every point where lanes meet. |
+| CUDA, LLVM, Vulkan convergence | A barrier or a warp operation in divergent control flow is undefined behavior in CUDA. LLVM added convergence tokens, and Vulkan added maximal reconvergence, to say where lanes meet again. | Make a barrier in divergent control flow a compile error, not undefined behavior. |
+| Swift 6 (SE-0414) | *Region-based isolation*: a value can move to another task when the sender does not use its region after that. | The checker can prove that a value moves into a task, with few annotations. |
 
 ### The rules
 
-**C1. Sequential meaning.** Each parallel construct has a sequential order, and the program means
-that order:
+**C0. Sequence points order only conflicting accesses.** Two accesses *conflict* when they touch
+overlapping places and at least one writes. The rules in this note order conflicting accesses, and
+nothing else. "Sequential meaning" below is about the result, not about how the program runs.
+
+**C1. Sequential meaning.** Each parallel construct that uses no atomics has a sequential order,
+and the program means that order:
 
 - a `spawn on` region runs at its place among the statements.
 - the passes of a `spawn` loop run in pass order.
@@ -214,6 +207,16 @@ that order:
 
 The compiler runs parts at the same time only when C3 shows that no program can see the difference.
 So a program gives the same result on one thread and on many.
+
+Two cases have more than one valid result:
+
+- **A construct that uses atomics.** Its meaning is the set of results that the memory model of C7
+  allows.
+- **A reduction that declares reassociation.** A parallel sum of floating-point numbers rounds
+  differently from a sequential sum. A reduction may declare that its operator can be
+  reassociated. Then the compiler picks a tree order. The order is the same on each run on one
+  machine, but the language does not specify it. Without that declaration, C1 holds, and a
+  floating-point reduction runs in order.
 
 **C2. Fork and join are sequence points.** At the *fork*, the program evaluates every operand of the
 construct by E1: the topology index, the loop bounds and the captured values. Then the parts start.
@@ -236,10 +239,22 @@ A1 needs the wait before it. That includes:
 `docs/spawn_on.md` §3 lists only the first case. The overlap is not built, so no program is wrong
 today, but the list must grow before someone builds the overlap.
 
-**C5. Barriers.** In a block-and-thread kernel, the lanes run at the same time. `barrier()` is a
-sequence point for every lane of the block. Each access before it, in any lane, happens before each
-access after it, in any lane. Between two barriers, C3 applies to the lanes: a place that one lane
-writes may not be accessed by another lane.
+**C5. Barriers.** In a block-and-thread kernel, the lanes run at the same time. A barrier is a
+sequence point for every lane of its *scope*:
+
+- a subgroup: the lanes that the hardware runs together, such as a warp.
+- a block: the lanes that share a shared memory.
+- a device.
+
+Each access before a barrier, in any lane of its scope, happens before each access after it, in any
+lane of the scope. Between two barriers, C3 applies to the lanes: a place that one lane writes may
+not be accessed by another lane. The language does not specify that the lanes of a subgroup run in
+lockstep. A subgroup operation, such as a shuffle, a vote or a reduction, is a sequence point at
+subgroup scope. Today `barrier()` has block scope, and Vx has no other scope.
+
+**C5a. Convergence.** Every lane of a barrier's scope must reach the barrier, and the checker must
+prove it. A barrier or a subgroup operation must be in control flow that is the same for every lane
+of its scope, or the program gets a compile error. CUDA makes this undefined behavior instead.
 
 **C6. Asynchronous copies.** `raw::async_copy(dst, src, i)` is an access with a span (A2). It starts
 at the call and ends at the matching `raw::async_wait`. During the span, `dst[i]` may not be read
@@ -255,9 +270,70 @@ exclusive, and atomics are sequential. When Vx gets tasks that share memory:
    `docs/language_rules_for_a_parallel_compiler.md`.
 1. Memory orderings follow C++20, as in Rust, without `consume`. A release write that an acquire
    read sees is a sequence point between the two tasks.
-1. The scope of an atomic, as in CUDA, comes from the memory space where the atomic lives. A space
-   that only one device can see needs no system scope. This is an open question.
+1. The scope of an atomic, as in PTX, comes from the memory space where the atomic lives: block scope
+   in shared memory, device scope in device memory, and system scope in managed memory that the host
+   also sees. The programmer cannot pick a scope that is too narrow. This is an open question.
 1. A data race in `unsafe` code is undefined behavior, as in Rust. This is the only exception.
+
+### Mapping to hardware
+
+These rules order only what a program can see. So they do not stop the compiler from using weak
+hardware fully.
+
+**Weakly ordered CPUs, such as AArch64.** E1 is the order of evaluation, not the order of memory
+operations. A1 and C3 make safe code free of data races. A program without data races cannot see
+how the hardware reorders plain accesses (the DRF-SC result of C++11 and Rust). So:
+
+- a plain read or write compiles to a plain `LDR` or `STR`, with no `DMB`.
+- a fork, a join and the release and acquire points of C7 compile to `STLR` and `LDAR`, or `LDAPR`
+  on Armv8.3 and later.
+- atomics use the published mappings from C++20 to ARMv8, which have proofs (Pulte et al. 2018,
+  Podkopaev et al. 2019).
+
+Three choices would close this door, and the rules avoid all three: sequential consistency for
+plain accesses (the cost of Java `volatile`), a meaning for programs with races (Java), and
+`consume`.
+
+**GPU streams.** C1 and C4 together give stream semantics. The compiler knows the accesses of each
+`spawn on` region. Two regions without conflicting accesses can go to different streams and run at
+the same time. Two regions that conflict go to one stream, or an event wait joins them. So the
+compiler makes the dependency graph that a CUDA graph would hold, and the program does not write it.
+C6 at device level lets a copy overlap compute, as `cudaMemcpyAsync` does.
+
+**GPU warps.** C5 gives barriers a subgroup scope, and subgroup operations become sequence points.
+C5a makes divergent barriers a compile error. The language specifies no lockstep, so it stays right
+on hardware that schedules each lane alone. The scope of an atomic comes from its memory space (C7),
+which maps to the PTX scopes `.cta`, `.gpu` and `.sys`.
+
+## A formal model
+
+The rules can be checked in three layers, from the cheapest to the most expensive.
+
+1. **An axiomatic model in herd7's `cat` language.** The C11, Linux kernel, ARMv8, PTX and Vulkan
+   models use this format. E1 gives program order. C2, C5 and C7 give synchronization edges.
+   Happens-before is their transitive closure. A1 and C3 become one axiom: happens-before orders
+   every two conflicting accesses. The programs in this note become litmus tests. memalloy
+   (Wickerson et al. 2017) then compares the Vx model with the ARMv8 and PTX models, and checks the
+   mapping above for all programs up to a size bound.
+
+1. **A small core language in Lean 4.** It has calls, the reservation of `&mut`, holders, fork and
+   join, and barriers. It proves three theorems:
+
+   - soundness: if the checker accepts a program, no run has two conflicting accesses active at the
+     same time.
+   - serial elision: if C3 holds, every interleaving gives the result of the sequential order.
+   - DRF-SC: a program without data races cannot see weak memory ordering.
+
+   RustBelt, Stacked Borrows and Oxide did this kind of work for Rust. A proof for all of Vx with
+   `unsafe` would take years, so the core comes first.
+
+1. **A link to the compiler.** A proof about a model says nothing about the code in `src/hir`.
+
+   - A run mode that checks A1 and A2 while the program runs, as Miri does for Rust. When the static
+     checker accepts a program that this mode rejects, the static checker has a bug.
+   - A fuzzer that makes programs and compares the two checkers.
+   - The test of evaluation order from the work list, on both generators and on the comptime
+     interpreter.
 
 ## The decision this needs
 
@@ -293,7 +369,9 @@ Option 2 is unsound. Option 1 can come first, and option 3 later, to accept more
 | A6 | held borrows copied only from a reference receiver | from every receiver |
 | C1 `unroll across` | `docs/lang/semantics.md`: parallel instances with no order | index order. Instances overlap only where C3 proves it |
 | C4 | waits planned only before reads of a region's results | also before writes that conflict |
-| C5 | lanes between barriers: not measured | checked by C3 |
+| C5 | lanes between barriers: not measured. Block scope only | checked by C3. Subgroup and device scopes |
+| C5a | a barrier in divergent control flow: not measured | compile error |
+| C1 reductions | no way to declare reassociation | a reduction that declares it may run as a tree |
 
 ## The work, in order
 
@@ -352,5 +430,17 @@ is a separate change.
 - PTX ISA, memory consistency model:
   https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#memory-consistency-model
 - Vulkan specification, appendix "Memory Model"
+- Lustig et al., A Formal Analysis of the NVIDIA PTX Memory Consistency Model, ASPLOS 2019
+- Pulte et al., Simplifying ARM Concurrency: Multicopy-Atomic Axiomatic and Operational Models for
+  ARMv8, POPL 2018
+- Podkopaev, Lahav and Vafeiadis, Bridging the Gap between Programming Languages and Hardware Weak
+  Memory Models, POPL 2019
+- Wickerson et al., Automatically Comparing Memory Consistency Models, POPL 2017
+- Alglave, Maranget and Tautschnig, Herding Cats, TOPLAS 2014
+- Jung et al., RustBelt, POPL 2018. Jung et al., Stacked Borrows, POPL 2020
+- Weiss et al., Oxide: The Essence of Rust, 2019
+- Bocchino et al., A Type and Effect System for Deterministic Parallel Java, OOPSLA 2009
+- NVIDIA, Inside Volta (independent thread scheduling), 2017
+- LLVM, Convergence and Uniformity: https://llvm.org/docs/ConvergenceAndUniformity.html
 - Swift SE-0414, Region based isolation:
   https://github.com/swiftlang/swift-evolution/blob/main/proposals/0414-region-based-isolation.md
