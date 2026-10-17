@@ -5,12 +5,13 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: env VX_PRINT_DROPS=1 vxc %s --action emit-mlir 2>&1 >/dev/null | FileCheck %s
-// RUN: env VX_PRINT_DROPS=1 vxc %s --action emit-mlir -j 2 2>&1 >/dev/null | FileCheck %s
-// RUN: env VX_PRINT_DROPS=1 vxc %s --action emit-mlir --legacy-codegen 2>&1 >/dev/null | FileCheck %s
+// RUN: env VX_PRINT_DROPS=1 vxc %s --action emit-mlir 2>&1 >/dev/null | LC_ALL=C sort | FileCheck %s
+// RUN: env VX_PRINT_DROPS=1 vxc %s --action emit-mlir -j 2 2>&1 >/dev/null | LC_ALL=C sort | FileCheck %s
+// RUN: env VX_PRINT_DROPS=1 vxc %s --action emit-mlir --legacy-codegen 2>&1 >/dev/null | LC_ALL=C sort | FileCheck %s
 //
 // With VX_PRINT_DROPS=1, generating code prints each drop point once, with its line, whichever
-// code generator is used.
+// code generator is used. A parallel compile (`-j 2`) can print the lines in any order, so the
+// output is sorted. A line printed twice is then followed by its copy.
 
 fn total(t : Tensor<f32, [4]>) -> f32 {
   return t[0] + t[1];
@@ -25,6 +26,6 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: drop in total: t, before the return on line 16
-// CHECK-NEXT: drop in main: a, after the statement on line 22
+// CHECK: drop in main: a, after the statement on line 23
+// CHECK-NEXT: drop in total: t, before the return on line 17
 // CHECK-NOT: drop in

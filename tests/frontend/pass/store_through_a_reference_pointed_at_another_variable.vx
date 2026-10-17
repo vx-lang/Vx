@@ -1,0 +1,30 @@
+//===- store_through_a_reference_pointed_at_another_variable.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+//
+// `rr` first points at `a`, then, through `rb`, at `b`. `*rr = &mut y` gives `b` a new
+// value, as `b = &mut y` would. All the variables are in one block, so nothing outlives
+// what it points at.
+
+fn main() -> i32 {
+  let mut x = 5;
+  let mut z = 6;
+  let mut y = 7;
+  let mut a = &mut x;
+  let mut b = &mut z;
+  let mut rr = &mut a;
+  let rb = &mut b;
+  rr = rb;
+  *rr = &mut y;
+  **rr = 20;
+  // CHECK-NOT: Error
+  // CHECK: {{^}}20{{$}}
+  print(y);
+  print!("\n");
+  return 0;
+}

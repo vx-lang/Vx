@@ -1,0 +1,27 @@
+//===- gpu_kernel_in_main_on_the_ast_code_generator.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// On the AST code generator, a local tensor is kept in a slot on the host
+// stack. A `spawn` in `main` that writes the tensor gets the tensor itself, not
+// that slot, which a GPU cannot read. So the PTX kernel stores 1.0 (bits
+// 1065353216) straight into global memory.
+//
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// CHECK: toponame=Device{{.*}}image={{.*}}.entry vx_npu_kernel_0({{.*}}st.global.b32 {{.*}}1065353216;
+
+fn main() -> i32 {
+  let h = Tensor<f32, [1024]>::fill(2.0);
+  let mut d = transfer(h, Memory::HBM);
+  spawn on(Topology::Device) {
+    for i in 0..1024 {
+      d[i] = 1.0;
+    }
+  }
+  let back = transfer(d, Memory::CPU_DRAM);
+  print(back[0]);
+  return 0;
+}

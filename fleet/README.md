@@ -86,6 +86,7 @@ error rather than a silently ignored word.
 | mi300x | AMD ROCm documentation, "AMD Instinct MI300 series microarchitecture" — per-datatype table |
 | m4-uma | Apple, Metal Shading Language Specification — "Scalar Data Types", Table 2.1 |
 | cortex-m7 | STMicroelectronics, STM32H742xI/G STM32H743xI/G datasheet (DS12110) |
+| arc-a770 | Intel, "Introduction to the Xe-HPG Architecture" white paper (document 758302) — the XMX units "support FP16, BF16, INT8, INT4 and INT2 multiply, with either 16 or 32 bits accumulate", and the paper's throughput table lists XMX BF16, INT8 and INT4/INT2 rates. `f64` is omitted by measurement: the card exposes no `cl_khr_fp64` and Vulkan reports `shaderFloat64 = false` |
 
 What the declarations then say, which is the point of writing them down:
 
@@ -148,6 +149,10 @@ matrix, but enough to flip a marginal cell.
 | `HBM` bandwidth (**B200**) | **contested** — 7.7 TB/s (Lenovo per-GPU table) vs 8.0 TB/s (NVIDIA DGX aggregate ÷ 8). 7.7 used; see `b200.vx` |
 | `L2` capacity and bandwidth | **unverified** — transcribed from architecture whitepapers from memory |
 | `SMEM` capacity | **unverified** — per-SM/CU configurable maximum |
+| **arc-a770** capacities (`HBM`, `L2`, `SMEM`) | **measured 2026-10-04** — device-reported figures from Level Zero, OpenCL and Vulkan queries on the card (16 GiB part; 15.11 GiB reported usable, recorded in the file) |
+| **arc-a770** `HBM` bandwidth (560 GB/s) | **verified 2026-10-11** — Intel, "Introduction to the Xe-HPG Architecture" white paper (document 758302): 17.5 GT/s per pin over a maximum of 256 bits, "up to 560 GB/s of low-latency bandwidth"; the 512 GB/s some sources quote is the 8 GB card |
+| **arc-a770** transfer edges (31.5 GB/s) | **spec** — the card's PCIe 4.0 x16 capability, from the same white paper ("a maximum of 32 GB/s in each direction for a x16 PCIe 4.0 slot", 31.5 GB/s after the link's encoding); the 10.8-11.7 / 10.0-10.8 GB/s measured on this machine is its own Gen3 x16 link, not the card |
+| **arc-a770** `SMEM` and `L2` bandwidths | **absent on purpose** — not published for this part, so the on-die hops are left unpriceable rather than priced by a guess |
 | **cortex-m7** capacities (AXI SRAM, DTCM, L1 D-cache) | **verified 2026-09-17** — quoted from the ST datasheet (DS12110) |
 | **cortex-m7** bandwidths | **unverified** — derived from bus width x clock (64-bit AXI at 240 MHz; 64-bit TCM at the 480 MHz core clock), not quoted |
 | Interconnect figures in `node-8gpu.vx` | **unverified** |
