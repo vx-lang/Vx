@@ -312,9 +312,11 @@ The rules can be checked in three layers, from the cheapest to the most expensiv
 1. **An axiomatic model in herd7's `cat` language.** The C11, Linux kernel, ARMv8, PTX and Vulkan
    models use this format. E1 gives program order. C2, C5 and C7 give synchronization edges.
    Happens-before is their transitive closure. A1 and C3 become one axiom: happens-before orders
-   every two conflicting accesses. The programs in this note become litmus tests. memalloy
-   (Wickerson et al. 2017) then compares the Vx model with the ARMv8 and PTX models, and checks the
-   mapping above for all programs up to a size bound.
+   every two conflicting accesses. Each case of C1 to C7 becomes a litmus test.
+   `formal/memory_model/` (#1851) has the model and the tests. memalloy (Wickerson et al. 2017)
+   then compares the Vx model with the ARMv8 and PTX models, and checks the mapping above for all
+   programs up to a size bound. herd7 models only code that runs at the same time. The sequential
+   programs of this note go to the Lean model.
 
 1. **A small core language in Lean 4.** It has calls, the reservation of `&mut`, holders, fork and
    join, and barriers. It proves three theorems:
