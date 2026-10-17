@@ -39,6 +39,8 @@ pub enum TokenTypeBase<S, C> {
     Unsafe,
     Safe,
     Extern,
+    /// `pub fn`: the function is exported from the object file.
+    Pub,
     Trait,
     /// `type Item;` in a trait, `type Item = i64;` in an impl.
     TypeKw,
@@ -153,6 +155,7 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::Unsafe => write!(f, "unsafe"),
             TokenTypeBase::Safe => write!(f, "safe"),
             TokenTypeBase::Extern => write!(f, "extern"),
+            TokenTypeBase::Pub => write!(f, "pub"),
             TokenTypeBase::Trait => write!(f, "trait"),
             TokenTypeBase::TypeKw => write!(f, "type"),
             TokenTypeBase::Impl => write!(f, "impl"),
@@ -282,6 +285,7 @@ static KEYWORDS: Lazy<
     m.insert("unsafe", TokenTypeBase::Unsafe);
     m.insert("safe", TokenTypeBase::Safe);
     m.insert("extern", TokenTypeBase::Extern);
+    m.insert("pub", TokenTypeBase::Pub);
     m.insert("trait", TokenTypeBase::Trait);
     m.insert("type", TokenTypeBase::TypeKw);
     m.insert("impl", TokenTypeBase::Impl);
@@ -840,6 +844,7 @@ impl<'a> Token<'a> {
             TokenTypeBase::Unsafe => TokenTypeBase::Unsafe,
             TokenTypeBase::Safe => TokenTypeBase::Safe,
             TokenTypeBase::Extern => TokenTypeBase::Extern,
+            TokenTypeBase::Pub => TokenTypeBase::Pub,
             TokenTypeBase::Trait => TokenTypeBase::Trait,
             TokenTypeBase::TypeKw => TokenTypeBase::TypeKw,
             TokenTypeBase::Impl => TokenTypeBase::Impl,
@@ -954,6 +959,7 @@ impl OwnedToken {
             TokenTypeBase::Unsafe => TokenTypeBase::Unsafe,
             TokenTypeBase::Safe => TokenTypeBase::Safe,
             TokenTypeBase::Extern => TokenTypeBase::Extern,
+            TokenTypeBase::Pub => TokenTypeBase::Pub,
             TokenTypeBase::Trait => TokenTypeBase::Trait,
             TokenTypeBase::TypeKw => TokenTypeBase::TypeKw,
             TokenTypeBase::Impl => TokenTypeBase::Impl,

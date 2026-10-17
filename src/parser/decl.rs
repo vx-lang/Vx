@@ -135,6 +135,10 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_function(&mut self) -> ParseResult<'a, Function> {
+        // A top-level `pub fn` has its `pub` read before this, so one here is on a method.
+        if self.check(&TokenType::Pub) {
+            return Err(self.error("`pub` on a method is not supported yet"));
+        }
         let is_unsafe = self.match_token(&TokenType::Unsafe);
         self.consume(&TokenType::Fn, "Expected 'fn'")?;
 
@@ -245,6 +249,7 @@ impl<'a> Parser<'a> {
 
         Ok(Function {
             is_unsafe,
+            is_pub: false,
             name: name.into(),
             generics,
             params,
@@ -1017,6 +1022,9 @@ impl<'a> Parser<'a> {
             if self.check(&TokenType::Unsafe) {
                 return Err(self.error("`unsafe fn` on a trait method is not supported yet"));
             }
+            if self.check(&TokenType::Pub) {
+                return Err(self.error("`pub` on a method is not supported yet"));
+            }
             self.consume(&TokenType::Fn, "Expected 'fn' in trait")?;
             let method_name = self.expect_identifier("Expected method name")?;
             // The method's own parameters, on top of the trait's. They stay in scope for
@@ -1433,9 +1441,19 @@ impl<'a> Parser<'a> {
                 let mut c = self.parse_const_item()?;
                 c.doc_comment = doc_comment;
                 consts.push(c);
-            } else if self.at_fn_start() {
+            } else if self.at_fn_start() || self.check(&TokenType::Pub) {
                 let start = self.peek().clone();
+                let is_pub = self.match_token(&TokenType::Pub);
+                if is_pub && !self.at_fn_start() {
+                    return Err(self.error("Expected 'fn' after 'pub'"));
+                }
                 let mut f = self.parse_function()?;
+                // A generic function becomes one copy per type, each with its own name, so
+                // there is no single name to export.
+                if is_pub && !f.generics.is_empty() {
+                    return Err(self.error_at(&start, "a generic function cannot be `pub` yet"));
+                }
+                f.is_pub = is_pub;
                 f.doc_comment = doc_comment;
                 // Vx has no overloading: a second `fn foo` replaced the first without a word.
                 let earlier = defined_at.get(&f.name).copied().or_else(|| {

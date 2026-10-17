@@ -219,7 +219,11 @@ Accelerate. The whole thing — runtime compilation, the libffi link, and the
 - A function the program defines keeps its name, and is `hidden` and `dso_local`.
   The executable does not export it, so a program's `fn write` does not replace
   libc's `write` for the runtime library.
-- Apart from `main`, every symbol Vx exports starts with `_vx_`. The kernel entry
+- A `pub fn` keeps its name and is exported, so a shared library built from the
+  program gives it to C. Only a top-level function that is not generic can be
+  `pub`. A `pub fn write` replaces libc's `write`, as any exported C function does.
+- Apart from `main` and `pub` functions, every symbol Vx exports starts with
+  `_vx_`. The kernel entry
   points `_vx_ciface_<kernel>` are the only ones today. The dispatch runtime
   finds them with `dlsym`.
 - `main` keeps its C name, because the C runtime calls it.
