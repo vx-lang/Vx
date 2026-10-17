@@ -1644,7 +1644,7 @@ impl<'a> TypeChecker<'a> {
     /// A place reached through a reference variable, `*m`, `(*m).f` or `(*m)[i]`, rooted at that
     /// variable: `&mut *m` borrows `m`, so `m` cannot be used while the reborrow is. A raw
     /// pointer has no borrows to track.
-    fn reborrow_base_and_path(&self, e: &Expr) -> Option<(String, Vec<String>)> {
+    pub(crate) fn reborrow_base_and_path(&self, e: &Expr) -> Option<(String, Vec<String>)> {
         match e {
             Expr::Dereference(d) => match &*d.expr {
                 Expr::Identifier(id)

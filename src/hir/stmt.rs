@@ -1073,7 +1073,10 @@ impl<'a> TypeChecker<'a> {
         if self.speculating || self.borrow.skip_borrow_check {
             return;
         }
-        let Some((root, path)) = Self::extract_base_and_path(lhs) else {
+        // `*m = v` writes what `m` points at, which `&*m` borrowed.
+        let direct = Self::extract_base_and_path(lhs);
+        let through_deref = direct.is_none();
+        let Some((root, path)) = direct.or_else(|| self.reborrow_base_and_path(lhs)) else {
             return;
         };
         let shared = self
@@ -1087,7 +1090,10 @@ impl<'a> TypeChecker<'a> {
                     && crate::hir::places::paths_may_alias(&path, &b.path)
             });
         if shared {
-            let place = crate::hir::places::display_place(&root, &path);
+            let mut place = crate::hir::places::display_place(&root, &path);
+            if through_deref {
+                place = format!("*{place}");
+            }
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E4009,
                 format!(
