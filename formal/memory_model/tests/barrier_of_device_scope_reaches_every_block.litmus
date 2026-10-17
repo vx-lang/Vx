@@ -1,0 +1,9 @@
+LISA barrier_of_device_scope_reaches_every_block
+(* A barrier of device scope orders the lanes of every block on the device (C5).
+   Expect: never, no data race. *)
+{ x = 0; }
+ P0                  | P1                   | P2                   ;
+ w[plain] x 1        | f[barrier,device]    | f[barrier,device]    ;
+ f[barrier,device]   | r[plain] r0 x        | r[plain] r1 x        ;
+scopes: (device (block P0 P1) (block P2))
+exists (1:r0 = 0 \/ 2:r1 = 0)

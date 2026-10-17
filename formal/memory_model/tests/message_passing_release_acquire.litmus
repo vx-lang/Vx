@@ -1,0 +1,11 @@
+LISA message_passing_release_acquire
+(* A release write of the flag, read by an acquire read, publishes the data (C7). A reader that
+   waits for the flag reads the new data, and nothing races.
+   Expect: never, no data race. *)
+{ data = 0; flag = 0; }
+ P0                  | P1                   ;
+ w[plain] data 1     | r[acq] r0 flag       ;
+ w[rel] flag 1       | r[plain] r1 data     ;
+scopes: (system P0 P1)
+filter (1:r0 = 1)
+exists (1:r1 = 0)
