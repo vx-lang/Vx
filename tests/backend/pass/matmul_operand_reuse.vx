@@ -71,15 +71,19 @@ fn main() -> i32 {
   print(e[1][1]);
   print!(" ");
 
-  // The same two tensors, read by kernels placed on two different GPUs.
-  let mut p = unsafe { Tensor<f32, [2, 2]>::uninit() };
-  let mut q = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  // The same two tensors, copied to GPU memory and read by kernels placed on two different GPUs.
+  let ag = transfer(a, Memory::GPU_HBM);
+  let bg = transfer(b, Memory::GPU_HBM);
+  let mut pg = unsafe { Tensor<f32, [2, 2], Memory::GPU_HBM>::uninit() };
+  let mut qg = unsafe { Tensor<f32, [2, 2], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU[0]) {
-    p = &a @ &b;
+    pg = &ag @ &bg;
   }
   spawn on(Topology::GPU[1]) {
-    q = &a @ &b;
+    qg = &ag @ &bg;
   }
+  let p = transfer(pg, Memory::CPU_DRAM);
+  let q = transfer(qg, Memory::CPU_DRAM);
 
   print(p[0][0]);
   print!(" ");

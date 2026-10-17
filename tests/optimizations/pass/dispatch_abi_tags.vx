@@ -37,6 +37,10 @@
 // materialized by `vx-to-llvm`, and the middle-end runner checks the module as
 // it stands *before* the lowering pipeline.
 //
+// The kernel stores a new tensor into a slot in host memory, so the regions run
+// on the ANE, which shares memory with the host. A discrete GPU cannot write to
+// that slot.
+//
 // The four tags are different numbers, so the checks do not depend on the order the
 // arguments are passed in.
 //
@@ -48,7 +52,7 @@
 
 fn half_kernel(a : Tensor<f16, [?, ?]>) -> Tensor<f16, [?, ?]> {
   let mut c = a.clone();
-  spawn on(Topology::GPU) {
+  spawn on(Topology::ANE) {
     c = a.clone();
   }
   return c;
@@ -56,7 +60,7 @@ fn half_kernel(a : Tensor<f16, [?, ?]>) -> Tensor<f16, [?, ?]> {
 
 fn single_kernel(a : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
   let mut c = a.clone();
-  spawn on(Topology::GPU) {
+  spawn on(Topology::ANE) {
     c = a.clone();
   }
   return c;

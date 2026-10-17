@@ -35,6 +35,8 @@
 // shape can settle it. `out` names the *slot* the kernel stores its result
 // pointer through, since `c = a @ b` allocates the result inside the kernel
 // rather than filling a buffer it was handed -- hence `outkind = "slot"`.
+// The slot is in host memory, so the region runs on the ANE, which shares
+// memory with the host. A discrete GPU cannot write to it.
 //
 //
 // The role indices moved when the outliner stopped capturing constants: the
@@ -71,7 +73,7 @@ fn gemm(a : Tensor<f32, [?, ?]>, b : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]>
   // `a @ b` over run-time extents has run-time extents, and a `[2, 3]` binding would be a
   // narrowing nothing checks; the accumulator says what it is.
   let mut c = unsafe { Tensor<f32, [?, ?]>::uninit([2, 3]) };
-  spawn on(Topology::GPU) {
+  spawn on(Topology::ANE) {
     c = a @b;
   }
   return c;

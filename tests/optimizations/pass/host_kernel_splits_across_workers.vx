@@ -83,7 +83,7 @@
 // CHECK: memref.store %[[UB]], %{{.*}}[] {vx.parallel_bound}
 
 fn probe() -> f32 {
-  let mut o = unsafe { Tensor<f32, [4, 8]>::uninit() };
+  let mut o = unsafe { Tensor<f32, [4, 8], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
     for i in 0..4 {
       for j in 0..8 {
@@ -91,7 +91,8 @@ fn probe() -> f32 {
       }
     }
   }
-  return o[0][0];
+  let back = transfer(o, Memory::CPU_DRAM);
+  return back[0][0];
 }
 
 fn main() -> i32 {

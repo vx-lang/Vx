@@ -42,9 +42,9 @@
 // The launch carries the one buffer the region touches and nothing else. The
 // loop bounds, the exponent's operand and the scratch extents were all
 // constants, and none of them is an operand here.
-// CHECK: vx.launch @vx_npu_kernel_0(%alloc) {topology = 500 : i32, vx.topology_name = "GPU[0]"} : (memref<?x?xf32>) -> ()
+// CHECK: vx.launch @vx_npu_kernel_0(%{{[a-z0-9_]+}}) {topology = 500 : i32, vx.topology_name = "GPU[0]"} : (memref<4x4xf32>) -> ()
 
-// CHECK: vx.kernel @vx_npu_kernel_0(500) : (memref<?x?xf32>) -> ()
+// CHECK: vx.kernel @vx_npu_kernel_0(500) : (memref<4x4xf32>) -> ()
 
 // The bounds are inside the kernel, so the shape is visible to the backend.
 // CHECK: arith.constant 4 : index
@@ -64,7 +64,7 @@
 import core::num;
 
 fn kernel_prep() -> f32 {
-  let mut o = unsafe { Tensor<f32, [4, 4]>::uninit() };
+  let mut o = transfer(unsafe { Tensor<f32, [4, 4]>::uninit() }, Memory::GPU_HBM);
   spawn on(Topology::GPU) {
     let mut scratch = unsafe { Tensor<f32, [1, 4]>::uninit() };
     for i in 0..4 {
@@ -74,7 +74,8 @@ fn kernel_prep() -> f32 {
       }
     }
   }
-  return o[0][0];
+  let back = transfer(o, Memory::CPU_DRAM);
+  return back[0][0];
 }
 
 fn main() -> i32 {

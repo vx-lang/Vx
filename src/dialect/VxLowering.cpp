@@ -2596,6 +2596,48 @@ static LLVM::LLVMFuncOp getOrDeclareRuntimeFn(OpBuilder &builder,
       loc, name, LLVM::LLVMFunctionType::get(result, params, false));
 }
 
+// A program may declare a runtime function itself, as an `extern` it calls
+// directly, and a `transfer` then calls the same function. The program's
+// declaration is still a `func.func` here, so the lowering would declare an
+// `llvm.func` of the same name beside it. Make the program's declaration the
+// `llvm.func` first, and its calls `llvm.call`s, so both use one declaration.
+static void adoptDeclaredRuntimeFns(ModuleOp module) {
+  for (StringRef name :
+       {"vx_plugin_alloc_and_transfer", "vx_plugin_transfer_device_to_host",
+        "vx_plugin_transfer_peer", "vx_plugin_free",
+        "vx_plugin_dispatch_async"}) {
+    auto fn = module.lookupSymbol<func::FuncOp>(name);
+    if (!fn || !fn.isDeclaration())
+      continue;
+    FunctionType type = fn.getFunctionType();
+    auto compatible = [](TypeRange types) {
+      return llvm::all_of(types, LLVM::isCompatibleType);
+    };
+    if (type.getNumResults() > 1 || !compatible(type.getInputs()) ||
+        !compatible(type.getResults()))
+      continue;
+    Type result = type.getNumResults()
+                      ? type.getResult(0)
+                      : LLVM::LLVMVoidType::get(module.getContext());
+    OpBuilder builder(fn);
+    auto llvmFn = LLVM::LLVMFuncOp::create(
+        builder, fn.getLoc(), name,
+        LLVM::LLVMFunctionType::get(result, type.getInputs()));
+    SmallVector<func::CallOp> calls;
+    module.walk([&](func::CallOp c) {
+      if (c.getCallee() == name)
+        calls.push_back(c);
+    });
+    for (func::CallOp c : calls) {
+      OpBuilder at(c);
+      auto call = LLVM::CallOp::create(at, c.getLoc(), llvmFn, c.getOperands());
+      c.replaceAllUsesWith(call->getResults());
+      c.erase();
+    }
+    fn.erase();
+  }
+}
+
 // Lower a transfer into a device space to the plugin's allocate-and-transfer.
 //
 // This is what makes a `transfer` mean something physical. It used to lower to
@@ -3719,6 +3761,7 @@ struct ConvertVxToLLVMPass
     patterns.add<ReturnOpLowering>(&getContext());
     patterns.add<BarrierOpLowering>(&getContext());
 
+    adoptDeclaredRuntimeFns(getOperation());
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
       signalPassFailure();
