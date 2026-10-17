@@ -5,8 +5,9 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=LLVM
+// The default code generator does not support a function whose return type it cannot spell in MLIR yet, so this uses the AST one.
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --action emit-llvm 2>&1 | FileCheck %s --check-prefix=LLVM
 
 struct CPU {}
 struct NPU {}

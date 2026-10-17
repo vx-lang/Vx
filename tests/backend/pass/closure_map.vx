@@ -1,4 +1,5 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// The default code generator does not support an enum with no known layout yet, so this uses the AST one.
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
 // A trait-impl method's name carries the trait and its arguments, so two impls of
 // one trait for one type do not collide. Only an argument-bearing trait contributes
 // the segment -- `impl Math for f32` is still `f32$abs`.

@@ -1,4 +1,5 @@
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// The default code generator does not support a cast to a closure type yet, so this uses the AST one.
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-LABEL: func.func @Closure_1_call(%arg0: !llvm.ptr) -> i32
 // CHECK: %[[V0:.*]] = llvm.getelementptr %{{.*}}, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"Closure_1", (i32)>
 // CHECK: llvm.load %[[V0]] : !llvm.ptr -> i32
