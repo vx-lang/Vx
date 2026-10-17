@@ -1,0 +1,10 @@
+LISA store_buffering_seq_cst
+(* Sequentially consistent atomics forbid the result where each thread misses the write of the
+   other (C7).
+   Expect: never, no data race. *)
+{ x = 0; y = 0; }
+ P0                  | P1                   ;
+ w[sc] x 1           | w[sc] y 1            ;
+ r[sc] r0 y          | r[sc] r1 x           ;
+scopes: (system P0 P1)
+exists (0:r0 = 0 /\ 1:r1 = 0)

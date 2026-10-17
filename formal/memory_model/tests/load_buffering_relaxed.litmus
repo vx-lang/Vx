@@ -1,0 +1,10 @@
+LISA load_buffering_relaxed
+(* No value comes out of thin air. Each thread reads, then writes 1. Both reads cannot see the
+   write that comes after the other read, even with relaxed atomics (C7, the rule of RC11).
+   Expect: never, no data race. *)
+{ x = 0; y = 0; }
+ P0                  | P1                   ;
+ r[rlx] r0 x         | r[rlx] r1 y          ;
+ w[rlx] y 1          | w[rlx] x 1           ;
+scopes: (system P0 P1)
+exists (0:r0 = 1 /\ 1:r1 = 1)
