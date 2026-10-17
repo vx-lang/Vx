@@ -1202,6 +1202,23 @@ impl<'a> TypeChecker<'a> {
                 );
             }
         }
+        // `r = v` gives `r` a new value, so the borrows `r` held end, unless `v` reads `r`.
+        if let (None, Expr::Identifier(id)) = (op, &*lhs) {
+            let mut reads_target = false;
+            crate::syntax::visit_expr(rhs, &mut |e| {
+                reads_target |= matches!(e, Expr::Identifier(i) if i.name == id.name);
+            });
+            if !reads_target && !self.speculating {
+                let held: Vec<_> = self
+                    .borrow
+                    .snapshot()
+                    .into_iter()
+                    .flat_map(|(base, records)| records.into_iter().map(move |r| (base.clone(), r)))
+                    .filter(|(_, r)| r.borrower_name.as_deref() == Some(id.name.as_ref()))
+                    .collect();
+                self.borrow.forget(&held);
+            }
+        }
         let mut rhs_ty =
             self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume && !copies_into_tensor);
         self.current_assignment_target = None;
