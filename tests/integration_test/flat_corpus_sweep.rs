@@ -188,6 +188,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // `a && b` in a `print!` argument: the flat path declines it ("a logical operator lowers only
     // in memory mode"). The file is about the AST path.
     "frontend/pass/print_argument_with_and_or.vx",
+    // `p.v = o` stores a `Vec` into a struct field: the flat path declines "a store to a nested
+    // nominal field".
+    "frontend/pass/moved_variable_given_a_new_value.vx",
     // `c = a.clone()` inside a `spawn`: the flat path declines it ("a tensor given a new value
     // inside a branch or loop"). The kernel has to write `c` for `c` to be passed as a slot,
     // which is what the file checks.

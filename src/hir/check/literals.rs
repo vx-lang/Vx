@@ -790,7 +790,9 @@ impl<'a> TypeChecker<'a> {
                                     f_expr,
                                     &f_type,
                                 );
-                                if !self.is_assignable(expected_type, &f_type) && !self.speculating
+                                if f_type != Type::Unknown
+                                    && !self.is_assignable(expected_type, &f_type)
+                                    && !self.speculating
                                 {
                                     self.errors.push(format!(
                                             "Type mismatch in struct initialization for field '{}'. Expected {}, got {}",
