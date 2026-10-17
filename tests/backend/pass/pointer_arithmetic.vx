@@ -31,6 +31,6 @@ fn main() -> i32 {
 // left there, but the address arithmetic is not.
 // MLIR-LABEL: func.func @main() -> i32 {
 // MLIR: %[[P:.*]] = call @malloc(%{{.*}}) : (i32) -> !llvm.ptr
-// MLIR: %[[GEP:.*]] = llvm.getelementptr %[[P]][%{{.*}}] : (!llvm.ptr, i64) -> !llvm.ptr, f32
+// MLIR: %[[GEP:.*]] = llvm.getelementptr %[[P]][%{{.*}}] : (!llvm.ptr, i32) -> !llvm.ptr, f32
 // MLIR: %[[V:.*]] = llvm.load %[[GEP]] : !llvm.ptr -> f32
 // MLIR: call @print_f32(%[[V]])

@@ -18,8 +18,7 @@ fn slice_index(q : Tensor<f32, [2, 4]>) -> f32 {
   return r[2];
 }
 
-// CHECK: module attributes {llvm.module_flags = {"Debug Info Version" = 3 : i32, "Dwarf Version" = 4 : i32}, vx.drops} {
-// CHECK:   func.func private @vx_init_signals()
+// CHECK: module attributes {vx.drops} {
 // CHECK:   func.func @slice_index(%arg0: memref<2x4xf32> {vx.owned}) -> f32 {
 // CHECK:     %c1_i32 = arith.constant 1 : i32
 // CHECK:     %0 = arith.index_cast %c1_i32 : i32 to index

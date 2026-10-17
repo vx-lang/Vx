@@ -29,12 +29,23 @@
 // which operand is A, B and the destination, and
 // tests/integration_test/gemm_plan_test.rs decodes the payload and checks it
 // describes the GEMM the program wrote.
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+//
+// Only the AST code generator keeps a local in a slot, so this RUN line uses it.
+// RUN: vxc %s --legacy-codegen --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
 // CHECK: vx.launch @vx_npu_kernel_0
 // CHECK: vx.kernel_kind = "matmul"
 // CHECK: vx.kernel_out_kind = "buffer"
 // CHECK: vx.kernel_roles = "a:1,b:2,out:0"
 // CHECK-SAME: : (memref<{{[^<>]*}}xf32>, memref<{{[^<>]*}}xf32>, memref<{{[^<>]*}}xf32>) -> ()
+//
+// The flat code generator passes the local buffers directly. The roles must
+// still resolve.
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=FLAT
+// FLAT: vx.launch @vx_npu_kernel_0
+// FLAT-SAME: vx.kernel_kind = "matmul"
+// FLAT-SAME: vx.kernel_out_kind = "buffer"
+// FLAT-SAME: vx.kernel_roles = "a:1,b:2,out:0"
+// FLAT-SAME: (memref<2x2xf32>, memref<2x2xf32>, memref<2x2xf32>)
 //
 // RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
 // PAYLOAD: \00kind=matmul\00roles=a:1,b:2,out:0\00outkind=buffer\00
