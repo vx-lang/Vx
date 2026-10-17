@@ -103,10 +103,8 @@ the place, then evaluates the value, then applies the operator, then writes. `a[
 So `a.push(x)`, `Vec::push(&mut a, x)` and `(&mut a).push(x)` have one evaluation order and one
 borrow check.
 
-**E7. Nothing in sequential code has an open order.** A construct that runs work in parallel says
-so: the passes of a `spawn` loop, and `spawn on` instances. There, the checker proves that the
-parts do not conflict, or it runs them in order (W1033). Vx never gives a program undefined
-behavior because of evaluation order.
+**E7. Nothing in sequential code has an open order.** Vx never gives a program undefined
+behavior because of evaluation order. Code that runs at the same time follows C1 to C7 below.
 
 A compiler may reorder evaluation only where no program can see the difference.
 
@@ -164,6 +162,103 @@ place is `*p`. The checker records its borrows on `p`, as for a view through a r
   where the receiver points. So `x = it.next()` makes `x` a holder of the borrow of `a` that `it`
   holds.
 
+## Sequence points between parts that run at the same time
+
+Vx does not have threads yet, but it already runs code at the same time in four places:
+
+- the instances of `unroll across`, and the passes of a `spawn` loop that the compiler splits (W1033
+  explains a loop that it does not split).
+- a `spawn on` region that overlaps the host's later work (`docs/spawn_on.md` §3, not built yet).
+- the lanes of a block-and-thread kernel, which meet at `barrier()`.
+- `raw::async_copy`, which a copy engine finishes while the lane continues, until `raw::async_wait`.
+
+Rules for these must exist before threads do. Each rule that sequential code uses (E1, A1, A2) then
+extends to tasks, and nothing has to be taken back. This is not the parallel compiler of
+`docs/language_rules_for_a_parallel_compiler.md`, which is about how the compiler itself runs.
+
+### What earlier memory models teach
+
+| Model | Rule | Lesson for Vx | | --- | --- | --- | | C++11 | *Happens-before* is sequenced-before
+plus *synchronizes-with* (a release write read by an acquire read). A data race is undefined
+behavior. | Build the order between tasks from the order inside a task. But undefined behavior for a
+race is not acceptable in safe code. | | C++ `memory_order_consume` | An ordering that follows data
+dependencies. No compiler implemented it as specified, and C++26 deprecates it (P3475). | Do not
+specify an ordering that a compiler cannot check. | | C++ and Java relaxed accesses | Neither model
+rules out *out-of-thin-air* values for relaxed or racy accesses, and that problem is still open. |
+Nothing that the checker relies on may depend on relaxed accesses. | | Java (JSR-133) | A race is
+defined behavior, not undefined. Ševčík and Aspinall (2008) showed that the causality rules forbid
+common compiler optimizations. | It is very hard to give a racy program a meaning. Forbid races when
+compiling instead. | | Go | A race on a value larger than one word, such as a slice, can corrupt
+memory. | No middle ground exists: a language allows memory corruption from races, or prevents
+races. | | Rust | `Send`, `Sync` and borrows make safe code free of data races. `thread::scope` lets
+a task borrow a local, because the scope ends with a join. Atomics follow C++20. | Exclusivity
+across tasks gives freedom from races. A join that the program structure guarantees lets a task's
+borrows end like a call's borrows. | | Cilk, OpenMP tasks | *Serial elision*: a program without
+races means the same as the program with the parallel keywords removed. | A parallel construct can
+have a sequential meaning. `spawn on` already has one. | | CUDA, HSA, Vulkan | Synchronization has a
+*scope*: a block, a device or the system. Vulkan separates ordering from *availability* and
+*visibility* in memory that is not coherent. | On a machine with many memories, happens-before needs
+a scope, and visibility is a separate step. Vx memory spaces and `transfer` already make visibility
+explicit. | | Swift 6 (SE-0414) | *Region-based isolation*: a value can move to another task when
+the sender does not use its region after that. | The checker can prove that a value moves into a
+task, with few annotations. |
+
+### The rules
+
+**C1. Sequential meaning.** Each parallel construct has a sequential order, and the program means
+that order:
+
+- a `spawn on` region runs at its place among the statements.
+- the passes of a `spawn` loop run in pass order.
+- the instances of `unroll across` run in index order.
+
+The compiler runs parts at the same time only when C3 shows that no program can see the difference.
+So a program gives the same result on one thread and on many.
+
+**C2. Fork and join are sequence points.** At the *fork*, the program evaluates every operand of the
+construct by E1: the topology index, the loop bounds and the captured values. Then the parts start.
+At the *join*, every access of every part ends. Then the statement after the construct starts.
+
+**C3. Exclusivity between parts.** For A1, each access of a part is active from the fork to the
+join. So two parts can access one place only if both read it. A part may write only memory that is
+its own, such as its own rows of a tensor. The check behind W1033 already proves this for a `spawn`
+loop. When the proof fails, the compiler runs the parts in order and warns (W1033). That is still
+right under C1. A program never gets a data race from this.
+
+**C4. Overlap with the host.** When the runtime overlaps a region with the host's later work, the
+region's accesses last from the dispatch to the wait. A host access that conflicts with them under
+A1 needs the wait before it. That includes:
+
+- a read of a value that the region made or wrote.
+- a write to memory that the region reads.
+- a write to memory that the region writes.
+
+`docs/spawn_on.md` §3 lists only the first case. The overlap is not built, so no program is wrong
+today, but the list must grow before someone builds the overlap.
+
+**C5. Barriers.** In a block-and-thread kernel, the lanes run at the same time. `barrier()` is a
+sequence point for every lane of the block. Each access before it, in any lane, happens before each
+access after it, in any lane. Between two barriers, C3 applies to the lanes: a place that one lane
+writes may not be accessed by another lane.
+
+**C6. Asynchronous copies.** `raw::async_copy(dst, src, i)` is an access with a span (A2). It starts
+at the call and ends at the matching `raw::async_wait`. During the span, `dst[i]` may not be read
+and `src` may not be written. `docs/custom_transfer_contract.md` already says this. Here it is one
+more instance of A1. Another lane sees the copied value only after a `barrier()` (C5).
+
+**C7. Atomics and shared writes.** Today an atomic write takes `&mut self`, so A1 makes it
+exclusive, and atomics are sequential. When Vx gets tasks that share memory:
+
+1. Safe code has no data races. A1 and C3 forbid them.
+1. An atomic is the only place that two parts may write at the same time. That needs a type that a
+   shared borrow may write through. This is a language change, and it must be checked against
+   `docs/language_rules_for_a_parallel_compiler.md`.
+1. Memory orderings follow C++20, as in Rust, without `consume`. A release write that an acquire
+   read sees is a sequence point between the two tasks.
+1. The scope of an atomic, as in CUDA, comes from the memory space where the atomic lives. A space
+   that only one device can see needs no system scope. This is an open question.
+1. A data race in `unsafe` code is undefined behavior, as in Rust. This is the only exception.
+
 ## The decision this needs
 
 `VecIter::next` has an `unsafe` block, so its return provenance is "any parameter". Under A6 its
@@ -196,6 +291,9 @@ Option 2 is unsound. Option 1 can come first, and option 3 later, to accept more
 | A3, A4 | ownership guessed after the call (`retain_present`) | owner in the record (#1800) |
 | A5 | receiver check skipped | checked (#1795) |
 | A6 | held borrows copied only from a reference receiver | from every receiver |
+| C1 `unroll across` | `docs/lang/semantics.md`: parallel instances with no order | index order. Instances overlap only where C3 proves it |
+| C4 | waits planned only before reads of a region's results | also before writes that conflict |
+| C5 | lanes between barriers: not measured | checked by C3 |
 
 ## The work, in order
 
@@ -211,6 +309,9 @@ Option 2 is unsound. Option 1 can come first, and option 3 later, to accept more
    #1795.
 
 Each step adds the programs in this note as tests, in the file for its own step.
+
+A later step, after the design of threads: write C1 to C7 into the language document, and
+measure which of C3 and C5 the checker enforces today.
 
 ## Not covered
 
@@ -241,3 +342,15 @@ is a separate change.
 - Swift SE-0176, Enforce Exclusive Access to Memory:
   https://github.com/swiftlang/swift-evolution/blob/main/proposals/0176-enforce-exclusive-access-to-memory.md
 - Java Language Specification §15.7, evaluation order
+- Boehm and Adve, Foundations of the C++ Concurrency Memory Model, PLDI 2008
+- P3475, Defang and deprecate memory_order::consume: https://wg21.link/p3475
+- JSR-133, the Java memory model: https://www.cs.umd.edu/~pugh/java/memoryModel/
+- Ševčík and Aspinall, On Validity of Program Transformations in the Java Memory Model, ECOOP 2008
+- The Go memory model: https://go.dev/ref/mem
+- Rust `std::thread::scope`: https://doc.rust-lang.org/std/thread/fn.scope.html
+- Frigo, Leiserson and Randall, The Implementation of the Cilk-5 Multithreaded Language, PLDI 1998
+- PTX ISA, memory consistency model:
+  https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#memory-consistency-model
+- Vulkan specification, appendix "Memory Model"
+- Swift SE-0414, Region based isolation:
+  https://github.com/swiftlang/swift-evolution/blob/main/proposals/0414-region-based-isolation.md
