@@ -7,6 +7,7 @@
 - [Install Vx](getting-started.md)
 - [Building from source](building.md)
 - [Your first program](first-program.md)
+- [Your first afternoon](first-afternoon.md)
 
 # The language
 
