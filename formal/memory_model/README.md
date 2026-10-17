@@ -15,6 +15,7 @@ it expects.
 | `vx.bell` | The tags that a test can put on an access or a fence. |
 | `run_litmus.py` | Runs every test and compares each result with its `Expect:` line. |
 | `tests/` | One test for each case of the rules. |
+| `memalloy/` | The CPU part of the model, compared with RC11 and with AArch64 by memalloy. |
 
 ## Running the tests
 
@@ -26,6 +27,27 @@ python3 formal/memory_model/run_litmus.py
 The script also checks *DRF-SC*. A test without a data race, whose accesses are plain or
 sequentially consistent, must give the same final states on `vx.cat` as on `sequential.cat`.
 Such a program cannot see how the hardware reorders memory accesses.
+
+## Comparing with RC11 and AArch64
+
+[memalloy](https://github.com/johnwickerson/memalloy) searches for a small execution that one
+model allows and another forbids. It reads a smaller dialect of cat, so `memalloy/vx_cpu.cat`
+is the CPU part of `vx.cat` in that dialect, without scopes and barriers.
+
+```bash
+MEMALLOY=~/memalloy python3 formal/memory_model/memalloy/run_memalloy.py   # about 3 minutes
+```
+
+The script checks, up to 5 or 6 events:
+
+- `vx_cpu.cat` and RC11 allow the same executions, and find the same data races.
+- The mapping of `vx_to_aarch64.als` gives no AArch64 result that `vx_cpu.cat` forbids.
+- Without the dependency after a relaxed load, the mapping gives such a result. This is the price
+  of the rule against values out of thin air.
+
+To build memalloy with OCaml 4.14 and Python 3, add `let compare = Stdlib.compare` after `open List` in `src/myList.ml`, and port the `print` and `string.replace` calls in `etc/` to Python 3.
+Its model of PTX is from 2013, older than the PTX model of Volta, so it cannot check a mapping to
+current GPUs.
 
 ## Reading a test
 
