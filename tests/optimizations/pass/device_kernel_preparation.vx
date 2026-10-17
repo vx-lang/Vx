@@ -42,9 +42,9 @@
 // The launch carries the one buffer the region touches and nothing else. The
 // loop bounds, the exponent's operand and the scratch extents were all
 // constants, and none of them is an operand here.
-// CHECK: vx.launch @vx_npu_kernel_0(%alloca) {topology = 500 : i32, vx.topology_name = "GPU[0]"} : (memref<memref<4x4xf32>>) -> ()
+// CHECK: vx.launch @vx_npu_kernel_0(%{{[a-z0-9_]+}}) {topology = 500 : i32, vx.topology_name = "GPU[0]"} : (memref<4x4xf32>) -> ()
 
-// CHECK: vx.kernel @vx_npu_kernel_0(500) : (memref<memref<4x4xf32>>) -> ()
+// CHECK: vx.kernel @vx_npu_kernel_0(500) : (memref<4x4xf32>) -> ()
 
 // The bounds are inside the kernel, so the shape is visible to the backend.
 // CHECK: arith.constant 4 : index

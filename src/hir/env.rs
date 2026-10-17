@@ -619,8 +619,38 @@ impl<'a> TypeChecker<'a> {
         self.consteval.env.pop();
         self.literal_typed_lets.retain(|_, d| *d + 1 < depth);
 
-        // Lexical Lifetime cleanup: Remove borrows originating in this scope
-        self.borrow.retain_scope(depth);
+        // Lexical Lifetime cleanup: Remove borrows originating in this scope. A borrow
+        // recorded at depth `d` was made when `scopes.len()` was `d`, so a variable of scope
+        // `i` is held at depth `i + 1`.
+        let scopes = &self.scopes;
+        self.borrow.retain_scope(depth, |name| {
+            scopes
+                .iter()
+                .rposition(|s| s.contains_key(name))
+                .map(|i| i + 1)
+        });
+    }
+
+    /// After an expression statement: put back the borrow table from before it, which ends
+    /// the borrows its calls made, but keep each new borrow that a variable still in scope
+    /// holds, such as `outer` after `if c { outer = W { r : &x }; }`.
+    pub(crate) fn restore_borrows_keeping_held(
+        &mut self,
+        saved: std::collections::HashMap<crate::symbol::Symbol, Vec<crate::hir::env::BorrowRecord>>,
+    ) {
+        let added = self.borrow.added_since(&saved);
+        self.borrow.restore(saved);
+        for (base, mut record) in added {
+            let Some(scope) = record
+                .borrower_name
+                .as_deref()
+                .and_then(|n| self.scope_of(n))
+            else {
+                continue;
+            };
+            record.scope_depth = record.scope_depth.min(scope + 1);
+            self.borrow.record(&base, record);
+        }
     }
 
     pub fn insert(&mut self, name: String, ty: Type) {

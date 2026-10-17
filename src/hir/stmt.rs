@@ -364,7 +364,7 @@ impl<'a> TypeChecker<'a> {
                 let saved_borrows = self.borrow.snapshot();
                 self.value_unused = true;
                 self.check_expr_type_flag(expr, consume);
-                self.borrow.restore(saved_borrows);
+                self.restore_borrows_keeping_held(saved_borrows);
                 self.settle_mut_borrow_call(expr, &before, &scopes);
             }
             Statement::Assert(assert) => self.check_assert_stmt(assert, consume, return_type),

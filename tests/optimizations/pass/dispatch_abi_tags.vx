@@ -25,9 +25,9 @@
 // header would otherwise surface only as a plugin misreading a buffer at run
 // time -- silently, since the pointer would still be valid.
 //
-// The local `c` each kernel writes is captured as a *slot*: storage holding a
-// descriptor, which is what a kernel stores a result it allocated itself
-// through. Described verbatim a slot is a rank-0 memref with no scalar element
+// Each kernel gives the local `c` a new tensor, so `c` is captured as a
+// *slot*: storage holding a descriptor, which is what a kernel stores a result
+// it allocated itself through. Described verbatim a slot is a rank-0 memref with no scalar element
 // type, which is byte-identical to the opaque-pointer encoding -- so the bit
 // says it is a slot and the element type and rank describe what it holds, and
 // a plugin computing the result itself knows what to write there. Hence
@@ -36,6 +36,10 @@
 // This lives under optimizations/ rather than middle_end/ because the tag is
 // materialized by `vx-to-llvm`, and the middle-end runner checks the module as
 // it stands *before* the lowering pipeline.
+//
+// The kernel stores a new tensor into a slot in host memory, so the regions run
+// on the ANE, which shares memory with the host. A discrete GPU cannot write to
+// that slot.
 //
 // The four tags are different numbers, so the checks do not depend on the order the
 // arguments are passed in.
@@ -46,26 +50,18 @@
 // CHECK-DAG: llvm.mlir.constant(16909824 : i32)
 // CHECK-DAG: llvm.mlir.constant(132608 : i32)
 
-fn half_kernel(a : Tensor<f16, [?, ?], Memory::GPU_HBM>) -> Tensor<f16, [?, ?]> {
-  let mut c = unsafe { Tensor<f16, [2, 2], Memory::GPU_HBM>::uninit() };
-  spawn on(Topology::GPU) {
-    for i in 0..2 {
-      for j in 0..2 {
-        c[i][j] = a[i][j];
-      }
-    }
+fn half_kernel(a : Tensor<f16, [?, ?]>) -> Tensor<f16, [?, ?]> {
+  let mut c = a.clone();
+  spawn on(Topology::ANE) {
+    c = a.clone();
   }
-  return transfer(c, Memory::CPU_DRAM);
+  return c;
 }
 
-fn single_kernel(a : Tensor<f32, [?, ?], Memory::GPU_HBM>) -> Tensor<f32, [?, ?]> {
-  let mut c = unsafe { Tensor<f32, [2, 2], Memory::GPU_HBM>::uninit() };
-  spawn on(Topology::GPU) {
-    for i in 0..2 {
-      for j in 0..2 {
-        c[i][j] = a[i][j];
-      }
-    }
+fn single_kernel(a : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
+  let mut c = a.clone();
+  spawn on(Topology::ANE) {
+    c = a.clone();
   }
-  return transfer(c, Memory::CPU_DRAM);
+  return c;
 }

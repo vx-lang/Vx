@@ -43,6 +43,14 @@
 
   <ul class="posts">
     <li>
+      <a href="/blog/breaking-the-borrow-checker-on-purpose.html">Breaking the borrow checker on purpose</a>
+      <time datetime="2026-10-15">15 October 2026</time>
+      <p>We broke Vx's borrow checker 108 ways, one at a time, to see whether the tests would
+      notice. They caught 93. Of the 15 they missed, 11 were rules no test checked, and one led to
+      a program that read freed memory. Then 78 of Rust's borrow checker bug reports, run in Vx,
+      found 14 more holes.</p>
+    </li>
+    <li>
       <a href="/blog/what-the-borrow-checker-let-through.html">What the borrow checker let through</a>
       <time datetime="2026-10-14">14 October 2026</time>
       <p>A review of Vx's borrow checker found eleven programs that compiled and should not have.

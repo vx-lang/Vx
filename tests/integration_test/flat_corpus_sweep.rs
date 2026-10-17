@@ -188,6 +188,10 @@ const KNOWN_DECLINES: &[&str] = &[
     // `a && b` in a `print!` argument: the flat path declines it ("a logical operator lowers only
     // in memory mode"). The file is about the AST path.
     "frontend/pass/print_argument_with_and_or.vx",
+    // `c = a.clone()` inside a `spawn`: the flat path declines it ("a tensor given a new value
+    // inside a branch or loop"). The kernel has to write `c` for `c` to be passed as a slot,
+    // which is what the file checks.
+    "optimizations/pass/dispatch_abi_tags.vx",
 ];
 
 /// Every `.vx` file under `dir`, recursively, sorted for a stable report.
@@ -332,7 +336,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/numa_peer_node_is_priced.vx",  // needs --host and --machine
             // needs --host and --machine
             "optimizations/pass/dtcm_tiles_in_sibling_blocks_fit_a_cortex_m7.vx",
-            "frontend/pass/packages/import_from_a_package.vx", // needs --package
+            "optimizations/pass/gpu_kernel_in_main_on_the_ast_code_generator.vx", // needs --machine
+            "frontend/pass/packages/import_from_a_package.vx",                    // needs --package
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {
             continue;
