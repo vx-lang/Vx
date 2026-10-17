@@ -6,9 +6,9 @@
 // and is checked against the CPU or against the bytes that were written.
 //
 // Memory: the program prints its footprint and refuses to allocate past the
-// ceiling in `vram_ceiling.h` (`VX_VRAM_CEILING`, 2 GiB by default). At the
-// default 512 MiB per buffer the peak is the triad phase's 1.5 GiB, so a larger
-// run has to be asked for on purpose.
+// ceiling in `vram_ceiling.h` (`VX_VRAM_CEILING`, 2 GiB by default, never more
+// than 12 GiB). At the default 512 MiB per buffer the peak is the triad phase's
+// 1.5 GiB, so a larger run has to be asked for on purpose.
 //
 // Build and run: scripts/tools/xpu_bandwidth_spike.sh [size in MiB]
 
@@ -62,12 +62,11 @@ static double secondsSince(const std::chrono::steady_clock::time_point &t0) {
 int main(int argc, char **argv) {
   const char *spvPath = argc > 1 ? argv[1] : "triad.spv";
   const char *kernelName = argc > 2 ? argv[2] : "triad";
-  // The number is MiB per buffer. It is capped at a third of the ceiling, so
-  // the three-buffer peak below can neither wrap a 64-bit count nor exceed what
-  // the operator allowed, and a size that is not a number is refused rather
-  // than read as 0.
+  // The number is MiB per buffer. It is capped so that the three-buffer peak
+  // below cannot wrap a 64-bit count, and a size that is not a number is
+  // refused rather than read as 0.
   const uint64_t sizeMiB = argc > 3 ? parseCount("size in MiB", argv[3], "MiB",
-                                                 vramCeilingMaxSizeMiB())
+                                                 kVramCeilingMaxSizeMiB)
                                     : 512;
   if (sizeMiB == 0) {
     std::fprintf(stderr, "size in MiB: 0 measures nothing\n");
@@ -90,10 +89,9 @@ int main(int argc, char **argv) {
   // The most device memory this run holds at one time: the triad phase's three
   // buffers, or the transfer phase's one device buffer, whichever is larger.
   // The phases free their buffers before the next phase starts, so this is a
-  // peak and not a sum. `sizeMiB` is capped at a third of the ceiling above, so
-  // the three-buffer product is at most the ceiling and cannot wrap a 64-bit
-  // count; the transfer phase's buffer is a constant, which the ceiling still
-  // limits. Checked before `zeInit` and before any allocation.
+  // peak and not a sum. `sizeMiB` is capped above, so the three-buffer product
+  // cannot wrap a 64-bit count. Checked before `zeInit` and before any
+  // allocation.
   const uint64_t triadPeak = 3 * bytesPerBuffer;
   requireWithinCeiling("xpu_bandwidth_spike", std::max(triadPeak, kXfer),
                        vramCeiling());
