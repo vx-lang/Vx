@@ -1,3 +1,4 @@
+use clap::Parser;
 use lsp_server::{Connection, Message, Request, RequestId, Response};
 use lsp_types::{
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams, Hover,
@@ -33,7 +34,19 @@ macro_rules! log_line {
     };
 }
 
+/// Command line for `--version`/`--help`. The protocol arrives on stdin, so no argument
+/// selects the transport, and `--stdio` (which editors pass) is accepted and ignored.
+#[derive(Parser)]
+#[command(name = "vx-analyzer", version, about = "Vx language server")]
+struct Cli {
+    /// Accepted and ignored; hidden so `--help` does not imply another transport exists.
+    #[arg(long, hide = true)]
+    stdio: bool,
+}
+
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
+    Cli::parse();
+
     let mut log_file = log_sink();
     log_line!(log_file, "--- vx-analyzer started (lsp-server) ---");
 
