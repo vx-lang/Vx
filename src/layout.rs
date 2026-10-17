@@ -204,6 +204,11 @@ impl<'a> LayoutComputer<'a> {
             Type::Borrow { inner, .. } if matches!(**inner, Type::Tensor(..)) => {
                 self.field_info(inner)
             }
+            // Slice borrows are fat values backed by the ordinary `Slice`/`SliceMut`
+            // aggregate, rather than pointer-sized references.
+            Type::Borrow { inner, .. } if crate::syntax::slice_borrow_parts(ty).is_some() => {
+                self.field_info(inner)
+            }
             // Pointer-like fields, all a pointer-sized opaque word: raw pointers, borrows, and a
             // function/closure type (a function pointer, e.g. `Closure1`'s `func` field). (#242)
             Type::Pointer(..)

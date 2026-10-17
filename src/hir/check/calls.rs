@@ -42,6 +42,9 @@ struct ReborrowPlan {
     base_snapshots: HashMap<String, Option<Vec<BorrowRecord>>>,
     /// By-value arguments that can hold a reference, `s` after `let s = View { r : &x }`.
     held_args: Vec<String>,
+    /// All borrows present before argument evaluation. A value-returning outer call also releases
+    /// borrows made by nested reference-returning calls used only as its arguments.
+    borrow_snapshot: HashMap<crate::symbol::Symbol, Vec<BorrowRecord>>,
 }
 
 /// How an impl block is named in a diagnostic: the trait with its arguments, so two impls of
@@ -262,6 +265,7 @@ impl<'a> TypeChecker<'a> {
         // snapshot each reference-argument base *before* the arguments are checked, let the
         // arguments record their borrows (so intra-call conflicts like `f(&mut x, &x)` still
         // fire), then revert the non-deriving bases to their pre-call state.
+        let borrow_snapshot = self.borrow.snapshot();
         let callee_sig = if self.speculating {
             None
         } else {
@@ -402,6 +406,7 @@ impl<'a> TypeChecker<'a> {
             ref_args,
             base_snapshots,
             held_args,
+            borrow_snapshot,
         }
     }
 
@@ -605,6 +610,14 @@ impl<'a> TypeChecker<'a> {
             // spurious conflicts later.
             let prev: &[BorrowRecord] = snap.as_deref().unwrap_or(&[]);
             self.borrow.retain_present(base.as_str(), prev);
+        }
+        // A nested call may manufacture the reference passed to this call, so it has no direct
+        // lvalue base for `ref_args` to snapshot: `sum(values.as_slice())`. If this outer call
+        // returns no reference, none of the borrows created while evaluating its arguments can
+        // escape it. Keep only pre-call records that are still live; do not restore records that
+        // NLL legitimately removed during argument checking.
+        if !plan.ret_is_ref {
+            self.borrow.retain_present_snapshot(&plan.borrow_snapshot);
         }
     }
 
@@ -2740,7 +2753,11 @@ impl<'a> TypeChecker<'a> {
                 _ => false,
             };
 
-            let obj_is_ref = matches!(base_ty, Type::Borrow { .. } | Type::Pointer(_, _, _));
+            // A language slice is logically a borrow but physically an aggregate. Calling a
+            // `Slice` method therefore takes the address of that backing value, just as it does
+            // for an ordinary struct receiver.
+            let obj_is_ref = crate::syntax::slice_borrow_parts(base_ty).is_none()
+                && matches!(base_ty, Type::Borrow { .. } | Type::Pointer(_, _, _));
             if param_is_ref && is_mut {
                 let method = generic_method.name.to_string();
                 if !obj_is_ref {
