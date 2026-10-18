@@ -485,8 +485,8 @@ pub fn builtin_memory_space_name(id: u64) -> Option<String> {
 /// A target-independent address space: what the memory *is*, not what number a particular GPU
 /// ISA gives it. Codegen maps this to a concrete annotation per target
 /// ([`DeviceTarget::address_space`]; the `#gpu.address_space<..>` attribute spelling when a GPU
-/// backend lands, #251), so the numbering lives in exactly one place instead of being hardcoded
-/// at every use.
+/// backend lands), so the numbering lives in exactly one place instead of being hardcoded at
+/// every use.
 ///
 /// Previously codegen emitted raw integers keyed only on the built-in `MemorySpace` variant, which
 /// was wrong twice over: on-chip scratchpad was given NVPTX 2 (reserved, not shared), and *every*
