@@ -15,7 +15,8 @@ let mut count = 0;     // mutable
 Bindings are immutable unless you write `mut`.
 
 The primitive types are the ones you would expect: `i8` `i16` `i32` `i64`, `u8` `u16` `u32` `u64`,
-`f16` `f32` `f64`, and `bool`.
+`f16` `f32` `f64`, and `bool`. For machine learning there are also `bf16`, the 4-bit integers `i4` and
+`u4`, and the fp8 and fp4 types in [Low-precision numbers](low-precision-numbers.md).
 
 **There are no implicit numeric conversions.** An `i32` does not become an `i64` because the context
 wants one; you write the conversion. Integer literals infer to the type the context requires, so
