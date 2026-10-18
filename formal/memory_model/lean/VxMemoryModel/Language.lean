@@ -11,7 +11,7 @@ An execution of a program gives each event a value and a position in its thread.
 each thread, in order, must be a run of its code, and each read must read a write of the same
 value. The write of a read-modify-write comes right after its read, and `rmw` joins them. This
 file shows that these executions have the three properties of `Program`. So DRF-SC holds for
-each well-typed program whose atomics are sequentially consistent and which has no fences.
+each program whose atomics are sequentially consistent and which has no fences.
 -/
 
 namespace Vx
@@ -19,8 +19,6 @@ namespace Vx
 open Classical
 
 structure Prog where
-  /-- Which places are atomic. -/
-  atomic : Nat → Bool
   code : Nat → Stmt
 
 namespace Prog
@@ -165,20 +163,8 @@ def toProgram (P : Prog) : Program where
   any_co _ co hX := let ⟨r⟩ := hX; r.any_co co
   receptive _ _ _ hX hr hlast hw hl := let ⟨r⟩ := hX; r.receptive hr hlast hw hl
 
-/-- Each thread follows `Stmt.Typed`: each place is atomic or not. -/
-def WellTyped (P : Prog) : Prop := ∀ t, (P.code t).Typed P.atomic
-
 /-- Each thread follows `Stmt.SeqCstOnly`: only sequentially consistent atomics, no fences. -/
 def SeqCstOnly (P : Prog) : Prop := ∀ t, (P.code t).SeqCstOnly
-
-theorem Run.typed {X : Execution} (r : P.Run X) (hP : P.WellTyped) {e : X.E} (he : X.IsAccess e) :
-    (P.atomic (X.loc e) = true ↔ X.IsAtomic e) := by
-  have h := (typedRule P.atomic).trace (r.trace e) (hP _)
-  rw [r.lab_eq e] at h
-  refine h ?_
-  rcases he with he | he
-  · unfold Execution.IsRead at he; rw [he]; nofun
-  · unfold Execution.IsWrite at he; rw [he]; nofun
 
 theorem Run.seqCst {X : Execution} (r : P.Run X) (hP : P.SeqCstOnly) (e : X.E) :
     X.kind e ≠ .fence ∧ (X.order e = .plain ∨ X.order e = .sc) := by
@@ -186,17 +172,15 @@ theorem Run.seqCst {X : Execution} (r : P.Run X) (hP : P.SeqCstOnly) (e : X.E) :
   rw [r.lab_eq e] at h
   exact h
 
-/-- DRF-SC for the core language: take a well-typed program whose atomics are sequentially
-consistent and which has no fences. If no interleaving of it has a data race, then each finite
+/-- DRF-SC for the core language: take a program whose atomics are sequentially consistent and
+which has no fences. If no interleaving of it has a data race, then each finite
 execution that the model allows is an interleaving. -/
-theorem drf_sc (P : Prog) (hty : P.WellTyped) (hsc : P.SeqCstOnly)
+theorem drf_sc (P : Prog) (hsc : P.SeqCstOnly)
     (hP : ∀ Y, P.Execs Y → Y.WellFormed → Y.SeqConsistent → Y.RaceFree)
     {X : Execution} (hX : P.Execs X) (wf : X.WellFormed) (hfin : X.Finite)
     (hc : X.Consistent) : X.SeqConsistent := by
   obtain ⟨r⟩ := hX
-  refine P.toProgram.drf_sc hP ⟨r⟩ wf hfin ?_ ?_ ?_ hc
-  · intro a b ha hb hl
-    rw [← r.typed hty ha, ← r.typed hty hb, hl]
+  refine P.toProgram.drf_sc hP ⟨r⟩ wf hfin ?_ ?_ hc
   · intro e he
     rcases (r.seqCst hsc e).2 with h | h
     · exact absurd h he

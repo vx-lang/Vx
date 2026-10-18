@@ -66,6 +66,8 @@ structure WellFormed : Prop where
   /-- Two events of one thread are ordered. -/
   po_total : ∀ a b, X.thread a = X.thread b → a ≠ b → X.po a b ∨ X.po b a
   rf_write_read : ∀ w r, X.rf w r → X.IsWrite w ∧ X.IsRead r ∧ X.loc w = X.loc r
+  /-- A read reads from one write. -/
+  rf_unique : ∀ w w' r, X.rf w r → X.rf w' r → w = w'
   co_writes : ∀ a b, X.co a b → X.IsWrite a ∧ X.IsWrite b ∧ X.loc a = X.loc b
   co_irrefl : ∀ a, ¬ X.co a a
   rmw_po : ∀ r w, X.rmw r w → X.po r w

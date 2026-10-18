@@ -10,10 +10,6 @@ A run of the code gives a list of labels, one for each memory access. A load can
 value, because the value comes from another thread. So if a run ends with a load, a run with
 another value for that load also exists. A read-modify-write is two steps, a read and then a
 write, so a run can also stop between them.
-
-A program is well typed when each place is either atomic or not atomic: an access to an atomic
-place has an atomic order, and an access to another place is plain. Only atomic places have
-read-modify-writes.
 -/
 
 namespace Vx
@@ -188,17 +184,6 @@ theorem Trace.receptive {s n} {f : Nat → Label} (h : Trace s (n + 1) f)
 
 /-! ## Rules on the code -/
 
-/-- Each place is atomic or not: the order of an access is atomic exactly when its place is. -/
-def Stmt.Typed (atomic : Nat → Bool) : Stmt → Prop
-  | load _ x o | store x _ o => (atomic x = true ↔ o ≠ .plain)
-  | fetchAdd _ x _ o | cas _ x _ _ o | rmwStore x _ o => atomic x = true ∧ o ≠ .plain
-  | seq s t | ite _ s t => s.Typed atomic ∧ t.Typed atomic
-  | loop _ s => s.Typed atomic
-  | _ => True
-
-def Label.Typed (atomic : Nat → Bool) (l : Label) : Prop :=
-  l.kind ≠ .fence → (atomic l.loc = true ↔ l.order ≠ .plain)
-
 /-- The atomics are sequentially consistent, and there are no fences. -/
 def Stmt.SeqCstOnly : Stmt → Prop
   | load _ _ o | store _ _ o | fetchAdd _ _ _ o | cas _ _ _ _ o | rmwStore _ _ o =>
@@ -231,35 +216,6 @@ theorem Rule.runs (R : Rule) {s regs L} (h : Runs s regs L) (hs : R.onStmt s) :
 theorem Rule.trace (R : Rule) {s n} {f : Nat → Label} (h : Trace s (n + 1) f) (hs : R.onStmt s) :
     R.onLabel (f n) :=
   R.runs h hs _ (List.mem_map.2 ⟨n, List.mem_range.2 (Nat.lt_succ_self n), rfl⟩)
-
-def typedRule (atomic : Nat → Bool) : Rule where
-  onStmt := Stmt.Typed atomic
-  onLabel := Label.Typed atomic
-  step := by
-    intro s regs a s' regs' h
-    induction h with
-    | load | store =>
-      intro hs
-      exact ⟨trivial, fun l hl _ => by cases hl; exact hs⟩
-    | fetchAdd | cas_eq =>
-      intro hs
-      refine ⟨hs, fun l hl _ => ?_⟩
-      cases hl
-      exact ⟨fun _ => hs.2, fun _ => hs.1⟩
-    | cas_ne | rmwStore =>
-      intro hs
-      refine ⟨trivial, fun l hl _ => ?_⟩
-      cases hl
-      exact ⟨fun _ => hs.2, fun _ => hs.1⟩
-    | fence => exact fun _ => ⟨trivial, fun l hl hk => by cases hl; exact absurd rfl hk⟩
-    | seq _ ih =>
-      intro hs
-      exact ⟨⟨(ih hs.1).1, hs.2⟩, (ih hs.1).2⟩
-    | seq_skip => exact fun hs => ⟨hs.2, nofun⟩
-    | ite_true => exact fun hs => ⟨hs.1, nofun⟩
-    | ite_false => exact fun hs => ⟨hs.2, nofun⟩
-    | loop => exact fun hs => ⟨⟨⟨hs, hs⟩, trivial⟩, nofun⟩
-    | assign => exact fun _ => ⟨trivial, nofun⟩
 
 def seqCstRule : Rule where
   onStmt := Stmt.SeqCstOnly

@@ -69,15 +69,15 @@ size, on the CPU part of the model:
 For `Program.drf_sc`, a program is the set of its executions, with three properties that any
 language with threads has. A prefix of an execution is an execution. The coherence order is any
 order. A read at the end of its thread can read any write to its place. The theorem also needs
-sequentially consistent atomics, no fences, and places that are either atomic or not atomic.
+sequentially consistent atomics and no fences. A place can have both atomic and plain accesses:
+`atomic_read_of_a_plain_write.litmus` shows such a race.
 
 The core language in `Thread.lean` and `Language.lean` has registers, loads, stores, `fetchAdd`,
 `cas`, fences, `if` and loops. Each access names its memory order. A read-modify-write is a read
 and then a write, so a thread can stop between them. Thread 0 runs first and writes the initial
 values. `Language.lean` shows that the executions of these programs have the three properties.
-`Prog.drf_sc` then needs two rules on the code, which a type checker can check:
-`Prog.WellTyped` (each place is atomic or not) and `Prog.SeqCstOnly` (only `sc` atomics, no
-fences). `LanguageExample.lean` builds an execution of message passing with release and acquire,
+`Prog.drf_sc` then needs one rule on the code, which a type checker can check:
+`Prog.SeqCstOnly` (only `sc` atomics, no fences). `LanguageExample.lean` builds an execution of message passing with release and acquire,
 and one of two `fetchAdd` calls on a counter.
 
 ```bash
@@ -85,7 +85,7 @@ lake -d formal/memory_model/lean build    # Lean 4.35, no other libraries
 ```
 
 The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
-`run_lean.py` checks that Lean and `vx.cat` agree on the 12 tests without scopes and barriers:
+`run_lean.py` checks that Lean and `vx.cat` agree on the 13 tests without scopes and barriers:
 
 ```bash
 python3 formal/memory_model/run_lean.py    # needs lake and herd7
@@ -139,8 +139,6 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - The rule for sequentially consistent atomics ignores scopes.
 - herd7 checks each test completely, but only the tests. memalloy checks every execution up to 5
   or 6 events.
-- `Program.drf_sc` assumes that each place is either atomic or not atomic. The proof does not
-  cover a race between an atomic read and a plain write to the same place.
 - The core language has no functions, no references, and no fork or join after thread 0.
 - The Lean model has no scopes and no barriers.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in

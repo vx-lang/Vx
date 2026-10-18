@@ -160,6 +160,7 @@ theorem WellFormed.restrict {X : Execution} (wf : X.WellFormed) (S : X.E → Pro
   po_trans a b c := wf.po_trans a.val b.val c.val
   po_total a b ht hne := wf.po_total a.val b.val ht (fun h => hne (Subtype.ext h))
   rf_write_read w r := wf.rf_write_read w.val r.val
+  rf_unique w w' r h h' := Subtype.ext (wf.rf_unique w.val w'.val r.val h h')
   co_writes a b := wf.co_writes a.val b.val
   co_irrefl a := wf.co_irrefl a.val
   rmw_po r w := wf.rmw_po r.val w.val

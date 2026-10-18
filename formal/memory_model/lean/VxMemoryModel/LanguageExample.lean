@@ -16,15 +16,12 @@ In the execution below, thread 2 sees the flag and reads 42.
 namespace Vx
 
 def messagePassing : Prog where
-  atomic x := x == 1
   code
     | 0 => .seq (.store 0 (.const 0) .plain) (.store 1 (.const 0) .rel)
     | 1 => .seq (.store 0 (.const 42) .plain) (.store 1 (.const 1) .rel)
     | 2 => .seq (.load 0 1 .acq) (.ite (.reg 0) (.load 1 0 .plain) .skip)
     | _ => .skip
 
-theorem messagePassing_wellTyped : messagePassing.WellTyped
-  | 0 | 1 | 2 | _ + 3 => by simp [messagePassing, Stmt.Typed]
 
 /-- Events: 0 and 1 are the initial writes, 2 and 3 are the writes of thread 1, and 4 and 5
 are the reads of thread 2. -/
@@ -91,17 +88,14 @@ def messagePassingRun : messagePassing.Run messagePassingData.toExecution where
 /-! ## Two threads add 1 to one counter
 
 Place 0 is an atomic counter. Threads 1 and 2 each add 1 with a sequentially consistent
-`fetchAdd`. In the execution below, thread 1 goes first and thread 2 reads its write. -/
+`fetchAdd`. In the execution below, thread 1 goes first and thread 2 reads its write. The
+program follows `Prog.SeqCstOnly`, so `Prog.drf_sc` applies to it. -/
 
 def counter : Prog where
-  atomic x := x == 0
   code
     | 0 => .store 0 (.const 0) .sc
     | 1 | 2 => .fetchAdd 0 0 (.const 1) .sc
     | _ => .skip
-
-theorem counter_wellTyped : counter.WellTyped
-  | 0 | 1 | 2 | _ + 3 => by simp [counter, Stmt.Typed]
 
 theorem counter_seqCstOnly : counter.SeqCstOnly
   | 0 | 1 | 2 | _ + 3 => by simp [counter, Stmt.SeqCstOnly]
