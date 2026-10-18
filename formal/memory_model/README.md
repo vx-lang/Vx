@@ -14,6 +14,7 @@ it expects.
 | `sequential.cat` | Sequential consistency with barriers: every run is one interleaving. |
 | `vx.bell` | The tags that a test can put on an access or a fence. |
 | `run_litmus.py` | Runs every test and compares each result with its `Expect:` line. |
+| `run_lean.py` | Checks that the Lean model and `vx.cat` agree on the tests for CPUs. |
 | `tests/` | One test for each case of the rules. |
 | `memalloy/` | The CPU part of the model, compared with RC11 and with AArch64 by memalloy. |
 | `lean/` | The CPU part of the model in Lean 4, with proofs for executions of any size. |
@@ -64,7 +65,16 @@ lake -d formal/memory_model/lean build    # Lean 4.35, no other libraries
 ```
 
 The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
-Nothing checks yet that the two agree.
+`run_lean.py` checks that Lean and `vx.cat` agree on the 12 tests without scopes and barriers:
+
+```bash
+python3 formal/memory_model/run_lean.py    # needs lake and herd7
+```
+
+For each test, the script lists every candidate execution, and Lean decides which ones the
+model allows and which have a data race. `lean/VxMemoryModel/Check.lean` decides the
+definitions themselves, so a wrong answer cannot come from a second copy of the model. The
+final states, the observation and the race flag must be the same as those of herd7.
 
 ## Reading a test
 
