@@ -4,8 +4,9 @@ import VxMemoryModel.Program
 /-!
 # Programs of the core language
 
-A program gives the code of each thread. Thread 0 runs first, and the other threads start when
-it ends, so thread 0 can write the initial values.
+A program gives the code of each thread. All threads start together. A fork or a join is an
+`sc` write of a flag and a loop that waits for it, as in `../../vx.cat`: `Stmt.fork` and
+`Stmt.join` below.
 
 An execution of a program gives each event a value and a position in its thread. The events of
 each thread, in order, must be a run of its code, and each read must read a write of the same
@@ -32,8 +33,7 @@ structure Run (P : Prog) (X : Execution) where
   idx : X.E → Nat
   /-- The accesses of each thread, in order. -/
   lab : Nat → Nat → Label
-  po_iff : ∀ a b, X.po a b ↔
-    (X.thread a = X.thread b ∧ idx a < idx b) ∨ (X.thread a = 0 ∧ X.thread b ≠ 0)
+  po_iff : ∀ a b, X.po a b ↔ X.thread a = X.thread b ∧ idx a < idx b
   idx_inj : ∀ a b, X.thread a = X.thread b → idx a = idx b → a = b
   /-- The positions of a thread have no gaps. -/
   idx_down : ∀ e i, i < idx e → ∃ e', X.thread e' = X.thread e ∧ idx e' = i
@@ -59,7 +59,7 @@ theorem Run.prefix_closed {X : Execution} (r : P.Run X) {S : X.E → Prop} (hS :
   idx_inj := fun a b ht hi => Subtype.ext (r.idx_inj _ _ ht hi)
   idx_down := fun e i hi => by
     obtain ⟨e', ht, hi'⟩ := r.idx_down e.val i hi
-    have hp : X.po e' e.val := (r.po_iff _ _).2 (Or.inl ⟨ht, hi' ▸ hi⟩)
+    have hp : X.po e' e.val := (r.po_iff _ _).2 ⟨ht, hi' ▸ hi⟩
     exact ⟨⟨e', hS _ _ e.property (Or.inl hp)⟩, ht, hi'⟩
   lab_eq := fun e => r.lab_eq e.val
   trace := fun e => r.trace e.val
@@ -97,7 +97,7 @@ theorem Run.receptive {X : Execution} (r : P.Run X) {rd w : X.E} (hr : X.IsRead 
     cases he
   -- Each event of the thread of `rd` comes before it or is `rd`.
   have hle : ∀ e, X.thread e = X.thread rd → r.idx e ≤ r.idx rd := fun e ht =>
-    Nat.le_of_not_lt fun h => hlast e ((r.po_iff _ _).2 (Or.inl ⟨ht.symm, h⟩))
+    Nat.le_of_not_lt fun h => hlast e ((r.po_iff _ _).2 ⟨ht.symm, h⟩)
   have hnew : (⟨.read, X.order rd, X.loc rd, r.val w, r.isRmw rd⟩ : Label) =
       { r.lab (X.thread rd) (r.idx rd) with val := r.val w } := by
     rw [r.lab_eq rd]
@@ -156,6 +156,18 @@ theorem Run.receptive {X : Execution} (r : P.Run X) {rd w : X.E} (hr : X.IsRead 
       · obtain ⟨a, ha⟩ := r.rf_source b hb
         exact ⟨a, Or.inr ⟨h, ha⟩⟩
     rmw_iff := r.rmw_iff }⟩
+
+/-- A signal orders the events before it before the events after a wait that reads it. -/
+theorem _root_.Vx.Execution.hb_of_signal {X : Execution} {a w r b : X.E}
+    (haw : a = w ∨ X.po a w) (hw : X.IsWrite w) (hws : X.IsSeqCst w) (hrf : X.rf w r)
+    (hrs : X.IsSeqCst r) (hrb : r = b ∨ X.po r b) : X.hb a b := by
+  have hwa : X.IsAtomic w := by unfold Execution.IsAtomic; rw [hws]; nofun
+  have hra : X.IsAtomic r := by unfold Execution.IsAtomic; rw [hrs]; nofun
+  have hsw : X.hb w r := Relation.TransGen.single (Or.inr ⟨Or.inr (Or.inr hws),
+    Or.inr (Or.inr hrs), w, w, r, Or.inl rfl, ⟨w, hw, Or.inl rfl, hw, hwa, Or.inl rfl⟩, hrf, hra,
+    Or.inl rfl⟩)
+  have h1 : X.hb a r := haw.elim (fun h => h ▸ hsw) (fun h => Relation.TransGen.head (Or.inl h) hsw)
+  exact hrb.elim (fun h => h ▸ h1) (fun h => h1.tail (Or.inl h))
 
 def toProgram (P : Prog) : Program where
   Execs := P.Execs

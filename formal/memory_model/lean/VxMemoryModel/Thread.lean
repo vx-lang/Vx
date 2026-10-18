@@ -59,6 +59,14 @@ inductive Stmt where
   /-- Run `s` while `c` is not 0. -/
   | loop (c : Expr) (s : Stmt)
 
+/-- Set the flag `x`: an `sc` write of 1. A fork is `signal` in the parent and `await` at the
+start of the child. A join is `signal` at the end of the child and `await` in the parent. -/
+abbrev Stmt.signal (x : Nat) : Stmt := .store x (.const 1) .sc
+
+/-- Wait until the flag `x` is not 0, with `sc` reads into the register `r`. -/
+abbrev Stmt.await (r x : Nat) : Stmt :=
+  .seq (.assign r (.const 0)) (.loop (.eq (.reg r) (.const 0)) (.load r x .sc))
+
 def update (regs : Nat → Int) (r : Nat) (v : Int) : Nat → Int :=
   fun i => if i = r then v else regs i
 
@@ -118,6 +126,14 @@ theorem Trace.prefix {s n m} {f : Nat → Label} (h : Trace s n f) (hmn : m ≤ 
     unfold Trace at h
     rw [← Nat.add_assoc, List.range_succ, List.map_append] at h
     exact ih (h.prefix _ _ rfl) (Nat.le_add_right _ _)
+
+/-- A wait that sees the flag set on its first read, followed by `k`. -/
+theorem Runs.await_seq {r x k regs l} (h : Runs k (update (update regs r 0) r 1) l) :
+    Runs (.seq (Stmt.await r x) k) regs (⟨.read, .sc, x, 1, false⟩ :: l) :=
+  .silent (.seq (.seq .assign)) <| .silent (.seq .seq_skip) <| .silent (.seq .loop) <|
+    .silent (.seq (.ite_true (by simp [Expr.eval, update]))) <|
+    .visible (.seq (.seq (.load 1))) <| .silent (.seq .seq_skip) <| .silent (.seq .loop) <|
+    .silent (.seq (.ite_false (by simp [Expr.eval, update]))) <| .silent .seq_skip h
 
 theorem Step.receptive {s regs a s' regs'} (h : Step s regs a s' regs') :
     ∀ l, a = some l → l.kind = .read → ∀ v : Int,

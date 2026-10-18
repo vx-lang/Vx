@@ -74,11 +74,13 @@ sequentially consistent atomics and no fences. A place can have both atomic and 
 
 The core language in `Thread.lean` and `Language.lean` has registers, loads, stores, `fetchAdd`,
 `cas`, fences, `if` and loops. Each access names its memory order. A read-modify-write is a read
-and then a write, so a thread can stop between them. Thread 0 runs first and writes the initial
-values. `Language.lean` shows that the executions of these programs have the three properties.
-`Prog.drf_sc` then needs one rule on the code, which a type checker can check:
-`Prog.SeqCstOnly` (only `sc` atomics, no fences). `LanguageExample.lean` builds an execution of message passing with release and acquire,
-and one of two `fetchAdd` calls on a counter.
+and then a write, so a thread can stop between them. All threads start together. A fork or a join
+is `signal`, an `sc` write of a flag, and `await`, a loop that reads the flag until it is set.
+`hb_of_signal` shows that they order the events around them. `Language.lean` shows that the
+executions of these programs have the three properties. `Prog.drf_sc` then needs one rule on
+the code, which a type checker can check: `Prog.SeqCstOnly` (only `sc` atomics, no fences).
+`LanguageExample.lean` builds an execution of message passing with release and acquire, and
+one where thread 0 starts two threads and joins them, with plain data.
 
 ```bash
 lake -d formal/memory_model/lean build    # Lean 4.35, no other libraries
@@ -139,7 +141,8 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - The rule for sequentially consistent atomics ignores scopes.
 - herd7 checks each test completely, but only the tests. memalloy checks every execution up to 5
   or 6 events.
-- The core language has no functions, no references, and no fork or join after thread 0.
+- The core language has no functions and no references. Fork and join are flags, not a construct
+  that guarantees the join, as the tasks of #1860 will.
 - The Lean model has no scopes and no barriers.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.
