@@ -39,9 +39,12 @@ jobs:
           key: lean-${{ hashFiles('formal/memory_model/lean/lean-toolchain', 'formal/memory_model/lean/**/*.lean') }}
           restore-keys: lean-
 
+      # `lake -d` runs from the repository root, where elan finds no lean-toolchain file, so
+      # make that file's version the default.
       - name: Install Lean
         run: |
-          curl -sSfL https://elan.lean-lang.org/elan-init.sh | sh -s -- -y --default-toolchain none
+          curl -sSfL https://elan.lean-lang.org/elan-init.sh |
+            sh -s -- -y --default-toolchain "$(cat formal/memory_model/lean/lean-toolchain)"
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       # --wfail fails on warnings, so a proof left as `sorry` fails the build.
