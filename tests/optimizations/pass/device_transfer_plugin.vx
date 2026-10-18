@@ -69,8 +69,11 @@
 //
 // RUN: vxc %s --host default --machine fleet/xeon-e5-2666v3.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=HOST
 // HOST: capacity = 32212254720
-// HOST: cost = 236
 // HOST: scope = "device"
+//
+// Only the AST code generator writes the cost on the transfer.
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/xeon-e5-2666v3.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=HOST-AST
+// HOST-AST: capacity = 32212254720 : i64, cost = 236
 
 fn main() -> i32 {
   let mut a = unsafe { Tensor<f32, [2, 2]>::uninit() };

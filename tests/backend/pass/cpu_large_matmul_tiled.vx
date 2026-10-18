@@ -85,19 +85,18 @@ fn main() -> i32 {
   return 0;
 }
 
-// Before the pass the extents are still i32 values that have to be cast to index; the buffer
-// is allocated from those casts.
+// The extents are constants, so each buffer is allocated with a static shape.
 // CHECK-LABEL: func.func @test_f32() -> i32
-// CHECK: %[[N:.*]] = arith.index_cast %{{.*}} : i32 to index
-// CHECK: memref.alloc(%[[N:.*]], %[[M:.*]]) : memref<?x?xf32>
+// CHECK: memref.alloc() : memref<64x64xf32>
+// CHECK-LABEL: func.func @test_bf16() -> i32
+// CHECK: memref.alloc() : memref<64x64xbf16>
 
-// convert-vx-to-standard folds them, so the same allocation reads from index constants.
+// convert-vx-to-standard keeps the same allocation.
 // STD-LABEL: func.func @test_f32() -> i32
-// STD: %[[C:.*]] = arith.constant {{[0-9]+}} : index
-// STD: memref.alloc(%[[C:.*]], %[[D:.*]]) : memref<?x?xf32>
+// STD: memref.alloc() : memref<64x64xf32>
 
-// --emit-llvm stops at the LLVM dialect, where the same function is an llvm.func and the
-// buffers are raw allocations rather than memrefs.
+// --emit-llvm stops at the LLVM dialect, where the same function is an llvm.func. The
+// buffers are too large for the stack, so they are heap allocations.
 // LLVM-LABEL: llvm.func {{(hidden )?}}@test_f32() -> i32
 // LLVM: llvm.call @malloc
-// LLVM: llvm.func {{(hidden )?}}@main() -> i32
+// LLVM-LABEL: llvm.func {{(hidden )?}}@test_bf16() -> i32

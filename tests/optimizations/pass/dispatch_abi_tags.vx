@@ -44,7 +44,10 @@
 // The four tags are different numbers, so the checks do not depend on the order the
 // arguments are passed in.
 //
-// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s
+// Only the AST code generator keeps the local `c` in a slot. The flat code
+// generator also declines `c = a.clone()` inside a spawn. So this RUN line uses
+// the AST code generator.
+// RUN: vxc %s --legacy-codegen --emit-llvm 2>&1 | FileCheck %s
 // CHECK-DAG: llvm.mlir.constant(16910336 : i32)
 // CHECK-DAG: llvm.mlir.constant(133120 : i32)
 // CHECK-DAG: llvm.mlir.constant(16909824 : i32)

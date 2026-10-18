@@ -15,8 +15,8 @@
 // GPU did not.
 //
 // The dispatch id bands a kind with a device index (src/arch.rs
-// `topology_dispatch_id`), so GPU[0] is 500 and GPU[1] is 501. The two code
-// generators emit the kernels in different orders, so the checks accept any order.
+// `topology_dispatch_id`), so GPU[0] is 500 and GPU[1] is 501. The order of the
+// two kernels in the output is not part of the test.
 // GPU[0] and GPU[1] see only GPU memory, so each tensor is made there and the
 // result is copied back to the host.
 //

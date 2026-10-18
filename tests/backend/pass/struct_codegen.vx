@@ -37,11 +37,13 @@ fn main() -> i32 {
 // The f32 field survives the struct round trip.
 // CHECK: 0.00001
 
-// The struct is built field by field into one aggregate value, and the f32 field read back out
-// is the one that reaches print -- the round trip the number below measures.
+// The struct is built field by field in one stack slot. The f32 field read back out is the one
+// that reaches print. This is the round trip that the printed number measures.
 // MLIR-LABEL: func.func @main() -> i32 {
-// MLIR: llvm.mlir.undef : !llvm.struct<"Config", (i32, i32, i32, i32, i32, i32, f32)>
+// MLIR: %[[CONF:[0-9]+]] = llvm.alloca %{{.*}} x !llvm.struct<(i32, i32, i32, i32, i32, i32, f32)>
 // MLIR: %[[EPS:.*]] = arith.constant 9.99999974E-6 : f32
-// MLIR: %[[FULL:.*]] = llvm.insertvalue %[[EPS]], %{{.*}}[6] : !llvm.struct<"Config", (i32, i32, i32, i32, i32, i32, f32)>
-// MLIR: %[[OUT:.*]] = llvm.extractvalue %[[FULL]][6] : !llvm.struct<"Config", (i32, i32, i32, i32, i32, i32, f32)>
+// MLIR: %[[SLOT:[0-9]+]] = llvm.getelementptr %[[CONF]][0, 6] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32, i32, i32, i32, i32, f32)>
+// MLIR: llvm.store %[[EPS]], %[[SLOT]] : f32, !llvm.ptr
+// MLIR: %[[READ:[0-9]+]] = llvm.getelementptr %[[CONF]][0, 6] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i32, i32, i32, i32, i32, f32)>
+// MLIR: %[[OUT:[0-9]+]] = llvm.load %[[READ]] : !llvm.ptr -> f32
 // MLIR: call @print_f32(%[[OUT]])
