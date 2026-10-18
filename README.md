@@ -257,11 +257,12 @@ ______________________________________________________________________
 | :--- | :--- | :--- |
 | **Memory Algebra & Topology** | ✅ Implemented, tested, diagnostic codes active | [`docs/memory_algebra.md`](docs/memory_algebra.md) |
 | **JIT & AOT Cross-Compilation** | ✅ Fully supported via LLVM and declared machines | [ROADMAP.md](ROADMAP.md) |
-| **Control Flow** | ⚠️ `for` loops over ranges and recursion work; `while` loops in development | [#506](https://github.com/vx-lang/Vx/issues/506) |
+| **Control Flow** | ✅ `if`, `match`, `for` over ranges and iterators, `while`, `break`/`continue` and recursion | [`tests/backend/pass/`](tests/backend/pass/) |
 | **Overlapped `spawn on`** | ⚠️ `spawn on(...) { ... }` is sequential by design; the non-blocking dispatch that overlaps it with host work is still to be built | [`docs/spawn_on.md`](docs/spawn_on.md) |
-| **Standard Library** | ⚠️ Core modules (`io`, `math`, `vec`, `fs`, `net`, `time`) working; package manager in progress | [#487](https://github.com/vx-lang/Vx/issues/487) |
-| **Automatic Memory Cleanup** | ⚠️ Linear types and explicit `free()` available; RAII destructors in development | [#495](https://github.com/vx-lang/Vx/issues/495) |
-| **Autodiff (`grad`)** | ⚠️ Enzyme MLIR integration functional; discrete function checks in progress | [#503](https://github.com/vx-lang/Vx/issues/503) |
+| **Standard Library** | ✅ `core` (`option`, `result`, `iter`, `libm`, `cmp`, `fmt`) and `std` (`io`, `fs`, `net`, `time`, `vec`, `string`, `hash_map`, `tensor`) | [`docs/std_library_design.md`](docs/std_library_design.md) |
+| **Automatic Memory Cleanup** | ✅ The compiler frees a value when its owner goes out of scope | [Ownership](www/book/src/ownership.md) |
+| **Autodiff (`grad`)** | ✅ Enzyme computes the derivatives, and the checker rejects a function with a discrete input or result | [Autodiff](www/book/src/autodiff.md) |
+| **Package Manager** | ⚠️ Not built yet. The design is under discussion | [#1275](https://github.com/vx-lang/Vx/issues/1275) |
 
 Full tracking is available on our [GitHub Issue Tracker](https://github.com/vx-lang/Vx/issues).
 
