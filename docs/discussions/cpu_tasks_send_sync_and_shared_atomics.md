@@ -168,6 +168,12 @@ We chose these on 2026-10-18.
 The fork is `spawn`, a release. The join is `join()` or the end of the `tasks` block, an acquire.
 The parent runs between the fork and the join. A task returns one value.
 
+`formal/memory_model/lean/VxMemoryModel/Tasks.lean` (#1881) models this order. It proves that the
+code before a `spawn` happens before every access of the task, and that every access of the task
+happens before the code after its join. It does not model captured values (E1), nested tasks, a
+`spawn` in a loop, or the joins at the end of a `tasks` block. It takes the program after the
+compiler adds those joins.
+
 ## The work, in order
 
 1. `SharedCell`, the `llvm.readonly` change, and atomics that write through `&Self` (U1 to U4).
