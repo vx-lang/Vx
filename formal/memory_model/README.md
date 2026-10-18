@@ -71,12 +71,14 @@ language with threads has. A prefix of an execution is an execution. The coheren
 order. A read at the end of its thread can read any write to its place. The theorem also needs
 sequentially consistent atomics, no fences, and places that are either atomic or not atomic.
 
-The core language in `Thread.lean` and `Language.lean` has registers, loads, stores, `if` and
-loops. The type of a place gives the order of each access: an access to an atomic place is
-sequentially consistent, and other accesses are plain. Thread 0 runs first and writes the initial
-values. `Language.lean` shows that the executions of these programs have the three properties,
-so `Prog.drf_sc` needs no other assumption about the program. `LanguageExample.lean` builds an
-execution of message passing, to show that real programs have executions.
+The core language in `Thread.lean` and `Language.lean` has registers, loads, stores, `fetchAdd`,
+`cas`, fences, `if` and loops. Each access names its memory order. A read-modify-write is a read
+and then a write, so a thread can stop between them. Thread 0 runs first and writes the initial
+values. `Language.lean` shows that the executions of these programs have the three properties.
+`Prog.drf_sc` then needs two rules on the code, which a type checker can check:
+`Prog.WellTyped` (each place is atomic or not) and `Prog.SeqCstOnly` (only `sc` atomics, no
+fences). `LanguageExample.lean` builds an execution of message passing with release and acquire,
+and one of two `fetchAdd` calls on a counter.
 
 ```bash
 lake -d formal/memory_model/lean build    # Lean 4.35, no other libraries
@@ -139,8 +141,7 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   or 6 events.
 - `Program.drf_sc` assumes that each place is either atomic or not atomic. The proof does not
   cover a race between an atomic read and a plain write to the same place.
-- The core language has no functions, no references, no read-modify-writes, and no fork or join
-  after thread 0. The memory orders of atomics other than `sc` are not in it.
+- The core language has no functions, no references, and no fork or join after thread 0.
 - The Lean model has no scopes and no barriers.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.

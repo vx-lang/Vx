@@ -3,13 +3,17 @@ import VxMemoryModel.Execution
 /-!
 # The code of one thread
 
-A small language for the code of a thread: registers, loads, stores, `if` and loops. The type
-of a place gives the memory order of each access: an access to an atomic place is sequentially
-consistent, and an access to another place is plain.
+A small language for the code of a thread: registers, loads, stores, read-modify-writes, fences,
+`if` and loops. Each access names its memory order, as the methods of `core::sync::atomic` do.
 
 A run of the code gives a list of labels, one for each memory access. A load can return any
 value, because the value comes from another thread. So if a run ends with a load, a run with
-another value for that load also exists.
+another value for that load also exists. A read-modify-write is two steps, a read and then a
+write, so a run can also stop between them.
+
+A program is well typed when each place is either atomic or not atomic: an access to an atomic
+place has an atomic order, and an access to another place is plain. Only atomic places have
+read-modify-writes.
 -/
 
 namespace Vx
@@ -20,6 +24,8 @@ structure Label where
   order : Order
   loc : Nat
   val : Int
+  /-- True for the write of a read-modify-write. -/
+  rmw : Bool
   deriving DecidableEq
 
 inductive Expr where
@@ -40,9 +46,16 @@ def Expr.eval (regs : Nat → Int) : Expr → Int
 inductive Stmt where
   | skip
   /-- Read the place `x` into the register `r`. -/
-  | load (r x : Nat)
+  | load (r x : Nat) (o : Order)
   /-- Write the value of `e` to the place `x`. -/
-  | store (x : Nat) (e : Expr)
+  | store (x : Nat) (e : Expr) (o : Order)
+  /-- Add `e` to the place `x` in one atomic step, and put the old value in `r`. -/
+  | fetchAdd (r x : Nat) (e : Expr) (o : Order)
+  /-- Read `x` into `r`. If the value equals `expected`, write `new` in the same atomic step. -/
+  | cas (r x : Nat) (expected new : Expr) (o : Order)
+  /-- The write of a read-modify-write, after its read. -/
+  | rmwStore (x : Nat) (v : Int) (o : Order)
+  | fence (o : Order)
   | assign (r : Nat) (e : Expr)
   | seq (s t : Stmt)
   /-- Run `s` when `c` is not 0, else `t`. -/
@@ -50,41 +63,44 @@ inductive Stmt where
   /-- Run `s` while `c` is not 0. -/
   | loop (c : Expr) (s : Stmt)
 
-/-- The memory order of an access to the place `x`. -/
-def orderOf (atomic : Nat → Bool) (x : Nat) : Order := if atomic x then .sc else .plain
-
 def update (regs : Nat → Int) (r : Nat) (v : Int) : Nat → Int :=
   fun i => if i = r then v else regs i
 
 /-- One step of a thread. The label is `none` for a step that does not access memory. -/
-inductive Step (atomic : Nat → Bool) : Stmt → (Nat → Int) → Option Label → Stmt → (Nat → Int) → Prop
-  | load {r x regs} (v : Int) :
-    Step atomic (.load r x) regs (some ⟨.read, orderOf atomic x, x, v⟩) .skip (update regs r v)
-  | store {x e regs} :
-    Step atomic (.store x e) regs (some ⟨.write, orderOf atomic x, x, e.eval regs⟩) .skip regs
-  | assign {r e regs} : Step atomic (.assign r e) regs none .skip (update regs r (e.eval regs))
-  | seq_skip {t regs} : Step atomic (.seq .skip t) regs none t regs
-  | seq {s s' t regs regs' a} :
-    Step atomic s regs a s' regs' → Step atomic (.seq s t) regs a (.seq s' t) regs'
-  | ite_true {c s t regs} : c.eval regs ≠ 0 → Step atomic (.ite c s t) regs none s regs
-  | ite_false {c s t regs} : c.eval regs = 0 → Step atomic (.ite c s t) regs none t regs
-  | loop {c s regs} :
-    Step atomic (.loop c s) regs none (.ite c (.seq s (.loop c s)) .skip) regs
+inductive Step : Stmt → (Nat → Int) → Option Label → Stmt → (Nat → Int) → Prop
+  | load {r x o regs} (v : Int) :
+    Step (.load r x o) regs (some ⟨.read, o, x, v, false⟩) .skip (update regs r v)
+  | store {x e o regs} :
+    Step (.store x e o) regs (some ⟨.write, o, x, e.eval regs, false⟩) .skip regs
+  | fetchAdd {r x e o regs} (v : Int) :
+    Step (.fetchAdd r x e o) regs (some ⟨.read, o, x, v, false⟩)
+      (.rmwStore x (v + e.eval regs) o) (update regs r v)
+  | cas_eq {r x expected new o regs} (v : Int) : v = expected.eval regs →
+    Step (.cas r x expected new o) regs (some ⟨.read, o, x, v, false⟩)
+      (.rmwStore x (new.eval regs) o) (update regs r v)
+  | cas_ne {r x expected new o regs} (v : Int) : v ≠ expected.eval regs →
+    Step (.cas r x expected new o) regs (some ⟨.read, o, x, v, false⟩) .skip (update regs r v)
+  | rmwStore {x v o regs} : Step (.rmwStore x v o) regs (some ⟨.write, o, x, v, true⟩) .skip regs
+  | fence {o regs} : Step (.fence o) regs (some ⟨.fence, o, 0, 0, false⟩) .skip regs
+  | assign {r e regs} : Step (.assign r e) regs none .skip (update regs r (e.eval regs))
+  | seq_skip {t regs} : Step (.seq .skip t) regs none t regs
+  | seq {s s' t regs regs' a} : Step s regs a s' regs' → Step (.seq s t) regs a (.seq s' t) regs'
+  | ite_true {c s t regs} : c.eval regs ≠ 0 → Step (.ite c s t) regs none s regs
+  | ite_false {c s t regs} : c.eval regs = 0 → Step (.ite c s t) regs none t regs
+  | loop {c s regs} : Step (.loop c s) regs none (.ite c (.seq s (.loop c s)) .skip) regs
 
-/-- `Runs atomic s regs l`: the code `s` can make the accesses `l` and then stop. -/
-inductive Runs (atomic : Nat → Bool) : Stmt → (Nat → Int) → List Label → Prop
-  | stop {s regs} : Runs atomic s regs []
-  | silent {s regs s' regs' l} :
-    Step atomic s regs none s' regs' → Runs atomic s' regs' l → Runs atomic s regs l
+/-- `Runs s regs l`: the code `s` can make the accesses `l` and then stop. -/
+inductive Runs : Stmt → (Nat → Int) → List Label → Prop
+  | stop {s regs} : Runs s regs []
+  | silent {s regs s' regs' l} : Step s regs none s' regs' → Runs s' regs' l → Runs s regs l
   | visible {s regs s' regs' a l} :
-    Step atomic s regs (some a) s' regs' → Runs atomic s' regs' l → Runs atomic s regs (a :: l)
+    Step s regs (some a) s' regs' → Runs s' regs' l → Runs s regs (a :: l)
 
 /-- The first `n` labels of `f` are a run of `s` from registers that hold 0. -/
-def Trace (atomic : Nat → Bool) (s : Stmt) (n : Nat) (f : Nat → Label) : Prop :=
-  Runs atomic s (fun _ => 0) ((List.range n).map f)
+def Trace (s : Stmt) (n : Nat) (f : Nat → Label) : Prop :=
+  Runs s (fun _ => 0) ((List.range n).map f)
 
-theorem Runs.prefix {atomic : Nat → Bool} {s regs L} (h : Runs atomic s regs L) :
-    ∀ l l', L = l ++ l' → Runs atomic s regs l := by
+theorem Runs.prefix {s regs L} (h : Runs s regs L) : ∀ l l', L = l ++ l' → Runs s regs l := by
   induction h with
   | stop =>
     intro l _ hL
@@ -98,8 +114,7 @@ theorem Runs.prefix {atomic : Nat → Bool} {s regs L} (h : Runs atomic s regs L
     · exact .visible hs (ih l l' hl)
 
 /-- A thread can stop at any point. -/
-theorem Trace.prefix {atomic : Nat → Bool} {s n m} {f : Nat → Label} (h : Trace atomic s n f)
-    (hmn : m ≤ n) : Trace atomic s m f := by
+theorem Trace.prefix {s n m} {f : Nat → Label} (h : Trace s n f) (hmn : m ≤ n) : Trace s m f := by
   obtain ⟨k, rfl⟩ := Nat.exists_eq_add_of_le hmn
   induction k with
   | zero => exact h
@@ -108,15 +123,25 @@ theorem Trace.prefix {atomic : Nat → Bool} {s n m} {f : Nat → Label} (h : Tr
     rw [← Nat.add_assoc, List.range_succ, List.map_append] at h
     exact ih (h.prefix _ _ rfl) (Nat.le_add_right _ _)
 
-theorem Step.receptive {atomic : Nat → Bool} {s regs a s' regs'}
-    (h : Step atomic s regs a s' regs') : ∀ l, a = some l → l.kind = .read → ∀ v : Int,
-    ∃ s'' regs'', Step atomic s regs (some { l with val := v }) s'' regs'' := by
+theorem Step.receptive {s regs a s' regs'} (h : Step s regs a s' regs') :
+    ∀ l, a = some l → l.kind = .read → ∀ v : Int,
+    ∃ s'' regs'', Step s regs (some { l with val := v }) s'' regs'' := by
   induction h with
   | load =>
     intro l hl _ v
     cases hl
     exact ⟨_, _, .load v⟩
-  | store =>
+  | fetchAdd =>
+    intro l hl _ v
+    cases hl
+    exact ⟨_, _, .fetchAdd v⟩
+  | @cas_eq _ _ expected _ _ regs _ _ | @cas_ne _ _ expected _ _ regs _ _ =>
+    intro l hl _ v
+    cases hl
+    by_cases hv : v = expected.eval regs
+    · exact ⟨_, _, .cas_eq v hv⟩
+    · exact ⟨_, _, .cas_ne v hv⟩
+  | store | rmwStore | fence =>
     intro l hl hk _
     cases hl
     cases hk
@@ -126,9 +151,8 @@ theorem Step.receptive {atomic : Nat → Bool} {s regs a s' regs'}
     exact ⟨_, _, .seq h⟩
   | _ => intro _ hl; cases hl
 
-theorem Runs.receptive {atomic : Nat → Bool} {s regs L} (h : Runs atomic s regs L) :
-    ∀ l a, L = l ++ [a] → a.kind = .read → ∀ v : Int,
-    Runs atomic s regs (l ++ [{ a with val := v }]) := by
+theorem Runs.receptive {s regs L} (h : Runs s regs L) :
+    ∀ l a, L = l ++ [a] → a.kind = .read → ∀ v : Int, Runs s regs (l ++ [{ a with val := v }]) := by
   induction h with
   | stop =>
     intro l _ hL
@@ -144,16 +168,16 @@ theorem Runs.receptive {atomic : Nat → Bool} {s regs L} (h : Runs atomic s reg
       exact .visible hs' .stop
     · exact .visible hs (ih l' a hl' hk v)
 
-theorem Trace.congr {atomic : Nat → Bool} {s n} {f g : Nat → Label} (h : Trace atomic s n f)
-    (hfg : ∀ i, i < n → f i = g i) : Trace atomic s n g := by
+theorem Trace.congr {s n} {f g : Nat → Label} (h : Trace s n f)
+    (hfg : ∀ i, i < n → f i = g i) : Trace s n g := by
   unfold Trace
   rw [← List.map_congr_left (fun i hi => hfg i (List.mem_range.1 hi))]
   exact h
 
 /-- The last access of a trace, when it is a load, can return any value. -/
-theorem Trace.receptive {atomic : Nat → Bool} {s n} {f : Nat → Label}
-    (h : Trace atomic s (n + 1) f) (hk : (f n).kind = .read) (v : Int) :
-    Trace atomic s (n + 1) (fun i => if i = n then { f n with val := v } else f i) := by
+theorem Trace.receptive {s n} {f : Nat → Label} (h : Trace s (n + 1) f)
+    (hk : (f n).kind = .read) (v : Int) :
+    Trace s (n + 1) (fun i => if i = n then { f n with val := v } else f i) := by
   unfold Trace at h ⊢
   rw [List.range_succ, List.map_append] at h ⊢
   have hmap : (List.range n).map (fun i => if i = n then { f n with val := v } else f i) =
@@ -162,28 +186,99 @@ theorem Trace.receptive {atomic : Nat → Bool} {s n} {f : Nat → Label}
   rw [hmap]
   simpa using h.receptive _ _ rfl hk v
 
-/-- Each step accesses memory with the order of the type of the place. -/
-theorem Step.typed {atomic : Nat → Bool} {s regs a s' regs'} (h : Step atomic s regs a s' regs') :
-    ∀ l, a = some l → l.kind ≠ .fence ∧ l.order = orderOf atomic l.loc := by
-  induction h with
-  | load => intro l hl; cases hl; exact ⟨nofun, rfl⟩
-  | store => intro l hl; cases hl; exact ⟨nofun, rfl⟩
-  | seq _ ih => exact ih
-  | _ => intro _ hl; cases hl
+/-! ## Rules on the code -/
 
-theorem Runs.typed {atomic : Nat → Bool} {s regs L} (h : Runs atomic s regs L) :
-    ∀ l, l ∈ L → l.kind ≠ .fence ∧ l.order = orderOf atomic l.loc := by
+/-- Each place is atomic or not: the order of an access is atomic exactly when its place is. -/
+def Stmt.Typed (atomic : Nat → Bool) : Stmt → Prop
+  | load _ x o | store x _ o => (atomic x = true ↔ o ≠ .plain)
+  | fetchAdd _ x _ o | cas _ x _ _ o | rmwStore x _ o => atomic x = true ∧ o ≠ .plain
+  | seq s t | ite _ s t => s.Typed atomic ∧ t.Typed atomic
+  | loop _ s => s.Typed atomic
+  | _ => True
+
+def Label.Typed (atomic : Nat → Bool) (l : Label) : Prop :=
+  l.kind ≠ .fence → (atomic l.loc = true ↔ l.order ≠ .plain)
+
+/-- The atomics are sequentially consistent, and there are no fences. -/
+def Stmt.SeqCstOnly : Stmt → Prop
+  | load _ _ o | store _ _ o | fetchAdd _ _ _ o | cas _ _ _ _ o | rmwStore _ _ o =>
+    o = .plain ∨ o = .sc
+  | fence _ => False
+  | seq s t | ite _ s t => s.SeqCstOnly ∧ t.SeqCstOnly
+  | loop _ s => s.SeqCstOnly
+  | _ => True
+
+def Label.SeqCstOnly (l : Label) : Prop := l.kind ≠ .fence ∧ (l.order = .plain ∨ l.order = .sc)
+
+/-- A rule on the code that each step keeps, and that holds for each access the code makes. -/
+structure Rule where
+  onStmt : Stmt → Prop
+  onLabel : Label → Prop
+  step : ∀ {s regs a s' regs'}, Step s regs a s' regs' → onStmt s →
+    onStmt s' ∧ ∀ l, a = some l → onLabel l
+
+theorem Rule.runs (R : Rule) {s regs L} (h : Runs s regs L) (hs : R.onStmt s) :
+    ∀ l, l ∈ L → R.onLabel l := by
   induction h with
   | stop => intro _ h; cases h
-  | silent _ _ ih => exact ih
-  | visible hs _ ih =>
+  | silent hstep _ ih => exact ih (R.step hstep hs).1
+  | visible hstep _ ih =>
     intro l hl
     rcases List.mem_cons.1 hl with rfl | hl
-    · exact hs.typed _ rfl
-    · exact ih l hl
+    · exact (R.step hstep hs).2 _ rfl
+    · exact ih (R.step hstep hs).1 l hl
 
-theorem Trace.typed {atomic : Nat → Bool} {s n} {f : Nat → Label} (h : Trace atomic s (n + 1) f) :
-    (f n).kind ≠ .fence ∧ (f n).order = orderOf atomic (f n).loc :=
-  Runs.typed h _ (List.mem_map.2 ⟨n, List.mem_range.2 (Nat.lt_succ_self n), rfl⟩)
+theorem Rule.trace (R : Rule) {s n} {f : Nat → Label} (h : Trace s (n + 1) f) (hs : R.onStmt s) :
+    R.onLabel (f n) :=
+  R.runs h hs _ (List.mem_map.2 ⟨n, List.mem_range.2 (Nat.lt_succ_self n), rfl⟩)
+
+def typedRule (atomic : Nat → Bool) : Rule where
+  onStmt := Stmt.Typed atomic
+  onLabel := Label.Typed atomic
+  step := by
+    intro s regs a s' regs' h
+    induction h with
+    | load | store =>
+      intro hs
+      exact ⟨trivial, fun l hl _ => by cases hl; exact hs⟩
+    | fetchAdd | cas_eq =>
+      intro hs
+      refine ⟨hs, fun l hl _ => ?_⟩
+      cases hl
+      exact ⟨fun _ => hs.2, fun _ => hs.1⟩
+    | cas_ne | rmwStore =>
+      intro hs
+      refine ⟨trivial, fun l hl _ => ?_⟩
+      cases hl
+      exact ⟨fun _ => hs.2, fun _ => hs.1⟩
+    | fence => exact fun _ => ⟨trivial, fun l hl hk => by cases hl; exact absurd rfl hk⟩
+    | seq _ ih =>
+      intro hs
+      exact ⟨⟨(ih hs.1).1, hs.2⟩, (ih hs.1).2⟩
+    | seq_skip => exact fun hs => ⟨hs.2, nofun⟩
+    | ite_true => exact fun hs => ⟨hs.1, nofun⟩
+    | ite_false => exact fun hs => ⟨hs.2, nofun⟩
+    | loop => exact fun hs => ⟨⟨⟨hs, hs⟩, trivial⟩, nofun⟩
+    | assign => exact fun _ => ⟨trivial, nofun⟩
+
+def seqCstRule : Rule where
+  onStmt := Stmt.SeqCstOnly
+  onLabel := Label.SeqCstOnly
+  step := by
+    intro s regs a s' regs' h
+    induction h with
+    | load | store | cas_ne | rmwStore =>
+      exact fun hs => ⟨trivial, fun l hl => by cases hl; exact ⟨nofun, hs⟩⟩
+    | fetchAdd | cas_eq =>
+      exact fun hs => ⟨hs, fun l hl => by cases hl; exact ⟨nofun, hs⟩⟩
+    | fence => exact fun hs => hs.elim
+    | seq _ ih =>
+      intro hs
+      exact ⟨⟨(ih hs.1).1, hs.2⟩, (ih hs.1).2⟩
+    | seq_skip => exact fun hs => ⟨hs.2, nofun⟩
+    | ite_true => exact fun hs => ⟨hs.1, nofun⟩
+    | ite_false => exact fun hs => ⟨hs.2, nofun⟩
+    | loop => exact fun hs => ⟨⟨⟨hs, hs⟩, trivial⟩, nofun⟩
+    | assign => exact fun _ => ⟨trivial, nofun⟩
 
 end Vx
