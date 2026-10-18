@@ -16,6 +16,13 @@ use super::*;
 
 use crate::hir;
 use crate::hir::borrow_cx::BlockUses;
+
+/// See [`TypeChecker::save_flow_state`].
+pub(crate) struct FlowState {
+    moved: Vec<HashSet<String>>,
+    borrows: HashMap<crate::symbol::Symbol, Vec<crate::hir::env::BorrowRecord>>,
+    drops: crate::hir::check::drops::DropFrames,
+}
 use crate::hir::check_state::ComptimeEvalContext;
 use crate::hir::comptime_interpreter::{
     ComptimeFunctionBodies, ComptimeInterpreter, ComptimeObservation,
@@ -193,6 +200,7 @@ impl<'a> TypeChecker<'a> {
         self.speculating = false;
 
         let mut terminated_at = None;
+        let mut state_at_end = None;
         let mut declared = HashMap::new();
         if is_function_body {
             for name in self.borrow.current_params.keys() {
@@ -203,29 +211,52 @@ impl<'a> TypeChecker<'a> {
         for i in 0..body.len() {
             self.borrow.set_stmt(i);
             self.drops_set_stmt(i);
-            if terminated {
+            // Code that never runs is still checked, as rustc checks it. The warning is once
+            // per block.
+            if terminated && terminated_at == Some(i - 1) {
                 let stmt_span = body[i].span();
                 self.errors.warn(
                     crate::diagnostic::DiagnosticCode::W1003,
                     "Unreachable code after return, break, or continue",
                     Some(crate::diagnostic::SourceSpan::from_ast_span(&stmt_span)),
                 );
-                break; // Only warn once per block
             }
 
             self.warn_if_declared_twice(&body[i], &mut declared);
             self.check_statement(&mut body[i], return_type, true);
             match &body[i] {
-                Statement::Return(_) | Statement::Break(_) | Statement::Continue(_) => {
+                Statement::Return(_) | Statement::Break(_) | Statement::Continue(_)
+                    if !terminated =>
+                {
                     terminated = true;
                     terminated_at = Some(i);
+                    state_at_end = Some(self.save_flow_state());
                 }
                 _ => {}
             }
         }
+        if let Some(state) = state_at_end {
+            self.restore_flow_state(state);
+        }
         self.drops_exit_block(body, terminated_at);
         self.speculating = saved_speculating;
         self.borrow.exit_block();
+    }
+
+    /// What the checks after a `return`, `break` or `continue` change, but code that runs
+    /// must not see: moves, borrows and drop points.
+    pub(crate) fn save_flow_state(&self) -> FlowState {
+        FlowState {
+            moved: self.moved_snapshot(),
+            borrows: self.borrow.snapshot(),
+            drops: self.drops_save(),
+        }
+    }
+
+    pub(crate) fn restore_flow_state(&mut self, state: FlowState) {
+        self.restore_moved(state.moved);
+        self.borrow.restore(state.borrows);
+        self.drops_restore(state.drops);
     }
 
     /// W1005: `stmt` is a `let` of a name its block already declared, so the earlier value can no
@@ -489,6 +520,16 @@ impl<'a> TypeChecker<'a> {
             if !self.speculating {
                 self.borrow
                     .copy_borrows(from.name.as_ref(), name.as_ref(), self.scopes.len());
+                self.reborrow_mut_variable(from.name.as_ref(), name.as_ref());
+            }
+        }
+        // `let w = h.r` copies a reference out of `h`, so `w` holds what `h` holds.
+        if let Expr::MemberAccess(_) = &*expr {
+            if let Some((root, _)) = Self::extract_base_and_path(expr) {
+                if !self.speculating && Self::is_ref_type(&binding_ty) {
+                    self.borrow
+                        .copy_borrows(&root, name.as_ref(), self.scopes.len());
+                }
             }
         }
 
@@ -1073,7 +1114,10 @@ impl<'a> TypeChecker<'a> {
         if self.speculating || self.borrow.skip_borrow_check {
             return;
         }
-        let Some((root, path)) = Self::extract_base_and_path(lhs) else {
+        // `*m = v` writes what `m` points at, which `&*m` borrowed.
+        let direct = Self::extract_base_and_path(lhs);
+        let through_deref = direct.is_none();
+        let Some((root, path)) = direct.or_else(|| self.reborrow_base_and_path(lhs)) else {
             return;
         };
         let shared = self
@@ -1087,7 +1131,10 @@ impl<'a> TypeChecker<'a> {
                     && crate::hir::places::paths_may_alias(&path, &b.path)
             });
         if shared {
-            let place = crate::hir::places::display_place(&root, &path);
+            let mut place = crate::hir::places::display_place(&root, &path);
+            if through_deref {
+                place = format!("*{place}");
+            }
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E4009,
                 format!(
@@ -1205,6 +1252,23 @@ impl<'a> TypeChecker<'a> {
         }
         // The right-hand side is read before the write, so `o = o` still reads a moved `o`.
         self.restore_moved(moved_before);
+        // `r = v` gives `r` a new value, so the borrows `r` held end, unless `v` reads `r`.
+        if let (None, Expr::Identifier(id)) = (op, &*lhs) {
+            let mut reads_target = false;
+            crate::syntax::visit_expr(rhs, &mut |e| {
+                reads_target |= matches!(e, Expr::Identifier(i) if i.name == id.name);
+            });
+            if !reads_target && !self.speculating {
+                let held: Vec<_> = self
+                    .borrow
+                    .snapshot()
+                    .into_iter()
+                    .flat_map(|(base, records)| records.into_iter().map(move |r| (base.clone(), r)))
+                    .filter(|(_, r)| r.borrower_name.as_deref() == Some(id.name.as_ref()))
+                    .collect();
+                self.borrow.forget(&held);
+            }
+        }
         let mut rhs_ty =
             self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume && !copies_into_tensor);
         self.current_assignment_target = None;

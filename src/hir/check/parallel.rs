@@ -51,17 +51,26 @@ impl crate::hir::TypeChecker<'_> {
                     } else {
                         b.span
                     };
-                    found.push((b.why, at));
+                    found.push((b.why, at, contains_barrier(&sp.stmts)));
                 }
             }
         });
-        for (why, at) in found {
-            self.errors.warn(
-                crate::diagnostic::DiagnosticCode::W1033,
+        for (why, at, kernel) in found {
+            let msg = if kernel {
+                format!(
+                    "this `spawn` region calls `barrier()`, but it runs on one thread: {why}. \
+                     The compiler splits a region with `barrier()` into blocks and threads only \
+                     when it can show that no two threads write the same memory"
+                )
+            } else {
                 format!(
                     "this `spawn` loop runs on one thread: {why}. Each pass writes only its own \
                      rows, so without that its passes could run at the same time"
-                ),
+                )
+            };
+            self.errors.warn(
+                crate::diagnostic::DiagnosticCode::W1033,
+                msg,
                 Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
             );
         }
@@ -70,11 +79,15 @@ impl crate::hir::TypeChecker<'_> {
 
 /// Why the loop of a `spawn` region runs on one thread, when every pass writes only memory of
 /// its own and something else stops the split. `None` when the loop runs in parallel, and when
-/// it is not a loop meant to be split. A region with a `barrier()` is a block-and-thread
-/// kernel, which this does not explain.
+/// it is not a loop meant to be split. A region with a `barrier()` is always meant to be split
+/// into blocks and threads, so for one that runs on one thread this names the first thing that
+/// stopped the split.
 pub(crate) fn serial_loop_blocker(stmts: &[Statement]) -> Option<Blocker> {
     if contains_barrier(stmts) {
-        return None;
+        if parallel_outer_for(stmts).is_some() {
+            return None;
+        }
+        return two_level(stmts).err();
     }
     match outer_for(stmts, true) {
         Verdict::Blocked(b) if parallel_two_level(stmts).is_none() => Some(b),
@@ -261,7 +274,19 @@ pub(crate) struct TwoLevelPlan {
 /// strides are both 1 and offsets both 0, so the kernel IS the serial nest -- the host path and
 /// the launcher's EXPECT check hold by construction, not by re-verification.
 pub(crate) fn parallel_two_level(stmts: &[Statement]) -> Option<(u64, TwoLevelPlan)> {
+    two_level(stmts).ok()
+}
+
+/// `parallel_two_level`, and why not: the first thing that stopped the split, with where it is.
+/// A reason with no position of its own uses the default span.
+fn two_level(stmts: &[Statement]) -> Result<(u64, TwoLevelPlan), Blocker> {
     use crate::syntax::stmt::Statement as S;
+    let no = |why: &str, span: Span| {
+        Err(Blocker {
+            why: why.to_string(),
+            span,
+        })
+    };
 
     // Same region prologue rule as the single-level prover: declarations only, then the loop,
     // nothing after it.
@@ -269,40 +294,63 @@ pub(crate) fn parallel_two_level(stmts: &[Statement]) -> Option<(u64, TwoLevelPl
     for (i, s) in stmts.iter().enumerate() {
         if matches!(s, S::ForLoop(_)) {
             if for_idx.is_some() {
-                return None;
+                return no("the region has more than one loop", s.span());
             }
             for_idx = Some(i);
         }
     }
-    let idx = for_idx?;
+    let Some(idx) = for_idx else {
+        return no("the region has no loop", Span::default());
+    };
     if !only_scratch_drops_after(stmts, idx) {
-        return None;
+        let after = stmts[idx + 1..].iter().find(|s| !matches!(s, S::Drop(_)));
+        return no(
+            "the region does more after the loop",
+            after.map(|s| s.span()).unwrap_or_default(),
+        );
     }
     let S::ForLoop(f) = &stmts[idx] else {
-        return None;
+        return no("the region has no loop", Span::default());
     };
+    let block_bounds = "the loop over blocks does not go over `0..N`, with `N` a number known \
+                        when compiling";
     let Expr::Range(r) = &*f.iterable else {
-        return None;
+        return no(block_bounds, f.iterable.span());
     };
-    let lo = parallel_int_literal(&r.start)?;
-    let hi = parallel_int_literal(&r.end)?;
+    let (Some(lo), Some(hi)) = (parallel_int_literal(&r.start), parallel_int_literal(&r.end))
+    else {
+        return no(block_bounds, f.iterable.span());
+    };
     if lo != 0 || hi <= lo {
-        return None; // the affine ownership argument below assumes lb 0
+        return no(block_bounds, f.iterable.span()); // the affine ownership argument assumes lb 0
     }
 
     // A region with no thread loop or no barrier is not a cooperative kernel; let the flat
     // grid-stride path have it (it maps the same work with less machinery).
     let mut scan = ParallelScan::fresh(f.iter.clone());
+    let why_not = |scan: ParallelScan, why: &str, span: Span| {
+        Err(scan.refusal.unwrap_or(Blocker {
+            why: why.to_string(),
+            span,
+        }))
+    };
     for s in &stmts[..idx] {
         let S::LetDecl(d) = s else {
-            return None;
+            return no(
+                "the region does more than declare names before the loop",
+                s.span(),
+            );
         };
         if !scan.let_decl_two_level(d) {
-            return None;
+            return why_not(
+                scan,
+                "a name declared before the loop cannot be split",
+                d.span,
+            );
         }
     }
     if !scan.declare(&f.iter, f.span) {
-        return None;
+        return why_not(scan, "the loop over blocks reuses a name", f.span);
     }
 
     let mut walker = TwoLevelWalk {
@@ -317,17 +365,36 @@ pub(crate) fn parallel_two_level(stmts: &[Statement]) -> Option<(u64, TwoLevelPl
     // block -- one thread's next-bq fill against another's lagging consume. The ledgers
     // surviving pass one are exactly that seam, and only a second pass walks a write into them.
     if !walker.items(&f.body) || !walker.items(&f.body) {
-        return None;
+        return why_not(
+            walker.scan,
+            "a statement in the loop over blocks cannot be split",
+            f.span,
+        );
     }
-    if !walker.saw_thread_loop || walker.scan.passes_may_share_rows() {
-        return None;
+    if !walker.saw_thread_loop {
+        return no(
+            "the loop over blocks holds no loop that the threads of a block can share",
+            f.span,
+        );
+    }
+    if let Some((name, span)) = walker.scan.shared_row() {
+        return no(
+            &format!("a pass reads a row of `{name}` that another pass writes"),
+            span,
+        );
     }
     let threads = walker.max_thread_trip.clamp(1, 1024) as u64;
     // A cooperative loop's barriers live INSIDE it, so every thread of the block must enter it:
     // its trip must BE the block shape, exactly. A wider sibling loop would leave threads
     // outside the bar, and the kernel hangs.
-    if walker.coop_trips.iter().any(|t| *t as u64 != threads) {
-        return None;
+    if let Some(t) = walker.coop_trips.iter().find(|t| **t as u64 != threads) {
+        return no(
+            &format!(
+                "a loop that holds a `barrier()` has {t} passes, but the block has {threads} \
+                 threads, one for each pass of its widest loop"
+            ),
+            f.span,
+        );
     }
     // The walks above ran twice (sequences twice per pass), so the plan vector carries
     // duplicates; membership is all `lower_for` asks of it.
@@ -338,7 +405,7 @@ pub(crate) fn parallel_two_level(stmts: &[Statement]) -> Option<(u64, TwoLevelPl
     } else {
         SPAWN_COOP
     };
-    Some((
+    Ok((
         (hi - lo) as u64 | (threads << 32) | coop,
         TwoLevelPlan {
             // The address of the ForLoopStmt itself, because that is what `lower_for` is
@@ -379,10 +446,24 @@ impl TwoLevelWalk {
         // iteration and the block loop's next block-stride iteration reuse the same
         // storage. "The next statement is the barrier" is the whole v1 discipline.
         let mut need_barrier = false;
+        let no_barrier = |scan: &mut ParallelScan, span: Span| {
+            let mut names: Vec<&String> = scan.smem_written.iter().collect();
+            names.sort();
+            let name = names.first().map(|n| n.to_string()).unwrap_or_default();
+            scan.fail(
+                &format!(
+                    "a loop writes the block-shared tensor `{name}`, and the next statement is \
+                     not `barrier()`"
+                ),
+                span,
+            )
+        };
+        let mut last_span = Span::default();
         for s in stmts {
             if need_barrier && !is_barrier(s) {
-                return false;
+                return no_barrier(&mut self.scan, last_span);
             }
+            last_span = s.span();
             need_barrier = false;
             let ok = match s {
                 // Block-scope declaration: every thread evaluates it into its own copy --
@@ -393,9 +474,14 @@ impl TwoLevelWalk {
                 // redundant-per-thread and harmless; a captured or block-shared write at
                 // block scope is every thread racing.
                 S::Assign(a) => {
-                    matches!(&a.lhs, Expr::Identifier(id)
+                    (matches!(&a.lhs, Expr::Identifier(id)
                         if self.scan.declared.contains(&*id.name)
                             && !self.scan.smem.contains(&*id.name))
+                        || self.scan.fail(
+                            "outside the loops that the threads share, it writes memory that \
+                             every thread of the block would write",
+                            a.span,
+                        ))
                         && self.scan.expr(&a.rhs)
                 }
                 S::ExprStmt(_) => {
@@ -406,7 +492,11 @@ impl TwoLevelWalk {
                         self.scan.smem_written.clear();
                         self.scan.smem_nonown_read.clear();
                     }
-                    b
+                    b || self.scan.fail(
+                        "outside the loops that the threads share, it does something other \
+                         than `barrier()`, which every thread of the block would do",
+                        s.span(),
+                    )
                 }
                 S::ForLoop(inner) => {
                     let ok = self.for_item(inner, s);
@@ -415,27 +505,39 @@ impl TwoLevelWalk {
                     }
                     ok
                 }
-                _ => false,
+                _ => self.scan.fail(
+                    "outside the loops that the threads share, it holds a statement that every \
+                     thread of the block would run",
+                    s.span(),
+                ),
             };
             if !ok {
                 return false;
             }
         }
-        !need_barrier
+        !need_barrier || no_barrier(&mut self.scan, last_span)
     }
 
     fn for_item(&mut self, inner: &crate::syntax::ForLoopStmt, node: &Statement) -> bool {
+        let bounds = "a loop inside the loop over blocks does not go over `0..N`, with `N` a \
+                      number known when compiling";
         let Expr::Range(r) = &*inner.iterable else {
-            return false;
+            return self.scan.fail(bounds, inner.iterable.span());
         };
         let (Some(lo), Some(hi)) = (parallel_int_literal(&r.start), parallel_int_literal(&r.end))
         else {
-            return false;
+            return self.scan.fail(bounds, inner.iterable.span());
         };
         if lo != 0 || hi <= lo {
-            return false;
+            return self.scan.fail(bounds, inner.iterable.span());
         }
-        if *inner.iter == *self.block_iv || !self.scan.declare(&inner.iter, inner.span) {
+        if *inner.iter == *self.block_iv {
+            return self.scan.fail(
+                "an inner loop reuses the name of the loop over blocks",
+                inner.span,
+            );
+        }
+        if !self.scan.declare(&inner.iter, inner.span) {
             return false;
         }
         // Decide the loop's role by whether its subtree synchronizes: a barrier anywhere
@@ -448,13 +550,19 @@ impl TwoLevelWalk {
         // rule, which rejected the whole region.
         let is_sequence = contains_barrier(&inner.body);
         if is_sequence {
+            let refusal = self.scan.refusal.clone();
             if self.coop_item(inner, node, hi - lo) {
                 return true;
             }
             // Twice for the same reason the block body walks twice: a sequence's end wraps
             // to its own beginning on the next iteration, and a dangling nonown read meeting
-            // the next pass's fill is visible only to a second walk.
-            return self.items(&inner.body) && self.items(&inner.body);
+            // the next pass's fill is visible only to a second walk. When this fails too, the
+            // warning keeps the reason the cooperative loop failed, which names the cause.
+            if self.items(&inner.body) && self.items(&inner.body) {
+                self.scan.refusal = refusal;
+                return true;
+            }
+            return false;
         }
         let saved_iv = std::mem::replace(&mut self.scan.iv, inner.iter.to_string());
         let saved_affine = self.scan.affine.take();
@@ -669,6 +777,9 @@ struct ParallelScan {
     explain: bool,
     /// The first thing other than a write that stopped the split.
     blocker: Option<Blocker>,
+    /// The first thing of any kind that stopped the split. The warning for a block-and-thread
+    /// kernel names it.
+    refusal: Option<Blocker>,
     /// Whether a pass writes memory that another pass may write too.
     shared_write: bool,
     /// For each tensor from outside the region, where a pass first reaches a row another pass
@@ -695,6 +806,7 @@ impl ParallelScan {
             depth: 0,
             explain: false,
             blocker: None,
+            refusal: None,
             shared_write: false,
             other_row_at: HashMap::new(),
         }
@@ -709,14 +821,28 @@ impl ParallelScan {
                 span,
             });
         }
+        self.fail(why, span);
         self.explain
     }
 
-    /// Stop the split because a write may reach memory another pass writes. Such a loop is not
-    /// one meant to run in parallel, so nothing is said about it.
-    fn refuse_write(&mut self) -> bool {
+    /// Stop the split because a write may reach memory another pass writes. A loop without
+    /// `barrier()` that does this is not one meant to run in parallel, so W1033 says nothing.
+    fn refuse_write(&mut self, why: &str, span: Span) -> bool {
         self.shared_write = true;
+        self.fail(why, span);
         self.explain
+    }
+
+    /// Note `why` as the reason the split stopped, unless an earlier reason is noted. Always
+    /// answers false, so `return self.fail(..)` stops the walk.
+    fn fail(&mut self, why: &str, span: Span) -> bool {
+        if self.refusal.is_none() {
+            self.refusal = Some(Blocker {
+                why: why.to_string(),
+                span,
+            });
+        }
+        false
     }
 
     /// A `let` in a two-level region (prologue or block scope). Two shapes pass: a plain
@@ -816,7 +942,11 @@ impl ParallelScan {
                     && (parallel_int_literal(&r.start).is_none()
                         || parallel_int_literal(&r.end).is_none())
                 {
-                    return false;
+                    return self.fail(
+                        "a loop that holds a `barrier()` has bounds that are not numbers known \
+                         when compiling",
+                        inner.iterable.span(),
+                    );
                 }
                 self.loop_barrier_stack.push(synchronizes);
                 // A synchronizing loop wraps: its end meets its own beginning on the next
@@ -832,7 +962,7 @@ impl ParallelScan {
                 // An infinite loop's trip is break-decided, i.e. potentially per-thread:
                 // there is no uniform position for a barrier in one.
                 if self.coop && contains_barrier(&l.body) {
-                    return false;
+                    return self.fail("a `loop` holds a `barrier()`", l.span);
                 }
                 self.loop_barrier_stack.push(false);
                 let ok = self.stmts(&l.body, depth + 1);
@@ -842,7 +972,11 @@ impl ParallelScan {
             // Leaving or short-circuiting a synchronizing loop early desynchronizes its
             // barriers: one thread stops arriving while the rest wait.
             S::Break(_) | S::Continue(_) if *self.loop_barrier_stack.last().unwrap_or(&false) => {
-                false
+                self.fail(
+                    "a `break` or `continue` leaves a loop that holds a `barrier()`, so the \
+                     other threads would wait at it forever",
+                    s.span(),
+                )
             }
             // A `break` of the outer loop stops every later iteration when serial but only the
             // current thread's stripe when strided — two different programs.
@@ -861,7 +995,11 @@ impl ParallelScan {
                             // A statement-position barrier: legal only where every thread
                             // arrives, and it retires the dirt on both ledgers.
                             if !self.barrier_ok {
-                                return false;
+                                return self.fail(
+                                    "a `barrier()` is inside an `if`, so some threads may not \
+                                     reach it",
+                                    fc.span,
+                                );
                             }
                             self.smem_written.clear();
                             self.smem_nonown_read.clear();
@@ -888,9 +1026,22 @@ impl ParallelScan {
             // block-shared storage.
             Expr::Identifier(id) => {
                 if !self.declared.contains(&*id.name) {
-                    return self.refuse_write();
+                    return self.refuse_write(
+                        &format!(
+                            "every pass writes `{}`, a name from outside the region",
+                            id.name
+                        ),
+                        id.span,
+                    );
                 }
                 !self.smem.contains(&*id.name)
+                    || self.fail(
+                        &format!(
+                            "it gives the whole block-shared tensor `{}` a new value",
+                            id.name
+                        ),
+                        id.span,
+                    )
             }
             // An index chain `a[e0][e1]..`: peel to the base. A local base is thread-private
             // regardless of indices; a captured base must be indexed first by the IV, giving each
@@ -903,7 +1054,10 @@ impl ParallelScan {
                     cur = &ix.base;
                 }
                 let Expr::Identifier(id) = cur else {
-                    return self.refuse_write();
+                    return self.refuse_write(
+                        "it writes an element of something that is not a named tensor",
+                        lhs.span(),
+                    );
                 };
                 // `indices` is outermost-last: `a[i][d]` pushed d then i.
                 let first = match indices.last() {
@@ -922,27 +1076,56 @@ impl ParallelScan {
                     // the loop's own IV. The ledger feeds the barrier-after-write rule at the
                     // items level and the seam checks here.
                     if self.affine.is_none() {
-                        return false;
+                        return self.fail(
+                            &format!(
+                                "it writes the block-shared tensor `{}` outside a loop that \
+                                 the threads share",
+                                id.name
+                            ),
+                            lhs.span(),
+                        );
                     }
                     // The write-after-read seam: rows a neighbour read since the last barrier
                     // (the next tile's fill racing this tile's consume). Only a barrier
                     // between the two orders them.
                     if self.smem_nonown_read.contains(&*id.name) {
-                        return false;
+                        return self.fail(
+                            &format!(
+                                "it writes `{}` after a pass read another pass's row of it, \
+                                 with no `barrier()` between",
+                                id.name
+                            ),
+                            lhs.span(),
+                        );
                     }
                     self.smem_written.insert(id.name.to_string());
-                    return matches!(first, Expr::Identifier(fid) if *fid.name == *self.iv);
+                    return matches!(first, Expr::Identifier(fid) if *fid.name == *self.iv)
+                        || self.fail(
+                            &format!(
+                                "a pass writes a row of the block-shared tensor `{}` that is \
+                                 not the row its loop variable `{}` picks",
+                                id.name, self.iv
+                            ),
+                            lhs.span(),
+                        );
                 }
                 self.note(&id.name);
                 self.captured_written.insert(id.name.to_string());
                 if !self.owns_row(&indices) {
-                    return self.refuse_write();
+                    return self.refuse_write(
+                        &format!(
+                            "the compiler cannot show that each pass of the loop over `{}` \
+                             writes a different element of `{}`",
+                            self.iv, id.name
+                        ),
+                        lhs.span(),
+                    );
                 }
                 self.record_row(&id.name, first, lhs.span());
                 true
             }
             // A write through a pointer, a field or anything else may reach any memory.
-            _ => self.refuse_write(),
+            _ => self.refuse_write("it writes through a pointer or a field", lhs.span()),
         }
     }
 
@@ -998,15 +1181,9 @@ impl ParallelScan {
             || self.block_row_write(indices)
     }
 
-    /// Whether two passes may reach the same row of a tensor from outside the region that the
-    /// loop writes: one reads a row the reading pass may not own, or the tensor is reached
-    /// through two different first indices.
-    fn passes_may_share_rows(&self) -> bool {
-        self.shared_row().is_some()
-    }
-
     /// A tensor from outside the region that the loop writes and that a pass reaches at a row
-    /// another pass may own, with where it does; see `passes_may_share_rows`.
+    /// another pass may own, with where it does: a pass reads a row it may not own, or reaches
+    /// the tensor through two different first indices.
     fn shared_row(&self) -> Option<(String, Span)> {
         let mut names: Vec<&String> = self.captured_written.iter().collect();
         names.sort();
@@ -1143,7 +1320,14 @@ impl ParallelScan {
                         // written since the last barrier -- the fill may not be
                         // visible yet. Legal only across a barrier.
                         if self.smem_written.contains(&*id.name) {
-                            return false;
+                            return self.fail(
+                                &format!(
+                                    "a pass reads another pass's row of `{}` after it was \
+                                     written, with no `barrier()` between",
+                                    id.name
+                                ),
+                                e.span(),
+                            );
                         }
                         self.smem_nonown_read.insert(id.name.to_string());
                     }
@@ -1177,7 +1361,10 @@ impl ParallelScan {
                 pure && fc.args.iter().all(|a| self.expr(a))
             }
             // A `&mut` borrow may be written through, anywhere.
-            Expr::Borrow(b) => (!b.is_mut || self.refuse_write()) && self.expr(&b.expr),
+            Expr::Borrow(b) => {
+                (!b.is_mut || self.refuse_write("it takes a `&mut` borrow", e.span()))
+                    && self.expr(&b.expr)
+            }
             // Belt for the pre-rewrite spelling, should this walk ever run on an unchecked AST: a
             // method rooted at a captured name is refused (`&mut self` mutation is a write this
             // walk cannot see); on a local or a computed scalar it is thread-private either way.
@@ -1187,7 +1374,12 @@ impl ParallelScan {
                     root = &ix.base;
                 }
                 if let Expr::Identifier(id) = root {
-                    if !self.declared.contains(&*id.name) && !self.refuse_write() {
+                    if !self.declared.contains(&*id.name)
+                        && !self.refuse_write(
+                            &format!("it calls a method on `{}`, which may change it", id.name),
+                            mc.span,
+                        )
+                    {
                         return false;
                     }
                 }

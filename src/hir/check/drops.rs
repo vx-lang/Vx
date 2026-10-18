@@ -43,6 +43,7 @@ pub(crate) enum Moved {
     Yes,
 }
 
+#[derive(Clone)]
 struct Owner {
     name: String,
     is_param: bool,
@@ -67,6 +68,7 @@ struct Owner {
 pub(crate) type MovedField = (Vec<String>, Moved, Option<String>);
 
 /// A field moved out of an owner, with the same states the owner itself has.
+#[derive(Clone)]
 struct FieldMove {
     path: Vec<String>,
     moved: Moved,
@@ -160,7 +162,7 @@ impl TempScan {
 }
 
 /// What the checker writes into one block, by statement.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Edits {
     /// The `let`s of the statement's temporaries, which go first.
     lets: BTreeMap<usize, Vec<Statement>>,
@@ -171,6 +173,7 @@ struct Edits {
     assign: HashMap<usize, (Vec<Statement>, Option<String>)>,
 }
 
+#[derive(Clone)]
 enum FrameKind {
     Function {
         /// Whether drops are written into this body.
@@ -194,7 +197,7 @@ enum FrameKind {
 
 /// The drop-point state of the function being checked: one frame per open block, loop and
 /// function or closure body.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct DropFrames {
     frames: Vec<FrameKind>,
     /// Owners to add to the next block: a function's parameters that need dropping.
@@ -709,6 +712,19 @@ impl<'a> TypeChecker<'a> {
             stmt: 0,
             edits: Box::default(),
         });
+    }
+
+    /// The drop state, to put back after checking code that never runs.
+    pub(crate) fn drops_save(&self) -> DropFrames {
+        self.borrow.drops.clone()
+    }
+
+    /// Put back a state from [`Self::drops_save`]. The counter stays, so the names of the
+    /// locals added since are not given out again.
+    pub(crate) fn drops_restore(&mut self, saved: DropFrames) {
+        let counter = self.borrow.drops.counter;
+        self.borrow.drops = saved;
+        self.borrow.drops.counter = counter;
     }
 
     pub(crate) fn drops_set_stmt(&mut self, i: usize) {

@@ -1,6 +1,6 @@
 //===- cpu_fusion_overhead.vx ------------------------------*- Vx -*-===//
-// RUN: vxc %s --emit-mlir -O0 | FileCheck %s --check-prefixes=MLIR,MLIR-O0
-// RUN: vxc %s --emit-mlir -O3 | FileCheck %s --check-prefixes=MLIR,MLIR-O3
+// RUN: vxc %s --emit-mlir -O0 | FileCheck %s --check-prefix=MLIR
+// RUN: vxc %s --emit-mlir -O3 | FileCheck %s --check-prefix=MLIR
 // RUN: vxc %s --emit-llvm -O3 | FileCheck %s --check-prefix=LLVM
 
 import std::io;
@@ -145,13 +145,8 @@ fn main() -> i32 {
 
 // MLIR-LABEL: func.func @main() -> i32 {
 
-// At -O0 the 128x128 extents are still runtime values: two index casts feed a dynamic alloc.
-// MLIR-O0: %[[D0:.*]] = arith.index_cast %{{.*}} : i32 to index
-// MLIR-O0: %[[D1:.*]] = arith.index_cast %{{.*}} : i32 to index
-// MLIR-O0: memref.alloc(%[[D0]], %[[D1]]) : memref<?x?xf32>
-
-// At -O3 they fold and the buffer is statically shaped.
-// MLIR-O3: memref.alloc() : memref<128x128xf32>
+// The 128x128 extents are constants, so the buffer is statically shaped at -O0 and at -O3.
+// MLIR: memref.alloc() : memref<128x128xf32>
 
 // --emit-llvm stops at the LLVM dialect, so main is still an llvm.func here.
 // LLVM-LABEL: llvm.func {{(hidden )?}}@main() -> i32 {

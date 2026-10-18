@@ -1,0 +1,7 @@
+(* vx_cpu.cat, with "no data race" as an axiom. *)
+
+"C"
+
+include "vx_cpu.cat"
+
+empty dr as NoDataRace

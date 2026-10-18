@@ -93,6 +93,9 @@ pub struct Function {
     /// unsafe context. The body is not itself one (Rust 2024): an unsafe operation inside still
     /// needs its own `unsafe` block.
     pub is_unsafe: bool,
+    /// `pub fn`: the object file exports the function under its own name. Any other function
+    /// the program defines is hidden (docs/lang/abi.md, section 4).
+    pub is_pub: bool,
     pub body: Vec<Statement>,
     pub doc_comment: Option<String>,
 }
@@ -110,6 +113,7 @@ impl Function {
             ensures: self.ensures.clone(),
             where_transfers: self.where_transfers.clone(),
             is_unsafe: self.is_unsafe,
+            is_pub: self.is_pub,
             body: if preserve_body || !self.generics.is_empty() {
                 self.body.clone()
             } else {

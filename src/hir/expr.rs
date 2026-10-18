@@ -131,6 +131,8 @@ impl<'a> TypeChecker<'a> {
         let mut ret_ty = Type::Struct("void".into(), None);
         let mut terminated = false;
         let mut terminated_at = None;
+        let mut type_at_end = None;
+        let mut state_at_end = None;
         let last = stmts.len().saturating_sub(1);
         // An `if` or `match` arm is a block of its own: what it declares is dropped inside it,
         // and a borrow made in it ends at its last use there.
@@ -141,14 +143,15 @@ impl<'a> TypeChecker<'a> {
         for (i, s) in stmts.iter_mut().enumerate() {
             self.borrow.set_stmt(i);
             self.drops_set_stmt(i);
-            if terminated && !self.speculating {
+            // Code that never runs is still checked, as rustc checks it, but it does not give
+            // the block its type.
+            if terminated && terminated_at == Some(i - 1) && !self.speculating {
                 let stmt_span = s.span();
                 self.errors.warn(
                     crate::diagnostic::DiagnosticCode::W1003,
                     "Unreachable code after return, break, or continue",
                     Some(crate::diagnostic::SourceSpan::from_ast_span(&stmt_span)),
                 );
-                break;
             }
             self.warn_if_declared_twice(s, &mut declared);
 
@@ -189,12 +192,22 @@ impl<'a> TypeChecker<'a> {
             }
 
             match s {
-                Statement::Return(_) | Statement::Break(_) | Statement::Continue(_) => {
+                Statement::Return(_) | Statement::Break(_) | Statement::Continue(_)
+                    if !terminated =>
+                {
                     terminated = true;
                     terminated_at = Some(i);
+                    type_at_end = Some(ret_ty.clone());
+                    state_at_end = Some(self.save_flow_state());
                 }
                 _ => {}
             }
+        }
+        if let Some(ty) = type_at_end {
+            ret_ty = ty;
+        }
+        if let Some(state) = state_at_end {
+            self.restore_flow_state(state);
         }
         self.drops_exit_block(stmts, terminated_at);
         self.borrow.exit_block();

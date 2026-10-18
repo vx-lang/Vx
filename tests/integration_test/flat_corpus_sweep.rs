@@ -498,12 +498,12 @@ fn flat_path_answers_match_the_backend_expectations() {
     let mut checked = 0usize;
     let mut failures: Vec<String> = Vec::new();
 
-    // `read_dir` rather than the recursive `corpus_programs` above, because this must be
-    // the SAME corpus `run_backend_test` runs, and that walks the directory without
-    // descending. Subdirectories like backend/pass/autodiff/ are reached by their own RUN
-    // lines instead, and their `// EXPECT:` lines assert on emitted IR rather than on what
-    // the program printed -- recursing would quietly test a different thing against
-    // assertions that were never about program output.
+    // `read_dir` rather than the recursive `corpus_programs` above, because this must be the
+    // SAME corpus `run_expect_lines_on_the_ast_code_generator` runs, and that walks the
+    // directory without descending. Subdirectories like backend/pass/autodiff/ are reached by
+    // their own RUN lines instead, and their `// EXPECT:` lines assert on emitted IR rather
+    // than on what the program printed -- recursing would quietly test a different thing
+    // against assertions that were never about program output.
     let backend_dir = tests.join("backend/pass");
     let mut programs: Vec<PathBuf> = std::fs::read_dir(&backend_dir)
         .expect("tests/backend/pass is missing")
@@ -523,13 +523,14 @@ fn flat_path_answers_match_the_backend_expectations() {
         }
         let source = std::fs::read_to_string(&program).unwrap_or_default();
 
-        // The same gates `run_backend_test` applies, so the two harnesses agree on what a
-        // fixture has opted out of -- all but `// REQUIRES: flat-codegen`, which says the
-        // legacy path gets the answers wrong and is therefore a reason to run a file here,
-        // not to skip it. Every other `// REQUIRES:` is about which codegen path a
-        // program takes, which is this file's other test, not a reason to skip running one.
-        // `NO_EXEC` was the gate this loop first left out: a fixture that has never been run
-        // can carry EXPECT lines nothing has ever compared, and `matmul_bf16.vx` did.
+        // The same gates `run_expect_lines_on_the_ast_code_generator` applies, so the two
+        // harnesses agree on what a fixture has opted out of -- all but
+        // `// REQUIRES: flat-codegen`, which says the legacy path gets the answers wrong and is
+        // therefore a reason to run a file here, not to skip it. Every other `// REQUIRES:` is
+        // about which codegen path a program takes, which is this file's other test, not a
+        // reason to skip running one. `NO_EXEC` was the gate this loop first left out: a
+        // fixture that has never been run can carry EXPECT lines nothing has ever compared,
+        // and `matmul_bf16.vx` did.
         if source.contains("// NO_EXEC") {
             continue;
         }
@@ -578,8 +579,9 @@ fn flat_path_answers_match_the_backend_expectations() {
 
         // Both streams, because a fixture's expected output is not always on stdout --
         // ffi_stdio.vx writes deliberately to stderr, and an unwind message goes there too.
-        // `run_backend_test` sees one combined string from the in-process JIT, so checking
-        // only stdout here would fail programs the legacy path passes for no real reason.
+        // `run_expect_lines_on_the_ast_code_generator` sees one combined string from the
+        // in-process JIT, so checking only stdout here would fail programs the legacy path
+        // passes for no real reason.
         let out = format!("{}{}", String::from_utf8_lossy(&output.stdout), log);
         for expect in &expects {
             if !crate::integration_test::compile_test::expect_matches(&out, expect) {

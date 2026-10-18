@@ -2306,9 +2306,17 @@ pub fn emit_function_mlir(
         Some(t) => format!(" -> {t}"),
         None => String::new(),
     };
-    // A function declared `-> !` is `noreturn` to LLVM.
+    // A function declared `-> !` is `noreturn` to LLVM. A `pub fn` stays exported:
+    // `vx-hide-program-symbols` skips a function with `vx.pub`.
+    let mut attrs = Vec::new();
     if crate::syntax::is_never_ty(&func.return_type) {
-        ret_sig += " attributes {passthrough = [\"noreturn\"]}";
+        attrs.push("passthrough = [\"noreturn\"]");
+    }
+    if func.is_pub {
+        attrs.push("vx.pub");
+    }
+    if !attrs.is_empty() {
+        ret_sig += &format!(" attributes {{{}}}", attrs.join(", "));
     }
     let mut out = format!(
         "func.func {}({}){} {{\n",

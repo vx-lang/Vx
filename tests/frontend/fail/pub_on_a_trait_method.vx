@@ -1,0 +1,12 @@
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A trait method cannot be `pub` yet.
+
+trait Peek {
+  pub fn peek(self : Self) -> i32;
+}
+// CHECK: `pub` on a method is not supported yet
+
+fn main() -> i32 {
+  return 0;
+}

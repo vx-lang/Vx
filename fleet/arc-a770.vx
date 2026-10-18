@@ -70,8 +70,14 @@ Topology Device {
   // part, and the paper gives "a maximum of 32 GB/s in each direction for a x16
   // PCIe 4.0 slot", 31.5 GB/s after the link's 128b/130b encoding. That is the
   // card's own capability, as `capacity:` above is the part's.
+  //
+  // Measured: 10.8-11.7 GB/s outbound and 10.0-10.8 GB/s back over five runs,
+  // one on 2026-10-04 and four on 2026-10-11
+  // (scripts/tools/xpu_bandwidth_spike.sh measures both directions). The limit
+  // is this machine's link, not the card: the CPU's lanes are PCIe 3.0, so the
+  // card runs at Gen3 x16.
   transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s,
-  // The way home, declared from the same spec.
+  // The way home, declared from the same spec and measured in the same runs.
   transfer Memory::HBM -> Memory::CPU_DRAM : 31.5 GB/s,
   // The on-die hops declare no cost: HBM and L2 nest via `within:`, so the
   // roofline derives what their bandwidths support (E6013 forbids a second

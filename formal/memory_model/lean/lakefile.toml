@@ -1,0 +1,5 @@
+name = "VxMemoryModel"
+defaultTargets = ["VxMemoryModel"]
+
+[[lean_lib]]
+name = "VxMemoryModel"

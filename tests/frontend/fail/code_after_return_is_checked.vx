@@ -1,0 +1,39 @@
+//===- code_after_return_is_checked.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Code after `return`, `break` or `continue` never runs, but it is still checked.
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+import std::vec;
+
+fn take(v : Vec<i32>) -> void {}
+
+fn unknown_name() -> i32 {
+  return 0;
+  // CHECK: Warning[W1003] at [[# @LINE + 2]]:3: Unreachable code
+  // CHECK: Error[E2001] at [[# @LINE + 1]]:17: Undefined variable 'undefined_name'
+  let y : i32 = undefined_name;
+  return y;
+}
+
+fn moved_twice() -> i32 {
+  let v = Vec<i32>::new();
+  loop {
+    break;
+    take(v);
+    // CHECK: Error[E4001] at [[# @LINE + 1]]:21: Use of moved or consumed linear variable: v
+    let f = || take(v);
+    f();
+  }
+  return 0;
+}
+// CHECK-NOT: Error
+// CHECK: 2 error(s) emitted
+
+fn main() -> i32 {
+  return unknown_name() + moved_twice();
+}

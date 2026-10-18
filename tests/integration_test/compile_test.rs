@@ -179,7 +179,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     // what makes the header mean what it says. XFAIL files come along because that marker is
     // itself an assertion -- that the RUN line still cannot pass.
     if source.lines().any(|l| l.trim().starts_with("// CHECK")) || source.contains("// XFAIL: *") {
-        run_lit_test(path, false)?;
+        run_lit_test(path)?;
     }
     Ok(())
 }
@@ -499,14 +499,15 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-// Backend Runner
-fn run_backend_test(path: &Path) -> Result<(), String> {
+/// Runs a file's `// EXPECT:` lines on the AST code generator. flat_corpus_sweep.rs runs the
+/// same lines on the flat code generator, which is the default. Together they check that both
+/// code generators give the same answers.
+fn run_expect_lines_on_the_ast_code_generator(path: &Path) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
-    // This runner is the legacy AST code generator. `// REQUIRES: flat-codegen` says the
-    // file needs something only the flat path does, such as a pass that runs only there.
-    // The flat sweep in flat_corpus_sweep.rs still runs the file, so its `EXPECT` lines are
-    // checked -- on one code generator rather than two.
+    // `// REQUIRES: flat-codegen` says the AST code generator cannot run the file yet. Each
+    // such file is a gap between the two code generators. The flat sweep still checks its
+    // `EXPECT` lines.
     if source.contains("// REQUIRES: flat-codegen") {
         return Ok(());
     }
@@ -902,8 +903,7 @@ fn test_warnings() -> Result<(), String> {
 
 // Optimization Test Runner
 fn run_optimization_test(path: &Path) -> Result<(), String> {
-    // These files pin the AST codegen's MLIR structure, so they force the legacy path.
-    run_lit_test(path, true)
+    run_lit_test(path)
 }
 
 /// Execute a file's `// RUN:` lines through a shell, so `| FileCheck %s` runs the real
@@ -914,12 +914,9 @@ fn run_optimization_test(path: &Path) -> Result<(), String> {
 /// `CHECK-NOT:`, which meant the pipe in the RUN line was decoration -- anything else a
 /// file wrote had to be refused, or it would pass while asserting nothing (Vx#407).
 ///
-/// `force_legacy` pins the AST codegen, which the optimizations and backend tests want
-/// because they assert that path's exact IR. The frontend tests run the default path
-/// instead: they assert what a user actually gets, and forcing legacy there would report
-/// the AST path's own bugs as frontend failures (three such programs are recorded on
-/// Vx#398).
-fn run_lit_test(path: &Path, force_legacy: bool) -> Result<(), String> {
+/// A RUN line runs exactly the command it names. It uses the AST code generator only when
+/// it says `--legacy-codegen`.
+fn run_lit_test(path: &Path) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
     // Same lit-style gate the middle-end and backend runners apply. A check against IR that
@@ -978,29 +975,13 @@ fn run_lit_test(path: &Path, force_legacy: bool) -> Result<(), String> {
     ));
 
     for run_line in run_lines {
-        let mut cmd = run_line
+        let cmd = run_line
             .split_once("RUN:")
             .unwrap()
             .1
             .trim()
             .replace("%s", path.to_str().unwrap())
             .replace("%t", t_val.to_str().unwrap());
-
-        // `// REQUIRES: flat-codegen` opts a file out: some constructs exist ONLY on the flat
-        // path, and forcing legacy there tests a lowering that deliberately does not exist.
-        // Skip a command that already names the flag: clap rejects it twice.
-        if force_legacy
-            && !cmd.contains("--legacy-codegen")
-            && !source.contains("// REQUIRES: flat-codegen")
-        {
-            let split = cmd.find('|').unwrap_or(cmd.len());
-            let (head, tail) = cmd.split_at(split);
-            let mut words = head.split_whitespace();
-            let first = words.next();
-            if first == Some("vxc") || (first == Some("not") && words.next() == Some("vxc")) {
-                cmd = format!("{} --legacy-codegen {}", head.trim_end(), tail);
-            }
-        }
 
         // pipefail, because a RUN line fails if any stage fails. A shell reports only the
         // last stage, so a compiler that crashed would still pass whenever its stderr
@@ -1010,6 +991,9 @@ fn run_lit_test(path: &Path, force_legacy: bool) -> Result<(), String> {
             .arg(format!("set -o pipefail; {}", cmd))
             .env("PATH", &path_var)
             .env("RUST_BACKTRACE", "1")
+            // A RUN line without `--legacy-codegen` tests the default code generator. If that
+            // code generator declines the program, vxc fails, and does not use the AST one.
+            .env("VX_NO_AST_FALLBACK", "1")
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .output()
             .expect("Failed to execute RUN line");
@@ -1086,7 +1070,7 @@ fn test_middle_end_fail() -> Result<(), String> {
 fn test_crash() -> Result<(), String> {
     for i in 0..5 {
         println!("test_crash iteration {}", i);
-        run_backend_test(Path::new("tests/backend/pass/plugin_npe.vx"))?;
+        run_expect_lines_on_the_ast_code_generator(Path::new("tests/backend/pass/plugin_npe.vx"))?;
         println!("test_crash iteration {} done", i);
     }
     Ok(())
@@ -1099,7 +1083,7 @@ fn test_backend() -> Result<(), String> {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass"),
         |path| {
             println!("Running test_backend on {:?}", path);
-            run_backend_test(path)?;
+            run_expect_lines_on_the_ast_code_generator(path)?;
             // Any file that states CHECK lines, or whose RUN line names FileCheck, gets
             // those RUN lines executed. Matching on one exact spelling of the RUN line
             // left most of this directory's CHECK lines inert, and they had drifted
@@ -1494,10 +1478,9 @@ where
     Ok(())
 }
 
-// The fail tiers name their own command, so nothing is pinned for them; everything else
-// the lit runner does -- the real FileCheck, pipefail, %s/%t -- applies here too.
+// The fail tiers get everything the lit runner does: the real FileCheck, pipefail, %s/%t.
 fn run_shell_tests(path: &Path) -> Result<(), String> {
-    run_lit_test(path, false)
+    run_lit_test(path)
 }
 
 #[test]
