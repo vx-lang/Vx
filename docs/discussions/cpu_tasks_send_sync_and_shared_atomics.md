@@ -1,6 +1,6 @@
 # Scoped tasks, Send and Sync, and shared atomics on the CPU
 
-Status: proposal. Issues: #1860, #1861, #1862. Tracking: #1870. Memory model: C0 to C7 in
+Status: agreed. Issues: #1860, #1861, #1862. Tracking: #1870. Memory model: C0 to C7 in
 `borrow_check_sequence_points_for_calls.md`.
 
 These three designs depend on each other. A task needs a rule for what it may take (#1861), and
@@ -101,39 +101,39 @@ code is undefined behavior (C7). This is the only case in which a race has no me
 
 ## 3. A type that a shared reference can write through (#1862)
 
-**U1. `UnsafeCell<T>`** in `core::cell`. The compiler knows it by name, as it knows `Copy`.
+**U1. `SharedCell<T>`** in `core::cell`. The compiler knows it by name, as it knows `Copy`.
 
 <!-- vx-doctest: skip (proposed syntax) -->
 
 ```vx
-struct UnsafeCell<T> { v : T }
-impl<T> UnsafeCell<T> {
-  fn new(v : T) -> UnsafeCell<T> { .. }
-  fn get(self : &UnsafeCell<T>) -> *mut T { .. }   // the only way to write through `&`
-  fn get_mut(self : &mut UnsafeCell<T>) -> &mut T { .. }
+struct SharedCell<T> { v : T }
+impl<T> SharedCell<T> {
+  fn new(v : T) -> SharedCell<T> { .. }
+  fn get(self : &SharedCell<T>) -> *mut T { .. }   // the only way to write through `&`
+  fn get_mut(self : &mut SharedCell<T>) -> &mut T { .. }
 }
 ```
 
 **U2. Why the compiler must know it.** The flat generator marks each `&T` parameter
 `llvm.readonly` (`src/codegen/flat.rs`). An atomic store through `&Self` would then break the
-optimizer's assumptions. A `&T` whose `T` contains an `UnsafeCell`, in a field at any depth, does
+optimizer's assumptions. A `&T` whose `T` contains a `SharedCell`, in a field at any depth, does
 not get `llvm.readonly`. Whether a type contains one is a layout fact, and the freeze knows it.
 
 **U3.** A write through the pointer from `get` needs `unsafe`. A safe type wraps it.
-`UnsafeCell<T>` is `Send` when `T` is, and it is not `Sync`.
+`SharedCell<T>` is `Send` when `T` is, and it is not `Sync`.
 
-**U4. Atomics.** Each atomic holds its value in an `UnsafeCell`, and each method that writes takes
+**U4. Atomics.** Each atomic holds its value in a `SharedCell`, and each method that writes takes
 `self : &Self`. Each atomic opts in to `Sync`:
 
 <!-- vx-doctest: skip (proposed syntax) -->
 
 ```vx
-struct AtomicI32 { v : UnsafeCell<i32> }
+struct AtomicI32 { v : SharedCell<i32> }
 unsafe impl Sync for AtomicI32 {}
 ```
 
-`get_mut` keeps `&mut self`. So a plain access to an atomic is exclusive, and no program has a race
-between an atomic access and a plain one. #1868 is not needed while this holds.
+`get_mut` keeps `&mut self`. So a plain access to an atomic is exclusive, and safe code has no race
+between an atomic access and a plain one.
 
 U1 to U4 do not need threads. They can come first, and the atomic tests still run on one thread.
 
@@ -144,21 +144,24 @@ U1 to U4 do not need threads. They can come first, and the atomic tests still ru
 | Rule | This design |
 | --- | --- |
 | A signature is the whole contract | No signature gets a fact from a body. An erased closure type is not `Send` (S4). Vx has no `async fn` or `-> impl Trait`, which leak `Send` in Rust. |
-| Every layout is known at the freeze | `Send`, `Sync` and "contains an `UnsafeCell`" come from the fields and from top-level `unsafe impl` items. |
+| Every layout is known at the freeze | `Send`, `Sync` and "contains a `SharedCell`" come from the fields and from top-level `unsafe impl` items. |
 | A generic closes at its definition | `T : Send` is a bound like any other. `Task<T>` is a generic instantiation, the allowed exception. |
 | A body declares nothing global | `tasks` and `spawn` are expressions. `unsafe impl` is valid only at the top level. |
 
 ## Decisions
 
-1. **Syntax.** `tasks { spawn { .. } }`, as above. A library function cannot do it: Rust's
-   `thread::scope` needs lifetimes to tie a task to its scope, and Vx has none. Other spellings
-   (`scope`, `parallel`) are possible. `tasks` adds one keyword.
-1. **What runs a task.** The language promise of T7 (a task finishes, and nothing more), with one
-   OS thread for each task at first. The other choice promises one thread for each task. That
-   makes spin loops between tasks valid, but a pool can then never replace the threads.
-1. **`Send` and `Sync`.** Rust's rule, derived from fields (S2), with `unsafe impl` to opt in. The
-   other choice is Swift's regions.
-1. **The cell's name.** `UnsafeCell`, as in Rust, which a Vx programmer probably already knows.
+We chose these on 2026-10-18.
+
+1. **Syntax.** `tasks { spawn { .. } }`. A library function cannot do it: Rust's
+   `thread::scope` needs lifetimes to tie a task to its scope, and Vx has none. `scope` and
+   `parallel` were the other spellings.
+1. **What runs a task.** The promise of T7: a task finishes, and nothing more. The runtime starts
+   with one OS thread for each task. A promise of one thread for each task would make spin loops
+   between tasks valid, but a pool could then never replace the threads.
+1. **`Send` and `Sync`.** Rust's rule, derived from fields (S2), with `unsafe impl` to opt in, not
+   Swift's regions.
+1. **The cell's name.** `SharedCell`, not Rust's `UnsafeCell`. The name says what the type is
+   for: a value that a shared reference can write.
 
 ## For the Lean model (#1867)
 
@@ -167,7 +170,7 @@ The parent runs between the fork and the join. A task returns one value.
 
 ## The work, in order
 
-1. `UnsafeCell`, the `llvm.readonly` change, and atomics that write through `&Self` (U1 to U4).
+1. `SharedCell`, the `llvm.readonly` change, and atomics that write through `&Self` (U1 to U4).
 1. `Send` and `Sync` derived from fields, and `unsafe impl` (S1 to S5).
 1. `tasks` and `spawn`, parsed and borrow checked (T1 to T5). The first lowering runs each task at
    its `spawn`, which T7 allows. So programs and tests can come before threads.
