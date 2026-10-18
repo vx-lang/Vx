@@ -59,6 +59,13 @@ size, on the CPU part of the model:
 - `consistent_of_seqConsistent`: the model allows every interleaving of the threads.
 - `seqConsistent_of_raceFree`: take an execution that the model allows. If it has no data race,
   no fences, and only sequentially consistent atomics, then it is an interleaving (DRF-SC).
+- `Program.drf_sc`: DRF-SC for programs. If no interleaving of a program has a data race, then
+  every execution of the program that the model allows is an interleaving.
+
+For `Program.drf_sc`, a program is the set of its executions, with three properties that any
+language with threads has. A prefix of an execution is an execution. The coherence order is any
+order. A read at the end of its thread can read any write to its place. The theorem also needs
+sequentially consistent atomics, no fences, and places that are either atomic or not atomic.
 
 ```bash
 lake -d formal/memory_model/lean build    # Lean 4.35, no other libraries
@@ -119,8 +126,10 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - The rule for sequentially consistent atomics ignores scopes.
 - herd7 checks each test completely, but only the tests. memalloy checks every execution up to 5
   or 6 events.
-- The Lean DRF-SC theorem is about one execution. The theorem for programs needs a semantics of
-  programs: if no interleaving of a program has a data race, then every run is an interleaving.
+- `Program.drf_sc` assumes that each place is either atomic or not atomic. The proof does not
+  cover a race between an atomic read and a plain write to the same place.
+- No language gives `Program.drf_sc` its programs yet. The core language of #1850 must show the
+  three properties of a program.
 - The Lean model has no scopes and no barriers.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.
