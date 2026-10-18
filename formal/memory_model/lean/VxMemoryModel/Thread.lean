@@ -58,14 +58,15 @@ inductive Stmt where
   | ite (c : Expr) (s t : Stmt)
   /-- Run `s` while `c` is not 0. -/
   | loop (c : Expr) (s : Stmt)
+  /-- Read the place `x` with `sc` reads until it is not 0. -/
+  | wait (x : Nat)
+  /-- Start the task `t`. `Tasks.lean` gives its meaning, so it has no step here. -/
+  | spawn (t : Nat)
+  /-- Wait for the task `t` to finish. `Tasks.lean` gives its meaning. -/
+  | join (t : Nat)
 
-/-- Set the flag `x`: an `sc` write of 1. A fork is `signal` in the parent and `await` at the
-start of the child. A join is `signal` at the end of the child and `await` in the parent. -/
+/-- Set the flag `x`: an `sc` write of 1. -/
 abbrev Stmt.signal (x : Nat) : Stmt := .store x (.const 1) .sc
-
-/-- Wait until the flag `x` is not 0, with `sc` reads into the register `r`. -/
-abbrev Stmt.await (r x : Nat) : Stmt :=
-  .seq (.assign r (.const 0)) (.loop (.eq (.reg r) (.const 0)) (.load r x .sc))
 
 def update (regs : Nat → Int) (r : Nat) (v : Int) : Nat → Int :=
   fun i => if i = r then v else regs i
@@ -92,6 +93,8 @@ inductive Step : Stmt → (Nat → Int) → Option Label → Stmt → (Nat → I
   | ite_true {c s t regs} : c.eval regs ≠ 0 → Step (.ite c s t) regs none s regs
   | ite_false {c s t regs} : c.eval regs = 0 → Step (.ite c s t) regs none t regs
   | loop {c s regs} : Step (.loop c s) regs none (.ite c (.seq s (.loop c s)) .skip) regs
+  | wait {x regs} (v : Int) :
+    Step (.wait x) regs (some ⟨.read, .sc, x, v, false⟩) (if v = 0 then .wait x else .skip) regs
 
 /-- `Runs s regs l`: the code `s` can make the accesses `l` and then stop. -/
 inductive Runs : Stmt → (Nat → Int) → List Label → Prop
@@ -128,12 +131,9 @@ theorem Trace.prefix {s n m} {f : Nat → Label} (h : Trace s n f) (hmn : m ≤ 
     exact ih (h.prefix _ _ rfl) (Nat.le_add_right _ _)
 
 /-- A wait that sees the flag set on its first read, followed by `k`. -/
-theorem Runs.await_seq {r x k regs l} (h : Runs k (update (update regs r 0) r 1) l) :
-    Runs (.seq (Stmt.await r x) k) regs (⟨.read, .sc, x, 1, false⟩ :: l) :=
-  .silent (.seq (.seq .assign)) <| .silent (.seq .seq_skip) <| .silent (.seq .loop) <|
-    .silent (.seq (.ite_true (by simp [Expr.eval, update]))) <|
-    .visible (.seq (.seq (.load 1))) <| .silent (.seq .seq_skip) <| .silent (.seq .loop) <|
-    .silent (.seq (.ite_false (by simp [Expr.eval, update]))) <| .silent .seq_skip h
+theorem Runs.wait_seq {x k regs l} (h : Runs k regs l) :
+    Runs (.seq (.wait x) k) regs (⟨.read, .sc, x, 1, false⟩ :: l) :=
+  .visible (.seq (.wait 1)) (.silent (by simpa using (Step.seq_skip : Step (.seq .skip k) _ _ _ _)) h)
 
 theorem Step.receptive {s regs a s' regs'} (h : Step s regs a s' regs') :
     ∀ l, a = some l → l.kind = .read → ∀ v : Int,
@@ -147,6 +147,10 @@ theorem Step.receptive {s regs a s' regs'} (h : Step s regs a s' regs') :
     intro l hl _ v
     cases hl
     exact ⟨_, _, .fetchAdd v⟩
+  | wait =>
+    intro l hl _ v
+    cases hl
+    exact ⟨_, _, .wait v⟩
   | @cas_eq _ _ expected _ _ regs _ _ | @cas_ne _ _ expected _ _ regs _ _ =>
     intro l hl _ v
     cases hl
@@ -252,5 +256,49 @@ def seqCstRule : Rule where
     | ite_false => exact fun hs => ⟨hs.2, nofun⟩
     | loop => exact fun hs => ⟨⟨⟨hs, hs⟩, trivial⟩, nofun⟩
     | assign => exact fun _ => ⟨trivial, nofun⟩
+    | wait v =>
+      refine fun _ => ⟨?_, fun l hl => by cases hl; exact ⟨nofun, Or.inr rfl⟩⟩
+      by_cases hv : v = 0 <;> simp [hv, Stmt.SeqCstOnly]
+
+/-- Each access of `s` of the kind `k` to the place `x` with the order `o` has `p k o x`. -/
+def Stmt.Accesses (p : Kind → Order → Nat → Prop) : Stmt → Prop
+  | load _ x o => p .read o x
+  | store x _ o | rmwStore x _ o => p .write o x
+  | fetchAdd _ x _ o | cas _ x _ _ o => p .read o x ∧ p .write o x
+  | fence o => p .fence o 0
+  | wait x => p .read .sc x
+  | seq s t | ite _ s t => s.Accesses p ∧ t.Accesses p
+  | loop _ s => s.Accesses p
+  | skip | assign .. | spawn _ | join _ => True
+
+def accessRule (p : Kind → Order → Nat → Prop) : Rule where
+  onStmt := Stmt.Accesses p
+  onLabel l := p l.kind l.order l.loc
+  step := by
+    intro s regs a s' regs' h
+    induction h with
+    | load | store | rmwStore | fence => exact fun hs => ⟨trivial, fun l hl => by cases hl; exact hs⟩
+    | cas_ne => exact fun hs => ⟨trivial, fun l hl => by cases hl; exact hs.1⟩
+    | fetchAdd | cas_eq => exact fun hs => ⟨hs.2, fun l hl => by cases hl; exact hs.1⟩
+    | assign => exact fun _ => ⟨trivial, nofun⟩
+    | seq _ ih =>
+      intro hs
+      exact ⟨⟨(ih hs.1).1, hs.2⟩, (ih hs.1).2⟩
+    | seq_skip => exact fun hs => ⟨hs.2, nofun⟩
+    | ite_true => exact fun hs => ⟨hs.1, nofun⟩
+    | ite_false => exact fun hs => ⟨hs.2, nofun⟩
+    | loop => exact fun hs => ⟨⟨⟨hs, hs⟩, trivial⟩, nofun⟩
+    | wait v =>
+      refine fun hs => ⟨?_, fun l hl => by cases hl; exact hs⟩
+      by_cases hv : v = 0 <;> simp [hv, Stmt.Accesses] <;> exact hs
+
+theorem Stmt.Accesses.mono {p q : Kind → Order → Nat → Prop} (hpq : ∀ k o x, p k o x → q k o x)
+    {s : Stmt} (h : s.Accesses p) : s.Accesses q := by
+  induction s with
+  | load | store | rmwStore | fence | wait => exact hpq _ _ _ h
+  | fetchAdd | cas => exact ⟨hpq _ _ _ h.1, hpq _ _ _ h.2⟩
+  | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 h.1, ih2 h.2⟩
+  | loop _ _ ih => exact ih h
+  | _ => trivial
 
 end Vx

@@ -4,9 +4,8 @@ import VxMemoryModel.Program
 /-!
 # Programs of the core language
 
-A program gives the code of each thread. All threads start together. A fork or a join is an
-`sc` write of a flag and a loop that waits for it, as in `../../vx.cat`: `Stmt.fork` and
-`Stmt.join` below.
+A program gives the code of each thread. All threads start together. `Tasks.lean` builds
+`spawn` and `join` on top of this, with flags.
 
 An execution of a program gives each event a value and a position in its thread. The events of
 each thread, in order, must be a run of its code, and each read must read a write of the same

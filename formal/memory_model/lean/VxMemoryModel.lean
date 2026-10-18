@@ -10,4 +10,5 @@ import VxMemoryModel.Finite
 import VxMemoryModel.Program
 import VxMemoryModel.Thread
 import VxMemoryModel.Language
+import VxMemoryModel.Tasks
 import VxMemoryModel.LanguageExample
