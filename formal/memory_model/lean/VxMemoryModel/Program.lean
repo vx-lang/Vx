@@ -30,7 +30,7 @@ open Relation
 namespace Execution
 
 /-- The same events, with other reads-from and coherence edges. -/
-def withEdges (X : Execution) (rf co : X.E → X.E → Prop) : Execution :=
+abbrev withEdges (X : Execution) (rf co : X.E → X.E → Prop) : Execution :=
   { X with rf := rf, co := co }
 
 /-- The reads-from edges after the read `r` takes its value from `w`. -/
@@ -118,9 +118,9 @@ theorem replace_last (m : Y.E) (rf' co' : Y.E → Y.E → Prop)
         exact (restrictHom Y _).hb (toT.hb h')
       cases hpm with
       | single h => exact hrace.2.2.1 (TransGen.single (Or.inl (last p h)))
-      | tail h hx =>
+      | @tail x _ h hx =>
         have hx := last _ hx
-        have hxm : _ ≠ m := fun e => hpo m (e ▸ hx)
+        have hxm : x ≠ m := fun e => hpo m (e ▸ hx)
         exact hrace.2.2.1 ((back _ hxm h).tail (Or.inl hx))
     · -- Nothing comes after `m`.
       obtain ⟨c, hc⟩ := hmp.exists_first

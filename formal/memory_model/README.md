@@ -53,7 +53,7 @@ current GPUs.
 
 ## Proofs in Lean
 
-herd7 and memalloy check small executions. `lean/` proves two theorems for executions of any
+herd7 and memalloy check small executions. `lean/` proves these theorems for executions of any
 size, on the CPU part of the model:
 
 - `consistent_of_seqConsistent`: the model allows every interleaving of the threads.
@@ -61,11 +61,19 @@ size, on the CPU part of the model:
   no fences, and only sequentially consistent atomics, then it is an interleaving (DRF-SC).
 - `Program.drf_sc`: DRF-SC for programs. If no interleaving of a program has a data race, then
   every execution of the program that the model allows is an interleaving.
+- `Prog.drf_sc`: the same theorem for the programs of a small core language.
 
 For `Program.drf_sc`, a program is the set of its executions, with three properties that any
 language with threads has. A prefix of an execution is an execution. The coherence order is any
 order. A read at the end of its thread can read any write to its place. The theorem also needs
 sequentially consistent atomics, no fences, and places that are either atomic or not atomic.
+
+The core language in `Thread.lean` and `Language.lean` has registers, loads, stores, `if` and
+loops. The type of a place gives the order of each access: an access to an atomic place is
+sequentially consistent, and other accesses are plain. Thread 0 runs first and writes the initial
+values. `Language.lean` shows that the executions of these programs have the three properties,
+so `Prog.drf_sc` needs no other assumption about the program. `LanguageExample.lean` builds an
+execution of message passing, to show that real programs have executions.
 
 ```bash
 lake -d formal/memory_model/lean build    # Lean 4.35, no other libraries
@@ -128,8 +136,8 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   or 6 events.
 - `Program.drf_sc` assumes that each place is either atomic or not atomic. The proof does not
   cover a race between an atomic read and a plain write to the same place.
-- No language gives `Program.drf_sc` its programs yet. The core language of #1850 must show the
-  three properties of a program.
+- The core language has no functions, no references, no read-modify-writes, and no fork or join
+  after thread 0. The memory orders of atomics other than `sc` are not in it.
 - The Lean model has no scopes and no barriers.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.
