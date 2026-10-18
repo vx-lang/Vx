@@ -1,11 +1,26 @@
 // No W1033 for a `spawn` loop that runs in parallel, nor for one whose passes write memory
 // another pass writes too, which is not meant to run in parallel: a scalar every pass adds to,
-// and one row every pass writes, even after a call that alone would be warned about. The one
-// warning is that `unused` is not used.
+// and one row every pass writes, even after a call that alone would be warned about. Also no
+// W1033 for a region with `barrier()` that runs on blocks and threads. The one warning is that
+// `unused` is not used.
 // WARN: Unused variable 'unused'
 // NO-WARN: W1033
 
 import core::num;
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Coop {
+  arch: nvptx64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+}
 
 fn scale(x : f32) on Topology::GPU -> f32 {
   return x * 2.0;
@@ -49,4 +64,30 @@ fn main() -> i32 {
   let unused = 1;
   print(each_pass_writes_its_own_row() + every_pass_adds_to_one_scalar() + every_pass_writes_row_zero());
   return 0;
+}
+
+// Each thread adds four columns into `part`, then each pass of `z` adds `part` into column `z`.
+fn row_sums_into_column_z(out : &mut Tensor<f32, [64, 1], Memory::GPU_HBM>, x : &Tensor<f32, [64, 128], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::Coop) {
+    let mut part = unsafe { Tensor<f32, [32, 1], Memory::SMEM>::uninit() };
+    for r in 0..64 {
+      for t in 0..32 {
+        let mut s : f32 = 0.0;
+        for j in 0..4 {
+          s = s + x[r][t + j * 32];
+        }
+        part[t][0] = s;
+      }
+      barrier();
+      for z in 0..1 {
+        let mut s : f32 = 0.0;
+        for k in 0..32 {
+          s = s + part[k][0];
+        }
+        out[r][z] = s;
+      }
+      barrier();
+    }
+  }
+  return;
 }

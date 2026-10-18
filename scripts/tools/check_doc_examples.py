@@ -60,12 +60,12 @@ TAG = re.compile(r"<[^>]+>")
 
 # A block has to declare something to be a compilable unit. Bare statements are illustrative
 # fragments and are left alone.
-DECLARES = re.compile(r"^\s*(fn |unsafe fn |safe fn |struct |enum |trait |impl |extern |macro_rules!|Memory |Topology )", re.M)
+DECLARES = re.compile(r"^\s*(fn |pub fn |unsafe fn |safe fn |struct |enum |trait |impl |extern |macro_rules!|Memory |Topology )", re.M)
 
 # Constructs that exist in Rust and not in Vx. Architecture documents embed compiler internals in
 # ```rust fences, and those are Rust, not examples of the language.
 RUST_ONLY = re.compile(
-    r"^\s*use\s+\w|#\[|#!\[|\bpub\s+(fn|struct|enum|mod|const|trait)\b|\bcrate::|"
+    r"^\s*use\s+\w|#\[|#!\[|\bpub\s+(struct|enum|mod|const|trait)\b|\bcrate::|"
     r"&self\b|&mut self\b|\bimpl\s+\w+\s+for\s+\w+\s*\{[^}]*fn\s+\w+\s*\(\s*&|"
     # Types and idioms from the standard Rust library that Vx has no equivalent of. The
     # architecture documents embed real compiler internals, and these are what give them away.

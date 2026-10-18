@@ -1504,6 +1504,7 @@ impl<'a> TypeChecker<'a> {
 
         Function {
             is_unsafe: generic_func.is_unsafe,
+            is_pub: generic_func.is_pub,
             name: mangled_name.into(),
             generics: Vec::new(),
             params: new_params,

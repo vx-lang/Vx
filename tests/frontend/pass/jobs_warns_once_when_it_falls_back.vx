@@ -13,7 +13,8 @@
 // The `match` whose arms give the returned value is what puts it outside the flat subset; the
 // unused binding is what warns.
 //
-// RUN: (vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
+// This test checks the fallback, so it unsets VX_NO_AST_FALLBACK, which the test runner sets.
+// RUN: (env -u VX_NO_AST_FALLBACK vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
 
 fn seven_or_nine(n : i32) -> i32 {
   return match n {

@@ -5,7 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// The default code generator does not support a borrow of a value that is not a tensor yet, so this uses the AST one.
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
 //
 // What stays allowed next to two_mutable_borrows_of_elements_of_one_tensor.vx: a second `&mut`
 // element borrow once the first is finished, and `&mut` borrows of two different fields of a

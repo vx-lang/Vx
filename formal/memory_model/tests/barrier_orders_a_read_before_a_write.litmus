@@ -1,0 +1,10 @@
+LISA barrier_orders_a_read_before_a_write
+(* A barrier also orders a read before it with a write after it (C5). The lane that reads
+   before the barrier never sees the write that comes after it.
+   Expect: never, no data race. *)
+{ x = 0; }
+ P0                  | P1                   ;
+ r[plain] r0 x       | f[barrier,block]     ;
+ f[barrier,block]    | w[plain] x 1         ;
+scopes: (device (block P0 P1))
+exists (0:r0 = 1)

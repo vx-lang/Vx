@@ -324,6 +324,7 @@ pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &T
                 ensures: Vec::new(),
                 where_transfers: Vec::new(),
                 is_unsafe: false,
+                is_pub: false,
                 body,
                 doc_comment: None,
             });

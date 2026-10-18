@@ -2,16 +2,9 @@
 // the command line or set in the environment becomes a number.
 //
 // Every tool in this directory that touches the card includes this rather than
-// deciding for itself, so no two helpers disagree about how much of the card
-// they may hold. A card asked for more device memory than it can give can take
-// the driver down with it, so a helper states a ceiling and refuses before it
-// allocates anything.
-//
-// The ceiling is the operator's, not the card's. `VX_VRAM_CEILING` names it in
-// bytes, and the default below is deliberately small so a larger run has to be
-// asked for on purpose. How much of a card a deployment may use is a fact about
-// the driver and the card -- the driver reports what is available to allocate
-// -- and the operator decides how much of that a measurement may hold.
+// deciding for itself, because the failure it prevents is the machine's: the
+// owner's machine becomes unstable above 12 GiB of VRAM in use, and a run that
+// asks for more can take the driver down with it.
 #pragma once
 
 #include <cerrno>
@@ -23,11 +16,16 @@
 // setting `VX_VRAM_CEILING`, so the larger allocation is always deliberate.
 static constexpr uint64_t kVramCeilingDefault = 2ull * 1024 * 1024 * 1024;
 
-// The most `VX_VRAM_CEILING` may be set to. This is arithmetic and not a fact
-// about any card: it is the largest ceiling under which three buffers sized
-// from the ceiling still fit a 64-bit count, so no ceiling the variable accepts
-// can make a helper's peak arithmetic wrap.
-static constexpr uint64_t kVramCeilingMax = UINT64_MAX / 3;
+// The most `VX_VRAM_CEILING` may be set to, so the variable cannot walk a run
+// past the ceiling.
+static constexpr uint64_t kVramCeilingMax = 12ull * 1024 * 1024 * 1024;
+
+// The largest per-buffer size in MiB a helper may be asked for when its peak is
+// three buffers of that size: `3 * size * MiB` is then at most
+// `kVramCeilingMax`, so the peak cannot wrap a 64-bit count before
+// `requireWithinCeiling` sees it.
+static constexpr uint64_t kVramCeilingMaxSizeMiB =
+    kVramCeilingMax / 3 / (1024 * 1024);
 
 // Parse `text` as a decimal count of `unit` and return it, or print why `name`
 // is not usable and exit. An empty string, a `-`, a trailing character, a value
@@ -68,14 +66,6 @@ static uint64_t vramCeiling() {
   return parseCount("VX_VRAM_CEILING", env, "bytes", kVramCeilingMax);
 }
 
-// The largest per-buffer size in MiB a helper may be asked for when its peak is
-// three buffers of that size. It is computed from the ceiling, so `3 * size *
-// MiB` is at most the ceiling: a size this cap lets through can neither wrap a
-// 64-bit count nor exceed what the operator allowed.
-static inline uint64_t vramCeilingMaxSizeMiB() {
-  return vramCeiling() / 3 / (1024 * 1024);
-}
-
 // Print the ceiling and the peak this run needs, then refuse if the peak is
 // over. `peak` is the most device memory the run holds at one time, which is
 // what the ceiling is about -- not the sum over the run.
@@ -108,8 +98,9 @@ static void requireWithinCeiling(const char *tool, uint64_t peak,
     std::fprintf(stderr,
                  "%s: refusing to allocate %llu bytes (requested); the VRAM "
                  "ceiling is %llu bytes (permitted). Raise VX_VRAM_CEILING to "
-                 "permit more.\n",
-                 tool, (unsigned long long)peak, (unsigned long long)ceiling);
+                 "at most %llu bytes deliberately.\n",
+                 tool, (unsigned long long)peak, (unsigned long long)ceiling,
+                 (unsigned long long)kVramCeilingMax);
     std::exit(1);
   }
 }

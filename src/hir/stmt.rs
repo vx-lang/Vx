@@ -16,6 +16,13 @@ use super::*;
 
 use crate::hir;
 use crate::hir::borrow_cx::BlockUses;
+
+/// See [`TypeChecker::save_flow_state`].
+pub(crate) struct FlowState {
+    moved: Vec<HashSet<String>>,
+    borrows: HashMap<crate::symbol::Symbol, Vec<crate::hir::env::BorrowRecord>>,
+    drops: crate::hir::check::drops::DropFrames,
+}
 use crate::hir::check_state::ComptimeEvalContext;
 use crate::hir::comptime_interpreter::{
     ComptimeFunctionBodies, ComptimeInterpreter, ComptimeObservation,
@@ -193,6 +200,7 @@ impl<'a> TypeChecker<'a> {
         self.speculating = false;
 
         let mut terminated_at = None;
+        let mut state_at_end = None;
         let mut declared = HashMap::new();
         if is_function_body {
             for name in self.borrow.current_params.keys() {
@@ -203,29 +211,52 @@ impl<'a> TypeChecker<'a> {
         for i in 0..body.len() {
             self.borrow.set_stmt(i);
             self.drops_set_stmt(i);
-            if terminated {
+            // Code that never runs is still checked, as rustc checks it. The warning is once
+            // per block.
+            if terminated && terminated_at == Some(i - 1) {
                 let stmt_span = body[i].span();
                 self.errors.warn(
                     crate::diagnostic::DiagnosticCode::W1003,
                     "Unreachable code after return, break, or continue",
                     Some(crate::diagnostic::SourceSpan::from_ast_span(&stmt_span)),
                 );
-                break; // Only warn once per block
             }
 
             self.warn_if_declared_twice(&body[i], &mut declared);
             self.check_statement(&mut body[i], return_type, true);
             match &body[i] {
-                Statement::Return(_) | Statement::Break(_) | Statement::Continue(_) => {
+                Statement::Return(_) | Statement::Break(_) | Statement::Continue(_)
+                    if !terminated =>
+                {
                     terminated = true;
                     terminated_at = Some(i);
+                    state_at_end = Some(self.save_flow_state());
                 }
                 _ => {}
             }
         }
+        if let Some(state) = state_at_end {
+            self.restore_flow_state(state);
+        }
         self.drops_exit_block(body, terminated_at);
         self.speculating = saved_speculating;
         self.borrow.exit_block();
+    }
+
+    /// What the checks after a `return`, `break` or `continue` change, but code that runs
+    /// must not see: moves, borrows and drop points.
+    pub(crate) fn save_flow_state(&self) -> FlowState {
+        FlowState {
+            moved: self.moved_snapshot(),
+            borrows: self.borrow.snapshot(),
+            drops: self.drops_save(),
+        }
+    }
+
+    pub(crate) fn restore_flow_state(&mut self, state: FlowState) {
+        self.restore_moved(state.moved);
+        self.borrow.restore(state.borrows);
+        self.drops_restore(state.drops);
     }
 
     /// W1005: `stmt` is a `let` of a name its block already declared, so the earlier value can no
@@ -1216,6 +1247,23 @@ impl<'a> TypeChecker<'a> {
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(&lhs.span())),
                 );
+            }
+        }
+        // `r = v` gives `r` a new value, so the borrows `r` held end, unless `v` reads `r`.
+        if let (None, Expr::Identifier(id)) = (op, &*lhs) {
+            let mut reads_target = false;
+            crate::syntax::visit_expr(rhs, &mut |e| {
+                reads_target |= matches!(e, Expr::Identifier(i) if i.name == id.name);
+            });
+            if !reads_target && !self.speculating {
+                let held: Vec<_> = self
+                    .borrow
+                    .snapshot()
+                    .into_iter()
+                    .flat_map(|(base, records)| records.into_iter().map(move |r| (base.clone(), r)))
+                    .filter(|(_, r)| r.borrower_name.as_deref() == Some(id.name.as_ref()))
+                    .collect();
+                self.borrow.forget(&held);
             }
         }
         let mut rhs_ty =

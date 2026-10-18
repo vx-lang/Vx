@@ -499,14 +499,15 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-// Backend Runner
-fn run_backend_test(path: &Path) -> Result<(), String> {
+/// Runs a file's `// EXPECT:` lines on the AST code generator. flat_corpus_sweep.rs runs the
+/// same lines on the flat code generator, which is the default. Together they check that both
+/// code generators give the same answers.
+fn run_expect_lines_on_the_ast_code_generator(path: &Path) -> Result<(), String> {
     let source = fs::read_to_string(path).expect("Failed to read test file");
 
-    // This runner is the legacy AST code generator. `// REQUIRES: flat-codegen` says the
-    // file needs something only the flat path does, such as a pass that runs only there.
-    // The flat sweep in flat_corpus_sweep.rs still runs the file, so its `EXPECT` lines are
-    // checked -- on one code generator rather than two.
+    // `// REQUIRES: flat-codegen` says the AST code generator cannot run the file yet. Each
+    // such file is a gap between the two code generators. The flat sweep still checks its
+    // `EXPECT` lines.
     if source.contains("// REQUIRES: flat-codegen") {
         return Ok(());
     }
@@ -990,6 +991,9 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
             .arg(format!("set -o pipefail; {}", cmd))
             .env("PATH", &path_var)
             .env("RUST_BACKTRACE", "1")
+            // A RUN line without `--legacy-codegen` tests the default code generator. If that
+            // code generator declines the program, vxc fails, and does not use the AST one.
+            .env("VX_NO_AST_FALLBACK", "1")
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .output()
             .expect("Failed to execute RUN line");
@@ -1066,7 +1070,7 @@ fn test_middle_end_fail() -> Result<(), String> {
 fn test_crash() -> Result<(), String> {
     for i in 0..5 {
         println!("test_crash iteration {}", i);
-        run_backend_test(Path::new("tests/backend/pass/plugin_npe.vx"))?;
+        run_expect_lines_on_the_ast_code_generator(Path::new("tests/backend/pass/plugin_npe.vx"))?;
         println!("test_crash iteration {} done", i);
     }
     Ok(())
@@ -1079,7 +1083,7 @@ fn test_backend() -> Result<(), String> {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/backend/pass"),
         |path| {
             println!("Running test_backend on {:?}", path);
-            run_backend_test(path)?;
+            run_expect_lines_on_the_ast_code_generator(path)?;
             // Any file that states CHECK lines, or whose RUN line names FileCheck, gets
             // those RUN lines executed. Matching on one exact spelling of the RUN line
             // left most of this directory's CHECK lines inert, and they had drifted

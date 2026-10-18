@@ -162,6 +162,8 @@ impl TypeId {
 
 By encapsulating variance rules and lifetime scopes directly into the type identifier, the borrow checker can process constraints via fast path register comparisons.
 
+<!-- vx-doctest: skip (Rust, not Vx) -->
+
 ```rust
 /// High-performance verification check for variance and lifetime compatibility
 pub fn verify_subtyping_bounds(
@@ -839,6 +841,8 @@ Now, Phase 2 (Parallel Body Type-Checking) begins. Let us trace exactly how a th
 ### 3. Module-Based Bucket Partitioning & Parallel Deduplication
 
 This snippet implements Strategy #3, where monomorphization requests are grouped using their 64-bit Module Hash (Word 0). Threads process independent buckets simultaneously with absolute data isolation.
+
+<!-- vx-doctest: skip (Rust, not Vx) -->
 
 ```rust
 // Pass in a map that translates the 64-bit hash to a dense array index

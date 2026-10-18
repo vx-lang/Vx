@@ -1417,6 +1417,16 @@ impl CompilerDriver {
                 ));
             }
             None => {
+                // The test runner sets this, so that a RUN line without `--legacy-codegen`
+                // never tests the AST code generator by accident.
+                if !self.options.legacy_codegen && std::env::var("VX_NO_AST_FALLBACK").is_ok() {
+                    return Err(format!(
+                        "Cannot compile '{filename}' with the default code generator. The \
+                         `[flat-codegen]` line above names the construct it does not support \
+                         yet. VX_NO_AST_FALLBACK is set, so the AST code generator is not used \
+                         in its place. Add `--legacy-codegen` to use the AST code generator."
+                    ));
+                }
                 if !self.options.legacy_codegen {
                     eprintln!("[flat-codegen] program outside the flat subset; using the AST path");
                 }
@@ -1764,6 +1774,7 @@ impl CompilerDriver {
             }
             let synth = crate::syntax::Function {
                 is_unsafe: false,
+                is_pub: false,
                 name: body.name.clone(),
                 generics: vec![],
                 params: body

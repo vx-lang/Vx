@@ -1,0 +1,52 @@
+"Vx memory model"
+
+(* An executable model of the rules for code that runs at the same time, C0 to C7 in
+   docs/discussions/borrow_check_sequence_points_for_calls.md. It is RC11 (Lahav et al.,
+   "Repairing Sequential Consistency in C/C++11", PLDI 2017), with two additions:
+   barriers of a scope (C5), and atomics of a scope (C7). See README.md. *)
+
+include "cos.cat"
+include "vx_events.cat"
+
+(* C7: an atomic reaches the threads inside its scope. Two atomics synchronize, and do not
+   race, only when each one reaches the thread of the other. *)
+let reaches =
+    ((Atomic & InSubgroup) * _) & same-subgroup
+  | ((Atomic & InBlock) * _) & same-block
+  | ((Atomic & InDevice) * _) & same-device
+  | ((Atomic \ (InSubgroup | InBlock | InDevice)) * _)
+let strong = reaches & reaches^-1
+
+(* C2 and C7: a release write, read by an acquire read, synchronizes the two threads. A fork
+   and a join are such a pair. *)
+let rs = [W]; (po & loc)?; [W & Atomic]; (rf; rmw)*
+let sw = [Rel | AcqRel | Sc]; ([F]; po)?; rs; (rf & strong); [R & Atomic]; (po; [F])?;
+         [Acq | AcqRel | Sc]
+
+let hb = (po | sw | bar)+
+
+(* C0 and C3: two accesses conflict when they touch one place and at least one writes. A data
+   race is a conflict between threads that happens-before does not order, unless both are
+   atomics that reach each other. Safe Vx code must never have one: the checker rejects it. *)
+let cnf = ((W * _) | (_ * W)) & loc \ ((IW * _) | (_ * IW))
+let dr = (cnf & ext) \ (hb | hb^-1 | strong)
+flag ~empty dr as data-race
+
+(* The axioms of RC11. *)
+let eco = (rf | co | fr)+
+irreflexive hb; eco? as coherence
+irreflexive rmw; eco as coherence-rmw
+empty rmw & (fr; co) as atomicity
+
+let sbl = po \ loc
+let hbl = hb & loc
+let scb = po | sbl; hb; sbl | hbl | co | fr
+let pscb = ([Sc] | [F & Sc]; hb?); scb; ([Sc] | hb?; [F & Sc])
+let pscf = [F & Sc]; (hb | hb; eco; hb); [F & Sc]
+acyclic pscb | pscf as seq-cst
+
+(* No value comes out of thin air. RC11 makes this rule strong: it forbids every cycle of
+   program order and reads, also for relaxed atomics. *)
+acyclic po | rf as no-thin-air
+
+show hb, sw, bar

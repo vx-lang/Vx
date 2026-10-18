@@ -1,0 +1,39 @@
+//===- new_value_for_a_reference_ends_its_old_borrow.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `r = &y` gives `r` a new value, so `r` no longer borrows `x`, and `x` can change.
+
+struct W {
+  r : &i32,
+}
+
+fn reference() -> i32 {
+  let mut x : i32 = 1;
+  let y : i32 = 2;
+  let mut r = &x;
+  r = &y;
+  x = 5;
+  return *r + x;
+}
+
+fn struct_holding_a_reference() -> i32 {
+  let mut x : i32 = 1;
+  let y : i32 = 2;
+  let mut outer = W {
+    r : &x
+  };
+  outer = W {
+    r : &y
+  };
+  x = 5;
+  return *outer.r + x;
+}
+
+fn main() -> i32 {
+  print(reference() + struct_holding_a_reference());
+  return 0;
+}

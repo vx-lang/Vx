@@ -3406,6 +3406,12 @@ impl<'a> TypeChecker<'a> {
                 gf.return_type.clone(),
             ));
         }
+        // `Type::method(..)`: the method's declared signature, found the way
+        // `check_static_method_call` finds it. Before its first instance exists, nothing else
+        // knows it, and a reference the call returns would keep no borrow.
+        if let Some(sig) = self.static_method_signature(base) {
+            return Some(sig);
+        }
         // A function from an `extern` block. Without its signature, none of the borrows its
         // arguments make would end when the call returns.
         if let Some(ext) = self
@@ -3434,6 +3440,46 @@ impl<'a> TypeChecker<'a> {
             return Some((sig.params.clone(), sig.ret_ty.clone()));
         }
         None
+    }
+
+    /// The declared signature of `Type::method`: the inherent impl's method, or the one trait
+    /// impl that has it. `None` when two traits' impls have it, since only the arguments can
+    /// choose between them.
+    fn static_method_signature(&self, name: &str) -> Option<(Vec<Type>, Type)> {
+        let (ty, method) = name.split_once("::")?;
+        let ty = ty.split('<').next().unwrap_or(ty);
+        let mut from_traits = Vec::new();
+        for (trait_key, impl_blocks) in self.env.impls.iter() {
+            for ib in impl_blocks {
+                let target = match &ib.target_type {
+                    Type::Struct(n, _) | Type::Enum(n, _) | Type::Generic(n, _) => n.as_ref(),
+                    Type::GenericInstance(inner, _) => match &**inner {
+                        Type::Struct(n, _) | Type::Enum(n, _) => n.as_ref(),
+                        _ => continue,
+                    },
+                    _ => continue,
+                };
+                if target != ty {
+                    continue;
+                }
+                let Some(m) = ib.methods.iter().find(|m| m.name.as_ref() == method) else {
+                    continue;
+                };
+                let sig = (
+                    m.params.iter().map(|(_, t)| t.clone()).collect(),
+                    m.return_type.clone(),
+                );
+                if trait_key.as_ref() == "_inherent" {
+                    return Some(sig);
+                }
+                from_traits.push(sig);
+            }
+        }
+        if from_traits.len() == 1 {
+            from_traits.pop()
+        } else {
+            None
+        }
     }
 
     /// `t.reshape([d0, d1, ..])`, optionally with `PadMode::Pad` or `PadMode::Trim`. Every
