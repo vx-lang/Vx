@@ -30,6 +30,9 @@ The script also checks *DRF-SC*. A test without a data race, whose accesses are 
 sequentially consistent, must give the same final states on `vx.cat` as on `sequential.cat`.
 Such a program cannot see how the hardware reorders memory accesses.
 
+CI (`.github/workflows/formal.yml`) runs this script, `run_lean.py` and the Lean build on each
+pull request that changes `formal/`. memalloy needs local patches, so CI does not run it.
+
 ## Comparing with RC11 and AArch64
 
 [memalloy](https://github.com/johnwickerson/memalloy) searches for a small execution that one
