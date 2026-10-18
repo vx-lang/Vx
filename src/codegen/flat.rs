@@ -311,6 +311,17 @@ pub(crate) fn placed_device(id: u64, ctx: &EmitCtx) -> Option<i32> {
 fn param_alias_attrs(ty: &Type, ctx: &EmitCtx) -> String {
     match ty {
         Type::Borrow { is_mut: true, .. } => " {llvm.noalias}".to_string(),
+        // A `SharedCell` in the value lets code write through the `&`.
+        Type::Borrow {
+            is_mut: false,
+            inner,
+            ..
+        } if ctx
+            .shared_cell_types
+            .contains(&crate::syntax::types::Mangle::mangle(&**inner)) =>
+        {
+            String::new()
+        }
         Type::Borrow { is_mut: false, .. } => " {llvm.readonly}".to_string(),
         // A tensor taken by value belongs to the function, which frees it. One placed in
         // another memory names the topology its plugin frees it on.
@@ -905,6 +916,9 @@ pub struct EmitCtx {
     /// The program's `const` tables as (global name, memref type), in the registry's order, which
     /// is what a `ConstTable` instruction's `imm` counts in.
     pub const_tables: Vec<(String, String)>,
+    /// The mangled types, among those that a parameter's `&` points to, that hold a
+    /// `SharedCell`. A `&` to one of them is not `llvm.readonly`.
+    pub shared_cell_types: std::collections::HashSet<String>,
 }
 
 /// The declared properties of a memory sub-space the flat emitter re-attaches to a `vx.transfer`,
@@ -1076,6 +1090,7 @@ impl EmitCtx {
                 .iter()
                 .map(|t| (t.symbol(), t.memref_type()))
                 .collect(),
+            shared_cell_types: std::collections::HashSet::new(),
         }
     }
 
@@ -1191,6 +1206,16 @@ pub fn emit_module_mlir(
 ) -> Lowered<String> {
     let setup = std::time::Instant::now();
     let mut ctx = EmitCtx::from_registry(registry, sched);
+    for (func, ..) in funcs {
+        for (_, ty) in &func.params {
+            if let Type::Borrow { inner, .. } = ty {
+                if registry.holds_shared_cell(inner) {
+                    ctx.shared_cell_types
+                        .insert(crate::syntax::types::Mangle::mangle(&**inner));
+                }
+            }
+        }
+    }
     for s in subspaces {
         ctx.subspaces.insert(s.dispatch_id, s.clone());
     }
