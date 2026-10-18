@@ -1,4 +1,4 @@
-# The Vx memory model in herd7
+# The Vx memory model
 
 This directory is an executable model of the rules for code that runs at the same time: C0 to
 C7 in `docs/discussions/borrow_check_sequence_points_for_calls.md`. Tracking issue: #1850.
@@ -16,6 +16,7 @@ it expects.
 | `run_litmus.py` | Runs every test and compares each result with its `Expect:` line. |
 | `tests/` | One test for each case of the rules. |
 | `memalloy/` | The CPU part of the model, compared with RC11 and with AArch64 by memalloy. |
+| `lean/` | The CPU part of the model in Lean 4, with proofs for executions of any size. |
 
 ## Running the tests
 
@@ -48,6 +49,22 @@ The script checks, up to 5 or 6 events:
 To build memalloy with OCaml 4.14 and Python 3, add `let compare = Stdlib.compare` after `open List` in `src/myList.ml`, and port the `print` and `string.replace` calls in `etc/` to Python 3.
 Its model of PTX is from 2013, older than the PTX model of Volta, so it cannot check a mapping to
 current GPUs.
+
+## Proofs in Lean
+
+herd7 and memalloy check small executions. `lean/` proves two theorems for executions of any
+size, on the CPU part of the model:
+
+- `consistent_of_seqConsistent`: the model allows every interleaving of the threads.
+- `seqConsistent_of_raceFree`: take an execution that the model allows. If it has no data race,
+  no fences, and only sequentially consistent atomics, then it is an interleaving (DRF-SC).
+
+```bash
+lake -d formal/memory_model/lean build    # Lean 4.35, no other libraries
+```
+
+The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
+Nothing checks yet that the two agree.
 
 ## Reading a test
 
@@ -90,7 +107,10 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - A test may have at most one barrier in each thread. The model matches barriers by scope, not
   by count.
 - The rule for sequentially consistent atomics ignores scopes.
-- herd7 checks each test completely, but only the tests. A proof for all programs belongs to the
-  Lean model of #1850.
+- herd7 checks each test completely, but only the tests. memalloy checks every execution up to 5
+  or 6 events.
+- The Lean DRF-SC theorem is about one execution. The theorem for programs needs a semantics of
+  programs: if no interleaving of a program has a data race, then every run is an interleaving.
+- The Lean model has no scopes and no barriers.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.
