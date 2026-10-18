@@ -32,6 +32,78 @@ pub(crate) fn binary_op_symbol(op: &BinaryOp) -> &'static str {
     }
 }
 
+/// Whether `e` is arithmetic on fp8 or fp4 values that the checker moved to f32: a narrow value
+/// converted with `as f32`, or an operator on such values and f32 literals.
+pub(crate) fn is_widened_narrow_arithmetic(e: &Expr) -> bool {
+    match e {
+        Expr::AsCast(c) => {
+            c.target_ty == Type::Scalar(ElementType::F32)
+                && matches!(&c.source_ty, Some(Type::Scalar(s)) if s.is_narrow_float())
+        }
+        Expr::BinaryOp(b) => {
+            matches!(
+                b.op,
+                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem
+            ) && (is_widened_narrow_arithmetic(&b.lhs) || is_widened_narrow_arithmetic(&b.rhs))
+                && [&b.lhs, &b.rhs]
+                    .iter()
+                    .all(|o| is_widened_narrow_arithmetic(o) || is_f32_literal(o))
+        }
+        Expr::UnaryOp(u) => u.op == UnaryOp::Neg && is_widened_narrow_arithmetic(&u.expr),
+        _ => false,
+    }
+}
+
+fn is_f32_literal(e: &Expr) -> bool {
+    matches!(e, Expr::Number(n) if n.ty == Some(ElementType::F32))
+}
+
+/// `e` as f32: an fp8 or fp4 value becomes `e as f32`, and a literal becomes an f32 literal.
+fn widen_to_f32(e: &mut Expr, ty: &Type) {
+    if let Expr::Number(n) = e {
+        n.ty = Some(ElementType::F32);
+        return;
+    }
+    let span = e.span();
+    let inner = std::mem::replace(
+        e,
+        Expr::Number(NumberExpr::new("0".to_string(), None, span)),
+    );
+    *e = Expr::AsCast(AsCastExpr {
+        expr: Box::new(inner),
+        target_ty: Type::Scalar(ElementType::F32),
+        source_ty: Some(ty.clone()),
+        span,
+    });
+}
+
+/// The right side of `let c : f8e4m3 = a * b`, which the checker moved to f32: it rounds once,
+/// here, to the written type. Any other expression keeps its type.
+pub(crate) fn round_narrow_arithmetic(e: &mut Expr, ty: Type, written: Option<&Type>) -> Type {
+    let Some(Type::Scalar(t)) = written else {
+        return ty;
+    };
+    if ty != Type::Scalar(ElementType::F32)
+        || !t.is_float()
+        || *t == ElementType::F32
+        || !is_widened_narrow_arithmetic(e)
+    {
+        return ty;
+    }
+    let span = e.span();
+    let inner = std::mem::replace(
+        e,
+        Expr::Number(NumberExpr::new("0".to_string(), None, span)),
+    );
+    *e = Expr::AsCast(AsCastExpr {
+        expr: Box::new(inner),
+        target_ty: Type::Scalar(t.clone()),
+        source_ty: Some(Type::Scalar(ElementType::F32)),
+        span,
+    });
+    Type::Scalar(t.clone())
+}
+
 /// `x.topology()`, with no arguments: the placement query.
 fn is_placement_query(e: &Expr) -> bool {
     matches!(e, Expr::MethodCall(mc) if mc.method_name.as_ref() == "topology" && mc.args.is_empty())
@@ -499,7 +571,24 @@ impl<'a> TypeChecker<'a> {
                 if let Type::Scalar(e) = &lhs_ty {
                     *operand_ty = Some(e.clone());
                 }
-                if !self.check_no_narrow_float_operand(
+                let narrow_scalar = [&lhs_ty, &rhs_ty]
+                    .iter()
+                    .any(|t| matches!(t, Type::Scalar(e) if e.is_narrow_float()));
+                let arithmetic = matches!(
+                    op,
+                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem
+                );
+                if narrow_scalar && arithmetic && self.has_written_float_result() {
+                    if Self::widen_narrow_operands(&mut [
+                        (&mut **lhs, &lhs_ty),
+                        (&mut **rhs, &rhs_ty),
+                    ]) {
+                        *operand_ty = Some(ElementType::F32);
+                        return Type::Scalar(ElementType::F32);
+                    }
+                    // An operand of another type, such as an f32 value: the type mismatch
+                    // below reports it.
+                } else if !self.check_no_narrow_float_operand(
                     binary_op_symbol(op),
                     &[&lhs_ty, &rhs_ty],
                     span,
@@ -703,7 +792,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Reports E3052 when an operand of `op` is an fp8 or fp4 value, or a tensor of them, and
-    /// returns false. The compiler has conversions for these types but no arithmetic yet.
+    /// returns false. A scalar operand is an error here only when no result type is written.
     pub(crate) fn check_no_narrow_float_operand(
         &mut self,
         op: &str,
@@ -716,15 +805,67 @@ impl<'a> TypeChecker<'a> {
         else {
             return true;
         };
+        let tensor = operands
+            .iter()
+            .any(|t| matches!(t, Type::Tensor(e, ..) if e.is_narrow_float()));
+        let message = if tensor {
+            format!(
+                "The compiler cannot compute `{op}` on tensors of `{elem}` yet. Convert the \
+                 elements with `as f32`"
+            )
+        } else if let Some(Type::Scalar(written)) = &self.expected_type {
+            format!(
+                "`{op}` on `{elem}` values gives a float, and the written result type is \
+                 `{written}`. Write a float type, and convert the result with `as {written}`"
+            )
+        } else {
+            format!(
+                "`{op}` on `{elem}` values needs a written result type, such as \
+                 `let c : f32 = ...`. The compiler computes in f32, and rounds once to that type"
+            )
+        };
         self.errors.error_with_code(
             crate::diagnostic::DiagnosticCode::E3052,
-            format!(
-                "The compiler cannot compute `{op}` on `{elem}` values yet. Convert each value \
-                 with `as f32`, and convert the result back with `as {elem}`"
-            ),
+            message,
             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
         );
         false
+    }
+
+    /// Whether the expression being checked has a written float result type, as in
+    /// `let c : f32 = a * b`. Only then can arithmetic on fp8 or fp4 values happen.
+    fn has_written_float_result(&self) -> bool {
+        matches!(&self.expected_type, Some(Type::Scalar(t)) if t.is_float())
+    }
+
+    /// `a * b` or `a < b` on fp8 or fp4 values: each narrow operand becomes `operand as f32`,
+    /// and a literal operand becomes an f32 literal, so the operation happens in f32. Returns
+    /// false, and changes nothing, when an operand is anything else, such as an f32 value.
+    fn widen_narrow_operands(operands: &mut [(&mut Expr, &Type)]) -> bool {
+        let needs_cast: Option<Vec<bool>> = operands
+            .iter()
+            .map(|(e, t)| match t {
+                Type::Scalar(n) if n.is_narrow_float() => Some(true),
+                Type::Scalar(ElementType::F32)
+                    if is_widened_narrow_arithmetic(e) || is_f32_literal(e) =>
+                {
+                    Some(false)
+                }
+                _ => None,
+            })
+            .collect();
+        let Some(needs_cast) = needs_cast else {
+            return false;
+        };
+        if !needs_cast.iter().any(|c| *c) {
+            return false;
+        }
+        for ((e, t), cast) in operands.iter_mut().zip(needs_cast) {
+            if cast {
+                widen_to_f32(e, t);
+            }
+        }
+        true
     }
 
     /// The operand rule for `%`, the bitwise operators and the shifts: the three that have
@@ -885,7 +1026,23 @@ impl<'a> TypeChecker<'a> {
                     RelationalOp::Gt => ">",
                     RelationalOp::Ge => ">=",
                 };
-                if !self.check_no_narrow_float_operand(symbol, &[&lhs_ty, &rhs_ty], span) {
+                // A comparison of fp8 or fp4 values happens in f32, which holds them exactly, so
+                // it needs no result type.
+                let narrow_scalar = [&lhs_ty, &rhs_ty]
+                    .iter()
+                    .any(|t| matches!(t, Type::Scalar(e) if e.is_narrow_float()));
+                if narrow_scalar
+                    && Self::widen_narrow_operands(&mut [
+                        (&mut **lhs, &lhs_ty),
+                        (&mut **rhs, &rhs_ty),
+                    ])
+                {
+                    *operand_ty = Some(ElementType::F32);
+                    return Type::Scalar(ElementType::Bool);
+                }
+                if !narrow_scalar
+                    && !self.check_no_narrow_float_operand(symbol, &[&lhs_ty, &rhs_ty], span)
+                {
                     return Type::Scalar(ElementType::Bool);
                 }
                 if self.is_struct_type(&lhs_ty) {
@@ -1037,6 +1194,13 @@ impl<'a> TypeChecker<'a> {
             UnaryOp::Neg => "-",
             UnaryOp::Not => "!",
         };
+        if *op == UnaryOp::Neg
+            && matches!(&inner_ty, Type::Scalar(e) if e.is_narrow_float())
+            && self.has_written_float_result()
+        {
+            widen_to_f32(inner, &inner_ty);
+            return Type::Scalar(ElementType::F32);
+        }
         if !self.check_no_narrow_float_operand(symbol, &[&inner_ty], span) {
             return inner_ty;
         }

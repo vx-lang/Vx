@@ -146,7 +146,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3049`](/errors/E3049/) | Two impls of the same trait for the same type: `impl Describe for Point` written twice, in one module or in two. A type has one impl of a trait, so a call could not choose between them. Remove one. |
 | [`E3050`](/errors/E3050/) | A pattern inside a variant's payload that is not a name or `_`, such as the `3` in `Val(3)` or the `Inner::A(v)` in `Wrap(Inner::A(v))`. The compiler does not test such a pattern when it chooses an arm, so the arm would be taken for any payload. Bind the payload to a name and test it in the arm, with an `if` or another `match`. |
 | [`E3051`](/errors/E3051/) | A `match` pattern that names a variant of another enum than the value matched, such as `Other::Red` in a `match` on a `Color`. Write the variant with the matched value's enum. |
-| [`E3052`](/errors/E3052/) | An operator on fp8 or fp4 values (`f8e4m3`, `f8e5m2` or `f4e2m1`), such as `a * b`, `-a` or `a < b`, or on tensors of them. The compiler cannot compute with these types yet. Convert each value with `as f32`, and convert the result back with `as`. |
+| [`E3052`](/errors/E3052/) | Arithmetic on fp8 or fp4 values (`f8e4m3`, `f8e5m2` or `f4e2m1`) with no written result type, as in `print(a * b)`. The compiler computes in f32 and rounds once to the written type, so the program must write it: `let c : f32 = a * b;`. Also `+=` and the other compound operators on these values, and any operator on tensors of them. |
 
 ## Borrow/Ownership Errors
 

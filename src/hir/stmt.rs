@@ -437,6 +437,7 @@ impl<'a> TypeChecker<'a> {
         let prev_expected = self.expected_type.take();
         self.expected_type = ty_ann.clone();
         let ty = self.check_expr_type_flag(expr, consume);
+        let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, ty_ann.as_ref());
         self.expected_type = prev_expected;
         self.current_assignment_target = None;
 
@@ -1268,6 +1269,7 @@ impl<'a> TypeChecker<'a> {
         }
         let mut rhs_ty =
             self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume && !copies_into_tensor);
+        rhs_ty = crate::hir::check::operators::round_narrow_arithmetic(rhs, rhs_ty, Some(&lhs_ty));
         self.current_assignment_target = None;
         // `*r = &mut y`, with `r` bound to `&mut x`: `r` reaches the borrows `x` now holds.
         if let (Some(var), Expr::Dereference(d)) = (self.store_target_var_of(lhs), &*lhs) {
@@ -1316,8 +1318,19 @@ impl<'a> TypeChecker<'a> {
             if !self.check_restricted_operands(op, &lhs_ty, &rhs_ty, &span) {
                 return;
             }
-            let symbol = format!("{}=", crate::hir::check::operators::binary_op_symbol(op));
-            if !self.check_no_narrow_float_operand(&symbol, &[&lhs_ty, &rhs_ty], &span) {
+            let narrow = [&lhs_ty, &rhs_ty]
+                .iter()
+                .find_map(|t| Self::scalar_elem(t).filter(|e| e.is_narrow_float()));
+            if let Some(elem) = narrow {
+                let symbol = crate::hir::check::operators::binary_op_symbol(op);
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3052,
+                    format!(
+                        "`{symbol}=` on `{elem}` values is not supported. Write `x = x {symbol} y`, \
+                         which computes in f32 and rounds once to the type of `x`"
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                );
                 return;
             }
         }
@@ -1619,6 +1632,7 @@ impl<'a> TypeChecker<'a> {
         let prev_expected = self.expected_type.take();
         self.expected_type = Some(return_type.clone());
         let ty = self.check_expr_type_flag(expr, consume);
+        let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, Some(return_type));
         self.expected_type = prev_expected;
         self.drops_exit("return", span.line, false);
 
