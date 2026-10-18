@@ -64,7 +64,7 @@ impl FnEmit<'_> {
                     self.body += &format!("  {n} = func.call @print_bool({w}) : (i32) -> i32\n");
                     return Ok(());
                 }
-                "f16" | "bf16" => {
+                "f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f16" | "bf16" => {
                     let w = format!("%pw{idx}");
                     self.body += &format!("  {w} = arith.extf {arg} : {et} to f32\n");
                     (w, "f32")

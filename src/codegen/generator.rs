@@ -236,6 +236,8 @@ pub(crate) fn scalar_type_bits(ty_text: &str) -> Option<u32> {
         return Some(bits);
     }
     match ty_text {
+        "f4E2M1FN" => Some(4),
+        "f8E4M3FN" | "f8E5M2" => Some(8),
         "f16" | "bf16" => Some(16),
         "f32" => Some(32),
         "f64" => Some(64),
@@ -245,7 +247,10 @@ pub(crate) fn scalar_type_bits(ty_text: &str) -> Option<u32> {
 
 /// Whether an MLIR type spelling is a float type.
 pub(crate) fn is_float_text(ty_text: &str) -> bool {
-    matches!(ty_text, "f16" | "bf16" | "f32" | "f64")
+    matches!(
+        ty_text,
+        "f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f16" | "bf16" | "f32" | "f64"
+    )
 }
 
 /// A drop waiting for the value of the statement it precedes.
@@ -610,9 +615,31 @@ impl<'c> MeliorGenerator<'c> {
             return Ok(block.append_operation(cast_op).result(0)?.into());
         }
 
-        let is_float = |t: Type<'c>| {
-            t == self.f32_ty || t == self.f64_ty || t == self.f16_ty || t == self.bf16_ty
-        };
+        let is_float = |t: Type<'c>| is_float_text(&t.to_string());
+
+        // Any other pair of float types, which includes every pair with an fp8 or fp4 side. Two
+        // different types of one width (`f8e4m3` and `f8e5m2`) go through f32, which holds every
+        // value of both, so the value rounds only once.
+        if is_float(from_ty) && is_float(to_ty) && from_ty != to_ty {
+            let from_bits = scalar_type_bits(&from_ty.to_string()).unwrap_or(0);
+            let to_bits = scalar_type_bits(&to_ty.to_string()).unwrap_or(0);
+            let convert =
+                |op: &str, v: Value<'c, 'c>, ty: Type<'c>| -> Result<Value<'c, 'c>, LowerError> {
+                    let op = melior::ir::operation::OperationBuilder::new(op, self.loc())
+                        .add_operands(&[v])
+                        .add_results(&[ty])
+                        .build()?;
+                    Ok(block.append_operation(op).result(0)?.into())
+                };
+            return match from_bits.cmp(&to_bits) {
+                std::cmp::Ordering::Greater => convert("arith.truncf", val, to_ty),
+                std::cmp::Ordering::Less => convert("arith.extf", val, to_ty),
+                std::cmp::Ordering::Equal => {
+                    let wide = convert("arith.extf", val, self.f32_ty)?;
+                    convert("arith.truncf", wide, to_ty)
+                }
+            };
+        }
 
         // A `bool` is `i1`, and `sitofp` would make `true` into -1.0.
         let is_number_int = |t: Type<'c>| melior::ir::TypeLike::is_integer(&t) && t != self.i1_ty;

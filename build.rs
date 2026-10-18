@@ -654,11 +654,13 @@ fn main() {
     assert!(status.success(), "mlir-tblgen failed");
     println!("cargo:rerun-if-changed=src/dialect/VxLowering.cpp");
     println!("cargo:rerun-if-changed=src/dialect/vx-opt.cpp");
+    println!("cargo:rerun-if-changed=src/dialect/NarrowFloats.cpp");
 
     // Compile the dialect
     let dialect_obj_path = PathBuf::from(&out_dir).join("VxDialect.o");
     let lowering_obj_path = PathBuf::from(&out_dir).join("VxLowering.o");
     let vx_opt_obj_path = PathBuf::from(&out_dir).join("vx-opt.o");
+    let narrow_floats_obj_path = PathBuf::from(&out_dir).join("NarrowFloats.o");
     let dialect_lib_path = PathBuf::from(&out_dir).join("libvx_dialect.a");
 
     let mut dialect_cmd = Command::new(&cxx);
@@ -712,6 +714,23 @@ fn main() {
         .expect("Failed to execute cxx for vx-opt");
     assert!(status.success(), "clang++ compilation failed for vx-opt");
 
+    let mut narrow_floats_cmd = Command::new(&cxx);
+    narrow_floats_cmd.args([
+        "-c",
+        "src/dialect/NarrowFloats.cpp",
+        "-o",
+        narrow_floats_obj_path.to_str().unwrap(),
+        "-std=c++17",
+    ]);
+    narrow_floats_cmd.args(&llvm_cxxflags_vec);
+    let status = narrow_floats_cmd
+        .status()
+        .expect("Failed to execute cxx for NarrowFloats");
+    assert!(
+        status.success(),
+        "clang++ compilation failed for NarrowFloats"
+    );
+
     let mut ar_cmd = Command::new(&ar);
     ar_cmd.args(&arflags);
     ar_cmd.args([
@@ -719,6 +738,7 @@ fn main() {
         dialect_obj_path.to_str().unwrap(),
         lowering_obj_path.to_str().unwrap(),
         vx_opt_obj_path.to_str().unwrap(),
+        narrow_floats_obj_path.to_str().unwrap(),
     ]);
     let status = ar_cmd.status().expect("Failed to archive libvx_dialect.a");
     assert!(status.success(), "ar failed for libvx_dialect");

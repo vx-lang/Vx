@@ -4250,7 +4250,10 @@ struct BoundedInlinerPass
 
 namespace mlir {
 namespace vx {
+std::unique_ptr<Pass> createExpandNarrowFloatsPass();
+
 void registerVxPasses() {
+  mlir::registerPass(createExpandNarrowFloatsPass);
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<ConvertVxToStandardPass>();
   });

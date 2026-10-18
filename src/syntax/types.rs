@@ -1186,6 +1186,50 @@ impl ElementType {
     /// 4 dense bits vs 1 padded byte, both from independent tables). `None` for an un-instantiated
     /// generic. Adding a numeric format sets its width here, in one place. (See the
     /// heterogeneous gap analysis §9.8.1.)
+    /// Whether this is one of the fp8 or fp4 types, which have conversions but no arithmetic yet.
+    pub fn is_narrow_float(&self) -> bool {
+        matches!(
+            self,
+            ElementType::F8E4M3 | ElementType::F8E5M2 | ElementType::F4E2M1
+        )
+    }
+
+    /// The value of this fp8 or fp4 type nearest to `x`. A tie goes to the value whose encoding
+    /// ends in 0, and a value too large for the type gives its largest one. These are the rules
+    /// of the `vx-expand-narrow-floats` pass, for a constant that never reaches it: MLIR would
+    /// fold a literal too large for `f8e4m3` to NaN. `None` for any other type.
+    pub fn nearest_narrow_value(&self, x: f64) -> Option<f64> {
+        let (mant_bits, bias, max_finite): (i32, i32, u32) = match self {
+            ElementType::F8E4M3 => (3, 7, 0x7E),
+            ElementType::F8E5M2 => (2, 15, 0x7B),
+            ElementType::F4E2M1 => (1, 1, 0x7),
+            _ => return None,
+        };
+        assert!(!x.is_nan(), "a narrow float literal is never NaN");
+        let value = |enc: u32| {
+            let exp = (enc >> mant_bits) as i32;
+            let mant = f64::from(enc & ((1 << mant_bits) - 1));
+            if exp == 0 {
+                mant * 2f64.powi(1 - bias - mant_bits)
+            } else {
+                (1.0 + mant / f64::from(1u32 << mant_bits)) * 2f64.powi(exp - bias)
+            }
+        };
+        let a = x.abs();
+        let enc = (0..max_finite)
+            .find(|&k| a < value(k + 1))
+            .map(|k| {
+                let mid = (value(k) + value(k + 1)) / 2.0;
+                if a < mid || (a == mid && k % 2 == 0) {
+                    k
+                } else {
+                    k + 1
+                }
+            })
+            .unwrap_or(max_finite);
+        Some(value(enc).copysign(x))
+    }
+
     pub fn bits(&self) -> Option<u32> {
         Some(match self {
             ElementType::Bool => 1,

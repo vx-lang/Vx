@@ -10,7 +10,8 @@ impl FnEmit<'_> {
         let e = self.ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
         let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
         let lit = if e.is_float() {
-            mlir_float_literal(f64::from_bits(ins.imm))
+            let v = f64::from_bits(ins.imm);
+            mlir_float_literal(e.nearest_narrow_value(v).unwrap_or(v))
         } else if !is_signed(&e) && int_bits(&e).is_some_and(|b| b > 64) {
             // The literal holds 64 bits. A wider unsigned type fills the rest with zeroes, so
             // `2^64 - 1` stays positive in a `u128`.
@@ -479,6 +480,23 @@ impl FnEmit<'_> {
             .ok_or(crate::emitter_gap!())?
             .clone();
         let op = cast_op(&src, &tgt).ok_or(crate::emitter_gap!())?;
+        // Two different float types of one width (`f8e4m3` and `f8e5m2`, `f16` and `bf16`):
+        // neither `extf` nor `truncf` converts between them. f32 holds every value of both, so
+        // going through it rounds only once.
+        let same_width_floats =
+            src.is_float() && tgt.is_float() && !op.is_empty() && src.bits() == tgt.bits();
+        if same_width_floats {
+            let (s, t) = (
+                mlir_scalar(&src).ok_or(crate::emitter_gap!())?,
+                mlir_scalar(&tgt).ok_or(crate::emitter_gap!())?,
+            );
+            let n = format!("%v{idx}");
+            self.body += &format!("  {n}_f32 = arith.extf {a} : {s} to f32\n");
+            self.body += &format!("  {n} = arith.truncf {n}_f32 : f32 to {t}\n");
+            self.names[idx] = n;
+            self.etypes[idx] = Some(tgt);
+            return Ok(());
+        }
         if op.is_empty() {
             self.names[idx] = a; // reinterpret (e.g. i32 as u32) -> alias
         } else {

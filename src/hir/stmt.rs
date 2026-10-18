@@ -1316,6 +1316,10 @@ impl<'a> TypeChecker<'a> {
             if !self.check_restricted_operands(op, &lhs_ty, &rhs_ty, &span) {
                 return;
             }
+            let symbol = format!("{}=", crate::hir::check::operators::binary_op_symbol(op));
+            if !self.check_no_narrow_float_operand(&symbol, &[&lhs_ty, &rhs_ty], &span) {
+                return;
+            }
         }
         if !self.is_assignable(&lhs_ty, &rhs_ty) {
             // Named types and a location, like every other type error: this fires on a

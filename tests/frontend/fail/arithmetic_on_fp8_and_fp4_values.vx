@@ -1,0 +1,37 @@
+//===- arithmetic_on_fp8_and_fp4_values.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// The compiler converts fp8 and fp4 values with `as`, but cannot compute with them yet. Each
+// operator on them is an error, and a negative literal is not.
+
+fn main() -> i32 {
+  let a : f8e4m3 = -1.5;
+  let b : f4e2m1 = 2.0;
+  let mut c : f8e4m3 = 3.0;
+  let t = Tensor<f4e2m1, [2, 2]>::new();
+  let u = Tensor<f4e2m1, [2, 2]>::new();
+  let w = Tensor<f8e5m2, [2]>::new();
+  let v = Tensor<f8e5m2, [2]>::new();
+  // CHECK-DAG: Error[E3052] at [[@LINE+1]]:{{[0-9]+}}: The compiler cannot compute `*` on `f8e4m3` values yet. Convert each value with `as f32`, and convert the result back with `as f8e4m3`
+  let p = a * a;
+  // CHECK-DAG: Error[E3052] at [[@LINE+1]]:{{[0-9]+}}: The compiler cannot compute `-` on `f4e2m1` values yet.
+  let n = -b;
+  // CHECK-DAG: Error[E3052] at [[@LINE+1]]:{{[0-9]+}}: The compiler cannot compute `<` on `f8e4m3` values yet.
+  let less = a < c;
+  // CHECK-DAG: Error[E3052] at [[@LINE+1]]:{{[0-9]+}}: The compiler cannot compute `+=` on `f8e4m3` values yet.
+  c += a;
+  // CHECK-DAG: Error[E3052] at [[@LINE+1]]:{{[0-9]+}}: The compiler cannot compute `@` on `f4e2m1` values yet.
+  let m = t @ u;
+  // CHECK-DAG: Error[E3052] at [[@LINE+1]]:{{[0-9]+}}: The compiler cannot compute `+` on `f8e5m2` values yet.
+  let s = w + v;
+  // Converting first is the way to compute with them.
+  let q = (a as f32) * (b as f32);
+  print(q);
+  return 0;
+}
