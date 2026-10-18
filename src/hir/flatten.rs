@@ -7327,12 +7327,12 @@ mod tests {
 
     #[test]
     fn unmodelled_aggregate_param_is_declined() {
-        // `Buf` holds a by-value generic instance, whose size depends on the instantiation, so the
-        // base layout stays the 0/0 stub; a function taking `Buf` by value cannot be sized, and
+        // `Buf` holds an enum with a payload by value, which the frozen layouts do not model, so
+        // its layout stays the 0/0 stub; a function taking `Buf` by value cannot be sized, and
         // lowering is declined atomically (worker untouched). This used to use a `<4 x f32>` field,
-        // which stopped being unmodelled once a vector got a layout.
+        // then a generic struct instance, and each stopped being unmodelled when it got a layout.
         let (did, w) = lower_with_registry(
-            "struct Inner<T> { v: T }\nstruct Buf { data: Inner<i32> }\nfn f(b: Buf) -> i32 { return 0; }",
+            "enum Maybe<T> { Some(T), Nothing }\nstruct Buf { data: Maybe<i32> }\nfn f(b: Buf) -> i32 { return 0; }",
             "f",
         );
         assert!(
