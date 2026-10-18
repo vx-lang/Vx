@@ -900,6 +900,19 @@ pub fn build_frozen_registry_with(
         }
     }
 
+    // The generic struct instances that the layouts above hold by value (`SharedCell<i32>`), so
+    // a field naming one resolves like a field naming a plain struct.
+    for (id, name, l) in layout.instance_layouts() {
+        defs.push(TypeDefinition {
+            id,
+            name: name.to_string(),
+            size_bytes: l.size,
+            align_bytes: l.align,
+            fields: l.fields.clone(),
+            by_value_dependencies: Vec::new(),
+        });
+    }
+
     let mut registry = crate::registry::ImmutableGlobalRegistry::build_and_validate(defs)
         .map_err(PipelineError::Semantic)?;
 
