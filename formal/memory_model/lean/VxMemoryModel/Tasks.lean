@@ -23,6 +23,7 @@ namespace Vx
 holds. -/
 def Stmt.Below (n : Nat) (tasks : Prop) : Stmt → Prop
   | load _ x _ | store x _ _ | fetchAdd _ x _ _ | cas _ x _ _ _ | rmwStore x _ _ | wait x => x < n
+  | loadAt _ base len _ _ | storeAt base len _ _ _ => base + len ≤ n
   | spawn _ | join _ => tasks
   | seq s t | ite _ s t => s.Below n tasks ∧ t.Below n tasks
   | loop _ s => s.Below n tasks
@@ -33,6 +34,7 @@ theorem Stmt.Below.accesses {n tasks} {s : Stmt} (h : s.Below n tasks) :
   induction s with
   | load | store | rmwStore | wait => exact Or.inr h
   | fetchAdd | cas => exact ⟨Or.inr h, Or.inr h⟩
+  | loadAt | storeAt => exact fun j hj => Or.inr (by simp only [Stmt.Below] at h; omega)
   | fence => exact Or.inl rfl
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 h.1, ih2 h.2⟩
   | loop _ _ ih => exact ih h
@@ -58,7 +60,8 @@ theorem Step.endsWith {y s regs a s' regs'} (h : Step s regs a s' regs') (hs : s
     have h' := (accessRule _).step h hs.1
     exact ⟨⟨h'.1, hs.2⟩, fun l hl hk hy => absurd hy (h'.2 l hl hk)⟩
   | seq_skip => exact ⟨hs.2, nofun⟩
-  | load | store | cas_ne | rmwStore | fence | assign => exact ⟨trivial, fun _ _ _ _ => rfl⟩
+  | load | store | cas_ne | rmwStore | fence | assign | loadAt | storeAt =>
+    exact ⟨trivial, fun _ _ _ _ => rfl⟩
   | fetchAdd | cas_eq => exact ⟨hs.2, fun l hl hk => by cases hl; cases hk⟩
   | ite_true => exact ⟨Stmt.Accesses.endsWith hs.1, nofun⟩
   | ite_false => exact ⟨Stmt.Accesses.endsWith hs.2, nofun⟩
@@ -124,6 +127,8 @@ def lower : Stmt → Stmt
   | .fence o => .fence o
   | .assign r e => .assign r e
   | .wait x => .wait x
+  | .loadAt r base len i o => .loadAt r base len i o
+  | .storeAt base len i e o => .storeAt base len i e o
 
 def toProg : Prog where
   code
@@ -145,6 +150,8 @@ theorem lower_accesses {tasks} {s : Stmt} (h : s.Below P.flags tasks) :
   | join t => exact Or.inr (Or.inr ⟨rfl, Or.inr ⟨rfl, t, rfl⟩⟩)
   | load | store | rmwStore | wait => exact Or.inr (Or.inl h)
   | fetchAdd | cas => exact ⟨Or.inr (Or.inl h), Or.inr (Or.inl h)⟩
+  | loadAt | storeAt =>
+    exact fun j hj => Or.inr (Or.inl (by simp only [Stmt.Below] at h; omega))
   | fence => exact Or.inl rfl
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 h.1, ih2 h.2⟩
   | loop _ _ ih => exact ih h

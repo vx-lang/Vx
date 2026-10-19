@@ -75,6 +75,74 @@ def messagePassingRun : messagePassing.Run messagePassingData.toExecution where
 -- The model allows this execution, and it has no data race: the flag orders the data.
 #guard messagePassingData.check == some (true, false)
 
+/-! ## Message passing through an array
+
+The places 0 and 1 are an array, and place 2 holds a flag. Thread 1 computes the index 1 in a
+register, writes 42 to that element, and then sets the flag with a release write. Thread 2 reads
+the flag with an acquire read, and uses the value that it read as the index into the array. -/
+
+def arrayPassing : Prog where
+  code
+    | 1 => .seq (.assign 0 (.const 1)) <|
+        .seq (.storeAt 0 2 (.reg 0) (.const 42) .plain) (.store 2 (.const 1) .rel)
+    | 2 => .seq (.load 0 2 .acq) (.ite (.reg 0) (.loadAt 1 0 2 (.reg 0) .plain) .skip)
+    | _ => .skip
+
+/-- Events: 0 and 1 are the writes of thread 1, and 2 and 3 are the reads of thread 2. -/
+def arrayPassingData : Data 4 := Data.ofLists 4
+  [.write, .write, .read, .read]
+  [.plain, .rel, .acq, .plain]
+  [1, 2, 2, 1]
+  [1, 1, 2, 2]
+  [(0, 1), (2, 3)]
+  [(1, 2), (0, 3)]
+  []
+  []
+
+def arrayPassingLabels : Nat → Nat → Label
+  | 1, 0 => ⟨.write, .plain, 1, 42, false⟩
+  | 1, 1 => ⟨.write, .rel, 2, 1, false⟩
+  | 2, 0 => ⟨.read, .acq, 2, 1, false⟩
+  | 2, 1 => ⟨.read, .plain, 1, 42, false⟩
+  | _, _ => ⟨.fence, .plain, 0, 0, false⟩
+
+theorem arrayPassing_thread1 :
+    Trace (arrayPassing.code 1) 2 (arrayPassingLabels 1) :=
+  .silent (.seq .assign) <| .silent .seq_skip <|
+    .visible (.seq (.storeAt 1 (by decide) (by decide))) <| .silent .seq_skip <|
+    .visible .store .stop
+
+theorem arrayPassing_thread2 :
+    Trace (arrayPassing.code 2) 2 (arrayPassingLabels 2) :=
+  .visible (.seq (.load 1)) <| .silent .seq_skip <| .silent (.ite_true (by decide)) <|
+    .visible (.loadAt 1 42 (by decide) (by decide)) .stop
+
+def arrayPassingRun : arrayPassing.Run arrayPassingData.toExecution where
+  val i := [42, 1, 1, 42].getD i.val 0
+  isRmw _ := false
+  idx i := [0, 1, 0, 1].getD i.val 0
+  lab := arrayPassingLabels
+  po_iff := by decide
+  idx_inj := by decide
+  idx_down := by decide
+  lab_eq := by decide
+  trace
+    | ⟨0, _⟩ => arrayPassing_thread1.prefix (Nat.le_succ 1)
+    | ⟨1, _⟩ => arrayPassing_thread1
+    | ⟨2, _⟩ => arrayPassing_thread2.prefix (Nat.le_succ 1)
+    | ⟨3, _⟩ => arrayPassing_thread2
+  rf_val := by decide
+  rf_write_read := by
+    simp only [Execution.IsWrite, Execution.IsRead]
+    decide
+  rf_source := by
+    simp only [Execution.IsRead]
+    decide
+  rmw_iff := by decide
+
+-- The model allows this execution, and it has no data race: the flag orders the element.
+#guard arrayPassingData.check == some (true, false)
+
 /-! ## Fork and join
 
 The main code writes 5 to the place `input` and starts tasks 0 and 1. Each task reads `input`

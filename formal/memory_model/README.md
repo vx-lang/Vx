@@ -73,7 +73,9 @@ sequentially consistent atomics and no fences. A place can have both atomic and 
 `atomic_read_of_a_plain_write.litmus` shows such a race.
 
 The core language in `Thread.lean` and `Language.lean` has registers, loads, stores, `fetchAdd`,
-`cas`, fences, `if` and loops. Each access names its memory order. A read-modify-write is a read
+`cas`, fences, `if` and loops. Each access names its memory order. `loadAt` and `storeAt` access
+an element of an array at an index that the code computes. An index outside the array stops the
+thread, as a failed bounds check does. A read-modify-write is a read
 and then a write, so a thread can stop between them. All threads start together. `Language.lean`
 shows that the executions of these programs have the three properties. `Prog.drf_sc` then needs
 one rule on the code, which a type checker can check: `Prog.SeqCstOnly` (only `sc` atomics, no
@@ -84,7 +86,8 @@ fences).
 sets another flag at its end, and `join` waits for it. `fork_hb` and `join_hb` show that in each
 run, the code before a `spawn` comes before the task, and the task comes before the code after
 its `join`. `LanguageExample.lean` builds an execution of message passing with release and
-acquire, and one where the main code starts two tasks and joins them, with plain data.
+acquire, one that passes a message through an array, and one where the main code starts two
+tasks and joins them, with plain data.
 
 ```bash
 lake -d formal/memory_model/lean build    # Lean 4.35, no other libraries

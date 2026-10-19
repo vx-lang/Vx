@@ -5,6 +5,7 @@ import VxMemoryModel.Execution
 
 A small language for the code of a thread: registers, loads, stores, read-modify-writes, fences,
 `if` and loops. Each access names its memory order, as the methods of `core::sync::atomic` do.
+`loadAt` and `storeAt` access an element of an array, at an index that the code computes.
 
 A run of the code gives a list of labels, one for each memory access. A load can return any
 value, because the value comes from another thread. So if a run ends with a load, a run with
@@ -60,6 +61,11 @@ inductive Stmt where
   | loop (c : Expr) (s : Stmt)
   /-- Read the place `x` with `sc` reads until it is not 0. -/
   | wait (x : Nat)
+  /-- Read element `i` of the array of `len` places that starts at the place `base`, into the
+  register `r`. An index outside the array stops the thread, as a failed bounds check does. -/
+  | loadAt (r base len : Nat) (i : Expr) (o : Order)
+  /-- Write the value of `e` to element `i` of the array of `len` places at `base`. -/
+  | storeAt (base len : Nat) (i e : Expr) (o : Order)
   /-- Start the task `t`. `Tasks.lean` gives its meaning, so it has no step here. -/
   | spawn (t : Nat)
   /-- Wait for the task `t` to finish. `Tasks.lean` gives its meaning. -/
@@ -95,6 +101,10 @@ inductive Step : Stmt → (Nat → Int) → Option Label → Stmt → (Nat → I
   | loop {c s regs} : Step (.loop c s) regs none (.ite c (.seq s (.loop c s)) .skip) regs
   | wait {x regs} (v : Int) :
     Step (.wait x) regs (some ⟨.read, .sc, x, v, false⟩) (if v = 0 then .wait x else .skip) regs
+  | loadAt {r base len i o regs} (j : Nat) (v : Int) : i.eval regs = (j : Int) → j < len →
+    Step (.loadAt r base len i o) regs (some ⟨.read, o, base + j, v, false⟩) .skip (update regs r v)
+  | storeAt {base len i e o regs} (j : Nat) : i.eval regs = (j : Int) → j < len →
+    Step (.storeAt base len i e o) regs (some ⟨.write, o, base + j, e.eval regs, false⟩) .skip regs
 
 /-- `Runs s regs l`: the code `s` can make the accesses `l` and then stop. -/
 inductive Runs : Stmt → (Nat → Int) → List Label → Prop
@@ -151,13 +161,17 @@ theorem Step.receptive {s regs a s' regs'} (h : Step s regs a s' regs') :
     intro l hl _ v
     cases hl
     exact ⟨_, _, .wait v⟩
+  | loadAt j _ hi hj =>
+    intro l hl _ v
+    cases hl
+    exact ⟨_, _, .loadAt j v hi hj⟩
   | @cas_eq _ _ expected _ _ regs _ _ | @cas_ne _ _ expected _ _ regs _ _ =>
     intro l hl _ v
     cases hl
     by_cases hv : v = expected.eval regs
     · exact ⟨_, _, .cas_eq v hv⟩
     · exact ⟨_, _, .cas_ne v hv⟩
-  | store | rmwStore | fence =>
+  | store | rmwStore | fence | storeAt =>
     intro l hl hk _
     cases hl
     cases hk
@@ -206,8 +220,8 @@ theorem Trace.receptive {s n} {f : Nat → Label} (h : Trace s (n + 1) f)
 
 /-- The atomics are sequentially consistent, and there are no fences. -/
 def Stmt.SeqCstOnly : Stmt → Prop
-  | load _ _ o | store _ _ o | fetchAdd _ _ _ o | cas _ _ _ _ o | rmwStore _ _ o =>
-    o = .plain ∨ o = .sc
+  | load _ _ o | store _ _ o | fetchAdd _ _ _ o | cas _ _ _ _ o | rmwStore _ _ o
+  | loadAt _ _ _ _ o | storeAt _ _ _ _ o => o = .plain ∨ o = .sc
   | fence _ => False
   | seq s t | ite _ s t => s.SeqCstOnly ∧ t.SeqCstOnly
   | loop _ s => s.SeqCstOnly
@@ -243,7 +257,7 @@ def seqCstRule : Rule where
   step := by
     intro s regs a s' regs' h
     induction h with
-    | load | store | cas_ne | rmwStore =>
+    | load | store | cas_ne | rmwStore | loadAt | storeAt =>
       exact fun hs => ⟨trivial, fun l hl => by cases hl; exact ⟨nofun, hs⟩⟩
     | fetchAdd | cas_eq =>
       exact fun hs => ⟨hs, fun l hl => by cases hl; exact ⟨nofun, hs⟩⟩
@@ -260,13 +274,16 @@ def seqCstRule : Rule where
       refine fun _ => ⟨?_, fun l hl => by cases hl; exact ⟨nofun, Or.inr rfl⟩⟩
       by_cases hv : v = 0 <;> simp [hv, Stmt.SeqCstOnly]
 
-/-- Each access of `s` of the kind `k` to the place `x` with the order `o` has `p k o x`. -/
+/-- Each access of `s` of the kind `k` to the place `x` with the order `o` has `p k o x`. An
+array access can touch each place of its array. -/
 def Stmt.Accesses (p : Kind → Order → Nat → Prop) : Stmt → Prop
   | load _ x o => p .read o x
   | store x _ o | rmwStore x _ o => p .write o x
   | fetchAdd _ x _ o | cas _ x _ _ o => p .read o x ∧ p .write o x
   | fence o => p .fence o 0
   | wait x => p .read .sc x
+  | loadAt _ base len _ o => ∀ j < len, p .read o (base + j)
+  | storeAt base len _ _ o => ∀ j < len, p .write o (base + j)
   | seq s t | ite _ s t => s.Accesses p ∧ t.Accesses p
   | loop _ s => s.Accesses p
   | skip | assign .. | spawn _ | join _ => True
@@ -278,6 +295,8 @@ def accessRule (p : Kind → Order → Nat → Prop) : Rule where
     intro s regs a s' regs' h
     induction h with
     | load | store | rmwStore | fence => exact fun hs => ⟨trivial, fun l hl => by cases hl; exact hs⟩
+    | loadAt j _ _ hj | storeAt j _ hj =>
+      exact fun hs => ⟨trivial, fun l hl => by cases hl; exact hs j hj⟩
     | cas_ne => exact fun hs => ⟨trivial, fun l hl => by cases hl; exact hs.1⟩
     | fetchAdd | cas_eq => exact fun hs => ⟨hs.2, fun l hl => by cases hl; exact hs.1⟩
     | assign => exact fun _ => ⟨trivial, nofun⟩
@@ -297,6 +316,7 @@ theorem Stmt.Accesses.mono {p q : Kind → Order → Nat → Prop} (hpq : ∀ k 
   induction s with
   | load | store | rmwStore | fence | wait => exact hpq _ _ _ h
   | fetchAdd | cas => exact ⟨hpq _ _ _ h.1, hpq _ _ _ h.2⟩
+  | loadAt | storeAt => exact fun j hj => hpq _ _ _ (h j hj)
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 h.1, ih2 h.2⟩
   | loop _ _ ih => exact ih h
   | _ => trivial
