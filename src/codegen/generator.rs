@@ -1655,8 +1655,9 @@ impl<'c> MeliorGenerator<'c> {
                     return Ok(out);
                 }
                 // The block the statement hands back is never reached, and nothing will be
-                // lowered into it, but it still needs a terminator.
-                if let Some(b) = out.filter(|b| b.first_operation().is_none()) {
+                // lowered into it, but it still needs a terminator. It may hold the placeholder
+                // value of an `unsafe` block.
+                if let Some(b) = out.filter(|b| b.terminator().is_none()) {
                     b.append_operation(
                         melior::ir::operation::OperationBuilder::new(
                             "llvm.unreachable",
