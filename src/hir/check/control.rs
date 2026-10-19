@@ -1019,7 +1019,9 @@ impl<'a> TypeChecker<'a> {
                 self.consteval.closure_body_depth += 1;
                 // A `return` in the body leaves the closure, not the function around it.
                 self.drops_enter_function(Vec::new(), &[]);
+                self.traffic.closure_depth += 1;
                 let expr_ret_ty = self.check_expr_type(&mut b);
+                self.traffic.closure_depth -= 1;
                 self.drops_exit_function();
                 self.consteval.closure_body_depth -= 1;
                 self.consteval.comptime_depth = outer_comptime;

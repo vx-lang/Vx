@@ -707,6 +707,9 @@ pub struct TrafficState {
     /// copy said two of them never coexisted, when the emitted code holds both to the end of the
     /// block.
     pub consumed_by_transfer: bool,
+    /// How many closure bodies the checker is inside. A closure runs where it is called, not
+    /// where it is written.
+    pub closure_depth: u32,
     /// The calls the current function makes, keyed by call-site span (a probe may check the
     /// same expression twice; the first visit's program order wins). Taken, with the
     /// placements, when the function's summary is built.
@@ -723,4 +726,6 @@ pub struct CallSite {
     pub scope: Vec<u32>,
     pub order: usize,
     pub span: crate::syntax::Span,
+    /// Made from a closure body, which may run anywhere in the function.
+    pub in_closure: bool,
 }

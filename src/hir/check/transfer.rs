@@ -648,6 +648,7 @@ impl<'a> TypeChecker<'a> {
                 scope: self.traffic.scope_chain.clone(),
                 order: self.traffic.placement_order,
                 span: *span,
+                in_closure: self.traffic.closure_depth > 0,
             },
         );
     }
@@ -748,6 +749,14 @@ impl<'a> TypeChecker<'a> {
             // earlier in program order whose block is still open -- the same prefix test the
             // peak walk uses, evaluated at the call instead of at a placement.
             for (k, c) in calls.iter().enumerate() {
+                // A call from a closure body happens wherever the closure is called. What is
+                // resident at any point is at most the function's peak.
+                if c.in_closure {
+                    if total > 0 {
+                        summary.calls[k].live.insert(space.name(), total);
+                    }
+                    continue;
+                }
                 let held: u64 = placed
                     .iter()
                     .filter(|(_, sc, ord)| {
