@@ -187,11 +187,14 @@ enum FrameKind {
         owners: Vec<Owner>,
         /// The last statement of the block that uses each name, nested uses included.
         last_use: HashMap<crate::symbol::Symbol, usize>,
-        /// The first line of each statement.
+        /// The first line of each statement, and of the block's separate value.
         lines: Vec<usize>,
         /// The statement being checked.
         stmt: usize,
         edits: Box<Edits>,
+        /// The position in `last_use` of a separate value, `v` in `unsafe { ..; v }`: one
+        /// after the last statement. What it uses is dropped after it.
+        value_at: Option<usize>,
     },
 }
 
@@ -688,7 +691,7 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
-    pub(crate) fn drops_enter_block(&mut self, body: &[Statement]) {
+    pub(crate) fn drops_enter_block(&mut self, body: &[Statement], value: Option<&Expr>) {
         let d = &mut self.borrow.drops;
         let owners = std::mem::take(&mut d.pending)
             .into_iter()
@@ -707,10 +710,15 @@ impl<'a> TypeChecker<'a> {
             .collect();
         d.frames.push(FrameKind::Block {
             owners,
-            last_use: Self::compute_block_liveness(body),
-            lines: body.iter().map(|s| s.span().line).collect(),
+            last_use: Self::block_uses(body, value).last_use,
+            lines: body
+                .iter()
+                .map(|s| s.span().line)
+                .chain(value.map(|v| v.span().line))
+                .collect(),
             stmt: 0,
             edits: Box::default(),
+            value_at: value.map(|_| body.len()),
         });
     }
 
@@ -1236,6 +1244,7 @@ impl<'a> TypeChecker<'a> {
             last_use,
             lines,
             mut edits,
+            value_at,
             ..
         }) = self.borrow.drops.frames.pop()
         else {
@@ -1257,10 +1266,17 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.drops_print(owner, "at the end of its block".to_string());
                 // An empty block, as `fn drop<T>(_x : T) {}` has, drops it where it starts.
-                body.len().checked_sub(1)
+                value_at.or(body.len().checked_sub(1))
             } else {
                 match self.drops_last_use(&owner.name, &last_use) {
                     Some(i) if terminated_at.is_some_and(|t| i >= t) => continue,
+                    Some(i) if Some(i) == value_at => {
+                        self.drops_print(
+                            owner,
+                            format!("after the value of its block on line {}", lines[i]),
+                        );
+                        Some(i)
+                    }
                     Some(i) => {
                         self.drops_print(
                             owner,
@@ -1285,7 +1301,15 @@ impl<'a> TypeChecker<'a> {
             }
         }
         if rewriting {
+            // The block's separate value comes after its statements, so what waits for it goes
+            // at the end of the block. It runs once the value is computed.
+            let mut after_the_value = Vec::new();
+            if let Some(v) = value_at {
+                after_the_value.extend(edits.before.remove(&v).unwrap_or_default());
+                after_the_value.extend(edits.after.remove(&v).unwrap_or_default());
+            }
             self.drops_apply(body, *edits);
+            body.extend(after_the_value.into_iter().map(after_value));
         }
     }
 

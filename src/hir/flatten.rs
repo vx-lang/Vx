@@ -1424,7 +1424,11 @@ impl<'r> Lowerer<'r> {
                 }
                 match u.ret.as_deref() {
                     Some(e) => {
+                        // The drops waiting for the value. A statement inside the value, in an
+                        // `if` for example, must not run them.
+                        let waiting = std::mem::take(&mut me.queued_drops);
                         let v = me.lower_expr(e)?;
+                        me.queued_drops.extend(waiting);
                         me.run_queued_drops()?;
                         Ok(v)
                     }

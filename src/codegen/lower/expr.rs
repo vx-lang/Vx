@@ -2039,7 +2039,11 @@ fn lower_unsafe_block<'c>(
         }
     }
     if let Some(ret_expr) = &this.ret {
+        // The drops waiting for the value. A statement inside the value, in an `if` for
+        // example, must not run them.
+        let waiting = std::mem::take(&mut gen.queued_drops);
         let (val, ty, cur) = gen.generate_expr(ret_expr, current_block)?;
+        gen.queued_drops.extend(waiting);
         let cur = gen.run_queued_drops(cur)?;
         Ok((val, ty, cur))
     } else {

@@ -536,11 +536,10 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.push_scope();
                 self.value_unused = unused;
-                let mut ret_ty = self.check_expr_block(stmts, ret_expr.as_deref(), consume);
-                if let Some(r) = ret_expr {
-                    self.value_unused = unused;
-                    ret_ty = self.check_expr_type_flag(r, consume);
-                }
+                let ret_ty = match ret_expr {
+                    Some(r) => self.check_expr_block_with_value(stmts, r, unused, consume),
+                    None => self.check_expr_block(stmts, None, consume),
+                };
                 self.pop_scope();
                 if written {
                     // An error inside may hide the operation that needed `unsafe`, so only a

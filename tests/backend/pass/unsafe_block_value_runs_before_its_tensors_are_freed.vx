@@ -1,0 +1,96 @@
+//===- unsafe_block_value_runs_before_its_tensors_are_freed.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `unsafe` block's value, `total(&a)` in `unsafe { let a = ..; total(&a) }`, is computed
+// before the block frees what it made. The compiler used to free `a` first.
+//
+// RUN: env VX_PRINT_DROPS=1 vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DROPS --implicit-check-not="main: b,"
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=ORDER
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// The first RUN line also checks that `b` gets no drop: it moves into `take`.
+// ORDER: call @total([[A:%[a-z_0-9]+]])
+// ORDER-NEXT: vx.drop [[A]]
+//
+// `c` is freed where the two branches of the `if` meet, not after `note(used);`.
+// ORDER: call @note
+// ORDER-NEXT: call @total([[C:%[a-z_0-9]+]])
+// ORDER: {{\^bb[0-9]+}}: // 2 preds
+// ORDER-NEXT: memref.load
+// ORDER-NEXT: vx.drop [[C]]
+//
+// CHECK: note 10
+// CHECK-NEXT: peek 7
+// CHECK-NEXT: drop loud 7
+// CHECK-NEXT: 10 11 4 7
+
+fn total(t : &Tensor<f32, [4]>) -> f32 {
+  return t[0] + t[1] + t[2] + t[3];
+}
+
+fn take(t : Tensor<f32, [4]>) -> f32 {
+  return t[0] + t[3];
+}
+
+fn note(x : f32) -> void {
+  println!("note {}", x);
+}
+
+struct Loud {
+  id : i32,
+}
+
+impl Drop for Loud {
+  fn drop(self : &mut Loud) -> void {
+    println!("drop loud {}", self.id);
+  }
+}
+
+fn peek(l : &Loud) -> i32 {
+  println!("peek {}", l.id);
+  return l.id;
+}
+
+fn main() -> i32 {
+  let used = unsafe {
+    let mut a = Tensor<f32, [4]>::uninit();
+    a[0] = 1.0;
+    a[1] = 2.0;
+    a[2] = 3.0;
+    a[3] = 4.0;
+    // DROPS: drop in main: a, after the value of its block on line [[@LINE+1]]
+    total(&a)
+  };
+  let moved = unsafe {
+    let mut b = Tensor<f32, [4]>::uninit();
+    b[0] = 5.0;
+    b[1] = 0.0;
+    b[2] = 0.0;
+    b[3] = 6.0;
+    take(b)
+  };
+  // The value holds a statement, `note(used);`. The drop of `c` waits for the whole `if`.
+  let branch = unsafe {
+    let mut c = Tensor<f32, [4]>::uninit();
+    c[0] = 1.0;
+    c[1] = 1.0;
+    c[2] = 1.0;
+    c[3] = 1.0;
+    // DROPS: drop in main: c, after the value of its block on line [[@LINE+1]]
+    if used > 5.0 {
+      note(used);
+      total(&c)
+    } else {
+      0.0
+    }
+  };
+  // A `Drop` impl runs at the end of its block, after the block's value.
+  let loud = unsafe { let l = Loud { id : 7 }; peek(&l) };
+  println!("{} {} {} {}", used, moved, branch, loud);
+  return 0;
+}

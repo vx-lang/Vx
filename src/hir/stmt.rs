@@ -190,7 +190,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.borrow.enter_block(uses);
-        self.drops_enter_block(body);
+        self.drops_enter_block(body, None);
 
         // A block is always checked for real, never speculatively. Force `speculating` off for the
         // loop so a block reached from *inside* a return-type probe (e.g. a generic function body

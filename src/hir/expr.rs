@@ -125,6 +125,32 @@ impl<'a> TypeChecker<'a> {
         tail: Option<&Expr>,
         consume: bool,
     ) -> Type {
+        self.check_block_and_value(stmts, tail, None, consume)
+    }
+
+    /// A block with a separate value, `v` in `unsafe { ..; v }`. The value is checked inside
+    /// the block, so what it uses or moves is seen before the block's drops are placed.
+    /// `unused`: nothing reads the block's value.
+    pub(crate) fn check_expr_block_with_value(
+        &mut self,
+        stmts: &mut Vec<Statement>,
+        value: &mut Expr,
+        unused: bool,
+        consume: bool,
+    ) -> Type {
+        self.check_block_and_value(stmts, None, Some((value, unused)), consume)
+    }
+
+    /// `tail` is a separate value checked after the block closes, and `value` one checked
+    /// inside it. A block has at most one of the two.
+    fn check_block_and_value(
+        &mut self,
+        stmts: &mut Vec<Statement>,
+        tail: Option<&Expr>,
+        value: Option<(&mut Expr, bool)>,
+        consume: bool,
+    ) -> Type {
+        let tail = tail.or(value.as_ref().map(|(v, _)| &**v));
         Self::name_loop_literals(stmts);
         self.hoist_spawn_allocations(stmts);
         let block_unused = std::mem::replace(&mut self.value_unused, false);
@@ -136,7 +162,7 @@ impl<'a> TypeChecker<'a> {
         let last = stmts.len().saturating_sub(1);
         // An `if` or `match` arm is a block of its own: what it declares is dropped inside it,
         // and a borrow made in it ends at its last use there.
-        self.drops_enter_block(stmts);
+        self.drops_enter_block(stmts, tail);
         self.borrow.enter_block(Self::block_uses(stmts, tail));
 
         let mut declared = std::collections::HashMap::new();
@@ -203,7 +229,16 @@ impl<'a> TypeChecker<'a> {
                 _ => {}
             }
         }
+        let value_ty = value.map(|(value, unused)| {
+            self.borrow.set_stmt(stmts.len());
+            self.drops_set_stmt(stmts.len());
+            self.value_unused = unused;
+            self.check_expr_type_flag(value, consume)
+        });
         if let Some(ty) = type_at_end {
+            ret_ty = ty;
+        }
+        if let Some(ty) = value_ty {
             ret_ty = ty;
         }
         if let Some(state) = state_at_end {
