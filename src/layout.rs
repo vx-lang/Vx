@@ -103,7 +103,7 @@ pub struct LayoutComputer<'a> {
     memo: FxHashMap<TypeId, Option<TypeLayout>>,
     visiting: FxHashSet<TypeId>,
     /// The generic struct instances that a by-value field names with concrete arguments, such
-    /// as `SharedCell<i32>` in `AtomicI32 { v : SharedCell<i32> }`. Keyed by
+    /// as `SharedCell<i32>` in `Counter { v : SharedCell<i32> }`. Keyed by
     /// `struct_instance_gid`, the ID the flat lowering gives the same instance. The value is
     /// the instance's name and its layout, `None` when it cannot be computed.
     instances: FxHashMap<TypeId, (String, Option<TypeLayout>)>,
