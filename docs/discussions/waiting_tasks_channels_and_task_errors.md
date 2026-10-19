@@ -324,6 +324,7 @@ For the second runtime, all together:
 
 - A pool of fixed stacks with guard pages, the stack switch, and stack probes in the generated
   code (W3).
+- A shadow stack in each pool entry, which the switch moves from its first version (section 7).
 - The monitor thread (W8) and the rules of W9.
 - A test mode with one thread and a fixed seed, which gives the same run each time. It is a tool
   for tests: it cannot run a program that blocks in a foreign call.
@@ -333,6 +334,65 @@ After that:
 - An I/O event loop on epoll or kqueue, with a thread pool or io_uring for files. `std/net.vx`
   then calls it, not the blocking `extern` calls that it uses today. Until then, network I/O blocks
   its OS thread.
+
+## 7. Security
+
+Notes from a review of 2026-10-19. They are not decisions yet, except where a rule above already
+says the same thing.
+
+**What safe code gets.**
+
+- No data races (S6). The proof holds only if the library code gives the edges of M4. That code
+  is the trusted base (see below).
+- No reference that outlives its local across tasks: T3, M5, and `Task<T>` is not `Send`.
+- No use after free from cancelled I/O (F5). Async Rust with io_uring needs owned buffers for this
+  reason: a dropped future cannot wait for the kernel.
+- A cancel loses no data. A cancelled `send` gives its value back (M2), and a `drop` runs with
+  cancellation off (F6). Rust's futures that are not safe to cancel in `select!` have no
+  counterpart.
+- No unwinding (T6). No code sees state that a panic left half-changed, a `Mutex` needs no
+  poisoning, and the binary has no unwind tables.
+- Memory with a limit: each channel has one (M1), and admission (section 5) gives a verdict when
+  the counts are known.
+- A stack overflow faults on the guard page (W3) and does not change memory.
+
+**Where the guarantees stop.**
+
+- `unsafe` and `extern` code is the trusted base: the channel, `Mutex` and atomics, each
+  `unsafe impl Send` or `Sync`, the C++ runtime, and the vendor libraries. Today `std/net.vx` is
+  all `extern` calls. One list of each `unsafe impl` and each runtime entry point would give the
+  surface for an audit.
+- Availability: a panic stops the process, and so does a deadlock report (F9). So one tenant must
+  have its own process, not its own task.
+- The monitor (W8) starts workers with no limit when tasks block in foreign calls. It needs a
+  limit.
+- A stack from the pool (W3) still holds the data of the last task. Safe Vx cannot read it,
+  because each `let` must have a value. `unsafe` code and foreign code can. When a stack goes back
+  to the pool, `madvise(MADV_DONTNEED)` on its used part clears it and gives the memory back.
+- A stale current device can send work into the context of another partition. So "each dispatch
+  names its device" (W9) is also a security rule.
+
+**Shadow stacks and CFI.**
+
+1. **A shadow stack for each task stack.** This is the item that costs the most to add later, so
+   the first stack switch must have it.
+   - Each pool entry of W3 holds a task stack and a shadow stack, each with its own guard page.
+   - The switch moves the shadow-stack pointer with the stack pointer, with the restore tokens of
+     the architecture. It does this from the first version, also while the feature is off.
+   - Linux has user-space shadow stacks on x86 since 6.6, and arm64's Guarded Control Stack since
+     6.13. `map_shadow_stack` makes the extra stacks for the pool.
+1. **No unwinding keeps the shadow stack in step.** Each frame leaves by a normal return, also on a
+   cancel. So Vx must not get a fast cancel that jumps between stacks, or `longjmp`.
+1. **Forward-edge CFI from the freeze.** Vx has no overloading, and the freeze knows each signature.
+   In safe Vx, an indirect call goes through a closure type or a foreign function pointer. So the
+   compiler knows each function whose address the program takes, and its type. It can put an
+   IBT or BTI landing pad only on those functions and on the task entry, and a type-hash check
+   at each indirect call. LLVM has this check (KCFI). vxc emits neither landing pads nor CFI
+   today.
+1. **One library can turn it off.** A process gets shadow stacks only when the executable and each
+   library that it loads are marked as compatible. The Rust core, `libcuda` and cuBLAS decide it
+   for Vx. Check that the NVIDIA libraries have the mark before a doc promises this. The compiler
+   and the runtime must still be ready, so that Vx is never the reason a process runs without it.
 
 ## The parallel compiler
 
