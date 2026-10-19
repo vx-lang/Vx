@@ -971,6 +971,7 @@ impl<'a> Parser<'a> {
                     line: decl_line,
                     column: decl_column,
                     length: 0,
+                    expansion: self.expansion(),
                 },
                 doc_comment,
             });
@@ -1273,6 +1274,7 @@ impl<'a> Parser<'a> {
                 line: span_start_line,
                 column: span_start_column,
                 length: 0,
+                expansion: self.expansion(),
             },
         })
     }
@@ -1345,6 +1347,7 @@ impl<'a> Parser<'a> {
                 line: keyword.line,
                 column: keyword.column,
                 length: keyword.length,
+                expansion: self.expansion(),
             },
             doc_comment: None,
         })

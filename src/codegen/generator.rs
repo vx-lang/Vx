@@ -866,6 +866,7 @@ impl<'c> MeliorGenerator<'c> {
                 line: 1,
                 column: 1,
                 length: 1,
+                expansion: 0,
             },
             index_ty,
             i32_ty,

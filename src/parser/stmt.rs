@@ -105,6 +105,7 @@ impl<'a> Parser<'a> {
             line: token_line,
             column: token_col,
             length: token_len,
+            expansion: self.expansion(),
         };
 
         match &token.kind {
@@ -119,6 +120,7 @@ impl<'a> Parser<'a> {
                         line: token_line,
                         column: token_col,
                         length: token_len,
+                        expansion: self.expansion(),
                     });
                 }
                 let name = match &self.advance().kind {
@@ -143,6 +145,7 @@ impl<'a> Parser<'a> {
                         line: token_line,
                         column: token_col,
                         length: token_len,
+                        expansion: self.expansion(),
                     },
                 }))
             }
@@ -173,6 +176,7 @@ impl<'a> Parser<'a> {
                             line: keyword.line,
                             column: keyword.column,
                             length: keyword.length,
+                            expansion: self.expansion(),
                         },
                     }),
                     has_semi: true,
@@ -222,6 +226,7 @@ impl<'a> Parser<'a> {
                         line: token_line,
                         column: token_col,
                         length: token_len,
+                        expansion: self.expansion(),
                     },
                 }))
             }
@@ -248,6 +253,7 @@ impl<'a> Parser<'a> {
                     line: token_line,
                     column: token_col,
                     length: token_len,
+                    expansion: self.expansion(),
                 };
                 self.advance();
                 let cond = self.parse_expr()?;
@@ -299,6 +305,7 @@ impl<'a> Parser<'a> {
                     line: token_line,
                     column: token_col,
                     length: token_len,
+                    expansion: self.expansion(),
                 };
                 self.advance();
                 let iter = match &self.advance().kind {

@@ -152,6 +152,12 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// The macro expansion these tokens came from, or 0 for source code. One parser reads one
+    /// expansion, so every span it makes carries the same id.
+    pub(crate) fn expansion(&self) -> u32 {
+        self.tokens.first().map_or(0, |t| t.expansion)
+    }
+
     pub(crate) fn peek(&self) -> &'a Token<'a> {
         self.peek_n(0)
     }

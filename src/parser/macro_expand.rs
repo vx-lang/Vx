@@ -25,6 +25,9 @@ pub struct MacroExpander<'a> {
     /// an impl a macro produced is entitled to the defaults, and nothing before expansion
     /// can see it.
     pub trait_defaults: &'a crate::resolver::TraitDefaults,
+    /// The id the last expansion in this module got. Counted per module, so a parallel compile
+    /// gives the same ids as a normal one.
+    expansions: std::sync::atomic::AtomicU32,
 }
 
 fn take_expr(expr: &mut expr::Expr) -> expr::Expr {
@@ -139,6 +142,7 @@ impl<'a> MacroExpander<'a> {
         Self {
             macros,
             trait_defaults,
+            expansions: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -232,6 +236,7 @@ impl<'a> MacroExpander<'a> {
                     line: 0,
                     column: 0,
                     length: 0,
+                    expansion: 0,
                 });
                 let lexed: Vec<_> = transcribed.iter().map(|t| t.as_token()).collect();
                 let mut parser = crate::parser::Parser::new(&lexed, "");
@@ -244,6 +249,10 @@ impl<'a> MacroExpander<'a> {
     }
 
     pub fn expand_module(&self, module: &mut VxModule) -> Result<(), String> {
+        Self::new(self.macros, self.trait_defaults).expand_module_from_zero(module)
+    }
+
+    fn expand_module_from_zero(&self, module: &mut VxModule) -> Result<(), String> {
         // Item-position macro calls first, so the items they produce are expanded below like
         // any other. A produced item may call another item macro, so this drains a worklist
         // rather than walking the list once; the depth limit is what a macro that expands to
@@ -622,6 +631,7 @@ impl<'a> MacroExpander<'a> {
                     line: 0,
                     column: 0,
                     length: 0,
+                    expansion: 0,
                 });
                 return self.parse_expanded_expr(&transcribed);
             }
@@ -654,6 +664,7 @@ impl<'a> MacroExpander<'a> {
                     line: 0,
                     column: 0,
                     length: 0,
+                    expansion: 0,
                 });
                 for i in inner {
                     tokens.extend(self.flatten_tt(i));
@@ -663,6 +674,7 @@ impl<'a> MacroExpander<'a> {
                     line: 0,
                     column: 0,
                     length: 0,
+                    expansion: 0,
                 });
             }
         }
@@ -824,8 +836,17 @@ impl<'a> MacroExpander<'a> {
             line: 0,
             column: 0,
             length: 0,
+            expansion: 0,
         });
 
+        // Two expansions of one macro give their tokens the same positions, so the id is
+        // what keeps their nodes apart.
+        let id = 1 + self
+            .expansions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        for tok in &mut tokens {
+            tok.expansion = id;
+        }
         Ok(tokens)
     }
 
@@ -843,6 +864,7 @@ impl<'a> MacroExpander<'a> {
             line: 0,
             column: 0,
             length: 0,
+            expansion: 0,
         });
         let exprs = self.parse_expanded_exprs(&tokens)?;
         Ok(expr::Expr::VecMacro(expr::VecMacroExpr {
@@ -865,6 +887,7 @@ impl<'a> MacroExpander<'a> {
             line: 0,
             column: 0,
             length: 0,
+            expansion: 0,
         });
         let exprs = self.parse_expanded_exprs(&tokens)?;
         Ok(expr::Expr::Print(expr::PrintExpr {
@@ -887,6 +910,7 @@ impl<'a> MacroExpander<'a> {
             line: 0,
             column: 0,
             length: 0,
+            expansion: 0,
         });
         let exprs = self.parse_expanded_exprs(&tokens)?;
         Ok(expr::Expr::Println(expr::PrintlnExpr {
@@ -916,6 +940,7 @@ impl<'a> MacroExpander<'a> {
                     line: 0,
                     column: 0,
                     length: 0,
+                    expansion: 0,
                 });
                 t
             }
@@ -1115,6 +1140,7 @@ impl<'a> MacroExpander<'a> {
                 line: t.line,
                 column: t.column,
                 length: t.length,
+                expansion: t.expansion,
             })
             .unwrap_or_default();
 

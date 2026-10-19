@@ -583,7 +583,10 @@ impl<'a> TypeChecker<'a> {
         // `check_capacity` has no guard against that, unlike `record_staging_route` beside it. A
         // counter mints a fresh key per visit and turns one 3 MiB tile into two.
         let key = if span.line != 0 || span.column != 0 {
-            format!("@{}:{}:{}", span.line, span.column, span.length)
+            format!(
+                "@{}:{}:{}:{}",
+                span.line, span.column, span.length, span.expansion
+            )
         } else if let Some(name) = &self.current_assignment_target {
             // A synthesized placement carrying no position: fall back to the binding, which is
             // what this keyed on before and is stable across the second visit. Two shadowed
@@ -636,7 +639,10 @@ impl<'a> TypeChecker<'a> {
     /// exactly -- no `speculating` guard, span-keyed so a node checked twice lands on the same
     /// record, first visit's program order kept.
     pub(crate) fn record_call_edge(&mut self, callee: &str, span: &crate::syntax::Span) {
-        let key = format!("@{}:{}:{}:{}", span.line, span.column, span.length, callee);
+        let key = format!(
+            "@{}:{}:{}:{}:{}",
+            span.line, span.column, span.length, span.expansion, callee
+        );
         if self.traffic.call_sites.contains_key(&key) {
             return;
         }

@@ -54,6 +54,7 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
                     line: token.line,
                     column: token.column,
                     length: 1,
+                    expansion: token.expansion,
                 });
             }
         }
@@ -149,6 +150,7 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
                                 line: tokens[lb_idx].line,
                                 column: tokens[lb_idx].column,
                                 length: 1,
+                                expansion: tokens[lb_idx].expansion,
                             });
                         }
 
@@ -168,6 +170,7 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
                                 line: tokens[rb_idx].line,
                                 column: tokens[rb_idx].column,
                                 length: 1,
+                                expansion: tokens[rb_idx].expansion,
                             });
                         }
 
@@ -198,6 +201,7 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
                             line: 0,
                             column: 0,
                             length: 1,
+                            expansion: 0,
                         });
                         i = lb_idx + 1;
                     }
@@ -243,6 +247,7 @@ fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
                                     line: 0,
                                     column: 0,
                                     length: 1,
+                                    expansion: 0,
                                 });
                             }
                         }

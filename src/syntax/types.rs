@@ -98,6 +98,9 @@ pub struct Span {
     pub line: usize,
     pub column: usize,
     pub length: usize,
+    /// Which macro expansion made this node, or 0 for source code. Two expansions of one
+    /// macro share positions, so this is what tells their nodes apart.
+    pub expansion: u32,
 }
 
 /// Do two topology indices denote the same device?
@@ -1960,6 +1963,7 @@ mod tests {
             line: 7,
             column: 3,
             length: 1,
+            expansion: 0,
         };
         assert_eq!(
             Topology::GPU(Box::new(Expr::Number(spanned))),

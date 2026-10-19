@@ -154,6 +154,7 @@ impl<'a> Parser<'a> {
                 line: self.peek().line,
                 column: self.peek().column,
                 length: self.peek().length,
+                expansion: self.expansion(),
             };
             // A shift is checked first: on its own, the leading `<` or `>` would read as
             // a comparison, which binds looser and would take the second bracket as the
@@ -773,6 +774,7 @@ impl<'a> Parser<'a> {
                 line: variant_line,
                 column: variant_column,
                 length: 0,
+                expansion: self.expansion(),
             },
         }))
     }
@@ -789,6 +791,7 @@ impl<'a> Parser<'a> {
                     line: bang_line,
                     column: bang_column,
                     length: 1,
+                    expansion: self.expansion(),
                 },
             }));
         } else if self.match_token(&TokenType::Minus) {
@@ -800,6 +803,7 @@ impl<'a> Parser<'a> {
                     line: bang_line,
                     column: bang_column,
                     length: 1,
+                    expansion: self.expansion(),
                 },
             }));
         } else if self.check(&TokenType::Ampersand) {
@@ -808,6 +812,7 @@ impl<'a> Parser<'a> {
                 line: self.peek().line,
                 column: self.peek().column,
                 length: self.peek().length,
+                expansion: self.expansion(),
             };
             self.advance();
             let is_mut = self.match_token(&TokenType::Mut);
@@ -832,6 +837,7 @@ impl<'a> Parser<'a> {
                         line,
                         column: column + 1,
                         length: 1,
+                        expansion: self.expansion(),
                     },
                 })),
                 is_mut: false,
@@ -839,6 +845,7 @@ impl<'a> Parser<'a> {
                     line,
                     column,
                     length: 1,
+                    expansion: self.expansion(),
                 },
             }));
         } else if self.check(&TokenType::Star) {
@@ -847,6 +854,7 @@ impl<'a> Parser<'a> {
                 line: self.peek().line,
                 column: self.peek().column,
                 length: self.peek().length,
+                expansion: self.expansion(),
             };
             self.advance();
             let inner = self.parse_primary_expr()?;
@@ -861,6 +869,7 @@ impl<'a> Parser<'a> {
                 line: self.peek().line,
                 column: self.peek().column,
                 length: self.peek().length,
+                expansion: self.expansion(),
             };
             self.advance();
             self.consume(&TokenType::LeftBrace, "Expected '{' after unsafe")?;
@@ -895,6 +904,7 @@ impl<'a> Parser<'a> {
                 line: self.peek().line,
                 column: self.peek().column,
                 length: self.peek().length,
+                expansion: self.expansion(),
             };
             self.advance();
             let is_comptime = self.match_token(&TokenType::Comptime);
@@ -974,6 +984,7 @@ impl<'a> Parser<'a> {
                         line: arm_token.line,
                         column: arm_token.column,
                         length: arm_token.length,
+                        expansion: self.expansion(),
                     },
                 });
             }
@@ -1002,6 +1013,7 @@ impl<'a> Parser<'a> {
                         line: peeked_token.line,
                         column: peeked_token.column,
                         length: peeked_token.length,
+                        expansion: self.expansion(),
                     },
                 })
             }
@@ -1011,6 +1023,7 @@ impl<'a> Parser<'a> {
                     line: peeked_token.line,
                     column: peeked_token.column,
                     length: peeked_token.length,
+                    expansion: self.expansion(),
                 };
                 let mut elements = Vec::new();
                 if !self.check(&TokenType::RightBracket) {
@@ -1201,6 +1214,7 @@ impl<'a> Parser<'a> {
                                 line: token.line,
                                 column: token.column,
                                 length: token.length,
+                                expansion: self.expansion(),
                             };
                             self.parse_identifier_expr(s.to_string(), span)?
                         }
@@ -1211,6 +1225,7 @@ impl<'a> Parser<'a> {
                             line: token.line,
                             column: token.column,
                             length: token.length,
+                            expansion: self.expansion(),
                         },
                     )?,
                     TokenType::Number(s) => {
@@ -1258,6 +1273,7 @@ impl<'a> Parser<'a> {
                                 line: token.line,
                                 column: token.column,
                                 length: token.length,
+                                expansion: self.expansion(),
                             },
                         })
                     }
@@ -1331,6 +1347,7 @@ impl<'a> Parser<'a> {
                                 line: token.line,
                                 column: token.column,
                                 length: token.length,
+                                expansion: self.expansion(),
                             },
                         })
                     }
@@ -1355,6 +1372,7 @@ impl<'a> Parser<'a> {
                     line: self.peek().line,
                     column: self.peek().column,
                     length: self.peek().length,
+                    expansion: self.expansion(),
                 };
                 let ident = match self.advance().kind.clone() {
                     TokenType::Identifier(s) => s.to_string(),
@@ -1422,6 +1440,7 @@ impl<'a> Parser<'a> {
                     line: self.peek().line,
                     column: self.peek().column,
                     length: self.peek().length,
+                    expansion: self.expansion(),
                 };
                 self.advance();
                 let index = self.parse_expr()?;
@@ -1449,6 +1468,7 @@ impl<'a> Parser<'a> {
                 line: self.peek().line,
                 column: self.peek().column,
                 length: self.peek().length,
+                expansion: self.expansion(),
             };
             self.advance();
             let target_ty = self.parse_type()?;

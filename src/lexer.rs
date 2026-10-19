@@ -244,6 +244,8 @@ pub struct TokenBase<S, C> {
     pub line: usize,
     pub column: usize,
     pub length: usize,
+    /// Which macro expansion made this token, or 0 for a token from the source.
+    pub expansion: u32,
 }
 
 pub type Token<'a> = TokenBase<&'a str, std::borrow::Cow<'a, str>>;
@@ -418,6 +420,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: self.current_byte_offset() - start_byte,
+            expansion: 0,
         }
     }
 
@@ -445,6 +448,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: self.current_byte_offset() - start_byte,
+            expansion: 0,
         }
     }
 
@@ -517,6 +521,7 @@ impl<'a> Lexer<'a> {
                 line: start_line,
                 column: start_col,
                 length: end_byte - start_byte,
+                expansion: 0,
             };
         }
 
@@ -530,6 +535,7 @@ impl<'a> Lexer<'a> {
                 line: self.line,
                 column: start_col,
                 length: end_byte - start_byte,
+                expansion: 0,
             };
         }
 
@@ -539,6 +545,7 @@ impl<'a> Lexer<'a> {
                 line: self.line,
                 column: start_col,
                 length: self.current_byte_offset() - start_byte,
+                expansion: 0,
             };
         }
 
@@ -553,6 +560,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: self.current_byte_offset() - start_byte,
+            expansion: 0,
         }
     }
 
@@ -574,6 +582,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: end_byte - start_byte,
+            expansion: 0,
         }
     }
 
@@ -592,6 +601,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: end_byte - start_byte,
+            expansion: 0,
         }
     }
 
@@ -628,6 +638,7 @@ impl<'a> Lexer<'a> {
                     line: self.line,
                     column: self.column,
                     length: 0,
+                    expansion: 0,
                 }
             }
         };
@@ -801,6 +812,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: self.current_byte_offset() - start_byte,
+            expansion: 0,
         }
     }
 
@@ -929,6 +941,7 @@ impl<'a> Token<'a> {
             line: self.line,
             column: self.column,
             length: self.length,
+            expansion: self.expansion,
         }
     }
 }
@@ -1040,6 +1053,7 @@ impl OwnedToken {
             line: self.line,
             column: self.column,
             length: self.length,
+            expansion: self.expansion,
         }
     }
 }
