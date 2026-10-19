@@ -52,8 +52,9 @@ fork to the join (C3). So:
 
 **T7. What runs a task.** The language promises that a task finishes, not that it runs at the same
 time as another task. One valid run is: each task runs to its end at its `spawn` (C1, serial
-elision). So a task must not wait for another task except through `join()` or a channel. A
-task that waits on a channel parks, and the parent continues (W6). A spin loop on an atomic that another task sets may never end. This is a hang, not undefined behavior. The runtime
+elision). So a task must not wait for another task except through `join()`, a channel or a
+`lock`. Once channels exist, that run is no longer valid, and each task needs its own thread or a
+stack switch (W6). A spin loop on an atomic that another task sets may never end. This is a hang, not undefined behavior. The runtime
 of #1863 can start with one OS thread for each task, and change to a pool later, with no change
 to the language.
 
