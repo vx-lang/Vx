@@ -1,6 +1,6 @@
 # Contracts for `extern` and `unsafe` code
 
-Status: proposed. Issue: #1902. Tracking: #1870. Builds on section 7 of
+Status: agreed. Issue: #1902. Tracking: #1870. Builds on section 7 of
 `waiting_tasks_channels_and_task_errors.md` (the trusted base) and on W8, W9, M5 and admission in
 that note.
 
@@ -159,21 +159,17 @@ the process boundary.
 
 ## Decisions
 
-Decided on 2026-10-19:
+We chose these on 2026-10-19.
 
 1. **The syntax.** Clauses are `requires` and `ensures`, with the predicates of X3. Vx gets no new
    keyword and no attribute syntax.
 1. **Strict blocks check at run time.** The compiler wraps each call of a strict block, and the
    wrapper checks `requires` before the call and `ensures` after it (B3).
-
-Open:
-
-1. **The default for `thread_safe`.** One call at a time (X4), or many calls at once. Recommended:
-   one at a time. It is slow only for a library that does not state `ensures thread_safe`.
-1. **Where the policy lives.** A flag and an allow-list file now (P1, P2), or a package manifest
-   later. Recommended: the flag and the file now. Vx has no manifest yet.
-1. **`safe fn` in strict blocks (B2).** Require a `requires` for each pointer argument, or not.
-   Recommended: require it.
+1. **The default for `thread_safe`.** One call at a time (X4). It is slow only for a library that
+   does not state `ensures thread_safe`.
+1. **Where the policy lives.** A flag and an allow-list file now (P1, P2). Vx has no package
+   manifest yet. The policy can move into one later.
+1. **`safe fn` in strict blocks (B2).** It needs a `requires` for each pointer argument.
 
 ## The work, in order
 
