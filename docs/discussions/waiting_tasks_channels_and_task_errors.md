@@ -1,6 +1,6 @@
 # Tasks that wait, channels, and errors from tasks
 
-Status: proposed. Issues: #1865, #1864, #1893. Tracking: #1870. Builds on
+Status: agreed. Issues: #1865, #1864, #1893. Tracking: #1870. Builds on
 `cpu_tasks_send_sync_and_shared_atomics.md` (T1 to T8, S1 to S6) and the memory model (C0 to C7).
 
 Vx is for programs that run on a fleet of mixed hardware. Its concurrency must be better than
@@ -346,24 +346,24 @@ After that:
 
 ## Decisions
 
-Each item gives the recommendation of the review of 2026-10-19.
+We chose these on 2026-10-19, from the recommendations of a review.
 
 1. **The promise of T7.** W7 adds "if each of its waits can continue" to the decision of
-   2026-10-18, and the runtime owns it. Recommended: yes.
+   2026-10-18, and the runtime owns it. Chosen: yes.
 1. **The runtime for the first steps.** One OS thread for each task, or a shared runtime with the
-   monitor from the start. Recommended: one OS thread for each task (W2). It needs no stack switch,
+   monitor from the start. Chosen: one OS thread for each task (W2). It needs no stack switch,
    no monitor and no rules for W9. The second runtime then comes as one unit.
 1. **Cancellation.** Automatic on the first failure (F3), or only when the program calls
-   `cancel()`. Recommended: automatic. Its cost is that a task that must not fail the block
+   `cancel()`. Chosen: automatic. Its cost is that a task that must not fail the block
    returns its own enum, not `Result` (F1).
 1. **`?`.** Add a `?` that does not convert, with the target rule of F2, or let the program write
-   each `match`. Recommended: add it.
-1. **A dropped `Cancelled`.** Recommended: the warning of F4 for an arm that can reach the same wait
+   each `match`. Chosen: add it.
+1. **A dropped `Cancelled`.** Chosen: the warning of F4 for an arm that can reach the same wait
    again, and the run-time report of F9.
 1. **Code that must finish.** Only `drop` runs with cancellation off (F6), or also a block that the
-   program marks. Recommended: `drop` only, with a time limit on each wait in it.
+   program marks. Chosen: `drop` only, with a time limit on each wait in it.
 1. **How a task takes a local.** The use decides, and K2 moves a local that ends first, or a new
-   `spawn move`. Recommended: K1 to K3, with no new syntax.
+   `spawn move`. Chosen: K1 to K3, with no new syntax.
 
 The review also settled two earlier questions: `select` starts at a new index each time (M3), and
 the memory-space type decides what can go between targets (M6).
