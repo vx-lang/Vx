@@ -17,8 +17,8 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1033` (24 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3054` (53 codes)
-- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4013` (13 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3058` (57 codes)
+- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4014` (14 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6031` (31 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
@@ -148,6 +148,10 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3052`](/errors/E3052/) | Arithmetic on fp8 or fp4 values (`f8e4m3`, `f8e5m2` or `f4e2m1`) with no written result type, as in `print(a * b)`. The compiler computes in f32 and rounds once to the written type, so the program must write it: `let c : f32 = a * b;`. Also `+=` and the other compound operators on these values, and any operator on tensors of them. |
 | [`E3053`](/errors/E3053/) | An impl of `Send` or `Sync` with no `unsafe`, as in `impl Send for Handle {}`. The compiler derives both from the fields, and a raw pointer is neither. An impl claims one for a type that holds a raw pointer, and the compiler cannot check the claim. Write `unsafe impl Send for Handle {}`. |
 | [`E3054`](/errors/E3054/) | `unsafe impl` of a trait other than `Send` or `Sync`, or of no trait at all. Only those two traits make a claim that the compiler cannot check. Remove `unsafe`. |
+| [`E3055`](/errors/E3055/) | A task takes a value that is not `Send`, or reads a variable whose type is not `Sync`. A task that moves a value, copies it or writes it needs `Send`. A task that reads a variable in place shares it with the code around the task, so it needs `Sync`. The error names the field that makes the type fail. |
+| [`E3056`](/errors/E3056/) | `spawn { .. }` outside a `tasks { .. }` block. The end of the `tasks` block waits for each task, so a task cannot outlive the variables it uses. A `spawn` in a closure, or directly in another task, is outside the block too. Put the `spawn` in a `tasks` block of its own. |
+| [`E3057`](/errors/E3057/) | A task handle used in a way other than `h.join()`, or a `spawn` that is not the value of a `let` or a statement of its own. A task must not leave its `tasks` block, so the program cannot return a handle, store it, or pass it to a function. Write `let h = spawn { .. };` and later `h.join()`. |
+| [`E3058`](/errors/E3058/) | A `return`, `break` or `continue` that leaves a task, or a task that joins another task. The last expression of a task body is its result. A task cannot join another task yet. Join both tasks in the `tasks` block. |
 
 ## Borrow/Ownership Errors
 
@@ -168,6 +172,7 @@ Raised by the borrow checker and the linear-type rules. These rule out use-after
 | [`E4011`](/errors/E4011/) | A view of a tensor (a row `q[i]` or a field `h.t`) used where a tensor of its own is held: stored in a variable that already exists (`t = q[i]`) or a struct field (`h.t = q[i]`, `Holder { t : q[i] }`), or passed to a function that takes the tensor by value (`f(q[i])`). A view shares its owner's memory and is not a copy. Bind it to a new variable with `let`, pass `q[i].clone()`, or take the parameter by reference. |
 | [`E4012`](/errors/E4012/) | A call to the `drop` method of a `Drop` impl by hand: `x.drop()`. `drop` runs when the value is dropped, so calling it as well would run it twice. Write `drop(x)`, from `core::mem`, to drop a value early. |
 | [`E4013`](/errors/E4013/) | A field moved out of a value that must keep it: `let x = p.a` where `p`'s type implements `Drop`, whose `drop` needs every field, or `let x = make().a`, where the value has no name and drops all its fields at the end of the statement. Borrow the field (`&p.a`), clone it, or bind the value to a variable first. |
+| [`E4014`](/errors/E4014/) | A task that can still run when a variable that it uses ends or changes. A task in a loop that the same pass does not join runs at the same time as the next pass, so it must not write a variable from outside the loop, or read one that the loop writes. A task must not use a variable that ends before its `tasks` block, such as one of the loop body. Join the task in the same block: `let h = spawn { .. };` and then `h.join();`. |
 
 ## Safety Errors
 
@@ -242,4 +247,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-153 diagnostics.
+158 diagnostics.

@@ -264,6 +264,7 @@ fn expr_kind(e: &Expr) -> &'static str {
         Expr::RelationalOp(_) => "RelationalOp",
         Expr::UnaryOp(_) => "UnaryOp",
         Expr::UnsafeBlock(_) => "UnsafeBlock",
+        Expr::TaskBlock(_) => "TaskBlock",
         Expr::StructInit(_) => "StructInit",
         Expr::AsCast(_) => "AsCast",
         Expr::Print(_) => "Print",

@@ -866,6 +866,12 @@ impl<'a> TypeChecker<'a> {
                     self.discipline_expr(r, st, cx);
                 }
             }
+            Expr::TaskBlock(u) => {
+                self.discipline_stmts(&u.stmts, st, cx);
+                if let Some(r) = &u.ret {
+                    self.discipline_expr(r, st, cx);
+                }
+            }
             Expr::ComptimeBlock(c) => {
                 self.discipline_stmts(&c.stmts, st, cx);
                 if let Some(r) = &c.ret {
@@ -1204,6 +1210,12 @@ fn scan_expr(e: &Expr, in_closure: bool, out: &mut RawScan) {
                 scan_expr(r, in_closure, out);
             }
         }
+        Expr::TaskBlock(u) => {
+            scan_stmts(&u.stmts, in_closure, out);
+            if let Some(r) = &u.ret {
+                scan_expr(r, in_closure, out);
+            }
+        }
         Expr::ComptimeBlock(c) => {
             scan_stmts(&c.stmts, in_closure, out);
             if let Some(r) = &c.ret {
@@ -1520,6 +1532,12 @@ pub(crate) fn body_reassigns(body: &[Statement], name: &str) -> bool {
             Expr::ComptimeBlock(c) => {
                 walk(&c.stmts, name)
                     || c.ret
+                        .as_ref()
+                        .is_some_and(|r| expr_blocks_reassign(r, name))
+            }
+            Expr::TaskBlock(u) => {
+                walk(&u.stmts, name)
+                    || u.ret
                         .as_ref()
                         .is_some_and(|r| expr_blocks_reassign(r, name))
             }
@@ -1870,6 +1888,13 @@ impl<'a> TypeChecker<'a> {
             }
             // `unsafe` is the documented bounds escape, not control flow: transparent here.
             Expr::UnsafeBlock(u) => {
+                self.traffic_stmts(&u.stmts, mult, acc, exact, elem, src, dst, exts)?;
+                if let Some(r) = &u.ret {
+                    self.traffic_expr(r, mult, acc, exact, elem, src, dst, exts)?;
+                }
+                Ok(())
+            }
+            Expr::TaskBlock(u) => {
                 self.traffic_stmts(&u.stmts, mult, acc, exact, elem, src, dst, exts)?;
                 if let Some(r) = &u.ret {
                     self.traffic_expr(r, mult, acc, exact, elem, src, dst, exts)?;

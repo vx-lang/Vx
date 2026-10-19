@@ -2436,6 +2436,10 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 children.push(self.expr(&jvp.tangent));
                 self.refusal_after(children)
             }
+            Expr::TaskBlock(block) => {
+                let body = self.block_with_tail(&block.stmts, block.ret.as_deref());
+                self.refusal_after([body])
+            }
             Expr::SpawnOn(spawn) => {
                 let topology = self.topology(&spawn.top);
                 let body = self.block_with_tail(&spawn.stmts, spawn.ret.as_deref());

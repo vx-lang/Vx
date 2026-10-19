@@ -1296,8 +1296,12 @@ impl<'a> Parser<'a> {
                             span: Span::default(),
                         })
                     }
+                    TokenType::Tasks => self.parse_task_block(TaskBlockKind::Tasks, &token)?,
+                    TokenType::Spawn if self.check(&TokenType::LeftBrace) => {
+                        self.parse_task_block(TaskBlockKind::Spawn, &token)?
+                    }
                     TokenType::Spawn => {
-                        self.consume(&TokenType::On, "Expected 'on' after 'spawn'")?;
+                        self.consume(&TokenType::On, "Expected 'on' or '{' after 'spawn'")?;
                         self.consume(&TokenType::LeftParen, "Expected '('")?;
                         let top = self.parse_topology()?;
                         self.consume(&TokenType::RightParen, "Expected ')'")?;
@@ -1439,6 +1443,41 @@ impl<'a> Parser<'a> {
         }
 
         Ok(expr)
+    }
+
+    /// The body of `tasks { .. }` or `spawn { .. }`, after the keyword `token`. A last
+    /// expression with no `;` is the value of the block.
+    fn parse_task_block(
+        &mut self,
+        kind: TaskBlockKind,
+        token: &Token<'a>,
+    ) -> ParseResult<'a, Expr> {
+        self.consume(&TokenType::LeftBrace, "Expected '{'")?;
+        let mut stmts = Vec::new();
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            self.parse_statement_into(&mut stmts)?;
+        }
+        let mut ret = None;
+        if let Some(Statement::ExprStmt(ExprStmtStmt {
+            expr,
+            has_semi: false,
+            span: _,
+        })) = stmts.last().cloned()
+        {
+            stmts.pop();
+            ret = Some(Box::new(expr));
+        }
+        self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        Ok(Expr::TaskBlock(TaskBlockExpr {
+            kind,
+            stmts,
+            ret,
+            span: Span {
+                line: token.line,
+                column: token.column,
+                length: token.length,
+            },
+        }))
     }
 
     /// `expr as T`, any number of times.

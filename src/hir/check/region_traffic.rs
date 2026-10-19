@@ -971,6 +971,14 @@ impl<'a> TypeChecker<'a> {
                 }
                 Ok(())
             }
+            Expr::TaskBlock(u) => {
+                let mut inner = binds.clone();
+                self.region_stmts(&u.stmts, mult, acc, exact, outer, &mut inner, false)?;
+                if let Some(r) = &u.ret {
+                    self.region_expr(r, mult, acc, exact, outer, &mut inner)?;
+                }
+                Ok(())
+            }
             Expr::ComptimeBlock(c) => {
                 let mut inner = binds.clone();
                 self.region_stmts(&c.stmts, mult, acc, exact, outer, &mut inner, false)?;

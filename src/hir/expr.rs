@@ -195,6 +195,7 @@ impl<'a> TypeChecker<'a> {
                 let scopes = self.consteval_scopes();
                 let saved_borrows = self.borrow.snapshot();
                 self.value_unused = *has_semi || i != last || block_unused;
+                self.allow_spawn_statement(expr);
                 let ty = self.check_expr_type_flag(expr, consume);
                 if !*has_semi {
                     // A last expression that never finishes, `todo()`, gives the block the type
@@ -333,7 +334,10 @@ impl<'a> TypeChecker<'a> {
                 ty
             }
             Expr::IndexAccess(..) => self.check_indexaccess_expr(expr, consume),
-            Expr::MethodCall(..) => self.check_methodcall_expr(expr, consume),
+            Expr::MethodCall(..) => match self.check_task_join(expr, consume) {
+                Some(ty) => ty,
+                None => self.check_methodcall_expr(expr, consume),
+            },
             Expr::BinaryOp(..) => self.check_binaryop_expr(expr, consume),
             Expr::RelationalOp(..) => self.check_relationalop_expr(expr),
             Expr::LogicalOp(..) => self.check_logicalop_expr(expr),
@@ -365,6 +369,10 @@ impl<'a> TypeChecker<'a> {
             Expr::UnsafeBlock(..) => {
                 self.value_unused = value_unused;
                 self.check_unsafeblock_expr(expr, consume)
+            }
+            Expr::TaskBlock(..) => {
+                self.value_unused = value_unused;
+                self.check_task_block_expr(expr, consume)
             }
             Expr::StructInit(..) => self.check_structinit_expr(expr, consume),
             Expr::Grad(..) => self.check_grad_expr(expr),

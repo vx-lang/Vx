@@ -1,0 +1,209 @@
+//===- tasks_that_share_reads_and_join_results.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// Programs with `tasks` and `spawn` that the compiler accepts, and their results. `main` prints
+// the result of each function, and `tasks_that_move_values` prints one more line, the 5.
+//
+// CHECK: {{^}}45{{$}}
+// CHECK-NEXT: {{^}}12{{$}}
+// CHECK-NEXT: {{^}}3{{$}}
+// CHECK-NEXT: {{^}}14{{$}}
+// CHECK-NEXT: {{^}}5{{$}}
+// CHECK-NEXT: {{^}}4{{$}}
+// CHECK-NEXT: {{^}}7{{$}}
+// CHECK-NEXT: {{^}}3{{$}}
+//
+// Each value that a task makes is dropped once: the joined one by `main`, the others in their
+// `tasks` block.
+//
+// CHECK-DAG: dropped 2
+// CHECK-DAG: dropped 3
+// CHECK-NOT: dropped
+// CHECK: dropped 1
+// CHECK-NOT: dropped
+
+import core::ops;
+import std::vec;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("dropped {}", self.id);
+  }
+}
+
+fn make_noisy(id : i32) -> Noisy {
+  return Noisy {
+    id: id
+  };
+}
+
+fn numbers(n : i32) -> Vec<i32> {
+  let mut v = Vec<i32>::new();
+  for i in 0..n {
+    v.push(i);
+  }
+  return v;
+}
+
+fn sum(v : &Vec<i32>, start : i32, end : i32) -> i32 {
+  let mut total = 0;
+  for i in start..end {
+    total += v[i];
+  }
+  return total;
+}
+
+// Two tasks read `v` at the same time. Each result comes back through `join()`.
+fn two_tasks_read_one_vec() -> i32 {
+  let v = numbers(10);
+  return tasks {
+    let left = spawn {
+      sum(&v, 0, 5)
+    };
+    let right = spawn {
+      sum(&v, 5, 10)
+    };
+    left.join() + right.join()
+  };
+}
+
+fn generic_tasks<T : Copy>(x : T, f : fn(T) -> T) -> T {
+  return tasks {
+    let first = spawn {
+      f(x)
+    };
+    f(first.join())
+  };
+}
+
+fn add_six(x : i32) -> i32 {
+  return x + 6;
+}
+
+// A task with no result. The end of the `tasks` block waits for the task that nothing joins,
+// so `b` has its new value after the block.
+fn tasks_that_write() -> i32 {
+  let mut a = 0;
+  let mut b = 0;
+  tasks {
+    let h = spawn {
+      a += 1;
+    };
+    spawn {
+      b += 1;
+    };
+    h.join();
+    a += 1;
+  }
+  return a + b;
+}
+
+// Each pass joins its task, so the next pass can start a task that changes `total` again. The
+// task copies `i`, so `i` may end with its pass.
+fn one_task_each_pass() -> i32 {
+  let mut total = 0;
+  tasks {
+    for i in 0..4 {
+      let h = spawn {
+        i * i
+      };
+      total += h.join();
+    }
+  }
+  return total;
+}
+
+// The result of a task can be a value that has to be dropped. The task can also take a value
+// for itself.
+fn tasks_that_move_values() -> i32 {
+  let given = numbers(4);
+  let made = tasks {
+    let h = spawn {
+      numbers(5)
+    };
+    let moved = spawn {
+      let mine = given;
+      mine.len()
+    };
+    println!("{}", h.join().len());
+    moved.join()
+  };
+  return made;
+}
+
+// A task can have a `tasks` block of its own, and a loop with a `break` in it.
+fn nested_tasks() -> i32 {
+  let mut y = 0;
+  tasks {
+    spawn {
+      tasks {
+        spawn {
+          y += 4;
+        };
+      }
+      for i in 0..10 {
+        if i == 3 {
+          break;
+        }
+        y += 1;
+      }
+    };
+  }
+  return y;
+}
+
+// The tasks of each pass read `v` and nothing joins them, so they run at the same time as the
+// next pass. That is valid, because the loop does not change `v`. The change before the loop
+// does not count.
+fn tasks_in_a_loop_read() -> i32 {
+  let mut v = numbers(2);
+  v.push(9);
+  let mut count = 0;
+  tasks {
+    for i in 0..3 {
+      spawn {
+        v.len();
+      };
+      count += 1;
+    }
+  }
+  return count;
+}
+
+fn noisy_results() -> i32 {
+  let kept = tasks {
+    let joined = spawn {
+      make_noisy(1)
+    };
+    let _not_joined = spawn {
+      make_noisy(2)
+    };
+    spawn {
+      make_noisy(3)
+    };
+    joined.join()
+  };
+  return kept.id;
+}
+
+fn main() -> i32 {
+  println!("{}", two_tasks_read_one_vec());
+  println!("{}", generic_tasks(0, add_six));
+  println!("{}", tasks_that_write());
+  println!("{}", one_task_each_pass());
+  println!("{}", tasks_that_move_values());
+  println!("{}", nested_tasks());
+  println!("{}", tasks_in_a_loop_read());
+  return noisy_results() - 1;
+}

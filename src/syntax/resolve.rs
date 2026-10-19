@@ -277,6 +277,14 @@ impl Expr {
                     r.resolve_names(scope);
                 }
             }
+            Expr::TaskBlock(e) => {
+                for s in &mut e.stmts {
+                    s.resolve_names(scope);
+                }
+                if let Some(r) = &mut e.ret {
+                    r.resolve_names(scope);
+                }
+            }
             Expr::ComptimeBlock(e) => {
                 for s in &mut e.stmts {
                     s.resolve_names(scope);

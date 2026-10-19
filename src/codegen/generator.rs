@@ -1807,6 +1807,9 @@ impl<'c> MeliorGenerator<'c> {
             Expr::Match(e) => LowerToMelior::lower(e, self, block),
             Expr::Number(e) => LowerToMelior::lower(e, self, block),
             Expr::UnsafeBlock(e) => LowerToMelior::lower(e, self, block),
+            Expr::TaskBlock(_) => {
+                unreachable!("the checker makes each `tasks` and `spawn` a block")
+            }
             Expr::Grad(e) => LowerToMelior::lower(e, self, block),
             Expr::Vjp(e) => LowerToMelior::lower(e, self, block),
             Expr::Jvp(e) => LowerToMelior::lower(e, self, block),

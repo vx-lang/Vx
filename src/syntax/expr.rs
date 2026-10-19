@@ -491,6 +491,27 @@ impl UnsafeBlockExpr {
     }
 }
 
+/// Which block a [`TaskBlockExpr`] is.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum TaskBlockKind {
+    /// `tasks { .. }`: when the block ends, every task that it started is finished.
+    Tasks,
+    /// `spawn { .. }` in a `tasks` block: a task. Its value is a `Task<T>`.
+    Spawn,
+}
+
+/// `tasks { .. }`, or `spawn { .. }` without `on`. The design is in
+/// docs/discussions/cpu_tasks_send_sync_and_shared_atomics.md. Each task runs to its end at its
+/// `spawn`, which the design allows, so the checker makes both blocks of plain code once it has
+/// checked them. The code generators never see one.
+#[derive(Debug, PartialEq, Clone)]
+pub struct TaskBlockExpr {
+    pub kind: TaskBlockKind,
+    pub stmts: Vec<Statement>,
+    pub ret: Option<Box<Expr>>,
+    pub span: Span,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct ComptimeBlockExpr {
     pub stmts: Vec<Statement>,
@@ -653,6 +674,11 @@ pub fn statement_always_exits(stmt: &Statement, never: &dyn Fn(&str) -> bool) ->
             }
             Expr::FunctionCall(c) => is_abort_or_panic(c) || never(c.name.as_ref()),
             Expr::UnsafeBlock(UnsafeBlockExpr { stmts, .. }) => block_always_exits(stmts, never),
+            Expr::TaskBlock(TaskBlockExpr {
+                kind: TaskBlockKind::Tasks,
+                stmts,
+                ..
+            }) => block_always_exits(stmts, never),
             _ => false,
         },
         _ => false,
@@ -685,6 +711,11 @@ pub fn yields_no_value(expr: &Expr) -> bool {
             else_block: None,
             ..
         }) | Expr::UnsafeBlock(UnsafeBlockExpr { ret: None, .. })
+            | Expr::TaskBlock(TaskBlockExpr {
+                kind: TaskBlockKind::Tasks,
+                ret: None,
+                ..
+            })
     )
 }
 
@@ -927,6 +958,7 @@ pub enum Expr {
     Vjp(VjpExpr),
     Jvp(JvpExpr),
     SpawnOn(SpawnOnExpr),
+    TaskBlock(TaskBlockExpr),
     VecMacro(VecMacroExpr),
     Closure(ClosureExpr),
     MacroCall(MacroCallExpr),
@@ -970,6 +1002,7 @@ macro_rules! delegate_expr {
             Expr::Vjp(e) => e.$method.clone(),
             Expr::Jvp(e) => e.$method.clone(),
             Expr::SpawnOn(e) => e.$method.clone(),
+            Expr::TaskBlock(e) => e.$method.clone(),
             Expr::VecMacro(e) => e.$method.clone(),
             Expr::Closure(e) => e.$method.clone(),
             Expr::MacroCall(e) => e.$method.clone(),
@@ -1205,6 +1238,12 @@ pub fn visit_expr(e: &Expr, f: &mut dyn FnMut(&Expr)) {
             }
         }
         Expr::SpawnOn(b) => {
+            visit_exprs(&b.stmts, f);
+            if let Some(r) = &b.ret {
+                visit_expr(r, f);
+            }
+        }
+        Expr::TaskBlock(b) => {
             visit_exprs(&b.stmts, f);
             if let Some(r) = &b.ret {
                 visit_expr(r, f);
@@ -1463,6 +1502,12 @@ impl Expr {
                 // The device index is substituted too: `spawn on(NPU[R])` in a generic body must
                 // become `NPU[5]` at `f<5>`, or dispatch silently falls back to device 0 (#284).
                 top: e.top.substitute(mapping),
+                stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
+                ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
+                span: e.span,
+            }),
+            Expr::TaskBlock(e) => Expr::TaskBlock(TaskBlockExpr {
+                kind: e.kind,
                 stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
                 span: e.span,

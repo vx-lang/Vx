@@ -28,6 +28,7 @@ pub mod parallel;
 pub mod projection;
 pub mod raw;
 pub mod region_traffic;
+pub mod tasks;
 pub mod thread_safety;
 pub mod transfer;
 pub mod unused_functions;

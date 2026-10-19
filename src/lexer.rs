@@ -29,6 +29,7 @@ pub enum TokenTypeBase<S, C> {
     Continue,
     Return,
     Spawn,
+    Tasks,
     On,
     Where,
     Transfer,
@@ -145,6 +146,7 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::Continue => write!(f, "continue"),
             TokenTypeBase::Return => write!(f, "return"),
             TokenTypeBase::Spawn => write!(f, "spawn"),
+            TokenTypeBase::Tasks => write!(f, "tasks"),
             TokenTypeBase::On => write!(f, "on"),
             TokenTypeBase::Where => write!(f, "where"),
             TokenTypeBase::Transfer => write!(f, "transfer"),
@@ -324,6 +326,7 @@ static KEYWORDS: Lazy<
     m.insert("continue", TokenTypeBase::Continue);
     m.insert("return", TokenTypeBase::Return);
     m.insert("spawn", TokenTypeBase::Spawn);
+    m.insert("tasks", TokenTypeBase::Tasks);
     m.insert("on", TokenTypeBase::On);
     m.insert("where", TokenTypeBase::Where);
     m.insert("transfer", TokenTypeBase::Transfer);
@@ -889,6 +892,7 @@ impl<'a> Token<'a> {
             TokenTypeBase::Continue => TokenTypeBase::Continue,
             TokenTypeBase::Return => TokenTypeBase::Return,
             TokenTypeBase::Spawn => TokenTypeBase::Spawn,
+            TokenTypeBase::Tasks => TokenTypeBase::Tasks,
             TokenTypeBase::On => TokenTypeBase::On,
             TokenTypeBase::Where => TokenTypeBase::Where,
             TokenTypeBase::Transfer => TokenTypeBase::Transfer,
@@ -1004,6 +1008,7 @@ impl OwnedToken {
             TokenTypeBase::Continue => TokenTypeBase::Continue,
             TokenTypeBase::Return => TokenTypeBase::Return,
             TokenTypeBase::Spawn => TokenTypeBase::Spawn,
+            TokenTypeBase::Tasks => TokenTypeBase::Tasks,
             TokenTypeBase::On => TokenTypeBase::On,
             TokenTypeBase::Where => TokenTypeBase::Where,
             TokenTypeBase::Transfer => TokenTypeBase::Transfer,

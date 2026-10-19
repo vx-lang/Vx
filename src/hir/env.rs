@@ -510,6 +510,8 @@ pub struct TypeChecker<'a> {
     /// The variables the current function changes: assigns, borrows `&mut`, or calls a
     /// `&mut self` method on.
     pub(crate) changed_vars: std::collections::HashSet<String>,
+    /// The `tasks` blocks and tasks around the code being checked.
+    pub(crate) tasks: crate::hir::check::tasks::TaskCx,
     /// Expected type of the expression currently being checked, from a `let x: T = …` or a
     /// `return` in a typed function. Lets a generic call deduce a *return-only* topology (or
     /// type) variable — e.g. `D` in `-> Pinned<T, D>` — from the call's context.
@@ -563,6 +565,7 @@ impl<'a> TypeChecker<'a> {
             declared_mut_vars: Vec::new(),
             literal_typed_lets: std::collections::HashMap::new(),
             changed_vars: std::collections::HashSet::new(),
+            tasks: Default::default(),
             expected_type: None,
             consteval: Default::default(),
             mono: Default::default(),
@@ -641,6 +644,15 @@ impl<'a> TypeChecker<'a> {
         let added = self.borrow.added_since(&saved);
         self.borrow.restore(saved);
         for (base, mut record) in added {
+            // A task's borrows last until its join, past the statement that starts it.
+            if record
+                .borrower_name
+                .as_deref()
+                .is_some_and(|n| self.borrow.is_running_task(n))
+            {
+                self.borrow.record(&base, record);
+                continue;
+            }
             let Some(scope) = record
                 .borrower_name
                 .as_deref()
@@ -831,6 +843,14 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::UnsafeBlock(u) => {
+                for s in &u.stmts {
+                    Self::extract_uses_stmt(s, uses);
+                }
+                if let Some(ret) = &u.ret {
+                    Self::extract_uses_expr(ret, uses);
+                }
+            }
+            Expr::TaskBlock(u) => {
                 for s in &u.stmts {
                     Self::extract_uses_stmt(s, uses);
                 }
@@ -1399,6 +1419,12 @@ impl<'a> TypeChecker<'a> {
                     Self::subst_topo_in_expr(r, tm);
                 }
             }
+            E::TaskBlock(e) => {
+                recur_block(&mut e.stmts);
+                if let Some(r) = e.ret.as_deref_mut() {
+                    Self::subst_topo_in_expr(r, tm);
+                }
+            }
             E::ComptimeBlock(e) => {
                 recur_block(&mut e.stmts);
                 if let Some(r) = e.ret.as_deref_mut() {
@@ -1646,6 +1672,8 @@ impl<'a> TypeChecker<'a> {
         // the callee's cumulative check (mis-attributed and then lost to the caller, since that
         // check takes the map). Swap the per-function traffic out, restore it on exit.
         let prev_placements = std::mem::take(&mut self.traffic.memory_placements);
+        // A callee checked from inside a caller's `tasks` block is not in that block.
+        let prev_tasks = self.tasks.enter_function();
         let prev_call_sites = std::mem::take(&mut self.traffic.call_sites);
         let prev_scope_chain = std::mem::take(&mut self.traffic.scope_chain);
         let prev_scope_releases = std::mem::take(&mut self.traffic.scope_releases);
@@ -1841,6 +1869,7 @@ impl<'a> TypeChecker<'a> {
         self.declared_mut_vars = prev_declared_mut_vars;
         self.literal_typed_lets = prev_literal_typed_lets;
         self.changed_vars = prev_changed_vars;
+        self.tasks.exit_function(prev_tasks);
         self.in_written_unsafe_block = prev_written_unsafe;
         self.unsafe_op_seen = prev_unsafe_op_seen;
     }
@@ -2000,6 +2029,11 @@ fn seeds_in_expr(expr: &Expr, out: &mut Vec<String>) {
         Expr::SpawnOn(s) => {
             for stmt in &s.stmts {
                 collect_comptime_seeds(stmt, out);
+            }
+        }
+        Expr::TaskBlock(u) => {
+            for s in &u.stmts {
+                collect_comptime_seeds(s, out);
             }
         }
         Expr::Match(m) => {

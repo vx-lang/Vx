@@ -57,6 +57,9 @@ pub(crate) struct BorrowCx {
     borrowers_ever: HashMap<String, HashSet<String>>,
     /// Where each owned tensor is dropped. See `check/drops.rs`.
     pub(crate) drops: crate::hir::check::drops::DropFrames,
+    /// The tasks that have started and that nothing has joined yet. A task holds its borrows
+    /// until then, also where no statement names it. See `check/tasks.rs`.
+    running_tasks: HashSet<String>,
     /// What each view variable (`let r = q[i]`) borrows. Reset per function.
     pub(crate) views: HashMap<Symbol, crate::hir::check::views::View>,
     /// The tensors each view-making `let` may be part of, keyed by the `let`'s position. The
@@ -81,6 +84,9 @@ pub(crate) struct BlockUses {
 pub(crate) struct LoopExits {
     pub(crate) at_break: Option<Vec<HashSet<String>>>,
     pub(crate) at_continue: Option<Vec<HashSet<String>>>,
+    /// What the function changed before the loop. While the loop is checked, `changed_vars`
+    /// holds only what the loop changes.
+    pub(crate) changed_before: HashSet<String>,
 }
 
 impl Default for BorrowCx {
@@ -102,6 +108,7 @@ impl Default for BorrowCx {
             view_owners_by_let: HashMap::new(),
             borrowers_ever: HashMap::new(),
             drops: Default::default(),
+            running_tasks: HashSet::new(),
         }
     }
 }
@@ -149,6 +156,9 @@ impl BorrowCx {
     /// around it can see that variable. A loop body that names a variable from outside it
     /// answers yes too, because its next pass names it again.
     fn is_variable_used_after(&self, name: &str) -> bool {
+        if self.running_tasks.contains(name) {
+            return true;
+        }
         let blocks = self.block_liveness.iter().zip(&self.current_stmt_idx);
         for (block, &current_idx) in blocks.rev() {
             let last_use = block.last_use.get(name);
@@ -163,6 +173,20 @@ impl BorrowCx {
             }
         }
         false
+    }
+
+    /// A task started, and holds its borrows until [`Self::end_task`].
+    pub(crate) fn start_task(&mut self, task: &str) {
+        self.running_tasks.insert(task.to_string());
+    }
+
+    /// The task is joined, so its borrows end.
+    pub(crate) fn end_task(&mut self, task: &str) {
+        self.running_tasks.remove(task);
+    }
+
+    pub(crate) fn is_running_task(&self, name: &str) -> bool {
+        self.running_tasks.contains(name)
     }
 
     // --- borrow records ---

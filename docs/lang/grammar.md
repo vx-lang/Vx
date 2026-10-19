@@ -153,6 +153,8 @@ primary_expr ::=
     | "if" "comptime"? expr "{" statement* "}" ( "else" ( "if" primary_expr | "{" statement* "}" ) )?
     | "match" expr "{" ( pattern "=>" ( "{" statement* "}" | statement ) ","? )* "}"
     | "spawn" "on" "(" topology ")" "{" statement* "}"   // routes its body to a topology; yields Pinned<T, topology>
+    | "tasks" "{" statement* "}"                         // waits at its end for each task that it started
+    | "spawn" "{" statement* "}"                         // a task, only in a `tasks` block; yields Task<T>
     | "transfer" "(" expr "," memory_space ")"
     | "Reachable" "<" topology "," topology ">"           // comptime transferability predicate (a bool)
     | "[" ( expr ","? )* "]"

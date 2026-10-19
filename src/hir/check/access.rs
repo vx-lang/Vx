@@ -313,6 +313,7 @@ impl<'a> TypeChecker<'a> {
 
                 // Track variable usage for W1001/W1009 diagnostics
                 self.used_vars.insert(name.clone());
+                self.note_task_use(name.as_ref(), &span);
 
                 if !self.borrow.skip_borrow_check && !self.speculating {
                     // NLL: a borrow whose borrower is dead past this access no longer conflicts, so a
@@ -322,7 +323,11 @@ impl<'a> TypeChecker<'a> {
                         if b.is_mut {
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E4002,
-                                format!("Cannot access '{}' because it is mutably borrowed.", name),
+                                format!(
+                                    "Cannot access '{}' because it is mutably borrowed.{}",
+                                    name,
+                                    crate::hir::check::tasks::held_by_task_note(b)
+                                ),
                                 Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
                             );
                             break;
@@ -802,8 +807,9 @@ impl<'a> TypeChecker<'a> {
                                 self.errors.error_with_code(
                                     crate::diagnostic::DiagnosticCode::E4002,
                                     format!(
-                                        "Cannot access '{}' because it is mutably borrowed.",
-                                        name
+                                        "Cannot access '{}' because it is mutably borrowed.{}",
+                                        name,
+                                        crate::hir::check::tasks::held_by_task_note(b)
                                     ),
                                     Some(crate::diagnostic::SourceSpan::from_ast_span(&ma_span)),
                                 );
@@ -1199,10 +1205,11 @@ impl<'a> TypeChecker<'a> {
                 if let Some((name, mut path)) = place {
                     if !self.borrow.skip_borrow_check && !self.speculating {
                         path.push(crate::hir::places::index_element(idx));
-                        let conflict = self.borrow.live_borrows(&name).iter().any(|b| {
+                        let conflict = self.borrow.live_borrows(&name).iter().find(|b| {
                             b.is_mut && crate::hir::places::paths_may_alias(&path, &b.path)
                         });
-                        if conflict {
+                        let conflict = conflict.map(crate::hir::check::tasks::held_by_task_note);
+                        if let Some(note) = conflict {
                             // Point at the variable, as the whole-variable rule does.
                             let mut root = &**obj;
                             while let Expr::IndexAccess(IndexAccessExpr { base, .. })
@@ -1216,7 +1223,10 @@ impl<'a> TypeChecker<'a> {
                             };
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E4002,
-                                format!("Cannot access '{}' because it is mutably borrowed.", name),
+                                format!(
+                                    "Cannot access '{}' because it is mutably borrowed.{note}",
+                                    name
+                                ),
                                 Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
                             );
                         }
@@ -1601,8 +1611,9 @@ impl<'a> TypeChecker<'a> {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E4004,
                     format!(
-                        "Cannot borrow '{}' because it is already borrowed as mutable.",
-                        name
+                        "Cannot borrow '{}' because it is already borrowed as mutable.{}",
+                        name,
+                        crate::hir::check::tasks::held_by_task_note(b)
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
@@ -1611,8 +1622,9 @@ impl<'a> TypeChecker<'a> {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E4003,
                     format!(
-                        "Cannot borrow '{}' as mutable because it is also borrowed as immutable.",
-                        name
+                        "Cannot borrow '{}' as mutable because it is also borrowed as immutable.{}",
+                        name,
+                        crate::hir::check::tasks::held_by_task_note(b)
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
@@ -1822,6 +1834,13 @@ impl<'a> TypeChecker<'a> {
                     .collect(),
             ),
             Expr::UnsafeBlock(u) => {
+                let mut parts = self.block_value_provenance(&u.stmts);
+                if let Some(r) = &u.ret {
+                    parts.push(self.ref_provenance_of(r));
+                }
+                Self::join_provenances(parts)
+            }
+            Expr::TaskBlock(u) => {
                 let mut parts = self.block_value_provenance(&u.stmts);
                 if let Some(r) = &u.ret {
                     parts.push(self.ref_provenance_of(r));
@@ -2132,8 +2151,9 @@ impl<'a> TypeChecker<'a> {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E4004,
                     format!(
-                        "Cannot borrow '{}' because it is already borrowed as mutable.",
-                        base
+                        "Cannot borrow '{}' because it is already borrowed as mutable.{}",
+                        base,
+                        crate::hir::check::tasks::held_by_task_note(b)
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
@@ -2141,8 +2161,9 @@ impl<'a> TypeChecker<'a> {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E4003,
                     format!(
-                        "Cannot borrow '{}' as mutable because it is also borrowed as immutable.",
-                        base
+                        "Cannot borrow '{}' as mutable because it is also borrowed as immutable.{}",
+                        base,
+                        crate::hir::check::tasks::held_by_task_note(b)
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );

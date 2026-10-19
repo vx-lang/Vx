@@ -194,6 +194,12 @@ impl<'a> TypeChecker<'a> {
                     Self::scan_expr_for_asserts(r, out);
                 }
             }
+            Expr::TaskBlock(b) => {
+                Self::collect_assert_contracts(&b.stmts, out);
+                if let Some(r) = &b.ret {
+                    Self::scan_expr_for_asserts(r, out);
+                }
+            }
             Expr::ComptimeBlock(b) => {
                 Self::collect_assert_contracts(&b.stmts, out);
                 if let Some(r) = &b.ret {

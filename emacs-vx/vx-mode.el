@@ -36,7 +36,7 @@ The default matches the output of `vx-format'."
   '("across" "as" "assert" "break" "comptime" "continue" "else" "ensures"
     "enum" "extern" "fn" "for" "grad" "if" "impl" "import" "in" "invariant"
     "jvp" "let" "loop" "macro_rules" "match" "mut" "on" "requires" "return"
-    "safe" "self" "spawn" "struct" "trait" "transfer" "type" "unroll"
+    "safe" "self" "spawn" "struct" "tasks" "trait" "transfer" "type" "unroll"
     "unsafe" "vjp" "where" "while")
   "Keywords of Vx, as listed in src/lexer.rs, plus `self'.")
 

@@ -76,6 +76,7 @@ impl<'a> Parser<'a> {
                 Expr::UnsafeBlock(UnsafeBlockExpr { .. })
                 | Expr::ComptimeBlock(ComptimeBlockExpr { .. })
                 | Expr::SpawnOn(SpawnOnExpr { .. })
+                | Expr::TaskBlock(TaskBlockExpr { .. })
                 | Expr::If(IfExpr { .. })
                 | Expr::Match(MatchExpr { .. }) => {
                     has_semicolon = self.match_token(&TokenType::Semicolon);
@@ -356,10 +357,14 @@ impl<'a> Parser<'a> {
                 let expr = self.parse_expr()?;
                 self.parse_expr_or_assign_stmt(expr, token_span)
             }
-            // An `if`, `match`, `unsafe` or `spawn` block that starts a statement ends at its
+            // An `if`, `match`, `unsafe`, `spawn` or `tasks` block that starts a statement ends at its
             // closing brace, as in Rust. Read as one expression, `if c { .. }` followed by
             // `*x = 1;` would be `(if c { .. }) * x = 1`.
-            TokenType::If | TokenType::Match | TokenType::Unsafe | TokenType::Spawn => {
+            TokenType::If
+            | TokenType::Match
+            | TokenType::Unsafe
+            | TokenType::Spawn
+            | TokenType::Tasks => {
                 let expr = self.parse_primary_expr()?;
                 self.parse_expr_or_assign_stmt(expr, token_span)
             }

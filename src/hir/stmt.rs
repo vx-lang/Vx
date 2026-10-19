@@ -351,11 +351,20 @@ impl<'a> TypeChecker<'a> {
         consume: bool,
     ) {
         match stmt {
+            Statement::LetDecl(decl) if crate::hir::check::tasks::is_spawn(&decl.expr) => {
+                self.check_spawn_let(decl, consume)
+            }
             Statement::LetDecl(decl) => self.check_let_decl_stmt(decl, consume),
             Statement::ForLoop(floop) => self.check_for_loop_stmt(floop, consume, return_type),
             Statement::Loop(lp) => self.check_loop_stmt(lp, return_type),
-            Statement::Break(b) => self.drops_exit("break", b.span.line, true),
-            Statement::Continue(c) => self.drops_exit("continue", c.span.line, true),
+            Statement::Break(b) => {
+                self.check_task_exit(&Statement::Break(b.clone()));
+                self.drops_exit("break", b.span.line, true)
+            }
+            Statement::Continue(c) => {
+                self.check_task_exit(&Statement::Continue(c.clone()));
+                self.drops_exit("continue", c.span.line, true)
+            }
             Statement::Assign(AssignStmt { lhs, rhs, span: _ }) => {
                 self.check_assign_stmt(lhs, None, rhs, consume, None)
             }
@@ -370,6 +379,7 @@ impl<'a> TypeChecker<'a> {
                 self.check_assign_stmt(lhs, Some(&op), rhs, consume, Some(operand_ty))
             }
             Statement::Return(ret) => {
+                self.check_task_exit(&Statement::Return(ret.clone()));
                 if self.check_return_stmt(ret, consume, return_type) {
                     // `return todo()`: the call never finishes, so nothing is returned. Keep the
                     // call as a statement, which the code generators end the block after.
@@ -394,6 +404,7 @@ impl<'a> TypeChecker<'a> {
                 let scopes = self.consteval_scopes();
                 let saved_borrows = self.borrow.snapshot();
                 self.value_unused = true;
+                self.allow_spawn_statement(expr);
                 self.check_expr_type_flag(expr, consume);
                 self.restore_borrows_keeping_held(saved_borrows);
                 self.settle_mut_borrow_call(expr, &before, &scopes);
@@ -409,7 +420,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Check a `let` binding: type the initializer, bind the name (annotation wins), record the
     /// binding's reference provenance (#243), and register an equality constraint for an immutable.
-    fn check_let_decl_stmt(&mut self, decl: &mut LetDeclStmt, consume: bool) {
+    pub(crate) fn check_let_decl_stmt(&mut self, decl: &mut LetDeclStmt, consume: bool) {
         let LetDeclStmt {
             name,
             is_mut: _is_mut,
@@ -937,7 +948,12 @@ impl<'a> TypeChecker<'a> {
         let scopes = self.consteval_scopes();
 
         let marks_before = self.moved_snapshot();
-        self.borrow.loop_exits.push(Default::default());
+        self.borrow
+            .loop_exits
+            .push(crate::hir::borrow_cx::LoopExits {
+                changed_before: std::mem::take(&mut self.changed_vars),
+                ..Default::default()
+            });
         self.drops_enter_loop();
         let header = LoopHeader {
             binds: Some(iter.as_str()),
@@ -981,6 +997,9 @@ impl<'a> TypeChecker<'a> {
     ) {
         let end = self.branch_end(body);
         let exits = self.borrow.loop_exits.pop().expect("pushed by the loop");
+        let changed_in_loop = std::mem::replace(&mut self.changed_vars, exits.changed_before);
+        self.changed_vars.extend(changed_in_loop.iter().cloned());
+        self.check_tasks_in_loop(outer_depth, &changed_in_loop, span);
         let next_pass = [end.clone(), exits.at_continue.clone()]
             .into_iter()
             .flatten()
@@ -1040,7 +1059,12 @@ impl<'a> TypeChecker<'a> {
         let scopes = self.consteval_scopes();
 
         let marks_before = self.moved_snapshot();
-        self.borrow.loop_exits.push(Default::default());
+        self.borrow
+            .loop_exits
+            .push(crate::hir::borrow_cx::LoopExits {
+                changed_before: std::mem::take(&mut self.changed_vars),
+                ..Default::default()
+            });
         self.drops_enter_loop();
         let header = LoopHeader {
             binds: None,
@@ -1126,12 +1150,13 @@ impl<'a> TypeChecker<'a> {
             .live_borrows(&root)
             .iter()
             // A borrow with no borrower is a temporary, `f(&x)`, over by the end of its statement.
-            .any(|b| {
+            .find(|b| {
                 !b.is_mut
                     && b.borrower_name.is_some()
                     && crate::hir::places::paths_may_alias(&path, &b.path)
-            });
-        if shared {
+            })
+            .map(crate::hir::check::tasks::held_by_task_note);
+        if let Some(note) = shared {
             let mut place = crate::hir::places::display_place(&root, &path);
             if through_deref {
                 place = format!("*{place}");
@@ -1140,7 +1165,7 @@ impl<'a> TypeChecker<'a> {
                 crate::diagnostic::DiagnosticCode::E4009,
                 format!(
                     "`{place}` is assigned while it is borrowed, and the borrow is used after the \
-                     assignment"
+                     assignment.{note}"
                 ),
                 Some(crate::diagnostic::SourceSpan::from_ast_span(&lhs.span())),
             );

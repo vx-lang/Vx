@@ -483,6 +483,17 @@ impl<'a> MacroExpander<'a> {
                 }
                 u.stmts = new_body;
             }
+            expr::Expr::TaskBlock(u) => {
+                if let Some(ret) = &mut u.ret {
+                    **ret = self.expand_expr(take_expr(ret))?;
+                }
+                let body = std::mem::take(&mut u.stmts);
+                let mut new_body = Vec::with_capacity(body.len());
+                for s in body {
+                    new_body.extend(self.expand_stmt(s)?);
+                }
+                u.stmts = new_body;
+            }
             expr::Expr::ComptimeBlock(u) => {
                 if let Some(ret) = &mut u.ret {
                     **ret = self.expand_expr(take_expr(ret))?;
