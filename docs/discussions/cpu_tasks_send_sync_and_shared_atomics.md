@@ -25,7 +25,8 @@ in a function or closure that the block calls. Outside a `tasks` block it is a c
 
 **T2. The result.** `spawn { e }` has the type `Task<T>`, where `T` is the type of `e`.
 `h.join()` takes `h` by value, waits for the task, and returns its `T`. The end of the `tasks` block
-joins each task that the program did not join, and drops its result.
+joins each task that the program did not join, and drops its result. A task that can fail does
+not lose its error this way (F2 in `waiting_tasks_channels_and_task_errors.md`).
 
 **T3. The join comes from the program structure.** When a `tasks` block ends, every task that it
 started is finished. A `Task<T>` cannot leave its `tasks` block: the program may not return it,
@@ -47,12 +48,12 @@ fork to the join (C3). So:
 - a task may move a value of the function into itself. The function cannot use it again.
 
 **T6. A panic in a task stops the program**, as `panic` does today. Vx does not unwind, so
-`join()` never returns a failure.
+`join()` never reports a panic. A task that can fail returns a `Result` (F1).
 
 **T7. What runs a task.** The language promises that a task finishes, not that it runs at the same
 time as another task. One valid run is: each task runs to its end at its `spawn` (C1, serial
-elision). So a task must not wait for another task except through `join()`. A spin loop on an
-atomic that another task sets may never end. This is a hang, not undefined behavior. The runtime
+elision). So a task must not wait for another task except through `join()` or a channel. A
+task that waits on a channel parks, and the parent continues (W6). A spin loop on an atomic that another task sets may never end. This is a hang, not undefined behavior. The runtime
 of #1863 can start with one OS thread for each task, and change to a pool later, with no change
 to the language.
 
@@ -183,4 +184,3 @@ compiler adds those joins.
 1. OS threads (#1863), and the Lean fork and join (#1867).
 
 Tasks that wait, channels and errors from tasks are in `waiting_tasks_channels_and_task_errors.md`.
-Its W6 changes the run on one thread of T7.
