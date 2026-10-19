@@ -30,21 +30,23 @@ fn stats() -> f32 {
     parts[r][0] = 1.0;
     parts[r][1] = 2.0;
   }
+  let mut d = transfer(parts, Memory::GPU_HBM);
   spawn on(Topology::GPU) {
     for k in 0..4096 {
       if k % 4 == 0 {
         let mut s : f32 = 0.0;
         for p in 0..4 {
-          s = s + parts[k + p][0] * parts[k + p][1];
+          s = s + d[k + p][0] * d[k + p][1];
         }
-        parts[k][2] = s;
-        parts[k][3] = 1.0 / s;
+        d[k][2] = s;
+        d[k][3] = 1.0 / s;
       }
     }
   }
+  let back = transfer(d, Memory::CPU_DRAM);
   let mut sum = 0.0;
   for k in 0..4096 {
-    sum = sum + parts[k][2];
+    sum = sum + back[k][2];
   }
   return sum;
 }
@@ -54,19 +56,21 @@ fn shift() -> f32 {
   for r in 0..2049 {
     o[r][2] = 1.0;
   }
+  let mut d = transfer(o, Memory::GPU_HBM);
   spawn on(Topology::GPU) {
     for k in 0..2048 {
       let mut s : f32 = 0.0;
       for p in 0..2 {
         // CHECK: Warning[W1033] at [[@LINE+1]]:
-        s = s + o[k + p][2];
+        s = s + d[k + p][2];
       }
-      o[k][2] = s / 2.0;
+      d[k][2] = s / 2.0;
     }
   }
+  let back = transfer(d, Memory::CPU_DRAM);
   let mut sum = 0.0;
   for k in 0..2048 {
-    sum = sum + o[k][2];
+    sum = sum + back[k][2];
   }
   return sum;
 }
