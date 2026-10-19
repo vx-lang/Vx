@@ -1826,7 +1826,7 @@ impl<'c> MeliorGenerator<'c> {
     /// caller falls back to a conservative default. This replaces `SizeOfExpr::lower`'s old hardcoded
     /// `8` for aggregates, which under-sized a `Vec<struct>`'s element buffer (a `Vec<Vec<T>>` UB). (#242)
     pub(crate) fn type_size_align(&self, ty: &syntax::Type, depth: u32) -> Option<(usize, usize)> {
-        use crate::layout::{align_up, scalar_size_align};
+        use crate::layout::scalar_size_align;
         if depth > 32 {
             return None; // guard against a pathological/cyclic nesting
         }
@@ -1838,21 +1838,57 @@ impl<'c> MeliorGenerator<'c> {
             syntax::Type::Pinned(inner, _) | syntax::Type::Verified(inner) => {
                 self.type_size_align(inner, depth)
             }
-            syntax::Type::GenericInstance(base, _) => self.type_size_align(base, depth),
-            syntax::Type::Struct(name, _) => {
-                let base = name.as_ref().split('<').next().unwrap_or(name.as_ref());
-                let decl = self.structs.get(base)?;
-                let mut offset = 0usize;
-                let mut align = 1usize;
-                for (_, fty) in &decl.fields {
-                    let (fsize, falign) = self.type_size_align(fty, depth + 1)?;
-                    offset = align_up(offset, falign) + fsize;
-                    align = align.max(falign);
+            // `Holder<i64>`: the fields with `T` replaced by `i64`.
+            syntax::Type::GenericInstance(base, args) => {
+                let syntax::Type::Struct(name, _) = &**base else {
+                    return self.type_size_align(base, depth);
+                };
+                let decl = self.structs.get(name)?;
+                let mapping = decl
+                    .generics
+                    .iter()
+                    .zip(args)
+                    .map(|(param, arg)| (param.name().into(), arg.clone()))
+                    .collect();
+                let fields: Vec<_> = decl
+                    .fields
+                    .iter()
+                    .map(|(_, t)| t.substitute(&mapping))
+                    .collect();
+                self.fields_size_align(&fields, depth)
+            }
+            // A generic instance stored by its name, such as `Holder<i64>`.
+            syntax::Type::Struct(name, _) if name.contains('<') => {
+                let mut lexer = crate::lexer::Lexer::new(name);
+                let tokens = lexer.tokenize();
+                let parsed = crate::parser::Parser::new(&tokens, name)
+                    .parse_type()
+                    .ok()?;
+                match parsed {
+                    syntax::Type::GenericInstance(..) => self.type_size_align(&parsed, depth),
+                    _ => None,
                 }
-                Some((align_up(offset, align), align))
+            }
+            syntax::Type::Struct(name, _) => {
+                let decl = self.structs.get(name)?;
+                let fields: Vec<_> = decl.fields.iter().map(|(_, t)| t.clone()).collect();
+                self.fields_size_align(&fields, depth)
             }
             _ => None,
         }
+    }
+
+    /// Byte size and alignment of a struct with these field types, in order.
+    fn fields_size_align(&self, fields: &[syntax::Type], depth: u32) -> Option<(usize, usize)> {
+        use crate::layout::align_up;
+        let mut offset = 0usize;
+        let mut align = 1usize;
+        for fty in fields {
+            let (fsize, falign) = self.type_size_align(fty, depth + 1)?;
+            offset = align_up(offset, falign) + fsize;
+            align = align.max(falign);
+        }
+        Some((align_up(offset, align), align))
     }
 
     ///
