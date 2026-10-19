@@ -26,7 +26,7 @@ in a function or closure that the block calls. Outside a `tasks` block it is a c
 **T2. The result.** `spawn { e }` has the type `Task<T>`, where `T` is the type of `e`.
 `h.join()` takes `h` by value, waits for the task, and returns its `T`. The end of the `tasks` block
 joins each task that the program did not join, and drops its result. A task that can fail does
-not lose its error this way (F2 in `waiting_tasks_channels_and_task_errors.md`).
+not lose its error this way (F3 in `waiting_tasks_channels_and_task_errors.md`).
 
 **T3. The join comes from the program structure.** When a `tasks` block ends, every task that it
 started is finished. A `Task<T>` cannot leave its `tasks` block: the program may not return it,
