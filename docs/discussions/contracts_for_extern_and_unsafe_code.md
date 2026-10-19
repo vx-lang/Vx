@@ -41,56 +41,69 @@ does, and `safe` says that the call cannot break memory safety when the clauses 
 <!-- vx-doctest: skip (proposed syntax) -->
 
 ```vx
-strict extern "C" thread_safe {
+strict extern "C" ensures thread_safe {
   /// Reads up to `n` bytes into `buf`. Returns the count, or -1.
   fn vx_tcp_read(s : *mut i8, buf : *mut u8, n : u64) -> i64
       requires n > 0
       ensures return >= -1
-      reads(s)
-      writes(buf, n)
-      blocks
-      allocates(Memory::Host, 0);
+      ensures reads_only(s)
+      ensures writes_only(buf, n)
+      ensures !keeps(buf)
+      ensures blocks
+      ensures allocates(Memory::Host) == 0;
 }
 ```
 
-The clauses come after the return type, as `requires` and `ensures` do. Vx has no attribute
-syntax, so this keeps one style.
+**X3. The clauses are `requires` and `ensures`.** They are the contracts that Vx functions already
+have, so Vx gets no new keyword and no attribute syntax. A clause about the effect of a call is a
+predicate that only a contract can use:
 
-| Clause | What the compiler does with it | How it is enforced |
+| Predicate | What the compiler does with it | Check in the wrapper (B3) |
 | --- | --- | --- |
-| `requires e` | Proves `e` at each call site with z3, as for a Vx function (E8006). | Statically, at the caller. |
-| `ensures e` | Uses `e` as a fact after the call. | Trusted. A guarded build checks it (G1). |
-| `reads(p)`, `reads(p, n)` | The call does not change what `p` points to. | Trusted. A guarded build checks it with a copy. |
-| `writes(p, n)` | The call changes only the first `n` elements at `p`. The rest of the reachable memory stays the same. | Trusted. A guarded build puts guard bytes after `n`. |
-| `keeps(p)` | The function keeps `p` after it returns. Without `keeps`, the program can pass a reference to a local, which E4005 refuses today. | Trusted. Listed in the audit (A1). |
-| `frees(p)` | The call ends the life of the handle `p`. The program cannot use `p` after the call. | Statically, on the Vx side. |
-| `returns owned(f)` | The returned handle must go to `f`, which `frees` it. The handle type gets a `drop` that calls `f`. So the program cannot leak it or free it twice. | Statically, on the Vx side. |
-| `blocks`, `nonblocking` | A `nonblocking` call needs no help from the monitor (W8). The default is `blocks`. | Trusted. A guarded build reports a `nonblocking` call that takes too long. |
-| `calls back` | The task stays on its thread for the call (W9). A function-pointer argument without this clause is a compile error. | Statically. |
-| `allocates(Memory::X, n)` | Admission counts `n` in `Memory::X`. Without it, the verdict is "unknown". | Trusted. Listed in the audit. |
-| `-> !` | The call does not return. It exists today. | Statically, at the caller. |
+| `requires e` on a value | Proves `e` at each call site with z3, as for a Vx function (E8006). | Checks `e` before the call. |
+| `ensures e` on a value | Uses `e` as a fact after the call. | Checks `e` after the call. |
+| `ensures reads_only(p)` | The call does not change what `p` points to. | Compares a copy. |
+| `ensures writes_only(p, n)` | The call changes only the first `n` elements at `p`. The rest of the reachable memory stays the same. | Guard bytes after `n`. |
+| `ensures !keeps(p)` | The function does not keep `p` after it returns. Then the program can pass a reference to a local, which E4005 refuses today. | None. Trusted, and listed in the audit (A1). |
+| `ensures freed(p)` | The call ends the life of the handle `p`. The program cannot use `p` after the call. | None. The Vx side checks it statically. |
+| `ensures owned_by(return, f)` | The returned handle must go to `f`, which frees it. The handle type gets a `drop` that calls `f`. So the program cannot leak it or free it twice. | None. The Vx side checks it statically. |
+| `ensures !blocks` | The call does not block its thread, so it needs no help from the monitor (W8). `ensures blocks` states the default. | A time limit that the monitor watches. |
+| `ensures !calls_back` | The task does not need to stay on its thread for the call (W9). Without it, a call with a function-pointer argument pins the task. | The task is on the same thread after the call. |
+| `ensures allocates(Memory::X) <= n` | Admission counts `n` in `Memory::X`. Without it, the verdict is "unknown". | None. Trusted, and listed in the audit. |
+| `-> !` | The call does not return. It exists today. | Stops the program if the call returns. |
 
-**X3. `thread_safe`** is a clause of the whole `extern` block, because a library is safe from many
-threads or it is not. Without it, the runtime sends one call at a time to that library. The
-`static` map in `cublas_handle()` (`runtime/cuda_dispatch.cpp`) is the bug that this default
+**X4. `ensures thread_safe`** is a contract of the whole `extern` block, because a library is safe
+from many threads or it is not. Without it, the runtime sends one call at a time to that library.
+The `static` map in `cublas_handle()` (`runtime/cuda_dispatch.cpp`) is the bug that this default
 prevents.
 
-**X4. An unwind never enters Vx.** A foreign unwind that reaches a Vx frame stops the program at
-the boundary. This is not a clause, because no clause can make it safe. Vx code never unwinds
-(T6), so its state is never half-changed.
+**X5. An unwind never enters Vx.** A foreign unwind that reaches a Vx frame stops the program at
+the boundary. No contract can make it safe, so none exists. Vx code never unwinds (T6), so its
+state is never half-changed.
 
-**X5. Targets.** An `extern` block can name the targets that have the library, for example
+**X6. Targets.** An `extern` block can name the targets that have the library, for example
 `extern "C" for(CPU)`. A device body that calls a function of another target gets the error of F8.
 
 ## 3. Strict blocks
 
-**B1.** In a `strict extern { .. }` block, each function must state each clause, also when the
-answer is the default: `blocks` or `nonblocking`, `keeps` or no `keeps`, and so on. A missing
-clause is a compile error that names it. A team that must control each foreign call uses strict
-blocks, and a reviewer sees the whole contract in the declaration.
+**B1. Each contract is written.** In a `strict extern { .. }` block, each function must state each
+predicate of X3, also when the answer is the default, for example `ensures keeps(p)`. A missing
+one is a compile error that names it. A reviewer then sees the whole contract in the declaration.
 
-**B2.** `strict` also forbids `safe fn` without `requires` on each pointer argument, for example
+**B2.** A `safe fn` in a strict block needs a `requires` for each pointer argument, for example
 `requires n > 0` for a buffer of `n` elements.
+
+**B3. The compiler wraps each call.** For each function of a strict block, the compiler generates a
+wrapper, and each call goes to the wrapper:
+
+1. Check each `requires` at run time. z3 already proved it at the call site, but a call through a
+   function pointer or from foreign code may still break it.
+1. Call the `extern` function.
+1. Check each `ensures` that the third column of X3 can check.
+
+A failed check stops the program. The report names the function, the contract, and the line of
+the call. A contract that no run can check, such as `!keeps(p)`, stays trusted, and the audit
+lists it (A1).
 
 ## 4. A policy for `unsafe` and `extern`
 
@@ -124,16 +137,9 @@ see each new trusted item.
 
 ## 6. A guarded build
 
-**G1.** `vxc --guarded` puts a shim around each `extern` call. The shim checks the clauses that a
-run can check:
-
-- `ensures`, after the call
-- `writes(p, n)`, with guard bytes after `n`, and `reads(p)`, with a copy
-- `nonblocking`, with a time limit that the monitor watches
-- that a task without `calls back` is on the same thread after the call
-
-A failed check stops the program, and the report names the function and the clause. A guarded
-build is for tests and for deployments that take the cost.
+**G1.** `vxc --guarded` gives each `extern` block the wrapper of B3, also a block that is not
+strict. It checks the contracts that the block states. It is for tests, and for deployments that
+take the cost.
 
 ## 7. Later: isolation
 
@@ -152,10 +158,17 @@ the process boundary.
 
 ## Decisions
 
-1. **The syntax of clauses.** Keywords after the signature, as `requires` (section 2), or a new
-   attribute syntax. Recommended: keywords, so Vx keeps one style.
-1. **The default for `thread_safe`.** One call at a time (X3), or many calls at once. Recommended:
-   one at a time. It is slow only for a library that did not say `thread_safe`.
+Decided on 2026-10-19:
+
+1. **The syntax.** Clauses are `requires` and `ensures`, with the predicates of X3. Vx gets no new
+   keyword and no attribute syntax.
+1. **Strict blocks check at run time.** The compiler wraps each call of a strict block, and the
+   wrapper checks `requires` before the call and `ensures` after it (B3).
+
+Open:
+
+1. **The default for `thread_safe`.** One call at a time (X4), or many calls at once. Recommended:
+   one at a time. It is slow only for a library that does not state `ensures thread_safe`.
 1. **Where the policy lives.** A flag and an allow-list file now (P1, P2), or a package manifest
    later. Recommended: the flag and the file now. Vx has no manifest yet.
 1. **`safe fn` in strict blocks (B2).** Require a `requires` for each pointer argument, or not.
@@ -163,11 +176,12 @@ the process boundary.
 
 ## The work, in order
 
-1. The clauses in the parser and in `ExternDecl`, with `requires` and `ensures` (X1, X2).
+1. `requires` and `ensures` on `extern` functions, in the parser and in `ExternDecl` (X1 to X3).
+   z3 proves each `requires` at the call site, as for a Vx function.
 1. `vxc --audit` (A1, A2). It is useful before the other parts exist.
-1. `keeps`, `frees`, `returns owned` and `calls back`, in the borrow checker and E4005.
+1. `keeps`, `freed`, `owned_by` and `calls_back`, in the borrow checker and E4005.
 1. `thread_safe` and the one-call-at-a-time default, with the first runtime of the tasks design.
-1. Strict blocks and the policy (B1, B2, P1 to P3).
-1. `nonblocking` and `allocates`, with the monitor and admission.
-1. The guarded build (G1).
+1. Strict blocks and their wrappers (B1 to B3), and the policy (P1 to P3).
+1. `blocks` and `allocates`, with the monitor and admission.
+1. The guarded build (G1). It reuses the wrapper of B3.
 1. Isolation (I1).
