@@ -37,3 +37,6 @@ unsafe impl Handle {
 fn main() -> i32 {
   return 0;
 }
+
+// The errors above are all the errors.
+// CHECK: {{^}}Semantic check failed on {{.*}}: 4 error(s) emitted

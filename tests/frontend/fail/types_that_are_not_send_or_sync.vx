@@ -78,3 +78,6 @@ fn main() -> i32 {
   print(total);
   return 0;
 }
+
+// The errors above are all the errors.
+// CHECK: {{^}}Semantic check failed on {{.*}}: 7 error(s) emitted
