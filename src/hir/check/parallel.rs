@@ -658,6 +658,27 @@ fn contains_barrier(stmts: &[Statement]) -> bool {
     })
 }
 
+/// The indices of an access after its first index, which picks the row: `t[i][2]` gives
+/// `[Some(2)]`. An index that is not a number is `None`.
+fn columns(indices: &[&Expr]) -> Vec<Option<i64>> {
+    // `indices` is outermost-last, so the row is the last one.
+    let n = indices.len().saturating_sub(1);
+    indices[..n]
+        .iter()
+        .map(|e| parallel_int_literal(e))
+        .collect()
+}
+
+/// Whether two accesses to the same tensor, given by `columns`, always reach different
+/// elements: they have the same number of indices, and in one position both are different
+/// numbers.
+fn columns_apart(a: &[Option<i64>], b: &[Option<i64>]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .any(|(x, y)| matches!((x, y), (Some(x), Some(y)) if x != y))
+}
+
 /// A non-negative integer literal, for `parallel_outer_for`'s bounds.
 fn parallel_int_literal(e: &Expr) -> Option<i64> {
     let Expr::Number(n) = e else {
@@ -751,9 +772,11 @@ struct ParallelScan {
     smem_nonown_read: HashSet<String>,
     /// Tensors from outside the region that it writes, and those it reads at a row the reading
     /// iteration may not own. A tensor in both is a race: one iteration reads a row another may
-    /// be writing.
+    /// be writing. The exception is in `columns_apart`.
     captured_written: HashSet<String>,
-    captured_nonown_read: HashSet<String>,
+    /// For each such read, and for each write, the indices after the first (see `columns`).
+    captured_nonown_read: HashMap<String, Vec<Vec<Option<i64>>>>,
+    captured_write_columns: HashMap<String, Vec<Vec<Option<i64>>>>,
     /// For each tensor from outside the region, the first index of every access that reads or
     /// writes a row its pass owns, written out without spans. A written tensor reached through
     /// two different first indices, such as `o[i]` and `o[lo + i]`, is a race: one pass's
@@ -798,7 +821,8 @@ impl ParallelScan {
             smem_written: HashSet::new(),
             smem_nonown_read: HashSet::new(),
             captured_written: HashSet::new(),
-            captured_nonown_read: HashSet::new(),
+            captured_nonown_read: HashMap::new(),
+            captured_write_columns: HashMap::new(),
             row_keys: HashMap::new(),
             coop: false,
             barrier_ok: false,
@@ -1122,6 +1146,10 @@ impl ParallelScan {
                     );
                 }
                 self.record_row(&id.name, first, lhs.span());
+                self.captured_write_columns
+                    .entry(id.name.to_string())
+                    .or_default()
+                    .push(columns(&indices));
                 true
             }
             // A write through a pointer, a field or anything else may reach any memory.
@@ -1190,13 +1218,25 @@ impl ParallelScan {
         names
             .into_iter()
             .find(|name| {
-                self.captured_nonown_read.contains(*name)
+                self.reads_a_written_element(name)
                     || self.row_keys.get(*name).is_some_and(|keys| keys.len() > 1)
             })
             .map(|name| {
                 let at = self.other_row_at.get(name).copied().unwrap_or_default();
                 (name.clone(), at)
             })
+    }
+
+    /// Whether a read of a row that a pass may not own can reach an element that a pass of the
+    /// loop writes. A read of `t[i][0]` cannot reach a write to `t[k][2]`.
+    fn reads_a_written_element(&self, name: &str) -> bool {
+        let Some(reads) = self.captured_nonown_read.get(name) else {
+            return false;
+        };
+        let writes = self.captured_write_columns.get(name);
+        reads
+            .iter()
+            .any(|r| writes.is_none_or(|ws| ws.iter().any(|w| !columns_apart(w, r))))
     }
 
     /// The third captured-write ownership form (Vx#379 R3): the BLOCK owns the row and the
@@ -1281,7 +1321,10 @@ impl ParallelScan {
             Expr::Identifier(id) => {
                 self.note(&id.name);
                 if !self.declared.contains(&*id.name) {
-                    self.captured_nonown_read.insert(id.name.to_string());
+                    self.captured_nonown_read
+                        .entry(id.name.to_string())
+                        .or_default()
+                        .push(Vec::new());
                     self.other_row_at
                         .entry(id.name.to_string())
                         .or_insert(id.span);
@@ -1339,7 +1382,10 @@ impl ParallelScan {
                             self.record_row(&id.name, first, e.span());
                         }
                     } else {
-                        self.captured_nonown_read.insert(id.name.to_string());
+                        self.captured_nonown_read
+                            .entry(id.name.to_string())
+                            .or_default()
+                            .push(columns(&indices));
                         self.other_row_at
                             .entry(id.name.to_string())
                             .or_insert(e.span());

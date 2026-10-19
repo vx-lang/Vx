@@ -1,0 +1,81 @@
+//===- spawn_loop_reading_and_writing_different_columns_runs_in_parallel.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// In `stats`, pass k reads columns 0 and 1 of rows k..k+3 and writes columns 2 and 3 of row k.
+// No element is both read and written, so the loop runs in parallel. In `shift`, pass k reads
+// column 2 of rows k and k + 1, and pass k + 1 writes column 2 of row k + 1, so that loop
+// stays serial.
+//
+// The only W1033 warning is for `shift`. Only `stats` gets a launch size:
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --implicit-check-not=W1033
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=LAUNCH --implicit-check-not=launch=2048
+// LAUNCH: launch=4096
+//
+// Each group of 4 rows in `stats` sums 4 * (1 * 2) = 8, and 1024 groups give 8192. Every row
+// that `shift` reads holds 1, and so does every row it writes, so its sum is 2048 in any order. Only the Linux host dispatcher
+// splits a loop.
+//
+// RUN: env VX_HOST_THREADS=8 vxc %s 2>/dev/null | FileCheck %s --check-prefix=ANSWER
+// ANSWER: sum=8192 shift=2048{{$}}
+
+fn stats() -> f32 {
+  let mut parts = Tensor<f32, [4096, 4]>::new();
+  for r in 0..4096 {
+    parts[r][0] = 1.0;
+    parts[r][1] = 2.0;
+  }
+  spawn on(Topology::GPU) {
+    for k in 0..4096 {
+      if k % 4 == 0 {
+        let mut s : f32 = 0.0;
+        for p in 0..4 {
+          s = s + parts[k + p][0] * parts[k + p][1];
+        }
+        parts[k][2] = s;
+        parts[k][3] = 1.0 / s;
+      }
+    }
+  }
+  let mut sum = 0.0;
+  for k in 0..4096 {
+    sum = sum + parts[k][2];
+  }
+  return sum;
+}
+
+fn shift() -> f32 {
+  let mut o = Tensor<f32, [2049, 3]>::new();
+  for r in 0..2049 {
+    o[r][2] = 1.0;
+  }
+  spawn on(Topology::GPU) {
+    for k in 0..2048 {
+      let mut s : f32 = 0.0;
+      for p in 0..2 {
+        // CHECK: Warning[W1033] at [[@LINE+1]]:
+        s = s + o[k + p][2];
+      }
+      o[k][2] = s / 2.0;
+    }
+  }
+  let mut sum = 0.0;
+  for k in 0..2048 {
+    sum = sum + o[k][2];
+  }
+  return sum;
+}
+
+fn main() -> i32 {
+  print!("sum=");
+  print(stats());
+  print!(" shift=");
+  print(shift());
+  println!("");
+  return 0;
+}
