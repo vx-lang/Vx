@@ -1,0 +1,39 @@
+//===- unsafe_impl_only_for_send_and_sync.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// An impl of `Send` or `Sync` must be `unsafe impl` (E3053). Any other impl must not be (E3054).
+//
+// CHECK-DAG: Error[E3053]: `impl Send for Handle` must be `unsafe impl`: the compiler derives `Send` from the fields, and cannot check this claim
+// CHECK-DAG: Error[E3053]: `impl Sync for Handle` must be `unsafe impl`
+// CHECK-DAG: Error[E3054]: `unsafe impl Describe for Handle`: only `Send` and `Sync` take `unsafe impl`. Remove `unsafe`
+// CHECK-DAG: Error[E3054]: `unsafe impl Handle`: an impl with no trait cannot be `unsafe`
+
+import core::marker;
+
+trait Describe {}
+
+struct Handle {
+  p : *mut i32,
+}
+
+impl Send for Handle {}
+
+impl Sync for Handle {}
+
+unsafe impl Describe for Handle {}
+
+unsafe impl Handle {
+  fn id(self : &Handle) -> i32 {
+    return 1;
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}

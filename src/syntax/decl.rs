@@ -197,6 +197,9 @@ pub struct ImplBlock {
     /// default's bounds only at the call: `Iterator::sum` needs `Sum` on the item type, and an
     /// iterator over structs must still compile when it never calls `sum`.
     pub copied_defaults: Vec<Symbol>,
+    /// `unsafe impl`: the programmer states a fact that the compiler cannot check. Only
+    /// `Send` and `Sync` take it.
+    pub is_unsafe: bool,
 }
 
 impl ImplBlock {
@@ -208,6 +211,7 @@ impl ImplBlock {
             target_type: self.target_type.clone(),
             assoc_bindings: self.assoc_bindings.clone(),
             copied_defaults: self.copied_defaults.clone(),
+            is_unsafe: self.is_unsafe,
             // Always preserve method bodies: methods only exist in impl blocks, so
             // method-call monomorphization clones the body from the type-check env
             // (env.impls). Dropping it (as the signature clone does for free

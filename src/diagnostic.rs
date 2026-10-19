@@ -380,6 +380,14 @@ pub enum DiagnosticCode {
     /// type, so the program must write it: `let c : f32 = a * b;`. Also `+=` and the other
     /// compound operators on these values, and any operator on tensors of them.
     E3052,
+    /// An impl of `Send` or `Sync` with no `unsafe`, as in `impl Send for Handle {}`. The compiler
+    /// derives both from the fields, and a raw pointer is neither. An impl claims one for a type
+    /// that holds a raw pointer, and the compiler cannot check the claim. Write
+    /// `unsafe impl Send for Handle {}`.
+    E3053,
+    /// `unsafe impl` of a trait other than `Send` or `Sync`, or of no trait at all. Only those two
+    /// traits make a claim that the compiler cannot check. Remove `unsafe`.
+    E3054,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

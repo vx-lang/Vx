@@ -182,6 +182,9 @@ macro_rules stamp_atomic_int {
       v : SharedCell<$t>,
     }
 
+    // Each access to the value is atomic, so two tasks may share one through `&`.
+    unsafe impl Sync for $name {}
+
     impl $name {
       /// A new atomic holding `v`.
       fn new(v : $t) -> $name {
