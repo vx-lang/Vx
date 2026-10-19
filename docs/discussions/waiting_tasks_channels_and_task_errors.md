@@ -153,8 +153,9 @@ right result: no code reads the values.
 two branches both change `total`. Go has syntax for this, and Rust has a macro. Vx uses the form of
 crossbeam's `Select`: the program adds each operation, `wait()` returns the index of the one that
 can continue, and the program then does that operation. No closures, no new syntax. When more than
-one operation can continue, `select` starts its search at a new index each time, so no channel
-waits forever.
+one operation can continue, `select` starts its search at the index after the one that it chose
+last time (round robin). So a branch that can continue at each of `k` calls in a row, for `k`
+branches, is chosen in one of them. A random start would give only a probability.
 
 **M4. The memory model.** The Go memory model has the rules, and they fit C2:
 
@@ -365,7 +366,7 @@ We chose these on 2026-10-19, from the recommendations of a review.
 1. **How a task takes a local.** The use decides, and K2 moves a local that ends first, or a new
    `spawn move`. Chosen: K1 to K3, with no new syntax.
 
-The review also settled two earlier questions: `select` starts at a new index each time (M3), and
+The review also settled two earlier questions: `select` starts its search round robin (M3), and
 the memory-space type decides what can go between targets (M6).
 
 ## The work, in order
