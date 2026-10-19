@@ -49,11 +49,12 @@ Between two wait points, a task runs without a break. So the borrow checker need
 borrow across a wait is a borrow across a call. A wait inside device code, such as #244's `wait`
 in a kernel, is not a wait point: device code never parks.
 
-**W5. Marks in signatures.** A function that waits and can be cancelled returns a `Result` (F3). So
-its own signature shows that it waits. This mark does not spread: a function that calls `recv`
-and handles the `Result` has a plain signature. That is the difference from a color. A GPU target
-has no host wait functions in its library, so a GPU body that calls one gets "function not
-found".
+**W5. Which functions show that they wait.** A function that waits returns a `Result` whose error
+can be `Cancelled` (F4). So its own signature shows that it waits, but its callers' signatures do
+not: a caller can handle the `Err` and return a plain value. With `async`, every caller must be
+`async` too. So Vx has no function colors, for the same reason that Rust's `Result` is not a color.
+A GPU target has no host wait functions in its library, so a GPU body that calls one gets
+"function not found".
 
 **W6. This changes T7's serial elision.** T7 lets each task run to its end at its `spawn`. With
 channels, that run can wait forever: a task waits for a value that a later task sends. So the run
@@ -173,6 +174,9 @@ program (T6), so Vx needs no unwinding.
 of the error must be the `E` of the function or block. It does not convert the error, because Vx
 has no implicit conversions. `.map_err(..)` converts it.
 
+So passing `Cancelled` up costs more in Vx than in Rust: Rust's `?` converts it with `From`. A
+function with its own error enum needs a `Cancelled` case in it, or a `.map_err(..)` at each wait.
+
 **F3. One failure cancels the scope.** When a task returns `Err`:
 
 - The runtime marks each other task of the same `tasks` block as cancelled, and also the code of
@@ -196,6 +200,13 @@ They return their error with a `Cancelled` case. `join()`, `lock` and the waits 
 cannot be cancelled. A cancelled parent must join its children anyway (T3), so a cancelled `join`
 gives nothing. A wait for a device holds a token that must be used once (#244), and an error would
 lose it. A loop with no wait point does not see the cancel. `tasks::cancelled()` lets it check.
+
+**What a cancel promises.** In a cancelled task, the next wait that can be cancelled returns `Err`.
+The task stops only if each function between that wait and the task body passes the error up.
+The compiler cannot force that. The mark stays (F3), so a function that drops the error gets
+`Cancelled` again at its next wait. The bad case is a loop that retries on any `Err`: each wait
+fails at once, and the loop never ends. So the program must use the `Result` of each wait that
+can be cancelled, and the compiler warns when a `match` arm drops a `Cancelled`.
 
 **F5. Hardware that still owns a buffer.** A cancelled I/O or DMA wait does not return until the
 device finished the operation or the runtime revoked it. Otherwise the drops of the task free a buffer, and the kernel or the
@@ -265,6 +276,8 @@ tasks makes that real. So:
    `cancel()`. Automatic is the recommendation: it is the safe default.
 1. **`?`.** Add a `?` that does not convert (F2), or let the program write each `match`. The `?` is
    the recommendation: F7 and most error code need it.
+1. **A dropped `Cancelled`.** A warning when a `match` arm drops it (F4), or an error. The warning
+   is the recommendation: some code, such as a cleanup loop, drops it on purpose.
 1. **Code that must finish.** Only `drop` runs with cancellation off (F6), or also a block that the
    program marks. The recommendation is `drop` only at first, and a block when a program needs
    one.
