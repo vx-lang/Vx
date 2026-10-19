@@ -1,10 +1,11 @@
 # A plan for formal proofs of tasks, channels and errors
 
-Status: proposed. Tracking: #1870, #1850. Designs: `cpu_tasks_send_sync_and_shared_atomics.md`
-(T1 to T8, S1 to S6, U1 to U4) and `waiting_tasks_channels_and_task_errors.md` (W1 to W9, M1 to
-M7, F1 to F9). Model: `formal/memory_model/lean/`.
+Status: agreed on 2026-10-19. Tracking: #1870, #1850. Designs:
+`cpu_tasks_send_sync_and_shared_atomics.md` (T1 to T8, S1 to S6, U1 to U4) and
+`waiting_tasks_channels_and_task_errors.md` (W1 to W9, M1 to M7, F1 to F9). Model:
+`formal/memory_model/lean/`.
 
-This note plans the proofs. It contains no proofs.
+This note plans the proofs and records the decisions. It contains no proofs.
 
 ## What the model proves today
 
@@ -16,110 +17,131 @@ This note plans the proofs. It contains no proofs.
 The gaps:
 
 - No proof gives race freedom. `drf_sc` takes it as the hypothesis `hP`.
-- "Interleaving" means that `ord` has no cycle. No machine with a global state exists, so
-  properties of library code, such as FIFO order or mutual exclusion, are hard to state.
 - Each place is a constant. So the model has no arrays, no ring buffers and no `spawn` in a loop.
 - A task cannot start a task.
 - An execution is a finite prefix, so no progress property (T7, W7) can be stated.
 
-## The main idea: two layers
+## How the proofs work
 
-1. **The weak memory layer** exists. It has RC11, DRF-SC, and the edges from release and acquire.
-1. **The interleaving layer** is new. It is a machine with one memory and the code of each
-   thread. The proofs of the library (channels, `Mutex`, cancellation) use this layer.
+Each new construct is a lowering to `sc` atomics on places that the program code cannot use, as
+`Tasks.lean` does for `spawn` and `join`. Then:
 
-DRF-SC moves a property of the second layer to each consistent execution. This holds only for
-library code that uses `sc` atomics and has no race. Library code with release and acquire
-needs a proof on the weak layer for each weaker access, as `hb_of_signal` does. Each such
-access also gets a herd7 litmus test.
+- DRF-SC follows from `Prog.drf_sc`, with no new proof.
+- Each edge of M4 is a theorem about the lowering, on the weak memory layer (happens-before and
+  coherence).
+- The model gets no new kind of event, so `Rc11.lean`, `DrfSc.lean` and `Program.lean` stay the
+  same.
 
-## Phase 0: what all the other phases need
+## The steps
 
-- **Adequacy.** A finite execution of a `Prog` with no `ord` cycle is a run of the interleaving
-  machine. A run of the machine also gives such an execution.
-- **Computed addresses.** A load and a store whose address is an `Expr`. The three properties of
-  `Program` must still hold, also receptiveness. Ring buffers, arrays and a `spawn` in a loop need
-  them.
+Each step is one PR from `main`. A step that needs the step before it goes in a stack.
 
-## Phase 1: race freedom from the borrow rules (C3, T5, U4, S5 without types)
+### Step 0: computed addresses
+
+`Thread.lean` gets `Stmt.loadAt` and `Stmt.storeAt`, whose address is an `Expr`. A `spawn` in a
+loop and a ring of `n` slots need them. `Trace.receptive`, `Run.prefix_closed`, `Run.any_co` and
+`Run.receptive` must still hold.
+
+### Step 1: a tree of tasks (#1867)
+
+- A task can start tasks. Each task has a parent, and `TaskProg.Ok` allows `spawn` in a task.
+- A `spawn` in a loop takes its task id from a counter. Its flags are at `start id` and `done id`.
+- `Blocks.lean`: `Stmt.tasksBlock`, and the lowering `addJoins`. It joins each task that the block
+  did not join (T2). Today `Tasks.lean` takes the program after the compiler adds these joins.
+
+The theorems:
+
+- `fork_hb` and `join_hb` for a task at any depth of the tree.
+- `block_hb`: each access of each task that a block started happens before the code after the
+  block.
+- `addJoins_ok`: the lowering keeps `TaskProg.Ok`.
+- `drf_sc`.
+
+### Step 2: channels, by lowering (`Channel.lean`)
+
+`send` and `recv` lower to `sc` atomics. The theorems:
+
+- `send_hb_recv`: a `send` happens before the `recv` that gets its value.
+- `recv_hb_send_capacity`: for a channel with room for `n` values, the `k`-th `recv` happens
+  before the `(k + n)`-th `send` ends. The counter of the channel gives the order. A `send` ends at
+  its last event.
+- `drop_hb_closed`: each `Sender` drop happens before a `recv` that returns `Closed`. This is
+  stronger than "the last drop" in M4. The counter of senders is a `fetchAdd`, so the release
+  sequence gives it.
+- `ChanProg.drf_sc`.
+
+### Step 3: `Mutex`, by lowering (`Mutex.lean`)
+
+- `unlock_hb_lock`: an `unlock` happens before the next `lock`.
+- `MutexProg.drf_sc`.
+
+### Step 4: library code for the channel and the lock
+
+`ChannelImpl.lean` and `LockImpl.lean` hold a bounded channel and a lock in the core language, on
+`sc` atomics. This step shows that real code gives the edges that steps 2 and 3 define. #1864 asks
+for this check. The theorems:
+
+- `ring_send_hb_recv`, `ring_recv_hb_send` and `ring_drop_hb_closed`: the edges of step 2.
+- `ring_fifo`: each `recv` gets the value of one `send`, in order. No value is lost, and no value
+  arrives twice.
+- `lock_excl`: two tasks never hold the lock at the same time.
+- `lock_unlock_hb_lock`: the edge of step 3.
+- DRF-SC for a program that uses this library.
+
+Each edge also gets a herd7 litmus test, and `run_lean.py` checks that Lean and herd7 agree.
+
+DRF-SC for a client holds only with this `sc` library. A later step can make an access release or
+acquire. Each such access then needs its own edge proof and a litmus test.
+
+### Step 5: cancellation, safety only (`Cancel.lean`, F3)
+
+The model:
+
+- A failure slot. A failure writes it by a CAS from 0.
+- These write the slot by the same CAS: a task that returns `Err`, a `?` in the code of the block
+  (F2), and an `Err` that is the last value of the block.
+- The cancel flag is a release write, after the write of the slot in program order.
+- Each wait that can be cancelled reads the flag with acquire.
+
+The theorems:
+
+- `one_failure_wins`: exactly one CAS succeeds. This follows from the atomicity of a
+  read-modify-write in `Consistent`.
+- `block_value_is_failure`: after the joins, the block reads the value of that CAS. A task or the
+  code of the block produced it.
+- `block_value_not_cancelled`: a task that sees the flag also sees a slot that is not 0. So its CAS
+  fails, and `Cancelled` never reaches the slot.
+
+Sabotage, one at a time: set the flag before the slot, and make the write of the flag relaxed.
+Each one must break `block_value_not_cancelled`. Nested `tasks` blocks come later.
+
+### Step 6: race freedom from footprints (C3, T5, U4, S5 without types)
 
 Each task gets a static footprint: the places that it reads, the places that it writes, and the
 places that it uses only through atomics. The rule:
 
 - The writes of a task do not overlap the accesses of its sibling tasks.
 - They also do not overlap the accesses of the parent between the `spawn` and the `join`.
-- Two tasks share a place only through `sc` atomics.
+- Two tasks share a place only through a channel, the lock or `sc` atomics.
 
 **Theorem.** If the footprints follow the rule, each SC execution has no race. This gives `hP`,
-so DRF-SC becomes a property of the code. It is the core of S6, and it gives the most value for
-the work.
+so DRF-SC becomes a property of the code. This is the core of S6. It comes after steps 2 to 4,
+because tasks then share places only through the channel and the lock.
 
-## Phase 2: complete structured tasks
+## Later
 
-The README lists these limits:
-
-- Tasks in a tree: a task can start tasks.
-- A `spawn` in a loop starts a new task on each pass, with a new task id.
-- The joins at the end of a `tasks` block are a lowering in the model. Today the model takes the
-  program after the compiler adds them.
-- Captured values (E1) follow from `fork_hb`.
-
-**Theorem `tasks_block_hb`.** Each access of each task that a block started, at any depth,
-happens before each event after the block. F7 (an early exit cancels and then joins) comes when
-the model has `break`.
-
-## Phase 3: channels (M1, M2, M4)
-
-The channel is code of the core language, in steps:
-
-1. One slot, one sender.
-1. A ring of `n` slots.
-1. Many senders, with a counter for `clone` and `drop` (`fetchAdd`).
-1. `Closed`.
-
-The theorems:
-
-- **FIFO.** Each `recv` gets the value of one `send`, in order. No value is lost, and no value
-  arrives twice.
-- **The three edges of M4.**
-- **`Closed`** comes only after the program dropped each `Sender`, and only when the channel is
-  empty.
-
-Each edge gets a litmus test. `run_lean.py` checks that Lean and herd7 agree on it.
-
-## Phase 4: `Mutex` (M7)
-
-- Two tasks never hold the lock at the same time.
-- Each `unlock` happens before the next `lock`.
-
-## Phase 5: errors and cancellation (F1 to F4, T2)
-
-These proofs use the interleaving machine.
-
-- If a task returns `Err`, the block returns `Err`. No error is lost.
-- The `Cancelled` of a sibling is never the value of the block when a real error exists.
-- The cancel mark never goes away.
-
-## Phase 6: progress (W6, W7, M3, F9)
-
-The current model cannot say "finishes". This phase needs a new model: a scheduler over tasks
-that are ready, parked or done. The code between two wait points is one step that ends.
-
-- The scheduler on one thread (W6) stops only when each task is done or each task is parked.
-- **F9 is sound.** The runtime reports a deadlock only when no scheduler can move a task.
-- **W7.** With a FIFO queue of ready tasks, no ready task waits forever.
-- **M3.** A branch that is ready at `k` `select` calls in a row, for `k` branches, is chosen in
-  one of them.
-- Research, optional: Kahn determinism. If each channel has one sender, the result and a deadlock
-  do not depend on the schedule.
-
-## Phase 7: a typed layer
-
-The language gets references, `&` and `&mut`, structs, raw pointers, `SharedCell`, `Send` and
-`Sync` (S1 to S4), M5 (no reference in a channel) and T3 (a `Task<T>` stays in its block).
-
-**Theorem.** A well-typed program follows the footprint rule of Phase 1. This is a syntactic
-proof, not a semantic model as in RustBelt. It is the largest phase.
+- **Progress (W6, W7, M3, F9).** The current model cannot say "finishes". This needs a new model:
+  a scheduler over tasks that are ready, parked or done. It also needs an interleaving machine
+  with one memory, and a proof that its runs match the executions with no `ord` cycle.
+  - The scheduler on one thread (W6) stops only when each task is done or each task is parked.
+  - F9 is sound: the runtime reports a deadlock only when no scheduler can move a task.
+  - With a FIFO queue of ready tasks, no ready task waits forever (W7).
+  - A `select` branch that is ready at `k` calls in a row, for `k` branches, is chosen in one of
+    them (M3).
+- **A typed layer.** References, `&` and `&mut`, structs, raw pointers, `SharedCell`, `Send` and
+  `Sync` (S1 to S4), M5 and T3. The theorem: a well-typed program follows the footprint rule of
+  step 6. It is a syntactic proof, not a semantic model as in RustBelt.
+- **Release and acquire in the library**, one access at a time (step 4).
 
 ## What Lean does not cover
 
@@ -135,35 +157,28 @@ A Lean proof is about the Lean copy of the channel, not about `stdlib`. Litmus t
 the two. GenMC checks LLVM code against RC11, so it may check the compiled library. Nobody
 tried it on the LLVM code of Vx yet.
 
-## Order and size
+## Rules for each proof
 
-The sizes are rough guesses.
+- No `sorry`, and no axiom that the model does not already have.
+- Break the model on purpose before you trust a theorem, for example make a release relaxed.
+  Break each theorem separately, and record which proof fails.
 
-| Step | Size |
-| --- | --- |
-| Adequacy (Phase 0) | M |
-| Footprints for today's `TaskProg` (Phase 1) | M to L |
-| Computed addresses and Phase 2 | M |
-| Channels (Phase 3) | L |
-| `Mutex` (Phase 4) | S |
-| Cancellation (Phase 5) | M |
-| Progress (Phase 6, new model) | L |
-| Types (Phase 7) | XL |
+## Decisions
 
-For each new theorem, break each hypothesis one at a time, and record which proof fails. The
-commits of the current model do this.
+We decided these on 2026-10-19.
 
-## Questions for the waiting-tasks note
+1. **The order.** Steps 0 to 6 as above. Progress and the typed layer come later.
+1. **Channels and the lock are lowerings**, not new kinds of event. So the existing DRF-SC proof
+   covers them.
+1. **The library uses `sc` atomics first.** Release and acquire come one access at a time, each
+   with an edge proof and a litmus test.
+1. **`drop_hb_closed` covers each `Sender` drop**, not only the last one.
+1. **The first error is the failure whose CAS on the slot succeeded** (F3).
+1. **The interleaving machine waits** until the progress model needs it. Steps 0 to 5 use the
+   weak memory layer.
 
-A proof cannot state these claims as the note writes them:
+## Open questions for the waiting-tasks note
 
 1. **M3.** "A new index each time" gives a bound only for a round-robin start. A random start
    gives only a probability.
-1. **F3.** "The first error" needs a definition in a weak memory model. A proposal: the error
-   whose `cas` on the cancel flag succeeded.
-1. **M4.** With many senders, "the `k`-th `send`" needs an order from the channel, for example the
-   order of the `cas` on the tail.
-1. **M4.** Each `Sender` drop must happen before a `recv` that returns `Closed`, not only the last
-   drop. This needs an `acq_rel` counter and the release sequence of the model. It needs its own
-   test.
-1. **W7 and T7** are promises of progress. They wait for the model of Phase 6.
+1. **W7 and T7** are promises of progress. They wait for the progress model.
