@@ -44,18 +44,28 @@ loop and a ring of `n` slots need them. `Trace.receptive`, `Run.prefix_closed`, 
 
 ### Step 1: a tree of tasks (#1867)
 
-- A task can start tasks. Each task has a parent, and `TaskProg.Ok` allows `spawn` in a task.
-- A `spawn` in a loop takes its task id from a counter. Its flags are at `start id` and `done id`.
+Step 1 is two PRs in a stack.
+
+Step 1a:
+
+- A task can start tasks, and `TaskProg.Ok` allows `spawn` in a task.
+- `spawnAt` and `joinAt` compute the task id. A `spawn` in a loop takes its task id from a
+  counter. Its flags are at `start id` and `done id`. `joinAt` lowers to `waitAt`.
+- A task handle cannot go into an array or a struct yet. So a join in a loop is in the same
+  pass as its `spawn`, and needs no array of handles.
+- The theorems: `fork_hb` and `join_hb` for a task at any depth of the tree, and `drf_sc`.
+
+Step 1b:
+
 - `Blocks.lean`: `Stmt.tasksBlock`, and the lowering `addJoins`. It joins each task that the block
   did not join (T2). Today `Tasks.lean` takes the program after the compiler adds these joins.
-
-The theorems:
-
-- `fork_hb` and `join_hb` for a task at any depth of the tree.
 - `block_hb`: each access of each task that a block started happens before the code after the
   block.
 - `addJoins_ok`: the lowering keeps `TaskProg.Ok`.
-- `drf_sc`.
+
+The model has no captured values. When a later step adds them, it must follow T4: a task copies
+each `Copy` variable that it only reads, at its `spawn`. It borrows a variable in place only when
+it writes it, or when the variable is not `Copy`.
 
 ### Step 2: channels, by lowering (`Channel.lean`)
 

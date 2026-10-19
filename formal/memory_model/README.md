@@ -83,11 +83,13 @@ fences).
 
 `Tasks.lean` adds `spawn` and `join`, with the meaning that #1860 chose for `tasks { .. }`. A
 `spawn` is an `sc` write of a flag, and the task waits for that flag before it starts. A task
-sets another flag at its end, and `join` waits for it. `fork_hb` and `join_hb` show that in each
-run, the code before a `spawn` comes before the task, and the task comes before the code after
-its `join`. `LanguageExample.lean` builds an execution of message passing with release and
-acquire, one that passes a message through an array, and one where the main code starts two
-tasks and joins them, with plain data.
+sets another flag at its end, and `join` waits for it. A task can start tasks, and `spawnAt`
+computes the task id, as a `spawn` in a loop does. `fork_hb` and `join_hb` show that in each run,
+the code before a `spawn` comes before the task, and the task comes before the code after its
+`join`, at any depth of the tree of tasks. `LanguageExample.lean` builds an execution of message
+passing with release and acquire, and one that passes a message through an array. With plain
+data, it also builds one where the main code starts two tasks and joins them, one where a task
+starts a task, and one with a `spawn` and a `join` in each pass of a loop.
 
 ```bash
 lake -d formal/memory_model/lean build    # Lean 4.35, no other libraries
@@ -148,8 +150,8 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - The rule for sequentially consistent atomics ignores scopes.
 - herd7 checks each test completely, but only the tests. memalloy checks every execution up to 5
   or 6 events.
-- The core language has no functions and no references. A task can not start other tasks, and
-  a `spawn` in a loop does not start a new task on each pass.
+- The core language has no functions and no references. It has no `tasks` block, so the joins at
+  the end of a block are in the code already.
 - The Lean model has no scopes and no barriers.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.

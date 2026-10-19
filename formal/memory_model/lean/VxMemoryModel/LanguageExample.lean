@@ -160,6 +160,7 @@ def forkJoin : TaskProg where
     | 0 => .seq (.load 1 input .plain) (.store out1 (.add (.reg 1) (.const 1)) .plain)
     | 1 => .seq (.load 1 input .plain) (.store out2 (.add (.reg 1) (.const 2)) .plain)
     | _ => .skip
+  count := 2
   flags := 3
 
 theorem forkJoin_ok : forkJoin.Ok where
@@ -172,7 +173,7 @@ theorem forkJoin_seqCstOnly : forkJoin.toProg.SeqCstOnly :=
     fun | 0 | 1 | _ + 2 => by simp [forkJoin, Stmt.SeqCstOnly]
 
 /-- Events: 0 to 6 are the main code, 7 to 10 are task 0, and 11 to 14 are task 1. The flags
-`start 0`, `done 0`, `start 1` and `done 1` are the places 3, 4, 5 and 6. -/
+`start 0`, `start 1`, `done 0` and `done 1` are the places 3, 4, 5 and 6. -/
 def forkJoinData : Data 15 := Data.ofLists 15
   [.write, .write, .write, .read, .read, .read, .read,
     .read, .read, .write, .write,
@@ -180,9 +181,9 @@ def forkJoinData : Data 15 := Data.ofLists 15
   [.plain, .sc, .sc, .sc, .sc, .plain, .plain,
     .sc, .plain, .plain, .sc,
     .sc, .plain, .plain, .sc]
-  [0, 3, 5, 4, 6, 1, 2,
-    3, 0, 1, 4,
-    5, 0, 2, 6]
+  [0, 3, 4, 5, 6, 1, 2,
+    3, 0, 1, 5,
+    4, 0, 2, 6]
   [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2]
   ((List.range 15).flatMap fun a => (List.range 15).filterMap fun b =>
     if a < b ∧ (b < 7 ∨ 7 ≤ a ∧ b < 11 ∨ 11 ≤ a) then some (a, b) else none)
@@ -193,32 +194,36 @@ def forkJoinData : Data 15 := Data.ofLists 15
 def forkJoinLabels : Nat → Nat → Label
   | 0, 0 => ⟨.write, .plain, input, 5, false⟩
   | 0, 1 => ⟨.write, .sc, 3, 1, false⟩
-  | 0, 2 => ⟨.write, .sc, 5, 1, false⟩
-  | 0, 3 => ⟨.read, .sc, 4, 1, false⟩
+  | 0, 2 => ⟨.write, .sc, 4, 1, false⟩
+  | 0, 3 => ⟨.read, .sc, 5, 1, false⟩
   | 0, 4 => ⟨.read, .sc, 6, 1, false⟩
   | 0, 5 => ⟨.read, .plain, out1, 6, false⟩
   | 0, 6 => ⟨.read, .plain, out2, 7, false⟩
   | 1, 0 => ⟨.read, .sc, 3, 1, false⟩
   | 1, 1 => ⟨.read, .plain, input, 5, false⟩
   | 1, 2 => ⟨.write, .plain, out1, 6, false⟩
-  | 1, 3 => ⟨.write, .sc, 4, 1, false⟩
-  | 2, 0 => ⟨.read, .sc, 5, 1, false⟩
+  | 1, 3 => ⟨.write, .sc, 5, 1, false⟩
+  | 2, 0 => ⟨.read, .sc, 4, 1, false⟩
   | 2, 1 => ⟨.read, .plain, input, 5, false⟩
   | 2, 2 => ⟨.write, .plain, out2, 7, false⟩
   | 2, 3 => ⟨.write, .sc, 6, 1, false⟩
   | _, _ => ⟨.fence, .plain, 0, 0, false⟩
 
 theorem forkJoin_main : Trace (forkJoin.toProg.code 0) 7 (forkJoinLabels 0) :=
-  .visible (.seq .store) <| .silent .seq_skip <| .visible (.seq .store) <| .silent .seq_skip <|
-    .visible (.seq .store) <| .silent .seq_skip <| .wait_seq <| .wait_seq <|
+  .visible (.seq .store) <| .silent .seq_skip <|
+    .visible (.seq (.storeAt 0 rfl Nat.one_pos)) <| .silent .seq_skip <|
+    .visible (.seq (.storeAt 0 rfl Nat.one_pos)) <| .silent .seq_skip <|
+    .waitAt_seq 0 rfl Nat.one_pos <| .waitAt_seq 0 rfl Nat.one_pos <|
     .visible (.seq (.load 6)) <| .silent .seq_skip <| .visible (.load 7) .stop
 
-theorem forkJoin_task0 : Trace (forkJoin.toProg.code 1) 4 (forkJoinLabels 1) :=
-  .wait_seq <| .visible (.seq (.seq (.load 5))) <| .silent (.seq .seq_skip) <|
+theorem forkJoin_task0 : Trace (forkJoin.toProg.code 1) 4 (forkJoinLabels 1) := by
+  rw [TaskProg.code_succ, TaskProg.taskCode_of_lt (by decide)]
+  exact .wait_seq <| .visible (.seq (.seq (.load 5))) <| .silent (.seq .seq_skip) <|
     .visible (.seq .store) <| .silent .seq_skip <| .visible .store .stop
 
-theorem forkJoin_task1 : Trace (forkJoin.toProg.code 2) 4 (forkJoinLabels 2) :=
-  .wait_seq <| .visible (.seq (.seq (.load 5))) <| .silent (.seq .seq_skip) <|
+theorem forkJoin_task1 : Trace (forkJoin.toProg.code 2) 4 (forkJoinLabels 2) := by
+  rw [TaskProg.code_succ, TaskProg.taskCode_of_lt (by decide)]
+  exact .wait_seq <| .visible (.seq (.seq (.load 5))) <| .silent (.seq .seq_skip) <|
     .visible (.seq .store) <| .silent .seq_skip <| .visible .store .stop
 
 def forkJoinRun : forkJoin.toProg.Run forkJoinData.toExecution where
@@ -250,5 +255,215 @@ def forkJoinRun : forkJoin.toProg.Run forkJoinData.toExecution where
 -- The model allows this execution, and it has no data race: the fork orders the write of
 -- `input` before the reads, and the join orders the writes of the results before the reads.
 #guard forkJoinData.check == some (true, false)
+
+/-! ## A task that starts a task
+
+The main code writes 5 to the place 0 and starts task 0. Task 0 starts task 1 and joins it. Task 1
+reads the place 0 and writes 6 to the place 1. The main code joins task 0 and reads the place 1.
+Only the forks and the joins order the plain accesses, through two levels of the tree. -/
+
+def nested : TaskProg where
+  main := .seq (.store 0 (.const 5) .plain) <| .seq (.spawn 0) <| .seq (.join 0) (.load 1 1 .plain)
+  task
+    | 0 => .seq (.spawn 1) (.join 1)
+    | 1 => .seq (.load 1 0 .plain) (.store 1 (.add (.reg 1) (.const 1)) .plain)
+    | _ => .skip
+  count := 2
+  flags := 2
+
+theorem nested_ok : nested.Ok where
+  main := by simp [nested, Stmt.Below]
+  task
+    | 0 | 1 | _ + 2 => by simp [nested, Stmt.Below]
+
+/-- Events: 0 to 3 are the main code, 4 to 7 are task 0, and 8 to 11 are task 1. The flags
+`start 0`, `start 1`, `done 0` and `done 1` are the places 2, 3, 4 and 5. -/
+def nestedData : Data 12 := Data.ofLists 12
+  [.write, .write, .read, .read,
+    .read, .write, .read, .write,
+    .read, .read, .write, .write]
+  [.plain, .sc, .sc, .plain,
+    .sc, .sc, .sc, .sc,
+    .sc, .plain, .plain, .sc]
+  [0, 2, 4, 1,
+    2, 3, 5, 4,
+    3, 0, 1, 5]
+  [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2]
+  ((List.range 12).flatMap fun a => (List.range 12).filterMap fun b =>
+    if a < b ∧ a / 4 = b / 4 then some (a, b) else none)
+  [(1, 4), (5, 8), (11, 6), (7, 2), (0, 9), (10, 3)]
+  []
+  []
+
+def nestedLabels : Nat → Nat → Label
+  | 0, 0 => ⟨.write, .plain, 0, 5, false⟩
+  | 0, 1 => ⟨.write, .sc, 2, 1, false⟩
+  | 0, 2 => ⟨.read, .sc, 4, 1, false⟩
+  | 0, 3 => ⟨.read, .plain, 1, 6, false⟩
+  | 1, 0 => ⟨.read, .sc, 2, 1, false⟩
+  | 1, 1 => ⟨.write, .sc, 3, 1, false⟩
+  | 1, 2 => ⟨.read, .sc, 5, 1, false⟩
+  | 1, 3 => ⟨.write, .sc, 4, 1, false⟩
+  | 2, 0 => ⟨.read, .sc, 3, 1, false⟩
+  | 2, 1 => ⟨.read, .plain, 0, 5, false⟩
+  | 2, 2 => ⟨.write, .plain, 1, 6, false⟩
+  | 2, 3 => ⟨.write, .sc, 5, 1, false⟩
+  | _, _ => ⟨.fence, .plain, 0, 0, false⟩
+
+theorem nested_main : Trace (nested.toProg.code 0) 4 (nestedLabels 0) :=
+  .visible (.seq .store) <| .silent .seq_skip <|
+    .visible (.seq (.storeAt 0 rfl Nat.one_pos)) <| .silent .seq_skip <|
+    .waitAt_seq 0 rfl Nat.one_pos <| .visible (.load 6) .stop
+
+theorem nested_task0 : Trace (nested.toProg.code 1) 4 (nestedLabels 1) := by
+  rw [TaskProg.code_succ, TaskProg.taskCode_of_lt (by decide)]
+  exact .wait_seq <| .visible (.seq (.seq (.storeAt 0 rfl Nat.one_pos))) <|
+    .silent (.seq .seq_skip) <| .visible (.seq (.waitAt 0 1 rfl Nat.one_pos)) <|
+    .silent .seq_skip <| .visible .store .stop
+
+theorem nested_task1 : Trace (nested.toProg.code 2) 4 (nestedLabels 2) := by
+  rw [TaskProg.code_succ, TaskProg.taskCode_of_lt (by decide)]
+  exact .wait_seq <| .visible (.seq (.seq (.load 5))) <| .silent (.seq .seq_skip) <|
+    .visible (.seq .store) <| .silent .seq_skip <| .visible .store .stop
+
+def nestedRun : nested.toProg.Run nestedData.toExecution where
+  val i := [5, 1, 1, 6, 1, 1, 1, 1, 1, 5, 6, 1].getD i.val 0
+  isRmw _ := false
+  idx i := [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3].getD i.val 0
+  lab := nestedLabels
+  po_iff := by decide
+  idx_inj := by decide
+  idx_down := by decide
+  lab_eq := by decide
+  trace
+    | ⟨0, _⟩ | ⟨1, _⟩ | ⟨2, _⟩ => nested_main.prefix (by decide +revert)
+    | ⟨3, _⟩ => nested_main
+    | ⟨4, _⟩ | ⟨5, _⟩ | ⟨6, _⟩ => nested_task0.prefix (by decide +revert)
+    | ⟨7, _⟩ => nested_task0
+    | ⟨8, _⟩ | ⟨9, _⟩ | ⟨10, _⟩ => nested_task1.prefix (by decide +revert)
+    | ⟨11, _⟩ => nested_task1
+  rf_val := by decide
+  rf_write_read := by
+    simp only [Execution.IsWrite, Execution.IsRead]
+    decide
+  rf_source := by
+    simp only [Execution.IsRead]
+    decide
+  rmw_iff := by decide
+
+-- The model allows this execution, and it has no data race: the write of the place 0 happens
+-- before the read in task 1 through both forks, and the write of the place 1 happens before the
+-- read in the main code through both joins.
+#guard nestedData.check == some (true, false)
+
+/-! ## A spawn in a loop
+
+The main code runs a loop of two passes. Pass `i` starts task `i` and joins it, so each pass gets
+a new task id from the counter in register 0. Task `i` writes `10 + i` to the place `i`. After the
+loop, the main code reads both places. -/
+
+def spawnLoop : TaskProg where
+  main := .seq
+    (.loop (.sub (.const 1) (.eq (.reg 0) (.const 2))) <|
+      .seq (.spawnAt 0 2 (.reg 0)) <| .seq (.joinAt 0 2 (.reg 0)) <|
+        .assign 0 (.add (.reg 0) (.const 1)))
+    (.seq (.load 1 0 .plain) (.load 2 1 .plain))
+  task
+    | 0 => .store 0 (.const 10) .plain
+    | 1 => .store 1 (.const 11) .plain
+    | _ => .skip
+  count := 2
+  flags := 2
+
+theorem spawnLoop_ok : spawnLoop.Ok where
+  main := by simp [spawnLoop, Stmt.Below]
+  task
+    | 0 | 1 | _ + 2 => by simp [spawnLoop, Stmt.Below]
+
+/-- Events: 0 to 5 are the main code, 6 to 8 are task 0, and 9 to 11 are task 1. The flags
+`start 0`, `start 1`, `done 0` and `done 1` are the places 2, 3, 4 and 5. -/
+def spawnLoopData : Data 12 := Data.ofLists 12
+  [.write, .read, .write, .read, .read, .read,
+    .read, .write, .write,
+    .read, .write, .write]
+  [.sc, .sc, .sc, .sc, .plain, .plain,
+    .sc, .plain, .sc,
+    .sc, .plain, .sc]
+  [2, 4, 3, 5, 0, 1,
+    2, 0, 4,
+    3, 1, 5]
+  [0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2]
+  ((List.range 12).flatMap fun a => (List.range 12).filterMap fun b =>
+    if a < b ∧ (b < 6 ∨ 6 ≤ a ∧ b < 9 ∨ 9 ≤ a) then some (a, b) else none)
+  [(0, 6), (8, 1), (2, 9), (11, 3), (7, 4), (10, 5)]
+  []
+  []
+
+def spawnLoopLabels : Nat → Nat → Label
+  | 0, 0 => ⟨.write, .sc, 2, 1, false⟩
+  | 0, 1 => ⟨.read, .sc, 4, 1, false⟩
+  | 0, 2 => ⟨.write, .sc, 3, 1, false⟩
+  | 0, 3 => ⟨.read, .sc, 5, 1, false⟩
+  | 0, 4 => ⟨.read, .plain, 0, 10, false⟩
+  | 0, 5 => ⟨.read, .plain, 1, 11, false⟩
+  | 1, 0 => ⟨.read, .sc, 2, 1, false⟩
+  | 1, 1 => ⟨.write, .plain, 0, 10, false⟩
+  | 1, 2 => ⟨.write, .sc, 4, 1, false⟩
+  | 2, 0 => ⟨.read, .sc, 3, 1, false⟩
+  | 2, 1 => ⟨.write, .plain, 1, 11, false⟩
+  | 2, 2 => ⟨.write, .sc, 5, 1, false⟩
+  | _, _ => ⟨.fence, .plain, 0, 0, false⟩
+
+/-- The two passes of the loop, and then the two reads. -/
+theorem spawnLoop_main : Trace (spawnLoop.toProg.code 0) 6 (spawnLoopLabels 0) :=
+  .silent (.seq .loop) <| .silent (.seq (.ite_true (by decide))) <|
+    .visible (.seq (.seq (.seq (.storeAt 0 rfl (by decide))))) <|
+    .silent (.seq (.seq .seq_skip)) <|
+    .visible (.seq (.seq (.seq (.waitAt 0 1 rfl (by decide))))) <|
+    .silent (.seq (.seq .seq_skip)) <| .silent (.seq (.seq .assign)) <| .silent (.seq .seq_skip) <|
+    .silent (.seq .loop) <| .silent (.seq (.ite_true (by decide))) <|
+    .visible (.seq (.seq (.seq (.storeAt 1 rfl (by decide))))) <|
+    .silent (.seq (.seq .seq_skip)) <|
+    .visible (.seq (.seq (.seq (.waitAt 1 1 rfl (by decide))))) <|
+    .silent (.seq (.seq .seq_skip)) <| .silent (.seq (.seq .assign)) <| .silent (.seq .seq_skip) <|
+    .silent (.seq .loop) <| .silent (.seq (.ite_false (by decide))) <| .silent .seq_skip <|
+    .visible (.seq (.load 10)) <| .silent .seq_skip <| .visible (.load 11) .stop
+
+theorem spawnLoop_task0 : Trace (spawnLoop.toProg.code 1) 3 (spawnLoopLabels 1) := by
+  rw [TaskProg.code_succ, TaskProg.taskCode_of_lt (by decide)]
+  exact .wait_seq <| .visible (.seq .store) <| .silent .seq_skip <| .visible .store .stop
+
+theorem spawnLoop_task1 : Trace (spawnLoop.toProg.code 2) 3 (spawnLoopLabels 2) := by
+  rw [TaskProg.code_succ, TaskProg.taskCode_of_lt (by decide)]
+  exact .wait_seq <| .visible (.seq .store) <| .silent .seq_skip <| .visible .store .stop
+
+def spawnLoopRun : spawnLoop.toProg.Run spawnLoopData.toExecution where
+  val i := [1, 1, 1, 1, 10, 11, 1, 10, 1, 1, 11, 1].getD i.val 0
+  isRmw _ := false
+  idx i := [0, 1, 2, 3, 4, 5, 0, 1, 2, 0, 1, 2].getD i.val 0
+  lab := spawnLoopLabels
+  po_iff := by decide
+  idx_inj := by decide
+  idx_down := by decide
+  lab_eq := by decide
+  trace
+    | ⟨0, _⟩ | ⟨1, _⟩ | ⟨2, _⟩ | ⟨3, _⟩ | ⟨4, _⟩ => spawnLoop_main.prefix (by decide +revert)
+    | ⟨5, _⟩ => spawnLoop_main
+    | ⟨6, _⟩ | ⟨7, _⟩ => spawnLoop_task0.prefix (by decide +revert)
+    | ⟨8, _⟩ => spawnLoop_task0
+    | ⟨9, _⟩ | ⟨10, _⟩ => spawnLoop_task1.prefix (by decide +revert)
+    | ⟨11, _⟩ => spawnLoop_task1
+  rf_val := by decide
+  rf_write_read := by
+    simp only [Execution.IsWrite, Execution.IsRead]
+    decide
+  rf_source := by
+    simp only [Execution.IsRead]
+    decide
+  rmw_iff := by decide
+
+-- The model allows this execution, and it has no data race: the join of each pass orders the
+-- write of the task before the reads after the loop.
+#guard spawnLoopData.check == some (true, false)
 
 end Vx
