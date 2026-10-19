@@ -1,7 +1,8 @@
 # Tasks that wait, channels, and errors from tasks
 
-Status: agreed. Issues: #1865, #1864, #1893. Tracking: #1870. Builds on
-`cpu_tasks_send_sync_and_shared_atomics.md` (T1 to T8, S1 to S6) and the memory model (C0 to C7).
+Status: agreed, except decision 8 (`select`). Issues: #1865, #1864, #1893. Tracking: #1870.
+Builds on `cpu_tasks_send_sync_and_shared_atomics.md` (T1 to T8, S1 to S6) and the memory model
+(C0 to C7).
 
 Vx is for programs that run on a fleet of mixed hardware. Its concurrency must be better than
 Rust's, not equal to it. Scoped tasks already are: a task can borrow, and no lifetimes are
@@ -39,9 +40,32 @@ page. A task that cannot reach a wait does not need its own stack: it runs on th
 worker thread. An analysis of the call graph finds these tasks. It runs after the freeze and only
 changes the code that the compiler generates, as inlining does.
 
+**Stack size.** A task stack is as large as a thread stack on the platform, because foreign code
+runs on it (W8). On a 64-bit machine this costs address space, not memory: the kernel commits a
+page only when the task touches it. Segmented stacks save only address space, and they slow calls
+and calls into C, so Rust and Go both gave them up. The limits are elsewhere:
+
+- Each stack and its guard page are two kernel mappings, and Linux allows 65,530 by default
+  (`vm.max_map_count`). So about 30,000 tasks can park at once, fewer with shadow stacks. A
+  program that needs more raises the limit.
+- A page that a task touched stays committed when its stack goes back to the pool. The pool gives
+  the pages back with `madvise`.
+- The pool marks each stack `MADV_NOHUGEPAGE`, so that a huge page cannot commit 2 MiB for a stack
+  that uses a few KiB.
+- A parked task costs at least one page: 4 KiB on x86-64, and 16 KiB on Apple silicon.
+- Under strict overcommit (`vm.overcommit_memory=2`), each stack counts at its full size.
+
+**What a parked task holds.** A value that only holds memory is freed after its last use
+(`drop_semantics.md`). So a buffer whose last use comes before a wait is freed before the task
+parks. A Rust future keeps such a value across each `.await` until the end of its scope. The size
+of a frame does not shrink this way: it is fixed when the function starts. LLVM lets two stack
+slots share memory only when the code marks where the life of each one ends
+(`llvm.lifetime.end`), and vxc emits no such marks today. Marks at each drop can let Vx frames
+share more than C++ and Rust frames, whose marks are at the end of a scope.
+
 **W4. Wait points.** A task waits only at a call to a runtime function that waits on the host:
 
-- `send`, `recv` and `select` on a channel
+- `send` and `recv` on a channel, and `select` (M3)
 - `join()`
 - `lock` of a `Mutex` (M7), and `wait` of a `Condvar`
 - `sleep` and timers
@@ -149,13 +173,89 @@ So a sender to a dropped receiver does not wait forever, and the join at the end
 ends. In the example, a task whose receiver is gone fails, and so does the block (F1). That is the
 right result: no code reads the values.
 
-**M3. `select`.** A `select` closure for each branch fails the borrow checker in the usual case:
-two branches both change `total`. Go has syntax for this, and Rust has a macro. Vx uses the form of
-crossbeam's `Select`: the program adds each operation, `wait()` returns the index of the one that
-can continue, and the program then does that operation. No closures, no new syntax. When more than
-one operation can continue, `select` starts its search at the index after the one that it chose
-last time (round robin). So a branch that can continue at each of `k` calls in a row, for `k`
-branches, is chosen in one of them. A random start would give only a probability.
+**M3. `select`.** `select` waits on several operations, and runs the arm of the first one that can
+continue. It is a block expression, as `tasks` is, not a library type.
+
+<!-- vx-doctest: skip (proposed syntax) -->
+
+```vx
+// Add the values from `a` and `b` until both close. Stop when no value comes for `limit` seconds.
+let mut total = 0;
+let mut a_open = true;
+let mut b_open = true;
+while a_open || b_open {
+  select {
+    let r = a.recv() if a_open => {
+      match r {
+        Result<i64, RecvError>::Ok(v) => { total = total + v; }
+        Result<i64, RecvError>::Err(_) => { a_open = false; }
+      }
+    }
+    let r = b.recv() if b_open => {
+      match r {
+        Result<i64, RecvError>::Ok(v) => { total = total + v; }
+        Result<i64, RecvError>::Err(_) => { b_open = false; }
+      }
+    }
+    sleep(limit) => { break; }
+    cancelled => { break; }
+  }
+}
+```
+
+- **The arms.** Each arm is one operation, an optional guard, `=>` and a block. The operations are
+  `recv`, `send` and `sleep`. `let r = op` binds the result of the operation, with the type of the
+  plain call. The program must use it, as it must use the `Result` of a plain wait (F4). A `sleep`
+  arm binds nothing.
+- **Entry.** The `select` evaluates the guards, and then the operands of each arm that takes part,
+  in source order (E1). An arm whose guard is false takes no part. Go uses a nil channel for this.
+  If no arm takes part, the `select` waits only for a cancel. Vx's `match` has no guards today, so
+  the guard is new syntax.
+- **One operation commits.** If some operations can continue, the `select` commits one of them. It
+  starts its search at the arm after the one that it chose last time (round robin). So an arm that
+  can continue at each of `k` passes in a row, for `k` arms, is chosen in one of them. If none can
+  continue, it registers each operation and waits. The first one that can continue commits, and the `select`
+  takes back the other registrations. So exactly one operation has an effect.
+- **A `send` that loses keeps its value.** The value of a `send` arm must be a place, such as a
+  local or a field, not a temporary. It moves out of the place only when its arm commits. After the
+  `select`, the checker treats the place as moved only on the path of that arm.
+- **The borrow checker treats a `select` as a `match`.** One arm runs, so two arms can both change
+  `total`. Each operand is borrowed from the entry to the start of the arm that runs, so an arm can
+  drop or move a channel end. `break` and `continue` in an arm go to the loop around the `select`,
+  as in a `match` arm. In Go, a `break` in a `select` leaves only the `select`.
+- **Cancellation.** A `select` must have a `cancelled` arm. In a cancelled task, no operation
+  commits, and that arm runs. So the result that an arm binds never holds `Cancelled`, and the
+  warning of F4 looks only at the `cancelled` arm. The `Err(_)` arms of the example get no warning.
+- **Closed channels.** A `recv` on a closed channel can always continue: it returns `Closed`. A
+  `send` to a dropped receiver can always continue: it gives its value back. A loop that keeps such
+  an arm selects it on every pass, so the program turns the arm off with its guard, as the example
+  does.
+- **The memory model.** A `select` that commits an operation has the edges of that operation (M4).
+  A `select` that commits none has no channel edge.
+- **The runtime.** The wait records are in the frame of the `select`, and they do not move until it
+  returns. The compiler takes them back on each exit. The records do not depend on `T`, so one
+  runtime type serves channels of every element type. In the first runtime, the wait blocks the
+  thread of the task, with the same protocol.
+
+**Why `select` is syntax.** Rust's `Select` for its standard channels had an `unsafe` `add`, because
+a handle in the set must not move, and neither it nor `select!` became stable. crossbeam's `Select`
+fixed this with two features that Vx does not have. `Select<'a>` borrows each channel with a written
+lifetime, and `&dyn SelectHandle` puts channels of different element types in one set. Vx has no
+written lifetimes, and no type with dynamic dispatch (`generics_design.md`). crossbeam also checks
+at run time that the program completes the operation that was chosen. A closure for each arm fails
+the borrow checker in the usual case, where two arms both change `total`. This is the reason that
+`tasks` is syntax (decision 1 of the scoped tasks note), and it holds here too. As syntax, the
+compiler owns the wait records, so they cannot move. It writes the typed code of each arm, so the
+set needs no dynamic dispatch. It completes the chosen operation itself.
+
+**What `select` is not.** In Concurrent ML, an operation is a value of type `event`. A program
+combines events with `choose` and `wrap`, and a library can return an event that its caller selects
+on. Vx's `select` is closer to Go's: each arm is written in place. A library that its caller must
+wait on together with other things gives the caller a channel. A first-class event would be a value
+that holds borrows of its channels, and Vx has no written lifetimes to tie it to them. CML's
+`withNack` shows a cost that comes later. An operation that has already started when its arm loses,
+such as a read on io_uring, must be cancelled, and the runtime must wait for that (F5). So the
+first version allows only operations that a losing arm can take back with no effect.
 
 **M4. The memory model.** The Go memory model has the rules, and they fit C2:
 
@@ -239,11 +339,12 @@ discarding task groups cancel. Rust has no structured cancellation. Cancellation
 program starts would fail without a sign: after one shard fails, the other shards keep their
 devices busy until they finish.
 
-**F4. Which waits can be cancelled.** `send`, `recv`, `select`, `sleep` and I/O can be cancelled.
-They return their error with a `Cancelled` case. `join()`, `lock` and the waits for a device
-cannot be cancelled. A cancelled parent must join its children anyway (T3), so a cancelled `join`
-gives nothing. A wait for a device holds a token that must be used once (#244), and an error would
-lose it. A loop with no wait point does not see the cancel. `tasks::cancelled()` lets it check.
+**F4. Which waits can be cancelled.** `send`, `recv`, `sleep` and I/O can be cancelled. They
+return their error with a `Cancelled` case. A `select` runs its `cancelled` arm (M3). `join()`,
+`lock` and the waits for a device cannot be cancelled. A cancelled parent must join its children
+anyway (T3), so a cancelled `join` gives nothing. A wait for a device holds a token that must be
+used once (#244), and an error would lose it. A loop with no wait point does not see the cancel.
+`tasks::cancelled()` lets it check.
 
 **What a cancel promises.** In a cancelled task, the next wait that can be cancelled returns `Err`.
 The task stops only if each function between that wait and the task body passes the error up.
@@ -326,6 +427,7 @@ For the second runtime, all together:
 - A pool of fixed stacks with guard pages, the stack switch, and stack probes in the generated
   code (W3).
 - A shadow stack in each pool entry, which the switch moves from its first version (section 7).
+- `llvm.lifetime.end` at each drop, so that the slots of a frame can share memory (W3).
 - The monitor thread (W8) and the rules of W9.
 - A test mode with one thread and a fixed seed, which gives the same run each time. It is a tool
   for tests: it cannot run a program that blocks in a foreign call.
@@ -402,7 +504,7 @@ says the same thing.
 | A signature is the whole contract | No colors and no `async fn` (W1). A mark in a signature does not spread to callers (W5). The analysis of W3 only changes generated code. |
 | Every layout is known at the freeze | `Sender<T>` and `Receiver<T>` are library structs. The checks of M5 and M6 use the frozen layout. |
 | A generic closes at its definition | `T : Send` is a bound. |
-| A body declares nothing global | `Select` is a library type, and `tasks::cancelled()` is a call. K1 and K2 read only the body of the task. |
+| A body declares nothing global | `select` is an expression, as `tasks` is, and `tasks::cancelled()` is a call. K1 and K2 read only the body of the task. |
 | No implicit conversions | `?` does not convert the error (F2). |
 
 ## Decisions
@@ -425,6 +527,10 @@ We chose these on 2026-10-19, from the recommendations of a review.
    program marks. Chosen: `drop` only, with a time limit on each wait in it.
 1. **How a task takes a local.** The use decides, and K2 moves a local that ends first, or a new
    `spawn move`. Chosen: K1 to K3, with no new syntax.
+1. **`select`.** A block expression (M3), or a library type. A library type needs written lifetimes
+   and dynamic dispatch, and Vx has neither. The spelling of an arm and the guard are part of this
+   decision. Open. The recommendation is the block expression, for the reason that made `tasks`
+   syntax.
 
 The review also settled two earlier questions: `select` starts its search round robin (M3), and
 the memory-space type decides what can go between targets (M6).
@@ -433,7 +539,7 @@ the memory-space type decides what can go between targets (M6).
 
 1. The first runtime: OS threads, one for each task, and the safe dispatch runtime. Then `tasks`,
    `spawn`, K1 to K3, F1 with the first-failure rule of F3, and `?` (F2).
-1. Channels, `Select` and `Mutex` (M1 to M3, M7). A wait blocks the thread of the task. The Lean
+1. Channels, `select` and `Mutex` (M1 to M3, M7). A wait blocks the thread of the task. The Lean
    edges (M4) and the model check of the library code.
 1. Cancellation (F3 to F7) and the run-time reports (F9).
 1. The second runtime, as one unit: the stack pool and the switch, the monitor (W8), W9, and the
