@@ -181,3 +181,6 @@ compiler adds those joins.
 1. `tasks` and `spawn`, parsed and borrow checked (T1 to T5). The first lowering runs each task at
    its `spawn`, which T7 allows. So programs and tests can come before threads.
 1. OS threads (#1863), and the Lean fork and join (#1867).
+
+Tasks that wait, channels and errors from tasks are in `waiting_tasks_channels_and_task_errors.md`.
+Its W6 changes the run on one thread of T7.
