@@ -185,17 +185,58 @@ enum FrameKind {
     Spawn,
     Block {
         owners: Vec<Owner>,
-        /// The last statement of the block that uses each name, nested uses included.
-        last_use: HashMap<crate::symbol::Symbol, usize>,
+        /// What each statement of the block uses, and where each name has a `let`.
+        uses: BlockUseList,
         /// The first line of each statement, and of the block's separate value.
         lines: Vec<usize>,
         /// The statement being checked.
         stmt: usize,
         edits: Box<Edits>,
-        /// The position in `last_use` of a separate value, `v` in `unsafe { ..; v }`: one
+        /// The position in `uses` of a separate value, `v` in `unsafe { ..; v }`: one
         /// after the last statement. What it uses is dropped after it.
         value_at: Option<usize>,
     },
+}
+
+/// What each statement of a block uses, nested uses included, and where each name has a
+/// `let` in the block. A block's separate value is one more position after its statements.
+#[derive(Clone, Default)]
+pub(crate) struct BlockUseList {
+    used: Vec<HashSet<String>>,
+    lets: HashMap<String, Vec<usize>>,
+}
+
+impl BlockUseList {
+    fn new(body: &[Statement], value: Option<&Expr>) -> Self {
+        let mut list = BlockUseList::default();
+        for (i, stmt) in body.iter().enumerate() {
+            let mut used = HashSet::new();
+            TypeChecker::extract_uses_stmt(stmt, &mut used);
+            list.used.push(used);
+            if let Statement::LetDecl(l) = stmt {
+                list.lets.entry(l.name.to_string()).or_default().push(i);
+            }
+        }
+        if let Some(value) = value {
+            let mut used = HashSet::new();
+            TypeChecker::extract_uses_expr(value, &mut used);
+            list.used.push(used);
+        }
+        // An empty block still has one position, so a drop has somewhere to go.
+        if list.used.is_empty() {
+            list.used.push(HashSet::new());
+        }
+        list
+    }
+
+    /// The `let` that next hides `name` after `decl`, its own `let` (`None` for a parameter).
+    fn hidden_at(&self, name: &str, decl: Option<usize>) -> Option<usize> {
+        self.lets
+            .get(name)?
+            .iter()
+            .copied()
+            .find(|&i| decl.is_none_or(|d| i > d))
+    }
 }
 
 /// The drop-point state of the function being checked: one frame per open block, loop and
@@ -710,7 +751,7 @@ impl<'a> TypeChecker<'a> {
             .collect();
         d.frames.push(FrameKind::Block {
             owners,
-            last_use: Self::block_uses(body, value).last_use,
+            uses: BlockUseList::new(body, value),
             lines: body
                 .iter()
                 .map(|s| s.span().line)
@@ -1203,16 +1244,18 @@ impl<'a> TypeChecker<'a> {
         seen
     }
 
-    /// The last statement of a block that uses `name` or what borrows it.
-    fn drops_last_use(
-        &self,
-        name: &str,
-        last_use: &HashMap<crate::symbol::Symbol, usize>,
-    ) -> Option<usize> {
-        self.drops_users(name)
-            .iter()
-            .filter_map(|n| last_use.get(n.as_str()).copied())
-            .max()
+    /// The last statement of a block that uses `owner` or what borrows it. A later `let` of
+    /// the same name hides the owner, so only the statements up to that `let` count. The `let`
+    /// itself counts, as `let a = f(a)` reads the owner.
+    fn drops_last_use(&self, owner: &Owner, uses: &BlockUseList) -> Option<usize> {
+        let users = self.drops_users(&owner.name);
+        let start = owner.decl.map_or(0, |d| d + 1);
+        let end = uses
+            .hidden_at(&owner.name, owner.decl)
+            .unwrap_or(uses.used.len() - 1);
+        (start..=end)
+            .rev()
+            .find(|&i| users.iter().any(|n| uses.used[i].contains(n)))
     }
 
     fn drops_print(&self, owner: &Owner, at: String) {
@@ -1241,7 +1284,7 @@ impl<'a> TypeChecker<'a> {
         let rewriting = self.drops_rewriting();
         let Some(FrameKind::Block {
             owners,
-            last_use,
+            uses,
             lines,
             mut edits,
             value_at,
@@ -1268,8 +1311,22 @@ impl<'a> TypeChecker<'a> {
                 // An empty block, as `fn drop<T>(_x : T) {}` has, drops it where it starts.
                 value_at.or(body.len().checked_sub(1))
             } else {
-                match self.drops_last_use(&owner.name, &last_use) {
+                match self.drops_last_use(owner, &uses) {
                     Some(i) if terminated_at.is_some_and(|t| i >= t) => continue,
+                    // `let a = f(a)`: after it, `a` names the new value. The old one is
+                    // dropped before it, once its value is computed.
+                    Some(i) if uses.hidden_at(&owner.name, owner.decl) == Some(i) => {
+                        self.drops_print(
+                            owner,
+                            format!(
+                                "once the `let` on line {} that hides it has its value",
+                                lines[i]
+                            ),
+                        );
+                        let stmts = owner_drop(owner).into_iter().map(after_value);
+                        edits.before.entry(i).or_default().extend(stmts);
+                        continue;
+                    }
                     Some(i) if Some(i) == value_at => {
                         self.drops_print(
                             owner,
@@ -1562,10 +1619,7 @@ impl<'a> TypeChecker<'a> {
                 FrameKind::Loop if out_of_loop => break 'frames,
                 FrameKind::Loop => {}
                 FrameKind::Block {
-                    owners,
-                    last_use,
-                    stmt,
-                    ..
+                    owners, uses, stmt, ..
                 } => {
                     for owner in owners.iter().rev() {
                         if owner.moved == Moved::Yes || d.moved_now.contains(&owner.name) {
@@ -1573,9 +1627,7 @@ impl<'a> TypeChecker<'a> {
                         }
                         // Not used from this statement on, or never: dropped already.
                         if !owner.to_block_end
-                            && self
-                                .drops_last_use(&owner.name, last_use)
-                                .is_none_or(|i| i < *stmt)
+                            && self.drops_last_use(owner, uses).is_none_or(|i| i < *stmt)
                         {
                             continue;
                         }
