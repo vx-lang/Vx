@@ -136,8 +136,8 @@ because tasks then share places only through the channel and the lock.
   - The scheduler on one thread (W6) stops only when each task is done or each task is parked.
   - F9 is sound: the runtime reports a deadlock only when no scheduler can move a task.
   - With a FIFO queue of ready tasks, no ready task waits forever (W7).
-  - A `select` branch that is ready at `k` calls in a row, for `k` branches, is chosen in one of
-    them (M3).
+  - M3: `select` starts its search at the index after the one that it chose last time. A branch
+    that can continue at each of `k` calls in a row, for `k` branches, is chosen in one of them.
 - **A typed layer.** References, `&` and `&mut`, structs, raw pointers, `SharedCell`, `Send` and
   `Sync` (S1 to S4), M5 and T3. The theorem: a well-typed program follows the footprint rule of
   step 6. It is a syntactic proof, not a semantic model as in RustBelt.
@@ -176,9 +176,8 @@ We decided these on 2026-10-19.
 1. **The first error is the failure whose CAS on the slot succeeded** (F3).
 1. **The interleaving machine waits** until the progress model needs it. Steps 0 to 5 use the
    weak memory layer.
+1. **`select` is round robin** (M3, #1898). Its bound is a theorem of the progress model.
 
 ## Open questions for the waiting-tasks note
 
-1. **M3.** "A new index each time" gives a bound only for a round-robin start. A random start
-   gives only a probability.
 1. **W7 and T7** are promises of progress. They wait for the progress model.
