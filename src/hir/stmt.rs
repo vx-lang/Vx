@@ -437,6 +437,7 @@ impl<'a> TypeChecker<'a> {
         let prev_expected = self.expected_type.take();
         self.expected_type = ty_ann.clone();
         let ty = self.check_expr_type_flag(expr, consume);
+        let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, ty_ann.as_ref());
         self.expected_type = prev_expected;
         self.current_assignment_target = None;
 
@@ -1163,6 +1164,7 @@ impl<'a> TypeChecker<'a> {
         // value the name no longer owns; both stay refused.
         let mut owner_before = None;
         let mut moved_fields_before = Vec::new();
+        let moved_before = self.moved_snapshot();
         if op.is_none() {
             if let Expr::Identifier(id) = lhs {
                 owner_before = self.drops_owner_state(id.name.as_ref());
@@ -1249,6 +1251,8 @@ impl<'a> TypeChecker<'a> {
                 );
             }
         }
+        // The right-hand side is read before the write, so `o = o` still reads a moved `o`.
+        self.restore_moved(moved_before);
         // `r = v` gives `r` a new value, so the borrows `r` held end, unless `v` reads `r`.
         if let (None, Expr::Identifier(id)) = (op, &*lhs) {
             let mut reads_target = false;
@@ -1268,6 +1272,7 @@ impl<'a> TypeChecker<'a> {
         }
         let mut rhs_ty =
             self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume && !copies_into_tensor);
+        rhs_ty = crate::hir::check::operators::round_narrow_arithmetic(rhs, rhs_ty, Some(&lhs_ty));
         self.current_assignment_target = None;
         // `*r = &mut y`, with `r` bound to `&mut x`: `r` reaches the borrows `x` now holds.
         if let (Some(var), Expr::Dereference(d)) = (self.store_target_var_of(lhs), &*lhs) {
@@ -1308,6 +1313,9 @@ impl<'a> TypeChecker<'a> {
                 let depth = self.scope_depth_of(&id.name);
                 self.reach_borrows_of(&id.name, rhs, depth);
             } else {
+                if let Some((root, path)) = Self::extract_base_and_path(lhs) {
+                    self.unconsume_field(&root, &path);
+                }
                 self.drops_note_place_assign(lhs, &lhs_ty, lhs.span().line, &moved_fields_before);
             }
         }
@@ -1316,8 +1324,24 @@ impl<'a> TypeChecker<'a> {
             if !self.check_restricted_operands(op, &lhs_ty, &rhs_ty, &span) {
                 return;
             }
+            let narrow = [&lhs_ty, &rhs_ty]
+                .iter()
+                .find_map(|t| Self::scalar_elem(t).filter(|e| e.is_narrow_float()));
+            if let Some(elem) = narrow {
+                let symbol = crate::hir::check::operators::binary_op_symbol(op);
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3052,
+                    format!(
+                        "`{symbol}=` on `{elem}` values is not supported. Write `x = x {symbol} y`, \
+                         which computes in f32 and rounds once to the type of `x`"
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&span)),
+                );
+                return;
+            }
         }
-        if !self.is_assignable(&lhs_ty, &rhs_ty) {
+        // A moved variable reads as `Unknown`, and E4001 already reported it.
+        if rhs_ty != Type::Unknown && !self.is_assignable(&lhs_ty, &rhs_ty) {
             // Named types and a location, like every other type error: this fires on a
             // narrowing store into half storage, where the fix is to write the `as` the
             // language requires rather than to guess what was meant.
@@ -1615,6 +1639,7 @@ impl<'a> TypeChecker<'a> {
         let prev_expected = self.expected_type.take();
         self.expected_type = Some(return_type.clone());
         let ty = self.check_expr_type_flag(expr, consume);
+        let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, Some(return_type));
         self.expected_type = prev_expected;
         self.drops_exit("return", span.line, false);
 

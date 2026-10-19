@@ -236,6 +236,8 @@ pub(crate) fn scalar_type_bits(ty_text: &str) -> Option<u32> {
         return Some(bits);
     }
     match ty_text {
+        "f4E2M1FN" => Some(4),
+        "f8E4M3FN" | "f8E5M2" => Some(8),
         "f16" | "bf16" => Some(16),
         "f32" => Some(32),
         "f64" => Some(64),
@@ -245,7 +247,10 @@ pub(crate) fn scalar_type_bits(ty_text: &str) -> Option<u32> {
 
 /// Whether an MLIR type spelling is a float type.
 pub(crate) fn is_float_text(ty_text: &str) -> bool {
-    matches!(ty_text, "f16" | "bf16" | "f32" | "f64")
+    matches!(
+        ty_text,
+        "f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f16" | "bf16" | "f32" | "f64"
+    )
 }
 
 /// A drop waiting for the value of the statement it precedes.
@@ -610,9 +615,31 @@ impl<'c> MeliorGenerator<'c> {
             return Ok(block.append_operation(cast_op).result(0)?.into());
         }
 
-        let is_float = |t: Type<'c>| {
-            t == self.f32_ty || t == self.f64_ty || t == self.f16_ty || t == self.bf16_ty
-        };
+        let is_float = |t: Type<'c>| is_float_text(&t.to_string());
+
+        // Any other pair of float types, which includes every pair with an fp8 or fp4 side. Two
+        // different types of one width (`f8e4m3` and `f8e5m2`) go through f32, which holds every
+        // value of both, so the value rounds only once.
+        if is_float(from_ty) && is_float(to_ty) && from_ty != to_ty {
+            let from_bits = scalar_type_bits(&from_ty.to_string()).unwrap_or(0);
+            let to_bits = scalar_type_bits(&to_ty.to_string()).unwrap_or(0);
+            let convert =
+                |op: &str, v: Value<'c, 'c>, ty: Type<'c>| -> Result<Value<'c, 'c>, LowerError> {
+                    let op = melior::ir::operation::OperationBuilder::new(op, self.loc())
+                        .add_operands(&[v])
+                        .add_results(&[ty])
+                        .build()?;
+                    Ok(block.append_operation(op).result(0)?.into())
+                };
+            return match from_bits.cmp(&to_bits) {
+                std::cmp::Ordering::Greater => convert("arith.truncf", val, to_ty),
+                std::cmp::Ordering::Less => convert("arith.extf", val, to_ty),
+                std::cmp::Ordering::Equal => {
+                    let wide = convert("arith.extf", val, self.f32_ty)?;
+                    convert("arith.truncf", wide, to_ty)
+                }
+            };
+        }
 
         // A `bool` is `i1`, and `sitofp` would make `true` into -1.0.
         let is_number_int = |t: Type<'c>| melior::ir::TypeLike::is_integer(&t) && t != self.i1_ty;
@@ -1655,8 +1682,9 @@ impl<'c> MeliorGenerator<'c> {
                     return Ok(out);
                 }
                 // The block the statement hands back is never reached, and nothing will be
-                // lowered into it, but it still needs a terminator.
-                if let Some(b) = out.filter(|b| b.first_operation().is_none()) {
+                // lowered into it, but it still needs a terminator. It may hold the placeholder
+                // value of an `unsafe` block.
+                if let Some(b) = out.filter(|b| b.terminator().is_none()) {
                     b.append_operation(
                         melior::ir::operation::OperationBuilder::new(
                             "llvm.unreachable",
@@ -1826,7 +1854,7 @@ impl<'c> MeliorGenerator<'c> {
     /// caller falls back to a conservative default. This replaces `SizeOfExpr::lower`'s old hardcoded
     /// `8` for aggregates, which under-sized a `Vec<struct>`'s element buffer (a `Vec<Vec<T>>` UB). (#242)
     pub(crate) fn type_size_align(&self, ty: &syntax::Type, depth: u32) -> Option<(usize, usize)> {
-        use crate::layout::{align_up, scalar_size_align};
+        use crate::layout::scalar_size_align;
         if depth > 32 {
             return None; // guard against a pathological/cyclic nesting
         }
@@ -1838,21 +1866,57 @@ impl<'c> MeliorGenerator<'c> {
             syntax::Type::Pinned(inner, _) | syntax::Type::Verified(inner) => {
                 self.type_size_align(inner, depth)
             }
-            syntax::Type::GenericInstance(base, _) => self.type_size_align(base, depth),
-            syntax::Type::Struct(name, _) => {
-                let base = name.as_ref().split('<').next().unwrap_or(name.as_ref());
-                let decl = self.structs.get(base)?;
-                let mut offset = 0usize;
-                let mut align = 1usize;
-                for (_, fty) in &decl.fields {
-                    let (fsize, falign) = self.type_size_align(fty, depth + 1)?;
-                    offset = align_up(offset, falign) + fsize;
-                    align = align.max(falign);
+            // `Holder<i64>`: the fields with `T` replaced by `i64`.
+            syntax::Type::GenericInstance(base, args) => {
+                let syntax::Type::Struct(name, _) = &**base else {
+                    return self.type_size_align(base, depth);
+                };
+                let decl = self.structs.get(name)?;
+                let mapping = decl
+                    .generics
+                    .iter()
+                    .zip(args)
+                    .map(|(param, arg)| (param.name().into(), arg.clone()))
+                    .collect();
+                let fields: Vec<_> = decl
+                    .fields
+                    .iter()
+                    .map(|(_, t)| t.substitute(&mapping))
+                    .collect();
+                self.fields_size_align(&fields, depth)
+            }
+            // A generic instance stored by its name, such as `Holder<i64>`.
+            syntax::Type::Struct(name, _) if name.contains('<') => {
+                let mut lexer = crate::lexer::Lexer::new(name);
+                let tokens = lexer.tokenize();
+                let parsed = crate::parser::Parser::new(&tokens, name)
+                    .parse_type()
+                    .ok()?;
+                match parsed {
+                    syntax::Type::GenericInstance(..) => self.type_size_align(&parsed, depth),
+                    _ => None,
                 }
-                Some((align_up(offset, align), align))
+            }
+            syntax::Type::Struct(name, _) => {
+                let decl = self.structs.get(name)?;
+                let fields: Vec<_> = decl.fields.iter().map(|(_, t)| t.clone()).collect();
+                self.fields_size_align(&fields, depth)
             }
             _ => None,
         }
+    }
+
+    /// Byte size and alignment of a struct with these field types, in order.
+    fn fields_size_align(&self, fields: &[syntax::Type], depth: u32) -> Option<(usize, usize)> {
+        use crate::layout::align_up;
+        let mut offset = 0usize;
+        let mut align = 1usize;
+        for fty in fields {
+            let (fsize, falign) = self.type_size_align(fty, depth + 1)?;
+            offset = align_up(offset, falign) + fsize;
+            align = align.max(falign);
+        }
+        Some((align_up(offset, align), align))
     }
 
     ///

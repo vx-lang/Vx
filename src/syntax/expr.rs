@@ -720,6 +720,10 @@ pub fn diverges_on_every_path(expr: &Expr) -> bool {
             else_block: Some(else_block),
             ..
         }) => block_returns(then_block) && block_returns(else_block),
+        // `unsafe { ..; return x; }` as a function's last statement.
+        Expr::UnsafeBlock(UnsafeBlockExpr {
+            stmts, ret: None, ..
+        }) => block_returns(stmts),
         // Deliberately not `match`. A `match` whose arms all return already compiled correctly --
         // the rewrite to `return <match>` is harmless there, because the arm blocks carry their own
         // terminators and the chain never falls through to the merge block. Treating it as

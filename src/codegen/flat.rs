@@ -64,6 +64,9 @@ fn elem_from_mlir_scalar(s: &str) -> Option<ElementType> {
         "bf16" => BF16,
         "f32" => F32,
         "f64" => F64,
+        "f8E4M3FN" => F8E4M3,
+        "f8E5M2" => F8E5M2,
+        "f4E2M1FN" => F4E2M1,
         "i1" => Bool,
         "i4" => I4,
         "i8" => I8,
@@ -97,6 +100,8 @@ fn int_bits(e: &ElementType) -> Option<u32> {
 fn float_bits(e: &ElementType) -> Option<u32> {
     use ElementType::*;
     Some(match e {
+        F4E2M1 => 4,
+        F8E4M3 | F8E5M2 => 8,
         F16 | BF16 => 16,
         F32 => 32,
         F64 => 64,
@@ -149,7 +154,8 @@ fn cast_op(src: &ElementType, tgt: &ElementType) -> Option<&'static str> {
 fn elem_of_gid(gid: TypeId) -> Option<ElementType> {
     use ElementType::*;
     [
-        F16, F32, F64, BF16, I4, U4, I8, U8, I16, U16, I32, U32, I64, U64, I128, U128, USize, Bool,
+        F16, F32, F64, BF16, F8E4M3, F8E5M2, F4E2M1, I4, U4, I8, U8, I16, U16, I32, U32, I64, U64,
+        I128, U128, USize, Bool,
     ]
     .into_iter()
     .find(|e| scalar_gid(e) == gid)

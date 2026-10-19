@@ -396,7 +396,7 @@ fn nominal_struct_name(ty: &syntax::Type) -> Option<crate::symbol::Symbol> {
 
 /// For `place.member = rhs` where `place` is itself a field (`a.b`), a struct literal that
 /// copies every field of `place` but `member`, which is `rhs`. `None` when `place` is not a
-/// field of a variable path, or is a generic struct.
+/// field of a variable path, or is a generic struct with no type arguments.
 fn struct_with_one_field_replaced(
     gen: &MeliorGenerator<'_>,
     place: &Expr,
@@ -414,11 +414,19 @@ fn struct_with_one_field_replaced(
     if !matches!(root, Expr::Identifier(_)) {
         return None;
     }
-    let syntax::Type::Struct(name, _) = gen.infer_ast_type(place)? else {
-        return None;
+    // `name` is the type as written, `Holder<i64>` for a generic struct. `base` is `Holder`.
+    let ty = gen.infer_ast_type(place)?;
+    let base = match &ty {
+        syntax::Type::Struct(name, _) => name.as_ref().split('<').next()?.to_string(),
+        syntax::Type::GenericInstance(base, _) => match &**base {
+            syntax::Type::Struct(name, _) => name.to_string(),
+            _ => return None,
+        },
+        _ => return None,
     };
-    let decl = gen.structs.get(&name)?;
-    if !decl.generics.is_empty() {
+    let name: crate::symbol::Symbol = ty.to_string().into();
+    let decl = gen.structs.get(base.as_str())?;
+    if !decl.generics.is_empty() && !name.contains('<') {
         return None;
     }
     let fields = decl

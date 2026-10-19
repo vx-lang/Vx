@@ -3947,17 +3947,17 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
         } else {
             gen.i32_ty
         };
-        let ty_str = ty.to_string();
-        if ty_str.contains("f32")
-            || ty_str.contains("f64")
-            || ty_str.contains("f16")
-            || ty_str.contains("bf16")
-        {
+        if crate::codegen::generator::is_float_text(&ty.to_string()) {
+            let v = val_str.parse::<f64>().unwrap();
+            let v = ast_ty_opt
+                .as_ref()
+                .and_then(|e| e.nearest_narrow_value(v))
+                .unwrap_or(v);
             let op = OperationBuilder::new("arith.constant", gen.loc())
                 .add_results(&[ty])
                 .add_attributes(&[(
                     Identifier::new(gen.context, "value"),
-                    FloatAttribute::new(gen.context, ty, val_str.parse::<f64>().unwrap()).into(),
+                    FloatAttribute::new(gen.context, ty, v).into(),
                 )])
                 .build()?;
             let op_ref = block.append_operation(op);

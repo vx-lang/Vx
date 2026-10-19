@@ -375,6 +375,11 @@ pub enum DiagnosticCode {
     /// A `match` pattern that names a variant of another enum than the value matched, such as
     /// `Other::Red` in a `match` on a `Color`. Write the variant with the matched value's enum.
     E3051,
+    /// Arithmetic on fp8 or fp4 values (`f8e4m3`, `f8e5m2` or `f4e2m1`) with no written result
+    /// type, as in `print(a * b)`. The compiler computes in f32 and rounds once to the written
+    /// type, so the program must write it: `let c : f32 = a * b;`. Also `+=` and the other
+    /// compound operators on these values, and any operator on tensors of them.
+    E3052,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

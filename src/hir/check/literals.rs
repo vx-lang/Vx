@@ -800,7 +800,9 @@ impl<'a> TypeChecker<'a> {
                                     );
                                     self.reborrow_mut_variable(id.name.as_ref(), &holder);
                                 }
-                                if !self.is_assignable(expected_type, &f_type) && !self.speculating
+                                if f_type != Type::Unknown
+                                    && !self.is_assignable(expected_type, &f_type)
+                                    && !self.speculating
                                 {
                                     self.errors.push(format!(
                                             "Type mismatch in struct initialization for field '{}'. Expected {}, got {}",

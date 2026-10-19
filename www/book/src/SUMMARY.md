@@ -19,6 +19,7 @@
 - [Contracts and verification](contracts.md)
 - [Unsafe and FFI](unsafe-and-ffi.md)
 - [Automatic differentiation](autodiff.md)
+- [Low-precision numbers](low-precision-numbers.md)
 
 # Heterogeneous computing
 

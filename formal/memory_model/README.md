@@ -30,6 +30,9 @@ The script also checks *DRF-SC*. A test without a data race, whose accesses are 
 sequentially consistent, must give the same final states on `vx.cat` as on `sequential.cat`.
 Such a program cannot see how the hardware reorders memory accesses.
 
+CI (`.github/workflows/formal.yml`) runs this script, `run_lean.py` and the Lean build on each
+pull request that changes `formal/`. memalloy needs local patches, so CI does not run it.
+
 ## Comparing with RC11 and AArch64
 
 [memalloy](https://github.com/johnwickerson/memalloy) searches for a small execution that one
@@ -53,7 +56,7 @@ current GPUs.
 
 ## Proofs in Lean
 
-herd7 and memalloy check small executions. `lean/` proves two theorems for executions of any
+herd7 and memalloy check small executions. `lean/` proves these theorems for executions of any
 size, on the CPU part of the model:
 
 - `consistent_of_seqConsistent`: the model allows every interleaving of the threads.
@@ -61,18 +64,34 @@ size, on the CPU part of the model:
   no fences, and only sequentially consistent atomics, then it is an interleaving (DRF-SC).
 - `Program.drf_sc`: DRF-SC for programs. If no interleaving of a program has a data race, then
   every execution of the program that the model allows is an interleaving.
+- `Prog.drf_sc`: the same theorem for the programs of a small core language.
 
 For `Program.drf_sc`, a program is the set of its executions, with three properties that any
 language with threads has. A prefix of an execution is an execution. The coherence order is any
 order. A read at the end of its thread can read any write to its place. The theorem also needs
-sequentially consistent atomics, no fences, and places that are either atomic or not atomic.
+sequentially consistent atomics and no fences. A place can have both atomic and plain accesses:
+`atomic_read_of_a_plain_write.litmus` shows such a race.
+
+The core language in `Thread.lean` and `Language.lean` has registers, loads, stores, `fetchAdd`,
+`cas`, fences, `if` and loops. Each access names its memory order. A read-modify-write is a read
+and then a write, so a thread can stop between them. All threads start together. `Language.lean`
+shows that the executions of these programs have the three properties. `Prog.drf_sc` then needs
+one rule on the code, which a type checker can check: `Prog.SeqCstOnly` (only `sc` atomics, no
+fences).
+
+`Tasks.lean` adds `spawn` and `join`, with the meaning that #1860 chose for `tasks { .. }`. A
+`spawn` is an `sc` write of a flag, and the task waits for that flag before it starts. A task
+sets another flag at its end, and `join` waits for it. `fork_hb` and `join_hb` show that in each
+run, the code before a `spawn` comes before the task, and the task comes before the code after
+its `join`. `LanguageExample.lean` builds an execution of message passing with release and
+acquire, and one where the main code starts two tasks and joins them, with plain data.
 
 ```bash
 lake -d formal/memory_model/lean build    # Lean 4.35, no other libraries
 ```
 
 The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
-`run_lean.py` checks that Lean and `vx.cat` agree on the 12 tests without scopes and barriers:
+`run_lean.py` checks that Lean and `vx.cat` agree on the 13 tests without scopes and barriers:
 
 ```bash
 python3 formal/memory_model/run_lean.py    # needs lake and herd7
@@ -126,10 +145,8 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - The rule for sequentially consistent atomics ignores scopes.
 - herd7 checks each test completely, but only the tests. memalloy checks every execution up to 5
   or 6 events.
-- `Program.drf_sc` assumes that each place is either atomic or not atomic. The proof does not
-  cover a race between an atomic read and a plain write to the same place.
-- No language gives `Program.drf_sc` its programs yet. The core language of #1850 must show the
-  three properties of a program.
+- The core language has no functions and no references. A task can not start other tasks, and
+  a `spawn` in a loop does not start a new task on each pass.
 - The Lean model has no scopes and no barriers.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.
