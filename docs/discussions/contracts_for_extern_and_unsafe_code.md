@@ -48,6 +48,7 @@ strict extern "C" ensures thread_safe {
       ensures return >= -1
       ensures reads_only(s)
       ensures writes_only(buf, n)
+      ensures !keeps(s)
       ensures !keeps(buf)
       ensures blocks
       ensures allocates(Memory::Host) == 0;
