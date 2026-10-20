@@ -162,6 +162,7 @@ def forkJoin : TaskProg where
     | _ => .skip
   count := 2
   flags := 3
+  marks := 3
 
 theorem forkJoin_ok : forkJoin.Ok where
   main := by simp [forkJoin, Stmt.Below, input, out1, out2]
@@ -211,7 +212,9 @@ def forkJoinLabels : Nat → Nat → Label
 
 theorem forkJoin_main : Trace (forkJoin.toProg.code 0) 7 (forkJoinLabels 0) :=
   .visible (.seq .store) <| .silent .seq_skip <|
+    .silent (.seq (.seq (.assignAt 0 rfl Nat.one_pos))) <| .silent (.seq (.seq_skip)) <|
     .visible (.seq (.storeAt 0 rfl Nat.one_pos)) <| .silent .seq_skip <|
+    .silent (.seq (.seq (.assignAt 0 rfl Nat.one_pos))) <| .silent (.seq (.seq_skip)) <|
     .visible (.seq (.storeAt 0 rfl Nat.one_pos)) <| .silent .seq_skip <|
     .waitAt_seq 0 rfl Nat.one_pos <| .waitAt_seq 0 rfl Nat.one_pos <|
     .visible (.seq (.load 6)) <| .silent .seq_skip <| .visible (.load 7) .stop
@@ -270,6 +273,7 @@ def nested : TaskProg where
     | _ => .skip
   count := 2
   flags := 2
+  marks := 3
 
 theorem nested_ok : nested.Ok where
   main := by simp [nested, Stmt.Below]
@@ -312,12 +316,14 @@ def nestedLabels : Nat → Nat → Label
 
 theorem nested_main : Trace (nested.toProg.code 0) 4 (nestedLabels 0) :=
   .visible (.seq .store) <| .silent .seq_skip <|
+    .silent (.seq (.seq (.assignAt 0 rfl Nat.one_pos))) <| .silent (.seq (.seq_skip)) <|
     .visible (.seq (.storeAt 0 rfl Nat.one_pos)) <| .silent .seq_skip <|
     .waitAt_seq 0 rfl Nat.one_pos <| .visible (.load 6) .stop
 
 theorem nested_task0 : Trace (nested.toProg.code 1) 4 (nestedLabels 1) := by
   rw [TaskProg.code_succ, TaskProg.taskCode_of_lt (by decide)]
-  exact .wait_seq <| .visible (.seq (.seq (.storeAt 0 rfl Nat.one_pos))) <|
+  exact .wait_seq <| .silent (.seq (.seq (.seq (.assignAt 0 rfl Nat.one_pos)))) <| .silent (.seq (.seq (.seq_skip))) <|
+    .visible (.seq (.seq (.storeAt 0 rfl Nat.one_pos))) <|
     .silent (.seq .seq_skip) <| .visible (.seq (.waitAt 0 1 rfl Nat.one_pos)) <|
     .silent .seq_skip <| .visible .store .stop
 
@@ -374,6 +380,7 @@ def spawnLoop : TaskProg where
     | _ => .skip
   count := 2
   flags := 2
+  marks := 3
 
 theorem spawnLoop_ok : spawnLoop.Ok where
   main := by simp [spawnLoop, Stmt.Below]
@@ -417,11 +424,13 @@ def spawnLoopLabels : Nat → Nat → Label
 /-- The two passes of the loop, and then the two reads. -/
 theorem spawnLoop_main : Trace (spawnLoop.toProg.code 0) 6 (spawnLoopLabels 0) :=
   .silent (.seq .loop) <| .silent (.seq (.ite_true (by decide))) <|
+    .silent (.seq (.seq (.seq (.seq (.assignAt 0 rfl (by decide)))))) <| .silent (.seq (.seq (.seq (.seq_skip)))) <|
     .visible (.seq (.seq (.seq (.storeAt 0 rfl (by decide))))) <|
     .silent (.seq (.seq .seq_skip)) <|
     .visible (.seq (.seq (.seq (.waitAt 0 1 rfl (by decide))))) <|
     .silent (.seq (.seq .seq_skip)) <| .silent (.seq (.seq .assign)) <| .silent (.seq .seq_skip) <|
     .silent (.seq .loop) <| .silent (.seq (.ite_true (by decide))) <|
+    .silent (.seq (.seq (.seq (.seq (.assignAt 1 rfl (by decide)))))) <| .silent (.seq (.seq (.seq (.seq_skip)))) <|
     .visible (.seq (.seq (.seq (.storeAt 1 rfl (by decide))))) <|
     .silent (.seq (.seq .seq_skip)) <|
     .visible (.seq (.seq (.seq (.waitAt 1 1 rfl (by decide))))) <|

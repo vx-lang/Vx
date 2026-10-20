@@ -91,6 +91,12 @@ passing with release and acquire, and one that passes a message through an array
 data, it also builds one where the main code starts two tasks and joins them, one where a task
 starts a task, and one with a `spawn` and a `join` in each pass of a loop.
 
+`Blocks.lean` adds `tasks { .. }`. Each `spawn` sets a register, the mark of its task. At its end,
+the block joins each task that has its mark set, so it waits only for the tasks that it started.
+`block_hb` shows that each task that a block started happens before the code after the block.
+`BlocksExample.lean` applies `block_hb` to a run, and shows a block that starts no task and does
+not wait.
+
 ```bash
 lake -d formal/memory_model/lean build    # Lean 4.35, no other libraries
 ```
@@ -150,8 +156,9 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - The rule for sequentially consistent atomics ignores scopes.
 - herd7 checks each test completely, but only the tests. memalloy checks every execution up to 5
   or 6 events.
-- The core language has no functions and no references. It has no `tasks` block, so the joins at
-  the end of a block are in the code already.
+- The core language has no functions and no references.
+- `block_hb` needs a block whose body holds no other `tasks` block. A task can hold its own
+  blocks.
 - The Lean model has no scopes and no barriers.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.

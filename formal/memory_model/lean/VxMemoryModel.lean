@@ -11,4 +11,6 @@ import VxMemoryModel.Program
 import VxMemoryModel.Thread
 import VxMemoryModel.Language
 import VxMemoryModel.Tasks
+import VxMemoryModel.Blocks
 import VxMemoryModel.LanguageExample
+import VxMemoryModel.BlocksExample

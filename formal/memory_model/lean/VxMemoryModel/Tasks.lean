@@ -12,8 +12,9 @@ Each task has two flags: `start t` and `done t`. `spawn t` sets `start t` with a
 the task first waits for that flag. At its end the task sets `done t`, and `join t` waits for it.
 So a fork is a release and a join is an acquire, as in `../../vx.cat`.
 
-The compiler adds a `join` at the end of a `tasks` block for each task that the block did not
-join. The code below is the code after that step.
+Each `spawn` also sets a register, the mark of its task, so the code knows which tasks it
+started. At its end, a `tasks` block joins each task that has its mark set. `Blocks.lean` shows
+that each task that a block started happens before the code after the block.
 
 `fork_hb` and `join_hb` show that each run orders a task after the code before its `spawn`, and
 before the code after its `join`. This holds for a task at any depth of the tree.
@@ -28,8 +29,8 @@ def Stmt.Below (n tasks : Nat) : Stmt → Prop
   | loadAt _ base len _ _ | storeAt base len _ _ _ | waitAt base len _ => base + len ≤ n
   | spawnAt base len _ | joinAt base len _ => base + len ≤ tasks
   | seq s t | ite _ s t => s.Below n tasks ∧ t.Below n tasks
-  | loop _ s => s.Below n tasks
-  | skip | fence _ | assign .. => True
+  | loop _ s | tasksBlock s => s.Below n tasks
+  | skip | fence _ | assign .. | assignAt .. => True
 
 /-- `s` writes the place `y` only in its last step. -/
 def Stmt.EndsWith (y : Nat) : Stmt → Prop
@@ -51,7 +52,7 @@ theorem Step.endsWith {y s regs a s' regs'} (h : Step s regs a s' regs') (hs : s
     have h' := (accessRule _).step h hs.1
     exact ⟨⟨h'.1, hs.2⟩, fun l hl hk hy => absurd hy (h'.2 l hl hk)⟩
   | seq_skip => exact ⟨hs.2, nofun⟩
-  | load | store | cas_ne | rmwStore | fence | assign | loadAt | storeAt =>
+  | load | store | cas_ne | rmwStore | fence | assign | loadAt | storeAt | assignAt =>
     exact ⟨trivial, fun _ _ _ _ => rfl⟩
   | waitAt _ v =>
     refine ⟨?_, fun l hl hk => by cases hl; cases hk⟩
@@ -99,6 +100,9 @@ structure TaskProg where
   count : Nat
   /-- The code uses the places below `flags`. The places from `flags` up hold the flags. -/
   flags : Nat
+  /-- The code uses the registers below `marks`. The register `marks + t` is the mark of task
+  `t`. -/
+  marks : Nat
 
 namespace TaskProg
 
@@ -108,10 +112,30 @@ variable (P : TaskProg)
 def start (t : Nat) : Nat := P.flags + t
 def done (t : Nat) : Nat := P.flags + P.count + t
 
-/-- Replace `spawn` and `join` with the writes and the waits of the flags. -/
+/-- The tasks that `s` can start, but not in a `tasks` block inside `s`. -/
+def _root_.Vx.Stmt.spawnIds : Stmt → List Nat
+  | .spawnAt base len _ => (List.range len).map (base + ·)
+  | .seq s t | .ite _ s t => s.spawnIds ++ t.spawnIds
+  | .loop _ s => s.spawnIds
+  | _ => []
+
+/-- Clear the marks of the tasks `ids`. -/
+def clearMarks (ids : List Nat) : Stmt :=
+  ids.foldr (fun t s => .seq (.assign (P.marks + t) (.const 0)) s) .skip
+
+/-- Join each task of `ids` that has its mark set. -/
+def joinMarked (ids : List Nat) : Stmt :=
+  ids.foldr (fun t s => .seq (.ite (.reg (P.marks + t)) (.waitAt (P.done t) 1 (.const 0)) .skip) s)
+    .skip
+
+/-- Replace `spawn` and `join` with the writes and the waits of the flags. A `spawn` sets the
+mark of its task first. -/
 def lower : Stmt → Stmt
-  | .spawnAt base len i => .storeAt (P.start base) len i (.const 1) .sc
+  | .spawnAt base len i =>
+    .seq (.assignAt (P.marks + base) len i (.const 1)) (.storeAt (P.start base) len i (.const 1) .sc)
   | .joinAt base len i => .waitAt (P.done base) len i
+  | .tasksBlock s => .seq (P.clearMarks s.spawnIds) (.seq (lower s) (P.joinMarked s.spawnIds))
+  | .assignAt base len i e => .assignAt base len i e
   | .seq s u => .seq (lower s) (lower u)
   | .ite c s u => .ite c (lower s) (lower u)
   | .loop c s => .loop c (lower s)
@@ -146,6 +170,47 @@ structure Ok : Prop where
 
 variable {P}
 
+theorem spawnIds_lt {n tasks} {s : Stmt} (h : s.Below n tasks) : ∀ u ∈ s.spawnIds, u < tasks := by
+  induction s with
+  | spawnAt =>
+    intro u hu
+    simp only [Stmt.spawnIds, List.mem_map, List.mem_range] at hu
+    obtain ⟨j, hj, rfl⟩ := hu
+    simp only [Stmt.Below] at h
+    omega
+  | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 =>
+    intro u hu
+    rcases List.mem_append.1 hu with hu | hu
+    · exact ih1 h.1 u hu
+    · exact ih2 h.2 u hu
+  | loop _ _ ih => exact ih h
+  | _ => nofun
+
+theorem clearMarks_accesses (p : Kind → Order → Nat → Prop) (ids : List Nat) :
+    (P.clearMarks ids).Accesses p := by
+  induction ids with
+  | nil => trivial
+  | cons _ _ ih => exact ⟨trivial, ih⟩
+
+theorem joinMarked_accesses {p : Kind → Order → Nat → Prop} {ids : List Nat}
+    (h : ∀ u ∈ ids, p .read .sc (P.done u)) : (P.joinMarked ids).Accesses p := by
+  induction ids with
+  | nil => trivial
+  | cons u _ ih =>
+    refine ⟨⟨fun j hj => ?_, trivial⟩, ih fun v hv => h v (List.mem_cons_of_mem _ hv)⟩
+    obtain rfl : j = 0 := by omega
+    exact h u List.mem_cons_self
+
+theorem clearMarks_seqCstOnly (ids : List Nat) : (P.clearMarks ids).SeqCstOnly := by
+  induction ids with
+  | nil => trivial
+  | cons _ _ ih => exact ⟨trivial, ih⟩
+
+theorem joinMarked_seqCstOnly (ids : List Nat) : (P.joinMarked ids).SeqCstOnly := by
+  induction ids with
+  | nil => trivial
+  | cons _ _ ih => exact ⟨⟨trivial, trivial⟩, ih⟩
+
 theorem taskCode_of_lt {t} (ht : t < P.count) :
     P.taskCode t = .seq (.wait (P.start t)) (.seq (P.lower (P.task t)) (.signal (P.done t))) :=
   by simp [taskCode, ht]
@@ -158,9 +223,12 @@ theorem lower_accesses {s : Stmt} (h : s.Below P.flags P.count) :
         k = .read ∧ ∃ u < P.count, x = P.done u) := by
   induction s with
   | spawnAt base =>
-    refine fun j hj => Or.inr (Or.inr ⟨rfl, Or.inl ⟨rfl, base + j, ?_, ?_⟩⟩)
+    refine ⟨trivial, fun j hj => Or.inr (Or.inr ⟨rfl, Or.inl ⟨rfl, base + j, ?_, ?_⟩⟩)⟩
     · simp only [Stmt.Below] at h; omega
     · simp only [start]; omega
+  | tasksBlock s ih =>
+    refine ⟨clearMarks_accesses _ _, ih h, joinMarked_accesses fun u hu => ?_⟩
+    exact Or.inr (Or.inr ⟨rfl, Or.inr ⟨rfl, u, spawnIds_lt (s := s) h u hu, rfl⟩⟩)
   | joinAt base =>
     refine fun j hj => Or.inr (Or.inr ⟨rfl, Or.inr ⟨rfl, base + j, ?_, ?_⟩⟩)
     · simp only [Stmt.Below] at h; omega
@@ -172,12 +240,13 @@ theorem lower_accesses {s : Stmt} (h : s.Below P.flags P.count) :
   | fence => exact Or.inl rfl
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 h.1, ih2 h.2⟩
   | loop _ _ ih => exact ih h
-  | skip | assign => trivial
+  | skip | assign | assignAt => trivial
 
 theorem lower_seqCstOnly {s : Stmt} (h : s.SeqCstOnly) : (P.lower s).SeqCstOnly := by
   induction s with
-  | spawnAt => exact Or.inr rfl
+  | spawnAt => exact ⟨trivial, Or.inr rfl⟩
   | joinAt => trivial
+  | tasksBlock _ ih => exact ⟨clearMarks_seqCstOnly _, ih h, joinMarked_seqCstOnly _⟩
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 h.1, ih2 h.2⟩
   | loop _ _ ih => exact ih h
   | _ => exact h

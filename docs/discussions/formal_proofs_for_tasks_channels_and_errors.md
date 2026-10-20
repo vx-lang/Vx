@@ -57,11 +57,14 @@ Step 1a:
 
 Step 1b:
 
-- `Blocks.lean`: `Stmt.tasksBlock`, and the lowering `addJoins`. It joins each task that the block
-  did not join (T2). Today `Tasks.lean` takes the program after the compiler adds these joins.
-- `block_hb`: each access of each task that a block started happens before the code after the
-  block.
-- `addJoins_ok`: the lowering keeps `TaskProg.Ok`.
+- `Stmt.tasksBlock`. Each `spawn` sets a register, the mark of its task. The block clears the
+  marks at its start. At its end, it joins each task that has its mark set (T2).
+- The marks are registers, not places in memory. The model has no initial values and no total
+  `co`, so a thread can read an old write of its own to a place.
+- `block_hb` (`Blocks.lean`): each access of each task that a block started happens before the
+  code after the block. The body must not hold another `tasks` block.
+- `TaskProg.Ok` allows `tasksBlock`, and `fork_hb`, `join_hb` and `drf_sc` cover its lowering. So
+  `addJoins_ok` is not a separate theorem.
 
 The model has no captured values. When a later step adds them, it must follow T4: a task copies
 each `Copy` variable that it only reads, at its `spawn`. It borrows a variable in place only when

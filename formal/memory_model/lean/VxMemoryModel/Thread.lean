@@ -74,6 +74,11 @@ inductive Stmt where
   | spawnAt (base len : Nat) (i : Expr)
   /-- Wait for the task `base + i` to finish. `Tasks.lean` gives its meaning. -/
   | joinAt (base len : Nat) (i : Expr)
+  /-- Put the value of `e` in the register `base + i`, for an `i` below `len`. -/
+  | assignAt (base len : Nat) (i e : Expr)
+  /-- `tasks { s }`: at its end, wait for each task that `s` started. `Tasks.lean` gives its
+  meaning. -/
+  | tasksBlock (s : Stmt)
 
 /-- Start the task `t`. -/
 abbrev Stmt.spawn (t : Nat) : Stmt := .spawnAt t 1 (.const 0)
@@ -117,6 +122,8 @@ inductive Step : Stmt → (Nat → Int) → Option Label → Stmt → (Nat → I
   | waitAt {base len i regs} (j : Nat) (v : Int) : i.eval regs = (j : Int) → j < len →
     Step (.waitAt base len i) regs (some ⟨.read, .sc, base + j, v, false⟩)
       (if v = 0 then .waitAt base len i else .skip) regs
+  | assignAt {base len i e regs} (j : Nat) : i.eval regs = (j : Int) → j < len →
+    Step (.assignAt base len i e) regs none .skip (update regs (base + j) (e.eval regs))
 
 /-- `Runs s regs l`: the code `s` can make the accesses `l` and then stop. -/
 inductive Runs : Stmt → (Nat → Int) → List Label → Prop
@@ -247,7 +254,7 @@ def Stmt.SeqCstOnly : Stmt → Prop
   | loadAt _ _ _ _ o | storeAt _ _ _ _ o => o = .plain ∨ o = .sc
   | fence _ => False
   | seq s t | ite _ s t => s.SeqCstOnly ∧ t.SeqCstOnly
-  | loop _ s => s.SeqCstOnly
+  | loop _ s | tasksBlock s => s.SeqCstOnly
   | _ => True
 
 def Label.SeqCstOnly (l : Label) : Prop := l.kind ≠ .fence ∧ (l.order = .plain ∨ l.order = .sc)
@@ -292,7 +299,7 @@ def seqCstRule : Rule where
     | ite_true => exact fun hs => ⟨hs.1, nofun⟩
     | ite_false => exact fun hs => ⟨hs.2, nofun⟩
     | loop => exact fun hs => ⟨⟨⟨hs, hs⟩, trivial⟩, nofun⟩
-    | assign => exact fun _ => ⟨trivial, nofun⟩
+    | assign | assignAt => exact fun _ => ⟨trivial, nofun⟩
     | wait v =>
       refine fun _ => ⟨?_, fun l hl => by cases hl; exact ⟨nofun, Or.inr rfl⟩⟩
       by_cases hv : v = 0 <;> simp [hv, Stmt.SeqCstOnly]
@@ -313,7 +320,7 @@ def Stmt.Accesses (p : Kind → Order → Nat → Prop) : Stmt → Prop
   | waitAt base len _ => ∀ j < len, p .read .sc (base + j)
   | seq s t | ite _ s t => s.Accesses p ∧ t.Accesses p
   | loop _ s => s.Accesses p
-  | skip | assign .. | spawnAt .. | joinAt .. => True
+  | skip | assign .. | spawnAt .. | joinAt .. | assignAt .. | tasksBlock _ => True
 
 def accessRule (p : Kind → Order → Nat → Prop) : Rule where
   onStmt := Stmt.Accesses p
@@ -326,7 +333,7 @@ def accessRule (p : Kind → Order → Nat → Prop) : Rule where
       exact fun hs => ⟨trivial, fun l hl => by cases hl; exact hs j hj⟩
     | cas_ne => exact fun hs => ⟨trivial, fun l hl => by cases hl; exact hs.1⟩
     | fetchAdd | cas_eq => exact fun hs => ⟨hs.2, fun l hl => by cases hl; exact hs.1⟩
-    | assign => exact fun _ => ⟨trivial, nofun⟩
+    | assign | assignAt => exact fun _ => ⟨trivial, nofun⟩
     | seq _ ih =>
       intro hs
       exact ⟨⟨(ih hs.1).1, hs.2⟩, (ih hs.1).2⟩
