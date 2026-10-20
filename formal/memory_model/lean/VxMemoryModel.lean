@@ -16,3 +16,5 @@ import VxMemoryModel.Blocks
 import VxMemoryModel.LanguageExample
 import VxMemoryModel.BlocksExample
 import VxMemoryModel.CounterExample
+import VxMemoryModel.Channel
+import VxMemoryModel.ChannelExample
