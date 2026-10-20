@@ -1,0 +1,25 @@
+//===- gpu_op_that_host_code_calls.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `block_dim` holds `gpu.block_dim`, and `main` calls it on the CPU. The CPU cannot run that
+// op, so the compile fails. The compiler does not replace the body: only a function that GPU
+// kernels alone call gets a CPU copy that stops the program.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: LLVM Translation failed for operation: gpu.block_dim
+
+fn block_dim() -> i32 {
+  return mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
+    %t = gpu.block_dim x
+    %r = "arith.index_cast"(%t) : (index) -> i32
+    macro.yield %r : i32
+  };
+}
+
+fn main() -> i32 {
+  return block_dim();
+}

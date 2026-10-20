@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
+#include "mlir/Dialect/LLVMIR/FunctionCallUtils.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -3692,6 +3693,103 @@ struct ConvertVxToLLVMPass
 
     for (gpu::GPUModuleOp m : deviceModules)
       m.erase();
+
+    // A function that only GPU code calls can hold GPU ops that the CPU
+    // cannot run, such as `gpu.shuffle`. Its device copy went with the device
+    // module. On the host, only the host copy of a kernel calls it, and that
+    // copy runs only when no GPU runs the kernel. So the host copy of such a
+    // function stops the program with a message. A function that host code
+    // calls keeps its GPU ops, and translation still fails on them.
+    {
+      ModuleOp module = getOperation();
+      auto holdsGpuOps = [](func::FuncOp f) {
+        WalkResult r = f.walk([](Operation *op) {
+          Dialect *d = op->getDialect();
+          return d && d->getNamespace() == "gpu" ? WalkResult::interrupt()
+                                                 : WalkResult::advance();
+        });
+        return r.wasInterrupted();
+      };
+      // The functions that only kernel bodies reach: each use is in a kernel
+      // or in another such function. A function with no use is not one.
+      llvm::SmallPtrSet<Operation *, 8> kernelOnly;
+      for (func::FuncOp f : module.getOps<func::FuncOp>())
+        if (!f.isExternal())
+          kernelOnly.insert(f);
+      for (bool changed = true; changed;) {
+        changed = false;
+        for (Operation *f :
+             SmallVector<Operation *>(kernelOnly.begin(), kernelOnly.end())) {
+          auto uses = SymbolTable::getSymbolUses(f, module);
+          bool onlyKernels = uses.has_value() && !uses->empty();
+          if (uses)
+            for (const SymbolTable::SymbolUse &use : *uses) {
+              Operation *user = use.getUser();
+              if (user->getParentOfType<vx::KernelOp>())
+                continue;
+              auto caller = user->getParentOfType<func::FuncOp>();
+              if (!caller || !kernelOnly.contains(caller))
+                onlyKernels = false;
+            }
+          if (!onlyKernels) {
+            kernelOnly.erase(f);
+            changed = true;
+          }
+        }
+      }
+      // Of those, the ones that hold GPU ops or call one that does. So the
+      // message names the function the program wrote, not an `mlir!` block.
+      llvm::SmallPtrSet<Operation *, 8> gpuOnly;
+      for (Operation *f : kernelOnly)
+        if (holdsGpuOps(cast<func::FuncOp>(f)))
+          gpuOnly.insert(f);
+      for (bool changed = true; changed;) {
+        changed = false;
+        for (Operation *f :
+             SmallVector<Operation *>(gpuOnly.begin(), gpuOnly.end()))
+          if (auto uses = SymbolTable::getSymbolUses(f, module))
+            for (const SymbolTable::SymbolUse &use : *uses) {
+              auto caller = use.getUser()->getParentOfType<func::FuncOp>();
+              if (caller && kernelOnly.contains(caller) &&
+                  gpuOnly.insert(caller).second)
+                changed = true;
+            }
+      }
+      MLIRContext *ctx = &getContext();
+      auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+      for (Operation *op : gpuOnly) {
+        auto f = cast<func::FuncOp>(op);
+        f.getBody().dropAllReferences();
+        f.getBody().getBlocks().clear();
+        Block *entry = f.addEntryBlock();
+        OpBuilder b = OpBuilder::atBlockEnd(entry);
+        Location loc = f.getLoc();
+        // To stderr with `write`, because `abort` does not flush stdout.
+        std::string text = ("vx: '" + f.getSymName() +
+                            "' runs only on a GPU, but no GPU ran the kernel "
+                            "that calls it, so the CPU did\n")
+                               .str();
+        Value message = LLVM::createGlobalString(
+            loc, b, ("__vx_gpu_only_" + f.getSymName()).str(), text,
+            LLVM::Linkage::Internal);
+        auto i32 = IntegerType::get(ctx, 32);
+        auto i64 = IntegerType::get(ctx, 64);
+        auto write =
+            LLVM::lookupOrCreateFn(b, module, "write", {i32, ptrTy, i64}, i64);
+        auto abortFn = LLVM::lookupOrCreateFn(b, module, "abort", {},
+                                              LLVM::LLVMVoidType::get(ctx));
+        if (succeeded(write)) {
+          Value fd = b.create<LLVM::ConstantOp>(loc, i32, 2);
+          Value size = b.create<LLVM::ConstantOp>(loc, i64, text.size());
+          b.create<LLVM::CallOp>(loc, *write, ValueRange{fd, message, size});
+        }
+        if (succeeded(abortFn))
+          b.create<LLVM::CallOp>(loc, *abortFn, ValueRange{});
+        else
+          b.create<LLVM::Trap>(loc);
+        b.create<LLVM::UnreachableOp>(loc);
+      }
+    }
 
     // What remains after the device twin leaves is HOST code -- including the
     // host clone of every kernel body, which KernelOpLowering below inlines
