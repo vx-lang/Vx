@@ -156,7 +156,7 @@ impl BorrowCx {
     /// around it can see that variable. A loop body that names a variable from outside it
     /// answers yes too, because its next pass names it again.
     fn is_variable_used_after(&self, name: &str) -> bool {
-        if self.running_tasks.contains(name) {
+        if self.is_running_task(name) {
             return true;
         }
         let blocks = self.block_liveness.iter().zip(&self.current_stmt_idx);
@@ -185,8 +185,10 @@ impl BorrowCx {
         self.running_tasks.remove(task);
     }
 
+    /// Whether `name` is a running task, or the hold of a running task on what it copied.
     pub(crate) fn is_running_task(&self, name: &str) -> bool {
-        self.running_tasks.contains(name)
+        let task = name.split_once('/').map_or(name, |(task, _)| task);
+        self.running_tasks.contains(task)
     }
 
     // --- borrow records ---

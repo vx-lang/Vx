@@ -47,10 +47,10 @@ fork to the join (C3). So:
   the next pass, so it is an error. A value that each pass moves into its own task is valid.
 - a task may move a value of the function into itself. The function cannot use it again.
 - a task copies a `Copy` value that it only reads, at the fork (T4). Then the copy needs `Send`,
-  the variable is not borrowed, and it may end before the task does. So this is valid:
+  and the variable may end before the task does. So this is valid:
   `for i in 0..n { spawn { work(i) }; }`. A copied reference keeps what it points at borrowed
-  until the join. The code around the task may then write the variable. The task keeps the
-  value it copied, so the compiler warns about a write before the join (W1034).
+  until the join. The code around the task must not write the variable until the join (K4 in
+  `waiting_tasks_channels_and_task_errors.md`).
 
 **T6. A panic in a task stops the program**, as `panic` does today. Vx does not unwind, so
 `join()` never reports a panic. A task that can fail returns a `Result` (F1).
@@ -197,5 +197,8 @@ unsound:
 - A join ends the borrows of its task only when it always runs after the `spawn`, in the same
   block. Any other join leaves them until the end of the `tasks` block.
 - `spawn on(T)` in a `tasks` block (T8) keeps its old meaning.
+- A task does not move a local that ends before its join (K2). It reports E4014 instead.
+
+A closure does not follow K4 yet (#1938).
 
 Tasks that wait, channels and errors from tasks are in `waiting_tasks_channels_and_task_errors.md`.

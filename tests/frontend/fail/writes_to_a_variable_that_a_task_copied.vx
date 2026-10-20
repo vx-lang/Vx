@@ -1,0 +1,145 @@
+//===- writes_to_a_variable_that_a_task_copied.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A task copies a `Copy` value that it only reads, at its `spawn`. Until the task's `join()`, or
+// the end of its `tasks` block, the code around the task must not write the variable. So the
+// copy always has the current value of the variable, and the task cannot see an old value.
+
+struct Point {
+  x : i32,
+}
+
+impl Copy for Point {}
+
+impl Point {
+  fn move_right(self : &mut Point) -> void {
+    self.x += 1;
+  }
+}
+
+fn set_to(p : &mut i32, value : i32) -> void {
+  *p = value;
+}
+
+// CHECK: Error[E4009] at [[@LINE+7]]:5: `x` is assigned while it is borrowed, and the borrow is used after the assignment. A task that is not joined yet copied it, so it must not change until the task ends.
+fn write_before_the_join() -> i32 {
+  let mut x = 1;
+  return tasks {
+    let h = spawn {
+      x
+    };
+    x = 2;
+    h.join() + x
+  };
+}
+
+// The task would never see `stop = true`.
+// CHECK: Error[E4009] at [[@LINE+10]]:5: `stop` is assigned while it is borrowed, and the borrow is used after the assignment. A task that is not joined yet copied it, so it must not change until the task ends.
+fn stop_flag() -> void {
+  let mut stop = false;
+  tasks {
+    spawn {
+      let mut spins = 0;
+      while !stop {
+        spins += 1;
+      }
+    };
+    stop = true;
+  }
+}
+
+// A write through `&mut`, a `&mut self` method call and a write in another task are writes too.
+// CHECK: Error[E4003] at [[@LINE+12]]:12: Cannot borrow 'n' as mutable because it is also borrowed as immutable. A task that is not joined yet copied it, so it must not change until the task ends.
+// CHECK: Error[E4003] at [[@LINE+12]]:7: Cannot borrow 'p' as mutable because it is also borrowed as immutable. A task that is not joined yet copied it, so it must not change until the task ends.
+// CHECK: Error[E4009] at [[@LINE+13]]:7: `n` is assigned while it is borrowed, and the borrow is used after the assignment. A task that is not joined yet copied it, so it must not change until the task ends.
+fn other_writes() -> i32 {
+  let mut n = 0;
+  let mut p = Point {
+    x: 0
+  };
+  tasks {
+    spawn {
+      n + p.x;
+    };
+    set_to(&mut n, 5);
+    p.move_right();
+    spawn {
+      n = 7;
+    };
+  }
+  return n + p.x;
+}
+
+// The task of one pass still runs when the next pass writes `x`.
+// CHECK: Error[E4014] at [[@LINE+4]]:5: a task that this loop starts reads 'x', and the pass that starts it does not join it
+fn write_in_the_next_pass() -> void {
+  let mut x = 0;
+  tasks {
+    for i in 0..3 {
+      x += i;
+      spawn {
+        x * 2;
+      };
+    }
+  }
+}
+
+// These writes are valid. `x` is written before the `spawn`, and after the `join()` on the
+// right side. The task copies `y0`, not `y`. `z` is written after the end of the `tasks` block.
+// `i` ends before its task does, which is valid for a copy.
+fn valid_writes() -> i32 {
+  let mut x = 1;
+  let mut y = 1;
+  let mut z = 1;
+  tasks {
+    x = 2;
+    let h = spawn {
+      x
+    };
+    x = h.join() + 1;
+    let y0 = y;
+    let g = spawn {
+      y0
+    };
+    y = 5;
+    g.join();
+    spawn {
+      z + 1;
+    };
+    for i in 0..3 {
+      spawn {
+        i * 2;
+      };
+    }
+  }
+  z = 0;
+  return x + y + z;
+}
+
+// The hold of a task on a copied variable ends with the variable. A later variable of the same
+// name is free.
+fn a_copied_variable_ends_first(c : bool) -> void {
+  tasks {
+    if c {
+      let a = 1;
+      spawn {
+        a + 1;
+      };
+    }
+    let mut a = 2;
+    a = 3;
+  }
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// The errors above are all the errors.
+// CHECK: {{^}}Semantic check failed on {{.*}}: 6 error(s) emitted

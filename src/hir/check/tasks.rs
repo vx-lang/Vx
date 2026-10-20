@@ -43,17 +43,6 @@ pub(crate) struct TaskCx {
     joining: bool,
     /// The tasks started in a loop that is in their `tasks` block.
     loop_tasks: Vec<LoopTask>,
-    /// The variables that running tasks copied at their `spawn`.
-    copies: Vec<Copied>,
-}
-
-/// A variable that a task copied at its `spawn`. The task does not see a later write to it.
-struct Copied {
-    task: String,
-    name: String,
-    /// The scope that declares the variable.
-    depth: usize,
-    spawn: Span,
 }
 
 enum Frame {
@@ -144,9 +133,17 @@ impl TaskCx {
 /// The name of the borrower that a task's borrows have.
 const TASK_PREFIX: &str = "task#";
 
+/// The end of the borrower name of a task's hold on a variable that it copied.
+const COPY_SUFFIX: &str = "/copy";
+
 /// A sentence to add to a borrow error when the borrow `b` belongs to a task.
 pub(crate) fn held_by_task_note(b: &crate::hir::env::BorrowRecord) -> &'static str {
     match &b.borrower_name {
+        Some(name) if name.starts_with(TASK_PREFIX) && name.ends_with(COPY_SUFFIX) => {
+            " A task that is not joined yet copied it, so it must not change until the task \
+             ends. To give the task the value that it has now, copy it into a new variable \
+             before the `spawn`. To share a value that changes, use an atomic."
+        }
         Some(name) if name.starts_with(TASK_PREFIX) => {
             " A task that is not joined yet uses it. A task holds what it uses until its \
              `join()`, or until the end of its `tasks` block."
@@ -269,7 +266,6 @@ impl TypeChecker<'_> {
         for task in &tasks {
             self.borrow.end_task(task);
         }
-        self.tasks.copies.retain(|c| !tasks.contains(&c.task));
         self.tasks.loop_tasks.retain(|t| !tasks.contains(&t.task));
         self.tasks.handles.retain(|h| h.depth < scope_len - 1);
         self.pop_scope();
@@ -397,12 +393,6 @@ impl TypeChecker<'_> {
                 continue;
             }
             if take == Take::Copies {
-                self.tasks.copies.push(Copied {
-                    task: id.clone(),
-                    name: name.to_string(),
-                    depth: var_depth,
-                    spawn: span,
-                });
                 // A copied reference keeps what it points at borrowed until the task ends.
                 for (base, _) in self.borrow.borrowed_by(name) {
                     let base_depth = self.lookup_with_depth(&base).map(|(_, _, d)| d);
@@ -411,6 +401,18 @@ impl TypeChecker<'_> {
                     }
                 }
                 self.borrow.copy_borrows(name, &id, tasks_scope_len);
+                // The code around the task must not write the variable until the task ends, so
+                // the copy is always the current value. The variable may end first.
+                self.borrow.record(
+                    name,
+                    crate::hir::env::BorrowRecord {
+                        is_mut: false,
+                        scope_depth: tasks_scope_len.max(var_depth + 1),
+                        borrower_name: Some(format!("{id}{COPY_SUFFIX}")),
+                        path: Vec::new(),
+                    },
+                );
+                uses.push((name.to_string(), var_depth, false));
                 continue;
             }
             // The variable's scope ends before the `tasks` block, and nothing joins the task
@@ -622,7 +624,6 @@ impl TypeChecker<'_> {
         if self.tasks.ending_joins.contains(&span) && !in_other_task {
             self.borrow.end_task(&task);
             self.tasks.loop_tasks.retain(|t| t.task != task);
-            self.tasks.copies.retain(|c| c.task != task);
         }
         if !self.speculating {
             *expr = receiver;
@@ -697,32 +698,18 @@ impl TypeChecker<'_> {
         }
     }
 
-    /// W1034: the program writes `name` while a task runs that copied `name` at its `spawn`.
-    pub(crate) fn warn_write_to_copied(&mut self, name: &str, at: &Span) {
-        if self.speculating || self.tasks.copies.is_empty() {
-            return;
-        }
-        let Some(depth) = self.lookup_with_depth(name).map(|(_, _, d)| d) else {
-            return;
-        };
-        let Some(c) = self
-            .tasks
-            .copies
+    /// The tasks whose ending join is in `rhs`. An assignment runs its right side first, so
+    /// these tasks end before the assignment writes.
+    pub(crate) fn tasks_joined_in(&self, rhs: &Expr) -> Vec<String> {
+        self.tasks
+            .handles
             .iter()
-            .find(|c| c.name == name && c.depth == depth)
-        else {
-            return;
-        };
-        let message = format!(
-            "the task on line {} copied '{name}' at its `spawn`, so the task does not see this \
-             write. Join the task before the write, or share the value through an atomic",
-            c.spawn.line
-        );
-        self.errors.warn(
-            DiagnosticCode::W1034,
-            message,
-            Some(crate::diagnostic::SourceSpan::from_ast_span(at)),
-        );
+            .filter(|h| {
+                self.lookup_with_depth(&h.name).map(|(_, _, d)| d) == Some(h.depth)
+                    && join_in(rhs, &h.name).is_some_and(|s| self.tasks.ending_joins.contains(&s))
+            })
+            .map(|h| h.task.clone())
+            .collect()
     }
 
     fn task_error(&mut self, code: DiagnosticCode, message: String, at: &Span) {

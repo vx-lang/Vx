@@ -3119,9 +3119,6 @@ impl<'a> TypeChecker<'a> {
                     );
                     if takes_mut_self && !matches!(base_ty, Type::Borrow { .. } | Type::Pointer(..))
                     {
-                        if let Some(root) = &receiver_root {
-                            self.warn_write_to_copied(root, &method_span);
-                        }
                         self.changed_vars.extend(receiver_root.clone());
                     }
                     // `x.drop()` would run `drop`, and `x` would be dropped again when its owner

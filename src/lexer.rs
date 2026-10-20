@@ -259,6 +259,7 @@ impl<S, C> TokenTypeBase<S, C> {
                 | TokenTypeBase::Continue
                 | TokenTypeBase::Return
                 | TokenTypeBase::Spawn
+                | TokenTypeBase::Tasks
                 | TokenTypeBase::On
                 | TokenTypeBase::Where
                 | TokenTypeBase::Transfer

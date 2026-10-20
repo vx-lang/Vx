@@ -129,6 +129,13 @@ section 3.
 **K3.** To move a local that the body only borrows, the body writes `let t = tx;`. Vx needs no
 `spawn move`. K1 and K2 read only the body of the task, so they are local facts.
 
+**K4. A copy never goes stale.** A task copies a `Copy` value that it only reads, at its `spawn`
+(T4). Until the task's join, or the end of its `tasks` block, the code around the task may not
+write that variable, as if the task borrowed it, but the variable may end first. So the task
+always sees the variable's current value. `for i in 0..n { spawn { work(i) }; }` is valid.
+`spawn { work(x) }; x += 1;` is an error: write `let x0 = x;` before the `spawn`, or share the
+value through an atomic or a channel. A closure follows the same rule until its last use (#1938).
+
 ## 3. Channels (#1864)
 
 <!-- vx-doctest: skip (proposed syntax) -->

@@ -1135,7 +1135,8 @@ impl<'a> TypeChecker<'a> {
     /// Refuse writing to a variable, or a field or element of it, while a `&` borrow of that
     /// part is still used afterwards (E4009): the borrow would see the value change under it.
     /// A live `&mut` borrow is already refused as a use of the variable (E4002).
-    fn check_assign_while_borrowed(&mut self, lhs: &Expr) {
+    /// `joined` holds the tasks that the right side joins before the write.
+    fn check_assign_while_borrowed(&mut self, lhs: &Expr, joined: &[String]) {
         if self.speculating || self.borrow.skip_borrow_check {
             return;
         }
@@ -1152,7 +1153,11 @@ impl<'a> TypeChecker<'a> {
             // A borrow with no borrower is a temporary, `f(&x)`, over by the end of its statement.
             .find(|b| {
                 !b.is_mut
-                    && b.borrower_name.is_some()
+                    && b.borrower_name.as_deref().is_some_and(|n| {
+                        !joined
+                            .iter()
+                            .any(|t| n.split('/').next() == Some(t.as_str()))
+                    })
                     && crate::hir::places::paths_may_alias(&path, &b.path)
             })
             .map(crate::hir::check::tasks::held_by_task_note);
@@ -1204,7 +1209,8 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        self.check_assign_while_borrowed(lhs);
+        let joined = self.tasks_joined_in(rhs);
+        self.check_assign_while_borrowed(lhs, &joined);
         self.record_change(lhs);
         if let Some(root) = self.read_only_root(lhs) {
             self.report_read_only(&root, "it cannot be assigned", &lhs.span());
