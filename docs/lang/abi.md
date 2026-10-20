@@ -279,7 +279,9 @@ launches it calls `cuFuncSetAttribute(f, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SI
 the `sharedMemBytes` of `cuLaunchKernel`. Vx's own launch does both.
 
 A kernel whose region sets `grid([..]) block(n)` also has `launch`: `grid`, one entry for each
-axis, and `block`. An entry is a number, or `{"param": "rows"}` for the value of a parameter.
+axis, and `block`. An entry is a number, `{"param": "rows"}` for the value of a parameter, or
+`{"computed": "(rows + 3) / 4"}` for a size that the host computes from parameters and numbers.
+A size is not a parameter of the kernel, so a launcher computes it and launches that shape.
 
 With no `launch`, the program that launches the kernel chooses the grid and the block.
 

@@ -214,19 +214,21 @@ static inline int vx_launch_entry_param_count(const char *ptx,
   }
 }
 
-/* One size of a launch shape, from `text`: `#k` is the `i32` value of kernel
-   argument k, and a number is that size. Moves `*text` past the entry and its
-   comma. Returns -1 when argument k is not an `i32`. */
+/* One size of a launch shape, from `text`: `$j` is the `i32` launch value j,
+   which the compiled code puts after the kernel's `num_args` arguments, and a
+   number is that size. Moves `*text` past the entry and its comma. Returns -1
+   when launch value j is not an `i32`. */
 static inline long vx_launch_size(const char **text, void *const *device_args,
                                   const int32_t *arg_tags, int64_t num_args) {
   char *end = NULL;
   long value;
-  if (**text == '#') {
-    long k = strtol(*text + 1, &end, 10);
-    if (k < 0 || k >= num_args || arg_tags[k] != 4) {
+  if (**text == '$') {
+    long j = strtol(*text + 1, &end, 10);
+    /* A shape has at most four sizes. */
+    if (j < 0 || j > 3 || arg_tags[num_args + j] != 4) {
       return -1;
     }
-    value = *(const int32_t *)device_args[k];
+    value = *(const int32_t *)device_args[num_args + j];
   } else {
     value = strtol(*text, &end, 10);
   }

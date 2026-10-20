@@ -9,8 +9,8 @@
 // `grid_index(i)` outside a region with a grid, and an axis that the grid does not have.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK-DAG: E6032] at 28:27: {{.*}}needs a GPU topology, but 'CPU' is not a GPU
-// CHECK-DAG: E6032] at 35:27: a grid size or block size is an `i32`, not f32
+// CHECK-DAG: E6032] at 28:33: {{.*}}needs a GPU topology, but 'CPU' is not a GPU
+// CHECK-DAG: E6032] at 35:43: a grid size or block size is an `i32`, not f32
 // CHECK-DAG: E6032] at 43:11: `grid_index(i)` is valid only in a `spawn` region with `grid([..])`
 // CHECK-DAG: E6032] at 50:11: this grid has 1 axis, so `grid_index(1)` has no axis to give
 
