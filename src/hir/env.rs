@@ -487,6 +487,8 @@ pub struct TypeChecker<'a> {
     /// Set while checking the left-hand side of an assignment (plain or compound): a container
     /// index there is a *store* place, so the `v[i]` -> `v.get(i)` read rewrite must not fire.
     pub(crate) checking_assign_lhs: bool,
+    /// The identifier that `&` or `&mut` takes a reference to, while it is checked.
+    pub(crate) borrowed_name: Option<crate::syntax::Span>,
     /// The identifier being checked is the base of a field access, `p` in `p.b`: a move of
     /// another field, `p.a`, does not stop it.
     pub(crate) checking_field_base: bool,
@@ -553,6 +555,7 @@ impl<'a> TypeChecker<'a> {
             indexed_name: None,
             value_unused: false,
             checking_assign_lhs: false,
+            borrowed_name: None,
             checking_field_base: false,
             next_id: 1,
             current_return_type: None,

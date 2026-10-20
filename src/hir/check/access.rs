@@ -484,7 +484,14 @@ impl<'a> TypeChecker<'a> {
                         // Enforce Topology Boundaries! A reference to a placed tensor is only a
                         // pointer, so naming it reads nothing; indexing and `print` check the
                         // tensor's placement where the data is read.
+                        // A scalar that nothing can write goes to a device region by value, as
+                        // a launch parameter, so where it lives does not matter. A reference to
+                        // it would still point into the memory where it lives.
+                        let by_value = matches!(ty, Type::Scalar(_))
+                            && !self.is_mutable(name.as_ref())
+                            && self.borrowed_name != Some(span);
                         let is_valid = matches!(&ty, Type::Borrow { inner, .. } if inner.placement().is_some())
+                            || by_value
                             || self.transfer_cost_graph.is_type_accessible(
                                 &self.active_topology,
                                 &top,
@@ -1445,7 +1452,12 @@ impl<'a> TypeChecker<'a> {
                 }
                 let old_allow = self.allow_cross_topology;
                 self.allow_cross_topology |= borrows_placed;
+                let old_borrowed = self.borrowed_name.take();
+                if let Expr::Identifier(id) = &**inner {
+                    self.borrowed_name = Some(id.span);
+                }
                 let inner_ty = self.check_expr_type_flag(inner, false);
+                self.borrowed_name = old_borrowed;
                 self.allow_cross_topology = old_allow;
                 // Quiet when a reference to a reference is what was asked for, as in
                 // `let q : &&i64 = &&a;`.
