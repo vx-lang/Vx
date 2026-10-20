@@ -189,9 +189,10 @@ spawn on(Topology::Gpu) grid([rows]) block(256) {
 - `grid([..])` gives the number of blocks on each axis, one to three axes. `block(n)` gives the
   threads of a block. Each size is an `i32`, and the host computes it before the region.
 - `grid_index(i)` is the index of this block on axis `i`, a literal.
-- The region takes each size as a kernel argument. The payload names it in `grid=` and
-  `block=`: `#k` is kernel argument k, and a number is that size. The CUDA runtime launches
-  that shape, and it stops the program on a size that a GPU cannot launch.
+- A size is not a kernel argument. The launch passes each size that is not a number after the
+  kernel's arguments. The payload names the sizes in `grid=` and `block=`: `$j` is launch
+  value j, and a number is that size. The CUDA runtime launches that shape, and it stops the
+  program on a size that a GPU cannot launch.
 - Such a region runs only on a GPU. It must be one that the GPU code generator can take, or
   the compile fails. Its CPU copy, which runs when no GPU took the launch, stops the program
   with a message.

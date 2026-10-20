@@ -2145,12 +2145,16 @@ impl<'a> TypeChecker<'a> {
                     let mut sizes: Vec<&mut Expr> = shape.grid.iter_mut().collect();
                     sizes.push(&mut shape.block);
                     for size in sizes {
+                        let here = match size.span() {
+                            s if s == crate::syntax::Span::default() => at.clone(),
+                            s => Some(crate::diagnostic::SourceSpan::from_ast_span(&s)),
+                        };
                         let ty = self.check_expr_type(size);
                         if !matches!(ty, Type::Scalar(ElementType::I32)) && !self.speculating {
                             self.errors.error_with_code(
                                 crate::diagnostic::DiagnosticCode::E6032,
                                 format!("a grid size or block size is an `i32`, not {ty}"),
-                                at.clone(),
+                                here,
                             );
                         }
                     }
