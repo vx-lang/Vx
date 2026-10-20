@@ -124,6 +124,10 @@ struct DriverApi {
   decltype(&cuOccupancyMaxActiveBlocksPerMultiprocessor)
       OccupancyMaxActiveBlocksPerMultiprocessor;
   decltype(&cuLaunchKernel) LaunchKernel;
+  decltype(&cuCtxGetCurrent) CtxGetCurrent;
+  decltype(&cuCtxGetDevice) CtxGetDevice;
+  decltype(&cuDevicePrimaryCtxRetain) DevicePrimaryCtxRetain;
+  decltype(&cuDevicePrimaryCtxRelease) DevicePrimaryCtxRelease;
 };
 
 /// Loads the driver API once. Returns null and says why if it cannot.
@@ -151,6 +155,11 @@ const DriverApi *load_driver_api() {
     find(d.OccupancyMaxActiveBlocksPerMultiprocessor,
          "cuOccupancyMaxActiveBlocksPerMultiprocessor");
     find(d.LaunchKernel, "cuLaunchKernel");
+    find(d.CtxGetCurrent, "cuCtxGetCurrent");
+    find(d.CtxGetDevice, "cuCtxGetDevice");
+    find(d.DevicePrimaryCtxRetain, "cuDevicePrimaryCtxRetain");
+    // cuda.h maps the name to its second version.
+    find(d.DevicePrimaryCtxRelease, "cuDevicePrimaryCtxRelease_v2");
     return ok ? &d : nullptr;
   }();
   return api;
@@ -295,7 +304,40 @@ int gpu_index(int32_t topology_id) {
 /// saw thirteen of them, reported two devices, and the token comparison agreed
 /// because it was the same computation run twice on one GPU. Both halves of the
 /// evidence passed for a run that never disaggregated anything.
+/// Vx works in the primary context of each GPU, the one that the runtime API
+/// uses (docs/lang/abi.md, section 3.6). A host program that calls Vx with a
+/// context of its own current gives Vx buffers that Vx's kernels cannot use,
+/// and `cudaSetDevice` would replace that context with no message. So stop.
+static void require_primary_context(const char *why) {
+  const DriverApi *d = load_driver_api();
+  CUcontext current = nullptr;
+  if (!d || d->CtxGetCurrent(&current) != CUDA_SUCCESS || !current) {
+    return;
+  }
+  CUdevice device = 0;
+  CUcontext primary = nullptr;
+  if (d->CtxGetDevice(&device) != CUDA_SUCCESS ||
+      d->DevicePrimaryCtxRetain(&primary, device) != CUDA_SUCCESS) {
+    return;
+  }
+  d->DevicePrimaryCtxRelease(device);
+  if (current != primary) {
+    fprintf(stderr,
+            "[Vx CUDA] FATAL: a %s found a CUDA context that is not the "
+            "primary context of GPU %d.\n"
+            "          Vx uses the primary context. Make it current with "
+            "cuDevicePrimaryCtxRetain and\n"
+            "          cuCtxSetCurrent, and allocate the buffers that you give "
+            "Vx in it.\n",
+            why, (int)device);
+    abort();
+  }
+}
+
 bool select_device(int32_t topology_id, const char *why) {
+  if (cuda_available()) {
+    require_primary_context(why);
+  }
   int index = gpu_index(topology_id);
   if (index < 0) {
     return true;
