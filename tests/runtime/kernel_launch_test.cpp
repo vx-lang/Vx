@@ -243,6 +243,50 @@ void entry_parameter_counting() {
 
 } // namespace
 
+/// `grid([..]) block(n)` (#252): the payload names the sizes, and a size `#k`
+/// is the `i32` value of kernel argument k.
+void launch_shapes() {
+  int32_t rows = 7;
+  int64_t wide = 7;
+  float data[4] = {};
+  void *ptr = data;
+  void *args[3] = {&ptr, &rows, &wide};
+  const int32_t tags[3] = {0, 4, 5};
+  unsigned grid[3] = {0, 0, 0};
+  unsigned block = 0;
+  char why[160] = "";
+
+  const char shaped[] = "k\0grid=#1,2\0block=128\0";
+  check(vx_launch_shape(shaped, sizeof shaped, args, tags, 3, grid, &block, why,
+                        sizeof why) == 1,
+        "a payload with grid= and block= has a shape");
+  check(grid[0] == 7 && grid[1] == 2 && grid[2] == 1,
+        "the grid is argument 1, then 2, then 1 for the missing axis");
+  check(block == 128, "the block is the number in block=");
+
+  const char plain[] = "k\0launch=64\0";
+  check(vx_launch_shape(plain, sizeof plain, args, tags, 3, grid, &block, why,
+                        sizeof why) == 0,
+        "a payload without grid= has no shape");
+
+  const char big_block[] = "k\0grid=1\0block=2048\0";
+  check(vx_launch_shape(big_block, sizeof big_block, args, tags, 3, grid,
+                        &block, why, sizeof why) == -1 &&
+            strstr(why, "1 to 1024 threads"),
+        "a block of more than 1024 threads is refused");
+
+  const char empty_grid[] = "k\0grid=0\0block=32\0";
+  check(vx_launch_shape(empty_grid, sizeof empty_grid, args, tags, 3, grid,
+                        &block, why, sizeof why) == -1 &&
+            strstr(why, "grid axis 0 has 0 blocks"),
+        "a grid axis with no blocks is refused");
+
+  const char not_i32[] = "k\0grid=#2\0block=32\0";
+  check(vx_launch_shape(not_i32, sizeof not_i32, args, tags, 3, grid, &block,
+                        why, sizeof why) == -1,
+        "a size from an argument that is not an i32 is refused");
+}
+
 int main() {
   widths();
   the_four_operand_signature();
@@ -250,6 +294,7 @@ int main() {
   scalars_pass_by_address();
   refusals();
   entry_parameter_counting();
+  launch_shapes();
 
   if (failures != 0) {
     fprintf(stderr, "%d check(s) failed\n", failures);

@@ -1,0 +1,57 @@
+//===- launch_shapes_that_are_not_valid.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// E6032: `grid([..]) block(n)` on a topology that is not a GPU, a size that is not an `i32`,
+// `grid_index(i)` outside a region with a grid, and an axis that the grid does not have.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK-DAG: E6032] at 28:27: {{.*}}needs a GPU topology, but 'CPU' is not a GPU
+// CHECK-DAG: E6032] at 35:27: a grid size or block size is an `i32`, not f32
+// CHECK-DAG: E6032] at 43:11: `grid_index(i)` is valid only in a `spawn` region with `grid([..])`
+// CHECK-DAG: E6032] at 50:11: this grid has 1 axis, so `grid_index(1)` has no axis to give
+
+Memory HBM {
+  capacity: 40 GiB, bandwidth: 1555 GB/s, managed: explicit, scope: device
+}
+Topology Gpu {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::CPU_DRAM, Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s
+}
+
+fn on_the_cpu(n: i32) -> void {
+  spawn on(Topology::CPU) grid([n]) block(32) {
+    print(grid_index(0));
+  }
+  return;
+}
+
+fn a_float_size(n: f32) -> void {
+  spawn on(Topology::Gpu) grid([1]) block(n) {
+    print(grid_index(0));
+  }
+  return;
+}
+
+fn no_grid() -> void {
+  spawn on(Topology::Gpu) {
+    print(grid_index(0));
+  }
+  return;
+}
+
+fn an_axis_too_many(n: i32) -> void {
+  spawn on(Topology::Gpu) grid([n]) block(32) {
+    print(grid_index(1));
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

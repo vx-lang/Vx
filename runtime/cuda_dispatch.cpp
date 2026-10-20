@@ -926,7 +926,19 @@ bool run_device_image(const void *payload, size_t payload_size,
      enough blocks to cover the rest; the grid stride absorbs any remainder
      and any cap. */
   unsigned grid = 1, block = 1;
-  if (const char *launch = vx_payload_field(payload, payload_size, "launch=")) {
+  unsigned shape[3] = {1, 1, 1};
+  char why[160];
+  const int set_by_program =
+      vx_launch_shape(payload, payload_size, device_args, arg_tags, num_args,
+                      shape, &block, why, sizeof why);
+  if (set_by_program < 0) {
+    fprintf(stderr, "[Vx CUDA] FATAL: %s: %s\n", kernel_name, why);
+    abort();
+  }
+  if (set_by_program) {
+    grid = shape[0];
+  } else if (const char *launch =
+                 vx_payload_field(payload, payload_size, "launch=")) {
     char *rest = nullptr;
     long trip = strtol(launch, &rest, 10);
     if (rest && *rest == ',') {
@@ -969,8 +981,9 @@ bool run_device_image(const void *payload, size_t payload_size,
     cudaEventRecord(t0);
   }
   CUresult rc = driver().LaunchKernel(
-      fn, grid, 1, 1, block, 1, 1, dynamic_shared_bytes(payload, payload_size),
-      nullptr, params.params, nullptr);
+      fn, grid, shape[1], shape[2], block, 1, 1,
+      dynamic_shared_bytes(payload, payload_size), nullptr, params.params,
+      nullptr);
   if (rc != CUDA_SUCCESS) {
     const char *name = nullptr;
     driver().GetErrorName(rc, &name);

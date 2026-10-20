@@ -1368,6 +1368,20 @@ impl<'r> Lowerer<'r> {
                 // `barrier()` (Vx#379): an effect, not a call -- there is no callee anywhere.
                 // The checker typed it i32, so hand back a constant for the value position
                 // nobody should be using it in.
+                // `grid_index(i)` (#252): the checker made sure that `i` is an axis of the grid.
+                if fc.name.as_ref() == "grid_index" {
+                    let Some(Expr::Number(n)) = fc.args.first() else {
+                        return Err(crate::emitter_gap!());
+                    };
+                    let axis = n.value.parse::<u64>().map_err(|_| crate::emitter_gap!())?;
+                    return Ok(self.emit_value(
+                        Opcode::GridIndex,
+                        Register(0),
+                        Register(0),
+                        ElementType::I32,
+                        axis,
+                    ));
+                }
                 if fc.name.as_ref() == "barrier" {
                     self.emit_effect(Opcode::Barrier, Register(0), Register(0), 0);
                     return Ok(self.emit_value(
@@ -2960,12 +2974,24 @@ impl<'r> Lowerer<'r> {
         let top_id = crate::arch::topology_dispatch_id(&s.top) as u32 as u64;
         let name = self.strings.len() as u64 + 1;
         self.strings.push(s.top.display_name());
+        // The host computes the launch shape before the region starts.
+        let mut shape = Vec::new();
+        if let Some(l) = &s.launch {
+            for (axis, size) in l.grid.iter().enumerate() {
+                let v = self.lower_expr(size)?;
+                shape.push((axis as u64, self.read_rank0(v)));
+            }
+            let v = self.lower_expr(&l.block)?;
+            shape.push((3, self.read_rank0(v)));
+        }
+        // A program that sets the launch shape maps the work to threads itself.
         self.lower_region(
             top_id | (name << 32),
+            &shape,
             &s.stmts,
             s.ret.as_deref(),
             want_value,
-            true,
+            s.launch.is_none(),
         )
     }
 
@@ -2988,6 +3014,7 @@ impl<'r> Lowerer<'r> {
         };
         self.lower_region(
             id as u32 as u64,
+            &[],
             &u.stmts,
             u.ret.as_deref(),
             want_value,
@@ -2996,16 +3023,21 @@ impl<'r> Lowerer<'r> {
     }
 
     /// The `Spawn`/`SpawnEnd` region of `lower_spawn` and `lower_task_region`. `imm` is the
-    /// `Spawn` immediate. `offer_parallel` offers the region's loops to the device pipeline.
+    /// `Spawn` immediate, and `shape` the launch sizes, each with its axis. `offer_parallel`
+    /// offers the region's loops to the device pipeline.
     fn lower_region(
         &mut self,
         imm: u64,
+        shape: &[(u64, Val)],
         stmts: &[Statement],
         ret: Option<&Expr>,
         want_value: bool,
         offer_parallel: bool,
     ) -> Lowered<Option<Val>> {
         self.emit_effect(Opcode::Spawn, Register(0), Register(0), imm);
+        for (axis, v) in shape {
+            self.emit_effect(Opcode::LaunchDim, v.reg, Register(0), *axis);
+        }
         // Two proofs are offered, FLAT FIRST. The flat grid-stride (#251) is the measured
         // record shape -- one thread per iteration, slice bodies vectorized -- so a region it
         // covers must keep it: since the block-row write rule (Vx#379 R3) landed, a plain
