@@ -63,6 +63,7 @@ need no extra words, and the rare case should be visible in the code.</p>
 task needs its own index, and it reads data that all the tasks share. In Vx, the loop looks like
 this:</p>
 
+<!-- vx-doctest: skip (tasks and spawn come with #1925) -->
 <pre><code><span class="k">fn</span> <span class="f">work</span>(i : <span class="t">i32</span>) -&gt; <span class="t">void</span> {
   <span class="f">println!</span>(<span class="n">"task {}"</span>, i);
 }
@@ -194,6 +195,7 @@ references, and structs that implement <code>Copy</code>.</li>
 <p>Here one <code>tasks</code> block does all three. It borrows <code>v</code>, copies
 <code>half</code> and moves <code>w</code>, with no annotation:</p>
 
+<!-- vx-doctest: skip (tasks and spawn come with #1925) -->
 <pre><code><span class="k">import</span> std::vec;
 
 <span class="k">fn</span> <span class="f">numbers</span>(n : <span class="t">i32</span>) -&gt; <span class="t">Vec</span>&lt;<span class="t">i32</span>&gt; {
@@ -246,6 +248,7 @@ never sees the new value. The first version of the change that adds tasks
 (<a href="https://github.com/vx-lang/Vx/pull/1925">#1925</a>) copied <code>stop</code> here, so
 this program compiled and the task never stopped:</p>
 
+<!-- vx-doctest: skip (tasks and spawn come with #1925) -->
 <pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
   <span class="k">let</span> <span class="k">mut</span> stop = <span class="k">false</span>;
   <span class="k">let</span> <span class="k">mut</span> spins = <span class="n">0</span>;
@@ -281,6 +284,7 @@ error speaks of a borrow. The stop flag is now an error, with a hint:</p>
 <p>Each rare case needs one line, and that line shows the intent. To give the task the value as it
 is now, the program copies it first:</p>
 
+<!-- vx-doctest: skip (tasks and spawn come with #1925) -->
 <pre><code><span class="k">fn</span> <span class="f">work</span>(x : <span class="t">i32</span>) -&gt; <span class="t">void</span> {
   <span class="f">println!</span>(<span class="n">"work {}"</span>, x);
 }
