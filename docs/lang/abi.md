@@ -269,6 +269,9 @@ has `name` and `type` as the Vx source writes them, `mutable` (the type is
 { "name": "n", "type": "i32", "mutable": false, "kind": "scalar", "element": "i32", "words": 1 }
 ```
 
+An MLIR integer type has no sign, so `element` is `i16` for both `u16` and `i16`. Take the sign
+from `type`.
+
 The program that launches the kernel chooses the grid and the block.
 
 ## 4. Symbol names
