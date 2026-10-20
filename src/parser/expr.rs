@@ -1495,6 +1495,7 @@ impl<'a> Parser<'a> {
                 line: token.line,
                 column: token.column,
                 length: token.length,
+                expansion: self.expansion(),
             },
         }))
     }
