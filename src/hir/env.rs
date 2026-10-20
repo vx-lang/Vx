@@ -451,6 +451,9 @@ pub struct TypeChecker<'a> {
     pub allow_cross_topology: bool,
     pub errors: crate::diagnostic::DiagnosticsVec,
     pub(crate) in_unsafe_block: bool,
+    /// The number of grid axes of each open `spawn` region, innermost last. `None` for a region
+    /// with no `grid([..])`.
+    pub(crate) launch_axes: Vec<Option<usize>>,
     /// Inside an `unsafe` block someone wrote, not only one the compiler made for `vec![..]`.
     pub(crate) in_written_unsafe_block: bool,
     /// Something that needs `unsafe` was checked since the innermost written `unsafe` block
@@ -541,6 +544,7 @@ impl<'a> TypeChecker<'a> {
             scopes: vec![HashMap::new()],
             errors: crate::diagnostic::DiagnosticsVec::new(),
             in_unsafe_block: false,
+            launch_axes: Vec::new(),
             in_written_unsafe_block: false,
             unsafe_op_seen: false,
             allow_cross_topology: false,
@@ -778,6 +782,12 @@ impl<'a> TypeChecker<'a> {
             // held across a region look like one, which the space then had room for.
             Expr::SpawnOn(s) => {
                 topology(&s.top, uses);
+                if let Some(l) = &s.launch {
+                    for g in &l.grid {
+                        Self::extract_uses_expr(g, uses);
+                    }
+                    Self::extract_uses_expr(&l.block, uses);
+                }
                 for stmt in &s.stmts {
                     Self::extract_uses_stmt(stmt, uses);
                 }

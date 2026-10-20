@@ -15,6 +15,13 @@ impl<'c> LowerToMelior<'c> for syntax::SpawnOnExpr {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
+        if self.launch.is_some() {
+            return Err(LowerError::from(
+                "`grid([..]) block(n)` needs the flat code generator, and this program does \
+                 not take it"
+                    .to_string(),
+            ));
+        }
         let depth = gen.open_block();
         let lowered = lower_spawn_region(self, gen, block);
         gen.close_blocks_to(depth);

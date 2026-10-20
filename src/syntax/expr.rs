@@ -121,6 +121,8 @@ pub struct SpawnOnExpr {
     pub stmts: Vec<Statement>,
     pub ret: Option<Box<Expr>>,
     pub span: Span,
+    /// `grid([..]) block(n)`: the launch shape that the program sets (#252).
+    pub launch: Option<LaunchShape>,
 }
 impl SpawnOnExpr {
     pub fn new(top: Topology, stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -129,8 +131,20 @@ impl SpawnOnExpr {
             stmts,
             ret,
             span,
+            launch: None,
         }
     }
+}
+
+/// `spawn on(T) grid([g0, g1]) block(n) { .. }`: the region runs as `g0 * g1` blocks of `n`
+/// threads. The host computes each value before the region starts.
+#[derive(Debug, PartialEq, Clone)]
+pub struct LaunchShape {
+    /// The number of blocks on each axis, one to three of them.
+    pub grid: Vec<Expr>,
+    /// The number of threads in a block.
+    pub block: Box<Expr>,
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1205,6 +1219,10 @@ pub fn visit_expr(e: &Expr, f: &mut dyn FnMut(&Expr)) {
             }
         }
         Expr::SpawnOn(b) => {
+            if let Some(l) = &b.launch {
+                all(&l.grid, f);
+                visit_expr(&l.block, f);
+            }
             visit_exprs(&b.stmts, f);
             if let Some(r) = &b.ret {
                 visit_expr(r, f);
@@ -1466,6 +1484,11 @@ impl Expr {
                 stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
                 span: e.span,
+                launch: e.launch.as_ref().map(|l| LaunchShape {
+                    grid: l.grid.iter().map(|g| g.substitute(mapping)).collect(),
+                    block: Box::new(l.block.substitute(mapping)),
+                    span: l.span,
+                }),
             }),
             Expr::Identifier(id) => {
                 if let Some(mapped_ty) = mapping.get(&*id.name) {

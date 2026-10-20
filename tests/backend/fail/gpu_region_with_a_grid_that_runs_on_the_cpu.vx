@@ -1,0 +1,42 @@
+//===- gpu_region_with_a_grid_that_runs_on_the_cpu.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A region with `grid([..]) block(n)` runs only on a GPU. `CUDA_VISIBLE_DEVICES=` hides each
+// GPU, so the region runs on the CPU. There it writes a message and stops the program, before
+// `main` prints its line.
+//
+// REQUIRES: flat-codegen
+// RUN: env CUDA_VISIBLE_DEVICES= not vxc %s --host default 2>&1 | FileCheck %s
+// CHECK: vx: a GPU region with `grid([..]) block(n)` ran on the CPU, which cannot run it
+// CHECK-NOT: after the launch
+
+Memory HBM {
+  capacity: 40 GiB, bandwidth: 1555 GB/s, managed: explicit, scope: device
+}
+Topology Gpu {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::CPU_DRAM, Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s
+}
+
+pub fn double(out: &mut Tensor<f32, [?], Memory::HBM>, x: &Tensor<f32, [?], Memory::HBM>,
+n: i32) -> void {
+  spawn on(Topology::Gpu) grid([n]) block(1) {
+    let i: i32 = grid_index(0);
+    out[i] = x[i] * 2.0;
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let x = transfer(Tensor<f32, [8]>::new(), Memory::HBM);
+  let mut out = transfer(Tensor<f32, [8]>::new(), Memory::HBM);
+  double(&mut out, &x, 8);
+  println!("after the launch");
+  return 0;
+}

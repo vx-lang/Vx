@@ -873,6 +873,10 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::SpawnOn(sp) => {
+                if let Some(l) = &sp.launch {
+                    l.grid.iter().for_each(|g| self.discipline_expr(g, st, cx));
+                    self.discipline_expr(&l.block, st, cx);
+                }
                 self.discipline_stmts(&sp.stmts, st, cx);
                 if let Some(r) = &sp.ret {
                     self.discipline_expr(r, st, cx);
@@ -1211,6 +1215,10 @@ fn scan_expr(e: &Expr, in_closure: bool, out: &mut RawScan) {
             }
         }
         Expr::SpawnOn(sp) => {
+            if let Some(l) = &sp.launch {
+                l.grid.iter().for_each(|g| scan_expr(g, in_closure, out));
+                scan_expr(&l.block, in_closure, out);
+            }
             scan_stmts(&sp.stmts, in_closure, out);
             if let Some(r) = &sp.ret {
                 scan_expr(r, in_closure, out);

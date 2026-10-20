@@ -1,0 +1,58 @@
+//===- gpu_region_with_a_grid_and_a_block.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `grid([rows, 2]) block(64)` sets the launch shape. The dispatch payload gives the runtime the
+// shape: `#2` is kernel argument 2 (`rows`), and 2 and 64 are numbers. In the PTX,
+// `grid_index(0)` and `grid_index(1)` are the block indices `%ctaid.x` and `%ctaid.y`. The CPU
+// copy of the region stops the program. `--emit-ptx` gives the shape in its `.json` file.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
+// RUN: vxc %s --host default --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --check-prefix=JSON < %t.json
+// RUN: FileCheck %s --check-prefix=PTX < %t.ptx
+//
+// PAYLOAD-DAG: ran on the CPU, which cannot run it
+// PAYLOAD-DAG: grid=#2,2\00block=64\00image=
+//
+// JSON:      "launch": {
+// JSON-NEXT:   "block": 64,
+// JSON-NEXT:   "grid": [
+// JSON-NEXT:     {
+// JSON-NEXT:       "param": "rows"
+// JSON-NEXT:     },
+// JSON-NEXT:     2
+// JSON-NEXT:   ]
+//
+// PTX: .entry scale_rows(
+// PTX-DAG: %ctaid.x
+// PTX-DAG: %ctaid.y
+
+Memory HBM {
+  capacity: 40 GiB, bandwidth: 1555 GB/s, managed: explicit, scope: device
+}
+Topology Gpu {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::CPU_DRAM, Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s
+}
+
+// Row `grid_index(0)`, and half `grid_index(1)` of its columns.
+pub fn scale_rows(out: &mut Tensor<f32, [?], Memory::HBM>, x: &Tensor<f32, [?], Memory::HBM>,
+rows: i32, cols: i32) -> void {
+  spawn on(Topology::Gpu) grid([rows, 2]) block(64) {
+    let row: i32 = grid_index(0);
+    let half: i32 = grid_index(1);
+    let mut c: i32 = half * (cols / 2);
+    while c < (half + 1) * (cols / 2) {
+      out[row * cols + c] = x[row * cols + c] * 2.0;
+      c = c + 1;
+    }
+  }
+  return;
+}

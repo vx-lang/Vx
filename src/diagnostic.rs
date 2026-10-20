@@ -593,6 +593,10 @@ pub enum DiagnosticCode {
     /// the most an allocation can ask for. The size is known, and it is not one the generated
     /// code can allocate: it would wrap.
     E6031,
+    /// A launch shape that is not valid: `grid([..]) block(n)` on a topology that is not a
+    /// GPU, a grid size or block size that is not an `i32`, or `grid_index(i)` outside such a
+    /// region or with an axis that its grid does not have.
+    E6032,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

@@ -1848,13 +1848,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         // Assert body has one statement (spawn on)
         assert_eq!(func.body.len(), 1);
         if let Statement::Return(ReturnStmt {
-            expr:
-                Some(Expr::SpawnOn(SpawnOnExpr {
-                    top,
-                    stmts,
-                    ret: _,
-                    span: _,
-                })),
+            expr: Some(Expr::SpawnOn(SpawnOnExpr { top, stmts, .. })),
             span: _,
         }) = &func.body[0]
         {
@@ -2181,13 +2175,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         let func = &program.functions[0];
         assert_eq!(func.name.as_ref(), "custom_matmul");
         if let Statement::Return(ReturnStmt {
-            expr:
-                Some(Expr::SpawnOn(SpawnOnExpr {
-                    top: _,
-                    stmts,
-                    ret: _,
-                    span: _,
-                })),
+            expr: Some(Expr::SpawnOn(SpawnOnExpr { top: _, stmts, .. })),
             span: _,
         }) = &func.body[0]
         {

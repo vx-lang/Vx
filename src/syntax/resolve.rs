@@ -299,6 +299,12 @@ impl Expr {
             Expr::Topology(e) => e.top.resolve_names(scope),
             Expr::SpawnOn(e) => {
                 e.top.resolve_names(scope);
+                if let Some(l) = &mut e.launch {
+                    for g in &mut l.grid {
+                        g.resolve_names(scope);
+                    }
+                    l.block.resolve_names(scope);
+                }
                 for s in &mut e.stmts {
                     s.resolve_names(scope);
                 }

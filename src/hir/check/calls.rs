@@ -2470,6 +2470,38 @@ impl<'a> TypeChecker<'a> {
                     Some(Type::Unknown)
                 }
             }
+        } else if resolved_name == "grid_index" {
+            // `grid_index(i)` (#252): the index of this block on axis `i` of the grid that
+            // `grid([..])` sets. A literal axis, so that each one is a separate GPU register.
+            let axes = self.launch_axes.last().copied().flatten();
+            let axis = match args.first() {
+                Some(Expr::Number(n)) if args.len() == 1 => n.value.parse::<usize>().ok(),
+                _ => None,
+            };
+            if !self.speculating {
+                let problem = match (axes, axis) {
+                    (None, _) => Some(
+                        "`grid_index(i)` is valid only in a `spawn` region with `grid([..])`"
+                            .to_string(),
+                    ),
+                    (_, None) => {
+                        Some("`grid_index(i)` takes one axis, a number like 0".to_string())
+                    }
+                    (Some(n), Some(i)) if i >= n => Some(format!(
+                        "this grid has {n} {}, so `grid_index({i})` has no axis to give",
+                        if n == 1 { "axis" } else { "axes" }
+                    )),
+                    _ => None,
+                };
+                if let Some(problem) = problem {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6032,
+                        problem,
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span)),
+                    );
+                }
+            }
+            Some(Type::Scalar(ElementType::I32))
         } else if resolved_name == "barrier" {
             // Block-level synchronization inside a spawn region (Vx#379): all threads of a
             // block reach it before any proceeds. Serial execution already provides that

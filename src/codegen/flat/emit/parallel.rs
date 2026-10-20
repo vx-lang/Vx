@@ -230,4 +230,29 @@ impl FnEmit<'_> {
         self.body += "  \"vx.barrier\"() : () -> ()\n";
         Ok(())
     }
+
+    pub(crate) fn op_launch_dim(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let v = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        self.body += &format!(
+            "  \"vx.launch_dim\"({v}) {{axis = {} : i32}} : (i32) -> ()\n",
+            ins.imm
+        );
+        Ok(())
+    }
+
+    pub(crate) fn op_grid_index(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let axis = ["x", "y", "z"]
+            .get(ins.imm as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let n = format!("%v{idx}");
+        self.body += &format!("  {n}_index = gpu.block_id {axis}\n");
+        self.body += &format!("  {n} = arith.index_cast {n}_index : index to i32\n");
+        self.names[idx] = n;
+        self.etypes[idx] = Some(ElementType::I32);
+        Ok(())
+    }
 }

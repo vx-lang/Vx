@@ -1365,6 +1365,20 @@ impl<'r> Lowerer<'r> {
                 // `barrier()` (Vx#379): an effect, not a call -- there is no callee anywhere.
                 // The checker typed it i32, so hand back a constant for the value position
                 // nobody should be using it in.
+                // `grid_index(i)` (#252): the checker made sure that `i` is an axis of the grid.
+                if fc.name.as_ref() == "grid_index" {
+                    let Some(Expr::Number(n)) = fc.args.first() else {
+                        return Err(crate::emitter_gap!());
+                    };
+                    let axis = n.value.parse::<u64>().map_err(|_| crate::emitter_gap!())?;
+                    return Ok(self.emit_value(
+                        Opcode::GridIndex,
+                        Register(0),
+                        Register(0),
+                        ElementType::I32,
+                        axis,
+                    ));
+                }
                 if fc.name.as_ref() == "barrier" {
                     self.emit_effect(Opcode::Barrier, Register(0), Register(0), 0);
                     return Ok(self.emit_value(
@@ -2895,12 +2909,25 @@ impl<'r> Lowerer<'r> {
         let top_id = crate::arch::topology_dispatch_id(&s.top) as u32 as u64;
         let name = self.strings.len() as u64 + 1;
         self.strings.push(s.top.display_name());
+        // The host computes the launch shape before the region starts.
+        let mut shape = Vec::new();
+        if let Some(l) = &s.launch {
+            for (axis, size) in l.grid.iter().enumerate() {
+                let v = self.lower_expr(size)?;
+                shape.push((axis as u64, self.read_rank0(v)));
+            }
+            let v = self.lower_expr(&l.block)?;
+            shape.push((3, self.read_rank0(v)));
+        }
         self.emit_effect(
             Opcode::Spawn,
             Register(0),
             Register(0),
             top_id | (name << 32),
         );
+        for (axis, v) in &shape {
+            self.emit_effect(Opcode::LaunchDim, v.reg, Register(0), *axis);
+        }
         // Two proofs are offered, FLAT FIRST. The flat grid-stride (#251) is the measured
         // record shape -- one thread per iteration, slice bodies vectorized -- so a region it
         // covers must keep it: since the block-row write rule (Vx#379 R3) landed, a plain
@@ -2911,7 +2938,12 @@ impl<'r> Lowerer<'r> {
         // The region is a block: its `let`s end with it.
         let depth = self.open_block();
         self.spawn_depth += 1;
-        let par = parallel_outer_for(&s.stmts);
+        // A program that sets the launch shape maps the work to threads itself.
+        let par = if s.launch.is_none() {
+            parallel_outer_for(&s.stmts)
+        } else {
+            None
+        };
         let end_imm = if par.is_some() {
             for (i, stmt) in s.stmts.iter().enumerate() {
                 self.stride_next_for = matches!(par, Some((idx, _)) if idx == i);
@@ -2919,7 +2951,12 @@ impl<'r> Lowerer<'r> {
             }
             self.stride_next_for = false;
             par.map(|(_, t)| t).unwrap_or(0)
-        } else if let Some((btrip, plan)) = parallel_two_level(&s.stmts) {
+        } else if let Some((btrip, plan)) = s
+            .launch
+            .is_none()
+            .then(|| parallel_two_level(&s.stmts))
+            .flatten()
+        {
             self.stride_plan = Some(plan);
             for stmt in &s.stmts {
                 self.lower_stmt(stmt)?;
