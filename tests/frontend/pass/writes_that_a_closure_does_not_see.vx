@@ -1,0 +1,76 @@
+//===- writes_that_a_closure_does_not_see.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Warning --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Warning --implicit-check-not=Error
+//
+// A closure copies a variable that it does not move. A write to the variable before the last use
+// of the closure does not change the closure's copy. The compiler warns about such a write. A
+// write after the last use of the closure gets no warning.
+
+fn set_to(p : &mut i32, value : i32) -> void {
+  *p = value;
+}
+
+// The closure copied 10, so `add(1)` is 11.
+// CHECK: Warning[W1034] at [[@LINE+4]]:3: the closure in 'add' copied 'x' on line [[#@LINE+3]], so the closure does not see this write
+fn write_before_the_last_use() -> i32 {
+  let mut x = 10;
+  let add = |y : i32| x + y;
+  x = 20;
+  return add(1);
+}
+
+// A write through `&mut` is a write too.
+// CHECK: Warning[W1034] at [[@LINE+4]]:15: the closure in 'get' copied 'n' on line [[#@LINE+3]], so the closure does not see this write
+fn write_through_a_reference() -> i32 {
+  let mut n = 1;
+  let get = |y : i32| n + y;
+  set_to(&mut n, 5);
+  return get(0);
+}
+
+// A closure whose body has a `let` of its own.
+// CHECK: Warning[W1034] at [[@LINE+4]]:3: the closure in 'add' copied 'x' on line [[#@LINE+3]], so the closure does not see this write
+fn closure_with_a_let_in_its_body() -> i32 {
+  let mut x = 3;
+  let add = |y : i32| unsafe { let z = y + 1; x + z };
+  x = 4;
+  return add(0);
+}
+
+// No warning: a write after the last use of the closure, a write to a variable that the closure
+// does not use, and a write to a new variable of the same name.
+fn writes_with_no_warning() -> i32 {
+  let mut x = 1;
+  let add = |y : i32| x + y;
+  let first = add(1);
+  x = 6;
+  let x0 = x;
+  let add_x0 = |y : i32| x0 + y;
+  x = 7;
+  let add_x = |y : i32| x + y;
+  for i in 0..2 {
+    let mut x = 8;
+    x += i;
+  }
+  return first + add_x0(0) + x + add_x(0);
+}
+
+fn main() -> i32 {
+  println!("{}", write_before_the_last_use());
+  println!("{}", write_through_a_reference());
+  println!("{}", closure_with_a_let_in_its_body());
+  println!("{}", writes_with_no_warning());
+  return 0;
+}
+
+// The results: 10 + 1, 1 + 0, 3 + 0 + 1, and 2 + 6 + 7 + 7.
+// CHECK: {{^}}11{{$}}
+// CHECK-NEXT: {{^}}1{{$}}
+// CHECK-NEXT: {{^}}4{{$}}
+// CHECK-NEXT: {{^}}22{{$}}

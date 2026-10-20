@@ -447,7 +447,9 @@ impl<'a> TypeChecker<'a> {
         let from_literal = ty_ann.is_none() && matches!(bare, Expr::Number(n) if n.ty.is_none());
         let prev_expected = self.expected_type.take();
         self.expected_type = ty_ann.clone();
+        self.let_closure = matches!(&*expr, Expr::Closure(_)).then_some(*span);
         let ty = self.check_expr_type_flag(expr, consume);
+        self.let_closure = None;
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, ty_ann.as_ref());
         self.expected_type = prev_expected;
         self.current_assignment_target = None;

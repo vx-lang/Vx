@@ -1000,6 +1000,11 @@ impl<'a> TypeChecker<'a> {
                 self.next_id += 1;
 
                 let cloned_params = e.params.clone();
+                // The `let` whose value this closure is. A `let` in the body changes the field.
+                let in_let = self
+                    .let_closure
+                    .take()
+                    .zip(self.current_assignment_target.clone());
 
                 let closure_depth = self.scopes.len();
                 self.mono.closure_depths.push(closure_depth);
@@ -1051,6 +1056,14 @@ impl<'a> TypeChecker<'a> {
                         if matches!(ty, Type::Struct(_, _) | Type::Tensor(_, _, _)) {
                             self.consume(name.as_ref());
                         }
+                    }
+                    let copied: Vec<String> = captured_vars
+                        .iter()
+                        .filter(|(_, ty)| !matches!(ty, Type::Struct(_, _) | Type::Tensor(_, _, _)))
+                        .map(|(name, _)| name.to_string())
+                        .collect();
+                    if let Some((at, closure)) = in_let {
+                        self.note_closure_copies(closure, &copied, &at);
                     }
                 }
 
