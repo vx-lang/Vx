@@ -1,6 +1,7 @@
 # Tasks that wait, channels, and errors from tasks
 
-Status: agreed, except decision 8 (`select`). Issues: #1865, #1864, #1893. Tracking: #1870.
+Status: agreed, except decisions 8 (`select`) and 9 (who owns a task's error, #1937). Issues:
+#1865, #1864, #1893. Tracking: #1870.
 Builds on `cpu_tasks_send_sync_and_shared_atomics.md` (T1 to T8, S1 to S6) and the memory model
 (C0 to C7).
 
@@ -298,12 +299,14 @@ its `tasks` block.
 ## 4. Errors from tasks (#1893)
 
 **F1. A task that fails, and a task that returns data.** A `spawn` body whose type is core's
-`Result<T, E>` says that its failure is the failure of the block. Then `join()` returns that
-`Result`, and the `tasks` block must have a type `Result<U, E>` with the same `E`. Tasks with
-different error types need one enum that the program writes. A task that returns another type
-returns data. So to collect the results of the requests that worked, or to try another source
-after a failure, the task returns its own enum. The compiler knows `Result` by name, as it knows
-`SharedCell`. `panic` still stops the program (T6), so Vx needs no unwinding.
+`Result<T, E>` says that its failure is the failure of the block. Then `join()` returns its `T`.
+When the task failed, `join()` does not return: the block ends with its failure, as `?` ends it
+(F7). So `join()` never gives an error to the code of the block (F3a). The `tasks` block must have
+a type `Result<U, E>` with the same `E`. Tasks with different error types need one enum that the
+program writes. A task that returns another type returns data. So to collect the results of the
+requests that worked, or to try another source after a failure, the task returns its own enum.
+The compiler knows `Result` by name, as it knows `SharedCell`. `panic` still stops the program
+(T6), so Vx needs no unwinding.
 
 **F2. `?`.** Vx has no `?` today. This design adds one:
 
@@ -338,6 +341,17 @@ does not cancel the other children, and an error that nothing waits for is lost.
 discarding task groups cancel. Rust has no structured cancellation. Cancellation that only the
 program starts would fail without a sign: after one shard fails, the other shards keep their
 devices busy until they finish.
+
+**F3a. Who owns a failure.** The block owns its first failure: that `Err` moves into the value of
+the block, once. The block drops each later failure, with cancellation off (F6): at the join of its
+task, at the end of the block, or at the `?` that raised it. So the block returns or drops each
+error exactly once. Nothing copies an error, and `E` needs no `Clone`. This matters because an
+error can own a resource: a `SendError<T>` gives back the value that it could not send (M2), such
+as a tensor.
+
+`join()` gives no error to the code of the block (F1). If it gave the `Err` by value, the code
+could drop it, and the block would then have no first failure to return (#1937). Code that must
+look at the error of one task makes that task return its own enum, as data.
 
 **F4. Which waits can be cancelled.** `send`, `recv`, `sleep` and I/O can be cancelled. They
 return their error with a `Cancelled` case. A `select` runs its `cancelled` arm (M3). `join()`,
@@ -377,7 +391,7 @@ guard for the slot works.
 
 **F7. Leaving a `tasks` block early.** `return` or `break` out of the code of a `tasks` block
 cancels the tasks of the block and then joins them (T3). Then the exit happens. `?` is a failure
-of the block (F2).
+of the block (F2). A `join()` of a task that failed leaves the block the same way (F1).
 
 **F8. Compile errors.** Each error names what a programmer wrote, not internal types:
 
@@ -531,6 +545,12 @@ We chose these on 2026-10-19, from the recommendations of a review.
    and dynamic dispatch, and Vx has neither. The spelling of an arm and the guard are part of this
    decision. Open. The recommendation is the block expression, for the reason that made `tasks`
    syntax.
+1. **Who owns a task's error (#1937).** `join()` returns `T` and leaves the block on a failure,
+   and the block owns its first failure (F1, F3a). One other choice: `join()` gives a
+   `Result<T, &E>`. The code can read it but not pass it up with `?`, so each join needs a `match`.
+   Another: `join()` gives the `Err` by value, and the code must pass it up on every path. That
+   needs a flow check, and it can give the block a second error that is not the first. Open. The
+   recommendation is the first.
 
 The review also settled two earlier questions: `select` starts its search round robin (M3), and
 the memory-space type decides what can go between targets (M6).

@@ -26,7 +26,9 @@ in a function or closure that the block calls. Outside a `tasks` block it is a c
 **T2. The result.** `spawn { e }` has the type `Task<T>`, where `T` is the type of `e`.
 `h.join()` takes `h` by value, waits for the task, and returns its `T`. The end of the `tasks` block
 joins each task that the program did not join, and drops its result. A task that can fail does
-not lose its error this way (F3 in `waiting_tasks_channels_and_task_errors.md`).
+not lose its error this way (F3 in `waiting_tasks_channels_and_task_errors.md`). For a task whose
+`e` has the type `Result<T, E>`, `join()` returns the `T`, and a failure leaves the block instead
+(F1 and F3a there): the block owns each error.
 
 **T3. The join comes from the program structure.** When a `tasks` block ends, every task that it
 started is finished. A `Task<T>` cannot leave its `tasks` block: the program may not return it,
@@ -48,7 +50,8 @@ fork to the join (C3). So:
 - a task may move a value of the function into itself. The function cannot use it again.
 
 **T6. A panic in a task stops the program**, as `panic` does today. Vx does not unwind, so
-`join()` never reports a panic. A task that can fail returns a `Result` (F1).
+`join()` never reports a panic. A task that can fail returns a `Result`, and its failure is the
+failure of the block (F1).
 
 **T7. What runs a task.** The language promises that a task finishes, not that it runs at the same
 time as another task. One valid run is: each task runs to its end at its `spawn` (C1, serial

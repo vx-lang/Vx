@@ -121,9 +121,14 @@ The theorems:
   code of the block produced it.
 - `block_value_not_cancelled`: a task that sees the flag also sees a slot that is not 0. So its CAS
   fails, and `Cancelled` never reaches the slot.
+- `each_error_once` (F3a, #1937): the error whose CAS succeeded moves into the value of the block,
+  and the block drops each other error. The block returns or drops each error exactly once, and
+  `join()` never gives one to the code of the block. The ownership model of #1937
+  (`TaskErrorOwnership.lean`) checks the same property, with `join` giving the caller nothing.
 
 Sabotage, one at a time: set the flag before the slot, and make the write of the flag relaxed.
-Each one must break `block_value_not_cancelled`. Nested `tasks` blocks come later.
+Each one must break `block_value_not_cancelled`. Let `join()` give the error to its caller: that
+must break `each_error_once`. Nested `tasks` blocks come later.
 
 ### Step 6: race freedom from footprints (C3, T5, U4, S5 without types)
 
