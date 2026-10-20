@@ -285,6 +285,34 @@ A size is not a parameter of the kernel, so a launcher computes it and launches 
 
 With no `launch`, the program that launches the kernel chooses the grid and the block.
 
+### 3.6 Calling a Vx function that launches GPU kernels
+
+A host program that is not Vx, for example Python with `ctypes`, can call a `pub fn` from a
+library that `vxc --action emit-obj` builds. The function launches its GPU regions through the
+CUDA backend (`runtime/cuda_dispatch.cpp`). These rules hold for such a call:
+
+- **Parameters.** A `pub fn` takes the C signature of its MLIR function. A tensor parameter of
+  rank r is 3 + 2r values: the allocated pointer, the aligned pointer, the offset, r sizes and r
+  strides (the `words` of §3.5). A scalar is one value. For example,
+  `glm_vx_spawn_scale(out, x, alpha, n)` with two rank-1 tensors is
+  `(ptr, ptr, i64, i64, i64, ptr, ptr, i64, i64, i64, f32, i32)`.
+- **Device memory.** A tensor in a GPU space, such as `&Tensor<f32, [?], Memory::HBM>`, can
+  point at memory that is already on the GPU. The launch gives the descriptor to the kernel as
+  it is, with no copy.
+- **Context.** Vx uses the primary context of each GPU, the one that the CUDA runtime API uses.
+  Make it current (`cuDevicePrimaryCtxRetain`, then `cuCtxSetCurrent`) and allocate in it. Vx
+  stops the program with a message when it finds another context current.
+- **Stream.** Each Vx launch and copy goes on the legacy default stream, and a launch does not
+  wait for the GPU (#25). Work of the host program on the legacy default stream, on the
+  per-thread default stream, or on a blocking stream is ordered with Vx's. Work on a stream
+  made with `cudaStreamNonBlocking` is not. `VX_CUDA_SYNC=1` makes Vx wait after each launch.
+- **Launch shape.** The function computes the sizes of `grid([..]) block(n)` and launches that
+  shape (§3.5 and `docs/spawn_on.md` §8).
+- **No GPU.** When no GPU takes a launch, the region runs on the CPU. A region with a launch
+  shape, and a function that only GPU code calls, stop the program there with a message.
+- **Optimization level.** The device image follows `-O`. A library built at `-O 3` can hold
+  different PTX from `--emit-ptx` at the default level, so build both at the same level.
+
 ## 4. Symbol names
 
 - A function the program defines keeps its name, and is `hidden` and `dso_local`.
