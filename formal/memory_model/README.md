@@ -95,6 +95,12 @@ starts a task, and one with a `spawn` and a `join` in each pass of a loop.
 lake -d formal/memory_model/lean build    # Lean 4.35, no other libraries
 ```
 
+`Counter.lean` shows that two `fetchAdd`s of a counter never read the same value
+(`Counter.tickets`). A channel gives each `send` its number this way. The proof needs the rule of
+RC11 that `co` orders the writes to each place (`CoOrder`). `Consistent` does not have that rule,
+so the theorems that need it take `CoOrder` as a hypothesis. `CounterExample.lean` shows an
+execution that `Consistent` allows without it, where both `fetchAdd`s read 0.
+
 The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
 `run_lean.py` checks that Lean and `vx.cat` agree on the 13 tests without scopes and barriers:
 
@@ -155,3 +161,5 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - The Lean model has no scopes and no barriers.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.
+- `Consistent` does not ask that `co` orders the writes to each place. A theorem that needs it
+  takes `CoOrder` as a hypothesis.
