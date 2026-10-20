@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GLM on an A100, in Vx</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="GLM-5's decoder, with its sparse attention and 256-expert MoE layers, runs on an A100 through 28 GPU kernels written in Vx. On random weights it matches the official Hugging Face model to within 1e-5, generates the same 16 tokens, and runs INT4, FP8 and BF16 weights as stored.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="GLM on an A100, in Vx">
+<meta property="og:description" content="GLM-5's decoder runs on an A100 through 28 GPU kernels written in Vx, matches the official model on random weights, and runs INT4, FP8 and BF16 weights as stored.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-10-20T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/glm-on-an-a100.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog.png">
+<meta property="og:image:alt" content="GLM on an A100, in Vx.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>GLM on an A100, in Vx</h1>
+<p class="post-meta">Aditya Kumar &middot; 20 October 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — The decoder of GLM-5, a mixture-of-experts
+model with about 750 billion parameters, now runs on an NVIDIA A100 through 28 GPU kernels written
+in Vx. No small trained version of the model exists, so every check uses random weights in the
+model's real shapes. Against the official Hugging Face implementation, the logits agree to within
+1e-5 at every layer, up to 78 layers deep and 2,300 tokens long, and 16 tokens of greedy generation
+are identical. A decode path that keeps the weights on the GPU gives bit-identical logits at the
+model's full width, and runs INT4, FP8 and BF16 weights as they are stored. The GPU runs also found
+a bug the CPU tests never could: kernels read stale data when several processes shared the GPU.
+The full trained model has not run yet.</blockquote>
+
+<p class="lede"><a href="https://github.com/vx-lang/glm-vx">glm-vx</a> is an experimental serving
+engine for GLM-5 whose compute kernels are written in Vx. It started on 4 October with CPU kernels.
+This post is about the GPU work tracked in
+<a href="https://github.com/vx-lang/glm-vx/issues/1">glm-vx#1</a>: what runs on the GPU, how we
+know it computes the right thing, and what the two A100 runs, on 15 and 20 October, found.</p>
+
+<h2>The model</h2>
+
+<p>GLM-5 (Hugging Face class <code>GlmMoeDsaForCausalLM</code>) has 78 decoder layers. Each layer
+has two parts that make it more than a plain transformer:</p>
+
+<ul>
+<li><strong>Sparse attention.</strong> Attention compresses keys and values into a small latent
+vector per token, as DeepSeek's MLA does. A separate <em>indexer</em> scores every earlier token,
+and each query attends only to the 2,048 that score highest. Below 2,048 tokens this selects
+everything; above it, which tokens survive depends on an exact top-k.</li>
+<li><strong>Experts.</strong> After the first three layers, the feed-forward part is 256 experts,
+of which a router picks 8 per token, plus one shared expert.</li>
+</ul>
+
+<p>The hidden size is 6144, and the context length in the official config is 1,048,576 tokens.
+The official weights are FP8, about 756 GB. Community INT4 versions exist, in the
+compressed-tensors format.</p>
+
+<h2>What runs on the GPU</h2>
+
+<p>The GPU kernels are 1,406 lines of Vx in seven files: matrix-vector and matrix products in
+float32, TF32 on tensor cores, INT4, FP8 and BF16; RMSNorm, RoPE, SwiGLU and softmax; the
+sparse-attention indexer scores and its top-k; and MLA decode attention. Each is an ordinary Vx
+function, written per thread, with a few GPU intrinsics declared as <code>extern</code>. Here is
+the BF16 matrix-vector product, one warp per row:</p>
+
+<pre><code><span class="k">extern</span> <span class="n">"C"</span> {
+  <span class="k">fn</span> <span class="f">vx_gpu_thread_idx_x</span>() -&gt; <span class="t">i32</span>;
+  <span class="k">fn</span> <span class="f">vx_gpu_block_idx_x</span>() -&gt; <span class="t">i32</span>;
+  <span class="k">fn</span> <span class="f">vx_gpu_block_dim_x</span>() -&gt; <span class="t">i32</span>;
+  <span class="k">fn</span> <span class="f">vx_gpu_shuffle_down_f32</span>(value: <span class="t">f32</span>, delta: <span class="t">i32</span>) -&gt; <span class="t">f32</span>;
+}
+
+<span class="c">// out[N] = W[N, K] x[K]. Weights are raw bfloat16 bits; the sum is float32.</span>
+<span class="k">pub fn</span> <span class="f">glm_vx_gpu_bf16_matvec</span>(out: *<span class="k">mut</span> <span class="t">f32</span>, weight: *<span class="k">const</span> <span class="t">u16</span>, x: *<span class="k">const</span> <span class="t">f32</span>, rows: <span class="t">i32</span>, cols: <span class="t">i32</span>) -&gt; <span class="t">void</span> {
+  <span class="k">if</span> rows &lt;= <span class="n">0</span> { <span class="k">return</span>; }
+  <span class="k">unsafe</span> {
+    <span class="k">let</span> tid: <span class="t">i32</span> = <span class="f">vx_gpu_thread_idx_x</span>();
+    <span class="k">let</span> lane: <span class="t">i32</span> = tid &amp; <span class="n">31</span>;
+    <span class="k">let</span> warps: <span class="t">i32</span> = <span class="f">vx_gpu_block_dim_x</span>() / <span class="n">32</span>;
+    <span class="k">let</span> row: <span class="t">i64</span> = (<span class="f">vx_gpu_block_idx_x</span>() <span class="k">as</span> <span class="t">i64</span>) * (warps <span class="k">as</span> <span class="t">i64</span>) + ((tid / <span class="n">32</span>) <span class="k">as</span> <span class="t">i64</span>);
+    <span class="k">if</span> row &lt; (rows <span class="k">as</span> <span class="t">i64</span>) {
+      <span class="k">let</span> k: <span class="t">i64</span> = cols <span class="k">as</span> <span class="t">i64</span>;
+      <span class="k">let mut</span> sum: <span class="t">f32</span> = <span class="n">0.0</span>;
+      <span class="k">let mut</span> col: <span class="t">i64</span> = lane <span class="k">as</span> <span class="t">i64</span>;
+      <span class="k">while</span> col &lt; k {
+        sum = sum + <span class="f">glm_vx_bf16_decode</span>(weight[row * k + col] <span class="k">as</span> <span class="t">i32</span>) * x[col];
+        col = col + <span class="n">32</span>;
+      }
+      sum = sum + <span class="f">vx_gpu_shuffle_down_f32</span>(sum, <span class="n">16</span>);
+      sum = sum + <span class="f">vx_gpu_shuffle_down_f32</span>(sum, <span class="n">8</span>);
+      sum = sum + <span class="f">vx_gpu_shuffle_down_f32</span>(sum, <span class="n">4</span>);
+      sum = sum + <span class="f">vx_gpu_shuffle_down_f32</span>(sum, <span class="n">2</span>);
+      sum = sum + <span class="f">vx_gpu_shuffle_down_f32</span>(sum, <span class="n">1</span>);
+      <span class="k">if</span> lane == <span class="n">0</span> { out[row] = sum; }
+    }
+    <span class="k">return</span>;
+  }
+}</code></pre>
+
+<p>A build script turns these into PTX. <code>vxc --emit-llvm</code> gives MLIR's LLVM dialect,
+<code>mlir-translate</code> turns that into LLVM IR, the script retargets it to
+<code>nvptx64</code> and defines the intrinsics (thread and block indices, warp shuffles, the
+TF32 <code>mma.sync</code>), and LLVM's <code>opt</code> and <code>llc</code> produce PTX for
+<code>sm_80</code>. Python loads the PTX through the CUDA driver API and launches the kernels.
+This is not Vx's own GPU path, <code>spawn on(..)</code>, which does not have warp shuffles or
+tensor-core instructions yet. The same Vx source also compiles for the CPU, and a CPU emulator of
+the GPU's thread model runs the kernels in the test suite, so most bugs are found before a GPU is
+rented.</p>
+
+<p>The same build on the rented GPU machine and on a development machine without a GPU gives
+byte-identical PTX. Rebuilding with a compiler
+44 commits newer, on 20 October, changed no byte of it either.</p>
+
+<h2>How do we know it is right?</h2>
+
+<p>The usual check for an inference engine is to load the trained model, give it a prompt, and
+compare the output with a reference implementation. That needs the trained model to fit, and no
+trained GLM-5 checkpoint smaller than about 744 billion parameters has been published. So we
+compare on random weights instead, in the model's real shapes, against the official
+implementation: the <code>GlmMoeDsa</code> classes in Hugging Face Transformers, unmodified, in
+float32 on the CPU. A random model is a harder test than it sounds. Nothing in it is smooth or
+redundant, so a wrong index, a transposed matrix or a misplaced scale changes the output by a lot,
+not by a little.</p>
+
+<p>The checks form a chain. Each one compares against the step above it:</p>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Compared</th><th>Model</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td>Vx GPU vs official, logits and generation</td><td>6 layers, 24-token prompts, 3 seeds</td><td>max difference 8.8e-6; top-1 equal at every position; 16 greedy tokens identical</td></tr>
+<tr><td>Every stage of every layer vs official</td><td>78 layers, hidden 256</td><td>logits within 1.0e-5; 0 sparse-attention selections differ</td></tr>
+<tr><td></td><td>78 layers, hidden 1024, 64 heads</td><td>within 4.8e-6</td></tr>
+<tr><td></td><td>full width: hidden 6144, 256 experts, 4 layers</td><td>within 2.2e-6</td></tr>
+<tr><td>Long sequence vs official</td><td>2,300 tokens, top-2,048 selection</td><td>within 4.3e-6; 0 selections differ</td></tr>
+<tr><td>Prompt in chunks vs official</td><td>100-token prompt, 4 chunkings</td><td>relative error 2.5e-6; greedy match in each</td></tr>
+<tr><td>GPU-resident decode vs the GPU model above</td><td>6 layers, and full width at 4 layers, 48 tokens</td><td>bit-identical</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>"Every stage" means the norms, the attention output and the feed-forward output of each layer,
+at every position, and the list of tokens each query's sparse attention selected. The tolerance is
+2e-4, and the worst error seen is 20 times smaller.</p>
+
+<p>One early failure was not an error at all. With only two indexer heads, the ReLU in the
+indexer can zero every head for some key, and two keys then tie exactly. PyTorch's
+<code>topk</code> and our kernel broke the tie differently, a different token was attended to, and
+a logit jumped by 4.0. With 16 heads the ties go away. A trained checkpoint can tie too, so the tie
+rule now matches the model's exact <code>argsort(-scores, kind='stable')</code>, on the GPU as
+well.</p>
+
+<h2>Keeping the weights on the GPU</h2>
+
+<p>The first GPU path kept the model in host memory and sent each layer's weights to the GPU when
+it was needed. That is simple, and at full width it is slow: 29 seconds per token, nearly all of it
+copying. The resident path uploads each weight once and leaves it there, with activations and the
+attention caches on the GPU too. Per token, the host sends the token's embedding row and the
+RoPE angles, and reads back the ids of the experts the router picked and the logits. At full width it takes 10.8 ms per token for
+4 layers. These are single runs of a test script on random weights, not benchmarks.</p>
+
+<p>Both paths launch the same kernels in the same order, so their logits must be equal bit for
+bit, and they are. A bitwise test is stricter than a tolerance: a difference of one bit points at
+a mistake in how the launches are ordered, which a tolerance would hide.</p>
+
+<h2>INT4, FP8 and BF16</h2>
+
+<p>The trained model will not fit on a GPU in float32, so the resident path keeps each weight
+matrix in the format it is stored in and decodes it inside the matrix-vector kernel:</p>
+
+<ul>
+<li><strong>INT4</strong>, from the compressed-tensors checkpoints: 4-bit weights with a BF16
+scale per group of 128. Its tests include tensors read from a published GLM INT4 checkpoint.</li>
+<li><strong>FP8</strong>, the official format: E4M3 bytes with a float32 scale per 128 by 128
+block.</li>
+<li><strong>BF16</strong>, for the router and output layer, which the quantized checkpoints keep at
+16 bits.</li>
+</ul>
+
+<p>Each is compared with the float32 path on the exact decoded weights. On 20 October, on the A100,
+FP8 and BF16 were bit-identical to float32. INT4 differs only in the order of its sums: the top
+token matched at every position, with a largest difference of 5.2e-6, and the weights took 3.8
+times less memory.</p>
+
+<p>The BF16 result being bit-identical needed a decode that is exact for every one of the 65,536
+encodings. The PTX build has no bit cast from an integer to a float, so the kernel builds the value
+from the exponent and mantissa with products of powers of two, keeping subnormals, infinities and
+NaN. A test runs all 65,536 encodings.</p>
+
+<h2>What the GPU found</h2>
+
+<p>A 2,300-token comparison failed once, at position 1,428, and passed when rerun. Three identical
+runs started at the same time gave three different answers. Running 16 processes on one A100,
+each checking every GPU operation against an independent answer, showed wrong results in up to a
+fifth of some operations.</p>
+
+<p>The cause was in the upload. Copying from ordinary host memory to the GPU can return before the
+copy has landed, and the copy is ordered against the default stream, not the streams our kernels
+ran on. A kernel launched right after an upload could read the old contents of its buffer. On an
+idle GPU the copy almost always won the race, and on a shared one it often lost. The fix is one
+synchronization after the copy. With it, 16 processes show no wrong result, and identical
+concurrent runs give identical logits. Every GPU run now includes 8 processes sharing the GPU,
+because this bug only shows under contention.</p>
+
+<p>The 20 October run found two smaller things: BF16 tests that only run on a GPU were missing an
+import, and the saved toolchain archive for new machines held links into system libraries rather
+than the libraries themselves. Both are fixed.</p>
+
+<h2>What is left</h2>
+
+<ul>
+<li><strong>The trained model.</strong> Even in INT4, GLM-5 is larger than one GPU. The plan is a
+hybrid: attention and the dense layers on the GPU, the experts in host memory, which on the A100
+machine we rented is 944 GB. That is the step that runs the real checkpoint end to end, from a
+prompt to text.</li>
+<li>Full-width runs of the INT4, FP8 and BF16 paths, and the multi-token prediction layer, which
+is not implemented.</li>
+<li>Speed. The kernels are plain matrix-vector products, launched one at a time. Fusing them, and
+using tensor cores for the quantized formats, comes after the trained model runs.</li>
+<li>Moving from the PTX build script to Vx's own <code>spawn on(..)</code> GPU path, once that has
+warp shuffles and tensor-core instructions.</li>
+</ul>
+
+<p>The evidence for each number here, with the commands that produced it, is in the
+<a href="https://github.com/vx-lang/glm-vx/tree/main/evidence">evidence folders</a> of glm-vx, and
+progress is logged in <a href="https://github.com/vx-lang/glm-vx/issues/1">glm-vx#1</a>.</p>
+
+<p class="post-foot">Vx is Apache 2.0 with the LLVM exception &mdash;
+<a href="/docs/getting-started.html">install it</a> and try the examples.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+</body>
+</html>

@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-10-15T18:00:00Z</updated>
+  <updated>2026-10-20T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>GLM on an A100, in Vx</title>
+    <link href="https://vxlang.org/blog/glm-on-an-a100.html"/>
+    <id>https://vxlang.org/blog/glm-on-an-a100.html</id>
+    <updated>2026-10-20T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>The decoder of GLM-5, a mixture-of-experts model of about 750 billion parameters with sparse attention and 256 experts per layer, runs on an NVIDIA A100 through 28 GPU kernels written in Vx and compiled to PTX through LLVM. No small trained GLM-5 exists, so every check uses random weights in the model's real shapes against the unmodified Hugging Face implementation: logits agree to within 1e-5 at every stage of every layer, up to 78 layers deep and 2,300 tokens long, with no sparse-attention selection differing, and 16 greedy tokens are identical. A decode path that keeps the weights on the GPU is bit-identical at full width, 10.8 ms per token for 4 layers against 29 s when weights are re-sent each token, and runs INT4, FP8 and BF16 weights as stored: FP8 and BF16 bit-identical to float32, INT4 top-1 equal. The GPU runs found a race that CPU tests could not: a kernel launched after an upload could read stale memory when several processes shared the GPU. The trained model has not run yet; the next step is a hybrid with experts in host memory.</summary>
+  </entry>
 
   <entry>
     <title>Breaking the borrow checker on purpose</title>

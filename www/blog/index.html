@@ -43,6 +43,14 @@
 
   <ul class="posts">
     <li>
+      <a href="/blog/glm-on-an-a100.html">GLM on an A100, in Vx</a>
+      <time datetime="2026-10-20">20 October 2026</time>
+      <p>GLM-5's decoder, with its sparse attention and 256-expert layers, runs on an A100 through
+      28 GPU kernels written in Vx. On random weights it matches the official model to within 1e-5
+      up to 78 layers, generates the same 16 tokens, and runs INT4, FP8 and BF16 weights as stored.
+      The GPU also found a race that no CPU test could.</p>
+    </li>
+    <li>
       <a href="/blog/breaking-the-borrow-checker-on-purpose.html">Breaking the borrow checker on purpose</a>
       <time datetime="2026-10-15">15 October 2026</time>
       <p>We broke Vx's borrow checker 108 ways, one at a time, to see whether the tests would
