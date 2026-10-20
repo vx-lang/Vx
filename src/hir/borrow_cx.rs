@@ -159,7 +159,7 @@ impl BorrowCx {
     /// statement answers yes. A block that declares `name` ends the search, since no block
     /// around it can see that variable. A loop body that names a variable from outside it
     /// answers yes too, because its next pass names it again.
-    fn is_variable_used_after(&self, name: &str) -> bool {
+    pub(crate) fn is_variable_used_after(&self, name: &str) -> bool {
         if self.is_running_task(name) {
             return true;
         }

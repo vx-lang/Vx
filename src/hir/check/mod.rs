@@ -18,6 +18,7 @@ pub mod access;
 pub mod autodiff;
 pub mod calls;
 pub mod capacity_fold;
+pub mod closure_copies;
 pub mod control;
 pub mod drops;
 pub mod escape;
