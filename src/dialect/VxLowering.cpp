@@ -2800,21 +2800,13 @@ struct ConvertVxToStandardPass
         if (runsOnDevice(op, module, callees[k]))
           return WalkResult::advance();
         blocker = op;
-        if (gpuOnly) {
-          if (auto call = dyn_cast<func::CallOp>(op))
-            refuse(Twine("the GPU code generator cannot take the call of '") +
-                   call.getCallee() + "'");
-          else
-            refuse(Twine("the GPU code generator cannot take '") +
-                   op->getName().getStringRef() + "'");
-        }
         return WalkResult::interrupt();
       });
       if (!blocker) {
         kernels.push_back(k);
         return;
       }
-      // A region that runs only on the GPU got its error above.
+      // A region that runs only on the GPU gets its error below.
       if (gpuOnly)
         return;
       // Say so, or a program meant for the GPU runs on the CPU in silence. A
@@ -2831,6 +2823,30 @@ struct ConvertVxToStandardPass
       k.emitWarning() << "Warning: a GPU region runs on the CPU, because the "
                          "GPU code generator cannot take "
                       << what << ".";
+    });
+    // A region with `grid([..]) block(n)` that gets no GPU copy cannot run.
+    module.walk([&](vx::KernelOp k) {
+      // The two refusals above already named the other reasons.
+      if (!k->hasAttr("vx.launch_grid") || llvm::is_contained(kernels, k) ||
+          !hasDevicePipeline(k, static_cast<int32_t>(k.getTopology())) ||
+          k->hasAttr("vx.result_slot"))
+        return;
+      Operation *cannot = nullptr;
+      k.getBody().walk([&](Operation *op) {
+        if (runsOnDevice(op, module, callees[k]))
+          return WalkResult::advance();
+        cannot = op;
+        return WalkResult::interrupt();
+      });
+      if (!cannot)
+        return;
+      std::string what = "'" + cannot->getName().getStringRef().str() + "'";
+      if (auto call = dyn_cast<func::CallOp>(cannot))
+        what = "the call of '" + call.getCallee().str() + "'";
+      k.emitError("a GPU region with `grid([..]) block(n)` cannot run on the "
+                  "GPU, because the GPU code generator cannot take ")
+          << what;
+      signalPassFailure();
     });
     if (kernels.empty())
       return;
