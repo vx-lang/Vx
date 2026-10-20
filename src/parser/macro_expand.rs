@@ -27,7 +27,7 @@ pub struct MacroExpander<'a> {
     pub trait_defaults: &'a crate::resolver::TraitDefaults,
     /// The id the last expansion in this module got. Counted per module, so a parallel compile
     /// gives the same ids as a normal one.
-    expansions: std::sync::atomic::AtomicU32,
+    expansions: std::cell::Cell<u32>,
 }
 
 fn take_expr(expr: &mut expr::Expr) -> expr::Expr {
@@ -142,7 +142,7 @@ impl<'a> MacroExpander<'a> {
         Self {
             macros,
             trait_defaults,
-            expansions: std::sync::atomic::AtomicU32::new(0),
+            expansions: std::cell::Cell::new(0),
         }
     }
 
@@ -841,9 +841,8 @@ impl<'a> MacroExpander<'a> {
 
         // Two expansions of one macro give their tokens the same positions, so the id is
         // what keeps their nodes apart.
-        let id = 1 + self
-            .expansions
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id = self.expansions.get() + 1;
+        self.expansions.set(id);
         for tok in &mut tokens {
             tok.expansion = id;
         }

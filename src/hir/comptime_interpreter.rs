@@ -1775,13 +1775,20 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
     fn pattern_matches(pattern: &Pattern, value: &Value) -> Option<bool> {
         match pattern {
             Pattern::Wildcard | Pattern::Identifier(_) => Some(true),
-            Pattern::Literal(Expr::Identifier(id)) if id.name.as_ref() == "true" => {
+            Pattern::Literal(lit) => Self::literal_matches(lit, value),
+            Pattern::EnumVariant(..) => Some(false),
+        }
+    }
+
+    fn literal_matches(lit: &Expr, value: &Value) -> Option<bool> {
+        match lit {
+            Expr::Identifier(id) if id.name.as_ref() == "true" => {
                 Some(matches!(value, Value::Bool(true)))
             }
-            Pattern::Literal(Expr::Identifier(id)) if id.name.as_ref() == "false" => {
+            Expr::Identifier(id) if id.name.as_ref() == "false" => {
                 Some(matches!(value, Value::Bool(false)))
             }
-            Pattern::Literal(Expr::Number(number)) => match (value, Self::number_literal(number)) {
+            Expr::Number(number) => match (value, Self::number_literal(number)) {
                 (Value::Int(value), Some(Value::Int(other))) => Some(value == &other),
                 (Value::Number(value), Some(Value::Number(other))) => Some(value == &other),
                 (Value::Int(_), Some(Value::Number(_)))
@@ -1789,7 +1796,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 (_, None) => None,
                 _ => Some(false),
             },
-            Pattern::Literal(_) | Pattern::EnumVariant(..) => Some(false),
+            _ => Some(false),
         }
     }
 

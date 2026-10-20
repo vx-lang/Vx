@@ -648,7 +648,7 @@ pub fn generate_match_chain<'c>(
         // but against `match_val` directly (no tag extraction). Without this, an integer `match`
         // ICE'd here — `Unsupported pattern in codegen` (#263).
         Pattern::Literal(lit) => {
-            let lit_val = match lit {
+            let lit_val = match &**lit {
                 Expr::Number(n) => n.value.as_ref().parse::<i64>().unwrap_or(0),
                 other => panic!("Unsupported literal pattern in codegen: {:?}", other),
             };

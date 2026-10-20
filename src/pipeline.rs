@@ -516,15 +516,16 @@ fn macro_expansion_phase(
             global_macros.insert(mac.name.clone(), mac.rules.clone());
         }
     }
-    // Expansion is per-module and shares nothing. `MacroExpander` holds a single `&HashMap` and no
-    // mutable state, so its methods took `&mut self` without ever being able to use it; now that
-    // they take `&self`, one expander is shared across the parallel-for and the borrow checker
-    // proves the isolation rather than a comment asserting it.
+    // Expansion is per-module and shares nothing. Each module gets its own expander, because
+    // an expander counts the expansions it makes.
     // Collected here for the same reason the macro table is: both have to be complete before
     // any module is expanded, because a trait and an impl of it need not share a module.
     let trait_defaults = crate::resolver::collect_trait_defaults(parsed_modules.iter());
-    let expander = MacroExpander::new(&global_macros, &trait_defaults);
-    let expand = |m: &mut VxModule| expander.expand_module(m).map_err(PipelineError::Parse);
+    let expand = |m: &mut VxModule| {
+        MacroExpander::new(&global_macros, &trait_defaults)
+            .expand_module(m)
+            .map_err(PipelineError::Parse)
+    };
     if sched.is_seq() {
         parsed_modules.iter_mut().try_for_each(expand)?;
     } else {

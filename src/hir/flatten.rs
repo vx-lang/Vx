@@ -350,7 +350,7 @@ enum Binding {
     /// variable-length path in the AST it already lives in and lets `*r` reuse the existing field
     /// read/store lowering wholesale (§5.5: a non-escaping place is pure lowerer data). The projection
     /// path §5.4's disjointness needs is recovered from `place` on demand.
-    Place { place: Expr },
+    Place { place: Box<Expr> },
 }
 
 /// A name a `let` in a block shadows, with the binding and type it had before the block.
@@ -4902,7 +4902,7 @@ impl<'r> Lowerer<'r> {
                         self.scope.insert(
                             l.name.clone(),
                             Binding::Place {
-                                place: (*b.expr).clone(),
+                                place: b.expr.clone(),
                             },
                         );
                         return Ok(());

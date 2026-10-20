@@ -402,7 +402,7 @@ impl<'a> Parser<'a> {
         match token.kind {
             TokenType::Number(_) | TokenType::StringLiteral(_) => {
                 let expr = self.parse_primary_expr()?; // parses number or string
-                Ok(Pattern::Literal(expr))
+                Ok(Pattern::Literal(Box::new(expr)))
             }
             TokenType::Identifier(s) => {
                 let mut enum_name = s.to_string();
@@ -2028,7 +2028,7 @@ mod tests {
             assert_eq!(arms.len(), 2);
             assert!(matches!(
                 &arms[0].pattern,
-                Pattern::Literal(Expr::Number(_))
+                Pattern::Literal(lit) if matches!(**lit, Expr::Number(_))
             ));
             assert!(matches!(&arms[1].pattern, Pattern::Identifier(_)));
         } else {

@@ -773,7 +773,7 @@ impl RangeExpr {
 #[derive(Debug, PartialEq, Clone)]
 pub enum Pattern {
     Wildcard,
-    Literal(Expr), // e.g. Number, StringLiteral
+    Literal(Box<Expr>), // e.g. Number, StringLiteral
     Identifier(Symbol),
     EnumVariant(Symbol, Symbol, Option<Vec<Pattern>>), // enum_name, variant_name, payload patterns
 }

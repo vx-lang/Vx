@@ -630,7 +630,10 @@ impl<'a> TypeChecker<'a> {
         if self.speculating {
             return;
         }
-        let Pattern::Literal(Expr::Number(n)) = pattern else {
+        let Pattern::Literal(lit) = pattern else {
+            return;
+        };
+        let Expr::Number(n) = &**lit else {
             return;
         };
         let elem = match expr_ty {
