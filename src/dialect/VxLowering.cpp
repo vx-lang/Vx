@@ -1434,6 +1434,22 @@ static bool isDeviceLowerableDialect(StringRef ns) {
          ns == "memref" || ns == "scf" || ns == "vector";
 }
 
+/// Whether the device pipeline can take `op` as it is. `nvvm` ops are PTX
+/// already. An `llvm` op, such as the `getelementptr` and `load` of a raw
+/// pointer, lowers on the device too, except one that names a symbol: the
+/// symbol is a host function or a host global.
+static bool deviceAcceptsOp(Operation *op) {
+  Dialect *dialect = op->getDialect();
+  if (!dialect)
+    return false;
+  StringRef ns = dialect->getNamespace();
+  if (ns == "nvvm")
+    return true;
+  if (ns == "llvm")
+    return !isa<LLVM::CallOp, LLVM::InvokeOp, LLVM::AddressOfOp>(op);
+  return isDeviceLowerableDialect(ns);
+}
+
 /// What a device kernel needs copied into its `gpu.module` besides its own
 /// body: the functions it calls, transitively, and the constant tables
 /// (`memref.global constant`) they read. A `gpu.module` is its own symbol
@@ -1482,8 +1498,7 @@ static bool collectDeviceCallees(Operation *op, ModuleOp module, bool inCallee,
     return true;
   if (inCallee && isa<memref::AllocOp>(op))
     return false;
-  Dialect *dialect = op->getDialect();
-  return dialect && isDeviceLowerableDialect(dialect->getNamespace());
+  return deviceAcceptsOp(op);
 }
 
 // Read a buffer cell once before a `vx.spawn` when the region only reads it.
@@ -1554,8 +1569,7 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
     return collectDeviceCallees(op, module, /*inCallee=*/false, callees,
                                 onStack);
   }
-  Dialect *dialect = op->getDialect();
-  return dialect && isDeviceLowerableDialect(dialect->getNamespace());
+  return deviceAcceptsOp(op);
 }
 
 /// Whether the kernel outlined from `spawn` will get a device twin, by the
@@ -2204,15 +2218,31 @@ struct ConvertVxToStandardPass
       k.getBody().walk([&](linalg::FillOp f) { fills.push_back(f); });
       for (linalg::FillOp f : fills)
         fillToDeviceLoops(f);
-      bool deviceReady = true;
+      Operation *blocker = nullptr;
       k.getBody().walk([&](Operation *op) {
         if (runsOnDevice(op, module, callees[k]))
           return WalkResult::advance();
-        deviceReady = false;
+        blocker = op;
         return WalkResult::interrupt();
       });
-      if (deviceReady)
+      if (!blocker) {
         kernels.push_back(k);
+        return;
+      }
+      // Say so, or a program meant for the GPU runs on the CPU in silence. A
+      // `linalg` op is the matmul that the plugin sends to cuBLAS, on purpose.
+      if (blocker->getDialect() &&
+          blocker->getDialect()->getNamespace() == "linalg")
+        return;
+      std::string what =
+          "the op '" + blocker->getName().getStringRef().str() + "'";
+      if (auto call = dyn_cast<func::CallOp>(blocker))
+        what = "the call to '" + call.getCallee().str() +
+               "' or something that it calls";
+      // The driver prints the message as it is, with no source position.
+      k.emitWarning() << "Warning: a GPU region runs on the CPU, because the "
+                         "GPU code generator cannot take "
+                      << what << ".";
     });
     if (kernels.empty())
       return;
