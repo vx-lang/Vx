@@ -46,6 +46,9 @@ pub enum Action {
     /// Serialize this module's import interface (frozen registry + flat-HIR bodies) to a `.vxlib`
     /// artifact, so a downstream compile can import it without re-parsing the source (#220).
     EmitInterface,
+    /// Write the program's GPU kernels as one PTX file, and a `.json` file beside it that
+    /// gives each kernel's parameters (docs/lang/abi.md, section 3.5)
+    EmitPtx,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -53,7 +56,7 @@ pub enum Action {
 pub struct DriverOptions {
     /// Action to perform
     #[arg(short = 'a', long = "action", value_enum, default_value_t = Action::RunJit)]
-    #[arg(overrides_with_all = ["compile", "parse_only", "print_ast", "emit_mlir", "emit_llvm", "run_jit", "emit_interface"])]
+    #[arg(overrides_with_all = ["compile", "parse_only", "print_ast", "emit_mlir", "emit_llvm", "run_jit", "emit_interface", "emit_ptx"])]
     pub action: Action,
 
     /// Output file. With several inputs, a directory that receives one output per input
@@ -88,6 +91,10 @@ pub struct DriverOptions {
     /// flat-HIR bodies as a `.vxlib`, for a downstream compile to import without re-parsing (#220).
     #[arg(long = "emit-interface", overrides_with = "action")]
     pub emit_interface: bool,
+
+    /// Write the GPU kernels as PTX (alias for --action emit-ptx)
+    #[arg(long = "emit-ptx", overrides_with = "action")]
+    pub emit_ptx: bool,
 
     /// Link a precompiled `.vxlib` module interface: its function signatures resolve imported calls in
     /// the frontend (type + borrow check, incl. cross-module return provenance) and its portable
@@ -280,6 +287,8 @@ impl CompilerDriver {
             options.action = Action::RunJit;
         } else if options.emit_interface {
             options.action = Action::EmitInterface;
+        } else if options.emit_ptx {
+            options.action = Action::EmitPtx;
         } else if options.compile {
             options.action = Action::EmitObj;
         }
@@ -336,6 +345,7 @@ impl CompilerDriver {
         let extension = match self.options.action {
             Action::EmitObj => "o",
             Action::EmitInterface => "vxlib",
+            Action::EmitPtx => "ptx",
             _ => return Ok(None),
         };
         if !out.is_dir() {
@@ -1385,7 +1395,13 @@ impl CompilerDriver {
         let flat_module = if self.options.legacy_codegen {
             None
         } else {
-            Self::build_flat_module(&context, &monomorphized_ast, &module_syntaxes, interfaces)
+            Self::build_flat_module(
+                &context,
+                &monomorphized_ast,
+                &module_syntaxes,
+                interfaces,
+                self.options.action == Action::EmitPtx,
+            )
         };
 
         let module = match flat_module {
@@ -1462,7 +1478,7 @@ impl CompilerDriver {
 
         let llvm_lower = matches!(
             self.options.action,
-            Action::EmitLlvm | Action::RunJit | Action::EmitObj
+            Action::EmitLlvm | Action::RunJit | Action::EmitObj | Action::EmitPtx
         );
         let pipeline_str = get_optimization_pipeline(
             self.options.opt_level,
@@ -1491,6 +1507,12 @@ impl CompilerDriver {
             }
         }
 
+        if self.options.action == Action::EmitPtx {
+            use melior::ir::operation::OperationMutLike;
+            module
+                .as_operation_mut()
+                .set_attribute("vx.export_kernels", melior::ir::Attribute::unit(context));
+        }
         let ran = crate::intern_mode::timed("mlir_passes", || pass_manager.run(&mut module));
         if let Err(e) = ran {
             return Err(format!("MLIR passes failed for {}: {}", filename, e));
@@ -1548,6 +1570,32 @@ impl CompilerDriver {
                 )
                 .map_err(|e| e.to_string())?;
                 print_program_output(&out);
+            }
+            Action::EmitPtx => {
+                let ptx_path = self.options.output.clone().unwrap_or_else(|| {
+                    let mut p = main_file.to_path_buf();
+                    p.set_extension("ptx");
+                    p
+                });
+                let read = |name: &str| {
+                    let attr = module.as_operation().attribute(name).ok()?;
+                    melior::ir::attribute::StringAttribute::try_from(attr)
+                        .ok()
+                        .map(|s| s.value().to_string())
+                };
+                let (Some(ptx), Some(manifest)) =
+                    (read("vx.exported_ptx"), read("vx.exported_kernels"))
+                else {
+                    return Err(format!(
+                        "{filename} has no GPU kernel to write. A GPU kernel is a `spawn on` \
+                         region whose topology has `arch: nvptx64`, and that can run on the GPU"
+                    ));
+                };
+                let json_path = ptx_path.with_extension("json");
+                std::fs::write(&ptx_path, ptx)
+                    .map_err(|e| format!("could not write '{}': {e}", ptx_path.display()))?;
+                std::fs::write(&json_path, manifest + "\n")
+                    .map_err(|e| format!("could not write '{}': {e}", json_path.display()))?;
             }
             Action::EmitObj => {
                 let output_path = self.options.output.clone().unwrap_or_else(|| {
@@ -1620,6 +1668,7 @@ impl CompilerDriver {
         main_ast: &crate::syntax::Program,
         module_syntaxes: &std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Program>,
         interfaces: &[Vec<u8>],
+        describe_params: bool,
     ) -> Option<melior::ir::Module<'c>> {
         // The main module first (its monomorphs win any name collision), then the imports; resolve
         // names so the registry freeze sees settled struct/enum GIDs.
@@ -1850,6 +1899,7 @@ impl CompilerDriver {
             &topo_archs,
             &local_devices,
             crate::config::Schedule::Parallel,
+            describe_params,
         ) {
             Ok(t) => t,
             Err(why) => {
@@ -2152,14 +2202,14 @@ mod flat_codegen_tests {
             "fn add(a: i32, b: i32) -> i32 { return a + b; }\n\
              fn main() -> i32 { return add(3, 4) * 5; }",
         );
-        assert!(CompilerDriver::build_flat_module(&context, &prog, &empty, &[]).is_some());
+        assert!(CompilerDriver::build_flat_module(&context, &prog, &empty, &[], false).is_some());
 
         // In subset: a libm extern call (declared `func.func private`, linked by the JIT).
         let ext = parse(
             "extern { safe fn sqrtf(x: f32) -> f32; }\n\
              fn main() -> i32 { print(sqrtf(16.0)); return 0; }",
         );
-        assert!(CompilerDriver::build_flat_module(&context, &ext, &empty, &[]).is_some());
+        assert!(CompilerDriver::build_flat_module(&context, &ext, &empty, &[], false).is_some());
 
         // In subset: structs (including a struct return) now build through the flat path -- the flat
         // build runs a registry-backed type-check to annotate `StructInit` GIDs (#215).
@@ -2168,12 +2218,14 @@ mod flat_codegen_tests {
              fn mk() -> P { return P { x: 1, y: 2 }; }\n\
              fn main() -> i32 { let p = mk(); return p.x + p.y; }",
         );
-        assert!(CompilerDriver::build_flat_module(&context, &strukt, &empty, &[]).is_some());
+        assert!(CompilerDriver::build_flat_module(&context, &strukt, &empty, &[], false).is_some());
 
         // Outside the subset: a bare call to an *undefined* Vx function has no body to lower -> the
         // whole program declines -> AST fallback (never a wrong result).
         let unknown = parse("fn main() -> i32 { return mystery(1); }");
-        assert!(CompilerDriver::build_flat_module(&context, &unknown, &empty, &[]).is_none());
+        assert!(
+            CompilerDriver::build_flat_module(&context, &unknown, &empty, &[], false).is_none()
+        );
     }
 }
 

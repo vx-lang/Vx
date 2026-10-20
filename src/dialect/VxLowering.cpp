@@ -42,9 +42,12 @@
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/JSON.h"
 
 #include <atomic>
 
@@ -713,6 +716,27 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       getUsedValuesDefinedAbove(spawnBody, captures);
     }
 
+    // The kernel takes the parameters of its function first, in the order
+    // the function declares them, then the other captured values in the
+    // order of their first use. So an edit to the region body does not
+    // change the order of the parameters that a launcher passes.
+    auto parentFunc = op->getParentOfType<func::FuncOp>();
+    {
+      auto paramIndex = [&](Value v) -> unsigned {
+        auto arg = dyn_cast<BlockArgument>(v);
+        if (parentFunc && arg &&
+            arg.getOwner() == &parentFunc.getBody().front())
+          return arg.getArgNumber();
+        return std::numeric_limits<unsigned>::max();
+      };
+      SmallVector<Value> ordered(captures.begin(), captures.end());
+      llvm::stable_sort(ordered, [&](Value a, Value b) {
+        return paramIndex(a) < paramIndex(b);
+      });
+      captures.clear();
+      captures.insert(ordered.begin(), ordered.end());
+    }
+
     // Create the outlined function at the module level
     auto module = op->getParentOfType<ModuleOp>();
     auto ip = rewriter.saveInsertionPoint();
@@ -756,6 +780,20 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // [500, 600)).
     if (auto arch = op->getAttrOfType<StringAttr>("arch"))
       kernelOp->setAttr("arch", arch);
+    // The function that holds the region, and the function parameter that
+    // fills each kernel parameter (-1 for a value that is not a parameter).
+    // `--emit-ptx` names the kernel and describes its parameters from these.
+    if (parentFunc && module->hasAttr("vx.export_kernels")) {
+      kernelOp->setAttr("vx.function", parentFunc.getSymNameAttr());
+      SmallVector<int64_t> paramOf;
+      for (Value cap : captures) {
+        auto arg = dyn_cast<BlockArgument>(cap);
+        paramOf.push_back(arg && arg.getOwner() == &parentFunc.getBody().front()
+                              ? int64_t(arg.getArgNumber())
+                              : -1);
+      }
+      kernelOp->setAttr("vx.param_of", rewriter.getDenseI64ArrayAttr(paramOf));
+    }
     // Keeps the kernel off the GPU device image: the slot is host stack.
     if (resultSlot)
       kernelOp->setAttr("vx.result_slot", rewriter.getUnitAttr());
@@ -3634,6 +3672,114 @@ static void declareLocalDevices(ModuleOp module) {
   }
 }
 
+/// For `--emit-ptx`: gives each kernel in `gpuModule` the name of the
+/// function that holds its region, and describes its parameters for a
+/// program that launches the kernel. Section 3.5 of `docs/lang/abi.md`
+/// gives the format.
+static FailureOr<llvm::json::Array>
+nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
+  llvm::StringMap<vx::KernelOp> kernelOf;
+  module.walk([&](vx::KernelOp k) { kernelOf[k.getSymName()] = k; });
+  SmallVector<gpu::GPUFuncOp> funcs;
+  gpuModule.walk([&](gpu::GPUFuncOp f) {
+    if (f.isKernel())
+      funcs.push_back(f);
+  });
+
+  llvm::json::Array kernels;
+  llvm::StringSet<> taken;
+  for (gpu::GPUFuncOp f : funcs) {
+    vx::KernelOp kernel = kernelOf.lookup(f.getName());
+    StringAttr fnName =
+        kernel ? kernel->getAttrOfType<StringAttr>("vx.function") : nullptr;
+    auto paramOf = kernel
+                       ? kernel->getAttrOfType<DenseI64ArrayAttr>("vx.param_of")
+                       : nullptr;
+    auto fn = fnName ? module.lookupSymbol<func::FuncOp>(fnName) : nullptr;
+    auto names = fn ? fn->getAttrOfType<ArrayAttr>("vx.param_names") : nullptr;
+    auto types = fn ? fn->getAttrOfType<ArrayAttr>("vx.param_types") : nullptr;
+    if (!paramOf || !names || !types) {
+      f.emitError("--emit-ptx cannot name this GPU kernel, because the code "
+                  "generator did not record the function that holds it. Only "
+                  "the flat code generator records it");
+      return failure();
+    }
+    assert(paramOf.size() == static_cast<int64_t>(f.getNumArguments()) &&
+           "one entry for each kernel parameter");
+    StringRef name = fnName.getValue();
+    Location loc = kernel.getLoc();
+
+    bool ptxName = !name.empty() && (llvm::isAlpha(name[0]) || name[0] == '_');
+    for (char c : name)
+      ptxName &= llvm::isAlnum(c) || c == '_';
+    if (!ptxName) {
+      emitError(loc) << "the GPU kernel in function '" << name
+                     << "' cannot have that name in PTX. Use a function name "
+                        "that has only letters, digits and '_'";
+      return failure();
+    }
+    if (!taken.insert(name).second) {
+      emitError(loc) << "function '" << name
+                     << "' holds more than one GPU kernel. --emit-ptx gives "
+                        "a kernel the name of its function, so put each "
+                        "kernel in a function of its own";
+      return failure();
+    }
+    Operation *other = SymbolTable::lookupSymbolIn(gpuModule, name);
+    if (other && other != f.getOperation()) {
+      emitError(loc) << "the GPU kernel in function '" << name
+                     << "' cannot have the name '" << name
+                     << "' in PTX, because the GPU code calls a function "
+                        "with that name";
+      return failure();
+    }
+
+    // A function that returns a tensor through a buffer of the caller has
+    // that buffer as its first argument, before the declared parameters.
+    int64_t offset = static_cast<int64_t>(fn.getNumArguments()) - names.size();
+    llvm::json::Array params;
+    for (auto [i, argIndex] : llvm::enumerate(paramOf.asArrayRef())) {
+      int64_t k = argIndex - offset;
+      if (argIndex < 0 || k < 0) {
+        emitError(loc) << "the GPU kernel in function '" << name
+                       << "' uses a value that is not a parameter of '" << name
+                       << "'. A kernel that --emit-ptx writes gets its "
+                          "inputs only from the parameters of its function";
+        return failure();
+      }
+      StringRef vxType = cast<StringAttr>(types[k]).getValue();
+      llvm::json::Object p{{"name", cast<StringAttr>(names[k]).getValue()},
+                           {"type", vxType},
+                           {"mutable", vxType.starts_with("&mut ")}};
+      Type t = f.getArgumentTypes()[i];
+      std::string element;
+      llvm::raw_string_ostream os(element);
+      if (auto m = dyn_cast<MemRefType>(t)) {
+        m.getElementType().print(os);
+        p["kind"] = "tensor";
+        p["element"] = element;
+        p["rank"] = m.getRank();
+        p["words"] = 3 + 2 * m.getRank();
+      } else if (isa<IntegerType, FloatType, IndexType>(t)) {
+        t.print(os);
+        p["kind"] = "scalar";
+        p["element"] = element;
+        p["words"] = 1;
+      } else {
+        emitError(loc) << "the GPU kernel in function '" << name
+                       << "' has a parameter of type " << t
+                       << ", which --emit-ptx cannot describe";
+        return failure();
+      }
+      params.push_back(std::move(p));
+    }
+    SymbolTable::setSymbolName(f, name);
+    kernels.push_back(
+        llvm::json::Object{{"name", name}, {"params", std::move(params)}});
+  }
+  return kernels;
+}
+
 struct ConvertVxToLLVMPass
     : public PassWrapper<ConvertVxToLLVMPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertVxToLLVMPass)
@@ -3669,8 +3815,24 @@ struct ConvertVxToLLVMPass
     getOperation().walk(
         [&](gpu::GPUModuleOp m) { deviceModules.push_back(m); });
 
+    // `--emit-ptx` sets this attribute. The driver then writes the image and
+    // the description of its kernels, and makes no program.
+    ModuleOp module = getOperation();
+    bool exporting = module->hasAttr("vx.export_kernels");
+    assert((!exporting || deviceModules.size() <= 1) &&
+           "the GPU kernels of a module are in one gpu.module");
+
     llvm::StringMap<std::string> deviceImages;
     for (gpu::GPUModuleOp m : deviceModules) {
+      llvm::json::Array exported;
+      if (exporting) {
+        FailureOr<llvm::json::Array> kernels = nameKernelsForExport(module, m);
+        if (failed(kernels)) {
+          signalPassFailure();
+          return;
+        }
+        exported = std::move(*kernels);
+      }
       std::string error;
       std::string image = deviceImageOf(m, error);
       // Fatal rather than "emit nothing and carry on". Carrying on produces a
@@ -3688,6 +3850,17 @@ struct ConvertVxToLLVMPass
       // `gpu.func` maps to the same image, and the kernel name -- already the
       // payload blob's first field -- is what selects the entry.
       m.walk([&](gpu::GPUFuncOp f) { deviceImages[f.getName()] = image; });
+      if (exporting) {
+        llvm::json::Object manifest{{"target", deviceChip()},
+                                    {"kernels", std::move(exported)}};
+        std::string text;
+        llvm::raw_string_ostream os(text);
+        os << llvm::formatv("{0:2}", llvm::json::Value(std::move(manifest)));
+        module->setAttr("vx.exported_ptx",
+                        StringAttr::get(&getContext(), image));
+        module->setAttr("vx.exported_kernels",
+                        StringAttr::get(&getContext(), text));
+      }
     }
 
     for (gpu::GPUModuleOp m : deviceModules)

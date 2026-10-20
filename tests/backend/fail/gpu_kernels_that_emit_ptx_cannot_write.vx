@@ -1,0 +1,62 @@
+//===- gpu_kernels_that_emit_ptx_cannot_write.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `--emit-ptx` names a kernel after its function, and gets the kernel's inputs only from the
+// function's parameters. So it refuses a kernel that uses a local variable of its function, a
+// function with two kernels, and a program with no GPU kernel. The `sed` lines make each case.
+//
+// REQUIRES: flat-codegen
+// RUN: mkdir -p %t.d
+// RUN: sed -n '/^Memory/,/^}/p; /^Topology/,/^}/p' %s > %t.d/machine.vx
+// RUN: sed -n '/^pub fn local/,/^}/p' %s > %t.d/local.vx
+// RUN: not vxc %t.d/local.vx --machine %t.d/machine.vx --host default --emit-ptx -o %t.d/local.ptx 2>&1 | FileCheck %s --check-prefix=LOCAL
+// RUN: sed -n '/^pub fn two/,/^}/p' %s > %t.d/two.vx
+// RUN: not vxc %t.d/two.vx --machine %t.d/machine.vx --host default --emit-ptx -o %t.d/two.ptx 2>&1 | FileCheck %s --check-prefix=TWO
+// RUN: sed -n '/^fn main/,/^}/p' %s > %t.d/none.vx
+// RUN: not vxc %t.d/none.vx --host default --emit-ptx -o %t.d/none.ptx 2>&1 | FileCheck %s --check-prefix=NONE
+
+// LOCAL: the GPU kernel in function 'local' uses a value that is not a parameter of 'local'
+// TWO: function 'two' holds more than one GPU kernel
+// NONE: none.vx has no GPU kernel to write
+
+Memory HBM {
+  capacity: 40 GiB, bandwidth: 1555 GB/s, managed: explicit, scope: device
+}
+Topology Gpu {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::CPU_DRAM, Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s
+}
+
+pub fn local(out: &mut Tensor<f32, [?], Memory::HBM>, n: i32) -> void {
+  let half: i32 = n / 2;
+  spawn on(Topology::Gpu) {
+    for i in 0..half {
+      out[i] = 0.0;
+    }
+  }
+  return;
+}
+
+pub fn two(out: &mut Tensor<f32, [?], Memory::HBM>, n: i32) -> void {
+  spawn on(Topology::Gpu) {
+    for i in 0..n {
+      out[i] = 0.0;
+    }
+  }
+  spawn on(Topology::Gpu) {
+    for i in 0..n {
+      out[i] = 1.0;
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -248,6 +248,7 @@ fn flat_llvm(src: &str) -> Option<String> {
         &[],
         &[],
         vxc::config::Schedule::Parallel,
+        false,
     )
     .ok()?;
 
@@ -348,6 +349,7 @@ fn flat_module_mlir(src: &str) -> Option<String> {
         &[],
         &[],
         vxc::config::Schedule::Parallel,
+        false,
     )
     .map_err(|e| eprintln!("flat path failed to emit: {e:?}"))
     .ok()
@@ -2207,6 +2209,7 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
         &[],
         &[],
         vxc::config::Schedule::Parallel,
+        false,
     )
     .expect("flat codegen emits the linked module");
     let context = make_context();

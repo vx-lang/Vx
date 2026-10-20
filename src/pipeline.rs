@@ -2013,6 +2013,7 @@ fn codegen_mlir_phase(
         topo_archs,
         local_devices,
         sched,
+        false,
     )
     .ok()?;
     chatter!(

@@ -135,6 +135,11 @@ wrapper, which Vx exports as `_vx_ciface_vx_npu_kernel_N` (see §4). The capture
 parameters, and memref-backed captures are passed as pointers to their memref
 descriptor structs (consistent with §2).
 
+The kernel takes the parameters of its function first, in the order that the
+function declares them. The other captured values come after them, in the order
+of their first use in the region. So an edit to the region body does not change
+the order of the function's parameters.
+
 The runtime (`runtime/npu_dispatch.mm`) receives the captures and invokes the
 kernel through libffi so that the platform calling convention is honored.
 
@@ -213,6 +218,58 @@ Accelerate. The whole thing — runtime compilation, the libffi link, and the
 - If the dispatch path is ever ported to Linux, note that the header is plain
   `<ffi.h>` (from `libffi-dev`), not macOS's `<ffi/ffi.h>`, and `-lffi` must stay
   gated to targets that actually link the runtime.
+
+### 3.5 GPU kernels that `--emit-ptx` writes
+
+`vxc --emit-ptx prog.vx -o kernels.ptx` writes the GPU kernels of a program to
+one PTX file, for a program that loads and launches them itself (for example
+with `cuModuleLoadData` and `cuLaunchKernel`). It also writes `kernels.json`
+beside the PTX. Without `-o`, the files are `prog.ptx` and `prog.json` beside
+the source.
+
+A GPU kernel is a `spawn on` region whose topology has `arch: nvptx64` and
+that can run on the GPU. Its PTX entry has the name of the function that holds
+the region:
+
+```vx
+pub fn add(out: &mut Tensor<f32, [?], Memory::HBM>, a: &Tensor<f32, [?], Memory::HBM>,
+           b: &Tensor<f32, [?], Memory::HBM>, n: i32) -> void {
+  spawn on(Topology::Device) { ... }   // .entry add
+  return;
+}
+```
+
+The name comes from the signature and not from the body, because a body
+declares nothing global (`docs/language_rules_for_a_parallel_compiler.md`).
+`--emit-ptx` refuses these kernels:
+
+- a function that holds two GPU kernels: put each kernel in a function of its own;
+- a kernel that uses a value that is not a parameter of its function;
+- a function whose name PTX cannot spell: use only letters, digits and `_`.
+
+The kernel's parameters are the function's parameters that the region uses, in
+the order that the function declares them. Each takes `words` PTX parameters:
+
+| Vx parameter | PTX parameters |
+| --- | --- |
+| a scalar | 1, of the scalar's width |
+| a tensor of rank r | 3 + 2r `.u64`: the base pointer, the aligned pointer, the offset, r sizes, r strides |
+
+The kernel reads elements through the aligned pointer. For a tensor that the
+host allocated, give the same pointer twice, offset 0, its sizes, and strides
+for row-major order.
+
+The `.json` file gives `target` (the chip, `VX_GPU_CHIP`, `sm_80` by default)
+and, for each kernel, its `name` and its `params` in launch order. A parameter
+has `name` and `type` as the Vx source writes them, `mutable` (the type is
+`&mut`), `kind` (`scalar` or `tensor`), `element` (the MLIR element type),
+`rank` for a tensor, and `words`:
+
+```json
+{ "name": "n", "type": "i32", "mutable": false, "kind": "scalar", "element": "i32", "words": 1 }
+```
+
+The program that launches the kernel chooses the grid and the block.
 
 ## 4. Symbol names
 

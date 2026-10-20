@@ -887,6 +887,9 @@ pub type TensorMap = HashMap<TypeId, (ElementType, Vec<String>)>;
 /// reference none (scalar/control-flow-only functions).
 #[derive(Default)]
 pub struct EmitCtx {
+    /// Record the Vx name and type of each parameter of a function that holds a `spawn`, for
+    /// `--emit-ptx` to describe the parameters of a GPU kernel.
+    pub describe_params: bool,
     pub callees: CalleeMap,
     pub aggs: AggMap,
     /// Base struct/enum name → modelled layout GID, for resolving a monomorphized cross-module
@@ -1091,6 +1094,7 @@ impl EmitCtx {
                 .map(|t| (t.symbol(), t.memref_type()))
                 .collect(),
             shared_cell_types: std::collections::HashSet::new(),
+            describe_params: false,
         }
     }
 
@@ -1203,9 +1207,11 @@ pub fn emit_module_mlir(
     topo_archs: &[(i64, String)],
     local_devices: &[(i32, i32)],
     sched: crate::config::Schedule,
+    describe_params: bool,
 ) -> Lowered<String> {
     let setup = std::time::Instant::now();
     let mut ctx = EmitCtx::from_registry(registry, sched);
+    ctx.describe_params = describe_params;
     for (func, ..) in funcs {
         for (_, ty) in &func.params {
             if let Type::Borrow { inner, .. } = ty {
@@ -2341,10 +2347,27 @@ pub fn emit_function_mlir(
     // `vx-hide-program-symbols` skips a function with `vx.pub`.
     let mut attrs = Vec::new();
     if crate::syntax::is_never_ty(&func.return_type) {
-        attrs.push("passthrough = [\"noreturn\"]");
+        attrs.push("passthrough = [\"noreturn\"]".to_string());
     }
     if func.is_pub {
-        attrs.push("vx.pub");
+        attrs.push("vx.pub".to_string());
+    }
+    // A function that holds a `spawn` keeps the Vx name and type of each parameter, so the
+    // compiler can describe the parameters of a GPU kernel that `--emit-ptx` writes.
+    if ctx.describe_params && hir.iter().any(|i| matches!(i.opcode, Opcode::Spawn)) {
+        let quoted = |s: String| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
+        let names: Vec<String> = func
+            .params
+            .iter()
+            .map(|(n, _)| quoted(n.to_string()))
+            .collect();
+        let types: Vec<String> = func
+            .params
+            .iter()
+            .map(|(_, t)| quoted(t.to_string()))
+            .collect();
+        attrs.push(format!("vx.param_names = [{}]", names.join(", ")));
+        attrs.push(format!("vx.param_types = [{}]", types.join(", ")));
     }
     if !attrs.is_empty() {
         ret_sig += &format!(" attributes {{{}}}", attrs.join(", "));
@@ -2507,6 +2530,7 @@ mod tests {
             &[],
             &[],
             crate::config::Schedule::Parallel,
+            false,
         )
         .expect("emits flat module");
 
