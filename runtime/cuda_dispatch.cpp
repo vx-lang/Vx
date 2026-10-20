@@ -61,6 +61,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -162,6 +163,69 @@ const DriverApi *load_driver_api() {
 /// A build with the CUDA backend compiled in can still run on a machine with no
 /// GPU -- the same binary, a different box. That is a reason to run kernels on
 /// the host, not to fail, so it is reported once and then taken as read.
+/* A launch does not wait for the GPU (#25). Every launch and copy goes on the
+   default stream, so the GPU runs them in program order, and a copy to the
+   host waits for the kernels before it. This records the last kernel that
+   each GPU started, so that the next wait can name a kernel when the GPU
+   reports a fault: before a copy to the host, a free, and at exit.
+   `VX_CUDA_SYNC=1` waits after each launch instead, which names the kernel
+   that faulted. */
+static std::mutex unwaited_mutex;
+static std::unordered_map<int, std::string> unwaited;
+
+static bool sync_each_launch() {
+  static const bool sync = getenv("VX_CUDA_SYNC") != nullptr;
+  return sync;
+}
+
+/// Waits for every kernel that a GPU started. Stops the program if one
+/// faulted.
+static void wait_for_kernels() {
+  std::unordered_map<int, std::string> started;
+  {
+    std::lock_guard<std::mutex> lock(unwaited_mutex);
+    started.swap(unwaited);
+  }
+  if (started.empty()) {
+    return;
+  }
+  int current = 0;
+  cudaGetDevice(&current);
+  for (const auto &[device, name] : started) {
+    cudaSetDevice(device);
+    const cudaError_t err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+      fprintf(stderr,
+              "[Vx CUDA] FATAL: a kernel faulted on GPU %d: %s.\n"
+              "          The last kernel started there is %s. Set "
+              "VX_CUDA_SYNC=1 to name the kernel that faulted.\n",
+              device, cudaGetErrorString(err), name.c_str());
+      abort();
+    }
+  }
+  cudaSetDevice(current);
+}
+
+/// After a launch of `name` on the current GPU.
+static void started_kernel(const char *name) {
+  int device = 0;
+  cudaGetDevice(&device);
+  if (sync_each_launch()) {
+    const cudaError_t err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+      fprintf(stderr, "[Vx CUDA] FATAL: %s faulted on GPU %d: %s\n", name,
+              device, cudaGetErrorString(err));
+      abort();
+    }
+    return;
+  }
+  std::lock_guard<std::mutex> lock(unwaited_mutex);
+  // A fault of a kernel that nothing waited for is reported at exit.
+  static const bool at_exit = atexit(wait_for_kernels) == 0;
+  (void)at_exit;
+  unwaited[device] = name;
+}
+
 bool cuda_available() {
   static const bool available = [] {
     int count = 0;
@@ -574,11 +638,12 @@ bool run_gemm(const vx_gemm_plan &plan) {
     cudaEventDestroy(t0);
     cudaEventDestroy(t1);
   }
-  VX_CUDA_CHECK(cudaDeviceSynchronize());
+  started_kernel("a GEMM");
 
   if (out_is_device) {
     return true;
   }
+  wait_for_kernels();
 
   size_t width = (size_t)plan.n * esz;
   if (plan.out_kind == VX_GEMM_OUT_SLOT) {
@@ -797,7 +862,15 @@ bool run_device_image(const void *payload, size_t payload_size,
      for. Keyed by both, because keying by name alone hands GPU 1 a function
      belonging to GPU 0's context -- which fails at launch rather than
      silently, but fails a long way from the cause. */
-  static std::unordered_map<std::string, CUfunction> loaded;
+  struct Loaded {
+    CUfunction fn;
+    /* The parameters that the entry declares, read from the image once. */
+    int params;
+  };
+  static std::unordered_map<std::string, Loaded> loaded;
+  /* Tasks (#1863) can dispatch from several threads at once. */
+  static std::mutex loaded_mutex;
+  std::unique_lock<std::mutex> lock(loaded_mutex);
 
   int device = 0;
   cudaGetDevice(&device);
@@ -805,9 +878,11 @@ bool run_device_image(const void *payload, size_t payload_size,
       std::string(kernel_name) + "@" + std::to_string(device);
 
   CUfunction fn = nullptr;
+  int declared = 0;
   auto found = loaded.find(key);
   if (found != loaded.end()) {
-    fn = found->second;
+    fn = found->second.fn;
+    declared = found->second.params;
   } else {
     /* The driver API needs a current context. The runtime API creates the
        primary one lazily, and this is the idiom that forces it: without it
@@ -880,8 +955,10 @@ bool run_device_image(const void *payload, size_t payload_size,
         abort();
       }
     }
-    loaded.emplace(key, fn);
+    declared = vx_launch_entry_param_count(image, kernel_name);
+    loaded.emplace(key, Loaded{fn, declared});
   }
+  lock.unlock();
 
   vx_launch_params params;
   if (!vx_launch_build_params(device_args, arg_tags, num_args, &params)) {
@@ -901,7 +978,6 @@ bool run_device_image(const void *payload, size_t payload_size,
      on faith. `cuLaunchKernel` cannot check a parameter array against the
      kernel it launches: too few, and the kernel reads parameters that were
      never written, which is a wrong answer rather than an error. */
-  const int declared = vx_launch_entry_param_count(image, kernel_name);
   if (declared != params.count) {
     fprintf(stderr,
             "[Vx CUDA] FATAL: %s declares %d parameters and its arguments "
@@ -991,12 +1067,7 @@ bool run_device_image(const void *payload, size_t payload_size,
             name ? name : "?");
     abort();
   }
-  const cudaError_t sync = cudaDeviceSynchronize();
-  if (sync != cudaSuccess) {
-    fprintf(stderr, "[Vx CUDA] FATAL: %s faulted on the device: %s\n",
-            kernel_name, cudaGetErrorString(sync));
-    abort();
-  }
+  started_kernel(kernel_name);
 
   if (time_kernel) {
     cudaEventRecord(t1);
@@ -1117,6 +1188,7 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
               bytes, kernel_name);
       abort();
     }
+    wait_for_kernels();
     VX_CUDA_CHECK(cudaMemcpy(host, aligned, bytes, cudaMemcpyDeviceToHost));
     void **ptrs = (void **)desc;
     copies.push_back({ptrs, ptrs[0], aligned, host, bytes});
@@ -1195,9 +1267,10 @@ uint64_t vx_plugin_dispatch_async_flat(float *xout, float *x, float *w, int n,
   VX_CUBLAS_CHECK(cublasSgemv(cublas_handle(), CUBLAS_OP_T, n, d, &alpha,
                               (const float *)dw.ptr, n, (const float *)dx.ptr,
                               1, &beta, (float *)dy.ptr, 1));
-  VX_CUDA_CHECK(cudaDeviceSynchronize());
+  started_kernel("a matrix-vector product");
 
   if (!out_is_device) {
+    wait_for_kernels();
     VX_CUDA_CHECK(cudaMemcpy(xout, dy.ptr, (size_t)d * sizeof(float),
                              cudaMemcpyDeviceToHost));
   }
@@ -1205,10 +1278,9 @@ uint64_t vx_plugin_dispatch_async_flat(float *xout, float *x, float *w, int n,
 }
 
 void vx_plugin_await_future(uint64_t future_id) {
-  // Dispatch synchronizes before returning, so the result is ready already.
-  // Overlapping it with host work is what the future ID is for and is part of
-  // the same milestone as device residency (#321).
+  // One future for each GPU: the kernels that it started.
   (void)future_id;
+  wait_for_kernels();
 }
 
 int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
@@ -1225,6 +1297,7 @@ int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
     // because the ABI is the contract a non-CUDA backend implements and nothing
     // guarantees that backend can infer anything from an address (#346).
     select_device((int32_t)topology_id, "fetch");
+    wait_for_kernels();
     VX_CUDA_CHECK(
         cudaMemcpy(host_ptr, device_ptr, bytes, cudaMemcpyDeviceToHost));
   } else {
@@ -1243,6 +1316,7 @@ void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
   vx_routing_refuse_handle("a free", device_ptr, topology_id);
   if (is_device_ptr(device_ptr)) {
     select_device((int32_t)topology_id, "free");
+    wait_for_kernels();
     cudaFree(device_ptr);
   } else {
     free(device_ptr);

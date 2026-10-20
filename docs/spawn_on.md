@@ -147,12 +147,18 @@ decision.
 | --- | --- | --- |
 | Result type `Pinned<T, τ>`, index in caller scope, region joined at exit | built | unchanged |
 | CPU region | inlined in place | unchanged |
-| Runtime dispatch (`cuda`, `npu`, host) | blocks before returning | returns a future id |
-| `vx_plugin_await_future` | no-op in every backend | blocks on that id |
+| Runtime dispatch (`cuda`, `npu`, host) | `cuda` returns once the launch is queued (#25); the others block before returning | returns a future id |
+| `vx_plugin_await_future` | `cuda` waits for every kernel that a GPU started; a no-op in the other backends | blocks on that id |
 | Wait insertion in the compiler | none | at first host use (§3) |
 | Value of a device spawn | the kernel stores it in a host slot and the host loads it after the launch; such a kernel gets no GPU device image and runs on the host | the slot staged to device memory, so the GPU twin can run |
 | Runtime device index `NPU[i]` | W1030, device 0 | separate issue |
 | Launch shape | `grid([..]) block(n)`, §8 | `semantics([..])` and roles, #252 stage 2 |
+
+The `cuda` backend puts every launch and copy on the default stream, so the GPU runs them in
+program order, and a copy to the host waits for the kernels before it. A fault shows at the next
+wait: a copy to the host, a free, or the end of the program. That message names the last kernel
+that the GPU started. `VX_CUDA_SYNC=1` waits after each launch, so that the message names the
+kernel that faulted.
 
 Order of work: the value stub first, since any model needs it; then non-blocking dispatch plus
 a real `await_future` in the runtimes, with the wait emitted at region exit so nothing
