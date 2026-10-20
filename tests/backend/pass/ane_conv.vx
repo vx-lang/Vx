@@ -17,10 +17,10 @@
 // was broken (Vx#366, Vx#436). Renaming the prefix separates the two meanings.
 //
 // EXEC_RUN itself is implemented nowhere, so nothing below runs today.
-// RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s --check-prefix=STD
-// RUN: vxc %s --emit-llvm | FileCheck %s --check-prefix=LLVM
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --emit-mlir -O0 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s --check-prefix=STD
+// RUN: vxc %s --legacy-codegen --emit-llvm | FileCheck %s --check-prefix=LLVM
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
 //
 // EXEC_RUN: vxc %s | mlir-opt -convert-scf-to-cf
 // -convert-func-to-llvm="use-bare-ptr-memref-call-conv=true"

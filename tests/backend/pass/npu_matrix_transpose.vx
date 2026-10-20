@@ -1,7 +1,7 @@
 //===- npu_matrix_transpose.vx ---------------------------------*- Vx -*-===//
-// RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=STD
-// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=LLVM
+// RUN: vxc %s --legacy-codegen --emit-mlir -O0 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=STD
+// RUN: vxc %s --legacy-codegen --emit-llvm 2>&1 | FileCheck %s --check-prefix=LLVM
 // REQUIRES: macos
 // FileCheck %s
 

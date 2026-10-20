@@ -6,7 +6,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
 // The externs this program pulls in are declared, and main calls them in order with the
 // values threaded between them -- the dataflow the run below scores, stated in the IR.
 // CHECK-DAG: func.func private @printMemrefF64(
