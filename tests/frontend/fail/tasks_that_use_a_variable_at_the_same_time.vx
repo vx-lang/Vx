@@ -82,8 +82,9 @@ fn loop_changes_what_a_task_reads() -> void {
   }
 }
 
-// CHECK: Error[E4014] at [[@LINE+6]]:7: the task uses 'v', but 'v' ends before its `tasks` block does
-fn task_outlives_a_variable() -> void {
+// A task moves `v`, because `v` ends before the task's join. So the pass cannot use `v` again.
+// CHECK: Error[E4001] at [[@LINE+9]]:16: Use of moved or consumed linear variable: v
+fn use_a_local_that_a_task_moved() -> void {
   tasks {
     for i in 0..3 {
       let mut v = Vec<i32>::new();
@@ -91,6 +92,7 @@ fn task_outlives_a_variable() -> void {
       spawn {
         v.len();
       };
+      let _w = v;
     }
   }
 }

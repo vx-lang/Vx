@@ -134,7 +134,7 @@ section 3.
 write that variable, as if the task borrowed it, but the variable may end first. So the task
 always sees the variable's current value. `for i in 0..n { spawn { work(i) }; }` is valid.
 `spawn { work(x) }; x += 1;` is an error: write `let x0 = x;` before the `spawn`, or share the
-value through an atomic or a channel. A closure follows the same rule until its last use (#1938).
+value through an atomic or a channel. A closure follows the same rule until its last use (#1941).
 
 ## 3. Channels (#1864)
 

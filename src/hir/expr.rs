@@ -334,7 +334,7 @@ impl<'a> TypeChecker<'a> {
                 ty
             }
             Expr::IndexAccess(..) => self.check_indexaccess_expr(expr, consume),
-            Expr::MethodCall(..) => match self.check_task_join(expr, consume) {
+            Expr::MethodCall(..) => match self.check_task_join(expr, consume && !value_unused) {
                 Some(ty) => ty,
                 None => self.check_methodcall_expr(expr, consume),
             },

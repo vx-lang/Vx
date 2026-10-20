@@ -337,6 +337,10 @@ impl TypeChecker<'_> {
                 }
             }
         }
+        let ended_by_join = self.tasks.joined_in_block.contains(&span);
+        if !ended_by_join {
+            self.move_locals_that_end_first(expr, tasks_scope_len);
+        }
         let id = format!("{TASK_PREFIX}{}", self.tasks.next_id);
         self.tasks.next_id += 1;
         let changed_outside = std::mem::take(&mut self.changed_vars);
@@ -365,7 +369,6 @@ impl TypeChecker<'_> {
             }
         }
 
-        let ended_by_join = self.tasks.joined_in_block.contains(&span);
         let mut uses = Vec::new();
         for (name, var_ty) in &used {
             let Some(var_depth) = self.lookup_with_depth(name).map(|(_, _, d)| d) else {
@@ -457,6 +460,50 @@ impl TypeChecker<'_> {
         }
         self.task_block_to_plain_block(expr, ret);
         ty
+    }
+
+    /// K2: a task moves each local that is not `Copy` and that ends before the task's join. The
+    /// body then starts with `let v = v;`, so the checks of moves and drops see the move.
+    fn move_locals_that_end_first(&mut self, expr: &mut Expr, tasks_scope_len: usize) {
+        let Expr::TaskBlock(tb) = expr else {
+            unreachable!("only a task block reaches here")
+        };
+        let mut names = std::collections::BTreeSet::new();
+        let mut note = |e: &Expr| {
+            if let Expr::Identifier(id) = e {
+                names.insert(id.name.clone());
+            }
+        };
+        crate::syntax::visit_exprs(&tb.stmts, &mut note);
+        if let Some(r) = &tb.ret {
+            crate::syntax::visit_expr(r, &mut note);
+        }
+        let mut moves = Vec::new();
+        for name in names {
+            let Some((ty, depth)) = self
+                .lookup_with_depth(&name)
+                .map(|(t, _, d)| (t.clone(), d))
+            else {
+                continue;
+            };
+            // A reference keeps what it points at borrowed, so the task cannot take it away.
+            let movable = depth + 1 > tasks_scope_len
+                && !self.is_copy(&ty)
+                && !matches!(ty, Type::Borrow { .. } | Type::Pointer(..) | Type::Ref(..))
+                && self.tasks.handle(&name, Some(depth)).is_none()
+                && !binds(&tb.stmts, &name)
+                && !tb.ret.as_deref().is_some_and(|r| binds_in_expr(r, &name));
+            if movable {
+                moves.push(Statement::LetDecl(LetDeclStmt {
+                    name: name.clone(),
+                    is_mut: self.is_mutable(&name),
+                    ty_ann: None,
+                    expr: Expr::Identifier(IdentifierExpr::new(name, tb.span)),
+                    span: tb.span,
+                }));
+            }
+        }
+        tb.stmts.splice(0..0, moves);
     }
 
     /// E4014: the task borrows `name`, or what the reference `name` points at, `base`. That
@@ -579,6 +626,7 @@ impl TypeChecker<'_> {
     }
 
     /// `h.join()` on a task handle `h`: the value of the task. `None` for any other call.
+    /// `consume` is false when the code around the join does not take its value.
     pub(crate) fn check_task_join(&mut self, expr: &mut Expr, consume: bool) -> Option<Type> {
         let Expr::MethodCall(MethodCallExpr {
             base,
@@ -616,11 +664,15 @@ impl TypeChecker<'_> {
                 &span,
             );
         }
+        // The join becomes `h`. Only code that takes the value moves it out of `h`. Otherwise
+        // `h` still owns the value and drops it at the end of its scope.
         self.tasks.joining = true;
         self.check_identifier_expr(&mut receiver, consume);
         self.tasks.joining = false;
         // A second join of the same task is a use after a move, also for a `Copy` result.
-        self.consume(&id.name.clone());
+        if !consume {
+            self.mark_used_keep_drop(&id.name);
+        }
         if self.tasks.ending_joins.contains(&span) && !in_other_task {
             self.borrow.end_task(&task);
             self.tasks.loop_tasks.retain(|t| t.task != task);
@@ -807,5 +859,45 @@ fn join_in(e: &Expr, name: &str) -> Option<Span> {
         Expr::Print(p) => first(p.args.iter().collect()),
         Expr::Println(p) => first(p.args.iter().collect()),
         _ => None,
+    }
+}
+
+/// Whether `stmts` declare a variable `name` anywhere, so that a use of `name` in them may not
+/// be the variable outside.
+fn binds(stmts: &[Statement], name: &str) -> bool {
+    let here = stmts.iter().any(|s| match s {
+        Statement::LetDecl(l) => l.name.as_ref() == name,
+        Statement::ForLoop(l) => l.iter == name,
+        _ => false,
+    });
+    let mut found = false;
+    crate::syntax::visit_exprs(stmts, &mut |e| found |= binds_in_expr(e, name));
+    here || found
+}
+
+fn binds_in_expr(e: &Expr, name: &str) -> bool {
+    match e {
+        Expr::If(i) => {
+            binds(&i.then_block, name) || i.else_block.as_ref().is_some_and(|b| binds(b, name))
+        }
+        Expr::Match(m) => m
+            .arms
+            .iter()
+            .any(|a| pattern_binds(&a.pattern, name) || binds(&a.body, name)),
+        Expr::UnsafeBlock(b) => binds(&b.stmts, name),
+        Expr::ComptimeBlock(b) => binds(&b.stmts, name),
+        Expr::SpawnOn(b) => binds(&b.stmts, name),
+        Expr::TaskBlock(b) => binds(&b.stmts, name),
+        Expr::Closure(c) => c.params.iter().any(|(p, _)| p.as_ref() == name),
+        _ => false,
+    }
+}
+
+fn pattern_binds(p: &crate::syntax::Pattern, name: &str) -> bool {
+    use crate::syntax::Pattern;
+    match p {
+        Pattern::Identifier(n) => n.as_ref() == name,
+        Pattern::EnumVariant(_, _, Some(ps)) => ps.iter().any(|p| pattern_binds(p, name)),
+        _ => false,
     }
 }

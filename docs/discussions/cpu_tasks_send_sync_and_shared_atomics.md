@@ -197,8 +197,7 @@ unsound:
 - A join ends the borrows of its task only when it always runs after the `spawn`, in the same
   block. Any other join leaves them until the end of the `tasks` block.
 - `spawn on(T)` in a `tasks` block (T8) keeps its old meaning.
-- A task does not move a local that ends before its join (K2). It reports E4014 instead.
 
-A closure does not follow K4 yet (#1938).
+A closure does not follow K4 yet (#1941).
 
 Tasks that wait, channels and errors from tasks are in `waiting_tasks_channels_and_task_errors.md`.

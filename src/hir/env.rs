@@ -941,6 +941,17 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Mark `name` as moved for the checks of later uses, but keep its drop at the end of its
+    /// scope, because the variable still owns its value.
+    pub(crate) fn mark_used_keep_drop(&mut self, name: &str) {
+        if let Some(moved) = self
+            .scope_of(name)
+            .and_then(|scope| self.borrow.moved_vars.get_mut(scope))
+        {
+            moved.insert(name.to_string());
+        }
+    }
+
     /// Undo a move, because the variable has been given a value again.
     pub fn unconsume(&mut self, name: &str) {
         let Some(scope) = self.scope_of(name) else {
