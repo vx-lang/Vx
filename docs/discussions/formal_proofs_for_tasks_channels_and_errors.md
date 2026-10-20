@@ -72,7 +72,13 @@ it writes it, or when the variable is not `Copy`.
 
 ### Step 2: channels, by lowering (`Channel.lean`)
 
-`send` and `recv` lower to `sc` atomics. The theorems:
+`send` and `recv` lower to `sc` atomics. Each `send` gets its number from a counter, with a
+`fetchAdd`. `Counter.lean` shows that no two `fetchAdd`s get the same number. That needs the rule
+of RC11 that `co` orders the writes to each place. `Consistent` does not have that rule, so a
+theorem that needs it takes `CoOrder` as a hypothesis. Step 5 needs it too: without it, two CAS
+operations on the failure slot can both succeed.
+
+The theorems:
 
 - `send_hb_recv`: a `send` happens before the `recv` that gets its value.
 - `recv_hb_send_capacity`: for a channel with room for `n` values, the `k`-th `recv` happens

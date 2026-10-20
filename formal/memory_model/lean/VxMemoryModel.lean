@@ -8,9 +8,11 @@ import VxMemoryModel.Hom
 import VxMemoryModel.Prefix
 import VxMemoryModel.Finite
 import VxMemoryModel.Program
+import VxMemoryModel.Counter
 import VxMemoryModel.Thread
 import VxMemoryModel.Language
 import VxMemoryModel.Tasks
 import VxMemoryModel.Blocks
 import VxMemoryModel.LanguageExample
 import VxMemoryModel.BlocksExample
+import VxMemoryModel.CounterExample
