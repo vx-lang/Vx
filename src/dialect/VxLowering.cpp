@@ -1478,7 +1478,9 @@ static bool collectDeviceCallees(Operation *op, ModuleOp module, bool inCallee,
     out.globals.insert(global);
     return true;
   }
-  if (inCallee && isa<func::ReturnOp>(op))
+  // A barrier in a callee becomes `gpu.barrier` in its device copy, as in a
+  // kernel body.
+  if (inCallee && isa<func::ReturnOp, vx::BarrierOp>(op))
     return true;
   if (inCallee && isa<memref::AllocOp>(op))
     return false;
@@ -2243,6 +2245,13 @@ struct ConvertVxToStandardPass
             copy->removeAttr("llvm.emit_c_interface");
             Location unknown = UnknownLoc::get(copy->getContext());
             copy->walk([&](Operation *op) { op->setLoc(unknown); });
+            SmallVector<vx::BarrierOp> barriers;
+            copy->walk([&](vx::BarrierOp bar) { barriers.push_back(bar); });
+            for (vx::BarrierOp bar : barriers) {
+              OpBuilder b(bar);
+              b.create<gpu::BarrierOp>(bar.getLoc());
+              bar.erase();
+            }
           }
       }
     }

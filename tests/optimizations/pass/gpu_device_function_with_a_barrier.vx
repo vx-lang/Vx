@@ -1,0 +1,39 @@
+//===- gpu_device_function_with_a_barrier.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A GPU region calls `sync`, a device function with `barrier()` in it. The region gets a PTX
+// kernel, and in the copy of `sync` on the GPU, the barrier is `bar.sync`.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: image={{.*}}.visible .func sync(){{.*}}bar.sync {{.*}}.visible .entry vx_npu_kernel_0(
+
+fn thread_id() on Topology::Device -> i32 {
+  return mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
+    %t = gpu.thread_id x
+    %r = "arith.index_cast"(%t) : (index) -> i32
+    macro.yield %r : i32
+  };
+}
+
+fn sync() on Topology::Device -> void {
+  barrier();
+  return;
+}
+
+pub fn copy(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    let t = thread_id();
+    out[t] = x[t];
+    sync();
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
