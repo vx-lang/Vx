@@ -43,6 +43,13 @@
 
   <ul class="posts">
     <li>
+      <a href="/blog/optimizing-for-the-common-case.html">Optimizing for the common case, in language design</a>
+      <time datetime="2026-10-20">20 October 2026</time>
+      <p>The most common parallel loop starts one task per index. Go, C# and JavaScript first made
+      it a trap, and Rust needs <code>move</code>. In Vx, a task takes each variable the way it
+      uses it, with no <code>move</code> keyword, and a copy can never go stale.</p>
+    </li>
+    <li>
       <a href="/blog/breaking-the-borrow-checker-on-purpose.html">Breaking the borrow checker on purpose</a>
       <time datetime="2026-10-15">15 October 2026</time>
       <p>We broke Vx's borrow checker 108 ways, one at a time, to see whether the tests would

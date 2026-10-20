@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-10-15T18:00:00Z</updated>
+  <updated>2026-10-20T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Optimizing for the common case, in language design</title>
+    <link href="https://vxlang.org/blog/optimizing-for-the-common-case.html"/>
+    <id>https://vxlang.org/blog/optimizing-for-the-common-case.html</id>
+    <updated>2026-10-20T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Hardware designers make the common case fast. A language can make the common case need no extra words. The most common parallel loop starts one task per index. Go, C# and JavaScript first made that loop a trap, and later changed their loops so that each iteration gets its own variable. Rust makes it correct with move, which takes every variable at once, so shared data needs let v = &amp;v; first. In Vx, a task takes each variable the way it uses it (borrow, copy or move) with no move keyword, and a copy can never go stale: the code around a task may not write a variable that the task copied, until the join. The loop needs nothing extra, the stop flag that a silent copy gets wrong is a compile error with a hint, and each rare case needs one line. Closures get the same rule next.</summary>
+  </entry>
 
   <entry>
     <title>Breaking the borrow checker on purpose</title>
