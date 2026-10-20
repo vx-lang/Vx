@@ -14,3 +14,5 @@ import VxMemoryModel.Language
 import VxMemoryModel.Tasks
 import VxMemoryModel.LanguageExample
 import VxMemoryModel.CounterExample
+import VxMemoryModel.Channel
+import VxMemoryModel.ChannelExample
