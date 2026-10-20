@@ -1,0 +1,31 @@
+//===- gpu_kernel_that_calls_a_method_of_a_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A GPU kernel calls `f32::from_bits`. A PTX name cannot hold `:`, so the
+// device copy of the function gets the name `f32_3a_3afrom_bits`, and the
+// kernel calls it by that name. The host copy keeps its name.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// CHECK-NOT: LLVM ERROR
+// CHECK: toponame=Device{{.*}}image={{.*}}.visible .func {{.*}}f32_3a_3afrom_bits(
+// CHECK: llvm.func hidden @"f32::from_bits"(
+
+import core::num;
+
+fn main() -> i32 {
+  let h = Tensor<f32, [4]>::fill(2.0);
+  let mut d = transfer(h, Memory::HBM);
+  spawn on(Topology::Device) {
+    for i in 0..4 {
+      d[i] = f32::from_bits(1077936128);
+    }
+  }
+  let back = transfer(d, Memory::CPU_DRAM);
+  print(back[0]);
+  return 0;
+}

@@ -3512,6 +3512,37 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
   OwningOpRef<ModuleOp> device = ModuleOp::create(gpuModule.getLoc());
   device->getBody()->push_back(gpuModule->clone());
 
+  // A PTX name holds only letters, digits and `_`. A callee such as
+  // `f32::from_bits` keeps its name on the host, so only this copy is renamed:
+  // each other character becomes `_` and its two hex digits.
+  {
+    auto copy = cast<gpu::GPUModuleOp>(device->getBody()->front());
+    SymbolTable table(copy);
+    auto ptxChar = [](char c) { return llvm::isAlnum(c) || c == '_'; };
+    SmallVector<func::FuncOp> funcs(copy.getOps<func::FuncOp>());
+    for (func::FuncOp f : funcs) {
+      StringRef name = f.getSymName();
+      if (llvm::all_of(name, ptxChar))
+        continue;
+      std::string fixed;
+      for (char c : name) {
+        if (ptxChar(c))
+          fixed += c;
+        else
+          fixed += "_" + llvm::utohexstr((unsigned char)c, /*LowerCase=*/true,
+                                         /*Width=*/2);
+      }
+      while (table.lookup(fixed))
+        fixed += "_";
+      if (failed(SymbolTable::replaceAllSymbolUses(
+              f, StringAttr::get(context, fixed), copy))) {
+        error = "renaming " + name.str() + " for PTX";
+        return "";
+      }
+      table.setSymbolName(f, fixed);
+    }
+  }
+
   PassManager pm(context, ModuleOp::getOperationName());
 
   GpuNVVMAttachTargetOptions attach;
