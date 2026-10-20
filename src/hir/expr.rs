@@ -150,6 +150,7 @@ impl<'a> TypeChecker<'a> {
         value: Option<(&mut Expr, bool)>,
         consume: bool,
     ) -> Type {
+        let has_value = value.is_some();
         let tail = tail.or(value.as_ref().map(|(v, _)| &**v));
         Self::name_loop_literals(stmts);
         self.hoist_spawn_allocations(stmts);
@@ -195,6 +196,9 @@ impl<'a> TypeChecker<'a> {
                 let scopes = self.consteval_scopes();
                 let saved_borrows = self.borrow.snapshot();
                 self.value_unused = *has_semi || i != last || block_unused;
+                // `v;` reads `v`: it does not move it.
+                let consume =
+                    consume && !(self.value_unused && matches!(expr, Expr::Identifier(_)));
                 self.allow_spawn_statement(expr);
                 let ty = self.check_expr_type_flag(expr, consume);
                 if !*has_semi {
@@ -245,7 +249,7 @@ impl<'a> TypeChecker<'a> {
         if let Some(state) = state_at_end {
             self.restore_flow_state(state);
         }
-        self.drops_exit_block(stmts, terminated_at);
+        self.drops_exit_block(stmts, terminated_at, !block_unused && !has_value);
         self.borrow.exit_block();
         ret_ty
     }

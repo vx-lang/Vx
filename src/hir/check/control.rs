@@ -515,6 +515,18 @@ impl<'a> TypeChecker<'a> {
                 let declares_a_variable = stmts
                     .iter()
                     .any(|s| matches!(s, Statement::LetDecl(l) if !l.name.starts_with("$value")));
+                // A value nothing takes is the block's last statement, which the block drops
+                // as it drops `make();`.
+                if unused {
+                    if let Some(value) = ret_expr.take() {
+                        let span = value.span();
+                        stmts.push(Statement::ExprStmt(crate::syntax::stmt::ExprStmtStmt {
+                            expr: *value,
+                            has_semi: false,
+                            span,
+                        }));
+                    }
+                }
                 // `unsafe { let v = ..; v }`, as `vec![..]` writes: the block's drops are placed
                 // when its statements are checked, so the value is moved out of `v` by one of
                 // them, into a `$value` that owns nothing.

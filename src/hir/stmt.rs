@@ -238,7 +238,7 @@ impl<'a> TypeChecker<'a> {
         if let Some(state) = state_at_end {
             self.restore_flow_state(state);
         }
-        self.drops_exit_block(body, terminated_at);
+        self.drops_exit_block(body, terminated_at, false);
         self.speculating = saved_speculating;
         self.borrow.exit_block();
     }
@@ -404,6 +404,8 @@ impl<'a> TypeChecker<'a> {
                 let scopes = self.consteval_scopes();
                 let saved_borrows = self.borrow.snapshot();
                 self.value_unused = true;
+                // `v;` reads `v`: it does not move it.
+                let consume = consume && !matches!(expr, Expr::Identifier(_));
                 self.allow_spawn_statement(expr);
                 self.check_expr_type_flag(expr, consume);
                 self.restore_borrows_keeping_held(saved_borrows);

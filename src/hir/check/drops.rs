@@ -1276,10 +1276,12 @@ impl<'a> TypeChecker<'a> {
     /// The block ends. `terminated_at` is its `return`, `break` or `continue`, whose own drops
     /// were found when it was checked. When drops are written into the program, the block's
     /// edits are made now.
+    /// `value_used`: something takes the value of the block's last statement.
     pub(crate) fn drops_exit_block(
         &mut self,
         body: &mut Vec<Statement>,
         terminated_at: Option<usize>,
+        value_used: bool,
     ) {
         let rewriting = self.drops_rewriting();
         let Some(FrameKind::Block {
@@ -1297,7 +1299,7 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         if rewriting {
-            self.drops_hoist_temporaries(body, &mut edits);
+            self.drops_hoist_temporaries(body, &mut edits, value_used);
         }
         for owner in owners.iter().rev() {
             if owner.moved == Moved::Yes {
@@ -1378,8 +1380,17 @@ impl<'a> TypeChecker<'a> {
     /// value was just read. Nothing moves out of a branch, a loop or the right of `&&` or `||`,
     /// and a temporary after one, or after a call whose type is not known, stays where it is
     /// and is not dropped.
-    fn drops_hoist_temporaries(&mut self, body: &mut [Statement], edits: &mut Edits) {
+    fn drops_hoist_temporaries(
+        &mut self,
+        body: &mut [Statement],
+        edits: &mut Edits,
+        value_used: bool,
+    ) {
+        let last = body.len().saturating_sub(1);
         for (i, stmt) in body.iter_mut().enumerate() {
+            // The block's value goes to whatever takes it, so it is not a temporary.
+            let taken =
+                value_used && i == last && matches!(stmt, Statement::ExprStmt(e) if !e.has_semi);
             // `for n in it` moves `it` into the loop, which drops what it has not handed out
             // when it ends. The loop advances a variable of its own, made here, in memory.
             if let Statement::ForLoop(f) = stmt {
@@ -1405,12 +1416,12 @@ impl<'a> TypeChecker<'a> {
             // Where the last temporary that can move out is, counted in calls.
             let mut probe = TempScan::new(None);
             let mut copy = stmt.clone();
-            self.drops_scan_stmt(&mut copy, &mut probe);
-            let Some(last) = probe.last_temp else {
+            self.drops_scan_stmt(&mut copy, taken, &mut probe);
+            let Some(last_temp) = probe.last_temp else {
                 continue;
             };
-            let mut scan = TempScan::new(Some(last));
-            self.drops_scan_stmt(stmt, &mut scan);
+            let mut scan = TempScan::new(Some(last_temp));
+            self.drops_scan_stmt(stmt, taken, &mut scan);
             for (name, ty, expr, glue) in scan.found {
                 // Mutable, so it has a place in memory: the loop advances it there, and its
                 // `drop` changes it before its fields are dropped.
@@ -1427,7 +1438,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn drops_scan_stmt(&mut self, stmt: &mut Statement, scan: &mut TempScan) {
+    fn drops_scan_stmt(&mut self, stmt: &mut Statement, taken: bool, scan: &mut TempScan) {
         match stmt {
             Statement::LetDecl(l) => self.drops_scan_temps(&mut l.expr, false, scan),
             Statement::Return(r) => {
@@ -1435,7 +1446,7 @@ impl<'a> TypeChecker<'a> {
                     self.drops_scan_temps(e, false, scan);
                 }
             }
-            Statement::ExprStmt(e) => self.drops_scan_temps(&mut e.expr, true, scan),
+            Statement::ExprStmt(e) => self.drops_scan_temps(&mut e.expr, !taken, scan),
             Statement::Assign(a) => self.drops_scan_temps(&mut a.rhs, false, scan),
             Statement::Assert(a) => self.drops_scan_temps(&mut a.expr, false, scan),
             // An iterator the loop makes, `for n in v.into_iter()`, lives until the loop ends.
