@@ -1,0 +1,39 @@
+//===- gpu_shared_memory_zero_fill_in_a_branch_gets_a_warning.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The shared tensor is made in a branch, which not every thread of the block enters. A barrier
+// there would wait for threads that never come, so the compiler adds none after the zero fill.
+// It warns instead, and the PTX has no `bar.sync`.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=bar.sync --implicit-check-not=Error
+// CHECK: Warning: a GPU region sets shared memory to zero in a branch or a loop, so the compiler adds no barrier after it.
+// CHECK: image=
+
+fn thread_id() on Topology::Device -> i32 {
+  return mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
+    %t = gpu.thread_id x
+    %r = "arith.index_cast"(%t) : (index) -> i32
+    macro.yield %r : i32
+  };
+}
+
+pub fn copy_half(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    let t = thread_id();
+    if t < 16 {
+      let mut shared = Tensor<f32, [32], Memory::SMEM>::new();
+      shared[t] = x[t];
+      out[t] = shared[t];
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

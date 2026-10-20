@@ -1304,10 +1304,12 @@ impl CompilerDriver {
             // program and *why* was written, handed to this closure, and
             // discarded. A backend error is a compile error and belongs on
             // stderr on the same terms as any other.
+            // A warning too: the lowering warns when a GPU region falls back to the CPU.
             if emit_diagnostics
                 || matches!(
                     diagnostic.severity(),
                     melior::diagnostic::DiagnosticSeverity::Error
+                        | melior::diagnostic::DiagnosticSeverity::Warning
                 )
             {
                 eprintln!("{}", diagnostic);
