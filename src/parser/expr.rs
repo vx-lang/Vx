@@ -1322,6 +1322,7 @@ impl<'a> Parser<'a> {
                         self.consume(&TokenType::LeftParen, "Expected '('")?;
                         let top = self.parse_topology()?;
                         self.consume(&TokenType::RightParen, "Expected ')'")?;
+                        let launch = self.parse_launch_shape()?;
                         self.consume(&TokenType::LeftBrace, "Expected '{'")?;
                         let mut stmts = Vec::new();
                         let mut ret_expr = None;
@@ -1354,6 +1355,7 @@ impl<'a> Parser<'a> {
                                 length: token.length,
                                 expansion: self.expansion(),
                             },
+                            launch,
                         })
                     }
                     TokenType::Unknown('"') => {

@@ -272,7 +272,10 @@ has `name` and `type` as the Vx source writes them, `mutable` (the type is
 An MLIR integer type has no sign, so `element` is `i16` for both `u16` and `i16`. Take the sign
 from `type`.
 
-The program that launches the kernel chooses the grid and the block.
+A kernel whose region sets `grid([..]) block(n)` also has `launch`: `grid`, one entry for each
+axis, and `block`. An entry is a number, or `{"param": "rows"}` for the value of a parameter.
+
+With no `launch`, the program that launches the kernel chooses the grid and the block.
 
 ## 4. Symbol names
 

@@ -738,6 +738,31 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       captures.insert(ordered.begin(), ordered.end());
     }
 
+    // The launch shape that the program set (#252), as payload text: `#k` for
+    // kernel argument k, a number for a constant. The `vx.launch_dim` ops go
+    // away here. The kernel still takes each value, and the runtime reads it.
+    std::string launchGrid, launchBlock;
+    {
+      SmallVector<vx::LaunchDimOp> dims;
+      spawnBody.walk([&](vx::LaunchDimOp d) { dims.push_back(d); });
+      for (vx::LaunchDimOp d : dims) {
+        std::string text;
+        APInt constant;
+        if (matchPattern(d.getValue(), m_ConstantInt(&constant)))
+          text = std::to_string(constant.getSExtValue());
+        else {
+          auto at = llvm::find(captures, d.getValue());
+          assert(at != captures.end() && "a launch size comes from the host");
+          text = "#" + std::to_string(at - captures.begin());
+        }
+        std::string &into = d.getAxis() == 3 ? launchBlock : launchGrid;
+        if (!into.empty())
+          into += ",";
+        into += text;
+        rewriter.eraseOp(d);
+      }
+    }
+
     // Create the outlined function at the module level
     auto module = op->getParentOfType<ModuleOp>();
     auto ip = rewriter.saveInsertionPoint();
@@ -796,6 +821,10 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
                               : -1);
       }
       kernelOp->setAttr("vx.param_of", rewriter.getDenseI64ArrayAttr(paramOf));
+    }
+    if (!launchGrid.empty()) {
+      kernelOp->setAttr("vx.launch_grid", rewriter.getStringAttr(launchGrid));
+      kernelOp->setAttr("vx.launch_block", rewriter.getStringAttr(launchBlock));
     }
     // Keeps the kernel off the GPU device image: the slot is host stack.
     if (resultSlot)
@@ -912,6 +941,10 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // runtime learns how wide the strided kernel's work is (#251).
     if (auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip"))
       launchOp->setAttr("vx_parallel_trip", trip);
+    if (!launchGrid.empty()) {
+      launchOp->setAttr("vx.launch_grid", rewriter.getStringAttr(launchGrid));
+      launchOp->setAttr("vx.launch_block", rewriter.getStringAttr(launchBlock));
+    }
     if (op->hasAttr("vx_parallel_two_level"))
       launchOp->setAttr("vx_parallel_two_level", rewriter.getUnitAttr());
     if (auto th = op->getAttrOfType<IntegerAttr>("vx_parallel_threads"))
@@ -2687,12 +2720,27 @@ struct ConvertVxToStandardPass
       // AST-codegen path (which does not stamp). A declared arch we have no
       // device pipeline for -- `applegpu` reaches its device through the plugin
       // ABI, not NVVM -- is excluded here exactly like NPU/AccCore below.
-      if (!hasDevicePipeline(k, topo))
+      // A region with `grid([..]) block(n)` runs only on a GPU (#252). The CPU
+      // cannot run its blocks and threads.
+      bool gpuOnly = k->hasAttr("vx.launch_grid");
+      auto refuse = [&](const Twine &why) {
+        k.emitError("a GPU region with `grid([..]) block(n)` cannot run on the "
+                    "GPU, because ")
+            << why;
+        signalPassFailure();
+      };
+      if (!hasDevicePipeline(k, topo)) {
+        if (gpuOnly)
+          refuse("its topology has no `arch: nvptx64`");
         return;
+      }
       // A kernel that hands back a value writes it into a host stack slot,
       // which a GPU cannot address; the runtime runs it on the host instead.
-      if (k->hasAttr("vx.result_slot"))
+      if (k->hasAttr("vx.result_slot")) {
+        if (gpuOnly)
+          refuse("it gives a value. Write the result into a tensor");
         return;
+      }
       // Only a body the device pipeline can actually compile.
       //
       // Two things get excluded, for two different reasons, and both are
@@ -2731,12 +2779,23 @@ struct ConvertVxToStandardPass
         if (runsOnDevice(op, module, callees[k]))
           return WalkResult::advance();
         blocker = op;
+        if (gpuOnly) {
+          if (auto call = dyn_cast<func::CallOp>(op))
+            refuse(Twine("the GPU code generator cannot take the call of '") +
+                   call.getCallee() + "'");
+          else
+            refuse(Twine("the GPU code generator cannot take '") +
+                   op->getName().getStringRef() + "'");
+        }
         return WalkResult::interrupt();
       });
       if (!blocker) {
         kernels.push_back(k);
         return;
       }
+      // A region that runs only on the GPU got its error above.
+      if (gpuOnly)
+        return;
       // Say so, or a program meant for the GPU runs on the CPU in silence. A
       // `linalg` op is the matmul that the plugin sends to cuBLAS, on purpose.
       if (blocker->getDialect() &&
@@ -3610,6 +3669,18 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     // Grid-striding makes any configuration correct, so this is a sizing
     // hint with a correctness floor, not a contract the runtime must honour
     // exactly.
+    // The launch shape that the program set (#252): `grid=` with one entry
+    // for each axis, and `block=`. An entry `#k` is the value of kernel
+    // argument k, an `i32`. A number is that size.
+    if (auto grid = op->getAttrOfType<StringAttr>("vx.launch_grid")) {
+      payload += "grid=" + grid.getValue().str();
+      payload.push_back('\0');
+      payload +=
+          "block=" +
+          op->getAttrOfType<StringAttr>("vx.launch_block").getValue().str();
+      payload.push_back('\0');
+    }
+
     if (auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip")) {
       payload += "launch=";
       payload += std::to_string(trip.getInt());
@@ -4378,8 +4449,34 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
       params.push_back(std::move(p));
     }
     SymbolTable::setSymbolName(f, name);
-    kernels.push_back(
-        llvm::json::Object{{"name", name}, {"params", std::move(params)}});
+    llvm::json::Object entry{{"name", name}, {"params", std::move(params)}};
+    // The launch shape that the program set (#252): each size is a parameter
+    // of the kernel, by name, or a number.
+    if (auto grid = kernel->getAttrOfType<StringAttr>("vx.launch_grid")) {
+      auto sizes = [&](StringRef text) {
+        llvm::json::Array out;
+        SmallVector<StringRef> items;
+        text.split(items, ',');
+        for (StringRef item : items) {
+          int64_t n = 0;
+          if (item.consume_front("#")) {
+            item.getAsInteger(10, n);
+            int64_t k = paramOf[n] - offset;
+            out.push_back(llvm::json::Object{
+                {"param", cast<StringAttr>(names[k]).getValue()}});
+          } else {
+            item.getAsInteger(10, n);
+            out.push_back(n);
+          }
+        }
+        return out;
+      };
+      llvm::json::Array block = sizes(
+          kernel->getAttrOfType<StringAttr>("vx.launch_block").getValue());
+      entry["launch"] = llvm::json::Object{{"grid", sizes(grid.getValue())},
+                                           {"block", std::move(block[0])}};
+    }
+    kernels.push_back(std::move(entry));
   }
   return kernels;
 }
@@ -4593,6 +4690,48 @@ struct ConvertVxToLLVMPass
     // to translate and started silently returning 1. A gpu op the compiler did
     // not put there still reaches LLVM translation and still fails loudly,
     // which is the right outcome for something nothing here knows how to lower.
+    // A region with `grid([..]) block(n)` runs only on a GPU (#252). Its CPU
+    // copy, which runs when no GPU took the launch, writes a message and stops
+    // the program.
+    getOperation().walk([&](vx::KernelOp kernel) {
+      if (!kernel->hasAttr("vx.launch_grid"))
+        return;
+      MLIRContext *ctx = kernel.getContext();
+      Location loc = kernel.getLoc();
+      // No source location: the flat code generator gives the kernel a
+      // location in its own MLIR text, which would mislead.
+      std::string text = "vx: a GPU region with `grid([..]) block(n)` ran on "
+                         "the CPU, which cannot run it\n";
+      Region &body = kernel.getBody();
+      SmallVector<Type> argTypes(body.front().getArgumentTypes());
+      body.dropAllReferences();
+      body.getBlocks().clear();
+      Block *entry = new Block();
+      body.push_back(entry);
+      for (Type t : argTypes)
+        entry->addArgument(t, loc);
+      OpBuilder b = OpBuilder::atBlockEnd(entry);
+      ModuleOp module = getOperation();
+      auto i32 = IntegerType::get(ctx, 32);
+      auto i64 = IntegerType::get(ctx, 64);
+      auto ptr = LLVM::LLVMPointerType::get(ctx);
+      std::string global = "__vx_gpu_only_" + kernel.getSymName().str();
+      Value message = LLVM::createGlobalString(loc, b, global, text + '\0',
+                                               LLVM::Linkage::Internal);
+      auto write =
+          LLVM::lookupOrCreateFn(b, module, "write", {i32, ptr, i64}, i64);
+      auto abortFn = LLVM::lookupOrCreateFn(b, module, "abort", {},
+                                            LLVM::LLVMVoidType::get(ctx));
+      assert(succeeded(write) && succeeded(abortFn) &&
+             "write and abort have one declaration each");
+      Value stderrFd = LLVM::ConstantOp::create(b, loc, i32, 2);
+      Value length = LLVM::ConstantOp::create(b, loc, i64, text.size());
+      LLVM::CallOp::create(b, loc, *write,
+                           ValueRange{stderrFd, message, length});
+      LLVM::CallOp::create(b, loc, *abortFn, ValueRange{});
+      LLVM::UnreachableOp::create(b, loc);
+    });
+
     getOperation().walk([&](vx::KernelOp kernel) {
       kernel.walk([&](gpu::ThreadIdOp t) {
         OpBuilder b(t);

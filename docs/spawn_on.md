@@ -152,6 +152,7 @@ decision.
 | Wait insertion in the compiler | none | at first host use (§3) |
 | Value of a device spawn | the kernel stores it in a host slot and the host loads it after the launch; such a kernel gets no GPU device image and runs on the host | the slot staged to device memory, so the GPU twin can run |
 | Runtime device index `NPU[i]` | W1030, device 0 | separate issue |
+| Launch shape | `grid([..]) block(n)`, §8 | `semantics([..])` and roles, #252 stage 2 |
 
 Order of work: the value stub first, since any model needs it; then non-blocking dispatch plus
 a real `await_future` in the runtimes, with the wait emitted at region exit so nothing
@@ -171,3 +172,29 @@ tracks the runtime wiring.
 
 Precedent: X10 `at`, Chapel `on`, CUDA streams, and PyTorch's eager mode, which is
 asynchronous under the hood while the program reads as sequential.
+
+## 8. The launch shape (#252)
+
+A region on a GPU can set its launch shape:
+
+<!-- vx-doctest: skip (needs a GPU topology) -->
+
+```vx
+spawn on(Topology::Gpu) grid([rows]) block(256) {
+  let row = grid_index(0);
+  ..
+}
+```
+
+- `grid([..])` gives the number of blocks on each axis, one to three axes. `block(n)` gives the
+  threads of a block. Each size is an `i32`, and the host computes it before the region.
+- `grid_index(i)` is the index of this block on axis `i`, a literal.
+- The region takes each size as a kernel argument. The payload names it in `grid=` and
+  `block=`: `#k` is kernel argument k, and a number is that size. The CUDA runtime launches
+  that shape, and it stops the program on a size that a GPU cannot launch.
+- Such a region runs only on a GPU. It must be one that the GPU code generator can take, or
+  the compile fails. Its CPU copy, which runs when no GPU took the launch, stops the program
+  with a message.
+- `--emit-ptx` gives the shape in its `.json` file (`lang/abi.md` §3.5).
+- Not yet: `semantics([parallel, arbitrary])`, and roles. A region without a launch shape
+  keeps the launch that the runtime chooses.

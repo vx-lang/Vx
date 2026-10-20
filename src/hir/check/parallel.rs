@@ -43,7 +43,8 @@ impl crate::hir::TypeChecker<'_> {
     pub(crate) fn warn_serial_spawn_loops(&mut self, body: &[Statement]) {
         let mut found = Vec::new();
         crate::syntax::visit_exprs(body, &mut |e| {
-            if let Expr::SpawnOn(sp) = e {
+            // A region with `grid([..]) block(n)` maps its work to threads itself.
+            if let Expr::SpawnOn(sp @ crate::syntax::SpawnOnExpr { launch: None, .. }) = e {
                 if let Some(b) = serial_loop_blocker(&sp.stmts) {
                     // An expression the compiler made may have no position of its own.
                     let at = if b.span == Span::default() {

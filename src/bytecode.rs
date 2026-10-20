@@ -286,6 +286,13 @@ pub enum Opcode {
     /// elements in row order and then zeros. With `TENSOR_PAD_EACH_AXIS` in `imm` it is
     /// `t.pad(shape)` instead: each element keeps its index, and the zeros follow on every axis.
     TensorPad = 63,
+    /// The first instructions of a `spawn` region with `grid([..]) block(n)` (#252): one for each
+    /// grid axis, `imm` 0 to 2, then one for the block, `imm` 3. `operand1` is the value, which
+    /// the host computed before the region. The region takes it, and the runtime reads it to
+    /// launch the kernel.
+    LaunchDim = 64,
+    /// `grid_index(i)` (#252): the index of this block on axis `imm` of the grid, an `i32`.
+    GridIndex = 65,
 }
 
 /// `Opcode::TensorPad`'s `imm`: pad each axis (`t.pad(shape)`), not the flat row order.

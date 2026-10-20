@@ -36,6 +36,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /// Enough for eight rank-3 memrefs, or the four rank-2 ones a four-operand
@@ -210,6 +212,67 @@ static inline int vx_launch_entry_param_count(const char *ptx,
     }
     return count;
   }
+}
+
+/* One size of a launch shape, from `text`: `#k` is the `i32` value of kernel
+   argument k, and a number is that size. Moves `*text` past the entry and its
+   comma. Returns -1 when argument k is not an `i32`. */
+static inline long vx_launch_size(const char **text, void *const *device_args,
+                                  const int32_t *arg_tags, int64_t num_args) {
+  char *end = NULL;
+  long value;
+  if (**text == '#') {
+    long k = strtol(*text + 1, &end, 10);
+    if (k < 0 || k >= num_args || arg_tags[k] != 4) {
+      return -1;
+    }
+    value = *(const int32_t *)device_args[k];
+  } else {
+    value = strtol(*text, &end, 10);
+  }
+  *text = end;
+  if (**text == ',') {
+    ++*text;
+  }
+  return value;
+}
+
+/* The launch shape that the program set with `grid([..]) block(n)` (#252),
+   from the payload's `grid=` and `block=` entries. Returns 1 and fills `grid`
+   and `block`, 0 when the payload has no shape, or -1 with the reason in `why`
+   when a size is not one a GPU can launch. A smaller launch would skip work, so
+   the caller stops the program on -1. */
+static inline int vx_launch_shape(const void *payload, size_t payload_size,
+                                  void *const *device_args,
+                                  const int32_t *arg_tags, int64_t num_args,
+                                  unsigned grid[3], unsigned *block, char *why,
+                                  size_t why_size) {
+  static const long limits[3] = {2147483647L, 65535L, 65535L};
+  const char *at = vx_payload_field(payload, payload_size, "grid=");
+  const char *block_text = vx_payload_field(payload, payload_size, "block=");
+  if (!at || !block_text) {
+    return 0;
+  }
+  for (int axis = 0; axis < 3; ++axis) {
+    long n = *at ? vx_launch_size(&at, device_args, arg_tags, num_args) : 1;
+    if (n < 1 || n > limits[axis]) {
+      snprintf(why, why_size,
+               "grid axis %d has %ld blocks, and a GPU launches 1 to %ld on "
+               "that axis",
+               axis, n, limits[axis]);
+      return -1;
+    }
+    grid[axis] = (unsigned)n;
+  }
+  long threads = vx_launch_size(&block_text, device_args, arg_tags, num_args);
+  if (threads < 1 || threads > 1024) {
+    snprintf(why, why_size,
+             "a block of %ld threads, and a block holds 1 to 1024 threads",
+             threads);
+    return -1;
+  }
+  *block = (unsigned)threads;
+  return 1;
 }
 
 #endif /* VX_KERNEL_LAUNCH_H */

@@ -2053,6 +2053,7 @@ impl<'a> TypeChecker<'a> {
                 stmts,
                 ret,
                 span,
+                launch,
             }) => {
                 let spawn_span = *span;
                 let mut actual_top = top.clone();
@@ -2139,6 +2140,35 @@ impl<'a> TypeChecker<'a> {
                     | Topology::Current => {}
                 }
 
+                // The launch shape is computed on the host, before the region starts.
+                if let Some(shape) = launch.as_mut() {
+                    let at = Some(crate::diagnostic::SourceSpan::from_ast_span(&shape.span));
+                    if !self.is_device_topology(&actual_top) && !self.speculating {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E6032,
+                            format!(
+                                "`grid([..]) block(n)` needs a GPU topology, but '{}' is not a \
+                                 GPU",
+                                actual_top.display_name()
+                            ),
+                            at.clone(),
+                        );
+                    }
+                    let mut sizes: Vec<&mut Expr> = shape.grid.iter_mut().collect();
+                    sizes.push(&mut shape.block);
+                    for size in sizes {
+                        let ty = self.check_expr_type(size);
+                        if !matches!(ty, Type::Scalar(ElementType::I32)) && !self.speculating {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E6032,
+                                format!("a grid size or block size is an `i32`, not {ty}"),
+                                at.clone(),
+                            );
+                        }
+                    }
+                }
+                self.launch_axes.push(launch.as_ref().map(|l| l.grid.len()));
+
                 let prev_top = self.active_topology.clone();
                 let prev_mem = self.active_memory.clone();
                 self.active_topology = actual_top.clone();
@@ -2190,6 +2220,7 @@ impl<'a> TypeChecker<'a> {
                 // Checked once the region's own frame is closed, so a variable from outside that
                 // the region hands out moves in the enclosing function.
                 self.drops_exit_spawn();
+                self.launch_axes.pop();
 
                 let mut ret_ty = Type::Struct("void".into(), None); // default void-like type
                 let has_ret = ret.is_some();

@@ -2158,6 +2158,8 @@ impl<'a> FnEmit<'a> {
             // the greedy folder cannot erase it before the device clone rewrites it to
             // `gpu.barrier`; the host lowering erases it instead (a serial loop IS the barrier).
             Opcode::Barrier => self.op_barrier(idx, ins),
+            Opcode::LaunchDim => self.op_launch_dim(idx, ins),
+            Opcode::GridIndex => self.op_grid_index(idx, ins),
             Opcode::TensorDrop => self.op_tensor_drop(idx, ins),
             Opcode::Abort => self.op_abort(idx, ins),
             Opcode::PrintStr => self.op_print_str(idx, ins),

@@ -107,6 +107,53 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `grid([g0, ..]) block(n)` after `spawn on(T)`, or nothing (#252).
+    pub(crate) fn parse_launch_shape(&mut self) -> ParseResult<'a, Option<LaunchShape>> {
+        if !matches!(self.peek().kind, TokenType::Identifier(s) if s == "grid") {
+            if matches!(self.peek().kind, TokenType::Identifier(s) if s == "block") {
+                return Err(self.error("`block(..)` comes after `grid([..])`"));
+            }
+            return Ok(None);
+        }
+        let at = self.advance();
+        self.consume(&TokenType::LeftParen, "Expected '(' after 'grid'")?;
+        self.consume(&TokenType::LeftBracket, "Expected '[' in 'grid(['")?;
+        let mut grid = Vec::new();
+        while !self.check(&TokenType::RightBracket) {
+            grid.push(self.parse_expr()?);
+            if !self.match_token(&TokenType::Comma) {
+                break;
+            }
+        }
+        self.consume(
+            &TokenType::RightBracket,
+            "Expected ']' after the grid sizes",
+        )?;
+        self.consume(&TokenType::RightParen, "Expected ')' after 'grid([..]'")?;
+        if grid.is_empty() || grid.len() > 3 {
+            return Err(self.error_at(at, "a grid has one, two or three axes"));
+        }
+        if !matches!(self.peek().kind, TokenType::Identifier(s) if s == "block") {
+            return Err(
+                self.error("Expected `block(n)` after `grid([..])`: the threads of a block")
+            );
+        }
+        self.advance();
+        self.consume(&TokenType::LeftParen, "Expected '(' after 'block'")?;
+        let block = self.parse_expr()?;
+        self.consume(&TokenType::RightParen, "Expected ')' after the block size")?;
+        Ok(Some(LaunchShape {
+            grid,
+            block: Box::new(block),
+            span: Span {
+                line: at.line,
+                column: at.column,
+                length: at.length,
+                expansion: self.expansion(),
+            },
+        }))
+    }
+
     /// Parse a topology in an operand position (a `Reachable<A, B>` argument): either a
     /// `Topology::X` reference or a bare identifier naming a topology variable.
     pub(crate) fn parse_topology_operand(&mut self) -> ParseResult<'a, Topology> {
