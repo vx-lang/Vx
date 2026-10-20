@@ -843,7 +843,13 @@ impl<'a> TypeChecker<'a> {
         if self.speculating {
             return;
         }
-        let here = self.scopes.len() - 1;
+        // A move at the top of a task body happens at its `spawn` (T4). The task runs on a
+        // thread of its own, so a flag that the task set would come too late for a drop after
+        // the `spawn`.
+        let mut here = self.scopes.len() - 1;
+        while let Some(outer) = self.tasks.spawn_scope_of_body(here) {
+            here = outer;
+        }
         let rewriting = self.drops_rewriting();
         if !again && field.is_none() {
             self.borrow.drops.moved_now.insert(name.to_string());

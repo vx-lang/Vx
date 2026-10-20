@@ -200,4 +200,18 @@ unsound:
 
 A closure does not follow K4 yet (#1941).
 
+Step 4 runs each task on an OS thread of its own (#1863). The flat code generator does it. The
+AST code generator still runs each task at its `spawn`, which T7 allows. A program that the flat
+code generator cannot take falls back to the AST code generator, so its tasks run one after
+another.
+
+- The `spawn` copies into the task's environment each scalar and struct local that the task
+  only loads (T4). The task gets a pointer to the other locals, which the borrow rules keep valid
+  until the join.
+- A move at the top of a task body happens at the `spawn`, so the owner's drop needs no flag.
+- Each use of the result of a task waits for the task. `join()` and the end of the block are such
+  uses.
+- While a task runs, each thread writes what it prints one line at a time, so the lines of two
+  tasks do not mix.
+
 Tasks that wait, channels and errors from tasks are in `waiting_tasks_channels_and_task_errors.md`.

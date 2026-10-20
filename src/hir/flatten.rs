@@ -1419,6 +1419,18 @@ impl<'r> Lowerer<'r> {
             // `unsafe { .. }` in value position (e.g. a stdlib wrapper's `return unsafe { sqrtf(self) }`).
             // Safety was checked upstream, so `unsafe` is transparent to lowering: run the block's
             // statements, then yield its trailing value expression.
+            Expr::UnsafeBlock(u) if u.task.is_some() => {
+                match self.lower_task_region(u, u.task.unwrap(), u.ret.is_some())? {
+                    Some(v) => Ok(v),
+                    None => Ok(self.emit_value(
+                        Opcode::Const,
+                        Register(0),
+                        Register(0),
+                        ElementType::I32,
+                        0,
+                    )),
+                }
+            }
             Expr::UnsafeBlock(u) => self.scoped(|me| {
                 for s in &u.stmts {
                     me.lower_stmt(s)?;
@@ -2896,12 +2908,52 @@ impl<'r> Lowerer<'r> {
         let top_id = crate::arch::topology_dispatch_id(&s.top) as u32 as u64;
         let name = self.strings.len() as u64 + 1;
         self.strings.push(s.top.display_name());
-        self.emit_effect(
-            Opcode::Spawn,
-            Register(0),
-            Register(0),
+        self.lower_region(
             top_id | (name << 32),
-        );
+            &s.stmts,
+            s.ret.as_deref(),
+            want_value,
+            true,
+        )
+    }
+
+    /// A `tasks` block or a task body: a `vx.spawn` region with the topology id of its kind.
+    /// `VxLowering` runs each task on a thread of its own.
+    fn lower_task_region(
+        &mut self,
+        u: &crate::syntax::UnsafeBlockExpr,
+        kind: crate::syntax::TaskBlockKind,
+        want_value: bool,
+    ) -> Lowered<Option<Val>> {
+        if want_value && u.ret.is_none() {
+            return Err(Decline::Unsupported {
+                what: "a task block whose region has no value",
+            });
+        }
+        let id = match kind {
+            crate::syntax::TaskBlockKind::Tasks => crate::arch::TASKS_BLOCK_DISPATCH_ID,
+            crate::syntax::TaskBlockKind::Spawn => crate::arch::TASK_DISPATCH_ID,
+        };
+        self.lower_region(
+            id as u32 as u64,
+            &u.stmts,
+            u.ret.as_deref(),
+            want_value,
+            false,
+        )
+    }
+
+    /// The `Spawn`/`SpawnEnd` region of `lower_spawn` and `lower_task_region`. `imm` is the
+    /// `Spawn` immediate. `offer_parallel` offers the region's loops to the device pipeline.
+    fn lower_region(
+        &mut self,
+        imm: u64,
+        stmts: &[Statement],
+        ret: Option<&Expr>,
+        want_value: bool,
+        offer_parallel: bool,
+    ) -> Lowered<Option<Val>> {
+        self.emit_effect(Opcode::Spawn, Register(0), Register(0), imm);
         // Two proofs are offered, FLAT FIRST. The flat grid-stride (#251) is the measured
         // record shape -- one thread per iteration, slice bodies vectorized -- so a region it
         // covers must keep it: since the block-row write rule (Vx#379 R3) landed, a plain
@@ -2912,32 +2964,45 @@ impl<'r> Lowerer<'r> {
         // The region is a block: its `let`s end with it.
         let depth = self.open_block();
         self.spawn_depth += 1;
-        let par = parallel_outer_for(&s.stmts);
+        let par = if offer_parallel {
+            parallel_outer_for(stmts)
+        } else {
+            None
+        };
+        let two_level = if offer_parallel && par.is_none() {
+            parallel_two_level(stmts)
+        } else {
+            None
+        };
         let end_imm = if par.is_some() {
-            for (i, stmt) in s.stmts.iter().enumerate() {
+            for (i, stmt) in stmts.iter().enumerate() {
                 self.stride_next_for = matches!(par, Some((idx, _)) if idx == i);
                 self.lower_stmt(stmt)?;
             }
             self.stride_next_for = false;
             par.map(|(_, t)| t).unwrap_or(0)
-        } else if let Some((btrip, plan)) = parallel_two_level(&s.stmts) {
+        } else if let Some((btrip, plan)) = two_level {
             self.stride_plan = Some(plan);
-            for stmt in &s.stmts {
+            for stmt in stmts {
                 self.lower_stmt(stmt)?;
             }
             self.stride_plan = None;
             btrip | SPAWN_TWO_LEVEL
         } else {
-            for stmt in &s.stmts {
+            for stmt in stmts {
                 self.lower_stmt(stmt)?;
             }
             0
         };
         if want_value {
-            let tail = s.ret.as_deref().ok_or(Decline::Unsupported {
+            let tail = ret.ok_or(Decline::Unsupported {
                 what: "a spawn expression whose region has no value",
             })?;
+            // The drops that wait for the value, as in a plain block.
+            let waiting = std::mem::take(&mut self.queued_drops);
             let v = self.lower_expr(tail)?;
+            self.queued_drops.extend(waiting);
+            self.run_queued_drops()?;
             self.close_blocks_to(depth);
             self.spawn_depth -= 1;
             let ty = v.ty.clone();
@@ -2949,7 +3014,7 @@ impl<'r> Lowerer<'r> {
                 end_imm,
             )));
         }
-        match s.ret.as_deref() {
+        match ret {
             Some(Expr::If(iff)) => self.lower_if(iff)?,
             Some(Expr::Match(m)) => self.lower_match(m)?,
             Some(Expr::SpawnOn(inner)) => {
@@ -2960,6 +3025,7 @@ impl<'r> Lowerer<'r> {
             }
             None => {}
         }
+        self.run_queued_drops()?;
         self.close_blocks_to(depth);
         self.spawn_depth -= 1;
         self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), end_imm);
@@ -5213,6 +5279,9 @@ impl<'r> Lowerer<'r> {
                 Expr::If(iff) => self.lower_if(iff),
                 Expr::Match(m) => self.lower_match(m),
                 Expr::SpawnOn(sp) => self.lower_spawn(sp, false).map(|_| ()),
+                Expr::UnsafeBlock(ub) if ub.task.is_some() => self
+                    .lower_task_region(ub, ub.task.unwrap(), false)
+                    .map(|_| ()),
                 // A statement-position `unsafe { … }` (an FFI program's `unsafe { … }` wrapper with no
                 // trailing value): safety was checked upstream, so `unsafe` is transparent — lower the
                 // inner statements, and its trailing value expression if any. (The value-position form,
@@ -5559,6 +5628,8 @@ fn expr_has_control_flow(e: &Expr) -> bool {
     match e {
         // The transparent blocks lower inline: their statements and their trailing expression
         // are this body's.
+        // A `tasks` block and a task body are regions, as a spawn body is.
+        Expr::UnsafeBlock(u) if u.task.is_some() => true,
         Expr::UnsafeBlock(u) => {
             body_has_control_flow(&u.stmts) || u.ret.as_deref().is_some_and(expr_has_control_flow)
         }

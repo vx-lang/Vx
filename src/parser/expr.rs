@@ -888,6 +888,7 @@ impl<'a> Parser<'a> {
                 ret,
                 span: unsafe_span,
                 generated: false,
+                task: None,
             }));
         } else if self.check(&TokenType::If) {
             // The `if` token, so a diagnostic about the `if` points at it.

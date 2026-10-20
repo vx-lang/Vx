@@ -16,6 +16,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
+#include "mlir/Dialect/LLVMIR/FunctionCallUtils.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -2104,6 +2105,452 @@ static LogicalResult placeDrops(ModuleOp module) {
   return lowerDrops(module);
 }
 
+// `tasks { .. }` and `spawn { .. }` run on OS threads (#1863). The flat code
+// generator makes each a `vx.spawn` region with one of these topologies
+// (src/arch.rs TASKS_BLOCK_DISPATCH_ID and TASK_DISPATCH_ID). The runtime
+// functions are in stdlib/rust_core/src/ffi/tasks.rs.
+static constexpr int32_t kTasksBlockTopology = 10;
+static constexpr int32_t kTaskTopology = 11;
+
+static bool isTasksBlock(vx::SpawnOp op) {
+  return op.getTopology() == kTasksBlockTopology;
+}
+static bool isTask(vx::SpawnOp op) { return op.getTopology() == kTaskTopology; }
+
+/// The start of each task environment: the group and the task's number in it.
+/// The code after a `spawn` writes them, and a join reads them.
+static LLVM::LLVMStructType taskHeaderType(MLIRContext *ctx) {
+  return LLVM::LLVMStructType::getLiteral(
+      ctx, {LLVM::LLVMPointerType::get(ctx), IntegerType::get(ctx, 64)});
+}
+
+/// Where a join finds its task: a stack slot that holds the task's environment.
+/// Before the `spawn` and after the end of the block, the slot holds an
+/// environment with no group, and a join of it does nothing.
+struct TaskSlot {
+  Value slot;
+  Value none;
+};
+
+static TaskSlot makeTaskSlot(func::FuncOp func, Location loc) {
+  MLIRContext *ctx = func.getContext();
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+  auto i64Ty = IntegerType::get(ctx, 64);
+  OpBuilder b = OpBuilder::atBlockBegin(&func.getBody().front());
+  Value one = LLVM::ConstantOp::create(b, loc, i64Ty, 1);
+  Value none = LLVM::AllocaOp::create(b, loc, ptrTy, taskHeaderType(ctx), one);
+  Value null = LLVM::ZeroOp::create(b, loc, ptrTy);
+  Value minusOne = LLVM::ConstantOp::create(b, loc, i64Ty, -1);
+  Value groupField = LLVM::GEPOp::create(b, loc, ptrTy, taskHeaderType(ctx),
+                                         none, ArrayRef<LLVM::GEPArg>{0, 0});
+  LLVM::StoreOp::create(b, loc, null, groupField);
+  Value indexField = LLVM::GEPOp::create(b, loc, ptrTy, taskHeaderType(ctx),
+                                         none, ArrayRef<LLVM::GEPArg>{0, 1});
+  LLVM::StoreOp::create(b, loc, minusOne, indexField);
+  Value slot = LLVM::AllocaOp::create(b, loc, ptrTy, ptrTy, one);
+  LLVM::StoreOp::create(b, loc, none, slot);
+  return {slot, none};
+}
+
+/// Waits for the task whose environment `slot` holds. Returns the environment.
+static Value joinTask(OpBuilder &b, Location loc, ModuleOp module, Value slot) {
+  MLIRContext *ctx = module.getContext();
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+  auto i64Ty = IntegerType::get(ctx, 64);
+  auto join = LLVM::lookupOrCreateFn(b, module, "vx_task_join", {ptrTy, i64Ty},
+                                     LLVM::LLVMVoidType::get(ctx));
+  assert(succeeded(join) && "vx_task_join has one declaration");
+  Value env = LLVM::LoadOp::create(b, loc, ptrTy, slot);
+  Value groupField = LLVM::GEPOp::create(b, loc, ptrTy, taskHeaderType(ctx),
+                                         env, ArrayRef<LLVM::GEPArg>{0, 0});
+  Value group = LLVM::LoadOp::create(b, loc, ptrTy, groupField);
+  Value indexField = LLVM::GEPOp::create(b, loc, ptrTy, taskHeaderType(ctx),
+                                         env, ArrayRef<LLVM::GEPArg>{0, 1});
+  Value index = LLVM::LoadOp::create(b, loc, i64Ty, indexField);
+  LLVM::CallOp::create(b, loc, *join, ValueRange{group, index});
+  return env;
+}
+
+/// A stack slot that a `let` stores the result of `task` into, and nothing
+/// else uses the result. Then the task writes its result into the slot, and
+/// each use of the slot waits for the task. Without this, the store right
+/// after the `spawn` would wait for the task.
+static Operation *resultSlotStore(vx::SpawnOp task, Value &slot);
+
+/// Moves the stack slot `slot` that a `let` makes after `task` to before it,
+/// with the constant that sizes it, so that the task can take the slot. False
+/// when the slot is made in another way.
+static bool moveSlotBefore(Value slot, vx::SpawnOp task) {
+  Operation *def = slot.getDefiningOp();
+  if (def->getBlock() != task->getBlock() || def->isBeforeInBlock(task))
+    return def->getBlock() == task->getBlock() ||
+           def->getParentRegion()->isAncestor(task->getParentRegion());
+  for (Value operand : def->getOperands()) {
+    Operation *size = operand.getDefiningOp();
+    if (!size || size->getNumOperands() != 0 ||
+        !size->hasTrait<OpTrait::ConstantLike>())
+      return false;
+  }
+  for (Value operand : def->getOperands()) {
+    Operation *size = operand.getDefiningOp();
+    if (size->getBlock() == task->getBlock() && task->isBeforeInBlock(size))
+      size->moveBefore(task);
+  }
+  def->moveBefore(task);
+  return true;
+}
+
+static Operation *resultSlotStore(vx::SpawnOp task, Value &slot) {
+  if (task.getNumResults() != 1 || !task.getResult(0).hasOneUse())
+    return nullptr;
+  Operation *user = *task.getResult(0).getUsers().begin();
+  if (auto store = dyn_cast<LLVM::StoreOp>(user)) {
+    if (store.getValue() == task.getResult(0) &&
+        store.getAddr().getDefiningOp<LLVM::AllocaOp>() &&
+        moveSlotBefore(store.getAddr(), task)) {
+      slot = store.getAddr();
+      return store;
+    }
+  }
+  if (auto store = dyn_cast<memref::StoreOp>(user)) {
+    if (store.getIndices().empty() &&
+        store.getMemRef().getDefiningOp<memref::AllocaOp>() &&
+        moveSlotBefore(store.getMemRef(), task)) {
+      slot = store.getMemRef();
+      return store;
+    }
+  }
+  return nullptr;
+}
+
+/// The value that a load of the stack slot `capture` gives, when the task
+/// only loads it: a scalar local, or a struct that the task moves or copies.
+/// The task copies such a slot at its `spawn` (T4), because the variable may
+/// end, and its slot get a new value, before the task reads it. A null type
+/// for any other capture.
+static Type copiedAtSpawn(Value capture, Region &body) {
+  Type loaded;
+  if (auto type = dyn_cast<MemRefType>(capture.getType())) {
+    if (type.getRank() != 0 || !type.getElementType().isIntOrIndexOrFloat() ||
+        !capture.getDefiningOp<memref::AllocaOp>())
+      return {};
+    loaded = type.getElementType();
+  } else if (!capture.getDefiningOp<LLVM::AllocaOp>()) {
+    return {};
+  }
+  for (OpOperand &use : capture.getUses()) {
+    Operation *user = use.getOwner();
+    if (!body.isAncestor(user->getParentRegion()) || isa<memref::LoadOp>(user))
+      continue;
+    auto load = dyn_cast<LLVM::LoadOp>(user);
+    if (!load || (loaded && loaded != load.getType()))
+      return {};
+    loaded = load.getType();
+  }
+  return loaded;
+}
+
+/// The loads of `slot` inside `fn`.
+static SmallVector<Operation *> loadsIn(Value slot, func::FuncOp fn) {
+  SmallVector<Operation *> loads;
+  for (Operation *user : slot.getUsers())
+    if (isa<memref::LoadOp, LLVM::LoadOp>(user) && fn->isProperAncestor(user))
+      loads.push_back(user);
+  return loads;
+}
+
+/// Outlines `task` into a function that runs on a thread of `group`.
+static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
+                               SmallVectorImpl<TaskSlot> &slots) {
+  MLIRContext *ctx = module.getContext();
+  Location loc = task.getLoc();
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+  auto i64Ty = IntegerType::get(ctx, 64);
+  LLVMTypeConverter converter(ctx);
+  Region &body = task.getBody();
+  assert(task.getNumResults() <= 1 && "a task has at most one result");
+  auto parentFunc = task->getParentOfType<func::FuncOp>();
+  assert(parentFunc && "a task is in a function");
+
+  // A constant is made again in the task, not copied to it.
+  {
+    SetVector<Value> captures;
+    getUsedValuesDefinedAbove(body, captures);
+    OpBuilder b = OpBuilder::atBlockBegin(&body.front());
+    for (Value capture : captures) {
+      Operation *def = capture.getDefiningOp();
+      if (!def || def->getNumOperands() != 0 ||
+          !def->hasTrait<OpTrait::ConstantLike>())
+        continue;
+      Operation *copy = b.clone(*def);
+      capture.replaceUsesWithIf(copy->getResult(0), [&](OpOperand &use) {
+        return body.isAncestor(use.getOwner()->getParentRegion());
+      });
+    }
+  }
+
+  Value result = task.getNumResults() ? task.getResult(0) : Value();
+  Value resultSlot;
+  Operation *slotStore = resultSlotStore(task, resultSlot);
+  SetVector<Value> captures;
+  getUsedValuesDefinedAbove(body, captures);
+  if (resultSlot)
+    captures.insert(resultSlot);
+
+  // The environment: the header, then one field for each captured value, then
+  // the result when no slot takes it.
+  // A copied slot has the type of its value, and every other capture its own.
+  SmallVector<Type> copied;
+  SmallVector<Type> fieldTypes = {ptrTy, i64Ty};
+  for (Value capture : captures) {
+    Type copy = capture != resultSlot ? copiedAtSpawn(capture, body) : Type();
+    copied.push_back(copy);
+    Type type = copy ? copy : capture.getType();
+    Type field = converter.convertType(type);
+    if (!field)
+      return task.emitError("a task cannot take a value of type ") << type;
+    fieldTypes.push_back(field);
+  }
+  std::optional<unsigned> resultField;
+  Type resultFieldType;
+  if (result && !resultSlot) {
+    resultFieldType = converter.convertType(result.getType());
+    if (!resultFieldType)
+      return task.emitError("a task cannot return a value of type ")
+             << result.getType();
+    resultField = fieldTypes.size();
+    fieldTypes.push_back(resultFieldType);
+  }
+  auto envType = LLVM::LLVMStructType::getLiteral(ctx, fieldTypes);
+  auto field = [&](OpBuilder &b, Value env, unsigned i) -> Value {
+    return LLVM::GEPOp::create(b, loc, ptrTy, envType, env,
+                               ArrayRef<LLVM::GEPArg>{0, int32_t(i)});
+  };
+
+  // The function that the thread runs.
+  static std::atomic<int> taskIdx{0};
+  std::string name = "vx_task_" + std::to_string(taskIdx.fetch_add(1));
+  OpBuilder atEnd = OpBuilder::atBlockEnd(module.getBody());
+  auto fn = func::FuncOp::create(atEnd, loc, name,
+                                 FunctionType::get(ctx, {ptrTy}, {}));
+  fn.setPrivate();
+  Block *entry = fn.addEntryBlock();
+  Value env = entry->getArgument(0);
+  OpBuilder b = OpBuilder::atBlockEnd(entry);
+  SmallVector<Value> inTask;
+  for (auto [i, capture] : llvm::enumerate(captures)) {
+    Value v =
+        LLVM::LoadOp::create(b, loc, fieldTypes[2 + i], field(b, env, 2 + i));
+    Type type = copied[i] ? copied[i] : capture.getType();
+    if (v.getType() != type)
+      v = UnrealizedConversionCastOp::create(b, loc, type, v).getResult(0);
+    inTask.push_back(v);
+  }
+  Block *first = &body.front();
+  fn.getBody().getBlocks().splice(fn.getBody().end(), body.getBlocks());
+  cf::BranchOp::create(b, loc, first);
+  for (auto [i, capture] : llvm::enumerate(captures)) {
+    if (copied[i]) {
+      for (Operation *load : loadsIn(capture, fn)) {
+        load->getResult(0).replaceAllUsesWith(inTask[i]);
+        load->erase();
+      }
+      continue;
+    }
+    Value(capture).replaceUsesWithIf(inTask[i], [&](OpOperand &use) {
+      return fn->isProperAncestor(use.getOwner());
+    });
+  }
+  Value slotInTask;
+  if (resultSlot)
+    slotInTask = inTask[llvm::find(captures, resultSlot) - captures.begin()];
+  SmallVector<vx::YieldOp> yields;
+  for (Block &block : fn.getBody())
+    if (auto yield = dyn_cast<vx::YieldOp>(block.getTerminator()))
+      yields.push_back(yield);
+  for (vx::YieldOp yield : yields) {
+    OpBuilder yb(yield);
+    if (result) {
+      Value value = yield.getOperand(0);
+      if (resultSlot && isa<LLVM::LLVMPointerType>(resultSlot.getType()))
+        LLVM::StoreOp::create(yb, loc, value, slotInTask);
+      else if (resultSlot)
+        memref::StoreOp::create(yb, loc, value, slotInTask);
+      else {
+        if (value.getType() != resultFieldType)
+          value = UnrealizedConversionCastOp::create(yb, loc, resultFieldType,
+                                                     value)
+                      .getResult(0);
+        LLVM::StoreOp::create(yb, loc, value, field(yb, env, *resultField));
+      }
+    }
+    func::ReturnOp::create(yb, loc);
+    yield.erase();
+  }
+
+  // The `spawn`: copies the captured values into the environment, and starts
+  // the thread.
+  TaskSlot taskSlot = makeTaskSlot(parentFunc, loc);
+  slots.push_back(taskSlot);
+  SmallVector<Operation *> slotUsers;
+  if (resultSlot)
+    for (Operation *user : resultSlot.getUsers())
+      if (user != slotStore && !fn->isProperAncestor(user))
+        slotUsers.push_back(user);
+  b.setInsertionPoint(task);
+  auto malloc = LLVM::lookupOrCreateMallocFn(b, module, i64Ty);
+  auto start = LLVM::lookupOrCreateFn(b, module, "vx_task_start",
+                                      {ptrTy, ptrTy, ptrTy}, i64Ty);
+  assert(succeeded(malloc) && succeeded(start) &&
+         "the runtime functions have one declaration each");
+  Value null = LLVM::ZeroOp::create(b, loc, ptrTy);
+  Value end = LLVM::GEPOp::create(b, loc, ptrTy, envType, null,
+                                  ArrayRef<LLVM::GEPArg>{1});
+  Value size = LLVM::PtrToIntOp::create(b, loc, i64Ty, end);
+  Value newEnv =
+      LLVM::CallOp::create(b, loc, *malloc, ValueRange{size}).getResult();
+  for (auto [i, capture] : llvm::enumerate(captures)) {
+    Value v = capture;
+    if (copied[i] && isa<MemRefType>(capture.getType()))
+      v = memref::LoadOp::create(b, loc, capture);
+    else if (copied[i])
+      v = LLVM::LoadOp::create(b, loc, copied[i], capture);
+    if (v.getType() != fieldTypes[2 + i])
+      v = UnrealizedConversionCastOp::create(b, loc, fieldTypes[2 + i], v)
+              .getResult(0);
+    LLVM::StoreOp::create(b, loc, v, field(b, newEnv, 2 + i));
+  }
+  Value fnRef = func::ConstantOp::create(b, loc, fn.getFunctionType(),
+                                         SymbolRefAttr::get(fn));
+  Value fnPtr =
+      UnrealizedConversionCastOp::create(b, loc, ptrTy, fnRef).getResult(0);
+  Value index =
+      LLVM::CallOp::create(b, loc, *start, ValueRange{group, fnPtr, newEnv})
+          .getResult();
+  LLVM::StoreOp::create(b, loc, group, field(b, newEnv, 0));
+  LLVM::StoreOp::create(b, loc, index, field(b, newEnv, 1));
+  LLVM::StoreOp::create(b, loc, newEnv, taskSlot.slot);
+
+  // Each use of the result waits for the task first.
+  for (Operation *user : slotUsers) {
+    if (auto other = user->getParentOfType<vx::SpawnOp>())
+      if (isTask(other))
+        return user->emitError("a task cannot use the result of another task");
+    OpBuilder jb(user);
+    joinTask(jb, loc, module, taskSlot.slot);
+  }
+  if (slotStore)
+    slotStore->erase();
+  if (result && !resultSlot) {
+    SmallVector<OpOperand *> uses;
+    for (OpOperand &use : result.getUses())
+      uses.push_back(&use);
+    for (OpOperand *use : uses) {
+      OpBuilder jb(use->getOwner());
+      Value doneEnv = joinTask(jb, loc, module, taskSlot.slot);
+      Value v = LLVM::LoadOp::create(
+          jb, loc, resultFieldType,
+          LLVM::GEPOp::create(
+              jb, loc, ptrTy, envType, doneEnv,
+              ArrayRef<LLVM::GEPArg>{0, int32_t(*resultField)}));
+      if (v.getType() != result.getType())
+        v = UnrealizedConversionCastOp::create(jb, loc, result.getType(), v)
+                .getResult(0);
+      use->set(v);
+    }
+  }
+  task.erase();
+  return success();
+}
+
+/// A `tasks` block: makes its group, outlines its tasks, and puts its code
+/// where the block is. Each way out of the block joins the tasks.
+static LogicalResult lowerTasksBlock(vx::SpawnOp block, ModuleOp module) {
+  MLIRContext *ctx = module.getContext();
+  Location loc = block.getLoc();
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+  Region &body = block.getBody();
+  if (body.empty()) {
+    block.erase();
+    return success();
+  }
+  OpBuilder b = OpBuilder::atBlockBegin(&body.front());
+  auto begin = LLVM::lookupOrCreateFn(b, module, "vx_tasks_begin", {}, ptrTy);
+  auto end = LLVM::lookupOrCreateFn(b, module, "vx_tasks_end", {ptrTy},
+                                    LLVM::LLVMVoidType::get(ctx));
+  assert(succeeded(begin) && succeeded(end) &&
+         "the runtime functions have one declaration each");
+  Value group = LLVM::CallOp::create(b, loc, *begin, ValueRange{}).getResult();
+
+  // The tasks of this block, not of a `tasks` block inside one of them.
+  SmallVector<vx::SpawnOp> tasks;
+  body.walk<WalkOrder::PreOrder>([&](vx::SpawnOp op) {
+    if (isTasksBlock(op))
+      return WalkResult::skip();
+    if (isTask(op)) {
+      tasks.push_back(op);
+      return WalkResult::skip();
+    }
+    return WalkResult::advance();
+  });
+  SmallVector<TaskSlot> slots;
+  for (vx::SpawnOp task : tasks)
+    if (failed(lowerTask(task, group, module, slots)))
+      return failure();
+
+  // The code of the block goes where the block is. Each `vx.yield` ends the
+  // tasks, and goes on after the block with the block's value.
+  Block *before = block->getBlock();
+  Block *after = before->splitBlock(block->getNextNode());
+  SmallVector<Location> argLocs(block.getNumResults(), loc);
+  after->addArguments(block.getResultTypes(), argLocs);
+  SmallVector<vx::YieldOp> yields;
+  for (Block &inner : body)
+    if (auto yield = dyn_cast<vx::YieldOp>(inner.getTerminator()))
+      yields.push_back(yield);
+  for (vx::YieldOp yield : yields) {
+    OpBuilder yb(yield);
+    LLVM::CallOp::create(yb, loc, *end, ValueRange{group});
+    for (TaskSlot &slot : slots)
+      LLVM::StoreOp::create(yb, loc, slot.none, slot.slot);
+    cf::BranchOp::create(yb, loc, after, yield.getOperands());
+    yield.erase();
+  }
+  Block *first = &body.front();
+  Region *parent = before->getParent();
+  parent->getBlocks().splice(Region::iterator(after), body.getBlocks());
+  block.replaceAllUsesWith(after->getArguments());
+  OpBuilder bb = OpBuilder::atBlockEnd(before);
+  cf::BranchOp::create(bb, loc, first);
+  block.erase();
+  return success();
+}
+
+/// Lowers each `tasks` block, the outermost first, so that a block inside a
+/// task is lowered in the function of that task.
+static LogicalResult lowerTasks(ModuleOp module) {
+  while (true) {
+    vx::SpawnOp found;
+    module.walk<WalkOrder::PreOrder>([&](vx::SpawnOp op) {
+      if (!isTasksBlock(op))
+        return WalkResult::advance();
+      found = op;
+      return WalkResult::interrupt();
+    });
+    if (!found)
+      break;
+    if (failed(lowerTasksBlock(found, module)))
+      return failure();
+  }
+  WalkResult stray = module.walk([](vx::SpawnOp op) {
+    if (!isTask(op))
+      return WalkResult::advance();
+    op.emitError("a task outside a tasks block");
+    return WalkResult::interrupt();
+  });
+  return failure(stray.wasInterrupted());
+}
+
 struct ConvertVxToStandardPass
     : public PassWrapper<ConvertVxToStandardPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertVxToStandardPass)
@@ -2119,8 +2566,8 @@ struct ConvertVxToStandardPass
   void getDependentDialects(DialectRegistry &registry) const override {
     registry
         .insert<async::AsyncDialect, cf::ControlFlowDialect, func::FuncDialect,
-                memref::MemRefDialect, arith::ArithDialect, gpu::GPUDialect,
-                math::MathDialect, scf::SCFDialect>();
+                LLVM::LLVMDialect, memref::MemRefDialect, arith::ArithDialect,
+                gpu::GPUDialect, math::MathDialect, scf::SCFDialect>();
   }
 
   /// Give every device kernel a `gpu.func` beside its `vx.kernel`.
@@ -2516,6 +2963,13 @@ struct ConvertVxToStandardPass
 
   void runOnOperation() override {
     getOperation()->emitRemark("Lowering Vx to Standard dialects");
+
+    // First, so that each later step sees a task as a call that starts it, and
+    // keeps what the task uses alive until the task is joined.
+    if (failed(lowerTasks(getOperation()))) {
+      signalPassFailure();
+      return;
+    }
 
     // Before anything is rewritten, so the diagnostic describes the program as
     // written rather than a partially converted version of it.

@@ -141,13 +141,28 @@ impl FnEmit<'_> {
             None => String::new(),
         };
         // A region with a value yields `operand1`, and the op that opened at `open_at` gets
-        // the result name now that the value's type is known. A scalar or a tensor.
+        // the result name now that the value's type is known. A scalar, a tensor, or a struct
+        // (a task can return one). A struct in a slot is yielded as its value.
         let mut result_ty: Option<String> = None;
         if self.types.get(ins.type_idx.0 as usize).is_some() {
             let r = ins.operand1.0 as usize;
-            let v = self.names.get(r).ok_or(crate::emitter_gap!())?.clone();
+            let mut v = self.names.get(r).ok_or(crate::emitter_gap!())?.clone();
+            let struct_of = |gid: Option<TypeId>| {
+                gid.and_then(|g| self.ctx.aggs.get(&g))
+                    .map(|a| (gid.unwrap(), a.struct_ty.clone()))
+            };
+            let in_slot = struct_of(self.agg_of.get(r).copied().flatten());
+            let by_value = struct_of(self.agg_val_of.get(r).copied().flatten());
             let ty = if let Some(Some(m)) = self.mem_of.get(r) {
                 m.clone()
+            } else if let Some((gid, sty)) = in_slot.or(by_value.clone()) {
+                if by_value.is_none() && !self.terminated {
+                    let loaded = format!("%v{idx}_value");
+                    self.body += &format!("  {loaded} = llvm.load {v} : !llvm.ptr -> {sty}\n");
+                    v = loaded;
+                }
+                self.agg_val_of[idx] = Some(gid);
+                sty
             } else {
                 mlir_scalar(&self.elem_at(ins.operand1.0).ok_or(crate::emitter_gap!())?)
                     .ok_or(crate::emitter_gap!())?
@@ -161,7 +176,7 @@ impl FnEmit<'_> {
             self.names[idx] = n;
             if self.mem_of.get(r).is_some_and(|m| m.is_some()) {
                 self.mem_of[idx] = Some(ty.clone());
-            } else {
+            } else if self.agg_val_of[idx].is_none() {
                 self.etypes[idx] = self.elem_at(ins.operand1.0);
             }
             result_ty = Some(ty);

@@ -1,0 +1,66 @@
+//===- tasks_run_on_threads_of_their_own.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each task runs on an OS thread of its own. `pthread_self` gives a task a thread that is not
+// the thread of `main`, and two tasks of one block get two threads.
+//
+// A task copies `i` at its `spawn`, so each task prints the `i` of its own pass, although the
+// loop gives `i` a new value before the task reads it. The tasks run at the same time, so their
+// lines come in any order.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: the task runs on another thread
+// CHECK: two tasks run on two threads
+// CHECK-DAG: {{^}}copy 0{{$}}
+// CHECK-DAG: {{^}}copy 1{{$}}
+// CHECK-DAG: {{^}}copy 2{{$}}
+// CHECK-DAG: {{^}}copy 3{{$}}
+// CHECK-DAG: {{^}}copy 4{{$}}
+// CHECK-DAG: {{^}}copy 5{{$}}
+// CHECK-DAG: {{^}}copy 6{{$}}
+// CHECK-DAG: {{^}}copy 7{{$}}
+
+extern "C" {
+  fn pthread_self() -> u64;
+}
+
+fn thread() -> u64 {
+  return unsafe { pthread_self() };
+}
+
+fn main() -> i32 {
+  let me = thread();
+  let other = tasks {
+    let h = spawn {
+      thread()
+    };
+    h.join()
+  };
+  if other != me {
+    println!("the task runs on another thread");
+  }
+  let different = tasks {
+    let x = spawn {
+      thread()
+    };
+    let y = spawn {
+      thread()
+    };
+    x.join() != y.join()
+  };
+  if different {
+    println!("two tasks run on two threads");
+  }
+  tasks {
+    for i in 0..8 {
+      spawn {
+        println!("copy {}", i);
+      };
+    }
+  }
+  return 0;
+}

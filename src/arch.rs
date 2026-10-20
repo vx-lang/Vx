@@ -386,6 +386,11 @@ fn topology_index(expr: &crate::syntax::Expr) -> i32 {
 }
 
 /// Dispatch id for a topology (`vx.spawn topology(N)`). Single source of truth.
+/// The `vx.spawn` topology of a `tasks` block, and of a task in it. No declared topology has
+/// these ids. `VxLowering` runs each task on a thread of its own (TasksBlockId, TaskId there).
+pub const TASKS_BLOCK_DISPATCH_ID: i32 = 10;
+pub const TASK_DISPATCH_ID: i32 = 11;
+
 pub fn topology_dispatch_id(top: &Topology) -> i32 {
     match top {
         Topology::CPU | Topology::Current => 0,

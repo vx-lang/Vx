@@ -9,10 +9,11 @@
 // `tasks { .. }` and `spawn { .. }`: T1 to T5 and S5 in
 // docs/discussions/cpu_tasks_send_sync_and_shared_atomics.md.
 //
-// Each task runs to its end at its `spawn`, which T7 allows. So after the checks a `tasks` block
-// and a task body are plain blocks, `let h = spawn { e }` is `let h = { e }`, and `h.join()` is
-// `h`. The checks are for the tasks that run at the same time later: a task holds a borrow of
-// each variable that it uses, from its `spawn` until its join.
+// After the checks a `tasks` block and a task body are blocks with a `task` mark,
+// `let h = spawn { e }` is `let h = { e }`, and `h.join()` is `h`. Each pass treats them as plain
+// blocks, which T7 allows. The flat code generator runs each task on a thread of its own, and a
+// read of `h` waits for the task. The checks are for the tasks that run at the same time: a task
+// holds a borrow of each variable that it uses, from its `spawn` until its join.
 //
 //===----------------------------------------------------------------------===//
 
@@ -62,6 +63,16 @@ enum Frame {
         /// Each variable from outside that the body names, with its type.
         used: BTreeMap<crate::symbol::Symbol, Type>,
     },
+}
+
+impl TaskCx {
+    /// The scope of the `spawn` of the task body whose top scope is `scope`.
+    pub(crate) fn spawn_scope_of_body(&self, scope: usize) -> Option<usize> {
+        self.frames.iter().find_map(|f| match f {
+            Frame::Spawn { depth, .. } if *depth == scope && *depth > 0 => Some(depth - 1),
+            _ => None,
+        })
+    }
 }
 
 struct Handle {
@@ -235,6 +246,7 @@ impl TypeChecker<'_> {
             ret,
             span: tb.span,
             generated: true,
+            task: Some(tb.kind),
         });
     }
 

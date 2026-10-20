@@ -479,6 +479,9 @@ pub struct UnsafeBlockExpr {
     /// The compiler made this block (for `vec![..]`), so W1010 never warns about it or counts it
     /// as a block around another one.
     pub generated: bool,
+    /// The checker made this block from a `tasks` block or a task body. Each pass treats it as a
+    /// plain block, which T7 allows. The flat code generator runs a task on a thread of its own.
+    pub task: Option<TaskBlockKind>,
 }
 impl UnsafeBlockExpr {
     pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -487,6 +490,7 @@ impl UnsafeBlockExpr {
             ret,
             span,
             generated: false,
+            task: None,
         }
     }
 }
@@ -501,9 +505,9 @@ pub enum TaskBlockKind {
 }
 
 /// `tasks { .. }`, or `spawn { .. }` without `on`. The design is in
-/// docs/discussions/cpu_tasks_send_sync_and_shared_atomics.md. Each task runs to its end at its
-/// `spawn`, which the design allows, so the checker makes both blocks of plain code once it has
-/// checked them. The code generators never see one.
+/// docs/discussions/cpu_tasks_send_sync_and_shared_atomics.md. The checker makes both blocks an
+/// [`UnsafeBlockExpr`] with a `task` mark once it has checked them. The code generators never see
+/// one.
 #[derive(Debug, PartialEq, Clone)]
 pub struct TaskBlockExpr {
     pub kind: TaskBlockKind,
@@ -1430,6 +1434,7 @@ impl Expr {
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
                 span: e.span,
                 generated: e.generated,
+                task: e.task,
             }),
             Expr::StructInit(e) => {
                 let mut new_name = e.name.clone();

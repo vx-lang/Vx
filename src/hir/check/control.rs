@@ -496,6 +496,7 @@ impl<'a> TypeChecker<'a> {
                 ret: ret_expr,
                 span,
                 generated,
+                ..
             }) => {
                 let block_span = *span;
                 let written = !*generated;
