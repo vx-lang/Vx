@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 // A file of GPU helpers, of which the kernel uses only some. `grid_size` holds
-// `gpu.grid_dim`, and nothing calls it. `warp_max` calls `shfl_down`, and nothing calls
-// `warp_max`. The kernel calls `warp_sum`, which calls `shfl_down`. Each of these four gets a
+// `gpu.grid_dim`, and `fast_exp` holds an `llvm.nvvm.` intrinsic. Nothing calls them. `warp_max` calls `shfl_down`, and nothing calls
+// `warp_max`. The kernel calls `warp_sum`, which calls `shfl_down`. Each of these five gets a
 // CPU copy that stops the program, so the program compiles to an object file. Before, the
 // unused helpers kept their GPU ops, and `warp_max` made `shfl_down` look like host code.
 //
@@ -15,7 +15,9 @@
 // RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-obj -o %t.o 2>&1 | FileCheck %s --check-prefix=OBJ --allow-empty
 // RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
 // OBJ-NOT: LLVM Translation failed
+// OBJ-NOT: LLVM ERROR
 // CHECK-DAG: __vx_gpu_only_grid_size{{.*}}runs only on a GPU
+// CHECK-DAG: __vx_gpu_only_fast_exp{{.*}}runs only on a GPU
 // CHECK-DAG: __vx_gpu_only_shfl_down{{.*}}runs only on a GPU
 // CHECK-DAG: __vx_gpu_only_warp_sum{{.*}}runs only on a GPU
 // CHECK-DAG: __vx_gpu_only_warp_max{{.*}}runs only on a GPU
@@ -25,6 +27,13 @@ fn grid_size() on Topology::GPU -> i32 {
     %g = gpu.grid_dim x
     %r = "arith.index_cast"(%g) : (index) -> i32
     macro.yield %r : i32
+  };
+}
+
+fn fast_exp(x : f32) on Topology::GPU -> f32 {
+  return mlir!( inputs : (%x = x : f32), returns : f32, dialects : ["llvm", "arith"]) {
+    %r = llvm.call_intrinsic "llvm.nvvm.ex2.approx.ftz.f"(%x) : (f32) -> f32
+    macro.yield %r : f32
   };
 }
 

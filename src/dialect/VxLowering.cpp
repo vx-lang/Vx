@@ -3702,11 +3702,16 @@ struct ConvertVxToLLVMPass
     // calls keeps its GPU ops, and translation still fails on them.
     {
       ModuleOp module = getOperation();
+      // A GPU op is a `gpu` or `nvvm` op, or a call of an `llvm.nvvm.`
+      // intrinsic, as `mlir!` can write. The CPU code generator takes none.
       auto holdsGpuOps = [](func::FuncOp f) {
         WalkResult r = f.walk([](Operation *op) {
           Dialect *d = op->getDialect();
-          return d && d->getNamespace() == "gpu" ? WalkResult::interrupt()
-                                                 : WalkResult::advance();
+          bool gpu =
+              d && (d->getNamespace() == "gpu" || d->getNamespace() == "nvvm");
+          if (auto call = dyn_cast<LLVM::CallIntrinsicOp>(op))
+            gpu |= call.getIntrin().starts_with("llvm.nvvm.");
+          return gpu ? WalkResult::interrupt() : WalkResult::advance();
         });
         return r.wasInterrupted();
       };
