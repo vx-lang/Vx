@@ -80,7 +80,8 @@ theorem oneSend_main : Trace (oneSend.toTaskProg.toProg.code 0) 10 (oneSendLabel
     .silent (.seq .seq_skip) <| .visible (.seq (.seq (.waitAt 0 1 rfl (by decide)))) <|
     .silent (.seq .seq_skip) <| .visible (.seq (.seq (.storeAt 0 rfl Nat.one_pos))) <|
     .silent (.seq .seq_skip) <| .visible (.seq (.storeAt 0 rfl Nat.one_pos)) <|
-    .silent .seq_skip <| .visible (.seq (.storeAt 0 rfl Nat.one_pos)) <| .silent .seq_skip <|
+    .silent .seq_skip <| .silent (.seq (.seq (.assignAt 0 rfl Nat.one_pos))) <|
+    .silent (.seq .seq_skip) <| .visible (.seq (.storeAt 0 rfl Nat.one_pos)) <| .silent .seq_skip <|
     .visible (.waitAt 0 1 rfl Nat.one_pos) .stop
 
 /-- The task waits for `start 0`, takes the number 0, waits for `full 0`, reads the value 7, sets

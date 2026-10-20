@@ -36,13 +36,15 @@ inductive CStmt where
   | seq (s t : CStmt)
   | ite (c : Expr) (s t : CStmt)
   | loop (c : Expr) (s : CStmt)
+  /-- A `tasks` block: it joins at its end each task that it started. -/
+  | tasksBlock (s : CStmt)
 
 /-- `s` holds the code `b` of `Tasks.lean`. -/
 def CStmt.Bases : CStmt → Stmt → Prop
   | .base s, b => s = b
   | .send .., _ | .recv .., _ => False
   | .seq s t, b | .ite _ s t, b => s.Bases b ∨ t.Bases b
-  | .loop _ s, b => s.Bases b
+  | .loop _ s, b | .tasksBlock s, b => s.Bases b
 
 /-- The two operations of a channel. -/
 inductive Op where
@@ -126,6 +128,7 @@ def lowerC : CStmt → Stmt
   | .seq s t => .seq (lowerC s) (lowerC t)
   | .ite e s t => .ite e (lowerC s) (lowerC t)
   | .loop e s => .loop e (lowerC s)
+  | .tasksBlock s => .tasksBlock (lowerC s)
 
 /-- `sc` writes of constants, in order. -/
 def stores : List (Nat × Int) → Stmt
@@ -146,6 +149,7 @@ def toTaskProg : TaskProg where
   task t := P.lowerC (P.task t)
   count := P.count
   flags := P.places + P.chans * P.size
+  marks := P.tmp + 1
 
 /-- The rules for the code of the program: it uses the places below `places`, its channels exist,
 and a `recv` does not write the register `tmp`. -/
@@ -154,7 +158,7 @@ def StmtOk : CStmt → Prop
   | .send c _ => c < P.chans
   | .recv r c => c < P.chans ∧ r ≠ P.tmp
   | .seq s t | .ite _ s t => StmtOk s ∧ StmtOk t
-  | .loop _ s => StmtOk s
+  | .loop _ s | .tasksBlock s => StmtOk s
 
 structure Ok : Prop where
   main : P.StmtOk P.main
@@ -743,13 +747,27 @@ theorem stores_seqCstOnly (ps : List (Nat × Int)) : (stores ps).SeqCstOnly := b
 
 /-- The code of the program stays outside the channels, also after the lowering of `spawn` and
 `join`. -/
+theorem clearMarks_avoid (ids : List Nat) : (P.toTaskProg.clearMarks ids).Accesses P.Avoid := by
+  induction ids with
+  | nil => trivial
+  | cons _ _ ih => exact ⟨trivial, ih⟩
+
+theorem joinMarked_avoid (ids : List Nat) : (P.toTaskProg.joinMarked ids).Accesses P.Avoid := by
+  induction ids with
+  | nil => trivial
+  | cons t _ ih =>
+    refine ⟨⟨fun j hj => Or.inr (Or.inr ?_), trivial⟩, ih⟩
+    simp only [TaskProg.done, toTaskProg]
+    omega
+
 theorem lower_avoid {s : Stmt} (h : s.Below P.places P.count) :
     (P.toTaskProg.lower s).Accesses P.Avoid := by
   induction s with
   | spawnAt base =>
-    refine fun j hj => Or.inr (Or.inr ?_)
+    refine ⟨trivial, fun j hj => Or.inr (Or.inr ?_)⟩
     simp only [TaskProg.start, toTaskProg]
     omega
+  | tasksBlock _ ih => exact ⟨clearMarks_avoid _, ih h, joinMarked_avoid _⟩
   | joinAt base =>
     refine fun j hj => Or.inr (Or.inr ?_)
     simp only [TaskProg.done, toTaskProg]
@@ -761,7 +779,7 @@ theorem lower_avoid {s : Stmt} (h : s.Below P.places P.count) :
   | fence => exact Or.inl rfl
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 h.1, ih2 h.2⟩
   | loop _ _ ih => exact ih h
-  | skip | assign => trivial
+  | skip | assign | assignAt => trivial
 
 theorem clean_lower {s : CStmt} (h : P.StmtOk s) : P.Clean (P.toTaskProg.lower (P.lowerC s)) := by
   induction s with
@@ -771,6 +789,7 @@ theorem clean_lower {s : CStmt} (h : P.StmtOk s) : P.Clean (P.toTaskProg.lower (
   | seq _ _ ih1 ih2 => exact .seq (ih1 h.1) (ih2 h.2)
   | ite _ _ _ ih1 ih2 => exact .ite (ih1 h.1) (ih2 h.2)
   | loop _ _ ih => exact .loop (ih h)
+  | tasksBlock _ ih => exact .seq (.other (clearMarks_avoid _)) (.seq (ih h) (.other (joinMarked_avoid _)))
 
 theorem code_zero :
     P.toTaskProg.toProg.code 0 = .seq (stores P.initList) (P.toTaskProg.lower (P.lowerC P.main)) := by
@@ -896,7 +915,7 @@ theorem seqCstOnly_lowerC {s : CStmt}
   | send | recv => exact ⟨Or.inr rfl, trivial, Or.inl rfl, Or.inr rfl⟩
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 =>
     exact ⟨ih1 fun b hb => h b (Or.inl hb), ih2 fun b hb => h b (Or.inr hb)⟩
-  | loop _ _ ih => exact ih h
+  | loop _ _ ih | tasksBlock _ ih => exact ih h
 
 /-- DRF-SC for programs with tasks and channels. -/
 theorem drf_sc (P : ChanProg) (hm : ∀ b, P.main.Bases b → b.SeqCstOnly)
