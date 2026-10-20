@@ -1,0 +1,44 @@
+//===- host_cannot_read_gpu_memory_declared_within_cpu_dram.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The built-in GPU sees the SMEM declared within its memory, because SMEM has
+// `scope: sm`. The host does not see SMEM, and it does not see GPU_HBM, which is
+// declared within CPU_DRAM but is a whole device (`scope: device`).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK-DAG: 'scratch' (type: Tensor<f32, [4], Memory::SMEM>) is unreachable from CPU
+// CHECK-DAG: a value on GPU[0] cannot be read from CPU
+
+Memory CPU_DRAM {}
+
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM,
+  capacity: 24 GiB,
+  managed: cached,
+  scope: device
+}
+
+Memory SMEM {
+  within: Memory::GPU_HBM,
+  capacity: 48 KiB,
+  managed: explicit,
+  scope: sm
+}
+
+fn host_scratch() -> void {
+  let mut scratch = unsafe { Tensor<f32, [4], Memory::SMEM>::uninit() };
+  scratch[0] = 1.0;
+  return;
+}
+
+fn main() -> i32 {
+  host_scratch();
+  let xh = Tensor<f32, [4]>::fill(2.0);
+  let x = transfer(xh, Memory::GPU_HBM);
+  print(x[0]);
+  return 0;
+}
