@@ -1,0 +1,37 @@
+//===- gpu_square_roots_are_correctly_rounded.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A square root on the GPU gives the same bits as on the CPU: the PTX uses `sqrt.rn.f32`, which
+// is correctly rounded, and not `sqrt.approx.f32`. So does `1.0 / x.sqrt()`, which becomes
+// `sqrt.rn.f32` and then `rcp.rn.f32`, not `rsqrt.approx.f32`. This holds for `.sqrt()` and for
+// `math.sqrt` in an `mlir!` block.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=sqrt.approx --implicit-check-not=rsqrt.approx --implicit-check-not=Error
+// CHECK: toponame=Device{{.*}}image={{.*}}sqrt.rn.f32{{.*}}sqrt.rn.f32{{.*}}rcp.rn.f32{{.*}}sqrt.rn.f32
+
+import core::num;
+
+fn sqrt_in_mlir(v : f32) on Topology::Device -> f32 {
+  return mlir!( inputs : (%v = v : f32), returns : f32, dialects : ["math"]) {
+    %r = math.sqrt %v : f32
+    macro.yield %r : f32
+  };
+}
+
+pub fn roots(o : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    o[0] = x[0].sqrt();
+    o[1] = 1.0 / x[1].sqrt();
+    o[2] = sqrt_in_mlir(x[2]);
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
