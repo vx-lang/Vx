@@ -20,7 +20,7 @@ impl FnEmit<'_> {
     /// the `arch:` the innermost open `vx.spawn` declared (`EmitCtx::topo_archs`). No open
     /// spawn (host code), or a topology that declares none (every built-in), names no
     /// target, and the answer is today's NVPTX 3 so the emitted MLIR does not change.
-    fn shared_addrspace(&self) -> i32 {
+    pub(crate) fn shared_addrspace(&self) -> i32 {
         // Read only the frame's first field, the topology, so a new field in the frame does not
         // break this lookup.
         let arch = self

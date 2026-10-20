@@ -97,7 +97,11 @@ impl FnEmit<'_> {
         let param_tensors = callee.param_tensors.clone();
         for (k, declared) in param_tensors.iter().enumerate().take(n) {
             if let Some(declared) = declared {
-                if arg_types[k].starts_with("memref<") && arg_types[k] != *declared {
+                // A tensor in shared memory: the callee's header has the same memory space.
+                let shared = declared
+                    .strip_suffix('>')
+                    .is_some_and(|d| arg_types[k] == format!("{d}, {}>", self.shared_addrspace()));
+                if arg_types[k].starts_with("memref<") && arg_types[k] != *declared && !shared {
                     arg_names[k] = self.cast_memref_value(
                         &format!("pc{idx}_{k}"),
                         &arg_names[k],

@@ -33,7 +33,13 @@ impl FnEmit<'_> {
                 self.agg_of[idx] = Some(agg_gid);
             }
         } else if let Some((elem, shape)) = self.ctx.tensors.get(&gid) {
-            self.mem_of[idx] = tensor_memref_ty(elem, shape);
+            // The type of the signature, which holds the memory space of a shared tensor.
+            self.mem_of[idx] = self
+                .func
+                .params
+                .get(ins.imm as usize)
+                .and_then(|(_, ty)| crate::codegen::flat::ty_mlir(ty, self.ctx).ok())
+                .or_else(|| tensor_memref_ty(elem, shape));
         } else if self.ctx.aggs.contains_key(&gid) {
             // A by-value aggregate parameter (`self : Option<i32>` in `Option::unwrap`, a
             // by-value struct arg): an `!llvm.struct` value, tracked so it can be spilled to a

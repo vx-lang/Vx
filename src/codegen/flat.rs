@@ -1137,7 +1137,7 @@ fn static_tile_bytes(elem: &ElementType, shape: &[String]) -> Option<u64> {
 /// tensor's memref, or a by-value aggregate's `!llvm.struct`. `None` for a void / unmodelled type.
 /// The single source of truth shared by the `func.func` header and a `FuncConst`'s `func.constant`
 /// signature, so a materialized function pointer's type matches its callee's header exactly. (#242)
-fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
+pub(crate) fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
     let ty = peel_wrappers(ty); // Verified/Ref/Pinned spell as their runtime inner type
                                 // A borrowed tensor is spelled as the tensor. A memref is already a reference, and a call
                                 // site hands over the memref itself; `!llvm.ptr` gave the signature a type nothing passes
@@ -1166,9 +1166,25 @@ fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
         let (elem, shape) = ctx.tensors.get(&gid).ok_or(Decline::TypeNotModelled {
             what: "a tensor with no recorded shape",
         })?;
-        tensor_memref_ty(elem, shape).ok_or(Decline::TypeNotModelled {
+        let memty = tensor_memref_ty(elem, shape).ok_or(Decline::TypeNotModelled {
             what: "a tensor with no memref spelling",
-        })
+        })?;
+        // A tensor in a `scope: sm` space is in shared memory, as where it is made, so a
+        // function can take it.
+        let shared = ty
+            .placement()
+            .map(|p| crate::arch::memory_space_dispatch_id(&p.space) as u64)
+            .and_then(|id| ctx.subspaces.get(&id))
+            .and_then(|s| s.scope.as_deref())
+            == Some("sm");
+        if !shared {
+            return Ok(memty);
+        }
+        let space = crate::arch::address_space_for_arch(None, crate::arch::AddressSpace::Workgroup);
+        Ok(format!(
+            "{}, {space}>",
+            memty.strip_suffix('>').ok_or(crate::emitter_gap!())?
+        ))
     } else if let Some(gid) = ctx.agg_gid(ty) {
         Ok(ctx
             .aggs
