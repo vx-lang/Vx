@@ -1,0 +1,71 @@
+//===- built_in_gpu_topology_reaches_smem.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A kernel on the built-in `Topology::GPU` can use the SMEM that a machine file
+// declares within GPU_HBM. The kernel runs one block per row and keeps its
+// partial sums in shared memory. Before, the compiler said 'part' was
+// unreachable from GPU[0] unless the program declared its own topology.
+//
+// RUN: vxc %s --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// CHECK-NOT: Error
+// CHECK: toponame=GPU[0]{{.*}}launch=64,32
+// CHECK-SAME: .shared .align 16 .b8 vx_npu_kernel_0_smem_0[128]
+// CHECK-SAME: st.shared.b32
+// CHECK-SAME: ld.shared
+
+Memory CPU_DRAM {}
+
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM,
+  capacity: 24 GiB,
+  bandwidth: 300 GB/s,
+  managed: cached,
+  scope: device
+}
+
+Memory SMEM {
+  within: Memory::GPU_HBM,
+  capacity: 48 KiB,
+  bandwidth: 128 B/cyc,
+  granule: 1 KiB,
+  managed: explicit,
+  scope: sm
+}
+
+fn rowsum(out : &mut Tensor<f32, [64, 1], Memory::GPU_HBM>, x : &Tensor<f32, [64, 128], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    let mut part = unsafe { Tensor<f32, [32, 1], Memory::SMEM>::uninit() };
+    for r in 0..64 {
+      for t in 0..32 {
+        let mut s : f32 = 0.0;
+        for j in 0..4 {
+          s = s + x[r][t + j * 32];
+        }
+        part[t][0] = s;
+      }
+      barrier();
+      for z in 0..1 {
+        let mut s : f32 = 0.0;
+        for k in 0..32 {
+          s = s + part[k][0];
+        }
+        out[r][z] = s;
+      }
+      barrier();
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let xh = Tensor<f32, [64, 128]>::new();
+  let x = transfer(xh, Memory::GPU_HBM);
+  let oh = Tensor<f32, [64, 1]>::new();
+  let mut o = transfer(oh, Memory::GPU_HBM);
+  rowsum(&mut o, &x);
+  return 0;
+}

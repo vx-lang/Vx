@@ -321,6 +321,7 @@ impl<'a> GlobalAstEnv<'a> {
             // the shortest-path sweep itself, so a sweep here would be computed and immediately
             // overwritten -- O(spaces^2) searches thrown away, on the serial spine.
             g.add_topology_edges(&decls);
+            g.add_on_chip_memories(env.memories.values().copied());
             // Routing minimises predicted cost, and a containment hop's cost lives
             // in the memory declarations rather than the topology's. Without this the on-die edges
             // -- which is every hop inside a device on every fleet SKU -- stay unpriced and the

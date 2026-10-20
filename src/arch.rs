@@ -1029,6 +1029,60 @@ impl TransferCostGraph {
         }
     }
 
+    /// Let a built-in topology see the on-chip memories that a machine file declares inside its
+    /// memory, such as `Memory SMEM { within: Memory::GPU_HBM, scope: sm }` for `Topology::GPU`.
+    ///
+    /// Only a memory private to a part of the device (`scope: sm`, `cta` or `thread`) counts.
+    /// `within:` alone does not put a memory on the same device: a machine file puts GPU_HBM
+    /// within CPU_DRAM. A declared topology lists what it sees itself, so it is not changed.
+    pub fn add_on_chip_memories<'a, I>(&mut self, memories: I)
+    where
+        I: IntoIterator<Item = &'a crate::syntax::MemoryDecl>,
+    {
+        use crate::syntax::Scope;
+        let memories: Vec<&crate::syntax::MemoryDecl> = memories.into_iter().collect();
+        let parent_of = |space: &MemorySpace| {
+            memories
+                .iter()
+                .find(|m| MemorySpace::from_name(m.name.as_ref()) == *space)
+                .and_then(|m| m.parent.clone())
+        };
+        for mem in &memories {
+            if !matches!(mem.scope, Some(Scope::Sm | Scope::Cta | Scope::Thread)) {
+                continue;
+            }
+            let space = MemorySpace::from_name(mem.name.as_ref());
+            // Walk out to the nearest memory that is some topology's own memory.
+            let mut seen = vec![space.clone()];
+            let mut up = mem.parent.clone();
+            while let Some(p) = up {
+                if seen.contains(&p) {
+                    break;
+                }
+                let owners: Vec<crate::syntax::TopologyKind> = self
+                    .descriptors
+                    .iter()
+                    .filter(|(_, d)| d.default_space == p)
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                if !owners.is_empty() {
+                    for kind in owners {
+                        if matches!(kind, crate::syntax::TopologyKind::Custom(_)) {
+                            continue;
+                        }
+                        let desc = self.descriptors.get_mut(&kind).expect("owner was found");
+                        if !desc.visibility.contains(&space) {
+                            desc.visibility.push(space.clone());
+                        }
+                    }
+                    break;
+                }
+                up = parent_of(&p);
+                seen.push(p);
+            }
+        }
+    }
+
     /// Returns the default memory space for a given topology, from its registered
     /// descriptor (see `topology_descriptor`).
     /// The descriptor for a topology kind (built-in or a topology declared in this compilation),
