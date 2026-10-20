@@ -6,18 +6,28 @@
 //
 //===----------------------------------------------------------------------===//
 // `grid([rows, 2]) block(64)` sets the launch shape. The dispatch payload gives the runtime the
-// shape: `#2` is kernel argument 2 (`rows`), and 2 and 64 are numbers. In the PTX,
+// shape: `$0` is launch value 0 (`rows`), and 2 and 64 are numbers. The launch passes `rows`
+// after the kernel's arguments, so the kernel does not take it. In the PTX,
 // `grid_index(0)` and `grid_index(1)` are the block indices `%ctaid.x` and `%ctaid.y`. The CPU
-// copy of the region stops the program. `--emit-ptx` gives the shape in its `.json` file.
+// copy of the region stops the program. `--emit-ptx` gives the shape in its `.json` file, and
+// `quarter_rows` shows a size that the host computes from a parameter.
 //
 // REQUIRES: flat-codegen
-// RUN: vxc %s --host default --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
+// RUN: vxc %s --host default --emit-llvm 2>&1 | FileCheck %s --check-prefixes=PAYLOAD,IR
 // RUN: vxc %s --host default --emit-ptx -o %t.ptx
 // RUN: FileCheck %s --check-prefix=JSON < %t.json
 // RUN: FileCheck %s --check-prefix=PTX < %t.ptx
 //
 // PAYLOAD-DAG: ran on the CPU, which cannot run it
-// PAYLOAD-DAG: grid=#2,2\00block=64\00image=
+// PAYLOAD-DAG: grid=$0,2\00block=64\00image=
+//
+// `quarter_rows` passes two values to the dispatch, the descriptor of `out` and then `blocks`,
+// and says that the kernel takes one.
+// IR-LABEL: llvm.func @quarter_rows
+// IR:       %[[ONE:[0-9]+]] = llvm.mlir.constant(1 : i64) : i64
+// IR:       %[[TWO:[0-9]+]] = llvm.mlir.constant(2 : i32) : i32
+// IR:       llvm.alloca %[[TWO]] x !llvm.ptr
+// IR:       llvm.call @vx_plugin_dispatch_async(%{{[0-9]+}}, %{{[0-9]+}}, %{{[0-9]+}}, %{{[0-9]+}}, %[[ONE]])
 //
 // JSON:      "launch": {
 // JSON-NEXT:   "block": 64,
@@ -27,10 +37,14 @@
 // JSON-NEXT:     },
 // JSON-NEXT:     2
 // JSON-NEXT:   ]
+// JSON:      "name": "scale_rows"
+// JSON-NOT:  "name": "rows"
+// JSON:      "computed": "(rows + 3) / 4"
 //
 // PTX: .entry scale_rows(
 // PTX-DAG: %ctaid.x
 // PTX-DAG: %ctaid.y
+// PTX: .entry quarter_rows(
 
 Memory HBM {
   capacity: 40 GiB, bandwidth: 1555 GB/s, managed: explicit, scope: device
@@ -53,6 +67,15 @@ rows: i32, cols: i32) -> void {
       out[row * cols + c] = x[row * cols + c] * 2.0;
       c = c + 1;
     }
+  }
+  return;
+}
+
+// Four rows for each block of 128 threads, as a warp-per-row kernel does.
+pub fn quarter_rows(out: &mut Tensor<f32, [?], Memory::HBM>, rows: i32) -> void {
+  let blocks: i32 = (rows + 3) / 4;
+  spawn on(Topology::Gpu) grid([blocks]) block(128) {
+    out[grid_index(0)] = 1.0;
   }
   return;
 }

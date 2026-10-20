@@ -142,15 +142,12 @@ impl<'a> Parser<'a> {
         self.consume(&TokenType::LeftParen, "Expected '(' after 'block'")?;
         let block = self.parse_expr()?;
         self.consume(&TokenType::RightParen, "Expected ')' after the block size")?;
+        // The span of the first size, so that an error points into the launch shape.
+        let span = grid[0].span();
         Ok(Some(LaunchShape {
             grid,
             block: Box::new(block),
-            span: Span {
-                line: at.line,
-                column: at.column,
-                length: at.length,
-                expansion: self.expansion(),
-            },
+            span,
         }))
     }
 

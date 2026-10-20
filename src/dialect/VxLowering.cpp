@@ -46,6 +46,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
@@ -584,6 +585,70 @@ static void useStackScratchIn(Region &kernel, PatternRewriter &rewriter) {
 
 // Inline `vx.spawn` in place for the CPU topology, or outline it into a
 // kernel + `vx.launch` for device topologies.
+/// A launch size as source text, from the parameters of `func` and numbers,
+/// for the `--emit-ptx` manifest: `(rows + 3) / 4`. Empty when the size comes
+/// from anything else.
+static std::string launchSizeText(Value v, func::FuncOp func, int depth = 0) {
+  if (depth > 16)
+    return {};
+  auto names = func->getAttrOfType<ArrayAttr>("vx.param_names");
+  if (auto arg = dyn_cast<BlockArgument>(v)) {
+    int64_t k = int64_t(arg.getArgNumber()) -
+                (int64_t(func.getNumArguments()) - (names ? names.size() : 0));
+    if (names && arg.getOwner() == &func.getBody().front() && k >= 0)
+      return cast<StringAttr>(names[k]).getValue().str();
+    return {};
+  }
+  APInt constant;
+  if (matchPattern(v, m_ConstantInt(&constant)))
+    return std::to_string(constant.getSExtValue());
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return {};
+  if (isa<arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp, arith::IndexCastOp>(
+          def))
+    return launchSizeText(def->getOperand(0), func, depth + 1);
+  // A local with one store, such as `let blocks: i32 = (rows + 3) / 4;`.
+  Value slot;
+  if (auto load = dyn_cast<memref::LoadOp>(def))
+    slot = load.getMemRef();
+  else if (auto load = dyn_cast<LLVM::LoadOp>(def))
+    slot = load.getAddr();
+  if (slot) {
+    Value stored;
+    int stores = 0;
+    for (Operation *user : slot.getUsers()) {
+      if (auto store = dyn_cast<memref::StoreOp>(user))
+        stored = store.getValue(), ++stores;
+      else if (auto store = dyn_cast<LLVM::StoreOp>(user))
+        stored = store.getValue(), ++stores;
+    }
+    return stores == 1 ? launchSizeText(stored, func, depth + 1) : "";
+  }
+  const char *sign =
+      llvm::TypeSwitch<Operation *, const char *>(def)
+          .Case<arith::AddIOp>([](auto) { return "+"; })
+          .Case<arith::SubIOp>([](auto) { return "-"; })
+          .Case<arith::MulIOp>([](auto) { return "*"; })
+          .Case<arith::DivSIOp, arith::DivUIOp>([](auto) { return "/"; })
+          .Case<arith::RemSIOp, arith::RemUIOp>([](auto) { return "%"; })
+          .Default([](auto) { return nullptr; });
+  if (!sign)
+    return {};
+  auto side = [&](Value operand) -> std::string {
+    std::string text = launchSizeText(operand, func, depth + 1);
+    Operation *d = operand.getDefiningOp();
+    bool binary =
+        d && isa<arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::DivSIOp,
+                 arith::DivUIOp, arith::RemSIOp, arith::RemUIOp>(d);
+    return binary && !text.empty() ? "(" + text + ")" : text;
+  };
+  std::string lhs = side(def->getOperand(0)), rhs = side(def->getOperand(1));
+  if (lhs.empty() || rhs.empty())
+    return {};
+  return lhs + " " + sign + " " + rhs;
+}
+
 struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
   using OpRewritePattern<SpawnOp>::OpRewritePattern;
 
@@ -682,6 +747,38 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       }
     }
 
+    // The launch shape that the program set (#252), as payload text: a number
+    // for a constant, and `$j` for launch value j. The `vx.launch_dim` ops go
+    // away here, so the kernel does not take a launch value. The launch passes
+    // each one after the kernel's arguments, and the runtime reads it there.
+    std::string launchGrid, launchBlock;
+    SmallVector<Value> launchValues;
+    SmallVector<Attribute> launchTexts;
+    {
+      auto func = op->getParentOfType<func::FuncOp>();
+      bool exporting =
+          op->getParentOfType<ModuleOp>()->hasAttr("vx.export_kernels");
+      SmallVector<vx::LaunchDimOp> dims;
+      spawnBody.walk([&](vx::LaunchDimOp d) { dims.push_back(d); });
+      for (vx::LaunchDimOp d : dims) {
+        std::string text;
+        APInt constant;
+        if (matchPattern(d.getValue(), m_ConstantInt(&constant))) {
+          text = std::to_string(constant.getSExtValue());
+        } else {
+          text = "$" + std::to_string(launchValues.size());
+          launchValues.push_back(d.getValue());
+          launchTexts.push_back(rewriter.getStringAttr(
+              exporting && func ? launchSizeText(d.getValue(), func) : ""));
+        }
+        std::string &into = d.getAxis() == 3 ? launchBlock : launchGrid;
+        if (!into.empty())
+          into += ",";
+        into += text;
+        rewriter.eraseOp(d);
+      }
+    }
+
     SetVector<Value> captures;
     getUsedValuesDefinedAbove(spawnBody, captures);
 
@@ -736,31 +833,6 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       });
       captures.clear();
       captures.insert(ordered.begin(), ordered.end());
-    }
-
-    // The launch shape that the program set (#252), as payload text: `#k` for
-    // kernel argument k, a number for a constant. The `vx.launch_dim` ops go
-    // away here. The kernel still takes each value, and the runtime reads it.
-    std::string launchGrid, launchBlock;
-    {
-      SmallVector<vx::LaunchDimOp> dims;
-      spawnBody.walk([&](vx::LaunchDimOp d) { dims.push_back(d); });
-      for (vx::LaunchDimOp d : dims) {
-        std::string text;
-        APInt constant;
-        if (matchPattern(d.getValue(), m_ConstantInt(&constant)))
-          text = std::to_string(constant.getSExtValue());
-        else {
-          auto at = llvm::find(captures, d.getValue());
-          assert(at != captures.end() && "a launch size comes from the host");
-          text = "#" + std::to_string(at - captures.begin());
-        }
-        std::string &into = d.getAxis() == 3 ? launchBlock : launchGrid;
-        if (!into.empty())
-          into += ",";
-        into += text;
-        rewriter.eraseOp(d);
-      }
     }
 
     // Create the outlined function at the module level
@@ -825,6 +897,7 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     if (!launchGrid.empty()) {
       kernelOp->setAttr("vx.launch_grid", rewriter.getStringAttr(launchGrid));
       kernelOp->setAttr("vx.launch_block", rewriter.getStringAttr(launchBlock));
+      kernelOp->setAttr("vx.launch_text", rewriter.getArrayAttr(launchTexts));
     }
     // Keeps the kernel off the GPU device image: the slot is host stack.
     if (resultSlot)
@@ -920,6 +993,7 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     rewriter.restoreInsertionPoint(ip);
 
     SmallVector<Value> launchOperands(captures.begin(), captures.end());
+    llvm::append_range(launchOperands, launchValues);
     auto launchOp = rewriter.create<vx::LaunchOp>(
         op.getLoc(), resultTypes,
         SymbolRefAttr::get(rewriter.getContext(), funcName),
@@ -944,6 +1018,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     if (!launchGrid.empty()) {
       launchOp->setAttr("vx.launch_grid", rewriter.getStringAttr(launchGrid));
       launchOp->setAttr("vx.launch_block", rewriter.getStringAttr(launchBlock));
+      launchOp->setAttr("vx.launch_values",
+                        rewriter.getI32IntegerAttr(launchValues.size()));
     }
     if (op->hasAttr("vx_parallel_two_level"))
       launchOp->setAttr("vx_parallel_two_level", rewriter.getUnitAttr());
@@ -3879,8 +3955,13 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     Value payloadSize = rewriter.create<LLVM::ConstantOp>(
         loc, llvmI64Type,
         rewriter.getI64IntegerAttr(static_cast<int64_t>(payload.size())));
+    // The launch values come after the kernel's arguments (#252), so they
+    // are not arguments of the kernel.
+    int64_t kernelArgs = numArgs;
+    if (auto launch = op->getAttrOfType<IntegerAttr>("vx.launch_values"))
+      kernelArgs -= launch.getInt();
     Value numArgsVal = rewriter.create<LLVM::ConstantOp>(
-        loc, llvmI64Type, rewriter.getI64IntegerAttr(numArgs));
+        loc, llvmI64Type, rewriter.getI64IntegerAttr(kernelArgs));
     auto callOp = rewriter.create<LLVM::CallOp>(
         loc, dispatchFunc,
         ValueRange{globalPtr, payloadSize, argsArray, tagsArray, numArgsVal});
@@ -4469,17 +4550,26 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
     // The launch shape that the program set (#252): each size is a parameter
     // of the kernel, by name, or a number.
     if (auto grid = kernel->getAttrOfType<StringAttr>("vx.launch_grid")) {
+      auto texts = kernel->getAttrOfType<ArrayAttr>("vx.launch_text");
+      bool failedSize = false;
       auto sizes = [&](StringRef text) {
         llvm::json::Array out;
         SmallVector<StringRef> items;
         text.split(items, ',');
         for (StringRef item : items) {
           int64_t n = 0;
-          if (item.consume_front("#")) {
+          if (item.consume_front("$")) {
             item.getAsInteger(10, n);
-            int64_t k = paramOf[n] - offset;
-            out.push_back(llvm::json::Object{
-                {"param", cast<StringAttr>(names[k]).getValue()}});
+            StringRef text = cast<StringAttr>(texts[n]).getValue();
+            bool isParam = llvm::any_of(names, [&](Attribute a) {
+              return cast<StringAttr>(a).getValue() == text;
+            });
+            if (text.empty())
+              failedSize = true;
+            else if (isParam)
+              out.push_back(llvm::json::Object{{"param", text}});
+            else
+              out.push_back(llvm::json::Object{{"computed", text}});
           } else {
             item.getAsInteger(10, n);
             out.push_back(n);
@@ -4489,7 +4579,15 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
       };
       llvm::json::Array block = sizes(
           kernel->getAttrOfType<StringAttr>("vx.launch_block").getValue());
-      entry["launch"] = llvm::json::Object{{"grid", sizes(grid.getValue())},
+      llvm::json::Array gridSizes = sizes(grid.getValue());
+      if (failedSize) {
+        emitError(loc) << "the GPU kernel in function '" << name
+                       << "' has a launch size that --emit-ptx cannot "
+                          "describe. A size can come from parameters and "
+                          "numbers, with + - * / and %";
+        return failure();
+      }
+      entry["launch"] = llvm::json::Object{{"grid", std::move(gridSizes)},
                                            {"block", std::move(block[0])}};
     }
     kernels.push_back(std::move(entry));
