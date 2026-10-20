@@ -493,6 +493,7 @@ impl<'a> TypeChecker<'a> {
             if !memory_already_recorded {
                 self.check_type_placement(ann, &context, span);
             }
+            self.shadow_borrows(name);
             self.insert(name.to_string(), ann.clone());
             ann.clone()
         } else {
@@ -503,6 +504,7 @@ impl<'a> TypeChecker<'a> {
             if !memory_already_recorded {
                 self.check_type_placement(&ty, &context, span);
             }
+            self.shadow_borrows(name);
             self.insert(name.to_string(), ty.clone());
             let depth = self.current_scope_depth();
             if from_literal {

@@ -618,6 +618,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.mutable_vars.pop();
         self.consteval.env.pop();
         self.literal_typed_lets.retain(|_, d| *d + 1 < depth);
+        self.borrow.unshadow(depth);
 
         // Lexical Lifetime cleanup: Remove borrows originating in this scope. A borrow
         // recorded at depth `d` was made when `scopes.len()` was `d`, so a variable of scope
@@ -651,6 +652,12 @@ impl<'a> TypeChecker<'a> {
             record.scope_depth = record.scope_depth.min(scope + 1);
             self.borrow.record(&base, record);
         }
+    }
+
+    /// A `let` declares a new variable `name`. The borrows of an older variable of that name are
+    /// not borrows of the new one, so they wait until the scope of the new variable ends.
+    pub(crate) fn shadow_borrows(&mut self, name: &str) {
+        self.borrow.shadow(name, self.scopes.len());
     }
 
     pub fn insert(&mut self, name: String, ty: Type) {
@@ -1686,6 +1693,7 @@ impl<'a> TypeChecker<'a> {
         // make the callee's uses conflict with the caller's live borrows, reported in the
         // callee's source.
         let prev_borrows = self.borrow.take();
+        let prev_shadowed = self.borrow.take_shadowed();
         let prev_borrowers = self.borrow.take_borrowers();
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
@@ -1835,6 +1843,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.views = prev_views;
         self.borrow.view_owners_by_let = prev_view_owners;
         self.borrow.restore(prev_borrows);
+        self.borrow.restore_shadowed(prev_shadowed);
         self.borrow.restore_borrowers(prev_borrowers);
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;

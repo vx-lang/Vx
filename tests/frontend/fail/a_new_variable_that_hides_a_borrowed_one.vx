@@ -1,0 +1,52 @@
+//===- a_new_variable_that_hides_a_borrowed_one.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A `let` can declare a new variable with the name of a borrowed one. Nothing borrows the new
+// variable, so the program may write it. The old variable stays borrowed, and after the new one
+// ends, a write to the old one is still an error.
+
+import std::vec;
+
+fn new_variable_in_an_inner_block() -> i32 {
+  let y = 1;
+  let mut z = 0;
+  if true {
+    let r = &y;
+    let mut y = 10;
+    y += 1;
+    z = *r + y;
+  }
+  return y + z;
+}
+
+fn new_variable_in_the_same_block() -> i32 {
+  let v = Vec<i32>::new();
+  let r = &v;
+  let mut v = Vec<i32>::new();
+  v.push(1);
+  return r.len() + v.len();
+}
+
+// CHECK: Error[E4009] at [[@LINE+8]]:3: `y` is assigned while it is borrowed
+fn old_variable_is_still_borrowed() -> i32 {
+  let mut y = 1;
+  let r = &y;
+  for i in 0..2 {
+    let mut y = 2;
+    y += i;
+  }
+  y = 5;
+  return *r;
+}
+
+fn main() -> i32 {
+  return new_variable_in_an_inner_block() + new_variable_in_the_same_block();
+}
+
+// CHECK: {{^}}Semantic check failed on {{.*}}: 1 error(s) emitted

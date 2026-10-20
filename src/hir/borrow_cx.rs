@@ -55,6 +55,9 @@ pub(crate) struct BorrowCx {
     /// Every borrower each variable has had in the function, kept after the borrow ends: a
     /// drop point is after the last use of all of them.
     borrowers_ever: HashMap<String, HashSet<String>>,
+    /// The borrows of variables that a newer `let` of the same name hides: the depth of the
+    /// new variable's scope, the name, and the records.
+    shadowed: Vec<(usize, Symbol, Vec<BorrowRecord>)>,
     /// Where each owned tensor is dropped. See `check/drops.rs`.
     pub(crate) drops: crate::hir::check::drops::DropFrames,
     /// What each view variable (`let r = q[i]`) borrows. Reset per function.
@@ -100,6 +103,7 @@ impl Default for BorrowCx {
             loop_exits: Vec::new(),
             views: HashMap::new(),
             view_owners_by_let: HashMap::new(),
+            shadowed: Vec::new(),
             borrowers_ever: HashMap::new(),
             drops: Default::default(),
         }
@@ -296,6 +300,30 @@ impl BorrowCx {
                 }
             });
         }
+    }
+
+    /// Set the records of `name` aside while a new variable of that name, declared at `depth`,
+    /// is in scope.
+    pub(crate) fn shadow(&mut self, name: &str, depth: usize) {
+        if let Some(records) = self.active_borrows.remove(name) {
+            self.shadowed.push((depth, name.into(), records));
+        }
+    }
+
+    /// The scope at `depth` ends: put back the records that its variables hid.
+    pub(crate) fn unshadow(&mut self, depth: usize) {
+        while self.shadowed.last().is_some_and(|(d, _, _)| *d >= depth) {
+            let (_, name, records) = self.shadowed.pop().expect("checked above");
+            self.active_borrows.entry(name).or_default().extend(records);
+        }
+    }
+
+    pub(crate) fn take_shadowed(&mut self) -> Vec<(usize, Symbol, Vec<BorrowRecord>)> {
+        std::mem::take(&mut self.shadowed)
+    }
+
+    pub(crate) fn restore_shadowed(&mut self, shadowed: Vec<(usize, Symbol, Vec<BorrowRecord>)>) {
+        self.shadowed = shadowed;
     }
 
     /// Clone the whole borrow table (a speculative/expression check restores it afterwards).
