@@ -2059,6 +2059,7 @@ impl<'a> TypeChecker<'a> {
     /// is checked: checking can rewrite `v[i]` into a call, which has no variable to record.
     pub(crate) fn record_change(&mut self, place: &Expr) {
         if let Some(root) = self.changed_root(place) {
+            self.warn_write_to_closure_copy(&root, &place.span());
             self.changed_vars.insert(root);
         }
     }

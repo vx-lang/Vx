@@ -484,6 +484,10 @@ pub struct TypeChecker<'a> {
     /// statement `match` whose arms yield nothing has no value rather than the function's
     /// return type. Every expression check takes it back to `false` on entry.
     pub(crate) value_unused: bool,
+    /// The variables that closures in `let`s copied, for W1034.
+    pub(crate) closure_copies: Vec<crate::hir::check::closure_copies::ClosureCopy>,
+    /// The `let` being checked, when its value is a closure.
+    pub(crate) let_closure: Option<crate::syntax::Span>,
     /// Set while checking the left-hand side of an assignment (plain or compound): a container
     /// index there is a *store* place, so the `v[i]` -> `v.get(i)` read rewrite must not fire.
     pub(crate) checking_assign_lhs: bool,
@@ -552,6 +556,8 @@ impl<'a> TypeChecker<'a> {
             unreadable_reported: Default::default(),
             indexed_name: None,
             value_unused: false,
+            closure_copies: Vec::new(),
+            let_closure: None,
             checking_assign_lhs: false,
             checking_field_base: false,
             next_id: 1,
@@ -1686,6 +1692,7 @@ impl<'a> TypeChecker<'a> {
         // make the callee's uses conflict with the caller's live borrows, reported in the
         // callee's source.
         let prev_borrows = self.borrow.take();
+        let prev_closure_copies = std::mem::take(&mut self.closure_copies);
         let prev_borrowers = self.borrow.take_borrowers();
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
@@ -1835,6 +1842,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.views = prev_views;
         self.borrow.view_owners_by_let = prev_view_owners;
         self.borrow.restore(prev_borrows);
+        self.closure_copies = prev_closure_copies;
         self.borrow.restore_borrowers(prev_borrowers);
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;

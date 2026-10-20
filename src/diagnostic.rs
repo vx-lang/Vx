@@ -132,6 +132,10 @@ pub enum DiagnosticCode {
     /// out of a loop that holds a `barrier()`, a write to block-shared memory with no `barrier()`
     /// after it, and the like.
     W1033,
+    /// The program writes a variable that a closure copied, and uses the closure after the
+    /// write. The closure keeps the value that it copied, so it does not see the write. A later
+    /// release makes this an error (K4).
+    W1034,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
