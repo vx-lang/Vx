@@ -1,0 +1,118 @@
+//===- writes_that_a_task_does_not_see.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Warning --implicit-check-not=Error
+//
+// A task copies a `Copy` value that it only reads, at its `spawn`. A write to the variable after
+// the `spawn` and before the task's `join()` does not change the task's copy. The compiler warns
+// about such a write. A write after the `join()` or before the `spawn` gets no warning.
+
+struct Point {
+  x : i32,
+}
+
+impl Copy for Point {}
+
+impl Point {
+  fn move_right(self : &mut Point) -> void {
+    self.x += 1;
+  }
+}
+
+fn set_to(p : &mut i32, value : i32) -> void {
+  *p = value;
+}
+
+// The task copies 1, so the result is 1 + 2 * 10.
+// CHECK: Warning[W1034] at [[@LINE+7]]:5: the task on line [[#@LINE+4]] copied 'x' at its `spawn`
+fn write_before_the_join() -> i32 {
+  let mut x = 1;
+  return tasks {
+    let h = spawn {
+      x
+    };
+    x = 2;
+    h.join() + x * 10
+  };
+}
+
+// The classic stop flag. The task never sees `stop = true`, so it stops only at its bound.
+// CHECK: Warning[W1034] at [[@LINE+11]]:5: the task on line [[#@LINE+4]] copied 'stop' at its `spawn`
+fn stop_flag() -> i32 {
+  let mut stop = false;
+  return tasks {
+    let h = spawn {
+      let mut spins = 0;
+      while !stop && spins < 3 {
+        spins += 1;
+      }
+      spins
+    };
+    stop = true;
+    h.join()
+  };
+}
+
+// A write through `&mut`, a `&mut self` method, and a write in another task are writes too.
+// CHECK: Warning[W1034] at [[@LINE+13]]:5: the task on line [[#@LINE+10]] copied 'n' at its `spawn`
+// CHECK: Warning[W1034] at [[@LINE+13]]:17: the task on line [[#@LINE+9]] copied 'n' at its `spawn`
+// CHECK: Warning[W1034] at [[@LINE+13]]:7: the task on line [[#@LINE+8]] copied 'p' at its `spawn`
+// CHECK: Warning[W1034] at [[@LINE+14]]:7: the task on line [[#@LINE+7]] copied 'n' at its `spawn`
+fn other_writes() -> i32 {
+  let mut n = 0;
+  let mut p = Point {
+    x: 0
+  };
+  tasks {
+    spawn {
+      n + p.x;
+    };
+    n += 1;
+    set_to(&mut n, 5);
+    p.move_right();
+    spawn {
+      n = 7;
+    };
+  }
+  return n + p.x;
+}
+
+// A write before the `spawn`, a write after the `join()`, a write to a new variable of the same
+// name, and a write after the end of the `tasks` block.
+fn writes_with_no_warning() -> i32 {
+  let mut x = 1;
+  let mut y = 1;
+  tasks {
+    x = 2;
+    let h = spawn {
+      x
+    };
+    let got = h.join();
+    x = got + 1;
+    spawn {
+      y + 1;
+    };
+    let mut y = 10;
+    y += 1;
+  }
+  y = 0;
+  return x + y;
+}
+
+fn main() -> i32 {
+  println!("{}", write_before_the_join());
+  println!("{}", stop_flag());
+  println!("{}", other_writes());
+  println!("{}", writes_with_no_warning());
+  return 0;
+}
+
+// The results: 1 + 2 * 10, the bound of the stop flag, the writes, and the value after the join.
+// CHECK: {{^}}21{{$}}
+// CHECK-NEXT: {{^}}3{{$}}
+// CHECK-NEXT: {{^}}8{{$}}
+// CHECK-NEXT: {{^}}3{{$}}

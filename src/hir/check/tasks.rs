@@ -43,6 +43,17 @@ pub(crate) struct TaskCx {
     joining: bool,
     /// The tasks started in a loop that is in their `tasks` block.
     loop_tasks: Vec<LoopTask>,
+    /// The variables that running tasks copied at their `spawn`.
+    copies: Vec<Copied>,
+}
+
+/// A variable that a task copied at its `spawn`. The task does not see a later write to it.
+struct Copied {
+    task: String,
+    name: String,
+    /// The scope that declares the variable.
+    depth: usize,
+    spawn: Span,
 }
 
 enum Frame {
@@ -258,6 +269,7 @@ impl TypeChecker<'_> {
         for task in &tasks {
             self.borrow.end_task(task);
         }
+        self.tasks.copies.retain(|c| !tasks.contains(&c.task));
         self.tasks.loop_tasks.retain(|t| !tasks.contains(&t.task));
         self.tasks.handles.retain(|h| h.depth < scope_len - 1);
         self.pop_scope();
@@ -385,6 +397,12 @@ impl TypeChecker<'_> {
                 continue;
             }
             if take == Take::Copies {
+                self.tasks.copies.push(Copied {
+                    task: id.clone(),
+                    name: name.to_string(),
+                    depth: var_depth,
+                    spawn: span,
+                });
                 // A copied reference keeps what it points at borrowed until the task ends.
                 for (base, _) in self.borrow.borrowed_by(name) {
                     let base_depth = self.lookup_with_depth(&base).map(|(_, _, d)| d);
@@ -604,6 +622,7 @@ impl TypeChecker<'_> {
         if self.tasks.ending_joins.contains(&span) && !in_other_task {
             self.borrow.end_task(&task);
             self.tasks.loop_tasks.retain(|t| t.task != task);
+            self.tasks.copies.retain(|c| c.task != task);
         }
         if !self.speculating {
             *expr = receiver;
@@ -676,6 +695,34 @@ impl TypeChecker<'_> {
         for message in found {
             self.task_error(DiagnosticCode::E4014, message, span);
         }
+    }
+
+    /// W1034: the program writes `name` while a task runs that copied `name` at its `spawn`.
+    pub(crate) fn warn_write_to_copied(&mut self, name: &str, at: &Span) {
+        if self.speculating || self.tasks.copies.is_empty() {
+            return;
+        }
+        let Some(depth) = self.lookup_with_depth(name).map(|(_, _, d)| d) else {
+            return;
+        };
+        let Some(c) = self
+            .tasks
+            .copies
+            .iter()
+            .find(|c| c.name == name && c.depth == depth)
+        else {
+            return;
+        };
+        let message = format!(
+            "the task on line {} copied '{name}' at its `spawn`, so the task does not see this \
+             write. Join the task before the write, or share the value through an atomic",
+            c.spawn.line
+        );
+        self.errors.warn(
+            DiagnosticCode::W1034,
+            message,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(at)),
+        );
     }
 
     fn task_error(&mut self, code: DiagnosticCode, message: String, at: &Span) {

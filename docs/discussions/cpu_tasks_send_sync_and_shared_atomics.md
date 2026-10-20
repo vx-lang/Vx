@@ -49,7 +49,8 @@ fork to the join (C3). So:
 - a task copies a `Copy` value that it only reads, at the fork (T4). Then the copy needs `Send`,
   the variable is not borrowed, and it may end before the task does. So this is valid:
   `for i in 0..n { spawn { work(i) }; }`. A copied reference keeps what it points at borrowed
-  until the join.
+  until the join. The code around the task may then write the variable. The task keeps the
+  value it copied, so the compiler warns about a write before the join (W1034).
 
 **T6. A panic in a task stops the program**, as `panic` does today. Vx does not unwind, so
 `join()` never reports a panic. A task that can fail returns a `Result` (F1).

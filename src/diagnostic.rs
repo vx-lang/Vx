@@ -132,6 +132,10 @@ pub enum DiagnosticCode {
     /// out of a loop that holds a `barrier()`, a write to block-shared memory with no `barrier()`
     /// after it, and the like.
     W1033,
+    /// The program writes a variable while a task runs that copied the variable at its `spawn`.
+    /// The task keeps the value it copied, so it does not see the write. Join the task before the
+    /// write, or share the value through an atomic.
+    W1034,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
