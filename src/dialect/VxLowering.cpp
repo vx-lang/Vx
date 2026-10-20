@@ -3711,17 +3711,21 @@ struct ConvertVxToLLVMPass
         return r.wasInterrupted();
       };
       // The functions that only kernel bodies reach: each use is in a kernel
-      // or in another such function. A function with no use is not one.
+      // or in another such function. A function that nothing calls counts
+      // too, so that an unused helper neither keeps its GPU ops nor makes a
+      // helper that it calls look like host code. `main` and a `pub fn` do
+      // not count: code outside the module can call them on the CPU.
       llvm::SmallPtrSet<Operation *, 8> kernelOnly;
       for (func::FuncOp f : module.getOps<func::FuncOp>())
-        if (!f.isExternal())
+        if (!f.isExternal() && f.getSymName() != "main" &&
+            !f->hasAttr("vx.pub"))
           kernelOnly.insert(f);
       for (bool changed = true; changed;) {
         changed = false;
         for (Operation *f :
              SmallVector<Operation *>(kernelOnly.begin(), kernelOnly.end())) {
           auto uses = SymbolTable::getSymbolUses(f, module);
-          bool onlyKernels = uses.has_value() && !uses->empty();
+          bool onlyKernels = uses.has_value();
           if (uses)
             for (const SymbolTable::SymbolUse &use : *uses) {
               Operation *user = use.getUser();
