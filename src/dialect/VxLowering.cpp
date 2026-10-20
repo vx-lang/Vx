@@ -3512,38 +3512,6 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
   OwningOpRef<ModuleOp> device = ModuleOp::create(gpuModule.getLoc());
   device->getBody()->push_back(gpuModule->clone());
 
-  // A square root must give the same bits as on the CPU. The NVVM conversion
-  // turns `math.sqrt` into libdevice's `__nv_sqrtf`, which picks
-  // `sqrt.approx.f32`, and `1.0 / sqrt.approx` then becomes `rsqrt.approx.f32`.
-  // The intrinsic `llvm.nvvm.sqrt.rn.f` is `sqrt.rn.f32`, which is correctly
-  // rounded, and the conversion leaves a call to it as it is.
-  {
-    SmallVector<Operation *> roots;
-    device->walk([&](Operation *op) {
-      if (isa<math::SqrtOp, math::RsqrtOp>(op) &&
-          (op->getOperand(0).getType().isF32() ||
-           op->getOperand(0).getType().isF64()))
-        roots.push_back(op);
-    });
-    for (Operation *op : roots) {
-      OpBuilder b(op);
-      Value x = op->getOperand(0);
-      StringRef intrinsic =
-          x.getType().isF32() ? "llvm.nvvm.sqrt.rn.f" : "llvm.nvvm.sqrt.rn.d";
-      Value root = b.create<LLVM::CallIntrinsicOp>(op->getLoc(), x.getType(),
-                                                   b.getStringAttr(intrinsic),
-                                                   ValueRange{x})
-                       .getResult(0);
-      if (isa<math::RsqrtOp>(op)) {
-        Value one = b.create<arith::ConstantOp>(
-            op->getLoc(), b.getFloatAttr(getElementTypeOrSelf(x), 1.0));
-        root = b.create<arith::DivFOp>(op->getLoc(), one, root);
-      }
-      op->getResult(0).replaceAllUsesWith(root);
-      op->erase();
-    }
-  }
-
   PassManager pm(context, ModuleOp::getOperationName());
 
   GpuNVVMAttachTargetOptions attach;
@@ -3575,6 +3543,38 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
   // which is a toolkit the compile host is not required to have.
   binary.compilationTarget = "isa";
   pm.addPass(createGpuModuleToBinaryPass(binary));
+
+  // A square root must give the same bits as on the CPU. The NVVM conversion
+  // turns `math.sqrt` into libdevice's `__nv_sqrtf`, which picks
+  // `sqrt.approx.f32`, and `1.0 / sqrt.approx` then becomes `rsqrt.approx.f32`.
+  // The intrinsic `llvm.nvvm.sqrt.rn.f` is `sqrt.rn.f32`, which is correctly
+  // rounded, and the conversion leaves a call to it as it is.
+  {
+    SmallVector<Operation *> roots;
+    device->walk([&](Operation *op) {
+      if (isa<math::SqrtOp, math::RsqrtOp>(op) &&
+          (op->getOperand(0).getType().isF32() ||
+           op->getOperand(0).getType().isF64()))
+        roots.push_back(op);
+    });
+    for (Operation *op : roots) {
+      OpBuilder b(op);
+      Value x = op->getOperand(0);
+      StringRef intrinsic =
+          x.getType().isF32() ? "llvm.nvvm.sqrt.rn.f" : "llvm.nvvm.sqrt.rn.d";
+      Value root = b.create<LLVM::CallIntrinsicOp>(op->getLoc(), x.getType(),
+                                                   b.getStringAttr(intrinsic),
+                                                   ValueRange{x})
+                       .getResult(0);
+      if (isa<math::RsqrtOp>(op)) {
+        Value one = b.create<arith::ConstantOp>(
+            op->getLoc(), b.getFloatAttr(getElementTypeOrSelf(x), 1.0));
+        root = b.create<arith::DivFOp>(op->getLoc(), one, root);
+      }
+      op->getResult(0).replaceAllUsesWith(root);
+      op->erase();
+    }
+  }
 
   if (failed(pm.run(*device))) {
     error = "the NVPTX pipeline failed";
