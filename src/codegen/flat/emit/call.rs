@@ -200,8 +200,17 @@ impl FnEmit<'_> {
             };
             let same = actual.replace(' ', "") == declared.replace(' ', "");
             if !same && actual.starts_with("memref<") {
+                // The comments let `parse_emitted_module` name this input when the cast fails.
+                let input = &blk.inputs[k].0;
+                self.body += &format!(
+                    "{}{} {} input {input} | {actual} | {declared}\n",
+                    crate::codegen::flat::MLIR_BLOCK_START,
+                    blk.line,
+                    blk.column
+                );
                 let c =
                     self.cast_memref_value(&format!("imc{idx}_{k}"), &name, &actual, declared)?;
+                self.body += &format!("{}\n", crate::codegen::flat::MLIR_BLOCK_END);
                 operands.push(c);
             } else {
                 operands.push(name);

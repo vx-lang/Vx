@@ -1237,10 +1237,8 @@ pub fn parse_emitted_module<'c>(
     }
     let errors = errors.borrow();
     if let Some((location, message)) = errors.first() {
-        if let Some(block) = mlir_block_at(text, location) {
-            return Err(format!(
-                "The `mlir!` block at {block} is not valid MLIR: {message}"
-            ));
+        if let Some(why) = mlir_block_error(text, location, message) {
+            return Err(why);
         }
     }
     for (_, message) in errors.iter() {
@@ -1249,26 +1247,32 @@ pub fn parse_emitted_module<'c>(
     Ok(None)
 }
 
-/// The `line L, column C` of the `mlir!` block whose wrapper holds `location`, a location in
-/// `text` such as `loc("-":4:5)`.
-fn mlir_block_at(text: &str, location: &str) -> Option<String> {
+/// The error for an MLIR error at `location`, such as `loc("-":4:5)` in `text`, when it is in
+/// the code of an `mlir!` block: its wrapper, or the cast of one of its inputs.
+fn mlir_block_error(text: &str, location: &str, message: &str) -> Option<String> {
     let mut parts = location.trim_end_matches(')').rsplit(':');
     let _column = parts.next()?;
     let line: usize = parts.next()?.parse().ok()?;
-    for l in text
-        .lines()
-        .take(line.checked_sub(1)?)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-    {
+    let before: Vec<&str> = text.lines().take(line.checked_sub(1)?).collect();
+    for l in before.into_iter().rev() {
         if l.starts_with(MLIR_BLOCK_END) {
             return None;
         }
-        if let Some(at) = l.strip_prefix(MLIR_BLOCK_START) {
-            let (line, column) = at.split_once(' ')?;
-            return Some(format!("line {line}, column {column}"));
-        }
+        let Some(at) = l.strip_prefix(MLIR_BLOCK_START) else {
+            continue;
+        };
+        let (line, rest) = at.split_once(' ')?;
+        let (column, input) = rest.split_once(' ').unwrap_or((rest, ""));
+        let block = format!("The `mlir!` block at line {line}, column {column}");
+        let Some(input) = input.strip_prefix("input ") else {
+            return Some(format!("{block} is not valid MLIR: {message}"));
+        };
+        let mut fields = input.split(" | ");
+        let (name, actual, declared) = (fields.next()?, fields.next()?, fields.next()?);
+        return Some(format!(
+            "{block} takes its input `{name}` as `{declared}`, but the value is a `{actual}`: \
+             {message}"
+        ));
     }
     None
 }
