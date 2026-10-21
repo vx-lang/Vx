@@ -715,6 +715,7 @@ void vx_plugin_release_future(uint64_t future_id) { (void)future_id; }
 /// A build without CUDA has no streams. The call exists so that a host program
 /// links against every build (#1986).
 void vx_cuda_set_stream(void *stream) { (void)stream; }
+void *vx_cuda_get_stream(void) { return nullptr; }
 
 int32_t vx_plugin_control(uint32_t opcode, void *payload) {
   (void)payload;

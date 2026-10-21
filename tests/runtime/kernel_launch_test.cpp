@@ -300,6 +300,8 @@ void caller_streams() {
         "a recording refuses a wait");
   check(vx_free_action_for(0, 0, 0) == VX_FREE_AFTER_DEVICE_WAIT,
         "with no stream, a free waits for the device");
+  check(vx_free_action_for(0, 0, 1) == VX_FREE_ON_STREAM,
+        "stream-ordered memory goes back on its stream after a reset to null");
   check(vx_free_action_for(1, 1, 1) == VX_FREE_ON_STREAM,
         "a recording holds the free of stream-ordered memory");
   check(vx_free_action_for(1, 0, 1) == VX_FREE_ON_STREAM,

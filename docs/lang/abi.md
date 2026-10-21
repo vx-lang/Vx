@@ -300,17 +300,19 @@ CUDA backend (`runtime/cuda_dispatch.cpp`). These rules hold for such a call:
   stream made with `cudaStreamNonBlocking` is not. `VX_CUDA_SYNC=1` makes Vx wait after each
   launch.
 - **A stream of the host program.** `void vx_cuda_set_stream(void *stream)` sets a `CUstream`
-  for the calling thread, and null gives back the legacy default stream. Then Vx's kernels,
-  cuBLAS calls and copies go on that stream. A wait (before a copy to host memory, at the end of
-  a region) waits for that stream only. Vx allocates its temporaries with `cudaMallocAsync` on the
-  stream and frees them with `cudaFreeAsync`, with no wait. A build without CUDA has the call,
-  and it does nothing.
+  for the calling thread, and null gives back the legacy default stream. `vx_cuda_get_stream()`
+  returns it, so a host program can put back the stream it had before. Then Vx's kernels, cuBLAS
+  calls and copies go on that stream. A wait (before a copy to host memory, at the end of a region)
+  waits for that stream only. Vx allocates its temporaries with `cudaMallocAsync` on the stream,
+  and frees each with `cudaFreeAsync` on the stream it came from, with no wait. A build without
+  CUDA has both calls, and they do nothing.
 - **CUDA graphs.** A host program can record a call into a graph with `cudaStreamBeginCapture`
   on its stream. A function whose tensors are all in device memory and whose results stay there
   records cleanly. While the stream records, Vx stops the program with a message at anything a
-  graph cannot hold: a wait, a copy from or to host memory, or a free of memory that needs a
-  wait. Call the function once before the recording, because its first call loads the kernel
-  image.
+  graph cannot hold: a wait, a copy from or to host memory, a free of memory that needs a wait,
+  `VX_CUDA_SYNC=1` and `VX_TIME_KERNEL`. The first call of a function loads its kernel image, and
+  the first GEMM on a GPU creates a cuBLAS handle with a workspace of its own. Vx stops when
+  either happens in a recording, so call the function once before the recording.
 - **Launch shape.** The function computes the sizes of `grid([..]) block(n)` and launches that
   shape (§3.5 and `docs/spawn_on.md` §8).
 - **No GPU.** When no GPU takes a launch, the region runs on the CPU. A region with a launch
