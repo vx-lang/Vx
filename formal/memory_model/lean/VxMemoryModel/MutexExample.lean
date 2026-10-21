@@ -14,10 +14,10 @@ before the read, so the two plain accesses do not race.
 namespace Vx
 
 def oneLock : ChanProg where
-  main := .seq (.base (.spawn 0)) (.seq (.lock 0)
-    (.seq (.base (.store 0 (.const 7) .plain)) (.seq (.unlock 0) (.base (.join 0)))))
+  main := .seq (.base (.spawn 0))
+    (.seq (.locked 0 (.base (.store 0 (.const 7) .plain))) (.base (.join 0)))
   task
-    | 0 => .seq (.lock 0) (.seq (.base (.load 5 0 .plain)) (.unlock 0))
+    | 0 => .locked 0 (.base (.load 5 0 .plain))
     | _ => .base .skip
   count := 1
   places := 1
@@ -29,9 +29,9 @@ def oneLock : ChanProg where
   tmp := 0
 
 theorem oneLock_ok : oneLock.Ok where
-  main := by simp [oneLock, ChanProg.StmtOk, Stmt.Below]
+  main := by simp [oneLock, ChanProg.StmtOk, Stmt.Below, CStmt.Locks]
   task
-    | 0 => by simp [oneLock, ChanProg.StmtOk, Stmt.Below]
+    | 0 => by simp [oneLock, ChanProg.StmtOk, Stmt.Below, CStmt.Locks]
     | _ + 1 => by simp [oneLock, ChanProg.StmtOk, Stmt.Below]
   cap _ h := absurd h (by simp [oneLock])
 
@@ -84,10 +84,11 @@ theorem oneLock_main : Trace (oneLock.toTaskProg.toProg.code 0) 10 (oneLockLabel
     .visible (.seq (.seq .store)) <| .silent (.seq .seq_skip) <| .silent .seq_skip <|
     .silent (.seq (.seq (.assignAt 0 rfl Nat.one_pos))) <| .silent (.seq .seq_skip) <|
     .visible (.seq (.storeAt 0 rfl Nat.one_pos)) <| .silent .seq_skip <|
-    .visible (.seq (.seq (.fetchAdd 0))) <| .visible (.seq (.seq .rmwStore)) <|
-    .silent (.seq .seq_skip) <| .visible (.seq (.seq (.load 0))) <| .silent (.seq .seq_skip) <|
-    .silent (.seq .loop) <| .silent (.seq (.ite_false (by decide))) <| .silent .seq_skip <|
-    .visible (.seq .store) <| .silent .seq_skip <|
+    .visible (.seq (.seq (.seq (.fetchAdd 0)))) <| .visible (.seq (.seq (.seq .rmwStore))) <|
+    .silent (.seq (.seq .seq_skip)) <| .visible (.seq (.seq (.seq (.load 0)))) <|
+    .silent (.seq (.seq .seq_skip)) <| .silent (.seq (.seq .loop)) <|
+    .silent (.seq (.seq (.ite_false (by decide)))) <| .silent (.seq .seq_skip) <|
+    .visible (.seq (.seq .store)) <| .silent (.seq .seq_skip) <|
     .visible (.seq (.fetchAdd 0)) <| .visible (.seq .rmwStore) <| .silent .seq_skip <|
     .visible (.waitAt 0 1 rfl Nat.one_pos) .stop
 

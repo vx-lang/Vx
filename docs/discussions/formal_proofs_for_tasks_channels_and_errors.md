@@ -121,6 +121,16 @@ for this check. The theorems:
 
 Each edge also gets a herd7 litmus test, and `run_lean.py` checks that Lean and herd7 agree.
 
+Steps 2 and 3 already lower the channel and the lock to `sc` atomics in the core language. So the
+edges of steps 2 and 3 are already theorems about real code, and step 4 has no separate copy of
+the library. `ChanProg.drf_sc` is the DRF-SC theorem. Step 4 adds the two theorems about values:
+
+- `lock_excl` (`Lock.lean`). A lock is now a block, `locked m s`, so each `unlock` has its
+  `lock`. `unlock_ticket` shows that the `unlock` of the ticket `k` reads `serving` as `k`. Then
+  each event of the block of ticket `k` happens before each read of `serving` that sees more than
+  `k`. The `lock` of a later ticket ends with such a read.
+- `ring_fifo` comes next.
+
 DRF-SC for a client holds only with this `sc` library. A later step can make an access release or
 acquire. Each such access then needs its own edge proof and a litmus test.
 

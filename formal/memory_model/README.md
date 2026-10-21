@@ -118,9 +118,12 @@ third counter. A `recv` waits in a loop that reads this counter, then `full k`. 
 when all senders dropped and `full k` is not set. `drop_hb_closed` shows that each drop happens
 before each read that sees all the drops. `Counter.hb_of_lt` gives this edge: a `fetchAdd` happens
 before each `sc` read of a larger value. `ChanProg.drf_sc` follows from `TaskProg.drf_sc`.
-A lock is a ticket lock with the counters `next` and `serving`. A `lock` takes ticket `k` from
-`next`, then reads `serving` until it is `k`. An `unlock` adds 1 to `serving`. `unlock_hb_lock`
-gives the edge from each `unlock` to each later `lock`, also by `Counter.hb_of_lt`.
+A lock is a ticket lock with the counters `next` and `serving`. The code holds it in a block,
+`locked m s`. The block takes ticket `k` from `next`, reads `serving` until it is `k`, runs `s`,
+and adds 1 to `serving`. `unlock_hb_lock` gives the edge from each `unlock` to each later `lock`,
+also by `Counter.hb_of_lt`. `Lock.lean` shows that the `unlock` of the ticket `k` reads `serving`
+as `k` (`unlock_ticket`). So `lock_excl` shows that two tasks never hold a lock at the same time:
+each event of the block of ticket `k` happens before each event of the block of a later ticket.
 `ChannelExample.lean` builds a run where the main code sends 7 and drops its sender, and a task
 makes two `recv`s. The first gets 7, and the second finds the channel closed. `check` finds that
 the model allows this run with no data race. `MutexExample.lean` builds a run where a lock orders
@@ -194,6 +197,8 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - `drop_hb_closed` speaks of the reads of the counter of drops. That a `recv` returns no value
   only after such a read, and that it then loses no value, follows from its code. No theorem shows
   it yet.
-- `unlock_hb_lock` speaks of the reads of `serving`. That a `lock` ends only after it reads its own
-  ticket there, and that two tasks never hold a lock at the same time, have no proof yet. Step 4
-  (`lock_excl`) is for the second one.
+- The code holds a lock for one block. So a guard of a `Mutex` that moves out of its block has no
+  model yet. A block of a lock cannot hold another block of the same lock.
+- `lock_excl` speaks of the reads of `serving` that let a later ticket in. That the `lock` of a
+  ticket ends with such a read follows from `Hold` in `Lock.lean`. No theorem states it on its
+  own.
