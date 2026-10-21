@@ -35,11 +35,18 @@ Memory SMEM {
   within: Memory::L2, capacity: 164 KiB, bandwidth: 128 B/cyc, clock: 1.41 GHz, granule: 1 KiB, managed: explicit, scope: sm, replicas: 108
 }
 
+// spec: CUDA C Programming Guide, technical specifications per compute capability -- at most
+// 255 32-bit registers per thread. A tensor here stays in registers, so each index must be
+// known when compiling (E6033).
+Memory REG {
+  within: Memory::SMEM, capacity: 1020 B, managed: explicit, scope: thread
+}
+
 Topology Device {
   // spec: NVIDIA Ampere GA100; LLVM's NVPTX target.
   arch: nvptx64,
   memory: Memory::HBM,
-  visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::REG],
   // spec: NVIDIA A100 Tensor Core GPU Architecture whitepaper v1.0, p.26 and Table 2 (p.23).
   // Same GA100 die as a100-40, so the same vocabulary. No FP8; that arrives with Hopper.
   dtypes: [f64, f32, bf16, f16, i4, u4, i8, u8, i16, u16, i32, u32, i64, u64, bool],

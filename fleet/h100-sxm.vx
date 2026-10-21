@@ -34,6 +34,13 @@ Memory SMEM {
   within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, clock: 1.98 GHz, granule: 1 KiB, managed: explicit, scope: sm, replicas: 132
 }
 
+// spec: CUDA C Programming Guide, technical specifications per compute capability -- at most
+// 255 32-bit registers per thread. A tensor here stays in registers, so each index must be
+// known when compiling (E6033).
+Memory REG {
+  within: Memory::SMEM, capacity: 1020 B, managed: explicit, scope: thread
+}
+
 // The staging path a placement crosses: host -> device memory -> on-chip.
 //
 // Each edge gets exactly ONE cost source (E6013). The on-die hops declare no cost: HBM/L2/SMEM
@@ -51,7 +58,7 @@ Topology Device {
   // spec: NVIDIA Hopper GH100; LLVM's NVPTX target.
   arch: nvptx64,
   memory: Memory::HBM,
-  visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::REG],
   // spec: NVIDIA "NVIDIA Hopper Architecture In-Depth" (developer.nvidia.com/blog):
   // "The FP8, FP16, BF16, TF32, FP64, and INT8 MMA data types are supported."
   // INT4 is absent from that list and is not native on Hopper -- deprecated after Ampere

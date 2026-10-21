@@ -593,6 +593,11 @@ pub enum DiagnosticCode {
     /// the most an allocation can ask for. The size is known, and it is not one the generated
     /// code can allocate: it would wrap.
     E6031,
+    /// An index into a tensor in a `scope: thread` space that is not known when compiling. Such
+    /// a tensor stays in registers, and a register has no address. So each index must be a
+    /// constant, or made of constants and the variables of `for` loops with constant bounds, at
+    /// most 1024 passes each. The code generator unrolls those loops.
+    E6033,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

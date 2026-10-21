@@ -40,6 +40,13 @@ Memory SMEM {
   within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, clock: 1.98 GHz, granule: 1 KiB, managed: explicit, scope: sm, replicas: 132
 }
 
+// spec: CUDA C Programming Guide, technical specifications per compute capability -- at most
+// 255 32-bit registers per thread. A tensor here stays in registers, so each index must be
+// known when compiling (E6033).
+Memory REG {
+  within: Memory::SMEM, capacity: 1020 B, managed: explicit, scope: thread
+}
+
 // --- The rest of the node ---------------------------------------------------
 
 // The aggregate HBM of the other seven GPUs, reachable over NVLink. Modelled as
@@ -67,7 +74,7 @@ Topology Node {
   // spec: Eight NVIDIA parts; the node's compute ISA is theirs.
   arch: nvptx64,
   memory: Memory::HBM,
-  visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::PEER_HBM],
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::REG, Memory::PEER_HBM],
   // spec: PCIe Gen5 x16 = 63 GB/s per direction (32 GT/s x 16 lanes, 128b/130b).
   // UNVERIFIED on this SKU; a Grace/C2C-attached part reaches the host at ~450 GB/s instead,
   // a 7x difference in every host-seam prediction. Settling it is an open experiment (utils/memalg).

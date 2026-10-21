@@ -24,6 +24,7 @@ Every SKU declares the **same space names**, so one program text can reference t
 | `HBM` | device-global memory (HBM2e/HBM3/HBM3e) | `device` |
 | `L2` | last-level on-die cache / Infinity Cache | `device` |
 | `SMEM` | per-SM/CU shared memory (scratchpad) | `sm` |
+| `REG` | per-thread registers (NVIDIA files only) | `thread` |
 
 A program that places a tile in `Memory::HBM` therefore means "this SKU's device memory", and the
 capacity check resolves that to whichever number the selected machine file declares. Adding a SKU
@@ -65,6 +66,15 @@ and edges (NVLink, PCIe, InfiniBand) that a multi-GPU placement crosses. It is c
 file rather than replacing it — but note that the `--machine` flag currently takes a single file
 (#281), so the node file re-declares the SKU spaces it needs. Declaration import (#224) would let
 these compose properly; see the note in that file.
+
+## Registers
+
+A tensor in a `scope: thread` space, such as `Tensor<f32, [32], Memory::REG>`, stays in registers.
+This is how a tensor-core kernel keeps its accumulators across a loop. A register has no address,
+so each index must be known when compiling: a constant, or made of constants and the variables of
+`for` loops with constant bounds. The compiler unrolls those loops, at most 1024 passes each. Any
+other index is E6033, which names the tensor and the reason. An `mlir!` block takes the tensor as
+`memref<32xf32>`. The NVIDIA files give `REG` a capacity of 1020 bytes, which is 255 registers.
 
 ## Element type vocabularies
 
