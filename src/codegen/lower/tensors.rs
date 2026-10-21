@@ -137,6 +137,12 @@ fn lower_spawn_region<'c>(
                 spawn_builder = spawn_builder
                     .add_attributes(&[(Identifier::new(gen.context, "arch"), arch_attr)]);
             }
+            if let Some(chip) = &desc.chip {
+                let chip_attr =
+                    melior::ir::attribute::StringAttribute::new(gen.context, chip.as_ref()).into();
+                spawn_builder = spawn_builder
+                    .add_attributes(&[(Identifier::new(gen.context, "chip"), chip_attr)]);
+            }
         }
     }
 

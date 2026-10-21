@@ -802,6 +802,7 @@ impl CompilerDriver {
                     visibility: vec![crate::syntax::MemorySpace::CPUDRAM],
                     transfers: Vec::new(),
                     dtypes: None,
+                    chip: None,
                 },
             }],
             imports: Vec::new(),
@@ -1701,7 +1702,7 @@ impl CompilerDriver {
         // `space`/`within`/`granule`/`capacity`/`scope` + bump-allocated `offset`/`slots` attrs the AST
         // path emits (otherwise dropped on the default path).
         let subspaces: Vec<crate::codegen::flat::SubspaceInfo>;
-        let topo_archs: Vec<(i64, String)>;
+        let topo_archs: Vec<(i64, crate::codegen::flat::DeclaredArch)>;
         let local_devices: Vec<(i32, i32)>;
         {
             let env_mods = mods.clone();

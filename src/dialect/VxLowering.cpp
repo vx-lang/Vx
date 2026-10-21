@@ -780,6 +780,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // [500, 600)).
     if (auto arch = op->getAttrOfType<StringAttr>("arch"))
       kernelOp->setAttr("arch", arch);
+    if (auto chip = op->getAttrOfType<StringAttr>("chip"))
+      kernelOp->setAttr("chip", chip);
     // The function that holds the region, and the function parameter that
     // fills each kernel parameter (-1 for a value that is not a parameter).
     // `--emit-ptx` names the kernel and describes its parameters from these.
@@ -2255,10 +2257,29 @@ struct ConvertVxToStandardPass
     if (kernels.empty())
       return;
 
+    // All kernels go into one device image, so they need one chip.
+    StringAttr chip;
+    for (vx::KernelOp kernel : kernels) {
+      auto mine = kernel->getAttrOfType<StringAttr>("chip");
+      if (!mine)
+        continue;
+      if (chip && chip != mine) {
+        kernel.emitError("this GPU kernel is for ")
+            << mine.getValue() << ", and another kernel is for "
+            << chip.getValue()
+            << ". One program can compile GPU kernels for one chip only";
+        signalPassFailure();
+        return;
+      }
+      chip = mine;
+    }
+
     OpBuilder builder(module.getBodyRegion());
     builder.setInsertionPointToEnd(module.getBody());
     auto gpuModule =
         builder.create<gpu::GPUModuleOp>(module.getLoc(), "vx_kernels");
+    if (chip)
+      gpuModule->setAttr("vx.chip", chip);
 
     // The kernels' callees and constant tables, copied once each. The host
     // keeps its own: only the device clone needs these.
@@ -3456,25 +3477,35 @@ struct BarrierOpLowering : public OpRewritePattern<vx::BarrierOp> {
 // Device images
 //===----------------------------------------------------------------------===//
 
-/// The GPU generation to compile a device kernel for.
-///
-/// The machine model does not carry one. `fleet/a100-40.vx` says `arch:
-/// nvptx64` -- the target, not the part -- and until now nothing needed the
-/// difference, because a GEMM routed to cuBLAS is compiled by whoever built
-/// cuBLAS. A kernel of our own does need it: `sm_80` code will not load on an
-/// `sm_70` device.
-///
-/// The topology id cannot supply it. It is a band plus a device ordinal
-/// (`topology_dispatch_id` in src/arch.rs), so `500` means "the first GPU" and
-/// says nothing about which GPU. So the default is the part this work is being
-/// measured on and the override is an environment variable -- which is honest
-/// about what it is, a stand-in for a `capability:` field on the Topology
-/// declaration that the machine files should eventually carry.
-static std::string deviceChip() {
+/// The GPU generation to compile a device kernel for: `VX_GPU_CHIP` if it is
+/// set, else the `chip:` of the machine file's topology, else `sm_80`. Code for
+/// `sm_80` does not load on an `sm_70` device.
+static std::string deviceChip(gpu::GPUModuleOp gpuModule) {
   if (const char *chip = ::getenv("VX_GPU_CHIP"))
     if (*chip)
       return chip;
+  if (auto chip = gpuModule->getAttrOfType<StringAttr>("vx.chip"))
+    return chip.str();
   return "sm_80";
+}
+
+/// The PTX ISA version for `chip`, as an NVPTX feature. 7.6 is what CUDA 11.6
+/// and later accept. A newer chip needs a newer version: 7.8 for `sm_89` and
+/// `sm_90`, 8.0 for `sm_90a` (which has `wgmma`), 8.8 for every `sm_10x` and
+/// `sm_12x` chip, and 9.0 for `sm_110`.
+static std::string ptxFeatureFor(StringRef chip) {
+  unsigned number = 0;
+  chip.drop_front(3).take_while(llvm::isDigit).getAsInteger(10, number);
+  bool archSpecific = chip.ends_with("a");
+  if (number >= 110 && number < 120)
+    return "+ptx90";
+  if (number >= 100)
+    return "+ptx88";
+  if (number >= 90)
+    return archSpecific ? "+ptx80" : "+ptx78";
+  if (number >= 89)
+    return "+ptx78";
+  return "+ptx76";
 }
 
 /// libdevice.10.bc, if this machine has it.
@@ -3553,10 +3584,8 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
   PassManager pm(context, ModuleOp::getOperationName());
 
   GpuNVVMAttachTargetOptions attach;
-  attach.chip = deviceChip();
-  // The PTX ISA version, not the device. 7.6 is what CUDA 11.6 and later
-  // accept, and it is what the script has been assembling with.
-  attach.features = "+ptx76";
+  attach.chip = deviceChip(gpuModule);
+  attach.features = ptxFeatureFor(attach.chip);
   std::string libdevice = deviceLibdevice();
   if (!libdevice.empty())
     attach.linkLibs.push_back(libdevice);
@@ -3851,7 +3880,7 @@ struct ConvertVxToLLVMPass
       // payload blob's first field -- is what selects the entry.
       m.walk([&](gpu::GPUFuncOp f) { deviceImages[f.getName()] = image; });
       if (exporting) {
-        llvm::json::Object manifest{{"target", deviceChip()},
+        llvm::json::Object manifest{{"target", deviceChip(m)},
                                     {"kernels", std::move(exported)}};
         std::string text;
         llvm::raw_string_ostream os(text);

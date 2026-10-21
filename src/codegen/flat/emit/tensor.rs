@@ -27,7 +27,7 @@ impl FnEmit<'_> {
             .spawn_stack
             .last()
             .and_then(|open| self.ctx.topo_archs.get(&open.0))
-            .map(|a| a.as_str());
+            .map(|a| a.arch.as_str());
         crate::arch::address_space_for_arch(arch, crate::arch::AddressSpace::Workgroup)
     }
 

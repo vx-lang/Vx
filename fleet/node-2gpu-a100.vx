@@ -66,6 +66,7 @@ Memory PEER_HBM {
 Topology Node {
   // spec: NVIDIA Ampere GA100; LLVM's NVPTX target.
   arch: nvptx64,
+  chip: sm_80,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::PEER_HBM],
 

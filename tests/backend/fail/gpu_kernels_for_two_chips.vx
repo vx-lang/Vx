@@ -1,0 +1,55 @@
+//===- gpu_kernels_for_two_chips.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The compiler puts all the GPU kernels of a program in one device image, so they must be for one
+// chip. Here one kernel runs on an A100 (`sm_80`) and one on an H100 (`sm_90a`), so the compile
+// stops.
+//
+// REQUIRES: flat-codegen
+// RUN: not vxc %s --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// CHECK: this GPU kernel is for sm_{{80|90a}}, and another kernel is for sm_{{80|90a}}. One program can compile GPU kernels for one chip only
+
+Memory CPU_DRAM {}
+Memory HBM_A {
+  within: Memory::CPU_DRAM, capacity: 40 GiB
+}
+Memory HBM_H {
+  within: Memory::CPU_DRAM, capacity: 80 GiB
+}
+Topology Ampere {
+  arch: nvptx64,
+  chip: sm_80,
+  memory: Memory::HBM_A,
+  transfer Memory::CPU_DRAM -> Memory::HBM_A : 63 GB/s,
+  transfer Memory::HBM_A -> Memory::CPU_DRAM : 63 GB/s
+}
+Topology Hopper {
+  arch: nvptx64,
+  chip: sm_90a,
+  memory: Memory::HBM_H,
+  transfer Memory::CPU_DRAM -> Memory::HBM_H : 63 GB/s,
+  transfer Memory::HBM_H -> Memory::CPU_DRAM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut a = transfer(Tensor<f32, [4]>::fill(0.0), Memory::HBM_A);
+  let mut h = transfer(Tensor<f32, [4]>::fill(0.0), Memory::HBM_H);
+  spawn on(Topology::Ampere) {
+    for i in 0..4 {
+      a[i] = 1.0;
+    }
+  }
+  spawn on(Topology::Hopper) {
+    for i in 0..4 {
+      h[i] = 2.0;
+    }
+  }
+  let back_a = transfer(a, Memory::CPU_DRAM);
+  let back_h = transfer(h, Memory::CPU_DRAM);
+  print(back_a[0] + back_h[0]);
+  return 0;
+}

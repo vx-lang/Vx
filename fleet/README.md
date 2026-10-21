@@ -66,6 +66,15 @@ file rather than replacing it — but note that the `--machine` flag currently t
 (#281), so the node file re-declares the SKU spaces it needs. Declaration import (#224) would let
 these compose properly; see the note in that file.
 
+## GPU chip
+
+`chip:` on an `nvptx64` topology names the GPU generation that its kernels are compiled for:
+`sm_80` for A100, `sm_90a` for H100 and H200, `sm_100a` for B200. The compiler picks the PTX
+version that the chip needs. Code for one chip may not load on an older one, and an `a` chip's code
+loads only on that generation. A topology with no `chip:` compiles for `sm_80`. The environment
+variable `VX_GPU_CHIP` overrides the field. All the kernels of one program go into one device
+image, so two topologies with different chips in one program are an error.
+
 ## Element type vocabularies
 
 `dtypes:` on a topology states which element types the hardware can natively represent and compute

@@ -50,6 +50,8 @@ Memory SMEM {
 Topology Device {
   // spec: NVIDIA Hopper GH100; LLVM's NVPTX target.
   arch: nvptx64,
+  // The `a` chip adds wgmma. Its code loads only on Hopper.
+  chip: sm_90a,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
   // spec: NVIDIA "NVIDIA Hopper Architecture In-Depth" (developer.nvidia.com/blog):

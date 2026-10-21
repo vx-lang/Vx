@@ -38,6 +38,7 @@ Memory SMEM {
 Topology Device {
   // spec: NVIDIA Ampere GA100; LLVM's NVPTX target.
   arch: nvptx64,
+  chip: sm_80,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
   // spec: NVIDIA A100 Tensor Core GPU Architecture whitepaper v1.0, p.26 and Table 2 (p.23).

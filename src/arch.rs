@@ -210,6 +210,10 @@ pub struct TopologyDescriptor {
     /// there. That is answerable here, before anything is emitted, because the placement is in the
     /// type and the machine is a declaration the compiler already reads.
     pub dtypes: Option<Vec<crate::syntax::ElementType>>,
+    /// The GPU generation that kernels for this topology are compiled for -- `chip: sm_90a` in
+    /// the declaration. `arch:` names the instruction set and not the part, and code for a newer
+    /// part does not load on an older one. `None` compiles for `sm_80`.
+    pub chip: Option<crate::symbol::Symbol>,
 }
 
 /// A user-declared topology: its name plus its descriptor. Carried on the AST
@@ -825,6 +829,7 @@ fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescrip
         // The built-ins describe a class of device rather than a part, and which element types a
         // GPU has is a property of the part. Undeclared, so they constrain nothing.
         dtypes: None,
+        chip: None,
     };
     let mut m = HashMap::new();
     m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM]));
@@ -1973,6 +1978,7 @@ mod tests {
             ],
             arch: None,
             dtypes: None,
+            chip: None,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -2006,6 +2012,7 @@ mod tests {
             ],
             arch: None,
             dtypes: None,
+            chip: None,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -2044,6 +2051,7 @@ mod tests {
             ],
             arch: None,
             dtypes: None,
+            chip: None,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -2293,6 +2301,7 @@ mod tests {
                 visibility: vec![default_space],
                 transfers: Vec::new(),
                 dtypes: None,
+                chip: None,
             },
         }
     }
@@ -2374,6 +2383,7 @@ mod tests {
                 copy_engine: false,
             }],
             dtypes: None,
+            chip: None,
         };
         graph.apply_descriptor_edges(&desc);
         graph.precompute_costs();
@@ -2405,6 +2415,7 @@ mod tests {
                 copy_engine: false,
             }],
             dtypes: None,
+            chip: None,
         };
         graph.apply_descriptor_edges(&desc);
         graph.precompute_costs();
@@ -2424,6 +2435,7 @@ mod tests {
             visibility: vec![island.clone()],
             transfers: Vec::new(),
             dtypes: None,
+            chip: None,
         };
         assert!(
             descriptor_coherence(&bad, &graph).contains(&CoherenceIssue::MemoryUnreachableFromHost)
@@ -2436,6 +2448,7 @@ mod tests {
             visibility: vec![MemorySpace::CPUDRAM],
             transfers: Vec::new(),
             dtypes: None,
+            chip: None,
         };
         assert!(descriptor_coherence(&bad2, &graph).contains(&CoherenceIssue::DefaultNotVisible));
 
@@ -2446,6 +2459,7 @@ mod tests {
             visibility: vec![MemorySpace::NPUHBM],
             transfers: Vec::new(),
             dtypes: None,
+            chip: None,
         };
         assert!(descriptor_coherence(&good, &graph).is_empty());
     }
@@ -2549,6 +2563,7 @@ mod tests {
                     visibility: vec![shared.clone()],
                     transfers: Vec::new(),
                     dtypes: None,
+                    chip: None,
                 },
             );
         }

@@ -203,9 +203,14 @@ impl FnEmit<'_> {
         } else {
             String::new()
         };
-        if let Some(arch) = self.ctx.topo_archs.get(&topo) {
+        if let Some(declared) = self.ctx.topo_archs.get(&topo) {
+            let arch = &declared.arch;
+            let chip = match &declared.chip {
+                Some(chip) => format!(", chip = \"{chip}\""),
+                None => String::new(),
+            };
             self.body += &format!(
-                "  }}) {{arch = \"{arch}\", topology = {topo} : i32{name}{trip}}} : () -> ({result_ty})\n"
+                "  }}) {{arch = \"{arch}\"{chip}, topology = {topo} : i32{name}{trip}}} : () -> ({result_ty})\n"
             );
         } else {
             self.body +=
