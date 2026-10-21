@@ -119,6 +119,7 @@ impl FnEmit<'_> {
     pub(crate) fn op_spawn(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         self.spawn_stack
             .push((ins.imm as u32 as i64, self.body.len(), ins.imm >> 32));
+        self.region_slots.push(None);
         self.body += &format!("  \"vx.spawn\"() ({{\n^bbspawn{idx}:\n");
         self.terminated = false;
         Ok(())
@@ -129,6 +130,7 @@ impl FnEmit<'_> {
     // the enclosing block (which the spawn op did not terminate).
     pub(crate) fn op_spawn_end(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let (topo, open_at, name) = self.spawn_stack.pop().ok_or(crate::emitter_gap!())?;
+        self.region_slots.pop();
         // The topology's name as the program wrote it, from the function's string table.
         let name = match name.checked_sub(1) {
             Some(i) => {
@@ -246,8 +248,64 @@ impl FnEmit<'_> {
     // Block-level sync (Vx#379). A registered op with no results and no Pure trait, so
     // the greedy folder cannot erase it before the device clone rewrites it to
     // `gpu.barrier`; the host lowering erases it instead (a serial loop IS the barrier).
-    pub(crate) fn op_barrier(&mut self, _idx: usize, _ins: &HirInstruction) -> Lowered<()> {
-        self.body += "  \"vx.barrier\"() : () -> ()\n";
+    // `subgroup`: only the lanes of one subgroup wait, as at the end of a lane loop in a
+    // subgroup loop.
+    pub(crate) fn op_barrier(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        if ins.imm == crate::bytecode::BARRIER_SUBGROUP {
+            self.body += "  \"vx.barrier\"() {subgroup} : () -> ()\n";
+        } else {
+            self.body += "  \"vx.barrier\"() : () -> ()\n";
+        }
+        Ok(())
+    }
+
+    pub(crate) fn op_launch_dim(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let v = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        self.body += &format!(
+            "  \"vx.launch_dim\"({v}) {{axis = {} : i32}} : (i32) -> ()\n",
+            ins.imm
+        );
+        Ok(())
+    }
+
+    // The GPU's own index ops. The CPU copy of the kernel reads an index as 0 and a count as 1,
+    // so a step of `min(lanes, block size)` is 1 there.
+    pub(crate) fn op_across_id(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let arg = ins.imm >> 2;
+        let axis = ["x", "y", "z"];
+        let (op, axis) = match ins.imm & 3 {
+            crate::bytecode::ACROSS_LANE => ("gpu.thread_id", "x"),
+            crate::bytecode::ACROSS_STRIDE => ("gpu.block_dim", "x"),
+            crate::bytecode::ACROSS_BLOCK => (
+                "gpu.block_id",
+                *axis.get(arg as usize).ok_or(crate::emitter_gap!())?,
+            ),
+            _ => (
+                "gpu.grid_dim",
+                *axis.get(arg as usize).ok_or(crate::emitter_gap!())?,
+            ),
+        };
+        let n = format!("%v{idx}");
+        self.body += &format!("  {n}_index = {op} {axis}\n");
+        if ins.imm & 3 == crate::bytecode::ACROSS_STRIDE {
+            self.body += &format!("  {n}_dim = arith.index_cast {n}_index : index to i32\n");
+            self.body += &format!("  {n}_lanes = arith.constant {arg} : i32\n");
+            self.body += &format!("  {n} = arith.minsi {n}_lanes, {n}_dim : i32\n");
+        } else {
+            self.body += &format!("  {n} = arith.index_cast {n}_index : index to i32\n");
+        }
+        self.names[idx] = n;
+        self.etypes[idx] = Some(ElementType::I32);
+        Ok(())
+    }
+
+    pub(crate) fn op_across_region(&mut self, _idx: usize, _ins: &HirInstruction) -> Lowered<()> {
+        let at = self.region_slots.last_mut().ok_or(crate::emitter_gap!())?;
+        *at = Some(self.body.len());
         Ok(())
     }
 }

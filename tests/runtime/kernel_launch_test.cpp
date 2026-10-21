@@ -243,6 +243,54 @@ void entry_parameter_counting() {
 
 } // namespace
 
+/// The launch shape of a region with `across` loops: the payload names the
+/// sizes. A size `$j` is the `i32` launch value j, which comes after the
+/// kernel's arguments.
+void launch_shapes() {
+  int32_t rows = 7;
+  int32_t none = 0;
+  int64_t wide = 7;
+  float data[4] = {};
+  void *ptr = data;
+  /* One kernel argument, then the launch values. */
+  void *args[4] = {&ptr, &rows, &wide, &none};
+  const int32_t tags[4] = {0, 4, 5, 4};
+  unsigned grid[3] = {0, 0, 0};
+  unsigned block = 0;
+  char why[160] = "";
+
+  const char shaped[] = "k\0grid=$0,2\0block=128\0";
+  check(vx_launch_shape(shaped, sizeof shaped, args, tags, 1, grid, &block, why,
+                        sizeof why) == 1,
+        "a payload with grid= and block= has a shape");
+  check(grid[0] == 7 && grid[1] == 2 && grid[2] == 1,
+        "the grid is launch value 0, then 2, then 1 for the missing axis");
+  check(block == 128, "the block is the number in block=");
+
+  const char plain[] = "k\0launch=64\0";
+  check(vx_launch_shape(plain, sizeof plain, args, tags, 1, grid, &block, why,
+                        sizeof why) == 0,
+        "a payload without grid= has no shape");
+
+  const char big_block[] = "k\0grid=1\0block=2048\0";
+  check(vx_launch_shape(big_block, sizeof big_block, args, tags, 1, grid,
+                        &block, why, sizeof why) == -1 &&
+            strstr(why, "1 to 1024 lanes"),
+        "a block of more than 1024 lanes is refused");
+
+  const char no_blocks[] = "k\0grid=$2,100000\0block=32\0";
+  check(vx_launch_shape(no_blocks, sizeof no_blocks, args, tags, 1, grid,
+                        &block, why, sizeof why) == 1 &&
+            grid[0] == 1 && grid[1] == 65535,
+        "a grid axis of 0 blocks launches 1, and one above the limit the "
+        "limit");
+
+  const char not_i32[] = "k\0grid=1\0block=$1\0";
+  check(vx_launch_shape(not_i32, sizeof not_i32, args, tags, 1, grid, &block,
+                        why, sizeof why) == -1,
+        "a launch value that is not an i32 is refused");
+}
+
 int main() {
   widths();
   the_four_operand_signature();
@@ -250,6 +298,7 @@ int main() {
   scalars_pass_by_address();
   refusals();
   entry_parameter_counting();
+  launch_shapes();
 
   if (failures != 0) {
     fprintf(stderr, "%d check(s) failed\n", failures);

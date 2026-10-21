@@ -420,7 +420,13 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        Ok(Some(AcrossClause { level, share, span }))
+        Ok(Some(AcrossClause {
+            level,
+            share,
+            span,
+            kind: None,
+            subgroup_lanes: None,
+        }))
     }
 
     fn parse_tuple_let(&mut self, span: Span) -> ParseResult<'a, Statement> {

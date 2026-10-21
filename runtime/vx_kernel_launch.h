@@ -36,6 +36,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /// Enough for eight rank-3 memrefs, or the four rank-2 ones a four-operand
@@ -210,6 +212,64 @@ static inline int vx_launch_entry_param_count(const char *ptx,
     }
     return count;
   }
+}
+
+/* One size of a launch shape, from `text`: `$j` is the `i32` launch value j,
+   which the compiled code puts after the kernel's `num_args` arguments, and a
+   number is that size. Moves `*text` past the entry and its comma. Returns -1
+   when launch value j is not an `i32`. */
+static inline long vx_launch_size(const char **text, void *const *device_args,
+                                  const int32_t *arg_tags, int64_t num_args) {
+  char *end = NULL;
+  long value;
+  if (**text == '$') {
+    long j = strtol(*text + 1, &end, 10);
+    /* A shape has at most four sizes. */
+    if (j < 0 || j > 3 || arg_tags[num_args + j] != 4) {
+      return -1;
+    }
+    value = *(const int32_t *)device_args[num_args + j];
+  } else {
+    value = strtol(*text, &end, 10);
+  }
+  *text = end;
+  if (**text == ',') {
+    ++*text;
+  }
+  return value;
+}
+
+/* The launch shape that the `across` loops of a region give, from the
+   payload's `grid=` and `block=` entries. Returns 1 and fills `grid` and
+   `block`, 0 when the payload has no shape, or -1 with the reason in `why`
+   when the block is not one a GPU can launch. A loop of blocks steps over the
+   blocks of the grid, so any grid covers its passes: a grid size below 1 is
+   1, and one above what the GPU launches on that axis is that limit. The
+   lanes of a block are exact, so the caller stops the program on -1. */
+static inline int vx_launch_shape(const void *payload, size_t payload_size,
+                                  void *const *device_args,
+                                  const int32_t *arg_tags, int64_t num_args,
+                                  unsigned grid[3], unsigned *block, char *why,
+                                  size_t why_size) {
+  static const long limits[3] = {2147483647L, 65535L, 65535L};
+  const char *at = vx_payload_field(payload, payload_size, "grid=");
+  const char *block_text = vx_payload_field(payload, payload_size, "block=");
+  if (!at || !block_text) {
+    return 0;
+  }
+  for (int axis = 0; axis < 3; ++axis) {
+    long n = *at ? vx_launch_size(&at, device_args, arg_tags, num_args) : 1;
+    grid[axis] = (unsigned)(n < 1 ? 1 : n > limits[axis] ? limits[axis] : n);
+  }
+  long threads = vx_launch_size(&block_text, device_args, arg_tags, num_args);
+  if (threads < 1 || threads > 1024) {
+    snprintf(why, why_size,
+             "a block of %ld lanes, and a block holds 1 to 1024 lanes",
+             threads);
+    return -1;
+  }
+  *block = (unsigned)threads;
+  return 1;
 }
 
 #endif /* VX_KERNEL_LAUNCH_H */

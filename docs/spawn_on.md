@@ -152,7 +152,7 @@ decision.
 | Wait insertion in the compiler | none | at first host use (§3) |
 | Value of a device spawn | the kernel stores it in a host slot and the host loads it after the launch; such a kernel gets no GPU device image and runs on the host | the slot staged to device memory, so the GPU twin can run |
 | Runtime device index `NPU[i]` | W1030, device 0 | separate issue |
-| `for i in a..b across <level>` (#252) | E6032 checks its place and its size. It also checks that no pass touches what another pass writes (L4), and that every lane reaches the end of each lane loop (L5, L8, L10). It runs as a plain `for`. | the loops give the launch shape |
+| `for i in a..b across <level>` (#252) | E6032 checks its place and its size. It also checks that no pass touches what another pass writes (L4), and that every lane reaches the end of each lane loop (L5, L8, L10). The loops give the launch shape: each loop of blocks is a grid axis, and the lane and subgroup loops give the lanes of a block. Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes memory. The CPU copy runs one block of one lane. | lane loops fuse, and per-lane arrays go in registers |
 
 Order of work: the value stub first, since any model needs it; then non-blocking dispatch plus
 a real `await_future` in the runtimes, with the wait emitted at region exit so nothing

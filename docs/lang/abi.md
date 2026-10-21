@@ -272,7 +272,14 @@ has `name` and `type` as the Vx source writes them, `mutable` (the type is
 An MLIR integer type has no sign, so `element` is `i16` for both `u16` and `i16`. Take the sign
 from `type`.
 
-The program that launches the kernel chooses the grid and the block.
+A kernel from a region with `across` loops also has `launch`: `grid`, one entry for each loop of
+blocks, and `block`, the lanes of a block. A grid entry is a number, `{"param": "rows"}` for the
+value of a parameter, or `{"computed": "(rows + 3) / 4"}` for a size that the host computes from
+parameters and numbers. A size is not a parameter of the kernel, so a launcher computes it and
+launches that shape. A loop of blocks steps over the blocks of the grid, so a smaller grid is
+also correct. The kernel needs exactly the lanes of `block`.
+
+With no `launch`, the program that launches the kernel chooses the grid and the block.
 
 ## 4. Symbol names
 

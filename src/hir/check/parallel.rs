@@ -43,7 +43,15 @@ impl crate::hir::TypeChecker<'_> {
     pub(crate) fn warn_serial_spawn_loops(&mut self, body: &[Statement]) {
         let mut found = Vec::new();
         crate::syntax::visit_exprs(body, &mut |e| {
+            // A region with `across` loops maps its work to lanes itself.
             if let Expr::SpawnOn(sp) = e {
+                if sp
+                    .stmts
+                    .iter()
+                    .any(crate::hir::check::across_lanes::holds_across)
+                {
+                    return;
+                }
                 if let Some(b) = serial_loop_blocker(&sp.stmts) {
                     // An expression the compiler made may have no position of its own.
                     let at = if b.span == Span::default() {
