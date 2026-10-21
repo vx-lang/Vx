@@ -114,12 +114,14 @@ fn extents_agree(x: &str, y: &str) -> bool {
 }
 
 /// An inline `mlir!` block as the emitter needs it: the named inputs with their declared MLIR
-/// types, the body text, and whether it yields nothing.
+/// types, the body text, whether it yields nothing, and where it is in the source.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InlineBlock {
     pub inputs: Vec<(String, String)>,
     pub body: String,
     pub void: bool,
+    pub line: usize,
+    pub column: usize,
 }
 
 /// The stable per-instance GID of a monomorphized generic struct whose layout depends on its
@@ -3938,6 +3940,8 @@ impl<'r> Lowerer<'r> {
                 .collect(),
             body: im.block_str.clone(),
             void: im.returns.is_none(),
+            line: im.span.line,
+            column: im.span.column,
         });
         Ok(self.emit_typed(Opcode::InlineMlir, Register(0), Register(0), ty, imm))
     }

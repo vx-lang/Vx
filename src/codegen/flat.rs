@@ -1211,6 +1211,68 @@ fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
     }
 }
 
+/// The comment before the wrapper of an `mlir!` block, followed by the block's line and column.
+pub(crate) const MLIR_BLOCK_START: &str = "// mlir! block at ";
+/// The comment after the wrapper of an `mlir!` block.
+pub(crate) const MLIR_BLOCK_END: &str = "// end of the mlir! block";
+
+/// Parses the text that `emit_module_mlir` returned. `Ok(None)` when it does not parse because
+/// of an emitter bug: the MLIR errors are printed. `Err` when it does not parse because an
+/// `mlir!` block of the program is not valid MLIR: the error names the block.
+pub fn parse_emitted_module<'c>(
+    context: &'c melior::Context,
+    text: &str,
+) -> Result<Option<melior::ir::Module<'c>>, String> {
+    let errors = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = errors.clone();
+    let id = context.attach_diagnostic_handler(move |d| {
+        seen.borrow_mut()
+            .push((d.location().to_string(), d.to_string()));
+        true
+    });
+    let parsed = melior::ir::Module::parse(context, text);
+    context.detach_diagnostic_handler(id);
+    if parsed.is_some() {
+        return Ok(parsed);
+    }
+    let errors = errors.borrow();
+    if let Some((location, message)) = errors.first() {
+        if let Some(block) = mlir_block_at(text, location) {
+            return Err(format!(
+                "The `mlir!` block at {block} is not valid MLIR: {message}"
+            ));
+        }
+    }
+    for (_, message) in errors.iter() {
+        eprintln!("{message}");
+    }
+    Ok(None)
+}
+
+/// The `line L, column C` of the `mlir!` block whose wrapper holds `location`, a location in
+/// `text` such as `loc("-":4:5)`.
+fn mlir_block_at(text: &str, location: &str) -> Option<String> {
+    let mut parts = location.trim_end_matches(')').rsplit(':');
+    let _column = parts.next()?;
+    let line: usize = parts.next()?.parse().ok()?;
+    for l in text
+        .lines()
+        .take(line.checked_sub(1)?)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        if l.starts_with(MLIR_BLOCK_END) {
+            return None;
+        }
+        if let Some(at) = l.strip_prefix(MLIR_BLOCK_START) {
+            let (line, column) = at.split_once(' ')?;
+            return Some(format!("line {line}, column {column}"));
+        }
+    }
+    None
+}
+
 /// Emit a whole module — every function as a concatenated bare `func.func` — or `None` if *any*
 /// function is outside the current subset (module-level keep-green atomicity: a partially lowered
 /// module is never emitted, so the AST path stays the oracle for the whole program). Callees + struct
