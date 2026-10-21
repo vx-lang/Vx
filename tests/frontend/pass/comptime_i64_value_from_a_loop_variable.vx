@@ -1,0 +1,39 @@
+//===- comptime_i64_value_from_a_loop_variable.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `comptime` block that returns an `i64` folds to an `i64` constant, also when the value
+// comes from a loop variable and fits in an `i32`. The compiler used to fold `best` as the
+// `i32` 9, and the `i64` arithmetic around it was cut down to `i32` to match. It also folded
+// the `i64` tensor `t` as an `i32` tensor, so `t[1] * t[3]` printed 1410465411, not
+// 10000400003. Neither `let` names a type, so only the block's own type can give one.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-LABEL: func.func @main
+// CHECK-DAG: arith.constant 9 : i64
+// CHECK-DAG: arith.constant 100003 : i64
+// CHECK-DAG: memref.alloc() : memref<4xi64>
+
+fn main() -> i32 {
+  let best = comptime {
+    let mut b : i64 = 0i64;
+    for s in 1i64..10i64 {
+      b = s;
+    }
+    b
+  };
+  let t = comptime {
+    let mut a : Tensor<i64, [4]> = [ 0i64, 0i64, 0i64, 0i64 ];
+    let mut v : i64 = 100000i64;
+    for i in 0..4 {
+      a[i] = v;
+      v = v + 1i64;
+    }
+    a
+  };
+  print(t[1] * t[3]);
+  return (best % 256i64) as i32;
+}

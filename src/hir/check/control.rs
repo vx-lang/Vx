@@ -173,6 +173,27 @@ impl<'a> TypeChecker<'a> {
     ///
     /// Only immutable values: numbers, booleans and arrays of them. Anything else has no
     /// spelling that survives to run time on its own.
+    /// Give each untyped number in a folded value the element type of `ty`. A whole number
+    /// such as 0.0 is written `0`, which is an `i32` without a type, and in an array that
+    /// first element made the whole array an `i32` array.
+    pub(crate) fn give_numbers_the_type(value: &mut Expr, ty: &Type) {
+        let elem = match ty {
+            Type::Scalar(elem) | Type::Tensor(elem, _, _) => elem,
+            _ => return,
+        };
+        match value {
+            Expr::Number(n) => {
+                n.ty.get_or_insert_with(|| elem.clone());
+            }
+            Expr::Array(array) => {
+                for element in &mut array.elements {
+                    Self::give_numbers_the_type(element, ty);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn value_to_expr(value: &Value, span: &Span) -> Option<Expr> {
         match value {
             Value::Int(i) => Some(Expr::Number(NumberExpr {
@@ -260,11 +281,7 @@ impl<'a> TypeChecker<'a> {
                     // an untyped literal is an `i32` to the legacy code generator, which cut
                     // an `i64` like 20! down to its low 32 bits.
                     ComptimeFold::Folded(mut value) => {
-                        if let (Expr::Number(n), Type::Scalar(elem)) = (&mut *value, &ret_ty) {
-                            if n.ty.is_none() {
-                                n.ty = Some(elem.clone());
-                            }
-                        }
+                        Self::give_numbers_the_type(&mut value, &ret_ty);
                         *expr = *value
                     }
                     // It ran and produced nothing, so nothing is left to emit.

@@ -1296,8 +1296,8 @@ impl<'a> TypeChecker<'a> {
         match folded {
             Some(mut constant) => {
                 // The literal takes the function's return type. Left bare it is an `i32`.
-                if let (Expr::Number(n), Some(Type::Scalar(elem))) = (&mut constant, &ret_ty) {
-                    n.ty.get_or_insert_with(|| elem.clone());
+                if let Some(ty) = &ret_ty {
+                    Self::give_numbers_the_type(&mut constant, ty);
                 }
                 *expr = constant;
             }
