@@ -1,4 +1,5 @@
-//===- vx_stream_policy.h - What a wait does on a caller's stream -*- C++ -*-===//
+//===- vx_stream_policy.h - What a wait does on a caller's stream -*- C++
+//-*-===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
@@ -28,8 +29,7 @@ typedef enum {
   VX_WAIT_REFUSE,
 } vx_wait_action;
 
-static inline vx_wait_action vx_wait_action_for(int has_stream,
-                                                int recording) {
+static inline vx_wait_action vx_wait_action_for(int has_stream, int recording) {
   if (!has_stream) {
     return VX_WAIT_DEVICE;
   }
@@ -42,21 +42,22 @@ typedef enum {
   VX_FREE_AFTER_DEVICE_WAIT,
   /* Wait for the caller's stream, then `cudaFree`. */
   VX_FREE_AFTER_STREAM_WAIT,
-  /* `cudaFreeAsync` on the stream, with no wait. */
+  /* `cudaFreeAsync` on the stream the memory came from, with no wait. */
   VX_FREE_ON_STREAM,
   /* The stream records a graph, and the memory needs a wait first. */
   VX_FREE_REFUSE,
 } vx_free_action;
 
 /* `on_stream` says whether the memory came from `cudaMallocAsync` on a
-   caller's stream. Only that memory is freed in stream order. */
+   caller's stream. That memory is freed in order on that stream, also when the
+   caller has set no stream since. */
 static inline vx_free_action vx_free_action_for(int has_stream, int recording,
                                                 int on_stream) {
-  if (!has_stream) {
-    return VX_FREE_AFTER_DEVICE_WAIT;
-  }
   if (on_stream) {
     return VX_FREE_ON_STREAM;
+  }
+  if (!has_stream) {
+    return VX_FREE_AFTER_DEVICE_WAIT;
   }
   return recording ? VX_FREE_REFUSE : VX_FREE_AFTER_STREAM_WAIT;
 }

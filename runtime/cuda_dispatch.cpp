@@ -66,7 +66,6 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include <cublas_v2.h>
@@ -193,12 +192,12 @@ static bool sync_each_launch() {
    `vx_cuda_set_stream` (#1986), or null for the legacy default stream. */
 static thread_local cudaStream_t caller_stream = nullptr;
 /* The last kernel this thread started on `caller_stream`. */
-static thread_local std::string last_on_stream;
+static thread_local const char *last_on_stream = nullptr;
 
 /* Device memory that `cudaMallocAsync` gave on a caller's stream. Only this
    memory may be freed in stream order. */
 static std::mutex on_stream_mutex;
-static std::unordered_set<void *> on_stream;
+static std::unordered_map<void *, cudaStream_t> on_stream;
 
 /// Whether the caller's stream records a CUDA graph now.
 static bool recording() {
@@ -206,23 +205,29 @@ static bool recording() {
     return false;
   }
   cudaStreamCaptureStatus status = cudaStreamCaptureStatusNone;
-  if (cudaStreamIsCapturing(caller_stream, &status) != cudaSuccess) {
-    cudaGetLastError();
-    return false;
+  const cudaError_t err = cudaStreamIsCapturing(caller_stream, &status);
+  if (err != cudaSuccess) {
+    fprintf(stderr,
+            "[Vx CUDA] FATAL: Vx could not ask whether the stream from "
+            "vx_cuda_set_stream records a CUDA graph: %s.\n",
+            cudaGetErrorString(err));
+    abort();
   }
   return status != cudaStreamCaptureStatusNone;
 }
 
 /// Stops the program: `what` cannot go into the CUDA graph that the caller's
-/// stream records.
-[[noreturn]] static void refuse_in_recording(const char *what) {
+/// stream records. `fix` says what to do instead.
+[[noreturn]] static void
+refuse_in_recording(const char *what,
+                    const char *fix = "Give the function only tensors in "
+                                      "device memory, and read its results "
+                                      "after the recording ends.") {
   fprintf(stderr,
           "[Vx CUDA] FATAL: %s, while the stream from vx_cuda_set_stream "
           "records a CUDA graph.\n"
-          "          A graph cannot hold this. Give the function only tensors "
-          "in device memory,\n"
-          "          and read its results after the recording ends.\n",
-          what);
+          "          A graph cannot hold this. %s\n",
+          what, fix);
   abort();
 }
 
@@ -274,7 +279,7 @@ static void wait_for_kernels(const char *why) {
             "          The last kernel started there is %s. Set "
             "VX_CUDA_SYNC=1 to name the kernel that faulted.\n",
             cudaGetErrorString(err),
-            last_on_stream.empty() ? "unknown" : last_on_stream.c_str());
+            last_on_stream ? last_on_stream : "unknown");
     abort();
   }
 }
@@ -285,7 +290,8 @@ static void started_kernel(const char *name) {
   cudaGetDevice(&device);
   if (sync_each_launch()) {
     if (recording()) {
-      refuse_in_recording("VX_CUDA_SYNC=1 waits after each launch");
+      refuse_in_recording("VX_CUDA_SYNC=1 waits after each launch",
+                          "Unset VX_CUDA_SYNC for a recording.");
     }
     const cudaError_t err = caller_stream ? cudaStreamSynchronize(caller_stream)
                                           : cudaDeviceSynchronize();
@@ -315,21 +321,27 @@ static cudaError_t device_alloc(void **ptr, size_t bytes) {
   const cudaError_t err = cudaMallocAsync(ptr, bytes, caller_stream);
   if (err == cudaSuccess) {
     std::lock_guard<std::mutex> lock(on_stream_mutex);
-    on_stream.insert(*ptr);
+    on_stream[*ptr] = caller_stream;
   }
   return err;
 }
 
 /// Frees device memory, by the rules of `vx_free_action_for`.
 static void device_free(void *ptr) {
+  cudaStream_t from = nullptr;
   bool mine = false;
-  if (caller_stream) {
+  {
     std::lock_guard<std::mutex> lock(on_stream_mutex);
-    mine = on_stream.erase(ptr) != 0;
+    auto found = on_stream.find(ptr);
+    if (found != on_stream.end()) {
+      from = found->second;
+      mine = true;
+      on_stream.erase(found);
+    }
   }
   switch (vx_free_action_for(caller_stream != nullptr, recording(), mine)) {
   case VX_FREE_ON_STREAM:
-    cudaFreeAsync(ptr, caller_stream);
+    cudaFreeAsync(ptr, from);
     return;
   case VX_FREE_REFUSE:
     refuse_in_recording("Vx freed device memory that needs a wait first");
@@ -495,8 +507,18 @@ cublasHandle_t cublas_handle() {
     return it->second;
   }
 
+  if (recording()) {
+    refuse_in_recording("The first GEMM on this GPU created a cuBLAS handle",
+                        "Call the function once before the recording.");
+  }
   cublasHandle_t h = nullptr;
   VX_CUBLAS_CHECK(cublasCreate(&h));
+  /* A workspace of its own, so that a GEMM in a CUDA graph recording does not
+     allocate one. 32 MiB is what the cuBLAS documentation gives for Hopper. */
+  void *workspace = nullptr;
+  const size_t workspace_bytes = (size_t)32 << 20;
+  VX_CUDA_CHECK(cudaMalloc(&workspace, workspace_bytes));
+  VX_CUBLAS_CHECK(cublasSetWorkspace(h, workspace, workspace_bytes));
   /* TF32, opt-in (VX_TF32=1): f32 GEMMs keep f32 storage and f32 accumulation
      but the tensor-core mma truncates input mantissas to 10 bits -- roughly
      8x the FP32 CUDA-core rate at ~3 decimal digits of input precision. An
@@ -795,7 +817,8 @@ bool run_gemm(const vx_gemm_plan &plan) {
      wall includes staging and the JIT. */
   const bool time_kernel = getenv("VX_TIME_KERNEL") != nullptr;
   if (time_kernel && recording()) {
-    refuse_in_recording("VX_TIME_KERNEL waits for each kernel");
+    refuse_in_recording("VX_TIME_KERNEL waits for each kernel",
+                        "Unset VX_TIME_KERNEL for a recording.");
   }
   cudaEvent_t t0 = nullptr, t1 = nullptr;
   if (time_kernel) {
@@ -1073,6 +1096,12 @@ bool run_device_image(const void *payload, size_t payload_size,
     fn = found->second.fn;
     declared = found->second.params;
   } else {
+    if (recording()) {
+      char what[256];
+      snprintf(what, sizeof what,
+               "The first call of %s loaded its kernel image", kernel_name);
+      refuse_in_recording(what, "Call the function once before the recording.");
+    }
     /* The driver API needs a current context. The runtime API creates the
        primary one lazily, and this is the idiom that forces it: without it
        cuModuleLoadData returns CUDA_ERROR_INVALID_CONTEXT on a dispatch that
@@ -1228,7 +1257,8 @@ bool run_device_image(const void *payload, size_t payload_size,
      to everything the host does between enqueue and sync. */
   const bool time_kernel = getenv("VX_TIME_KERNEL") != nullptr;
   if (time_kernel && recording()) {
-    refuse_in_recording("VX_TIME_KERNEL waits for each kernel");
+    refuse_in_recording("VX_TIME_KERNEL waits for each kernel",
+                        "Unset VX_TIME_KERNEL for a recording.");
   }
   cudaEvent_t t0 = nullptr, t1 = nullptr;
   if (time_kernel) {
@@ -1524,6 +1554,9 @@ void vx_plugin_release_future(uint64_t future_id) { (void)future_id; }
 void vx_cuda_set_stream(void *stream) {
   caller_stream = static_cast<cudaStream_t>(stream);
 }
+
+/// The stream that `vx_cuda_set_stream` set on the calling thread, or null.
+void *vx_cuda_get_stream(void) { return caller_stream; }
 
 int32_t vx_plugin_control(uint32_t opcode, void *payload) {
   switch (opcode) {
