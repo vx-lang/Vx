@@ -86,6 +86,7 @@ Memory SMEM {
 Topology Device {
   // spec: NVIDIA Blackwell GB100; LLVM's NVPTX target.
   arch: nvptx64,
+  chip: sm_100a,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM],
   // spec: NVIDIA RTX Blackwell PRO GPU Architecture whitepaper v1.0, "Blackwell 5th

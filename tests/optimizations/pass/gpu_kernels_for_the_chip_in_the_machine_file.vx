@@ -1,0 +1,29 @@
+//===- gpu_kernels_for_the_chip_in_the_machine_file.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The `chip:` in the machine file sets the GPU that the kernel is compiled for. The H100 file gives
+// `sm_90a`, which needs PTX 8.0. The A100 file gives `sm_80` and PTX 7.6.
+//
+// REQUIRES: flat-codegen
+// RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=H100
+// RUN: env -u VX_GPU_CHIP vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=H100
+// RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=A100
+// H100: image={{.*}}.version 8.0{{.*}}.target sm_90a{{.*}}.entry vx_npu_kernel_0(
+// A100: image={{.*}}.version 7.6{{.*}}.target sm_80{{.*}}.entry vx_npu_kernel_0(
+
+fn main() -> i32 {
+  let h = Tensor<f32, [4]>::fill(2.0);
+  let mut d = transfer(h, Memory::HBM);
+  spawn on(Topology::Device) {
+    for i in 0..4 {
+      d[i] = 3.0;
+    }
+  }
+  let back = transfer(d, Memory::CPU_DRAM);
+  print(back[0]);
+  return 0;
+}

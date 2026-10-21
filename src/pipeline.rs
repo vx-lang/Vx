@@ -103,7 +103,7 @@ struct Frontend {
     subspaces: Vec<crate::codegen::flat::SubspaceInfo>,
     /// Same travel pattern as `subspaces`: the declared-arch table for `vx.spawn` stamping
     /// (Vx#352), extracted from the env because the env cannot leave the frontend.
-    topo_archs: Vec<(i64, String)>,
+    topo_archs: Vec<(i64, crate::codegen::flat::DeclaredArch)>,
     /// Same again: `arch::local_device_aliases`, for the `vx.local_devices` module attribute.
     local_devices: Vec<(i32, i32)>,
     checks: Vec<FunctionCheck>,
@@ -1933,7 +1933,7 @@ fn codegen_mlir_phase(
     parsed_modules: &[VxModule],
     check_results: &mut [FunctionCheck],
     subspaces: &[crate::codegen::flat::SubspaceInfo],
-    topo_archs: &[(i64, String)],
+    topo_archs: &[(i64, crate::codegen::flat::DeclaredArch)],
     local_devices: &[(i32, i32)],
     global_session: &std::sync::Arc<GlobalSession>,
     merged_arenas: MergedArenas,

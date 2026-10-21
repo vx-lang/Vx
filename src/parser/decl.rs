@@ -301,6 +301,7 @@ impl<'a> Parser<'a> {
         let mut visible_given = false;
         let mut transfers: Vec<crate::arch::TransferEdge> = Vec::new();
         let mut dtypes: Option<Vec<crate::syntax::ElementType>> = None;
+        let mut chip: Option<crate::symbol::Symbol> = None;
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             // `transfer Memory::<From> -> Memory::<To> : <cost> [relaxed|sync]` -- a declared
@@ -431,6 +432,19 @@ impl<'a> Parser<'a> {
                     }
                     dtypes = Some(listed);
                 }
+                "chip" => {
+                    chip = Some(match &self.advance().kind {
+                        TokenType::Identifier(s) if s.starts_with("sm_") => {
+                            crate::symbol::Symbol::from(&**s)
+                        }
+                        other => {
+                            return Err(self.error(&format!(
+                                "`chip:` expects a GPU generation such as sm_90a, got {:?}",
+                                other
+                            )))
+                        }
+                    });
+                }
                 other => return Err(self.error(&format!("Unknown topology field '{}'", other))),
             }
             self.match_token(&TokenType::Comma);
@@ -444,6 +458,9 @@ impl<'a> Parser<'a> {
             Some(s) => s,
             None => return Err(self.error("topology declaration needs a `memory:` field")),
         };
+        if chip.is_some() && arch.as_ref().map(|a| a.as_ref()) != Some("nvptx64") {
+            return Err(self.error("`chip:` names an NVIDIA GPU, so it needs `arch: nvptx64`"));
+        }
         // With no explicit `visible`, a topology sees exactly its own default space. An
         // explicit `visible` list is respected verbatim, so an inconsistent one (default
         // not listed) is caught by the coherence check (E6005) rather than silently fixed.
@@ -461,6 +478,7 @@ impl<'a> Parser<'a> {
                 visibility,
                 transfers,
                 dtypes,
+                chip,
             },
         })
     }

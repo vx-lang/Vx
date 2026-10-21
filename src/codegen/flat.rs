@@ -912,7 +912,7 @@ pub struct EmitCtx {
     /// band -- which a custom topology can never enter (declared ids start at 3000 by
     /// construction, and the GPU band is [500, 600)). Built-in topologies are not in this map and
     /// keep riding the band.
-    pub topo_archs: HashMap<i64, String>,
+    pub topo_archs: HashMap<i64, DeclaredArch>,
     /// The program's `const` tables as (global name, memref type), in the registry's order, which
     /// is what a `ConstTable` instruction's `imm` counts in.
     pub const_tables: Vec<(String, String)>,
@@ -999,12 +999,19 @@ pub fn local_devices_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i32, i32)>
     crate::arch::local_device_aliases(env.topologies.values().map(|d| (&d.name, &d.descriptor)))
 }
 
+/// A declared topology's `arch:`, and its `chip:` when it gives one.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DeclaredArch {
+    pub arch: String,
+    pub chip: Option<String>,
+}
+
 /// The declared-arch table for `EmitCtx::topo_archs`, from the per-compilation env: one entry per
 /// user-declared topology that states an `arch:`. A topology that declines to declare one gets no
 /// entry, no `arch` attribute, and therefore no device compilation -- refusing to guess is the
 /// same policy `fleet/m4-uma.vx` documents for its own arch field.
-pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, String)> {
-    let mut out: Vec<(i64, String)> = env
+pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, DeclaredArch)> {
+    let mut out: Vec<(i64, DeclaredArch)> = env
         .topologies
         .values()
         .filter_map(|decl| {
@@ -1012,7 +1019,15 @@ pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, String)>
             let id = crate::arch::topology_dispatch_id(&crate::syntax::Topology::Custom(
                 decl.name.clone(),
             ));
-            Some((id as i64, arch.as_ref().to_string()))
+            let declared = DeclaredArch {
+                arch: arch.as_ref().to_string(),
+                chip: decl
+                    .descriptor
+                    .chip
+                    .as_ref()
+                    .map(|c| c.as_ref().to_string()),
+            };
+            Some((id as i64, declared))
         })
         .collect();
     // Sorted, because `env.topologies` is a HashMap and iteration order would otherwise decide
@@ -1200,7 +1215,7 @@ pub fn emit_module_mlir(
     agg_layouts: &[(TypeId, Vec<u64>, Vec<String>)],
     alias_tables: &[&[(usize, usize, Vec<usize>)]],
     subspaces: &[SubspaceInfo],
-    topo_archs: &[(i64, String)],
+    topo_archs: &[(i64, DeclaredArch)],
     local_devices: &[(i32, i32)],
     sched: crate::config::Schedule,
 ) -> Lowered<String> {

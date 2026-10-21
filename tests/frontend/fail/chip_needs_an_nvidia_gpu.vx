@@ -1,0 +1,44 @@
+//===- chip_needs_an_nvidia_gpu.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `chip:` names an NVIDIA GPU generation, such as `sm_90a`. A topology that does not run
+// `nvptx64` code cannot have one, and a chip name must start with `sm_`.
+//
+// RUN: split-file %s %t
+// RUN: not vxc %t/cpu.vx 2>&1 | FileCheck %s --check-prefix=CPU
+// RUN: not vxc %t/name.vx 2>&1 | FileCheck %s --check-prefix=NAME
+// CPU: `chip:` names an NVIDIA GPU, so it needs `arch: nvptx64`
+// NAME: `chip:` expects a GPU generation such as sm_90a, got Identifier("hopper")
+
+//--- cpu.vx
+Memory CPU_DRAM {}
+
+Topology Cpu {
+  arch: x86_64,
+  chip: sm_90a,
+  memory: Memory::CPU_DRAM
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+//--- name.vx
+Memory CPU_DRAM {}
+Memory HBM {
+  within: Memory::CPU_DRAM, capacity: 8 GiB
+}
+
+Topology Dev {
+  arch: nvptx64,
+  chip: hopper,
+  memory: Memory::HBM
+}
+
+fn main() -> i32 {
+  return 0;
+}
