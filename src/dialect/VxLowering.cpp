@@ -23,6 +23,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -1469,6 +1470,21 @@ static void fillToDeviceLoops(linalg::FillOp fill) {
   OpBuilder b(fill);
   Location loc = fill.getLoc();
   Value value = fill.getInputs()[0];
+  // A register tensor takes only constant indexes, so its fill is one store
+  // for each element.
+  auto alloca = buffer.getDefiningOp<memref::AllocaOp>();
+  if (alloca && alloca->hasAttr("vx.registers") && type.hasStaticShape()) {
+    SmallVector<int64_t> strides = computeSuffixProduct(type.getShape());
+    for (int64_t flat = 0; flat < type.getNumElements(); ++flat) {
+      SmallVector<Value> at;
+      for (int64_t d = 0; d < type.getRank(); ++d)
+        at.push_back(b.create<arith::ConstantIndexOp>(
+            loc, (flat / strides[d]) % type.getDimSize(d)));
+      b.create<memref::StoreOp>(loc, value, buffer, at);
+    }
+    fill.erase();
+    return;
+  }
   SmallVector<Value> lower, upper, step;
   for (int64_t d = 0; d < type.getRank(); ++d) {
     lower.push_back(b.create<arith::ConstantIndexOp>(loc, 0));
@@ -2878,8 +2894,16 @@ struct ConvertVxToStandardPass
           if (a->getBlock() != &entry && a->getNumOperands() == 0)
             late.push_back(a);
         });
-        for (memref::AllocaOp a : late)
-          a->moveBefore(&entry, entry.begin());
+        // In declaration order, so that the shared tensors among them are
+        // laid out in that order.
+        Operation *previous = nullptr;
+        for (memref::AllocaOp a : late) {
+          if (previous)
+            a->moveAfter(previous);
+          else
+            a->moveBefore(&entry, entry.begin());
+          previous = a;
+        }
       }
 
       {
