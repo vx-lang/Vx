@@ -113,9 +113,14 @@ channel. A `send` waits for the flag `taken k`, writes its value, and sets `full
 for `full k`, reads the value, and sets `taken (k + n)`, for a channel with room for `n` values.
 By `Counter.tickets`, each flag has one writer. So `send_hb_recv` shows that a `send` happens
 before the `recv` that gets its value. `recv_hb_send_capacity` shows that the `recv` with the
-number `k` happens before the `send` with the number `k + n` ends. `ChanProg.drf_sc` follows from
-`TaskProg.drf_sc`. `ChannelExample.lean` builds a run where the main code sends 7 and a task
-receives it, and `check` finds that the model allows it with no data race.
+number `k` happens before the `send` with the number `k + n` ends. A drop of a sender adds 1 to a
+third counter. A `recv` waits in a loop that reads this counter, then `full k`. It gets no value
+when all senders dropped and `full k` is not set. `drop_hb_closed` shows that each drop happens
+before each read that sees all the drops. `Counter.hb_of_lt` gives this edge: a `fetchAdd` happens
+before each `sc` read of a larger value. `ChanProg.drf_sc` follows from `TaskProg.drf_sc`.
+`ChannelExample.lean` builds a run where the main code sends 7 and drops its sender, and a task
+makes two `recv`s. The first gets 7, and the second finds the channel closed. `check` finds that
+the model allows this run with no data race.
 
 The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
 `run_lean.py` checks that Lean and `vx.cat` agree on the 13 tests without scopes and barriers:
@@ -180,5 +185,8 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   it.
 - `Consistent` does not ask that `co` orders the writes to each place. A theorem that needs it
   takes `CoOrder` as a hypothesis.
-- A channel carries at most `msgs` values in a run, and a channel cannot close yet. The edge from
-  a `Sender` drop to a `recv` that sees the channel closed comes later.
+- A channel carries at most `msgs` values in a run. Its number of senders is fixed, so a sender
+  cannot be cloned yet.
+- `drop_hb_closed` speaks of the reads of the counter of drops. That a `recv` returns no value
+  only after such a read, and that it then loses no value, follows from its code. No theorem shows
+  it yet.

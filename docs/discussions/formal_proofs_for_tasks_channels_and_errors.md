@@ -89,9 +89,10 @@ The theorems:
   sequence gives it.
 - `ChanProg.drf_sc`.
 
-`Channel.lean` has `send_hb_recv`, `recv_hb_send_capacity` and `ChanProg.drf_sc`. A channel cannot
-close yet, so `drop_hb_closed` comes in a later PR. Each channel carries at most `msgs` values in a
-run, so the number of places stays finite.
+`Channel.lean` has the four theorems. A drop adds 1 to a third counter of the channel, and a
+`recv` on a closed channel gets no value. Each channel carries at most `msgs` values in a run, so
+the number of places stays finite. The number of senders of a channel is fixed, so a `Sender`
+cannot be cloned yet.
 
 ### Step 3: `Mutex`, by lowering (`Mutex.lean`)
 

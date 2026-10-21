@@ -1,6 +1,7 @@
 import VxMemoryModel.Rc11
 import VxMemoryModel.Finite
 import VxMemoryModel.Program
+import VxMemoryModel.Language
 
 /-!
 # Counters
@@ -8,7 +9,9 @@ import VxMemoryModel.Program
 A counter is a place that one write sets at the start, and that each other write increments by a
 `fetchAdd` of 1. A channel gives each `send` a number from such a counter. `tickets` shows that
 two `fetchAdd`s never read the same value, so each `send` gets its own number. The first write
-need not happen before the others: `init_first` shows that it comes first in `co` anyway.
+need not happen before the others: `init_first` shows that it comes first in `co` anyway. When
+the accesses are `sc`, `hb_of_lt` shows that a `fetchAdd` happens before each read of a larger
+value.
 
 This needs the rule of RC11 that `co` orders the writes to each place (`CoOrder`). Without it,
 two read-modify-writes can read from the same write.
@@ -166,5 +169,42 @@ theorem Counter.tickets (wf : X.WellFormed) (hc : X.Consistent) (ho : X.CoOrder)
     omega
   · have := hC.mono wf hc ho hfin s2 s1 hsw2 hsw1 hx2 hx1 h
     omega
+
+/-- On a counter with `sc` accesses, a `fetchAdd` happens before each read of a larger value. The
+read gets its value from a `fetchAdd` that read one less, and so on down to the first one. -/
+theorem Counter.hb_of_lt (wf : X.WellFormed) (hc : X.Consistent) (ho : X.CoOrder)
+    (hfin : X.Finite) {val : X.E → Int} {x : Nat} (hC : X.Counter val x)
+    (hsc : ∀ e, X.loc e = x → X.kind e ≠ .fence → X.IsSeqCst e) {r w : X.E} (hrw : X.rmw r w)
+    (hwx : X.loc w = x) : ∀ e, X.IsRead e → X.loc e = x → val r < val e → X.hb r e := by
+  obtain ⟨-, hvw⟩ := hC.add r w hrw hwx
+  have hww := (wf.rmw_atomic r w hrw).2.1
+  have key : ∀ n e, (val e - val r).toNat ≤ n → X.IsRead e → X.loc e = x → val r < val e →
+      X.hb r e := by
+    intro n
+    induction n with
+    | zero => intro e hn _ _ hlt; omega
+    | succ n ih =>
+      intro e hn he hex hlt
+      obtain ⟨s, hs⟩ := hC.rf_source e he
+      obtain ⟨hsw, -, hsl⟩ := wf.rf_write_read s e hs
+      have hsx : X.loc s = x := hsl.trans hex
+      have hvs := hC.rf_val s e hs
+      have sig : ∀ a, a = s ∨ X.po a s → X.hb a e := fun a ha =>
+        X.hb_of_signal ha hsw (hsc s hsx (by rw [hsw]; nofun)) hs (hsc e hex (by rw [he]; nofun))
+          (Or.inl rfl)
+      by_cases hws : w = s
+      · subst hws
+        exact sig r (Or.inr (wf.rmw_po r w hrw))
+      rcases ho.total w s hww hsw (hwx.trans hsx.symm) hws with h | h
+      · by_cases hbi : ∃ r', X.rmw r' s
+        · obtain ⟨r', hr's⟩ := hbi
+          obtain ⟨hr'x, hvs'⟩ := hC.add r' s hr's hsx
+          have hm := hC.mono wf hc ho hfin w s hww hsw hwx hsx h
+          have := ih r' (by omega) (wf.rmw_atomic r' s hr's).1 hr'x (by omega)
+          exact this.trans (sig r' (Or.inr (wf.rmw_po r' s hr's)))
+        · exact (hC.init_first wf hc ho hfin hsw hsx (fun r h => hbi ⟨r, h⟩) w h).elim
+      · have := hC.mono wf hc ho hfin s w hsw hww hsx hwx h
+        omega
+  exact fun e => key _ e (Nat.le_refl _)
 
 end Vx.Execution

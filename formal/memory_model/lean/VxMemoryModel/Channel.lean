@@ -4,20 +4,25 @@ import VxMemoryModel.Tasks
 /-!
 # Channels
 
-A program with channels, as `channel<T>(n)` of Vx gives them. `send` and `recv` lower to `sc`
-atomics on places that the program code cannot use, as `spawn` and `join` do in `Tasks.lean`. So
-`Prog.drf_sc` covers a program with channels, with no new proof.
+A program with channels, as `channel<T>(n)` of Vx gives them. `send`, `recv` and the drop of a
+sender lower to `sc` atomics on places that the program code cannot use, as `spawn` and `join` do
+in `Tasks.lean`. So `Prog.drf_sc` covers a program with channels, with no new proof.
 
-Each channel has two counters. A `send` takes its number `k` from the first counter with a
+Each channel has three counters. A `send` takes its number `k` from the first counter with a
 `fetchAdd`. It waits for the flag `taken k`, writes its value to element `k` of the values, and
 sets the flag `full k`. A `recv` takes its number `k` from the second counter. It waits for
 `full k`, reads element `k` of the values, and sets `taken (k + n)`, where `n` is the room of the
-channel. At the start, thread 0 sets both counters and the flags `taken 0` to `taken (n - 1)`.
+channel. At the start, thread 0 sets the counters and the flags `taken 0` to `taken (n - 1)`.
 So each `send` waits for a `recv` `n` places before it.
 
+The third counter counts the senders that dropped. Each drop adds 1 to it with a `fetchAdd`. When
+it reaches `senders c`, the channel `c` is closed. So a `recv` waits in a loop: it reads the counter
+of drops, then `full k`. It stops when `full k` is set, or when the counter of drops showed that
+the channel is closed. In the second case it gets no value. It sets `taken (k + n)` in both cases.
+
 `Counter.tickets` shows that no two `send`s get the same number, and no two `recv`s. So each flag
-has one writer. Then `send_hb_recv` and `recv_hb_send_capacity` give the edges of M4 in
-`docs/discussions/waiting_tasks_channels_and_task_errors.md`.
+has one writer. Then `send_hb_recv`, `recv_hb_send_capacity` and `drop_hb_closed` give the edges
+of M4 in `docs/discussions/waiting_tasks_channels_and_task_errors.md`.
 
 Each channel can carry `msgs` values in a run. A `send` or a `recv` with the number `msgs` or more
 stops its thread, as a failed bounds check does. This keeps the number of places finite. The
@@ -26,13 +31,16 @@ theorems need `CoOrder` (see `Counter.lean`).
 
 namespace Vx
 
-/-- The code of a program with channels: the code of `Tasks.lean`, with `send` and `recv`. -/
+/-- The code of a program with channels: the code of `Tasks.lean`, with `send`, `recv` and `drop`. -/
 inductive CStmt where
   | base (s : Stmt)
   /-- Send the value of `e` on the channel `c`. -/
   | send (c : Nat) (e : Expr)
-  /-- Take the next value of the channel `c` into the register `r`. -/
-  | recv (r c : Nat)
+  /-- Take the next value of the channel `c` into the register `r`, and set the register `s` to 1.
+  If the channel is closed and has no value for this `recv`, set `s` to 0. -/
+  | recv (r s c : Nat)
+  /-- Drop a sender of the channel `c`. -/
+  | drop (c : Nat)
   | seq (s t : CStmt)
   | ite (c : Expr) (s t : CStmt)
   | loop (c : Expr) (s : CStmt)
@@ -42,7 +50,7 @@ inductive CStmt where
 /-- `s` holds the code `b` of `Tasks.lean`. -/
 def CStmt.Bases : CStmt → Stmt → Prop
   | .base s, b => s = b
-  | .send .., _ | .recv .., _ => False
+  | .send .., _ | .recv .., _ | .drop _, _ => False
   | .seq s t, b | .ite _ s t, b => s.Bases b ∨ t.Bases b
   | .loop _ s, b | .tasksBlock s, b => s.Bases b
 
@@ -57,6 +65,24 @@ def Op.other : Op → Op
   | .send => .recv
   | .recv => .send
 
+/-- The three counters of a channel: one for each operation, and one for the drops of senders. -/
+inductive Ctr where
+  | op (o : Op)
+  | drop
+  deriving DecidableEq
+
+/-- Where the counter is, in the places of its channel. -/
+def Ctr.idx : Ctr → Nat
+  | .op .send => 0
+  | .op .recv => 1
+  | .drop => 2
+
+theorem Ctr.idx_lt (q : Ctr) : q.idx < 3 := by
+  rcases q with ⟨_ | _⟩ | _ <;> simp [Ctr.idx]
+
+theorem Ctr.idx_inj {q q' : Ctr} (h : q.idx = q'.idx) : q = q' := by
+  rcases q with ⟨_ | _⟩ | _ <;> rcases q' with ⟨_ | _⟩ | _ <;> simp_all [Ctr.idx]
+
 structure ChanProg where
   main : CStmt
   /-- The code of task `t`. -/
@@ -70,9 +96,12 @@ structure ChanProg where
   chans : Nat
   /-- The room of each channel. -/
   cap : Nat → Nat
+  /-- The number of senders of each channel. The channel closes when all of them dropped. -/
+  senders : Nat → Nat
   /-- Each channel carries at most `msgs` values in a run. -/
   msgs : Nat
-  /-- The register that holds the number of a `send` or a `recv`. -/
+  /-- The register that holds the number of a `send` or a `recv`. The two registers after it hold
+  what a `recv` read while it waits. -/
   tmp : Nat
 
 namespace ChanProg
@@ -80,23 +109,27 @@ namespace ChanProg
 variable (P : ChanProg)
 
 /-- The number of places of one channel. -/
-def size : Nat := 2 + 4 * P.msgs
+def size : Nat := 3 + 4 * P.msgs
 
 /-- The first place of the channel `c`. -/
 def chan (c : Nat) : Nat := P.places + c * P.size
 
+/-- The counter `q` of the channel `c`. -/
+def cnt (q : Ctr) (c : Nat) : Nat := P.chan c + q.idx
+
 /-- The counter that numbers the operations `o` of the channel `c`. -/
-def ctr : Op → Nat → Nat
-  | .send, c => P.chan c
-  | .recv, c => P.chan c + 1
+abbrev ctr (o : Op) (c : Nat) : Nat := P.cnt (.op o) c
+
+/-- The counter of the senders of the channel `c` that dropped. -/
+abbrev drp (c : Nat) : Nat := P.cnt .drop c
 
 /-- The values: element `k` holds the value of the `send` with the number `k`. -/
-def data (c : Nat) : Nat := P.chan c + 2 + P.msgs
+def data (c : Nat) : Nat := P.chan c + 3 + P.msgs
 
 /-- The flags that the operation `o` sets: `full` for a `send`, `taken` for a `recv`. -/
 def sig : Op → Nat → Nat
-  | .send, c => P.chan c + 2
-  | .recv, c => P.chan c + 2 + 2 * P.msgs
+  | .send, c => P.chan c + 3
+  | .recv, c => P.chan c + 3 + 2 * P.msgs
 
 /-- The number of flags of each kind. -/
 def sigLen : Op → Nat
@@ -120,11 +153,47 @@ abbrev rest (o : Op) (c : Nat) (d : Stmt) : Stmt :=
 abbrev opCode (o : Op) (c : Nat) (d : Stmt) : Stmt :=
   .seq (.fetchAdd P.tmp (P.ctr o c) (.const 1) .sc) (P.rest o c d)
 
-/-- Replace `send` and `recv` with their code. -/
+/-- The register where a `recv` keeps the counter of drops that it read. -/
+abbrev dropsReg : Nat := P.tmp + 1
+
+/-- The register where a `recv` keeps the flag `full k` that it read. -/
+abbrev fullReg : Nat := P.tmp + 2
+
+abbrev loadFull (c : Nat) : Stmt :=
+  .loadAt P.fullReg (P.sig .send c) P.msgs (.reg P.tmp) .sc
+
+/-- One pass of the wait of a `recv`: read the counter of drops, then the flag `full k`. If the
+channel was closed at the first read, a `send` with the number `k` set `full k` before it. -/
+abbrev poll (c : Nat) : Stmt := .seq (.load P.dropsReg (P.drp c) .sc) (P.loadFull c)
+
+/-- Wait again while `full k` is not set and the channel is not closed. -/
+abbrev again (c : Nat) : Expr :=
+  .eq (.sub (.eq (.reg P.fullReg) (.const 0)) (.eq (.reg P.dropsReg) (.const (P.senders c))))
+    (.const 1)
+
+abbrev polls (c : Nat) : Stmt := .loop (P.again c) (P.poll c)
+
+/-- After the wait: read the value if `full k` is set. Else the channel is closed. -/
+abbrev result (c r s : Nat) : Stmt :=
+  .ite (.reg P.fullReg) (.seq (.loadAt r (P.data c) P.msgs (.reg P.tmp) .plain) (.assign s (.const 1)))
+    (.assign s (.const 0))
+
+abbrev recvEnd (c r s : Nat) : Stmt := .seq (P.result c r s) (P.fin .recv c)
+
+/-- A `recv` after it took its number. It makes one pass of the wait before it tests `again`. -/
+abbrev recvRest (c r s : Nat) : Stmt := .seq (.seq (P.poll c) (P.polls c)) (P.recvEnd c r s)
+
+abbrev recvCode (c r s : Nat) : Stmt :=
+  .seq (.fetchAdd P.tmp (P.ctr .recv c) (.const 1) .sc) (P.recvRest c r s)
+
+abbrev dropCode (c : Nat) : Stmt := .fetchAdd P.tmp (P.drp c) (.const 1) .sc
+
+/-- Replace `send`, `recv` and `drop` with their code. -/
 def lowerC : CStmt → Stmt
   | .base s => s
   | .send c e => P.opCode .send c (.storeAt (P.data c) P.msgs (.reg P.tmp) e .plain)
-  | .recv r c => P.opCode .recv c (.loadAt r (P.data c) P.msgs (.reg P.tmp) .plain)
+  | .recv r s c => P.recvCode c r s
+  | .drop c => P.dropCode c
   | .seq s t => .seq (lowerC s) (lowerC t)
   | .ite e s t => .ite e (lowerC s) (lowerC t)
   | .loop e s => .loop e (lowerC s)
@@ -135,13 +204,15 @@ def stores : List (Nat × Int) → Stmt
   | [] => .skip
   | (x, v) :: ps => .seq (.store x (.const v) .sc) (stores ps)
 
-/-- The counters: the `send` counter of each channel, and then its `recv` counter. -/
-def ctrPlace (i : Nat) : Nat := P.chan (i / 2) + i % 2
+/-- The counters: the three counters of channel 0, then of channel 1, and so on. -/
+def ctrPlace (i : Nat) : Nat := P.chan (i / 3) + i % 3
 
-/-- The writes at the start of thread 0: each counter, and the first `cap c` flags `taken` of each
-channel `c`. -/
+/-- The writes at the start of thread 0: 0 to each counter and each flag `full`, and 1 to the first
+`cap c` flags `taken` of each channel `c`. A `recv` on a closed channel reads `full k` while it is
+0, so that write must exist. -/
 def initList : List (Nat × Int) :=
-  (List.range (2 * P.chans)).map (fun i => (P.ctrPlace i, 0)) ++
+  (List.range (3 * P.chans)).map (fun i => (P.ctrPlace i, 0)) ++
+    ((List.range P.chans).flatMap fun c => (List.range P.msgs).map fun j => (P.sig .send c + j, 0)) ++
     (List.range P.chans).flatMap fun c => (List.range (P.cap c)).map fun j => (P.sig .recv c + j, 1)
 
 def toTaskProg : TaskProg where
@@ -149,14 +220,14 @@ def toTaskProg : TaskProg where
   task t := P.lowerC (P.task t)
   count := P.count
   flags := P.places + P.chans * P.size
-  marks := P.tmp + 1
+  marks := P.tmp + 3
 
 /-- The rules for the code of the program: it uses the places below `places`, its channels exist,
 and a `recv` does not write the register `tmp`. -/
 def StmtOk : CStmt → Prop
   | .base s => s.Below P.places P.count
-  | .send c _ => c < P.chans
-  | .recv r c => c < P.chans ∧ r ≠ P.tmp
+  | .send c _ | .drop c => c < P.chans
+  | .recv r s c => c < P.chans ∧ r ≠ P.tmp ∧ s ≠ P.tmp
   | .seq s t | .ite _ s t => StmtOk s ∧ StmtOk t
   | .loop _ s | .tasksBlock s => StmtOk s
 
@@ -169,7 +240,7 @@ structure Ok : Prop where
 
 variable {P}
 
-theorem size_eq : P.size = 2 + 4 * P.msgs := rfl
+theorem size_eq : P.size = 3 + 4 * P.msgs := rfl
 
 theorem chan_le {c c' : Nat} (h : c < c') : P.chan c + P.size ≤ P.chan c' := by
   unfold chan
@@ -198,8 +269,8 @@ theorem chan_eq {c c' a a' : Nat} (h : P.chan c + a = P.chan c' + a') (ha : a < 
 variable (P) in
 /-- Where the flags of the operation `o` start, in the places of its channel. -/
 def sigOff : Op → Nat
-  | .send => 2
-  | .recv => 2 + 2 * P.msgs
+  | .send => 3
+  | .recv => 3 + 2 * P.msgs
 
 theorem sig_eq (o : Op) (c j : Nat) : P.sig o c + j = P.chan c + (P.sigOff o + j) := by
   cases o <;> simp only [sig, sigOff] <;> omega
@@ -214,54 +285,38 @@ theorem sig_inj {o o' : Op} {c c' j j' : Nat} (hj : j < P.sigLen o) (hj' : j' < 
   cases o <;> cases o' <;> simp only [sigOff, sigLen] at h hj hj' <;>
     first | exact ⟨rfl, rfl, by omega⟩ | omega
 
-theorem ctr_eq (o : Op) (c : Nat) :
-    P.ctr o c = P.chan c + (match o with | .send => 0 | .recv => 1) := by
-  cases o <;> rfl
+theorem idx_in (q : Ctr) : q.idx < P.size := by
+  have := q.idx_lt
+  rw [size_eq]
+  omega
 
-theorem ctr_inj {o o' : Op} {c c' : Nat} (h : P.ctr o c = P.ctr o' c') : o = o' ∧ c = c' := by
-  have hs : 1 < P.size := by rw [size_eq]; omega
-  cases o <;> cases o' <;> simp only [ctr] at h
-  · exact ⟨rfl, (chan_eq (c := c) (c' := c') (a := 0) (a' := 0) (by omega) (by omega)
-      (by omega)).1⟩
-  · have := chan_eq (c := c) (c' := c') (a := 0) (a' := 1) (by omega) (by omega) (by omega)
-    omega
-  · have := chan_eq (c := c) (c' := c') (a := 1) (a' := 0) (by omega) (by omega) (by omega)
-    omega
-  · exact ⟨rfl, (chan_eq h (by omega) (by omega)).1⟩
+theorem cnt_inj {q q' : Ctr} {c c' : Nat} (h : P.cnt q c = P.cnt q' c') : q = q' ∧ c = c' := by
+  obtain ⟨rfl, h'⟩ := chan_eq h (idx_in q) (idx_in q')
+  exact ⟨Ctr.idx_inj h', rfl⟩
 
-theorem ctr_ne_sig {o o' : Op} {c c' j : Nat} (hj : j < P.sigLen o') :
-    P.ctr o c ≠ P.sig o' c' + j := by
+theorem cnt_ne_sig {q : Ctr} {o' : Op} {c c' j : Nat} (hj : j < P.sigLen o') :
+    P.cnt q c ≠ P.sig o' c' + j := by
   intro h
   rw [sig_eq] at h
-  have hs : 1 < P.size := by rw [size_eq]; omega
-  have hin := sig_in hj
-  cases o <;> simp only [ctr] at h
-  · have := chan_eq (c := c) (c' := c') (a := 0) (by omega) (by omega) hin
-    cases o' <;> simp only [sigOff] at this <;> omega
-  · have := chan_eq (a := 1) h (by omega) hin
-    cases o' <;> simp only [sigOff] at this <;> omega
+  have := chan_eq h (idx_in q) (sig_in hj)
+  have := q.idx_lt
+  cases o' <;> simp only [sigOff] at * <;> omega
 
 theorem data_ne_sig {o : Op} {c c' j j' : Nat} (hj : j < P.msgs) (hj' : j' < P.sigLen o) :
     P.data c + j ≠ P.sig o c' + j' := by
   intro h
   rw [sig_eq] at h
   have hin := sig_in hj'
-  have := chan_eq (c := c) (c' := c') (a := 2 + P.msgs + j) (by simp only [data] at h; omega)
+  have := chan_eq (c := c) (c' := c') (a := 3 + P.msgs + j) (by simp only [data] at h; omega)
     (by rw [size_eq]; omega) hin
   cases o <;> simp only [sigOff, sigLen] at this hj' <;> omega
 
-theorem data_ne_ctr {o : Op} {c c' j : Nat} (hj : j < P.msgs) : P.data c + j ≠ P.ctr o c' := by
+theorem data_ne_cnt {q : Ctr} {c c' j : Nat} (hj : j < P.msgs) : P.data c + j ≠ P.cnt q c' := by
   intro h
-  have hs : 1 < P.size := by rw [size_eq]; omega
-  cases o <;> simp only [ctr] at h
-  · have := chan_eq (P := P) (c := c) (c' := c') (a := 2 + P.msgs + j) (a' := 0)
-      (by simp only [data] at h; omega)
-      (by rw [size_eq]; omega) (by omega)
-    omega
-  · have := chan_eq (P := P) (c := c) (c' := c') (a := 2 + P.msgs + j) (a' := 1)
-      (by simp only [data] at h; omega)
-      (by rw [size_eq]; omega) (by omega)
-    omega
+  have := chan_eq (P := P) (c := c) (c' := c') (a := 3 + P.msgs + j) (a' := q.idx)
+    (by simp only [data, cnt] at h; omega) (by rw [size_eq]; omega) (idx_in q)
+  have := q.idx_lt
+  omega
 
 theorem sig_inside {o : Op} {c j : Nat} (hc : c < P.chans) (hj : j < P.sigLen o) :
     P.places ≤ P.sig o c + j ∧ P.sig o c + j < P.places + P.chans * P.size := by
@@ -271,12 +326,13 @@ theorem sig_inside {o : Op} {c j : Nat} (hc : c < P.chans) (hj : j < P.sigLen o)
   rw [sig_eq]
   omega
 
-theorem ctr_inside {o : Op} {c : Nat} (hc : c < P.chans) :
-    P.places ≤ P.ctr o c ∧ P.ctr o c < P.places + P.chans * P.size := by
+theorem cnt_inside {q : Ctr} {c : Nat} (hc : c < P.chans) :
+    P.places ≤ P.cnt q c ∧ P.cnt q c < P.places + P.chans * P.size := by
   have := chan_end hc
   have := places_le_chan (P := P) (c := c)
-  have hs : 1 < P.size := by rw [size_eq]; omega
-  cases o <;> simp only [ctr] <;> omega
+  have := idx_in (P := P) q
+  simp only [cnt]
+  omega
 
 theorem data_inside {c j : Nat} (hc : c < P.chans) (hj : j < P.msgs) :
     P.places ≤ P.data c + j ∧ P.data c + j < P.places + P.chans * P.size := by
@@ -298,8 +354,8 @@ def Avoid (k : Kind) (_ : Order) (x : Nat) : Prop :=
 /-- Where a thread is in an operation of a channel. -/
 inductive Phase where
   | idle
-  /-- It read the counter of the operation `o` of the channel `c`, and got the number `k`. -/
-  | took (o : Op) (c : Nat) (k : Int)
+  /-- It read the counter `q` of the channel `c`, and got the number `k`. -/
+  | took (q : Ctr) (c : Nat) (k : Int)
   /-- It wrote the counter, and did not read the flag that it waits for yet. -/
   | counted (o : Op) (c : Nat) (k : Int)
   /-- It read the flag that it waits for at least once. -/
@@ -311,9 +367,13 @@ inductive Trans : Phase → Option Label → Phase → Prop
   | counted_silent {o c k} : Trans (.counted o c k) none (.counted o c k)
   | waited_silent {o c k} : Trans (.waited o c k) none (.waited o c k)
   | other {l : Label} : P.Avoid l.kind l.order l.loc → Trans .idle (some l) .idle
-  | take {o c k} : c < P.chans → Trans .idle (some ⟨.read, .sc, P.ctr o c, k, false⟩) (.took o c k)
+  | take {q c k} : c < P.chans → Trans .idle (some ⟨.read, .sc, P.cnt q c, k, false⟩) (.took q c k)
   | count {o c k} :
-    Trans (.took o c k) (some ⟨.write, .sc, P.ctr o c, k + 1, true⟩) (.counted o c k)
+    Trans (.took (.op o) c k) (some ⟨.write, .sc, P.ctr o c, k + 1, true⟩) (.counted o c k)
+  | dropped {c k} : Trans (.took .drop c k) (some ⟨.write, .sc, P.drp c, k + 1, true⟩) .idle
+  /-- A `recv` reads the counter of drops while it waits. -/
+  | poll {c k v ph} : ph = .counted .recv c k ∨ ph = .waited .recv c k →
+    Trans ph (some ⟨.read, .sc, P.drp c, v, false⟩) ph
   | wait {o c k v ph} {j : Nat} : ph = .counted o c k ∨ ph = .waited o c k → (j : Int) = k →
     j < P.sigLen o.other →
     Trans ph (some ⟨.read, .sc, P.sig o.other c + j, v, false⟩) (.waited o c k)
@@ -322,15 +382,16 @@ inductive Trans : Phase → Option Label → Phase → Prop
   | set {o c k} {j : Nat} : (j : Int) = k + P.off o c → j < P.sigLen o →
     Trans (.waited o c k) (some ⟨.write, .sc, P.sig o c + j, 1, false⟩) .idle
 
-/-- The step that moves the value: a `send` writes it, a `recv` reads it. -/
+/-- The step of a `send` that writes its value. -/
 inductive Mid : Op → Nat → Stmt → Prop
   | send {c e} : Mid .send c (.storeAt (P.data c) P.msgs (.reg P.tmp) e .plain)
-  | recv {c r} : r ≠ P.tmp → Mid .recv c (.loadAt r (P.data c) P.msgs (.reg P.tmp) .plain)
 
 /-- Lowered code that is not in the middle of an operation. -/
 inductive Clean : Stmt → Prop
   | other {s} : s.Accesses P.Avoid → Clean s
   | op {o c d} : c < P.chans → P.Mid o c d → Clean (P.opCode o c d)
+  | recv {c r s} : c < P.chans → r ≠ P.tmp → s ≠ P.tmp → Clean (P.recvCode c r s)
+  | drop {c} : c < P.chans → Clean (P.dropCode c)
   | seq {s t} : Clean s → Clean t → Clean (.seq s t)
   | ite {e s t} : Clean s → Clean t → Clean (.ite e s t)
   | loop {e s} : Clean s → Clean (.loop e s)
@@ -341,7 +402,7 @@ inductive Good (regs : Nat → Int) : Phase → Stmt → Prop
   | clean {s} : P.Clean s → Good regs .idle s
   | seq {ph s t} : Good regs ph s → P.Clean t → Good regs ph (.seq s t)
   | took {o c d k} : P.Mid o c d → regs P.tmp = k →
-    Good regs (.took o c k) (.seq (.rmwStore (P.ctr o c) (k + 1) .sc) (P.rest o c d))
+    Good regs (.took (.op o) c k) (.seq (.rmwStore (P.ctr o c) (k + 1) .sc) (P.rest o c d))
   | counted {o c d k} : P.Mid o c d → regs P.tmp = k →
     Good regs (.counted o c k) (.seq .skip (P.rest o c d))
   | waiting {o c d k ph} : ph = .counted o c k ∨ ph = .waited o c k → P.Mid o c d →
@@ -352,6 +413,34 @@ inductive Good (regs : Nat → Int) : Phase → Stmt → Prop
     Good regs (.waited o c k) (.seq d (P.fin o c))
   | moved {o c k} : regs P.tmp = k → Good regs (.waited o c k) (.seq .skip (P.fin o c))
   | setting {o c k} : regs P.tmp = k → Good regs (.waited o c k) (P.fin o c)
+  | dtook {c k} : Good regs (.took .drop c k) (.rmwStore (P.drp c) (k + 1) .sc)
+  | rtook {c r s k} : r ≠ P.tmp → s ≠ P.tmp → regs P.tmp = k →
+    Good regs (.took (.op .recv) c k)
+      (.seq (.rmwStore (P.ctr .recv c) (k + 1) .sc) (P.recvRest c r s))
+  | rcounted {c r s k} : r ≠ P.tmp → s ≠ P.tmp → regs P.tmp = k →
+    Good regs (.counted .recv c k) (.seq .skip (P.recvRest c r s))
+  | polling {c r s k ph x} : ph = .counted .recv c k ∨ ph = .waited .recv c k →
+    x = P.poll c ∨ x = .seq .skip (P.loadFull c) ∨ x = P.loadFull c → r ≠ P.tmp → s ≠ P.tmp →
+    regs P.tmp = k → Good regs ph (.seq (.seq x (P.polls c)) (P.recvEnd c r s))
+  | polled {c r s k} : r ≠ P.tmp → s ≠ P.tmp → regs P.tmp = k →
+    Good regs (.waited .recv c k) (.seq (.seq .skip (P.polls c)) (P.recvEnd c r s))
+  | looping {c r s k} : r ≠ P.tmp → s ≠ P.tmp → regs P.tmp = k →
+    Good regs (.waited .recv c k) (.seq (P.polls c) (P.recvEnd c r s))
+  | testing {c r s k} : r ≠ P.tmp → s ≠ P.tmp → regs P.tmp = k →
+    Good regs (.waited .recv c k)
+      (.seq (.ite (P.again c) (.seq (P.poll c) (P.polls c)) .skip) (P.recvEnd c r s))
+  | exiting {c r s k} : r ≠ P.tmp → s ≠ P.tmp → regs P.tmp = k →
+    Good regs (.waited .recv c k) (.seq .skip (P.recvEnd c r s))
+  | ending {c r s k} : r ≠ P.tmp → s ≠ P.tmp → regs P.tmp = k →
+    Good regs (.waited .recv c k) (P.recvEnd c r s)
+  | reading {c r s k} : r ≠ P.tmp → s ≠ P.tmp → regs P.tmp = k →
+    Good regs (.waited .recv c k)
+      (.seq (.seq (.loadAt r (P.data c) P.msgs (.reg P.tmp) .plain) (.assign s (.const 1)))
+        (P.fin .recv c))
+  | readDone {c s k} : s ≠ P.tmp → regs P.tmp = k →
+    Good regs (.waited .recv c k) (.seq (.seq .skip (.assign s (.const 1))) (P.fin .recv c))
+  | status {c s k e} : s ≠ P.tmp → regs P.tmp = k →
+    Good regs (.waited .recv c k) (.seq (.assign s e) (P.fin .recv c))
 
 variable {P}
 
@@ -363,6 +452,16 @@ theorem other_step {s regs a s' regs'} (h : Step s regs a s' regs') (hs : s.Acce
   | none => exact .idle
   | some l => exact .other (ha l rfl)
 
+theorem Trans.silent {o c k ph} (h : ph = .counted o c k ∨ ph = .waited o c k) :
+    P.Trans ph none ph := by
+  rcases h with rfl | rfl
+  · exact .counted_silent
+  · exact .waited_silent
+
+theorem update_tmp {regs : Nat → Int} {r : Nat} {v k : Int} (hr : r ≠ P.tmp)
+    (hk : regs P.tmp = k) : update regs r v P.tmp = k := by
+  simp [update, Ne.symm hr, hk]
+
 theorem Clean.step {s} (hcl : P.Clean s) :
     ∀ {regs a s' regs'}, Step s regs a s' regs' → ∃ ph, P.Good regs' ph s' ∧ P.Trans .idle a ph := by
   induction hcl with
@@ -373,6 +472,16 @@ theorem Clean.step {s} (hcl : P.Clean s) :
     | seq h =>
       cases h with
       | fetchAdd v => exact ⟨_, .took hm (by simp [update]), .take hc⟩
+  | recv hc hr hs =>
+    intro regs a s' regs' h
+    cases h with
+    | seq h =>
+      cases h with
+      | fetchAdd v => exact ⟨_, .rtook hr hs (by simp [update]), .take hc⟩
+  | drop hc =>
+    intro regs a s' regs' h
+    cases h with
+    | fetchAdd v => exact ⟨_, .dtook, .take hc⟩
   | seq _ ht ih =>
     intro regs a s' regs' h
     cases h with
@@ -441,11 +550,6 @@ theorem Good.step {ph s regs} (hg : P.Good regs ph s) :
       | send =>
         cases h with
         | storeAt j hi hj => exact ⟨_, .moved hk, .move (hi.symm.trans hk) hj⟩
-      | recv hr =>
-        cases h with
-        | loadAt j v hi hj =>
-          refine ⟨_, .moved ?_, .move (hi.symm.trans hk) hj⟩
-          simp [update, Ne.symm hr, hk]
   | moved hk =>
     intro a s' regs' h
     cases h with
@@ -458,6 +562,102 @@ theorem Good.step {ph s regs} (hg : P.Good regs ph s) :
       refine ⟨_, .clean (.other trivial), .set ?_ hj⟩
       simp only [Expr.eval] at hi
       omega
+  | dtook =>
+    intro a s' regs' h
+    cases h with
+    | rmwStore => exact ⟨_, .clean (.other trivial), .dropped⟩
+  | rtook hr hs hk =>
+    intro a s' regs' h
+    cases h with
+    | seq h =>
+      cases h with
+      | rmwStore => exact ⟨_, .rcounted hr hs hk, .count⟩
+  | rcounted hr hs hk =>
+    intro a s' regs' h
+    cases h with
+    | seq_skip => exact ⟨_, .polling (Or.inl rfl) (Or.inl rfl) hr hs hk, .counted_silent⟩
+    | seq h => cases h
+  | polling hph hx hr hs hk =>
+    intro a s' regs' h
+    rcases hx with rfl | rfl | rfl
+    · cases h with
+      | seq h =>
+        cases h with
+        | seq h =>
+          cases h with
+          | seq h =>
+            cases h with
+            | load v =>
+              exact ⟨_, .polling hph (Or.inr (Or.inl rfl)) hr hs (update_tmp (r := P.tmp + 1) (by omega) hk),
+                .poll hph⟩
+    · cases h with
+      | seq h =>
+        cases h with
+        | seq h =>
+          cases h with
+          | seq_skip => exact ⟨_, .polling hph (Or.inr (Or.inr rfl)) hr hs hk, .silent hph⟩
+          | seq h => cases h
+    · cases h with
+      | seq h =>
+        cases h with
+        | seq h =>
+          cases h with
+          | loadAt j v hi hj =>
+            exact ⟨_, .polled hr hs (update_tmp (r := P.tmp + 2) (by omega) hk), .wait hph (hi.symm.trans hk) hj⟩
+  | polled hr hs hk =>
+    intro a s' regs' h
+    cases h with
+    | seq h =>
+      cases h with
+      | seq_skip => exact ⟨_, .looping hr hs hk, .waited_silent⟩
+      | seq h => cases h
+  | looping hr hs hk =>
+    intro a s' regs' h
+    cases h with
+    | seq h =>
+      cases h with
+      | loop => exact ⟨_, .testing hr hs hk, .waited_silent⟩
+  | testing hr hs hk =>
+    intro a s' regs' h
+    cases h with
+    | seq h =>
+      cases h with
+      | ite_true => exact ⟨_, .polling (Or.inr rfl) (Or.inl rfl) hr hs hk, .waited_silent⟩
+      | ite_false => exact ⟨_, .exiting hr hs hk, .waited_silent⟩
+  | exiting hr hs hk =>
+    intro a s' regs' h
+    cases h with
+    | seq_skip => exact ⟨_, .ending hr hs hk, .waited_silent⟩
+    | seq h => cases h
+  | ending hr hs hk =>
+    intro a s' regs' h
+    cases h with
+    | seq h =>
+      cases h with
+      | ite_true => exact ⟨_, .reading hr hs hk, .waited_silent⟩
+      | ite_false => exact ⟨_, .status hs hk, .waited_silent⟩
+  | reading hr hs hk =>
+    intro a s' regs' h
+    cases h with
+    | seq h =>
+      cases h with
+      | seq h =>
+        cases h with
+        | loadAt j v hi hj =>
+          exact ⟨_, .readDone hs (update_tmp hr hk), .move (hi.symm.trans hk) hj⟩
+  | readDone hs hk =>
+    intro a s' regs' h
+    cases h with
+    | seq h =>
+      cases h with
+      | seq_skip => exact ⟨_, .status hs hk, .waited_silent⟩
+      | seq h => cases h
+  | status hs hk =>
+    intro a s' regs' h
+    cases h with
+    | seq h =>
+      cases h with
+      | assign => exact ⟨_, .moved (update_tmp hs hk), .waited_silent⟩
 
 variable (P) in
 /-- The lists of accesses that `Trans` allows from a phase. -/
@@ -491,8 +691,8 @@ theorem Avoid.not_inside {k o x} (h : P.Avoid k o x) (hk : k ≠ .fence) (h1 : P
   · omega
 
 /-- Each write of a counter is the write of a `fetchAdd`. -/
-theorem Accepts.ctr_rmw {ph L} (h : P.Accepts ph L) {o c} (hc : c < P.chans) :
-    ∀ {m : Nat} {l : Label}, L[m]? = some l → l.kind = .write → l.loc = P.ctr o c → l.rmw = true := by
+theorem Accepts.cnt_rmw {ph L} (h : P.Accepts ph L) {q c} (hc : c < P.chans) :
+    ∀ {m : Nat} {l : Label}, L[m]? = some l → l.kind = .write → l.loc = P.cnt q c → l.rmw = true := by
   induction h with
   | nil => intro m l h; simp at h
   | cons htr _ ih =>
@@ -503,14 +703,32 @@ theorem Accepts.ctr_rmw {ph L} (h : P.Accepts ph L) {o c} (hc : c < P.chans) :
       simp only [List.getElem?_cons_zero, Option.some.injEq] at hl
       subst hl
       cases htr with
-      | other hav => exact (hav.not_inside (by rw [hk]; nofun) (hx ▸ (ctr_inside hc).1)
-          (hx ▸ (ctr_inside hc).2)).elim
-      | take | wait => cases hk
-      | count => rfl
-      | move _ hj => exact (data_ne_ctr hj hx).elim
-      | set _ hj => exact (ctr_ne_sig hj hx.symm).elim
+      | other hav => exact (hav.not_inside (by rw [hk]; nofun) (hx ▸ (cnt_inside hc).1)
+          (hx ▸ (cnt_inside hc).2)).elim
+      | take | wait | poll => cases hk
+      | count | dropped => rfl
+      | move _ hj => exact (data_ne_cnt hj hx).elim
+      | set _ hj => exact (cnt_ne_sig hj hx.symm).elim
 
-/-- The read of a counter comes right before the write of its `fetchAdd`. -/
+/-- Each access of a counter is `sc`. -/
+theorem Accepts.cnt_sc {ph L} (h : P.Accepts ph L) {q c} (hc : c < P.chans) :
+    ∀ {m : Nat} {l : Label}, L[m]? = some l → l.kind ≠ .fence → l.loc = P.cnt q c → l.order = .sc := by
+  induction h with
+  | nil => intro m l h; simp at h
+  | cons htr _ ih =>
+    intro m l hl hk hx
+    cases m with
+    | succ m => exact ih (by simpa using hl) hk hx
+    | zero =>
+      simp only [List.getElem?_cons_zero, Option.some.injEq] at hl
+      subst hl
+      cases htr with
+      | other hav => exact (hav.not_inside hk (hx ▸ (cnt_inside hc).1)
+          (hx ▸ (cnt_inside hc).2)).elim
+      | take | count | dropped | poll | wait | set => rfl
+      | move _ hj => exact (data_ne_cnt hj hx).elim
+
+/-- The read of the counter of an operation comes right before the write of its `fetchAdd`. -/
 theorem Accepts.take_count {ph L} (h : P.Accepts ph L) {o c} (hc : c < P.chans) :
     ∀ {m : Nat} {l l' : Label}, L[m]? = some l → L[m + 1]? = some l' → l.kind = .read → l.loc = P.ctr o c →
       l' = ⟨.write, .sc, P.ctr o c, l.val + 1, true⟩ := by
@@ -525,10 +743,10 @@ theorem Accepts.take_count {ph L} (h : P.Accepts ph L) {o c} (hc : c < P.chans) 
       simp only [List.getElem?_cons_succ] at hl'
       subst hl
       cases htr with
-      | other hav => exact (hav.not_inside (by rw [hk]; nofun) (hx ▸ (ctr_inside hc).1)
-          (hx ▸ (ctr_inside hc).2)).elim
+      | other hav => exact (hav.not_inside (by rw [hk]; nofun) (hx ▸ (cnt_inside hc).1)
+          (hx ▸ (cnt_inside hc).2)).elim
       | take =>
-        obtain ⟨rfl, rfl⟩ := ctr_inj hx
+        obtain ⟨rfl, rfl⟩ := cnt_inj hx
         cases hacc with
         | nil => simp at hl'
         | cons htr' _ =>
@@ -536,16 +754,17 @@ theorem Accepts.take_count {ph L} (h : P.Accepts ph L) {o c} (hc : c < P.chans) 
           subst hl'
           cases htr' with
           | count => rfl
-          | wait hph => rcases hph with h | h <;> cases h
-      | count | set => cases hk
-      | wait _ _ hj => exact (ctr_ne_sig hj hx.symm).elim
-      | move _ hj => exact (data_ne_ctr hj hx).elim
+          | wait hph | poll hph => rcases hph with h | h <;> cases h
+      | count | set | dropped => cases hk
+      | poll => exact absurd (cnt_inj hx).1 nofun
+      | wait _ _ hj => exact (cnt_ne_sig hj hx.symm).elim
+      | move _ hj => exact (data_ne_cnt hj hx).elim
 
 /-- The write of a `fetchAdd` of a counter comes right after the read of the counter. -/
-theorem Accepts.count_take {ph L} (h : P.Accepts ph L) {o c} (hc : c < P.chans) :
+theorem Accepts.count_take {ph L} (h : P.Accepts ph L) {q c} (hc : c < P.chans) :
     ∀ {m : Nat} {l : Label}, L[m]? = some l → l.kind = .write → l.rmw = true →
-      l.loc = P.ctr o c → (m = 0 ∧ ph = .took o c (l.val - 1)) ∨
-        ∃ m', m = m' + 1 ∧ L[m']? = some ⟨.read, .sc, P.ctr o c, l.val - 1, false⟩ := by
+      l.loc = P.cnt q c → (m = 0 ∧ ph = .took q c (l.val - 1)) ∨
+        ∃ m', m = m' + 1 ∧ L[m']? = some ⟨.read, .sc, P.cnt q c, l.val - 1, false⟩ := by
   induction h with
   | nil => intro m l h; simp at h
   | @cons ph ph' a L htr _ ih =>
@@ -556,15 +775,16 @@ theorem Accepts.count_take {ph L} (h : P.Accepts ph L) {o c} (hc : c < P.chans) 
       subst hl
       cases htr with
       | other hav => exact (hav.not_inside (by rw [hw]; nofun)
-          (hx ▸ (ctr_inside hc).1) (hx ▸ (ctr_inside hc).2)).elim
-      | take | wait | move | set => cases hr
-      | count =>
-        obtain ⟨rfl, rfl⟩ := ctr_inj hx
+          (hx ▸ (cnt_inside hc).1) (hx ▸ (cnt_inside hc).2)).elim
+      | take | wait | move | set | poll => cases hr
+      | count | dropped =>
+        obtain ⟨rfl, rfl⟩ := cnt_inj hx
         exact Or.inl ⟨rfl, by simp⟩
     | succ m =>
       rcases ih (by simpa using hl) hw hr hx with ⟨rfl, rfl⟩ | ⟨m', rfl, hm'⟩
-      · cases htr
-        exact Or.inr ⟨0, rfl, by simp⟩
+      · cases htr with
+        | take => exact Or.inr ⟨0, rfl, by simp⟩
+        | poll hph => rcases hph with h | h <;> cases h
       · exact Or.inr ⟨m' + 1, rfl, by simpa using hm'⟩
 
 /-- Each read and write of a flag is `sc`. -/
@@ -583,7 +803,7 @@ theorem Accepts.sig_sc {ph L} (h : P.Accepts ph L) {o c j} (hc : c < P.chans)
       cases htr with
       | other hav => exact (hav.not_inside hk (hx ▸ (sig_inside hc hj).1)
           (hx ▸ (sig_inside hc hj).2)).elim
-      | take | count | wait | set => rfl
+      | take | count | dropped | poll | wait | set => rfl
       | move _ hj' => exact (data_ne_sig hj' hj hx).elim
 
 variable (P) in
@@ -602,8 +822,8 @@ variable (P) in
 def Pre (ph : Phase) (o : Op) (c : Nat) (t : Int) (L : List Label) (i : Nat) : Prop :=
   match ph with
   | .idle => False
-  | .took o' c' k | .counted o' c' k =>
-    o' = o ∧ c' = c ∧ k = t ∧ P.NoSet o c L 0 i ∧ P.Waits o c t L 0 i
+  | .took q c' k => q = .op o ∧ c' = c ∧ k = t ∧ P.NoSet o c L 0 i ∧ P.Waits o c t L 0 i
+  | .counted o' c' k => o' = o ∧ c' = c ∧ k = t ∧ P.NoSet o c L 0 i ∧ P.Waits o c t L 0 i
   | .waited o' c' k => o' = o ∧ c' = c ∧ k = t ∧ P.NoSet o c L 0 i
 
 theorem NoSet.cons {o c L i0 i1} {a : Label} (h : P.NoSet o c L i0 i1) :
@@ -651,8 +871,8 @@ theorem Accepts.set_hist {ph L} (h : P.Accepts ph L) {o c j} (hc : c < P.chans)
       cases htr with
       | other hav => exact (hav.not_inside (by rw [hk]; nofun) (hx ▸ (sig_inside hc hj).1)
           (hx ▸ (sig_inside hc hj).2)).elim
-      | take | wait => cases hk
-      | count => exact (ctr_ne_sig hj hx).elim
+      | take | wait | poll => cases hk
+      | count | dropped => exact (cnt_ne_sig hj hx).elim
       | move _ hj' => exact (data_ne_sig hj' hj hx).elim
       | set hk' hj' =>
         obtain ⟨rfl, rfl, rfl⟩ := sig_inj hj' hj hx
@@ -664,20 +884,25 @@ theorem Accepts.set_hist {ph L} (h : P.Accepts ph L) {o c j} (hc : c < P.chans)
         rintro ⟨hw, j'', hj'', hl''⟩
         rcases hb with hb | hb | ⟨j', hj', hb⟩
         · exact hb hw
-        · exact ctr_ne_sig hj'' (hb.symm.trans hl'')
+        · exact cnt_ne_sig hj'' (hb.symm.trans hl'')
         · exact data_ne_sig hj' hj'' (hb.symm.trans hl'')
       rcases ih (by simpa using hl) hk hx with hpre | ⟨i', hi', hread, hno, hw⟩
       · cases ph' with
         | idle => exact hpre.elim
-        | took o' c' k =>
+        | took q c' k =>
           obtain ⟨rfl, rfl, rfl, hno, hw⟩ := hpre
-          cases htr
-          exact Or.inr ⟨0, by omega, by simp, hno.cons, hw.cons⟩
+          cases htr with
+          | take => exact Or.inr ⟨0, by omega, by simp, hno.cons, hw.cons⟩
+          | poll hph => rcases hph with h | h <;> cases h
         | counted o' c' k =>
           obtain ⟨rfl, rfl, rfl, hno, hw⟩ := hpre
-          cases htr
-          exact Or.inl ⟨rfl, rfl, rfl, hno.cons_zero (notSet (Or.inr (Or.inl rfl))),
-            hw.cons.weaken (Nat.zero_le _)⟩
+          cases htr with
+          | count =>
+            exact Or.inl ⟨rfl, rfl, rfl, hno.cons_zero (notSet (Or.inr (Or.inl rfl))),
+              hw.cons.weaken (Nat.zero_le _)⟩
+          | poll =>
+            exact Or.inl ⟨rfl, rfl, rfl, hno.cons_zero (notSet (Or.inl nofun)),
+              hw.cons.weaken (Nat.zero_le _)⟩
         | waited o' c' k =>
           obtain ⟨rfl, rfl, rfl, hno⟩ := hpre
           cases htr with
@@ -688,7 +913,9 @@ theorem Accepts.set_hist {ph L} (h : P.Accepts ph L) {o c j} (hc : c < P.chans)
             · exact Or.inl ⟨rfl, rfl, rfl, hno.cons_zero (notSet (Or.inl nofun))⟩
           | move hj' hjl =>
             exact Or.inl ⟨rfl, rfl, rfl, hno.cons_zero (notSet (Or.inr (Or.inr ⟨_, hjl, rfl⟩)))⟩
+          | poll => exact Or.inl ⟨rfl, rfl, rfl, hno.cons_zero (notSet (Or.inl nofun))⟩
       · exact Or.inr ⟨i' + 1, by omega, by simpa using hread, hno.cons, hw.cons⟩
+
 
 /-! ## The code of each thread -/
 
@@ -785,7 +1012,8 @@ theorem clean_lower {s : CStmt} (h : P.StmtOk s) : P.Clean (P.toTaskProg.lower (
   induction s with
   | base s => exact .other (lower_avoid h)
   | send c e => exact .op h .send
-  | recv r c => exact .op h.1 (.recv h.2)
+  | recv r s c => exact .recv h.1 h.2.1 h.2.2
+  | drop c => exact .drop h
   | seq _ _ ih1 ih2 => exact .seq (ih1 h.1) (ih2 h.2)
   | ite _ _ _ ih1 ih2 => exact .ite (ih1 h.1) (ih2 h.2)
   | loop _ _ ih => exact .loop (ih h)
@@ -862,57 +1090,63 @@ theorem trace_split (hP : P.Ok) {t n : Nat} {f : Nat → Label}
 /-! ## The writes at the start -/
 
 /-- The position of each counter in `initList`. -/
-def initIdx : Op → Nat → Nat
-  | .send, c => 2 * c
-  | .recv, c => 2 * c + 1
+def initIdx (q : Ctr) (c : Nat) : Nat := 3 * c + q.idx
 
 theorem initList_cases {i : Nat} {p : Nat × Int} (h : P.initList[i]? = some p) :
-    (i < 2 * P.chans ∧ p = (P.ctrPlace i, 0)) ∨
+    (i < 3 * P.chans ∧ p = (P.ctrPlace i, 0)) ∨
+      (∃ c < P.chans, ∃ j < P.msgs, p = (P.sig .send c + j, 0)) ∨
       ∃ c < P.chans, ∃ j < P.cap c, p = (P.sig .recv c + j, 1) := by
   unfold initList at h
-  by_cases hi : i < 2 * P.chans
-  · rw [List.getElem?_append_left (by simpa using hi), List.getElem?_map,
+  by_cases hi : i < 3 * P.chans
+  · rw [List.append_assoc, List.getElem?_append_left (by simpa using hi), List.getElem?_map,
       List.getElem?_range hi] at h
     exact Or.inl ⟨hi, (Option.some.inj h).symm⟩
   · right
-    rw [List.getElem?_append_right (by simp; omega)] at h
-    obtain ⟨c, hc, hp⟩ := List.mem_flatMap.1 (List.mem_of_getElem? h)
-    obtain ⟨j, hj, rfl⟩ := List.mem_map.1 hp
-    exact ⟨c, List.mem_range.1 hc, j, List.mem_range.1 hj, rfl⟩
+    rw [List.append_assoc, List.getElem?_append_right (by simp; omega)] at h
+    rcases List.mem_append.1 (List.mem_of_getElem? h) with hp | hp
+    · obtain ⟨c, hc, hp⟩ := List.mem_flatMap.1 hp
+      obtain ⟨j, hj, rfl⟩ := List.mem_map.1 hp
+      exact Or.inl ⟨c, List.mem_range.1 hc, j, List.mem_range.1 hj, rfl⟩
+    · obtain ⟨c, hc, hp⟩ := List.mem_flatMap.1 hp
+      obtain ⟨j, hj, rfl⟩ := List.mem_map.1 hp
+      exact Or.inr ⟨c, List.mem_range.1 hc, j, List.mem_range.1 hj, rfl⟩
 
 /-- The writes at the start write each counter once. -/
-theorem initList_ctr (hP : P.Ok) {i : Nat} {p : Nat × Int} (h : P.initList[i]? = some p) {o c}
-    (hp : p.1 = P.ctr o c) : i = initIdx o c := by
-  have hs : 1 < P.size := by rw [size_eq]; omega
-  rcases initList_cases h with ⟨hi, rfl⟩ | ⟨c', hc', j, hj, rfl⟩
-  · simp only [ctrPlace] at hp
-    have h2 : i % 2 < 2 := Nat.mod_lt _ (by omega)
-    cases o <;> simp only [ctr, initIdx] at hp ⊢
-    · obtain ⟨rfl, h⟩ := chan_eq (a' := 0) hp (by omega) (by omega)
-      omega
-    · obtain ⟨rfl, h⟩ := chan_eq hp (by omega) (by omega)
-      omega
+theorem initList_ctr (hP : P.Ok) {i : Nat} {p : Nat × Int} (h : P.initList[i]? = some p) {q c}
+    (hp : p.1 = P.cnt q c) : i = initIdx q c := by
+  have hs : 2 < P.size := by rw [size_eq]; omega
+  rcases initList_cases h with ⟨hi, rfl⟩ | ⟨c', hc', j, hj, rfl⟩ | ⟨c', hc', j, hj, rfl⟩
+  · simp only [ctrPlace, cnt] at hp
+    have h3 : i % 3 < 3 := Nat.mod_lt _ (by omega)
+    obtain ⟨rfl, h⟩ := chan_eq hp (by omega) (idx_in q)
+    simp only [initIdx]
+    omega
+  · exact (cnt_ne_sig (o' := .send) hj hp.symm).elim
   · have := hP.cap c' hc'
-    exact (ctr_ne_sig (o' := .recv) (by simp only [sigLen]; omega) hp.symm).elim
+    exact (cnt_ne_sig (o' := .recv) (by simp only [sigLen]; omega) hp.symm).elim
 
-/-- The only flags that the writes at the start set are the first `cap c` flags `taken`. -/
+/-- The writes at the start set the flags `full` to 0, and the first `cap c` flags `taken` to 1. -/
 theorem initList_sig (hP : P.Ok) {i : Nat} {p : Nat × Int} (h : P.initList[i]? = some p) {o c j}
-    (hj : j < P.sigLen o) (hp : p.1 = P.sig o c + j) : o = .recv ∧ j < P.cap c := by
-  have hs : 1 < P.size := by rw [size_eq]; omega
-  rcases initList_cases h with ⟨hi, rfl⟩ | ⟨c', hc', j', hj', rfl⟩
+    (hj : j < P.sigLen o) (hp : p.1 = P.sig o c + j) :
+    (o = .send ∧ p.2 = 0) ∨ (o = .recv ∧ j < P.cap c) := by
+  have hs : 2 < P.size := by rw [size_eq]; omega
+  rcases initList_cases h with ⟨hi, rfl⟩ | ⟨c', hc', j', hj', rfl⟩ | ⟨c', hc', j', hj', rfl⟩
   · simp only [ctrPlace] at hp
     rw [sig_eq] at hp
     have := chan_eq hp (Nat.lt_of_lt_of_le (Nat.mod_lt _ (by omega)) (by omega)) (sig_in hj)
     cases o <;> simp only [sigOff] at this <;> omega
+  · obtain ⟨rfl, rfl, rfl⟩ := sig_inj (o := .send) hj' hj hp
+    exact Or.inl ⟨rfl, rfl⟩
   · have := hP.cap c' hc'
     obtain ⟨rfl, rfl, rfl⟩ := sig_inj (o := .recv) (by simp only [sigLen]; omega) hj hp
-    exact ⟨rfl, hj'⟩
+    exact Or.inr ⟨rfl, hj'⟩
 
 theorem seqCstOnly_lowerC {s : CStmt}
     (h : ∀ b, s.Bases b → b.SeqCstOnly) : (P.lowerC s).SeqCstOnly := by
   induction s with
   | base s => exact h s rfl
-  | send | recv => exact ⟨Or.inr rfl, trivial, Or.inl rfl, Or.inr rfl⟩
+  | send => exact ⟨Or.inr rfl, trivial, Or.inl rfl, Or.inr rfl⟩
+  | recv | drop => simp [lowerC, Stmt.SeqCstOnly]
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 =>
     exact ⟨ih1 fun b hb => h b (Or.inl hb), ih2 fun b hb => h b (Or.inr hb)⟩
   | loop _ _ ih | tasksBlock _ ih => exact ih h
@@ -979,11 +1213,19 @@ theorem init_of (hP : P.Ok) {d : X.E} (hp : run.idx d < P.pre (X.thread d)) :
     obtain ⟨h1, h2, h3, -, h5⟩ := this
     exact ⟨p, rfl, h1.symm, h2.symm, h3.symm, h5.symm⟩
 
+/-- The value of a write at the start. -/
+theorem init_val (hP : P.Ok) {d : X.E} (hp : run.idx d < P.pre (X.thread d)) {p : Nat × Int}
+    (hi : P.initList[run.idx d]? = some p) : run.val d = p.2 := by
+  have := (view run hP d).1 _ (Nat.le_refl _) hp
+  rw [run.lab_eq d, hi] at this
+  simp only [Option.map_some, Option.some.injEq, initLabel, Label.mk.injEq] at this
+  exact this.2.2.2.1.symm
+
 /-- Each counter of a channel is a counter in the sense of `Counter.lean`. -/
-theorem counter (hP : P.Ok) (wf : X.WellFormed) {o c} (hc : c < P.chans) :
-    X.Counter run.val (P.ctr o c) := by
-  have hadd : ∀ r w, X.rmw r w → X.loc w = P.ctr o c →
-      X.loc r = P.ctr o c ∧ run.val w = run.val r + 1 := by
+theorem counter (hP : P.Ok) (wf : X.WellFormed) {q c} (hc : c < P.chans) :
+    X.Counter run.val (P.cnt q c) := by
+  have hadd : ∀ r w, X.rmw r w → X.loc w = P.cnt q c →
+      X.loc r = P.cnt q c ∧ run.val w = run.val r + 1 := by
     intro r w hrw hwl
     obtain ⟨ht, hidx, hrm⟩ := (run.rmw_iff r w).1 hrw
     have hww := (wf.rmw_atomic r w hrw).2.1
@@ -1000,15 +1242,15 @@ theorem counter (hP : P.Ok) (wf : X.WellFormed) {o c} (hc : c < P.chans) :
         simp only [Option.some.injEq, Label.mk.injEq] at this
         obtain ⟨-, -, h3, h4, -⟩ := this
         exact ⟨h3.symm, by omega⟩
-  have hfirst : ∀ a, X.IsWrite a → X.loc a = P.ctr o c → (∀ r, ¬ X.rmw r a) →
-      X.thread a = 0 ∧ run.idx a = initIdx o c := by
+  have hfirst : ∀ a, X.IsWrite a → X.loc a = P.cnt q c → (∀ r, ¬ X.rmw r a) →
+      X.thread a = 0 ∧ run.idx a = initIdx q c := by
     intro a haw hal hna
     by_cases hp : run.idx a < P.pre (X.thread a)
     · obtain ⟨ht, p, hi, -, -, hl, -⟩ := init_of run hP hp
       exact ⟨ht, initList_ctr hP hi (hl.symm.trans hal)⟩
     · have hacc := (view run hP a).2
       have hget := view_get run (e := a) rfl (Nat.le_refl _) (by omega)
-      have hrm := hacc.ctr_rmw hc hget haw hal
+      have hrm := hacc.cnt_rmw hc hget haw hal
       rcases hacc.count_take hc hget haw hrm hal with ⟨h0, h⟩ | ⟨m', hm, -⟩
       · cases h
       · obtain ⟨r, hr, hri⟩ := run.idx_down a (run.idx a - 1) (by omega)
@@ -1026,6 +1268,14 @@ theorem counter (hP : P.Ok) (wf : X.WellFormed) {o c} (hc : c < P.chans) :
       obtain ⟨ht2, hi2, -⟩ := (run.rmw_iff r2 w).1 h2
       exact run.idx_inj r1 r2 (ht1.trans ht2.symm) (by omega) }
 
+/-- Each access of a counter is `sc`. -/
+theorem cnt_sc (hP : P.Ok) {q c} (hc : c < P.chans) {e : X.E} (hk : X.kind e ≠ .fence)
+    (hl : X.loc e = P.cnt q c) : X.IsSeqCst e := by
+  by_cases hp : run.idx e < P.pre (X.thread e)
+  · obtain ⟨-, -, -, -, h, -⟩ := init_of run hP hp
+    exact h
+  · exact (view run hP e).2.cnt_sc hc (view_get run rfl (Nat.le_refl _) (by omega)) hk hl
+
 /-- Each read and write of a flag is `sc`. -/
 theorem sig_sc (hP : P.Ok) {o c j} (hc : c < P.chans) (hj : j < P.sigLen o) {e : X.E}
     (hk : X.kind e ≠ .fence) (hl : X.loc e = P.sig o c + j) : X.IsSeqCst e := by
@@ -1036,9 +1286,11 @@ theorem sig_sc (hP : P.Ok) {o c j} (hc : c < P.chans) (hj : j < P.sigLen o) {e :
 
 /-- The write of a flag comes from the operation whose number the flag names. In the thread of
 the write, a `fetchAdd` of the counter gave that number before it. Between them, the thread read
-the flag that the operation waits for, and set no other flag of its kind. -/
+the flag that the operation waits for, and set no other flag of its kind. The writes of 0 at the
+start to the flags `full` are the other writes of flags. -/
 theorem set_writer (hP : P.Ok) {o c j} (hc : c < P.chans) (hj : j < P.sigLen o)
-    (hoff : P.off o c ≤ j) {w : X.E} (hw : X.IsWrite w) (hwl : X.loc w = P.sig o c + j) :
+    (hoff : P.off o c ≤ j) {w : X.E} (hw : X.IsWrite w) (hwl : X.loc w = P.sig o c + j)
+    (hv : o = .recv ∨ run.val w ≠ 0) :
     ∃ r r', X.rmw r r' ∧ X.loc r' = P.ctr o c ∧ run.val r = (j : Int) - P.off o c ∧
       X.thread r = X.thread w ∧ run.idx r < run.idx w ∧
       (∀ d, X.thread d = X.thread w → run.idx r < run.idx d → run.idx d < run.idx w →
@@ -1048,9 +1300,12 @@ theorem set_writer (hP : P.Ok) {o c j} (hc : c < P.chans) (hj : j < P.sigLen o)
   have hp : P.pre (X.thread w) ≤ run.idx w := by
     refine Nat.le_of_not_lt fun hp => ?_
     obtain ⟨-, p, hi, -, -, hl, -⟩ := init_of run hP hp
-    obtain ⟨rfl, hj'⟩ := initList_sig hP hi hj (hl.symm.trans hwl)
-    simp only [off] at hoff
-    omega
+    rcases initList_sig hP hi hj (hl.symm.trans hwl) with ⟨rfl, hp2⟩ | ⟨rfl, hj'⟩
+    · rcases hv with h | h
+      · cases h
+      · exact h ((init_val run hP hp hi).trans hp2)
+    · simp only [off] at hoff
+      omega
   have hacc := (view run hP w).2
   have hget := view_get run (e := w) rfl (Nat.le_refl _) hp
   rcases hacc.set_hist hc hj hget hw hwl with h | ⟨i', hi', hread, hno, hwt⟩
@@ -1080,13 +1335,14 @@ theorem set_writer (hP : P.Ok) {o c j} (hc : c < P.chans) (hj : j < P.sigLen o)
     simp only [off] at *
     cases o <;> simp only at hoff hjw ⊢ <;> omega
 
-/-- Each flag has one writer. -/
+/-- Each flag has one writer, apart from the writes of 0 at the start. -/
 theorem set_unique (hP : P.Ok) (wf : X.WellFormed) (hcons : X.Consistent) (ho : X.CoOrder)
     (hfin : X.Finite) {o c j} (hc : c < P.chans) (hj : j < P.sigLen o) (hoff : P.off o c ≤ j)
-    {w1 w2 : X.E} (hw1 : X.IsWrite w1) (hl1 : X.loc w1 = P.sig o c + j) (hw2 : X.IsWrite w2)
-    (hl2 : X.loc w2 = P.sig o c + j) : w1 = w2 := by
-  obtain ⟨r1, r1', hrw1, hrl1, hv1, ht1, hi1, hno1, -⟩ := set_writer run hP hc hj hoff hw1 hl1
-  obtain ⟨r2, r2', hrw2, hrl2, hv2, ht2, hi2, hno2, -⟩ := set_writer run hP hc hj hoff hw2 hl2
+    {w1 w2 : X.E} (hw1 : X.IsWrite w1) (hl1 : X.loc w1 = P.sig o c + j)
+    (hz1 : o = .recv ∨ run.val w1 ≠ 0) (hw2 : X.IsWrite w2) (hl2 : X.loc w2 = P.sig o c + j)
+    (hz2 : o = .recv ∨ run.val w2 ≠ 0) : w1 = w2 := by
+  obtain ⟨r1, r1', hrw1, hrl1, hv1, ht1, hi1, hno1, -⟩ := set_writer run hP hc hj hoff hw1 hl1 hz1
+  obtain ⟨r2, r2', hrw2, hrl2, hv2, ht2, hi2, hno2, -⟩ := set_writer run hP hc hj hoff hw2 hl2 hz2
   have := (counter run hP wf hc).tickets wf hcons ho hfin hrw1 hrl1 hrw2 hrl2 (hv1.trans hv2.symm)
   subst this
   rcases Nat.lt_trichotomy (run.idx w1) (run.idx w2) with h | h | h
@@ -1095,16 +1351,18 @@ theorem set_unique (hP : P.Ok) (wf : X.WellFormed) (hcons : X.Consistent) (ho : 
   · exact (hno1 w2 (ht2.symm.trans ht1) hi2 h ⟨hw2, j, hj, hl2⟩).elim
 
 /-- A `send` happens before the `recv` that gets its value. The `send` with the number `k` ends
-with its write of the flag `full k`, and the `recv` with the number `k` waits for that flag. So
-each access before the write of `full k` happens before each access after a read of it. -/
+with its write of 1 to the flag `full k`, and the `recv` with the number `k` waits for that flag.
+So each access before the write of `full k` happens before each access after a read of it that
+sees it set. -/
 theorem send_hb_recv (hP : P.Ok) (wf : X.WellFormed) (hcons : X.Consistent) (ho : X.CoOrder)
     (hfin : X.Finite) {c k} (hc : c < P.chans) (hk : k < P.msgs) {a w e b : X.E}
-    (hw : X.IsWrite w) (hwl : X.loc w = P.sig .send c + k) (haw : a = w ∨ X.po a w)
-    (her : X.IsRead e) (hel : X.loc e = P.sig .send c + k) (heb : e = b ∨ X.po e b) :
-    X.hb a b := by
+    (hw : X.IsWrite w) (hwl : X.loc w = P.sig .send c + k) (hwv : run.val w ≠ 0)
+    (haw : a = w ∨ X.po a w) (her : X.IsRead e) (hel : X.loc e = P.sig .send c + k)
+    (hev : run.val e ≠ 0) (heb : e = b ∨ X.po e b) : X.hb a b := by
   obtain ⟨w', hrf⟩ := run.rf_source e her
   obtain ⟨hw', -, hwl'⟩ := run.rf_write_read w' e hrf
-  have := set_unique run hP wf hcons ho hfin hc hk (Nat.zero_le _) hw' (hwl'.trans hel) hw hwl
+  have := set_unique run hP wf hcons ho hfin hc hk (Nat.zero_le _) hw' (hwl'.trans hel)
+    (Or.inr fun h => hev ((run.rf_val w' e hrf).symm.trans h)) hw hwl (Or.inr hwv)
   subst this
   have hwk : X.kind w' ≠ .fence := by rw [hw]; nofun
   have hek : X.kind e ≠ .fence := by rw [her]; nofun
@@ -1112,25 +1370,37 @@ theorem send_hb_recv (hP : P.Ok) (wf : X.WellFormed) (hcons : X.Consistent) (ho 
 
 /-- For a channel with room for `n` values, the `recv` with the number `k` happens before the
 `send` with the number `k + n` ends. The `recv` ends with its write of the flag `taken (k + n)`.
-The `send` waits for that flag, and ends with its write of `full (k + n)`. -/
+The `send` waits for that flag, and ends with its write of 1 to `full (k + n)`. -/
 theorem recv_hb_send_capacity (hP : P.Ok) (wf : X.WellFormed) (hcons : X.Consistent)
     (ho : X.CoOrder) (hfin : X.Finite) {c k} (hc : c < P.chans) (hk : k + P.cap c < P.msgs)
     {a t w : X.E} (ht : X.IsWrite t) (htl : X.loc t = P.sig .recv c + (k + P.cap c))
-    (hat : a = t ∨ X.po a t) (hw : X.IsWrite w) (hwl : X.loc w = P.sig .send c + (k + P.cap c)) :
-    X.hb a w := by
+    (hat : a = t ∨ X.po a t) (hw : X.IsWrite w) (hwl : X.loc w = P.sig .send c + (k + P.cap c))
+    (hwv : run.val w ≠ 0) : X.hb a w := by
   obtain ⟨r, -, -, -, -, hrt, -, -, e, het, -, hew, her, hes, hel⟩ :=
-    set_writer run hP hc hk (Nat.zero_le _) hw hwl
+    set_writer run hP hc hk (Nat.zero_le _) hw hwl (Or.inr hwv)
   simp only [off, Op.other, Nat.sub_zero] at hel
   obtain ⟨t', hrf⟩ := run.rf_source e her
   obtain ⟨ht', -, htl'⟩ := run.rf_write_read t' e hrf
   have hj : k + P.cap c < P.sigLen .recv := by simp only [sigLen]; omega
   have := set_unique run hP wf hcons ho hfin hc hj (by simp only [off]; omega) ht'
-    (htl'.trans hel) ht htl
+    (htl'.trans hel) (Or.inl rfl) ht htl (Or.inl rfl)
   subst this
   have htk : X.kind t' ≠ .fence := by rw [ht]; nofun
   exact X.hb_of_signal hat ht (sig_sc run hP hc hj htk htl) hrf hes
     (Or.inr ((run.po_iff e w).2 ⟨het, hew⟩))
 
+/-- Each of the first `senders c` drops of the channel `c` happens before each read that sees all
+of them. A `recv` returns no value only after such a read. Each drop adds 1 to the counter of
+drops, so the read gets its value from a chain of `fetchAdd`s that starts at each drop. -/
+theorem drop_hb_closed (hP : P.Ok) (wf : X.WellFormed) (hcons : X.Consistent) (ho : X.CoOrder)
+    (hfin : X.Finite) {c} (hc : c < P.chans) {a r w e b : X.E} (hrw : X.rmw r w)
+    (hwl : X.loc w = P.drp c) (har : a = r ∨ X.po a r) (hr : run.val r < P.senders c)
+    (her : X.IsRead e) (hel : X.loc e = P.drp c) (hev : run.val e = P.senders c)
+    (heb : e = b ∨ X.po e b) : X.hb a b := by
+  have hre := (counter run hP wf hc).hb_of_lt wf hcons ho hfin
+    (fun d hd hk => cnt_sc run hP hc hk hd) hrw hwl e her hel (by omega)
+  have hae : X.hb a e := har.elim (fun h => h ▸ hre) (fun h => Relation.TransGen.head (Or.inl h) hre)
+  exact heb.elim (fun h => h ▸ hae) (fun h => hae.tail (Or.inl h))
 
 end ChanProg
 
