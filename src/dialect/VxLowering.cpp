@@ -2331,6 +2331,20 @@ struct ConvertVxToStandardPass
       // NVPTX renders exactly that as a `.shared` declaration -- and the
       // types line up with the alloca's uses with no casts. Dynamic ones were
       // refused above.
+      // Every stack slot of a fixed size goes to the entry block. LLVM keeps
+      // only entry-block slots in registers, and a variable declared inside an
+      // `if` or a loop of the region has its slot there.
+      {
+        Block &entry = gpuFunc.getBody().front();
+        SmallVector<memref::AllocaOp> late;
+        gpuFunc.walk([&](memref::AllocaOp a) {
+          if (a->getBlock() != &entry && a->getNumOperands() == 0)
+            late.push_back(a);
+        });
+        for (memref::AllocaOp a : late)
+          a->moveBefore(&entry, entry.begin());
+      }
+
       {
         SmallVector<memref::AllocaOp> smemAllocas;
         gpuFunc.walk([&](memref::AllocaOp a) {
