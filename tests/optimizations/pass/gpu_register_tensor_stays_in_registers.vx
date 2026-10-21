@@ -16,6 +16,7 @@
 // RUN: FileCheck %s --implicit-check-not=Error < %t.log
 // RUN: not grep __local_depot %t.log
 // CHECK: image={{.*}}.entry vx_npu_kernel_0({{.*}}mma.sync.aligned.m16n8k16{{.*}}bra
+// CHECK: image={{.*}}.entry vx_npu_kernel_1(
 
 fn mma_step(acc : &mut Tensor<f32, [32], Memory::REG>, a : i32, b : i32) on Topology::Device -> i32 {
   return mlir!( inputs : (%acc = acc : memref<32xf32>, %a = a : i32, %b = b : i32), returns : i32, dialects : ["llvm", "memref", "arith"]) {
@@ -52,6 +53,77 @@ pub fn gemm(out : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<i32, [?], Memo
     }
     for i in 0..32 {
       out[i] = acc[i];
+    }
+  }
+  return;
+}
+
+// Two register tensors and a loop counter declared in an `if`: a tile loop where adds stand in
+// for `mma.sync`. Their stack slots are in the `if`, and the compiler moves them to the kernel's
+// entry block. Without the move, LLVM left `acc` in local memory.
+fn thread_id() on Topology::Device -> i32 {
+  return mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
+    %t = gpu.thread_id x
+    %r = "arith.index_cast"(%t) : (index) -> i32
+    macro.yield %r : i32
+  };
+}
+fn block_id() on Topology::Device -> i32 {
+  return mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
+    %t = gpu.block_id x
+    %r = "arith.index_cast"(%t) : (index) -> i32
+    macro.yield %r : i32
+  };
+}
+pub fn tiles_in_an_if(out: &mut Tensor<f32, [?], Memory::HBM>, a: &Tensor<i32, [?], Memory::HBM>,
+b: &Tensor<i32, [?], Memory::HBM>, sizes: &Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    let lane: i32 = thread_id();
+    let tile: i32 = block_id();
+    let rows_m: i32 = sizes[0];
+    let rows_n: i32 = sizes[1];
+    let cols: i32 = sizes[2];
+    let tiles_n: i32 = rows_n / 64;
+    if rows_m % 16 == 0 && rows_n % 64 == 0 && cols % 16 == 0 && tiles_n > 0 && tile < (rows_m / 16) * tiles_n {
+      let m0: i32 = (tile / tiles_n) * 16;
+      let n0: i32 = (tile % tiles_n) * 64;
+      let g: i32 = lane >> 2;
+      let t: i32 = lane & 3;
+      let words: i64 = (cols / 2) as i64;
+      let a_lo: i64 = ((m0 + g) as i64) * words + (t as i64);
+      let a_hi: i64 = a_lo + 8 * words;
+      let b_base: i64 = ((n0 + g) as i64) * words + (t as i64);
+      let mut acc = unsafe { Tensor<f32, [32], Memory::REG>::uninit() };
+      for i in 0..32 {
+        acc[i] = 0.0;
+      }
+      let mut frag = unsafe { Tensor<i32, [16], Memory::REG>::uninit() };
+      let mut kw: i64 = 0;
+      while kw < words {
+        let a0: i32 = a[a_lo + kw];
+        let a1: i32 = a[a_hi + kw];
+        let a2: i32 = a[a_lo + kw + 4];
+        let a3: i32 = a[a_hi + kw + 4];
+        for j in 0..8 {
+          let row: i64 = b_base + 8 * (j as i64) * words + kw;
+          frag[2 * j] = b[row];
+          frag[2 * j + 1] = b[row + 4];
+        }
+        for j in 0..8 {
+          acc[4 * j] = acc[4 * j] + (frag[2 * j] as f32); acc[4 * j + 1] = acc[4 * j + 1] + (a0 as f32); acc[4 * j + 2] = acc[4 * j + 2] + (a1 as f32); acc[4 * j + 3] = acc[4 * j + 3] + (frag[2 * j + 1] as f32);
+        }
+        kw = kw + 8;
+      }
+      let n_count: i64 = rows_n as i64;
+      let out_lo: i64 = ((m0 + g) as i64) * n_count + ((n0 + 2 * t) as i64);
+      let out_hi: i64 = out_lo + 8 * n_count;
+      for j in 0..8 {
+        let col: i64 = 8 * (j as i64);
+        out[out_lo + col] = acc[4 * j];
+        out[out_lo + col + 1] = acc[4 * j + 1];
+        out[out_hi + col] = acc[4 * j + 2];
+        out[out_hi + col + 1] = acc[4 * j + 3];
+      }
     }
   }
   return;
