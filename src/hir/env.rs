@@ -1864,6 +1864,10 @@ impl<'a> TypeChecker<'a> {
         if !self.speculating {
             self.warn_serial_spawn_loops(&func.body);
         }
+        // E6032: an `across` loop in a place or with a size that it may not have.
+        if !self.speculating {
+            self.check_across_loops(&func.body);
+        }
 
         // The whole function has been checked; verify the working set of each memory space
         // it places tiles into fits (or is `overcommit`). Clears the per-function placement map.

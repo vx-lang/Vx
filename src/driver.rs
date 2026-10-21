@@ -803,6 +803,7 @@ impl CompilerDriver {
                     transfers: Vec::new(),
                     dtypes: None,
                     chip: None,
+                    levels: None,
                 },
             }],
             imports: Vec::new(),

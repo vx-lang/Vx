@@ -1,0 +1,161 @@
+//===- topology_levels_that_are_not_valid.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `levels:` on a `Topology` replaces the default levels of its arch, which `across` loops name.
+// In `small.vx`, a block has at most 256 lanes and there is no subgroup level, so a loop of 512
+// lanes and an `across subgroups` loop get E6032. An `nvptx64` block has at most 1024 lanes and
+// a subgroup has 32, so `levels:` cannot give more lanes or another subgroup size. The other
+// files each have one `levels:` that is not valid.
+//
+// RUN: split-file %s %t
+// RUN: not vxc %t/small.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=SMALL --implicit-check-not=E6032
+// RUN: not vxc %t/max.vx 2>&1 | FileCheck %s --check-prefix=MAX
+// RUN: not vxc %t/width.vx 2>&1 | FileCheck %s --check-prefix=WIDTH
+// RUN: not vxc %t/one.vx 2>&1 | FileCheck %s --check-prefix=ONE
+// RUN: not vxc %t/no_max.vx 2>&1 | FileCheck %s --check-prefix=NOMAX
+// RUN: not vxc %t/twice.vx 2>&1 | FileCheck %s --check-prefix=TWICE
+// RUN: not vxc %t/lanes_fact.vx 2>&1 | FileCheck %s --check-prefix=LANES
+// RUN: not vxc %t/max_fact.vx 2>&1 | FileCheck %s --check-prefix=MAXFACT
+// SMALL-DAG: Error[E6032] at 16:{{.*}}this loop asks for 512 lanes, but a block of `Dev` has at most 256
+// SMALL-DAG: Error[E6032] at 27:{{.*}}`across subgroups`: the topology `Dev` has the levels `blocks`, `lanes`
+// MAX: `max_lanes: 2048` is more than a block of `nvptx64` can have, which is 1024
+// WIDTH: `lanes: 64`: a subgroup of `nvptx64` has 32 lanes
+// ONE: `levels:` has 1 entries. It needs two (blocks and lanes) or three (blocks, subgroups and lanes)
+// NOMAX: `blocks` is the block level, so it needs `max_lanes:`
+// TWICE: `levels:` names `lanes` twice
+// LANES: Only a middle level, the subgroup level, has `lanes:`, not `lanes`
+// MAXFACT: Only the first level, the block level, has `max_lanes:`, not `subgroups`
+
+//--- small.vx
+Memory CPU_DRAM {}
+Memory HBM {
+  within: Memory::CPU_DRAM, capacity: 8 GiB
+}
+
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  levels: [blocks(max_lanes: 256, memory: cta), lanes(memory: thread)]
+}
+
+pub fn wide(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Dev) {
+    for b in 0..n across blocks {
+      for t in 0..512 across lanes {
+        o[t] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn warps(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Dev) {
+    for b in 0..n across blocks {
+      for w in 0..4 across subgroups {
+        o[w] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+//--- max.vx
+Memory HBM {}
+
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  levels: [blocks(max_lanes: 2048), lanes]
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+//--- width.vx
+Memory HBM {}
+
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  levels: [blocks(max_lanes: 1024), subgroups(lanes: 64), lanes]
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+//--- one.vx
+Memory HBM {}
+
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  levels: [blocks(max_lanes: 1024)]
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+//--- no_max.vx
+Memory HBM {}
+
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  levels: [blocks, lanes]
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+//--- twice.vx
+Memory HBM {}
+
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  levels: [lanes(max_lanes: 64), lanes]
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+//--- lanes_fact.vx
+Memory HBM {}
+
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  levels: [blocks(max_lanes: 64), lanes(lanes: 4)]
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+//--- max_fact.vx
+Memory HBM {}
+
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  levels: [blocks(max_lanes: 64), subgroups(lanes: 32, max_lanes: 4), lanes]
+}
+
+fn main() -> i32 {
+  return 0;
+}

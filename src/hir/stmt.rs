@@ -674,8 +674,26 @@ impl<'a> TypeChecker<'a> {
             body,
             span: loop_span,
             next_fn,
+            across,
         } = floop;
         let loop_span = *loop_span;
+        // The `n` of `across blocks(n)` is a count, as a loop bound is.
+        if let Some(a) = across.as_mut() {
+            let at = a.span;
+            if let Some(n) = a.share.as_deref_mut() {
+                let ty = self.check_expr_type_flag(n, false);
+                if ty != Type::Scalar(ElementType::I32) && ty != Type::Unknown {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6032,
+                        format!(
+                            "the count of an `across` loop is an `i32`, as a loop bound is, not \
+                             `{ty}`"
+                        ),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
+                    );
+                }
+            }
+        }
         // `for x in t` over a tensor reads it by index: `for $i in 0..t.len() { let x = t[$i]; .. }`.
         // A tensor of rank 2 or more gives its rows.
         if matches!(&**iterable, Expr::Array(_))
@@ -2683,6 +2701,7 @@ impl<'a> TypeChecker<'a> {
                 body,
                 span: _,
                 next_fn: _,
+                across: _,
             }) => self.eval_for_loop(iter, iterable, body, env),
             Statement::Loop(LoopStmt {
                 body,

@@ -309,6 +309,7 @@ impl<'a> Parser<'a> {
                 let iter = self.expect_identifier("Expected identifier after 'for'")?;
                 self.consume(&TokenType::In, "Expected 'in' after for iterator")?;
                 let iterable = self.parse_expr()?;
+                let across = self.parse_across_clause()?;
                 let mut invariants = Vec::new();
                 while self.match_token(&TokenType::Invariant) {
                     invariants.push(self.parse_expr()?);
@@ -326,6 +327,7 @@ impl<'a> Parser<'a> {
                     body: stmts,
                     span: for_span,
                     next_fn: None,
+                    across,
                 }))
             }
             TokenType::Identifier(s) => {
@@ -387,6 +389,40 @@ impl<'a> Parser<'a> {
     ///
     /// The first `let` is returned and the rest wait in `pending_stmts` for
     /// `parse_statement_into`, since a statement parses to one statement.
+    /// `across <level>` or `across <level>(n)` after the range of a `for`.
+    fn parse_across_clause(&mut self) -> ParseResult<'a, Option<AcrossClause>> {
+        if !self.check(&TokenType::Across) {
+            return Ok(None);
+        }
+        let at = self.advance().clone();
+        let span = Span {
+            line: at.line,
+            column: at.column,
+            length: at.length,
+            expansion: self.expansion(),
+        };
+        let level = match &self.advance().kind {
+            TokenType::Identifier(s) => crate::symbol::Symbol::from(*s),
+            other => {
+                return Err(self.error(&format!(
+                    "Expected a level such as `blocks` or `lanes` after 'across', got {:?}",
+                    other
+                )))
+            }
+        };
+        let share = if self.match_token(&TokenType::LeftParen) {
+            let n = self.parse_expr()?;
+            self.consume(
+                &TokenType::RightParen,
+                "Expected ')' after the count of passes",
+            )?;
+            Some(Box::new(n))
+        } else {
+            None
+        };
+        Ok(Some(AcrossClause { level, share, span }))
+    }
+
     fn parse_tuple_let(&mut self, span: Span) -> ParseResult<'a, Statement> {
         let start = self.peek().clone();
         let pattern = self.parse_tuple_pattern()?;

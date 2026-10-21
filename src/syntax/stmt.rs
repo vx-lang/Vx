@@ -73,7 +73,19 @@ pub struct ForLoopStmt {
     /// The `next` the checker resolved for this loop's iterator, by its instance name. Two
     /// instances of one generic iterator have two `next`s, and only the checker knows which.
     pub next_fn: Option<crate::symbol::Symbol>,
+    /// `across <level>` or `across <level>(n)`: the loop is one axis of a GPU launch.
+    pub across: Option<AcrossClause>,
 }
+
+/// `across lanes` or `across lanes(n)` on a `for`. `level` is a level of the region's
+/// topology, and `share` is the `n` that the passes are shared among.
+#[derive(Debug, PartialEq, Clone)]
+pub struct AcrossClause {
+    pub level: Symbol,
+    pub share: Option<Box<Expr>>,
+    pub span: Span,
+}
+
 impl ForLoopStmt {
     pub fn new(
         iter: String,
@@ -89,6 +101,7 @@ impl ForLoopStmt {
             body,
             span,
             next_fn: None,
+            across: None,
         }
     }
 }
@@ -333,6 +346,11 @@ impl Statement {
                 body: e.body.iter().map(|s| s.substitute(mapping)).collect(),
                 span: e.span,
                 next_fn: e.next_fn.clone(),
+                across: e.across.as_ref().map(|a| AcrossClause {
+                    level: a.level.clone(),
+                    share: a.share.as_ref().map(|n| Box::new(n.substitute(mapping))),
+                    span: a.span,
+                }),
             }),
             Statement::Assign(e) => Statement::Assign(AssignStmt {
                 lhs: e.lhs.substitute(mapping),
