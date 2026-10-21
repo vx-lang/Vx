@@ -27,6 +27,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "../../runtime/vx_kernel_launch.h"
+#include "../../runtime/vx_stream_policy.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -288,6 +289,28 @@ void launch_shapes() {
         "a launch value that is not an i32 is refused");
 }
 
+/* With a stream set by the host program, a wait covers that stream, and a
+   graph recording refuses a wait. Memory from cudaMallocAsync is freed in
+   stream order, so a recording can hold its free. */
+void caller_streams() {
+  check(vx_wait_action_for(0, 0) == VX_WAIT_DEVICE,
+        "with no stream, a wait covers the device");
+  check(vx_wait_action_for(1, 0) == VX_WAIT_STREAM,
+        "with a stream, a wait covers that stream");
+  check(vx_wait_action_for(1, 1) == VX_WAIT_REFUSE,
+        "a recording refuses a wait");
+  check(vx_free_action_for(0, 0, 0) == VX_FREE_AFTER_DEVICE_WAIT,
+        "with no stream, a free waits for the device");
+  check(vx_free_action_for(1, 1, 1) == VX_FREE_ON_STREAM,
+        "a recording holds the free of stream-ordered memory");
+  check(vx_free_action_for(1, 0, 1) == VX_FREE_ON_STREAM,
+        "stream-ordered memory is freed with no wait");
+  check(vx_free_action_for(1, 0, 0) == VX_FREE_AFTER_STREAM_WAIT,
+        "other memory waits for the stream before its free");
+  check(vx_free_action_for(1, 1, 0) == VX_FREE_REFUSE,
+        "a recording refuses a free that needs a wait");
+}
+
 int main() {
   widths();
   the_four_operand_signature();
@@ -296,6 +319,7 @@ int main() {
   refusals();
   entry_parameter_counting();
   launch_shapes();
+  caller_streams();
 
   if (failures != 0) {
     fprintf(stderr, "%d check(s) failed\n", failures);
