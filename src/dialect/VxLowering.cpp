@@ -3994,8 +3994,9 @@ static std::string deviceChip(gpu::GPUModuleOp gpuModule) {
 
 /// The PTX ISA version for `chip`, as an NVPTX feature. 7.6 is what CUDA 11.6
 /// and later accept. A newer chip needs a newer version: 7.8 for `sm_89` and
-/// `sm_90`, 8.0 for `sm_90a` (which has `wgmma`), 8.8 for every `sm_10x` and
-/// `sm_12x` chip, and 9.0 for `sm_110`.
+/// `sm_90`, 8.3 for `sm_90a` (which has `wgmma` and the tensor-map fence
+/// `fence.proxy.tensormap`), 8.8 for every `sm_10x` and `sm_12x` chip, and 9.0
+/// for `sm_110`.
 static std::string ptxFeatureFor(StringRef chip) {
   unsigned number = 0;
   chip.drop_front(3).take_while(llvm::isDigit).getAsInteger(10, number);
@@ -4005,7 +4006,7 @@ static std::string ptxFeatureFor(StringRef chip) {
   if (number >= 100)
     return "+ptx88";
   if (number >= 90)
-    return archSpecific ? "+ptx80" : "+ptx78";
+    return archSpecific ? "+ptx83" : "+ptx78";
   if (number >= 89)
     return "+ptx78";
   return "+ptx76";

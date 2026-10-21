@@ -70,7 +70,8 @@ these compose properly; see the note in that file.
 
 `chip:` on an `nvptx64` topology names the GPU generation that its kernels are compiled for:
 `sm_80` for A100, `sm_90a` for H100 and H200, `sm_100a` for B200. The compiler picks the PTX
-version that the chip needs. Code for one chip may not load on an older one, and an `a` chip's code
+version that the chip needs. `sm_90a` gets PTX 8.3, for the tensor-map fence, so it needs a CUDA 12.3
+or later driver. Code for one chip may not load on an older one, and an `a` chip's code
 loads only on that generation. A topology with no `chip:` compiles for `sm_80`. The environment
 variable `VX_GPU_CHIP` overrides the field. All the kernels of one program go into one device
 image, so two topologies with different chips in one program are an error.
