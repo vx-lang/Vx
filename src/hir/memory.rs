@@ -698,6 +698,7 @@ mod tests {
             replicas: None,
             managed: Management::default(),
             granule: None,
+            alignment: None,
             scope: None,
             overcommit: false,
             crossing: crate::syntax::Crossing::default(),

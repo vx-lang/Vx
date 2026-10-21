@@ -617,6 +617,10 @@ pub enum DiagnosticCode {
     /// the most an allocation can ask for. The size is known, and it is not one the generated
     /// code can allocate: it would wrap.
     E6031,
+    /// An `aligned(N)` in a tensor type that the compiler cannot give: the space is not one whose
+    /// storage the compiler lays out (`scope: sm`, `cta` or `thread`), or N is less than the
+    /// `alignment:` of the space, which every tensor there has.
+    E6034,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

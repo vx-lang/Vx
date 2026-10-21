@@ -30,9 +30,10 @@ Memory L2 {
 // spec: NVIDIA Hopper Architecture Whitepaper / CUDA C Programming Guide --
 // 228 KB configurable shared memory per SM.
 Memory SMEM {
+  // alignment: the 16-byte vector accesses (ld.shared.v4) that LLVM makes need it.
   // replicas: UNVERIFIED: same GH100 die as h100-sxm
   // clock: UNVERIFIED: same GH100 die as h100-sxm
-  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, clock: 1.98 GHz, granule: 1 KiB, managed: explicit, scope: sm, replicas: 132
+  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, clock: 1.98 GHz, granule: 1 KiB, managed: explicit, alignment: 16 B, scope: sm, replicas: 132
 }
 
 Topology Device {

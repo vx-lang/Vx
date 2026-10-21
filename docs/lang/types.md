@@ -39,6 +39,24 @@ the half it did not state, which is why `Placement` records which half the sourc
 > falls back to the like-named device rather than being refused, which is what an undeclared
 > `Topology::X` already does.
 
+### A tensor can ask for an alignment
+
+`aligned(N)` after the placement makes the tensor start at a multiple of N bytes, with N a power
+of two. TMA's 128-byte swizzle, for example, needs each shared buffer aligned to 1024:
+
+```rust
+let stage = unsafe { Tensor<f8e4m3, [128, 128], Memory::SMEM, aligned(1024)>::uninit() };
+```
+
+A memory space in the machine file states the least alignment of every tensor in it, as
+`alignment: 16 B`. `aligned(N)` may ask for more, not less, and only in a space whose storage the
+compiler lays out: one declared with `scope: sm`, `cta` or `thread`. Anything else is E6034.
+
+The alignment is part of the type. A tensor fits where a smaller alignment is asked: a
+`&mut Tensor<f32, [16], Memory::SMEM, aligned(1024)>` can be given to a parameter of type
+`&mut Tensor<f32, [16], Memory::SMEM>`, and not the other way round. A tensor with no `aligned(N)`
+has the alignment of its space.
+
 ### A raw pointer can say which memory it points into
 
 A bare `*mut T` or `*const T` points into host memory. A pointer into another memory writes the
@@ -368,6 +386,8 @@ When verifying `let target: TargetType = source_expression;`, the compiler permi
 1. **Borrow to Raw Pointer:** A borrow fits a raw pointer to the same type: `&mut T` fits `*mut T` or `*const T`, and `&T` fits `*const T`. A `&T` does not fit `*mut T`.
 1. **Dropping `mut`:** `&mut T` fits `&T`, and `*mut T` fits `*const T`. A raw pointer to `i8` fits a raw pointer to any type, and the other way round, as `void *` does in C.
 1. **Never:** A value of type `!`, such as a call to a function that never returns, fits any type.
+1. **More aligned to less aligned:** A tensor fits a tensor type that differs only in a smaller
+   `aligned(N)`. A tensor with no `aligned(N)` has the `alignment:` of its space.
 
 These are refused, and the compiler says so with E3001:
 

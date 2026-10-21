@@ -45,7 +45,8 @@ Memory L2 {
 // spec: NVIDIA Hopper Architecture Whitepaper / CUDA C Programming Guide --
 // 228 KB configurable shared memory per SM (up from 164 KB on A100).
 Memory SMEM {
-  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, scope: sm
+  // alignment: the 16-byte vector accesses (ld.shared.v4) that LLVM makes need it.
+  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, alignment: 16 B, scope: sm
 }
 
 // --- The decode device ------------------------------------------------------

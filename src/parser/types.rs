@@ -118,6 +118,29 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `aligned(N)` in a tensor type, with N a power of two.
+    fn parse_tensor_alignment(&mut self) -> ParseResult<'a, u64> {
+        match &self.advance().kind {
+            TokenType::Identifier(s) if *s == "aligned" => {}
+            other => {
+                return Err(self.error(&format!(
+                    "Expected `aligned(N)` after the placement of a tensor type, got {:?}",
+                    other
+                )))
+            }
+        }
+        self.consume(&TokenType::LeftParen, "Expected '(' after `aligned`")?;
+        let n = match &self.advance().kind {
+            TokenType::Number(s) => s.parse::<u64>().ok(),
+            _ => None,
+        };
+        let Some(n) = n.filter(|n| n.is_power_of_two()) else {
+            return Err(self.error("`aligned(N)` needs N to be a power of two, such as 1024"));
+        };
+        self.consume(&TokenType::RightParen, "Expected ')' after the alignment")?;
+        Ok(n)
+    }
+
     pub(crate) fn parse_memory_space(&mut self) -> ParseResult<'a, MemorySpace> {
         self.consume(&TokenType::Memory, "Expected 'Memory'")?;
         self.consume(&TokenType::DoubleColon, "Expected '::' after 'Memory'")?;
@@ -486,6 +509,13 @@ impl<'a> Parser<'a> {
                     let mut top = None;
                     if self.match_token(&TokenType::Comma) {
                         top = Some(self.parse_placement()?);
+                    }
+                    // `aligned(N)` after the placement: the tensor starts at a multiple of N
+                    // bytes.
+                    if let Some(p) = top.as_mut() {
+                        if self.match_token(&TokenType::Comma) {
+                            p.alignment = Some(self.parse_tensor_alignment()?);
+                        }
                     }
 
                     self.consume(

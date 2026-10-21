@@ -342,6 +342,9 @@ pub struct MemoryDecl {
     pub clock_hz: Option<u64>,
     pub managed: Management,
     pub granule: Option<ByteSize>,
+    /// `alignment: 128 B` -- the least alignment of a tensor in this space. A tensor can ask
+    /// for more with `.aligned(N)`.
+    pub alignment: Option<ByteSize>,
     /// The execution level this space is private to (`scope: sm` etc.); `None` = unscoped.
     pub scope: Option<Scope>,
     /// `replicas: 132` — how many instances of this space the device contains.

@@ -75,6 +75,12 @@ loads only on that generation. A topology with no `chip:` compiles for `sm_80`. 
 variable `VX_GPU_CHIP` overrides the field. All the kernels of one program go into one device
 image, so two topologies with different chips in one program are an error.
 
+## Alignment
+
+`alignment:` on a memory space is the least alignment, in bytes, of every tensor in it. The NVIDIA
+files give `SMEM` 16 bytes, which LLVM's 16-byte vector accesses need. A tensor asks for more with
+`aligned(N)` in its type (`docs/lang/types.md`).
+
 ## Element type vocabularies
 
 `dtypes:` on a topology states which element types the hardware can natively represent and compute

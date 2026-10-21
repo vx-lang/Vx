@@ -522,6 +522,13 @@ impl<'a> Parser<'a> {
                          `unsafe {{ {ty}::uninit() }}` for storage left as it was found"
                     )));
                 }
+                // The older spelling has no `aligned(N)`, so its error is the one to give.
+                Err(e @ ParserError::Custom { .. })
+                    if matches!(&e, ParserError::Custom { message, .. }
+                        if message.contains("`aligned(N)`")) =>
+                {
+                    return Err(e);
+                }
                 _ => self.pos = saved,
             }
         }

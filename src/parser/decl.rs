@@ -502,6 +502,7 @@ impl<'a> Parser<'a> {
         let mut numa_node: Option<u64> = None;
         let mut managed = crate::syntax::Management::default();
         let mut granule: Option<crate::syntax::ByteSize> = None;
+        let mut alignment: Option<crate::syntax::ByteSize> = None;
         let mut scope: Option<crate::syntax::Scope> = None;
         let mut overcommit = false;
         let mut crossing = crate::syntax::Crossing::default();
@@ -549,6 +550,16 @@ impl<'a> Parser<'a> {
                 }
                 "capacity" => capacity = Some(self.parse_byte_size()?),
                 "granule" => granule = Some(self.parse_byte_size()?),
+                "alignment" => {
+                    let size = self.parse_byte_size()?;
+                    if !size.0.is_power_of_two() {
+                        return Err(self.error(&format!(
+                            "`alignment:` must be a power of two bytes, got {} bytes",
+                            size.0
+                        )));
+                    }
+                    alignment = Some(size);
+                }
                 "bandwidth" => bandwidth = Some(self.parse_bandwidth()?),
                 "clock" => clock_hz = Some(self.parse_clock()?),
                 "replicas" => replicas = Some(self.parse_count()?),
@@ -614,6 +625,7 @@ impl<'a> Parser<'a> {
             numa_node,
             managed,
             granule,
+            alignment,
             scope,
             overcommit,
             crossing,

@@ -3586,9 +3586,11 @@ impl<'r> Lowerer<'r> {
                 .map(|p| crate::arch::memory_space_dispatch_id(&p.space))
                 .filter(|id| *id > 0)
                 .unwrap_or(0);
+            // `aligned(N)` rides on the first operand, 0 for none.
+            let align = placement.as_ref().and_then(|p| p.alignment).unwrap_or(0);
             let buf = self.emit_typed(
                 Opcode::TensorAlloc,
-                Register(0),
+                Register(align as u32),
                 Register(space as u32),
                 ty,
                 bytes,

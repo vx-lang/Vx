@@ -780,6 +780,7 @@ impl CompilerDriver {
                 replicas: None,
                 managed: crate::syntax::Management::Explicit,
                 granule: None,
+                alignment: None,
                 scope: None,
                 overcommit: false,
                 crossing: crate::syntax::Crossing::default(),

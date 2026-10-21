@@ -309,8 +309,17 @@ impl FnEmit<'_> {
             // compute-sanitizer on the block-per-row softmax (Vx#379 R3).
             // Entry block: a tensor declared inside a loop would otherwise take a
             // fresh stack slot per iteration and never give one back.
+            // At least 16, the `alignment:` of the space, and the `aligned(N)` of the type.
+            let align = self
+                .ctx
+                .subspaces
+                .get(&(ins.operand2.0 as u64))
+                .and_then(|s| s.alignment)
+                .unwrap_or(0)
+                .max(ins.operand1.0 as u64)
+                .max(16);
             self.emit_slot(&format!(
-                "  {n} = memref.alloca() {{alignment = 16 : i64}} : {smty}\n"
+                "  {n} = memref.alloca() {{alignment = {align} : i64}} : {smty}\n"
             ));
             self.names[idx] = n;
             self.mem_of[idx] = Some(smty);

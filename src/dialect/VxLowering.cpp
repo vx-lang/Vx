@@ -2840,6 +2840,9 @@ struct ConvertVxToStandardPass
               atEntry.getContext(), gpu::AddressSpace::Workgroup);
           auto bytesType = MemRefType::get(
               {ShapedType::kDynamic}, atEntry.getI8Type(), nullptr, workgroup);
+          int64_t most = 16;
+          for (memref::AllocaOp a : smemAllocas)
+            most = std::max(most, alignOf(a));
           Value base =
               atEntry.create<gpu::DynamicSharedMemoryOp>(loc, bytesType);
           int64_t offset = 0;
@@ -2860,6 +2863,8 @@ struct ConvertVxToStandardPass
           }
           gpuFunc->setAttr("vx.dynamic_shared",
                            atEntry.getI64IntegerAttr(total));
+          gpuFunc->setAttr("vx.dynamic_shared_align",
+                           atEntry.getI64IntegerAttr(most));
           smemAllocas.clear();
         }
         int smemIdx = 0;
@@ -4090,6 +4095,11 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
   NVVM::registerNVVMTargetInterfaceExternalModels(registry);
   context->appendDialectRegistry(registry);
 
+  uint64_t dynamicAlign = 16;
+  gpuModule.walk([&](gpu::GPUFuncOp f) {
+    if (auto a = f->getAttrOfType<IntegerAttr>("vx.dynamic_shared_align"))
+      dynamicAlign = std::max<uint64_t>(dynamicAlign, a.getInt());
+  });
   OwningOpRef<ModuleOp> device = ModuleOp::create(gpuModule.getLoc());
   device->getBody()->push_back(gpuModule->clone());
 
@@ -4194,9 +4204,14 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
   // Dynamic shared memory must be `.extern .shared .b8 name[]` in the PTX. The
   // NVVM conversion makes its global internal, and LLVM then turns it into a
   // one-byte `.shared` variable of the kernel.
-  device->walk([](LLVM::GlobalOp g) {
-    if (g.getSymName().starts_with("__dynamic_shmem__"))
-      g.setLinkage(LLVM::Linkage::External);
+  // Its alignment is the largest of the tensors in it, so that each one's
+  // offset keeps its own.
+  device->walk([&](LLVM::GlobalOp g) {
+    if (!g.getSymName().starts_with("__dynamic_shmem__"))
+      return;
+    g.setLinkage(LLVM::Linkage::External);
+    if (dynamicAlign > 16)
+      g.setAlignment(dynamicAlign);
   });
   if (failed(toBinary.run(*device))) {
     error = "the NVPTX pipeline failed";

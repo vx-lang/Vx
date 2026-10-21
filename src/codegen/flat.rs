@@ -934,6 +934,8 @@ pub struct SubspaceInfo {
     pub name: String,
     pub within: Option<String>,
     pub granule: Option<u64>,
+    /// `alignment:`, the least alignment of a tensor in the space, in bytes.
+    pub alignment: Option<u64>,
     pub capacity: Option<u64>,
     pub scope: Option<String>,
     /// "explicit" or "cached". Decides whether the host may read this space, and
@@ -1061,6 +1063,7 @@ pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
                 name: space.name(),
                 within: decl.parent.as_ref().map(|p| p.name()),
                 granule: decl.granule.as_ref().map(|g| g.0),
+                alignment: decl.alignment.as_ref().map(|a| a.0),
                 capacity: decl.capacity.as_ref().map(|c| c.0),
                 scope: decl.scope.as_ref().map(|s| {
                     match s {

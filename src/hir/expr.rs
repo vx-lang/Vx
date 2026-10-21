@@ -493,6 +493,12 @@ impl<'a> TypeChecker<'a> {
         if let (Some((t_inner, t_top)), Some((s_inner, s_top))) =
             (Self::located_parts(target), Self::located_parts(source))
         {
+            // A tensor fits where a smaller alignment is asked, not a larger one.
+            if let (Type::Tensor(_, _, Some(t)), Type::Tensor(_, _, Some(s))) = (target, source) {
+                if self.alignment_of(s) < self.alignment_of(t) {
+                    return false;
+                }
+            }
             return t_top == s_top && self.is_assignable(&t_inner, &s_inner);
         }
 
