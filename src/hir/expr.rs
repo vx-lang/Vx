@@ -195,7 +195,8 @@ impl<'a> TypeChecker<'a> {
                 let before = self.consteval_snapshot();
                 let scopes = self.consteval_scopes();
                 let saved_borrows = self.borrow.snapshot();
-                self.value_unused = *has_semi || i != last || block_unused;
+                // With a separate value after it, the last statement is not the block's value.
+                self.value_unused = *has_semi || i != last || block_unused || tail.is_some();
                 // `v;` reads `v`: it does not move it.
                 let consume =
                     consume && !(self.value_unused && matches!(expr, Expr::Identifier(_)));
