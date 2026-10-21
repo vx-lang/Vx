@@ -73,6 +73,9 @@ pub struct ForLoopStmt {
     /// The `next` the checker resolved for this loop's iterator, by its instance name. Two
     /// instances of one generic iterator have two `next`s, and only the checker knows which.
     pub next_fn: Option<crate::symbol::Symbol>,
+    /// The bounds of a loop that the code generator writes out once for each pass, set by the
+    /// checker when the loop variable indexes a tensor that must stay in registers.
+    pub unroll: Option<(i64, i64)>,
 }
 impl ForLoopStmt {
     pub fn new(
@@ -89,6 +92,7 @@ impl ForLoopStmt {
             body,
             span,
             next_fn: None,
+            unroll: None,
         }
     }
 }
@@ -333,6 +337,7 @@ impl Statement {
                 body: e.body.iter().map(|s| s.substitute(mapping)).collect(),
                 span: e.span,
                 next_fn: e.next_fn.clone(),
+                unroll: e.unroll,
             }),
             Statement::Assign(e) => Statement::Assign(AssignStmt {
                 lhs: e.lhs.substitute(mapping),

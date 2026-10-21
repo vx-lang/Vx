@@ -1,0 +1,62 @@
+//===- gpu_register_tensor_stays_in_registers.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor-core loop over 32 accumulators in `Memory::REG`. Each pass of the k loop gives four of
+// them to `mma.sync` through an `mlir!` block, then scales all 32. The compiler unrolls the loops
+// over the tensor, so the kernel keeps it in registers: the PTX has no local memory
+// (`__local_depot`), and the k loop stays a loop. Without the unroll, LLVM vectorizes the
+// 32-pass loops, and the tensor stays in local memory.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null > %t.log 2>&1
+// RUN: FileCheck %s --implicit-check-not=Error < %t.log
+// RUN: not grep __local_depot %t.log
+// CHECK: image={{.*}}.entry vx_npu_kernel_0({{.*}}mma.sync.aligned.m16n8k16{{.*}}bra
+
+fn mma_step(acc : &mut Tensor<f32, [32], Memory::REG>, a : i32, b : i32) on Topology::Device -> i32 {
+  return mlir!( inputs : (%acc = acc : memref<32xf32>, %a = a : i32, %b = b : i32), returns : i32, dialects : ["llvm", "memref", "arith"]) {
+    %i0 = arith.constant 0 : index
+    %i1 = arith.constant 1 : index
+    %i2 = arith.constant 2 : index
+    %i3 = arith.constant 3 : index
+    %c0 = memref.load %acc[%i0] : memref<32xf32>
+    %c1 = memref.load %acc[%i1] : memref<32xf32>
+    %c2 = memref.load %acc[%i2] : memref<32xf32>
+    %c3 = memref.load %acc[%i3] : memref<32xf32>
+    %r = llvm.inline_asm has_side_effects "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {$0,$1,$2,$3}, {$4,$4,$4,$4}, {$5,$5}, {$0,$1,$2,$3};", "=f,=f,=f,=f,r,r,0,1,2,3" %a, %b, %c0, %c1, %c2, %c3 : (i32, i32, f32, f32, f32, f32) -> !llvm.struct<(f32, f32, f32, f32)>
+    %o0 = llvm.extractvalue %r[0] : !llvm.struct<(f32, f32, f32, f32)>
+    %o1 = llvm.extractvalue %r[1] : !llvm.struct<(f32, f32, f32, f32)>
+    %o2 = llvm.extractvalue %r[2] : !llvm.struct<(f32, f32, f32, f32)>
+    %o3 = llvm.extractvalue %r[3] : !llvm.struct<(f32, f32, f32, f32)>
+    memref.store %o0, %acc[%i0] : memref<32xf32>
+    memref.store %o1, %acc[%i1] : memref<32xf32>
+    memref.store %o2, %acc[%i2] : memref<32xf32>
+    memref.store %o3, %acc[%i3] : memref<32xf32>
+    %z = arith.constant 0 : i32
+    macro.yield %z : i32
+  };
+}
+
+pub fn gemm(out : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<i32, [?], Memory::HBM>, s : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    let mut acc = Tensor<f32, [32], Memory::REG>::fill(0.0);
+    for k in 0..64 {
+      let _z = mma_step(&mut acc, a[k], a[k + 64]);
+      for i in 0..32 {
+        acc[i] = acc[i] * s[k];
+      }
+    }
+    for i in 0..32 {
+      out[i] = acc[i];
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

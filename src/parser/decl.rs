@@ -2036,6 +2036,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
             invariants: _,
             span: _,
             next_fn: _,
+            unroll: _,
         }) = &program.functions[0].body[0]
         {
             assert_eq!(iter, "i");

@@ -676,6 +676,7 @@ impl<'a> TypeChecker<'a> {
             body,
             span: loop_span,
             next_fn,
+            unroll,
         } = floop;
         let loop_span = *loop_span;
         // `for x in t` over a tensor reads it by index: `for $i in 0..t.len() { let x = t[$i]; .. }`.
@@ -965,7 +966,28 @@ impl<'a> TypeChecker<'a> {
             binds: Some(iter.as_str()),
             evaluates: Some(&**iterable),
         };
+        let bounds = match &**iterable {
+            Expr::Range(r) if !crate::hir::check::raw::body_reassigns(body, iter) => {
+                match (
+                    self.eval_expr(&r.start, &before),
+                    self.eval_expr(&r.end, &before),
+                ) {
+                    (Some(Value::Int(lo)), Some(Value::Int(hi))) => Some((lo, hi)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        self.unroll_candidates
+            .push(crate::hir::env::UnrollCandidate {
+                var: iter.as_str().into(),
+                bounds,
+                used: false,
+            });
         self.check_loop_body(body, return_type, header);
+        if let Some(c) = self.unroll_candidates.pop().filter(|c| c.used) {
+            *unroll = c.bounds;
+        }
         self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
@@ -2690,6 +2712,7 @@ impl<'a> TypeChecker<'a> {
                 body,
                 span: _,
                 next_fn: _,
+                unroll: _,
             }) => self.eval_for_loop(iter, iterable, body, env),
             Statement::Loop(LoopStmt {
                 body,

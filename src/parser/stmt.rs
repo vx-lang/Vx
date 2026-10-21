@@ -326,6 +326,7 @@ impl<'a> Parser<'a> {
                     body: stmts,
                     span: for_span,
                     next_fn: None,
+                    unroll: None,
                 }))
             }
             TokenType::Identifier(s) => {

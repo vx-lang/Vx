@@ -2615,6 +2615,14 @@ impl<'r> Lowerer<'r> {
             return self.lower_for_iterator(f);
         };
         let start = self.lower_expr(&range.start)?;
+        if let Some((lo, hi)) = f.unroll {
+            let LoweredTy::Scalar(elem) = start.ty else {
+                return Err(Decline::TypeNotModelled {
+                    what: "a range over a non-scalar",
+                });
+            };
+            return self.lower_unrolled_for(f, elem, lo, hi);
+        }
         let end = self.lower_expr(&range.end)?;
         let elem = match &start.ty {
             LoweredTy::Scalar(e) => e.clone(),
@@ -2693,6 +2701,48 @@ impl<'r> Lowerer<'r> {
         self.emit_effect(Opcode::Store, i_slot.reg, inc.reg, 0);
         self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
 
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), exit as u64);
+        Ok(())
+    }
+
+    /// A loop whose variable indexes a register tensor: the body once for each pass, with the
+    /// variable a constant in each, so every index into the tensor is a constant. `continue`
+    /// goes to the next pass and `break` to the end.
+    fn lower_unrolled_for(
+        &mut self,
+        f: &crate::syntax::ForLoopStmt,
+        elem: ElementType,
+        lo: i64,
+        hi: i64,
+    ) -> Lowered<()> {
+        let i_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
+        self.scope.insert(
+            f.iter.as_str().into(),
+            Binding::Slot {
+                reg: i_slot.reg,
+                ty: LoweredTy::Scalar(elem.clone()),
+            },
+        );
+        let exit = self.new_block();
+        for pass in lo..hi {
+            let value = self.emit_value(
+                Opcode::Const,
+                Register(0),
+                Register(0),
+                elem.clone(),
+                pass as u64,
+            );
+            self.emit_effect(Opcode::Store, i_slot.reg, value.reg, 0);
+            let next = self.new_block();
+            self.loop_stack.push((next, exit));
+            self.lower_block(&f.body)?;
+            self.loop_stack.pop();
+            if !self.block_terminated() {
+                self.emit_effect(Opcode::Br, Register(0), Register(0), next as u64);
+            }
+            self.emit_effect(Opcode::BlockStart, Register(0), Register(0), next as u64);
+        }
+        self.emit_effect(Opcode::Br, Register(0), Register(0), exit as u64);
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), exit as u64);
         Ok(())
     }

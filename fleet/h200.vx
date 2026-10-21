@@ -36,13 +36,20 @@ Memory SMEM {
   within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, clock: 1.98 GHz, granule: 1 KiB, managed: explicit, alignment: 16 B, scope: sm, replicas: 132
 }
 
+// spec: CUDA C Programming Guide, technical specifications per compute capability -- at most
+// 255 32-bit registers per thread. A tensor here stays in registers, so each index must be
+// known when compiling (E6033).
+Memory REG {
+  within: Memory::SMEM, capacity: 1020 B, managed: explicit, scope: thread
+}
+
 Topology Device {
   // spec: NVIDIA Hopper GH100; LLVM's NVPTX target.
   arch: nvptx64,
   // The `a` chip adds wgmma. Its code loads only on Hopper.
   chip: sm_90a,
   memory: Memory::HBM,
-  visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::REG],
   // spec: NVIDIA "NVIDIA Hopper Architecture In-Depth": "The FP8, FP16, BF16, TF32, FP64,
   // and INT8 MMA data types are supported." Same GH100 die as h100-sxm, so the same
   // vocabulary. No native INT4, and no FP4.

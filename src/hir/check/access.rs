@@ -16,6 +16,9 @@
 use super::super::*;
 use std::collections::HashMap;
 
+/// The most passes of one loop that the compiler unrolls for a register tensor.
+const MAX_UNROLLED_PASSES: i64 = 1024;
+
 impl<'a> TypeChecker<'a> {
     /// Whether a type opts out of being moved by implementing `Copy`.
     ///
@@ -1103,6 +1106,116 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Whether a tensor placed in `placement` must stay in registers: its space is declared
+    /// `scope: thread`.
+    pub(crate) fn is_register_space(&self, placement: Option<&crate::syntax::Placement>) -> bool {
+        let Some(p) = placement else {
+            return false;
+        };
+        let crate::syntax::MemorySpace::Custom(name) = &p.space else {
+            return false;
+        };
+        self.env
+            .memories
+            .values()
+            .any(|m| m.name == *name && m.scope == Some(crate::syntax::Scope::Thread))
+    }
+
+    /// A tensor in a `scope: thread` space stays in registers, and a register has no address.
+    /// So each index must be a constant, or made of constants and the variables of `for` loops
+    /// with constant bounds. Such a loop is marked, and the code generator unrolls it.
+    fn check_register_index(&mut self, base: &Expr, idx: &Expr, ix_span: &crate::syntax::Span) {
+        if self.speculating {
+            return;
+        }
+        let env = self.consteval_snapshot();
+        if matches!(self.eval_expr(idx, &env), Some(Value::Int(_))) {
+            return;
+        }
+        let mut names = Vec::new();
+        let unknown = !Self::index_names(idx, &mut names);
+        let mut why = None;
+        for name in &names {
+            let constant = matches!(
+                self.eval_expr(
+                    &Expr::Identifier(crate::syntax::expr::IdentifierExpr {
+                        name: name.clone(),
+                        span: *ix_span,
+                    }),
+                    &env
+                ),
+                Some(Value::Int(_))
+            );
+            if constant {
+                continue;
+            }
+            let candidate = self
+                .unroll_candidates
+                .iter_mut()
+                .rev()
+                .find(|c| c.var == *name);
+            match candidate {
+                Some(c) => match c.bounds {
+                    Some((lo, hi)) if hi - lo <= MAX_UNROLLED_PASSES => c.used = true,
+                    Some((lo, hi)) => {
+                        why = Some(format!(
+                            "the loop of '{name}' has {} passes, and the compiler unrolls at \
+                             most {MAX_UNROLLED_PASSES}",
+                            hi - lo
+                        ));
+                    }
+                    None => {
+                        why = Some(format!(
+                            "the bounds of the loop of '{name}' are not constants, so the \
+                             compiler cannot unroll it"
+                        ));
+                    }
+                },
+                None => {
+                    why = Some(format!(
+                        "'{name}' is not a constant or the variable of a `for` loop"
+                    ));
+                }
+            }
+        }
+        if why.is_none() && unknown {
+            why = Some(
+                "the index uses a value that is not a constant or a loop variable".to_string(),
+            );
+        }
+        if let Some(why) = why {
+            let tensor = match crate::hir::places::base_and_path(base) {
+                Some((root, _)) => format!("the register tensor '{root}'"),
+                None => "a register tensor".to_string(),
+            };
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E6033,
+                format!(
+                    "{tensor} needs an index that is known when compiling: {why}. A tensor in a \
+                     `scope: thread` space stays in registers, which have no address"
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(ix_span)),
+            );
+        }
+    }
+
+    /// Collects the variables of an index made of numbers, variables and arithmetic. False when
+    /// the index has anything else in it, such as a call or another index.
+    fn index_names(idx: &Expr, names: &mut Vec<crate::symbol::Symbol>) -> bool {
+        match idx {
+            Expr::Number(_) => true,
+            Expr::Identifier(id) => {
+                names.push(id.name.clone());
+                true
+            }
+            Expr::BinaryOp(b) => {
+                Self::index_names(&b.lhs, names) && Self::index_names(&b.rhs, names)
+            }
+            Expr::AsCast(c) => Self::index_names(&c.expr, names),
+            _ => false,
+        }
+    }
+
     /// The largest value an index can take, when the compiler knows it: a constant, or a
     /// variable with a known upper limit, such as the variable of `for j in 0..6`. `None` for
     /// a variable that can take no value at all, such as that of `for j in 0..0`, since the
@@ -1331,8 +1444,11 @@ impl<'a> TypeChecker<'a> {
                     Type::Borrow { inner, .. } => *inner,
                     other => other,
                 };
-                if let Type::Tensor(_, dims, _) = &base {
+                if let Type::Tensor(_, dims, placement) = &base {
                     self.check_tensor_index_in_range(dims, idx, &ix_span);
+                    if self.is_register_space(placement.as_ref()) {
+                        self.check_register_index(obj, idx, &ix_span);
+                    }
                 }
                 if let Type::Pointer(..) = &base {
                     self.require_unsafe_raw_access("Indexing a raw pointer", &ix_span);

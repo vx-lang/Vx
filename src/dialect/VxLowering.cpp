@@ -1651,10 +1651,12 @@ static bool spawnRunsOnDevice(vx::SpawnOp spawn) {
     // A fill becomes loops before the device clone is made.
     if (isa<linalg::FillOp>(op))
       return WalkResult::skip();
-    // A drop of a tensor the region made becomes a `memref.dealloc`.
+    // A drop of a tensor the region made becomes a `memref.dealloc`. A drop of
+    // a stack slot, such as a register or shared tensor, is erased.
     if (auto drop = dyn_cast<vx::DropOp>(op)) {
       Operation *def = drop.getBuffer().getDefiningOp();
-      return def && isa<memref::AllocOp>(def) && spawn->isProperAncestor(def)
+      return def && isa<memref::AllocOp, memref::AllocaOp>(def) &&
+                     spawn->isProperAncestor(def)
                  ? WalkResult::advance()
                  : WalkResult::interrupt();
     }

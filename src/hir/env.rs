@@ -445,6 +445,17 @@ impl RefProvenance {
     }
 }
 
+/// A `for` loop around the expression being checked.
+#[derive(Debug, Clone)]
+pub(crate) struct UnrollCandidate {
+    pub(crate) var: crate::symbol::Symbol,
+    /// The loop's bounds, when both are constants.
+    pub(crate) bounds: Option<(i64, i64)>,
+    /// Whether a register tensor is indexed with the variable, which makes the code generator
+    /// unroll the loop.
+    pub(crate) used: bool,
+}
+
 pub struct TypeChecker<'a> {
     pub worker: &'a mut crate::session::LocalWorkerState,
     pub env: &'a GlobalAstEnv<'a>,
@@ -473,6 +484,8 @@ pub struct TypeChecker<'a> {
     /// "fresh check" entry points (`check_expr_type`, `check_block`) force it back off, so the
     /// field's dynamic scope reproduces the old parameter's exactly.
     pub(crate) speculating: bool,
+    /// The `for` loops around the expression being checked, innermost last.
+    pub(crate) unroll_candidates: Vec<UnrollCandidate>,
     /// Identifiers already reported as unreadable from the active topology, so the indexing of
     /// the same read (`c[0][0]`) does not report it again.
     pub(crate) unreadable_reported: std::collections::HashSet<crate::syntax::Span>,
@@ -558,6 +571,7 @@ impl<'a> TypeChecker<'a> {
             transfer_cost_graph,
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
             speculating: false,
+            unroll_candidates: Vec::new(),
             unreadable_reported: Default::default(),
             indexed_name: None,
             value_unused: false,
