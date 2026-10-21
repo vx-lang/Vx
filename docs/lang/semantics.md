@@ -128,6 +128,21 @@ code, which is what used to happen:
   disappears, so the write would disappear with it.
 - A block inside another block is an error (E3034). The outer block already runs while
   compiling, so the inner one asks for nothing more.
+- A block may read a value known only when the program runs, when neither its value nor its
+  effects depend on that value.
+- The compiler decides, while compiling, every check that the program makes while it runs: an
+  `assert`, and an integer `/` or `%`. The division stops the program on a divisor of zero,
+  and on the minimum value divided by -1. A check left for run time would never run, because
+  the block disappears.
+  - A false `assert` on a path that always runs is an error (E8002).
+  - Any other check that the compiler cannot show to pass is an error (E3033). This is a check
+    that fails on a path that runs only for some run-time values, such as one branch of an
+    `if` on a run-time value. It is also a check that depends on a run-time value.
+- An integer result outside its type has no compile-time value, so a block whose value depends
+  on it is an error (E3033). At run time the program wraps the result and does not stop, so a
+  block whose value does not depend on it still folds.
+- The evaluator runs at most 1,000,000 loop iterations in a block, in all, and at most 256
+  nested calls. More is an error (E8005, E8004).
 
 **Comptime lambdas.** `comptime { .. }` is also Vx's block-expression form, so it is how a
 closure with more than one statement is written. Such a lambda is a function that runs while

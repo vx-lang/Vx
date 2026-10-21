@@ -9,9 +9,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::arch::TransferCostGraph;
 use crate::hir::check_state::{
-    ComptimeAggregateValue, ComptimeAssertProblem, ComptimeEvalContext, ComptimeEvalFlow,
-    ComptimeEvalOutcome, ComptimeEvalSupport, ComptimeEvalUnsupportedReason, ComptimeEvalValue,
-    ComptimeValueFacts,
+    ComptimeAggregateValue, ComptimeCheck, ComptimeCheckProblem, ComptimeEvalContext,
+    ComptimeEvalFlow, ComptimeEvalOutcome, ComptimeEvalSupport, ComptimeEvalUnsupportedReason,
+    ComptimeEvalValue, ComptimeValueFacts,
 };
 use crate::hir::env::Value;
 use crate::symbol::Symbol;
@@ -31,7 +31,9 @@ pub(crate) struct ComptimeObservation {
     pub outcome: ComptimeEvalOutcome,
     pub escaping_write: Option<Symbol>,
     pub call_depth_exceeded: bool,
-    pub assert_problems: Vec<ComptimeAssertProblem>,
+    pub check_problems: Vec<ComptimeCheckProblem>,
+    /// The loop that was running when the block used its whole loop budget.
+    pub loop_limit_reached_at: Option<Span>,
 }
 
 #[derive(Clone)]
@@ -124,6 +126,9 @@ pub(crate) struct ComptimeInterpreter<'graph, 'bodies> {
     heap_bytes: usize,
 }
 
+/// The values an `i64` holds, for an integer whose type the checker did not record.
+const I64_RANGE: (i128, i128) = (i64::MIN as i128, i64::MAX as i128);
+
 /// How many bytes one `comptime` block may put in byte buffers.
 const MAX_HEAP_BYTES: usize = 1 << 20;
 
@@ -198,7 +203,8 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                     outcome: ComptimeEvalOutcome::refusal(),
                     escaping_write: None,
                     call_depth_exceeded: false,
-                    assert_problems: Vec::new(),
+                    check_problems: Vec::new(),
+                    loop_limit_reached_at: None,
                 },
             }
         })
@@ -221,7 +227,8 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             outcome,
             escaping_write: self.context.escaping_write().cloned(),
             call_depth_exceeded: self.context.call_depth_exceeded(),
-            assert_problems: self.context.assert_problems().to_vec(),
+            check_problems: self.context.check_problems().to_vec(),
+            loop_limit_reached_at: self.context.loop_limit_reached_at(),
         }
     }
 
@@ -468,9 +475,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             Statement::ExprStmt(expr) => self.expr(&expr.expr),
             Statement::ForLoop(loop_stmt) => self.for_loop(loop_stmt),
             Statement::Assign(assign) => self.assign(&assign.lhs, &assign.rhs),
-            Statement::CompoundAssign(assign) => {
-                self.compound_assign(&assign.lhs, &assign.op, &assign.rhs)
-            }
+            Statement::CompoundAssign(assign) => self.compound_assign(assign),
             Statement::Assert(assert) => {
                 let outcome = self.expr(&assert.expr);
                 if outcome.flow == ComptimeEvalFlow::Normal {
@@ -478,8 +483,11 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                         Some(Value::Bool(value)) => Some(value),
                         _ => None,
                     };
-                    self.context
-                        .note_assert(condition, assert.span, &assert.msg);
+                    self.context.note_check(
+                        ComptimeCheck::Assert(assert.msg.clone()),
+                        condition,
+                        assert.span,
+                    );
                 }
                 outcome
             }
@@ -589,10 +597,17 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         outcome
     }
 
-    fn compound_assign(&mut self, lhs: &Expr, op: &BinaryOp, rhs: &Expr) -> ComptimeEvalOutcome {
+    fn compound_assign(&mut self, assign: &CompoundAssignStmt) -> ComptimeEvalOutcome {
+        let lhs = &assign.lhs;
         let (left, place) = self.write_place(lhs);
-        let right = self.expr(rhs);
-        let mut updated = self.binary(left.clone(), right.clone(), op);
+        let right = self.expr(&assign.rhs);
+        let mut updated = self.binary(
+            left.clone(),
+            right.clone(),
+            &assign.op,
+            assign.operand_ty.as_ref(),
+            assign.span,
+        );
         if !self.store_place(lhs, place, updated.value.clone()) {
             updated.mark_unsupported();
         }
@@ -1136,21 +1151,31 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         }
     }
 
+    /// `operand_ty` is the operands' element type, which the checker records.
     fn binary(
         &mut self,
         lhs: ComptimeEvalOutcome,
         rhs: ComptimeEvalOutcome,
         op: &BinaryOp,
+        operand_ty: Option<&ElementType>,
+        span: Span,
     ) -> ComptimeEvalOutcome {
+        let range = operand_ty.and_then(Self::integer_range);
+        if matches!(op, BinaryOp::Div | BinaryOp::Rem)
+            && !operand_ty.is_some_and(|ty| ty.is_float())
+        {
+            let passes = Self::division_passes(
+                lhs.value.concrete.as_ref(),
+                rhs.value.concrete.as_ref(),
+                range,
+            );
+            self.context
+                .note_check(ComptimeCheck::Division, passes, span);
+        }
         let concrete = match (&lhs.value.concrete, &rhs.value.concrete) {
-            (Some(Value::Int(a)), Some(Value::Int(b))) => match op {
-                BinaryOp::Add => a.checked_add(*b).map(Value::Int),
-                BinaryOp::Sub => a.checked_sub(*b).map(Value::Int),
-                BinaryOp::Mul => a.checked_mul(*b).map(Value::Int),
-                BinaryOp::Div => a.checked_div(*b).map(Value::Int),
-                BinaryOp::Rem => a.checked_rem(*b).map(Value::Int),
-                _ => None,
-            },
+            (Some(Value::Int(a)), Some(Value::Int(b))) => {
+                Self::integer_op(*a, *b, op, range.unwrap_or(I64_RANGE)).map(Value::Int)
+            }
             (Some(left), Some(right)) => match (left.as_f64(), right.as_f64(), op) {
                 (Some(a), Some(b), BinaryOp::Add) => Some(Value::Number(a + b)),
                 (Some(a), Some(b), BinaryOp::Sub) => Some(Value::Number(a - b)),
@@ -1164,6 +1189,65 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         let mut outcome = self.unknown_after([lhs, rhs]);
         outcome.value.concrete = concrete;
         outcome
+    }
+
+    /// The values an integer type holds, or `None` for a type that is not an integer.
+    fn integer_range(ty: &ElementType) -> Option<(i128, i128)> {
+        use ElementType::*;
+        let bits = match ty {
+            I4 | U4 => 4,
+            I8 | U8 => 8,
+            I16 | U16 => 16,
+            I32 | U32 => 32,
+            I64 | U64 => 64,
+            I128 => return Some((i128::MIN, i128::MAX)),
+            U128 => return Some((0, i128::MAX)),
+            USize => return Some((0, i64::MAX as i128)),
+            _ => return None,
+        };
+        Some(if ty.is_signed_int() {
+            (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+        } else {
+            (0, (1i128 << bits) - 1)
+        })
+    }
+
+    /// `a op b` for integers of the type whose values are `min..=max`. A result outside the
+    /// type has no value: the program wraps it, and a wrapped value folded into the program
+    /// would look like something the compiler worked out.
+    fn integer_op(a: i64, b: i64, op: &BinaryOp, (min, max): (i128, i128)) -> Option<i64> {
+        let (a, b) = (i128::from(a), i128::from(b));
+        let result = match op {
+            BinaryOp::Add => a + b,
+            BinaryOp::Sub => a - b,
+            BinaryOp::Mul => a * b,
+            BinaryOp::Div => a.checked_div(b)?,
+            BinaryOp::Rem => a.checked_rem(b)?,
+            _ => return None,
+        };
+        if result < min || result > max {
+            return None;
+        }
+        i64::try_from(result).ok()
+    }
+
+    /// Whether an integer `/` or `%` runs without stopping the program: `None` when that
+    /// depends on a value known only at run time. The program stops on a divisor of 0, and
+    /// on the minimum value divided by -1.
+    fn division_passes(
+        dividend: Option<&Value>,
+        divisor: Option<&Value>,
+        range: Option<(i128, i128)>,
+    ) -> Option<bool> {
+        let (min, _) = range.unwrap_or(I64_RANGE);
+        let signed = min < 0;
+        match (dividend, divisor) {
+            (_, Some(Value::Int(0))) => Some(false),
+            (Some(Value::Int(a)), Some(Value::Int(-1))) => Some(!(signed && i128::from(*a) == min)),
+            (_, Some(Value::Int(-1))) if signed => None,
+            (_, Some(_)) => Some(true),
+            (_, None) => None,
+        }
     }
 
     fn relational_value(&self, lhs: &Value, rhs: &Value, op: &RelationalOp) -> Option<Value> {
@@ -2053,7 +2137,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 let end_index = *end_index;
                 let mut outcome = self.unknown_after([start, end]);
                 while index < end_index {
-                    if !self.context.take_loop_step() {
+                    if !self.context.take_loop_step(loop_stmt.span) {
                         outcome.mark_unsupported();
                         break;
                     }
@@ -2150,7 +2234,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         // `return`; the shared budget gives an unproven recurrence the same fail-closed outcome
         // as the legacy evaluator's loop-step cap.
         let mut outcome = ComptimeEvalOutcome::unknown();
-        while self.context.take_loop_step() {
+        while self.context.take_loop_step(loop_stmt.span) {
             let body = self.block(&loop_stmt.body);
             outcome.support.merge_from(body.support);
             outcome
@@ -2302,7 +2386,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             Expr::BinaryOp(op) => {
                 let lhs = self.expr(&op.lhs);
                 let rhs = self.expr(&op.rhs);
-                self.binary(lhs, rhs, &op.op)
+                self.binary(lhs, rhs, &op.op, op.operand_ty.as_ref(), op.span)
             }
             Expr::RelationalOp(op) => {
                 let lhs = self.expr(&op.lhs);

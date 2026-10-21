@@ -14,7 +14,9 @@
 //===----------------------------------------------------------------------===//
 
 use super::super::*;
-use crate::hir::check_state::{ComptimeAssertProblem, ComptimeAssertProblemKind, ComptimeEvalFlow};
+use crate::hir::check_state::{
+    ComptimeCheck, ComptimeCheckProblem, ComptimeCheckProblemKind, ComptimeEvalFlow,
+};
 use std::collections::HashMap;
 
 /// What running a `comptime` block produced.
@@ -61,16 +63,16 @@ impl<'a> TypeChecker<'a> {
             .filter(|span| *span != Span::default())
             .unwrap_or(block_span);
 
-        // An assert that fails every time the block runs stops the build. Each one is reported,
-        // so a block of checks reports every check that fails.
+        // A check that fails every time the block runs stops the build. Each one is reported,
+        // so a block of asserts reports every assert that fails.
         let failed: Vec<_> = interpretation
-            .assert_problems
+            .check_problems
             .iter()
-            .filter(|problem| problem.kind == ComptimeAssertProblemKind::Fails)
+            .filter(|problem| problem.kind == ComptimeCheckProblemKind::Fails)
             .collect();
         if !failed.is_empty() {
             for problem in failed {
-                self.report_comptime_assert_failure(problem);
+                self.report_comptime_check_failure(problem);
             }
             return ComptimeFold::Refused;
         }
@@ -90,6 +92,10 @@ impl<'a> TypeChecker<'a> {
             self.report_comptime_depth_exceeded(&span);
             return ComptimeFold::Refused;
         }
+        if let Some(loop_span) = interpretation.loop_limit_reached_at {
+            self.report_comptime_loop_limit(&loop_span);
+            return ComptimeFold::Refused;
+        }
         if interpretation.outcome.requires_refusal || !interpretation.outcome.support.is_supported()
         {
             self.report_comptime_block_failure(
@@ -98,22 +104,10 @@ impl<'a> TypeChecker<'a> {
             );
             return ComptimeFold::Refused;
         }
-        // Any other assert would disappear with the block, and never be checked.
-        if !interpretation.assert_problems.is_empty() {
-            for problem in &interpretation.assert_problems {
-                let why = match problem.kind {
-                    ComptimeAssertProblemKind::MayFail => {
-                        "this assert is false on a path that depends on a value known only \
-                         when the program runs"
-                    }
-                    ComptimeAssertProblemKind::Undecided => {
-                        "this assert depends on a value known only when the program runs"
-                    }
-                    ComptimeAssertProblemKind::Fails => {
-                        unreachable!("a failing assert was reported above")
-                    }
-                };
-                self.report_comptime_block_failure(why, &problem.span);
+        // Any other check would disappear with the block, and never run.
+        if !interpretation.check_problems.is_empty() {
+            for problem in &interpretation.check_problems {
+                self.report_comptime_check_failure(problem);
             }
             return ComptimeFold::Refused;
         }
@@ -173,18 +167,64 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    pub(crate) fn report_comptime_assert_failure(&mut self, problem: &ComptimeAssertProblem) {
-        if self.speculating || self.consteval.closure_body_depth > 0 {
+    /// A false assert on a path that always runs is E8002. Every other check that a block
+    /// cannot show to pass is E3033.
+    pub(crate) fn report_comptime_check_failure(&mut self, problem: &ComptimeCheckProblem) {
+        use ComptimeCheckProblemKind::*;
+        let why = match (&problem.check, problem.kind) {
+            (ComptimeCheck::Assert(message), Fails) => {
+                if self.speculating || self.consteval.closure_body_depth > 0 {
+                    return;
+                }
+                let message = message.as_deref().unwrap_or("Comptime assertion failed");
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E8002,
+                    format!("Comptime assert failed: {}", message),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&problem.span)),
+                );
+                return;
+            }
+            (ComptimeCheck::Assert(_), MayFail) => {
+                "this assert is false on a path that depends on a value known only when the \
+                 program runs"
+            }
+            (ComptimeCheck::Assert(_), Undecided) => {
+                "this assert depends on a value known only when the program runs"
+            }
+            (ComptimeCheck::Division, Fails) => {
+                "this division stops the program: it divides by zero, or it divides the \
+                 minimum value by -1"
+            }
+            (ComptimeCheck::Division, MayFail) => {
+                "this division stops the program on a path that depends on a value known only \
+                 when the program runs"
+            }
+            (ComptimeCheck::Division, Undecided) => {
+                "this division depends on a value known only when the program runs, and it may \
+                 stop the program"
+            }
+        };
+        self.report_comptime_block_failure(why, &problem.span);
+    }
+
+    /// E8005, once. The checker's own evaluator may have reported it at the same loop.
+    pub(crate) fn report_comptime_loop_limit(&mut self, span: &Span) {
+        if self.speculating
+            || self.consteval.closure_body_depth > 0
+            || self
+                .errors
+                .has_error(crate::diagnostic::DiagnosticCode::E8005)
+        {
             return;
         }
-        let message = problem
-            .message
-            .as_deref()
-            .unwrap_or("Comptime assertion failed");
         self.errors.error_with_code(
-            crate::diagnostic::DiagnosticCode::E8002,
-            format!("Comptime assert failed: {}", message),
-            Some(crate::diagnostic::SourceSpan::from_ast_span(&problem.span)),
+            crate::diagnostic::DiagnosticCode::E8005,
+            format!(
+                "compile-time evaluation ran more than {} loop iterations and was stopped. A \
+                 loop whose end condition is never reached is the usual cause.",
+                crate::hir::check_state::MAX_LOOP_STEPS
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
         );
     }
 

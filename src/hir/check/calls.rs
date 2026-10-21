@@ -14,7 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 use super::super::*;
-use crate::hir::check_state::ComptimeAssertProblemKind;
+use crate::hir::check_state::ComptimeCheckProblemKind;
 use crate::hir::expr::{expected_numeric_elem, int_dim_expr};
 use std::collections::HashMap;
 
@@ -1288,17 +1288,26 @@ impl<'a> TypeChecker<'a> {
         let before = self.consteval_snapshot();
         let observed = self.observe_comptime_block(&[], Some(&*expr), &before);
         let outcome = &observed.outcome;
-        // Without parameters, the function's block reported a failing assert already.
-        let failed = observed
-            .assert_problems
-            .iter()
-            .find(|problem| problem.kind == ComptimeAssertProblemKind::Fails);
-        if let (Some(failed), true) = (failed, takes_params) {
-            self.report_comptime_assert_failure(failed);
-            return;
+        // Without parameters, the function's block reported these already.
+        if takes_params {
+            let failed: Vec<_> = observed
+                .check_problems
+                .iter()
+                .filter(|problem| problem.kind == ComptimeCheckProblemKind::Fails)
+                .collect();
+            if !failed.is_empty() {
+                for problem in failed {
+                    self.report_comptime_check_failure(problem);
+                }
+                return;
+            }
+            if let Some(loop_span) = observed.loop_limit_reached_at {
+                self.report_comptime_loop_limit(&loop_span);
+                return;
+            }
         }
         let folded = (observed.escaping_write.is_none()
-            && observed.assert_problems.is_empty()
+            && observed.check_problems.is_empty()
             && !observed.call_depth_exceeded
             && !outcome.requires_refusal
             && outcome.support.is_supported())

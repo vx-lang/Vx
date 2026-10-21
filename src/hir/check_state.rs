@@ -302,21 +302,31 @@ impl ComptimeEvalOutcome {
     }
 }
 
-/// An assert in a `comptime` block that the interpreter could not show to be true.
+/// A check that the program makes while it runs, in a `comptime` block, that the interpreter
+/// could not show to pass. The block is removed, so the check would never run.
 #[derive(Clone, PartialEq)]
-pub(crate) struct ComptimeAssertProblem {
+pub(crate) struct ComptimeCheckProblem {
     pub span: Span,
-    pub message: Option<String>,
-    pub kind: ComptimeAssertProblemKind,
+    pub check: ComptimeCheck,
+    pub kind: ComptimeCheckProblemKind,
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) enum ComptimeCheck {
+    /// An `assert`, with its message.
+    Assert(Option<String>),
+    /// An integer `/` or `%`, which stops the program on a divisor of 0, and on the minimum
+    /// value divided by -1.
+    Division,
 }
 
 #[derive(Clone, Copy, PartialEq)]
-pub(crate) enum ComptimeAssertProblemKind {
-    /// The condition is false, and the assert runs every time the block runs.
+pub(crate) enum ComptimeCheckProblemKind {
+    /// The check fails, and it runs every time the block runs.
     Fails,
-    /// The condition is false, on a path that runs only for some run-time values.
+    /// The check fails, on a path that runs only for some run-time values.
     MayFail,
-    /// The condition depends on a value known only when the program runs.
+    /// The check depends on a value known only when the program runs.
     Undecided,
 }
 
@@ -337,11 +347,13 @@ pub(crate) struct ComptimeEvalContext {
     /// Loop iterations run so far in this block, by every loop together, so nested loops share
     /// one `MAX_LOOP_STEPS` budget.
     loop_steps: u64,
+    /// The loop that was running when the budget ran out.
+    loop_limit_reached_at: Option<Span>,
     /// Whether the code being run may not run in the program, such as a branch of an `if`
     /// whose condition is known only at run time.
     on_uncertain_path: bool,
-    /// The asserts not shown to be true, in the order they ran.
-    assert_problems: Vec<ComptimeAssertProblem>,
+    /// The checks not shown to pass, in the order they ran.
+    check_problems: Vec<ComptimeCheckProblem>,
 }
 
 impl ComptimeEvalContext {
@@ -359,8 +371,9 @@ impl ComptimeEvalContext {
             call_depth_exceeded: false,
             escaping_writes: HashSet::new(),
             loop_steps: 0,
+            loop_limit_reached_at: None,
             on_uncertain_path: false,
-            assert_problems: Vec::new(),
+            check_problems: Vec::new(),
         }
     }
 
@@ -373,45 +386,42 @@ impl ComptimeEvalContext {
         self.on_uncertain_path = outer;
     }
 
-    /// Records an assert whose condition evaluated to `condition`, unless it is `Some(true)`.
-    pub(crate) fn note_assert(
-        &mut self,
-        condition: Option<bool>,
-        span: Span,
-        message: &Option<String>,
-    ) {
-        let kind = match (condition, self.on_uncertain_path) {
+    /// Records a check that passes when `passes` is `Some(true)`, and nothing in that case.
+    pub(crate) fn note_check(&mut self, check: ComptimeCheck, passes: Option<bool>, span: Span) {
+        let kind = match (passes, self.on_uncertain_path) {
             (Some(true), _) => return,
-            (Some(false), false) => ComptimeAssertProblemKind::Fails,
-            (Some(false), true) => ComptimeAssertProblemKind::MayFail,
-            (None, _) => ComptimeAssertProblemKind::Undecided,
+            (Some(false), false) => ComptimeCheckProblemKind::Fails,
+            (Some(false), true) => ComptimeCheckProblemKind::MayFail,
+            (None, _) => ComptimeCheckProblemKind::Undecided,
         };
-        self.add_assert_problem(ComptimeAssertProblem {
-            span,
-            message: message.clone(),
-            kind,
-        });
+        self.add_check_problem(ComptimeCheckProblem { span, check, kind });
     }
 
-    fn add_assert_problem(&mut self, problem: ComptimeAssertProblem) {
-        // A loop runs the same assert many times, and both sides of a branch carry what ran
+    fn add_check_problem(&mut self, problem: ComptimeCheckProblem) {
+        // A loop runs the same check many times, and both sides of a branch carry what ran
         // before the branch.
-        if !self.assert_problems.contains(&problem) {
-            self.assert_problems.push(problem);
+        if !self.check_problems.contains(&problem) {
+            self.check_problems.push(problem);
         }
     }
 
-    pub(crate) fn assert_problems(&self) -> &[ComptimeAssertProblem] {
-        &self.assert_problems
+    pub(crate) fn check_problems(&self) -> &[ComptimeCheckProblem] {
+        &self.check_problems
     }
 
-    /// Counts one loop iteration, or returns false when the block has used its whole budget.
-    pub(crate) fn take_loop_step(&mut self) -> bool {
+    /// Counts one iteration of the loop at `span`, or returns false when the block has used
+    /// its whole budget.
+    pub(crate) fn take_loop_step(&mut self, span: Span) -> bool {
         if self.loop_steps >= MAX_LOOP_STEPS {
+            self.loop_limit_reached_at.get_or_insert(span);
             return false;
         }
         self.loop_steps += 1;
         true
+    }
+
+    pub(crate) fn loop_limit_reached_at(&self) -> Option<Span> {
+        self.loop_limit_reached_at
     }
 
     pub(crate) fn push_scope(&mut self) {
@@ -515,9 +525,10 @@ impl ComptimeEvalContext {
         }
         self.escaping_writes
             .extend(branch.escaping_writes.iter().cloned());
-        for problem in &branch.assert_problems {
-            self.add_assert_problem(problem.clone());
+        for problem in &branch.check_problems {
+            self.add_check_problem(problem.clone());
         }
+        self.loop_limit_reached_at = self.loop_limit_reached_at.or(branch.loop_limit_reached_at);
         self.call_depth_exceeded |= branch.call_depth_exceeded;
         self.loop_steps = self.loop_steps.max(branch.loop_steps);
         debug_assert_eq!(self.analysis_call_depth, branch.analysis_call_depth);

@@ -243,7 +243,7 @@ impl<'a> Parser<'a> {
                 Ok(Statement::Loop(LoopStmt {
                     invariants,
                     body,
-                    span: Span::default(),
+                    span: token_span,
                 }))
             }
             TokenType::While => {
