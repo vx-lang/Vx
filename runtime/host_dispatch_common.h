@@ -712,6 +712,10 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
 
 void vx_plugin_release_future(uint64_t future_id) { (void)future_id; }
 
+/// A build without CUDA has no streams. The call exists so that a host program
+/// links against every build (#1986).
+void vx_cuda_set_stream(void *stream) { (void)stream; }
+
 int32_t vx_plugin_control(uint32_t opcode, void *payload) {
   (void)payload;
   if (opcode == VX_CTRL_GET_DEVICE_COUNT) {
