@@ -693,7 +693,7 @@ fn parallel_int_literal(e: &Expr) -> Option<i64> {
 /// receiver type. These are the stdlib's value-receiver scalar intrinsics: value in, value out,
 /// nothing written anywhere, which is exactly what the disjointness proof needs from a call.
 /// Anything not on this list rejects the region — a name here is a purity claim.
-fn parallel_pure_call(name: &str) -> bool {
+pub(crate) fn parallel_pure_call(name: &str) -> bool {
     let Some((ty, method)) = name.split_once('$') else {
         return false;
     };

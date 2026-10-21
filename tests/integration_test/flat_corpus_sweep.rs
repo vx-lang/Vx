@@ -341,6 +341,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/dtcm_tiles_in_sibling_blocks_fit_a_cortex_m7.vx",
             "optimizations/pass/gpu_kernel_in_main_on_the_ast_code_generator.vx", // needs --machine
             "optimizations/pass/across_loops_run_in_order_on_the_cpu.vx",         // needs --machine
+            "optimizations/pass/across_kernels_that_pass_the_checks.vx",          // needs --machine
             "frontend/pass/packages/import_from_a_package.vx",                    // needs --package
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {

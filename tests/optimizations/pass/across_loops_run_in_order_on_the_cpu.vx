@@ -28,21 +28,27 @@ fn sum(t : &Tensor<f32, [?]>, n : i32) -> f32 {
 fn main() -> i32 {
   let rows = 5;
   let cols = 40;
-  let mut y = transfer(Tensor<f32, [200]>::fill(0.0), Memory::HBM);
+  let mut y = transfer(Tensor<f32, [5, 40]>::fill(0.0), Memory::HBM);
   spawn on(Topology::Device) {
     for b in 0..(rows + 3) / 4 across blocks {
       for w in 0..4 across subgroups {
         let row = b * 4 + w;
         if row < rows {
           for c in 0..cols across lanes(32) {
-            y[row * cols + c] = (row * 100 + c) as f32;
+            y[row][c] = (row * 100 + c) as f32;
           }
         }
       }
     }
   }
   let y = transfer(y, Memory::CPU_DRAM);
-  println!("warps {}", sum(&y, 200));
+  let mut all = 0.0;
+  for r in 0..rows {
+    for c in 0..cols {
+      all = all + y[r][c];
+    }
+  }
+  println!("warps {}", all);
 
   let mut t = transfer(Tensor<f32, [256]>::fill(0.0), Memory::HBM);
   spawn on(Topology::Device) {
