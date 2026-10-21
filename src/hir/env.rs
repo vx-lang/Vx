@@ -1772,17 +1772,17 @@ impl<'a> TypeChecker<'a> {
         // its block is not folded here, the same as a comptime lambda's body. Without
         // parameters it folds here as well, so an error in it is reported even with no call.
         let comptime_fn = Self::is_comptime_fn(func) && !func.params.is_empty();
-        let outer_comptime = if comptime_fn {
+        if comptime_fn {
             self.consteval.closure_body_depth += 1;
-            std::mem::take(&mut self.consteval.comptime_depth)
-        } else {
-            self.consteval.comptime_depth
-        };
+        }
+        // A generic body is checked at its first call, which can be inside a `comptime` block.
+        // The body is not inside that block.
+        let outer_comptime = std::mem::take(&mut self.consteval.comptime_depth);
         self.check_block(&mut func.body, &func.return_type.clone());
         if comptime_fn {
             self.consteval.closure_body_depth -= 1;
-            self.consteval.comptime_depth = outer_comptime;
         }
+        self.consteval.comptime_depth = outer_comptime;
         self.drops_exit_function();
         Self::drop_spent_comptime_lambdas(&mut func.body);
 

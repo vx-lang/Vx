@@ -204,7 +204,7 @@ impl<'a> Parser<'a> {
                 Ok(Statement::Assert(AssertStmt {
                     expr: Box::new(expr),
                     msg,
-                    span: Span::default(),
+                    span: token_span,
                 }))
             }
             TokenType::Return => {

@@ -14,7 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 use super::super::*;
-use crate::hir::check_state::ComptimeEvalFlow;
+use crate::hir::check_state::{ComptimeAssertProblem, ComptimeAssertProblemKind, ComptimeEvalFlow};
 use std::collections::HashMap;
 
 /// What running a `comptime` block produced.
@@ -61,6 +61,19 @@ impl<'a> TypeChecker<'a> {
             .filter(|span| *span != Span::default())
             .unwrap_or(block_span);
 
+        // An assert that fails every time the block runs stops the build. Each one is reported,
+        // so a block of checks reports every check that fails.
+        let failed: Vec<_> = interpretation
+            .assert_problems
+            .iter()
+            .filter(|problem| problem.kind == ComptimeAssertProblemKind::Fails)
+            .collect();
+        if !failed.is_empty() {
+            for problem in failed {
+                self.report_comptime_assert_failure(problem);
+            }
+            return ComptimeFold::Refused;
+        }
         // Anything it writes that outlives it would have to survive, and the block does not.
         if let Some(name) = interpretation.escaping_write {
             self.report_comptime_block_failure(
@@ -83,6 +96,25 @@ impl<'a> TypeChecker<'a> {
                 "it holds a statement the evaluator cannot run",
                 &span,
             );
+            return ComptimeFold::Refused;
+        }
+        // Any other assert would disappear with the block, and never be checked.
+        if !interpretation.assert_problems.is_empty() {
+            for problem in &interpretation.assert_problems {
+                let why = match problem.kind {
+                    ComptimeAssertProblemKind::MayFail => {
+                        "this assert is false on a path that depends on a value known only \
+                         when the program runs"
+                    }
+                    ComptimeAssertProblemKind::Undecided => {
+                        "this assert depends on a value known only when the program runs"
+                    }
+                    ComptimeAssertProblemKind::Fails => {
+                        unreachable!("a failing assert was reported above")
+                    }
+                };
+                self.report_comptime_block_failure(why, &problem.span);
+            }
             return ComptimeFold::Refused;
         }
         // A `return` inside the block, where the block is a closure or function body, is
@@ -139,6 +171,21 @@ impl<'a> TypeChecker<'a> {
                 ComptimeFold::Refused
             }
         }
+    }
+
+    pub(crate) fn report_comptime_assert_failure(&mut self, problem: &ComptimeAssertProblem) {
+        if self.speculating || self.consteval.closure_body_depth > 0 {
+            return;
+        }
+        let message = problem
+            .message
+            .as_deref()
+            .unwrap_or("Comptime assertion failed");
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E8002,
+            format!("Comptime assert failed: {}", message),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(&problem.span)),
+        );
     }
 
     fn report_comptime_block_failure(&mut self, why: &str, span: &Span) {
@@ -265,9 +312,9 @@ impl<'a> TypeChecker<'a> {
                 self.pop_scope();
                 let folded = self.fold_comptime_block(stmts, ret.as_deref(), block_span, &before);
                 // An assertion the placement fold answered `true` is discharged here: nothing
-                // at run time holds a placement, so nothing is left to check. (A false one
-                // was reported by the assert check.) Asserts on anything else stay, as the
-                // program wrote them.
+                // at run time holds a placement, so nothing is left to check. (The fold
+                // reported a false one.) Asserts on anything else stay, as the program wrote
+                // them.
                 stmts.retain(|s| {
                     !matches!(s, Statement::Assert(a)
                         if matches!(&*a.expr, Expr::Identifier(id) if id.name.as_ref() == "true"))

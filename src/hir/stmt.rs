@@ -1763,6 +1763,11 @@ impl<'a> TypeChecker<'a> {
         }
 
         let is_verified = matches!(return_type, Type::Verified(_));
+        // The `comptime` interpreter decides an assert inside a `comptime` block, when the
+        // block is folded.
+        if self.consteval.comptime_depth > 0 && !is_verified {
+            return;
+        }
         let mut tmp_env = HashMap::new();
         for env in &self.consteval.env {
             for (k, v) in env {
@@ -2689,9 +2694,14 @@ impl<'a> TypeChecker<'a> {
                 invariants: _,
                 span: _,
             }) => self.eval_loop(body, env),
-            // Already checked and discharged by `check_assert_stmt`, and it produces no
-            // value, so there is nothing left for the evaluator to do with it.
-            Statement::Assert(_) => EvalFlow::Normal,
+            // The program goes on past an assert only when it holds, so a run that cannot
+            // show it true gives no value.
+            Statement::Assert(assert) => {
+                if !matches!(self.eval_expr(&assert.expr, env), Some(Value::Bool(true))) {
+                    self.consteval.unsupported_stmt.set(true);
+                }
+                EvalFlow::Normal
+            }
             Statement::Break(_) => EvalFlow::Break,
             Statement::Continue(_) => EvalFlow::Continue,
             // A call written as a statement. It is run only when it writes through a

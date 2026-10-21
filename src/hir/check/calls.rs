@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 use super::super::*;
+use crate::hir::check_state::ComptimeAssertProblemKind;
 use crate::hir::expr::{expected_numeric_elem, int_dim_expr};
 use std::collections::HashMap;
 
@@ -1258,7 +1259,8 @@ impl<'a> TypeChecker<'a> {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3033,
                         "this call to a `comptime` lambda cannot be evaluated: a comptime \
-                         lambda runs while compiling, so every argument has to be known then"
+                         lambda runs while compiling, so every argument has to be known then, \
+                         and every assert in it has to hold"
                             .to_string(),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
@@ -1286,7 +1288,17 @@ impl<'a> TypeChecker<'a> {
         let before = self.consteval_snapshot();
         let observed = self.observe_comptime_block(&[], Some(&*expr), &before);
         let outcome = &observed.outcome;
+        // Without parameters, the function's block reported a failing assert already.
+        let failed = observed
+            .assert_problems
+            .iter()
+            .find(|problem| problem.kind == ComptimeAssertProblemKind::Fails);
+        if let (Some(failed), true) = (failed, takes_params) {
+            self.report_comptime_assert_failure(failed);
+            return;
+        }
         let folded = (observed.escaping_write.is_none()
+            && observed.assert_problems.is_empty()
             && !observed.call_depth_exceeded
             && !outcome.requires_refusal
             && outcome.support.is_supported())

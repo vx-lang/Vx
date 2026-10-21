@@ -5,22 +5,9 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A write through a mutable borrow is followed, and a borrow that cannot be followed
-// still ends the array's compile-time value.
-//
-// This file used to say the opposite: taking `&mut a` always ended the value, because
-// the evaluator could not run the call and keeping the old contents would have reported
-// elements the program had already overwritten. It can run the call now, so the value
-// survives -- as the value the callee left, not the one it started with.
-//
-// The second rule keeps the first honest: a change that followed *every* borrow, including
-// one it cannot see through, would pass the first section and break the last one. A callee
-// the evaluator cannot run is no longer a case here at all -- it is a compile error now, in
-// fail/comptime_block_cannot_be_evaluated.vx.
-//
-// Note what the first section cannot catch: if the evaluator stopped evaluating
-// altogether, `a[0]` would have no value, the assert would not run, and this file would
-// compile anyway. fail/comptime_mut_borrow_stale_value.vx is where that is caught.
+// A write through a mutable borrow reaches the array it borrows. This holds when the borrow
+// is passed to a call, and when it is kept in a variable. Each assert checks a value after
+// such a write.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-LABEL: func.func @main() -> i32
@@ -50,13 +37,12 @@ fn main() -> i32 {
     assert(b[0] == 7i64, "the callee's loop wrote the first element");
     assert(b[2] == 7i64, "the callee's loop wrote the last element");
 
-    // A borrow taken and never passed to a call ends the value as well: the evaluator
-    // cannot see what is written through it. Same contradiction, same reason.
+    // A write through a borrow kept in a variable.
     let mut d : Tensor<i64, [3]> = [ 1i64, 2i64, 3i64 ];
     let r : &mut Tensor<i64, [3]> = &mut d;
     r[0] = 9i64;
-    assert(d[0] == 1i64, "a loose borrow left the old contents in place");
-    assert(d[0] != 1i64, "a loose borrow was treated as not writing");
+    assert(d[0] == 9i64, "the write through `r` reached `d`");
+    assert(d[1] == 2i64, "an element `r` did not write is unchanged");
   }
   return 0;
 }

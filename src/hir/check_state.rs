@@ -14,7 +14,7 @@
 //! so they compose with the parallel pipeline's phase isolation.
 
 use crate::symbol::Symbol;
-use crate::syntax::{Expr, MemorySpace, StructDecl, Topology, Type};
+use crate::syntax::{Expr, MemorySpace, Span, StructDecl, Topology, Type};
 use crate::{hir::env::Value, syntax::Function};
 use std::collections::{HashMap, HashSet};
 
@@ -302,6 +302,24 @@ impl ComptimeEvalOutcome {
     }
 }
 
+/// An assert in a `comptime` block that the interpreter could not show to be true.
+#[derive(Clone, PartialEq)]
+pub(crate) struct ComptimeAssertProblem {
+    pub span: Span,
+    pub message: Option<String>,
+    pub kind: ComptimeAssertProblemKind,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum ComptimeAssertProblemKind {
+    /// The condition is false, and the assert runs every time the block runs.
+    Fails,
+    /// The condition is false, on a path that runs only for some run-time values.
+    MayFail,
+    /// The condition depends on a value known only when the program runs.
+    Undecided,
+}
+
 /// Per-`comptime`-block state for the unified concrete/abstract interpreter.
 ///
 /// It replaces the old pattern of an evaluator plus a separately invoked effect walk. Its lexical
@@ -319,6 +337,11 @@ pub(crate) struct ComptimeEvalContext {
     /// Loop iterations run so far in this block, by every loop together, so nested loops share
     /// one `MAX_LOOP_STEPS` budget.
     loop_steps: u64,
+    /// Whether the code being run may not run in the program, such as a branch of an `if`
+    /// whose condition is known only at run time.
+    on_uncertain_path: bool,
+    /// The asserts not shown to be true, in the order they ran.
+    assert_problems: Vec<ComptimeAssertProblem>,
 }
 
 impl ComptimeEvalContext {
@@ -336,7 +359,50 @@ impl ComptimeEvalContext {
             call_depth_exceeded: false,
             escaping_writes: HashSet::new(),
             loop_steps: 0,
+            on_uncertain_path: false,
+            assert_problems: Vec::new(),
         }
+    }
+
+    /// Marks what runs next as a path that may not run, and answers the old mark to restore.
+    pub(crate) fn enter_uncertain_path(&mut self) -> bool {
+        std::mem::replace(&mut self.on_uncertain_path, true)
+    }
+
+    pub(crate) fn leave_uncertain_path(&mut self, outer: bool) {
+        self.on_uncertain_path = outer;
+    }
+
+    /// Records an assert whose condition evaluated to `condition`, unless it is `Some(true)`.
+    pub(crate) fn note_assert(
+        &mut self,
+        condition: Option<bool>,
+        span: Span,
+        message: &Option<String>,
+    ) {
+        let kind = match (condition, self.on_uncertain_path) {
+            (Some(true), _) => return,
+            (Some(false), false) => ComptimeAssertProblemKind::Fails,
+            (Some(false), true) => ComptimeAssertProblemKind::MayFail,
+            (None, _) => ComptimeAssertProblemKind::Undecided,
+        };
+        self.add_assert_problem(ComptimeAssertProblem {
+            span,
+            message: message.clone(),
+            kind,
+        });
+    }
+
+    fn add_assert_problem(&mut self, problem: ComptimeAssertProblem) {
+        // A loop runs the same assert many times, and both sides of a branch carry what ran
+        // before the branch.
+        if !self.assert_problems.contains(&problem) {
+            self.assert_problems.push(problem);
+        }
+    }
+
+    pub(crate) fn assert_problems(&self) -> &[ComptimeAssertProblem] {
+        &self.assert_problems
     }
 
     /// Counts one loop iteration, or returns false when the block has used its whole budget.
@@ -449,6 +515,9 @@ impl ComptimeEvalContext {
         }
         self.escaping_writes
             .extend(branch.escaping_writes.iter().cloned());
+        for problem in &branch.assert_problems {
+            self.add_assert_problem(problem.clone());
+        }
         self.call_depth_exceeded |= branch.call_depth_exceeded;
         self.loop_steps = self.loop_steps.max(branch.loop_steps);
         debug_assert_eq!(self.analysis_call_depth, branch.analysis_call_depth);

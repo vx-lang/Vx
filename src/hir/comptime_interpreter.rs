@@ -9,8 +9,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::arch::TransferCostGraph;
 use crate::hir::check_state::{
-    ComptimeAggregateValue, ComptimeEvalContext, ComptimeEvalFlow, ComptimeEvalOutcome,
-    ComptimeEvalSupport, ComptimeEvalUnsupportedReason, ComptimeEvalValue, ComptimeValueFacts,
+    ComptimeAggregateValue, ComptimeAssertProblem, ComptimeEvalContext, ComptimeEvalFlow,
+    ComptimeEvalOutcome, ComptimeEvalSupport, ComptimeEvalUnsupportedReason, ComptimeEvalValue,
+    ComptimeValueFacts,
 };
 use crate::hir::env::Value;
 use crate::symbol::Symbol;
@@ -30,6 +31,7 @@ pub(crate) struct ComptimeObservation {
     pub outcome: ComptimeEvalOutcome,
     pub escaping_write: Option<Symbol>,
     pub call_depth_exceeded: bool,
+    pub assert_problems: Vec<ComptimeAssertProblem>,
 }
 
 #[derive(Clone)]
@@ -196,6 +198,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                     outcome: ComptimeEvalOutcome::refusal(),
                     escaping_write: None,
                     call_depth_exceeded: false,
+                    assert_problems: Vec::new(),
                 },
             }
         })
@@ -218,6 +221,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             outcome,
             escaping_write: self.context.escaping_write().cloned(),
             call_depth_exceeded: self.context.call_depth_exceeded(),
+            assert_problems: self.context.assert_problems().to_vec(),
         }
     }
 
@@ -467,7 +471,18 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             Statement::CompoundAssign(assign) => {
                 self.compound_assign(&assign.lhs, &assign.op, &assign.rhs)
             }
-            Statement::Assert(assert) => self.expr(&assert.expr),
+            Statement::Assert(assert) => {
+                let outcome = self.expr(&assert.expr);
+                if outcome.flow == ComptimeEvalFlow::Normal {
+                    let condition = match outcome.value.concrete {
+                        Some(Value::Bool(value)) => Some(value),
+                        _ => None,
+                    };
+                    self.context
+                        .note_assert(condition, assert.span, &assert.msg);
+                }
+                outcome
+            }
             Statement::Loop(loop_stmt) => self.loop_stmt(loop_stmt),
             Statement::Break(_) => ComptimeEvalOutcome {
                 flow: ComptimeEvalFlow::Break,
@@ -616,16 +631,48 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                     return ComptimeWritePlace::Unknown;
                 };
                 Self::project_place(
-                    self.direct_place(&access.base),
+                    self.base_place(&access.base),
                     ComptimePlaceProjection::ArrayElement(index),
                 )
             }
             Expr::MemberAccess(access) => Self::project_place(
-                self.direct_place(&access.base),
+                self.base_place(&access.base),
                 ComptimePlaceProjection::StructField(access.member.clone()),
             ),
             _ => ComptimeWritePlace::Unknown,
         }
+    }
+
+    /// The place that `r[i]` or `r.f` starts from. When `r` is a mutable reference, it is the
+    /// place `r` points at, as for `*r`.
+    fn base_place(&self, base: &Expr) -> ComptimeWritePlace {
+        match base {
+            Expr::Identifier(id) => self
+                .reference_places
+                .get(&id.name)
+                .cloned()
+                .unwrap_or_else(|| ComptimeWritePlace::Binding(id.name.clone())),
+            _ => self.direct_place(base),
+        }
+    }
+
+    /// The value of the base of `r[i]` or `r.f`. A mutable reference reads the value it points
+    /// at, as `*r` does.
+    fn base_value(&mut self, base: &Expr) -> ComptimeEvalOutcome {
+        let mut outcome = self.expr(base);
+        let referenced = match base {
+            Expr::Identifier(id) => self
+                .reference_places
+                .get(&id.name)
+                .and_then(|place| self.read_place(place)),
+            _ => None,
+        };
+        if let Some(referenced) = referenced {
+            let facts = std::mem::take(&mut outcome.value.facts);
+            outcome.value = referenced;
+            outcome.value.facts.merge_from(&facts);
+        }
+        outcome
     }
 
     fn place_index(&self, expr: &Expr) -> Option<usize> {
@@ -862,7 +909,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             Expr::MemberAccess(access) => &access.base,
             _ => return false,
         };
-        let place = self.direct_place(base);
+        let place = self.base_place(base);
         let Some(root) = Self::place_root(&place).cloned() else {
             return false;
         };
@@ -1427,6 +1474,10 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         };
 
         let mut merged = self.clone();
+        let outer_path = merged.context.enter_uncertain_path();
+        if facts.callable_targets.len() == 1 {
+            merged.context.leave_uncertain_path(outer_path);
+        }
         let mut first_args = args.clone();
         if let Some(environment) = facts.callable_environments.get(first_target) {
             first_args.insert(
@@ -1444,6 +1495,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         let mut outcome = merged.known_function_call(first_target, first_args);
         for target in targets {
             let mut branch = self.clone();
+            branch.context.enter_uncertain_path();
             let mut branch_args = args.clone();
             if let Some(environment) = facts.callable_environments.get(target) {
                 branch_args.insert(
@@ -1471,6 +1523,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             outcome.merge_from(&branch_outcome);
         }
         self.context = merged.context;
+        self.context.leave_uncertain_path(outer_path);
         self.env = merged.env;
         self.reference_places = merged.reference_places;
         self.reference_projection_places = merged.reference_projection_places;
@@ -1731,8 +1784,10 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         // the condition, then the states join: effects and reference origins union, while a
         // concrete value or binding survives only when both paths establish the same one.
         let mut then_interpreter = self.clone();
+        let outer_path = then_interpreter.context.enter_uncertain_path();
         let then_outcome = then_interpreter.block(&if_expr.then_block);
         let mut else_interpreter = self.clone();
+        else_interpreter.context.enter_uncertain_path();
         let else_outcome = if_expr
             .else_block
             .as_ref()
@@ -1743,6 +1798,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             .context
             .merge_branch(&else_interpreter.context);
         self.context = then_interpreter.context;
+        self.context.leave_uncertain_path(outer_path);
         self.env = Self::merge_environments(then_interpreter.env, &else_interpreter.env);
         self.reference_places = Self::merge_reference_places(
             then_interpreter.reference_places,
@@ -1932,9 +1988,14 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         let scrutinee_requires_refusal = scrutinee.requires_refusal;
         let scrutinee_value = scrutinee.value.clone();
         let mut merged = self.clone();
+        let outer_path = merged.context.enter_uncertain_path();
+        if rest.is_empty() {
+            merged.context.leave_uncertain_path(outer_path);
+        }
         let mut outcome = merged.match_arm(first, &scrutinee_value);
         for arm in rest {
             let mut branch = self.clone();
+            branch.context.enter_uncertain_path();
             let branch_outcome = branch.match_arm(arm, &scrutinee_value);
             merged.context.merge_branch(&branch.context);
             merged.env = Self::merge_environments(merged.env, &branch.env);
@@ -1948,6 +2009,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             outcome.merge_from(&branch_outcome);
         }
         self.context = merged.context;
+        self.context.leave_uncertain_path(outer_path);
         self.env = merged.env;
         self.reference_places = merged.reference_places;
         self.reference_projection_places = merged.reference_projection_places;
@@ -2055,6 +2117,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         // one abstract iteration. That retains writes through outer references while preventing
         // the loop variable and body-local declarations from escaping the loop.
         let mut one_iteration = self.clone();
+        one_iteration.context.enter_uncertain_path();
         one_iteration.context.push_scope();
         one_iteration
             .context
@@ -2220,11 +2283,11 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 self.array(elements)
             }
             Expr::MemberAccess(access) => {
-                let base = self.expr(&access.base);
+                let base = self.base_value(&access.base);
                 self.member_access(base, &access.member)
             }
             Expr::IndexAccess(access) => {
-                let base = self.expr(&access.base);
+                let base = self.base_value(&access.base);
                 let index = self.expr(&access.index);
                 self.index_access(base, index)
             }
@@ -2288,7 +2351,13 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                     }
                     _ => {}
                 }
+                // With the left side unknown, the right side runs only for some run-time values.
+                let outer_path = self.context.enter_uncertain_path();
+                if lhs.value.concrete.is_some() {
+                    self.context.leave_uncertain_path(outer_path);
+                }
                 let rhs = self.expr(&op.rhs);
+                self.context.leave_uncertain_path(outer_path);
                 let mut outcome = self.unknown_after([lhs.clone(), rhs.clone()]);
                 outcome.value.concrete = match (&lhs.value.concrete, &rhs.value.concrete, &op.op) {
                     (Some(Value::Bool(a)), Some(Value::Bool(b)), LogicalOp::And) => {

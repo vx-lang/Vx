@@ -5,20 +5,16 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A called body holding a statement the evaluator cannot run gives no value at all.
+// A call whose body holds a statement that the run-time assert check cannot run has no value
+// there.
 //
-// `pick` returns 5. The evaluator does not run a bare call statement, and the statements
-// it can run leave `total` at 0. Answering 0 would reject a correct program with a
-// diagnostic stating the opposite, so the call has to answer nothing instead.
+// `pick` returns 5. Its body holds a call statement, `noop();`, which the evaluator behind a
+// run-time assert does not run. Answering with what the other statements leave would be a
+// guess. The two asserts in `_guess` contradict each other, so this file compiles only while
+// that evaluator has no value for `pick()`. Nothing calls `_guess`, so they never run.
 //
-// The unrunnable statement used to be a loop, and briefly an `if`. Both are run now, so
-// each version in turn tested the opposite of what it said: the call answered and the
-// file stopped compiling. Whatever teaches the evaluator to run a call statement will
-// have to move this file onto something it still cannot run, or delete it along with the
-// rule.
-//
-// The two asserts contradict each other, so this file only compiles while the evaluator
-// has no value for the call. Their messages differ so a failure says which way it broke.
+// The `comptime` interpreter does run call statements, so the assert in `main` is decided,
+// and it is true.
 //
 // A deep recursion is in here too, at 200 calls: under the limit, so it must still be
 // evaluated. That is the other half of the depth rule, whose refusing half is in
@@ -46,11 +42,14 @@ fn countdown(n : i64) -> i64 {
   };
 }
 
+fn _guess() -> void {
+  assert(pick() == 5, "the call answered, and not with the 5 it assigns");
+  assert(pick() != 5, "the call answered with 5, so call statements now run");
+}
+
 fn main() -> i32 {
   comptime {
-    assert(pick() == 5, "the call answered, and not with the 5 it assigns");
-    assert(pick() != 5, "the call answered with 5, so call statements now run");
-
+    assert(pick() == 5, "the interpreter ran the call statement");
     assert(countdown(200) == 200, "a recursion under the limit still evaluates");
   }
   return 0;
