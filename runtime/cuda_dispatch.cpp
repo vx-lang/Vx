@@ -123,6 +123,7 @@ struct DriverApi {
   decltype(&cuOccupancyMaxActiveBlocksPerMultiprocessor)
       OccupancyMaxActiveBlocksPerMultiprocessor;
   decltype(&cuLaunchKernel) LaunchKernel;
+  decltype(&cuFuncSetAttribute) FuncSetAttribute;
 };
 
 /// Loads the driver API once. Returns null and says why if it cannot.
@@ -150,6 +151,7 @@ const DriverApi *load_driver_api() {
     find(d.OccupancyMaxActiveBlocksPerMultiprocessor,
          "cuOccupancyMaxActiveBlocksPerMultiprocessor");
     find(d.LaunchKernel, "cuLaunchKernel");
+    find(d.FuncSetAttribute, "cuFuncSetAttribute");
     return ok ? &d : nullptr;
   }();
   return api;
@@ -763,6 +765,13 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
   return dst_ptr;
 }
 
+/// The bytes of dynamic shared memory that a launch of the payload's kernel
+/// passes: its `shared=` field, or 0.
+static unsigned dynamic_shared_bytes(const void *payload, size_t payload_size) {
+  const char *field = vx_payload_field(payload, payload_size, "shared=");
+  return field ? (unsigned)strtoul(field, nullptr, 10) : 0;
+}
+
 /// Run the kernel the payload carries, on this device.
 ///
 /// The compiler compiles every self-contained device region to PTX and puts it
@@ -835,14 +844,9 @@ bool run_device_image(const void *payload, size_t payload_size,
       driver().GetErrorName(rc, &name);
       fprintf(stderr,
               "[Vx CUDA] FATAL: the device image for %s did not load: %s.\n"
-              "          It was compiled for %s. Two known causes: an "
+              "          It was compiled for %s. A known cause is an "
               "unresolved `__nv_` symbol\n"
-              "          (libdevice was not linked -- set VX_LIBDEVICE), or "
-              "static `.shared`\n"
-              "          storage over the 48 KiB ceiling -- a cooperative "
-              "kernel's SMEM tiles\n"
-              "          must fit it (Vx#379; sum the .with_memory tensors' "
-              "bytes).\n",
+              "          (libdevice was not linked -- set VX_LIBDEVICE).\n",
               kernel_name, name ? name : "?",
               vx_payload_field(payload, payload_size, "chip=")
                   ? vx_payload_field(payload, payload_size, "chip=")
@@ -856,6 +860,25 @@ bool run_device_image(const void *payload, size_t payload_size,
               "named %s.\n",
               kernel_name);
       abort();
+    }
+    /* Dynamic shared memory over 48 KiB needs the kernel's permission, given
+       once (#1984). */
+    const unsigned shared = dynamic_shared_bytes(payload, payload_size);
+    if (shared > 48 * 1024) {
+      rc = driver().FuncSetAttribute(
+          fn, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, (int)shared);
+      if (rc != CUDA_SUCCESS) {
+        int most = 0;
+        cudaDeviceGetAttribute(&most, cudaDevAttrMaxSharedMemoryPerBlockOptin,
+                               device);
+        const char *name = nullptr;
+        driver().GetErrorName(rc, &name);
+        fprintf(stderr,
+                "[Vx CUDA] FATAL: %s needs %u bytes of shared memory, and GPU "
+                "%d gives a block at most %d: %s.\n",
+                kernel_name, shared, device, most, name ? name : "?");
+        abort();
+      }
     }
     loaded.emplace(key, fn);
   }
@@ -945,8 +968,9 @@ bool run_device_image(const void *payload, size_t payload_size,
     cudaEventCreate(&t1);
     cudaEventRecord(t0);
   }
-  CUresult rc = driver().LaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, nullptr,
-                                      params.params, nullptr);
+  CUresult rc = driver().LaunchKernel(
+      fn, grid, 1, 1, block, 1, 1, dynamic_shared_bytes(payload, payload_size),
+      nullptr, params.params, nullptr);
   if (rc != CUDA_SUCCESS) {
     const char *name = nullptr;
     driver().GetErrorName(rc, &name);
