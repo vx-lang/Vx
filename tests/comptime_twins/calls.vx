@@ -1,0 +1,52 @@
+//===- calls.vx - Vx Compiler ------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Calls: a write through a `&mut` parameter, a call through a function value, a struct whose
+// field is written, and a `comptime` function with a parameter.
+
+struct Point {
+  x : i64,
+  y : i64,
+}
+
+fn bump(v : &mut i64) -> void {
+  *v = *v + 10i64;
+}
+
+fn scaled(x : i64) -> i64 {
+  return comptime {
+    x * 3i64 + 1i64
+  };
+}
+
+fn main() -> i32 {
+  let a = comptime {
+    let mut v : i64 = 5i64;
+    bump(&mut v);
+    bump(&mut v);
+    v
+  };
+  println!("{}", a);
+  let b = comptime {
+    let mut v : i64 = 1i64;
+    let f = bump;
+    f(&mut v);
+    v
+  };
+  println!("{}", b);
+  let c = comptime {
+    let mut p = Point {
+      x : 1i64,
+      y : 2i64
+    };
+    p.x = p.y * 10i64;
+    p.x + p.y
+  };
+  println!("{}", c);
+  println!("{}", scaled(14i64));
+  return 0;
+}

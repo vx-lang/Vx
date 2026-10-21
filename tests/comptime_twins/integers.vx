@@ -1,0 +1,43 @@
+//===- integers.vx - Vx Compiler ---------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Integer arithmetic at several widths, with signs that division and remainder must keep.
+
+fn factorial(n : i64) -> i64 {
+  if n <= 1i64 {
+    return 1i64;
+  }
+  return n * factorial(n - 1i64);
+}
+
+fn main() -> i32 {
+  let f : i64 = comptime {
+    factorial(20i64)
+  };
+  println!("{}", f);
+  let q : i32 = comptime {
+    (0i32 - 7i32) / 2i32
+  };
+  println!("{}", q);
+  let r : i32 = comptime {
+    (0i32 - 7i32) % 2i32
+  };
+  println!("{}", r);
+  let big : i32 = comptime {
+    2147483000i32 + 647i32
+  };
+  println!("{}", big);
+  let u : u32 = comptime {
+    4000000000u32 / 3u32
+  };
+  println!("{}", u);
+  let small : i8 = comptime {
+    100i8 + 27i8
+  };
+  println!("{}", small);
+  return 0;
+}

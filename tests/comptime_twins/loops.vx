@@ -1,0 +1,60 @@
+//===- loops.vx - Vx Compiler ------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Loops: a value taken from a loop variable, nested loops, and a loop that ends with `break`.
+
+fn collatz_steps(start : i64) -> i64 {
+  let mut n : i64 = start;
+  let mut steps : i64 = 0i64;
+  loop {
+    if n == 1i64 {
+      break;
+    }
+    if n % 2i64 == 0i64 {
+      n = n / 2i64;
+    } else {
+      n = 3i64 * n + 1i64;
+    }
+    steps = steps + 1i64;
+  }
+  return steps;
+}
+
+fn main() -> i32 {
+  let last = comptime {
+    let mut b : i64 = 0i64;
+    for s in 1i64..10i64 {
+      b = s;
+    }
+    b
+  };
+  println!("{}", last);
+  let pairs = comptime {
+    let mut n : i64 = 0i64;
+    for i in 0..30 {
+      for j in 0..i {
+        n = n + 1i64;
+      }
+    }
+    n
+  };
+  println!("{}", pairs);
+  let longest = comptime {
+    let mut best : i64 = 0i64;
+    let mut best_start : i64 = 0i64;
+    for s in 1i64..1000i64 {
+      let c : i64 = collatz_steps(s);
+      if c > best {
+        best = c;
+        best_start = s;
+      }
+    }
+    best_start * 1000i64 + best
+  };
+  println!("{}", longest);
+  return 0;
+}
