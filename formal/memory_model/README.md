@@ -118,9 +118,13 @@ third counter. A `recv` waits in a loop that reads this counter, then `full k`. 
 when all senders dropped and `full k` is not set. `drop_hb_closed` shows that each drop happens
 before each read that sees all the drops. `Counter.hb_of_lt` gives this edge: a `fetchAdd` happens
 before each `sc` read of a larger value. `ChanProg.drf_sc` follows from `TaskProg.drf_sc`.
+A lock is a ticket lock with the counters `next` and `serving`. A `lock` takes ticket `k` from
+`next`, then reads `serving` until it is `k`. An `unlock` adds 1 to `serving`. `unlock_hb_lock`
+gives the edge from each `unlock` to each later `lock`, also by `Counter.hb_of_lt`.
 `ChannelExample.lean` builds a run where the main code sends 7 and drops its sender, and a task
 makes two `recv`s. The first gets 7, and the second finds the channel closed. `check` finds that
-the model allows this run with no data race.
+the model allows this run with no data race. `MutexExample.lean` builds a run where a lock orders
+a plain write of the main code before a plain read of a task.
 
 The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
 `run_lean.py` checks that Lean and `vx.cat` agree on the 13 tests without scopes and barriers:
@@ -190,3 +194,6 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - `drop_hb_closed` speaks of the reads of the counter of drops. That a `recv` returns no value
   only after such a read, and that it then loses no value, follows from its code. No theorem shows
   it yet.
+- `unlock_hb_lock` speaks of the reads of `serving`. That a `lock` ends only after it reads its own
+  ticket there, and that two tasks never hold a lock at the same time, have no proof yet. Step 4
+  (`lock_excl`) is for the second one.

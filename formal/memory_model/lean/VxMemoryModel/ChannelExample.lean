@@ -21,6 +21,7 @@ def oneSend : ChanProg where
   count := 1
   places := 0
   chans := 1
+  locks := 0
   cap _ := 1
   senders _ := 1
   msgs := 2

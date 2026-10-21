@@ -99,6 +99,13 @@ cannot be cloned yet.
 - `unlock_hb_lock`: an `unlock` happens before the next `lock`.
 - `MutexProg.drf_sc`.
 
+The lock went into `Channel.lean`, so one program can use channels and locks, and
+`ChanProg.drf_sc` covers both. The lock is a ticket lock. A `lock` takes ticket `k` from the
+counter `next`, then reads the counter `serving` until it is `k`. An `unlock` adds 1 to `serving`.
+`unlock_hb_lock` shows that the `unlock` that moved `serving` past `j` happens before each read of
+`serving` that sees a larger value. `MutexExample.lean` shows a run where the lock orders a plain
+write and a plain read of two tasks.
+
 ### Step 4: library code for the channel and the lock
 
 `ChannelImpl.lean` and `LockImpl.lean` hold a bounded channel and a lock in the core language, on

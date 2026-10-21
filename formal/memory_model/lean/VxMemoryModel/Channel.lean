@@ -20,9 +20,12 @@ it reaches `senders c`, the channel `c` is closed. So a `recv` waits in a loop: 
 of drops, then `full k`. It stops when `full k` is set, or when the counter of drops showed that
 the channel is closed. In the second case it gets no value. It sets `taken (k + n)` in both cases.
 
+A `Mutex` is a ticket lock with two counters. A `lock` takes its ticket `k` from the first
+counter, then reads the second counter until it is `k`. An `unlock` adds 1 to the second counter.
+
 `Counter.tickets` shows that no two `send`s get the same number, and no two `recv`s. So each flag
-has one writer. Then `send_hb_recv`, `recv_hb_send_capacity` and `drop_hb_closed` give the edges
-of M4 in `docs/discussions/waiting_tasks_channels_and_task_errors.md`.
+has one writer. Then `send_hb_recv`, `recv_hb_send_capacity`, `drop_hb_closed` and
+`unlock_hb_lock` give the edges of M4 in `docs/discussions/waiting_tasks_channels_and_task_errors.md`.
 
 Each channel can carry `msgs` values in a run. A `send` or a `recv` with the number `msgs` or more
 stops its thread, as a failed bounds check does. This keeps the number of places finite. The
@@ -31,7 +34,8 @@ theorems need `CoOrder` (see `Counter.lean`).
 
 namespace Vx
 
-/-- The code of a program with channels: the code of `Tasks.lean`, with `send`, `recv` and `drop`. -/
+/-- The code of a program with channels and locks: the code of `Tasks.lean`, with `send`, `recv`,
+`drop`, `lock` and `unlock`. -/
 inductive CStmt where
   | base (s : Stmt)
   /-- Send the value of `e` on the channel `c`. -/
@@ -41,6 +45,10 @@ inductive CStmt where
   | recv (r s c : Nat)
   /-- Drop a sender of the channel `c`. -/
   | drop (c : Nat)
+  /-- Wait until no other code holds the lock `m`, then hold it. -/
+  | lock (m : Nat)
+  /-- Let the next `lock` of the lock `m` go. -/
+  | unlock (m : Nat)
   | seq (s t : CStmt)
   | ite (c : Expr) (s t : CStmt)
   | loop (c : Expr) (s : CStmt)
@@ -50,7 +58,7 @@ inductive CStmt where
 /-- `s` holds the code `b` of `Tasks.lean`. -/
 def CStmt.Bases : CStmt → Stmt → Prop
   | .base s, b => s = b
-  | .send .., _ | .recv .., _ | .drop _, _ => False
+  | .send .., _ | .recv .., _ | .drop _, _ | .lock _, _ | .unlock _, _ => False
   | .seq s t, b | .ite _ s t, b => s.Bases b ∨ t.Bases b
   | .loop _ s, b | .tasksBlock s, b => s.Bases b
 
@@ -65,23 +73,36 @@ def Op.other : Op → Op
   | .send => .recv
   | .recv => .send
 
-/-- The three counters of a channel: one for each operation, and one for the drops of senders. -/
+/-- The counters. A channel has three: one for each operation, and one for the drops of senders.
+A lock has two: `next` gives the tickets, and `serving` names the ticket that may hold the lock. -/
 inductive Ctr where
   | op (o : Op)
   | drop
+  | next
+  | serving
   deriving DecidableEq
 
-/-- Where the counter is, in the places of its channel. -/
+/-- Where the counter is, in the places of its channel or of its lock. -/
 def Ctr.idx : Ctr → Nat
   | .op .send => 0
   | .op .recv => 1
   | .drop => 2
+  | .next => 0
+  | .serving => 1
+
+/-- A counter of a lock. -/
+def Ctr.IsLock : Ctr → Prop
+  | .next | .serving => True
+  | _ => False
+
+/-- A counter that only a `fetchAdd` with no other step changes: all but the counters of `send` and
+`recv`. -/
+def Ctr.Bump : Ctr → Prop
+  | .op _ => False
+  | _ => True
 
 theorem Ctr.idx_lt (q : Ctr) : q.idx < 3 := by
-  rcases q with ⟨_ | _⟩ | _ <;> simp [Ctr.idx]
-
-theorem Ctr.idx_inj {q q' : Ctr} (h : q.idx = q'.idx) : q = q' := by
-  rcases q with ⟨_ | _⟩ | _ <;> rcases q' with ⟨_ | _⟩ | _ <;> simp_all [Ctr.idx]
+  rcases q with ⟨_ | _⟩ | _ | _ | _ <;> simp [Ctr.idx]
 
 structure ChanProg where
   main : CStmt
@@ -94,6 +115,8 @@ structure ChanProg where
   places : Nat
   /-- The channels are `0` to `chans - 1`. -/
   chans : Nat
+  /-- The locks are `0` to `locks - 1`. -/
+  locks : Nat
   /-- The room of each channel. -/
   cap : Nat → Nat
   /-- The number of senders of each channel. The channel closes when all of them dropped. -/
@@ -111,11 +134,30 @@ variable (P : ChanProg)
 /-- The number of places of one channel. -/
 def size : Nat := 3 + 4 * P.msgs
 
-/-- The first place of the channel `c`. -/
-def chan (c : Nat) : Nat := P.places + c * P.size
+/-- The first place of the channel `c`. The two counters of each lock come before the channels. -/
+def chan (c : Nat) : Nat := P.places + 2 * P.locks + c * P.size
 
-/-- The counter `q` of the channel `c`. -/
-def cnt (q : Ctr) (c : Nat) : Nat := P.chan c + q.idx
+/-- The place after the channels. The flags of the tasks start here. -/
+def top : Nat := P.places + 2 * P.locks + P.chans * P.size
+
+/-- The counter `q` of the channel or the lock `c`. -/
+def cnt (q : Ctr) (c : Nat) : Nat :=
+  match q with
+  | .next | .serving => P.places + 2 * c + q.idx
+  | _ => P.chan c + q.idx
+
+/-- The channel or the lock `c` exists. -/
+def Has (q : Ctr) (c : Nat) : Prop :=
+  match q with
+  | .next | .serving => c < P.locks
+  | _ => c < P.chans
+
+/-- A counter of a lock names a lock that exists. A place of a channel is always above the
+places of the locks, so a counter of a channel needs no bound here. -/
+def LockOk (q : Ctr) (c : Nat) : Prop :=
+  match q with
+  | .next | .serving => c < P.locks
+  | _ => True
 
 /-- The counter that numbers the operations `o` of the channel `c`. -/
 abbrev ctr (o : Op) (c : Nat) : Nat := P.cnt (.op o) c
@@ -153,8 +195,9 @@ abbrev rest (o : Op) (c : Nat) (d : Stmt) : Stmt :=
 abbrev opCode (o : Op) (c : Nat) (d : Stmt) : Stmt :=
   .seq (.fetchAdd P.tmp (P.ctr o c) (.const 1) .sc) (P.rest o c d)
 
-/-- The register where a `recv` keeps the counter of drops that it read. -/
-abbrev dropsReg : Nat := P.tmp + 1
+/-- The register where code keeps a counter that it read while it waits: the counter of drops
+for a `recv`, and `serving` for a `lock`. -/
+abbrev ctrReg : Nat := P.tmp + 1
 
 /-- The register where a `recv` keeps the flag `full k` that it read. -/
 abbrev fullReg : Nat := P.tmp + 2
@@ -164,11 +207,11 @@ abbrev loadFull (c : Nat) : Stmt :=
 
 /-- One pass of the wait of a `recv`: read the counter of drops, then the flag `full k`. If the
 channel was closed at the first read, a `send` with the number `k` set `full k` before it. -/
-abbrev poll (c : Nat) : Stmt := .seq (.load P.dropsReg (P.drp c) .sc) (P.loadFull c)
+abbrev poll (c : Nat) : Stmt := .seq (.load P.ctrReg (P.drp c) .sc) (P.loadFull c)
 
 /-- Wait again while `full k` is not set and the channel is not closed. -/
 abbrev again (c : Nat) : Expr :=
-  .eq (.sub (.eq (.reg P.fullReg) (.const 0)) (.eq (.reg P.dropsReg) (.const (P.senders c))))
+  .eq (.sub (.eq (.reg P.fullReg) (.const 0)) (.eq (.reg P.ctrReg) (.const (P.senders c))))
     (.const 1)
 
 abbrev polls (c : Nat) : Stmt := .loop (P.again c) (P.poll c)
@@ -186,14 +229,25 @@ abbrev recvRest (c r s : Nat) : Stmt := .seq (.seq (P.poll c) (P.polls c)) (P.re
 abbrev recvCode (c r s : Nat) : Stmt :=
   .seq (.fetchAdd P.tmp (P.ctr .recv c) (.const 1) .sc) (P.recvRest c r s)
 
-abbrev dropCode (c : Nat) : Stmt := .fetchAdd P.tmp (P.drp c) (.const 1) .sc
+/-- Add 1 to the counter `q` of `c`. -/
+abbrev bump (q : Ctr) (c : Nat) : Stmt := .fetchAdd P.tmp (P.cnt q c) (.const 1) .sc
+
+/-- One read of `serving` by a `lock`. -/
+abbrev peek (m : Nat) : Stmt := .load P.ctrReg (P.cnt .serving m) .sc
+
+/-- Take a ticket, then read `serving` until it names the ticket. -/
+abbrev lockCode (m : Nat) : Stmt :=
+  .seq (P.bump .next m)
+    (.seq (P.peek m) (.loop (.eq (.eq (.reg P.ctrReg) (.reg P.tmp)) (.const 0)) (P.peek m)))
 
 /-- Replace `send`, `recv` and `drop` with their code. -/
 def lowerC : CStmt → Stmt
   | .base s => s
   | .send c e => P.opCode .send c (.storeAt (P.data c) P.msgs (.reg P.tmp) e .plain)
   | .recv r s c => P.recvCode c r s
-  | .drop c => P.dropCode c
+  | .drop c => P.bump .drop c
+  | .lock m => P.lockCode m
+  | .unlock m => P.bump .serving m
   | .seq s t => .seq (lowerC s) (lowerC t)
   | .ite e s t => .ite e (lowerC s) (lowerC t)
   | .loop e s => .loop e (lowerC s)
@@ -204,13 +258,14 @@ def stores : List (Nat × Int) → Stmt
   | [] => .skip
   | (x, v) :: ps => .seq (.store x (.const v) .sc) (stores ps)
 
-/-- The counters: the three counters of channel 0, then of channel 1, and so on. -/
+/-- The counters of the channels: the three counters of channel 0, then of channel 1, and so on. -/
 def ctrPlace (i : Nat) : Nat := P.chan (i / 3) + i % 3
 
 /-- The writes at the start of thread 0: 0 to each counter and each flag `full`, and 1 to the first
 `cap c` flags `taken` of each channel `c`. A `recv` on a closed channel reads `full k` while it is
 0, so that write must exist. -/
 def initList : List (Nat × Int) :=
+  (List.range (2 * P.locks)).map (fun i => (P.places + i, 0)) ++
   (List.range (3 * P.chans)).map (fun i => (P.ctrPlace i, 0)) ++
     ((List.range P.chans).flatMap fun c => (List.range P.msgs).map fun j => (P.sig .send c + j, 0)) ++
     (List.range P.chans).flatMap fun c => (List.range (P.cap c)).map fun j => (P.sig .recv c + j, 1)
@@ -219,7 +274,7 @@ def toTaskProg : TaskProg where
   main := .seq (stores P.initList) (P.lowerC P.main)
   task t := P.lowerC (P.task t)
   count := P.count
-  flags := P.places + P.chans * P.size
+  flags := P.top
   marks := P.tmp + 3
 
 /-- The rules for the code of the program: it uses the places below `places`, its channels exist,
@@ -227,6 +282,7 @@ and a `recv` does not write the register `tmp`. -/
 def StmtOk : CStmt → Prop
   | .base s => s.Below P.places P.count
   | .send c _ | .drop c => c < P.chans
+  | .lock m | .unlock m => m < P.locks
   | .recv r s c => c < P.chans ∧ r ≠ P.tmp ∧ s ≠ P.tmp
   | .seq s t | .ite _ s t => StmtOk s ∧ StmtOk t
   | .loop _ s | .tasksBlock s => StmtOk s
@@ -236,11 +292,15 @@ structure Ok : Prop where
   task : ∀ t, P.StmtOk (P.task t)
   cap : ∀ c, c < P.chans → P.cap c ≤ P.msgs
 
-/-! ## The places of the channels -/
+/-! ## The places of the channels and the locks -/
 
 variable {P}
 
 theorem size_eq : P.size = 3 + 4 * P.msgs := rfl
+
+theorem chan_ge {c : Nat} : P.places + 2 * P.locks ≤ P.chan c := by
+  unfold chan
+  omega
 
 theorem chan_le {c c' : Nat} (h : c < c') : P.chan c + P.size ≤ P.chan c' := by
   unfold chan
@@ -248,13 +308,15 @@ theorem chan_le {c c' : Nat} (h : c < c') : P.chan c + P.size ≤ P.chan c' := b
   rw [Nat.succ_mul] at this
   omega
 
-theorem chan_end {c : Nat} (h : c < P.chans) : P.chan c + P.size ≤ P.places + P.chans * P.size := by
-  unfold chan
+theorem chan_end {c : Nat} (h : c < P.chans) : P.chan c + P.size ≤ P.top := by
+  unfold chan top
   have := Nat.mul_le_mul_right P.size (Nat.succ_le_of_lt h)
   rw [Nat.succ_mul] at this
   omega
 
-theorem places_le_chan {c : Nat} : P.places ≤ P.chan c := Nat.le_add_right _ _
+theorem places_le_chan {c : Nat} : P.places ≤ P.chan c := by
+  have := chan_ge (P := P) (c := c)
+  omega
 
 /-- A place of the channels belongs to one channel. -/
 theorem chan_eq {c c' a a' : Nat} (h : P.chan c + a = P.chan c' + a') (ha : a < P.size)
@@ -290,17 +352,31 @@ theorem idx_in (q : Ctr) : q.idx < P.size := by
   rw [size_eq]
   omega
 
-theorem cnt_inj {q q' : Ctr} {c c' : Nat} (h : P.cnt q c = P.cnt q' c') : q = q' ∧ c = c' := by
-  obtain ⟨rfl, h'⟩ := chan_eq h (idx_in q) (idx_in q')
-  exact ⟨Ctr.idx_inj h', rfl⟩
+theorem Has.lockOk {q : Ctr} {c : Nat} (h : P.Has q c) : P.LockOk q c := by
+  rcases q with ⟨_ | _⟩ | _ | _ | _ <;> simp only [Has, LockOk] at * <;> trivial
 
-theorem cnt_ne_sig {q : Ctr} {o' : Op} {c c' j : Nat} (hj : j < P.sigLen o') :
+theorem cnt_inj {q q' : Ctr} {c c' : Nat} (h : P.cnt q c = P.cnt q' c') (hq : P.LockOk q c)
+    (hq' : P.LockOk q' c') : q = q' ∧ c = c' := by
+  have h1 := chan_ge (P := P) (c := c)
+  have h2 := chan_ge (P := P) (c := c')
+  have hs : 2 < P.size := by rw [size_eq]; omega
+  rcases q with ⟨_ | _⟩ | _ | _ | _ <;> rcases q' with ⟨_ | _⟩ | _ | _ | _ <;>
+    simp only [cnt, Ctr.idx, LockOk] at h hq hq' <;>
+    first
+    | (obtain ⟨rfl, h'⟩ := chan_eq h (by omega) (by omega); simp_all)
+    | (simp; omega)
+
+theorem cnt_ne_sig {q : Ctr} {o' : Op} {c c' j : Nat} (hq : P.LockOk q c) (hj : j < P.sigLen o') :
     P.cnt q c ≠ P.sig o' c' + j := by
   intro h
+  have h1 := chan_ge (P := P) (c := c')
+  have hs : 2 < P.size := by rw [size_eq]; omega
+  have hin := sig_in hj
   rw [sig_eq] at h
-  have := chan_eq h (idx_in q) (sig_in hj)
-  have := q.idx_lt
-  cases o' <;> simp only [sigOff] at * <;> omega
+  rcases q with ⟨_ | _⟩ | _ | _ | _ <;> simp only [cnt, Ctr.idx, LockOk] at h hq <;>
+    first
+    | omega
+    | (have := chan_eq h (by omega) hin; cases o' <;> simp only [sigOff] at this <;> omega)
 
 theorem data_ne_sig {o : Op} {c c' j j' : Nat} (hj : j < P.msgs) (hj' : j' < P.sigLen o) :
     P.data c + j ≠ P.sig o c' + j' := by
@@ -311,31 +387,40 @@ theorem data_ne_sig {o : Op} {c c' j j' : Nat} (hj : j < P.msgs) (hj' : j' < P.s
     (by rw [size_eq]; omega) hin
   cases o <;> simp only [sigOff, sigLen] at this hj' <;> omega
 
-theorem data_ne_cnt {q : Ctr} {c c' j : Nat} (hj : j < P.msgs) : P.data c + j ≠ P.cnt q c' := by
+theorem data_ne_cnt {q : Ctr} {c c' j : Nat} (hq : P.LockOk q c') (hj : j < P.msgs) :
+    P.data c + j ≠ P.cnt q c' := by
   intro h
-  have := chan_eq (P := P) (c := c) (c' := c') (a := 3 + P.msgs + j) (a' := q.idx)
-    (by simp only [data, cnt] at h; omega) (by rw [size_eq]; omega) (idx_in q)
-  have := q.idx_lt
-  omega
+  have h1 := chan_ge (P := P) (c := c)
+  have hs : 2 < P.size := by rw [size_eq]; omega
+  simp only [data] at h
+  rcases q with ⟨_ | _⟩ | _ | _ | _ <;> simp only [cnt, Ctr.idx, LockOk] at h hq <;>
+    first
+    | omega
+    | (have := chan_eq (P := P) (c := c) (c' := c') (a := 3 + P.msgs + j) (a' := 0) (by omega)
+        (by rw [size_eq]; omega) (by omega); omega)
+    | (have := chan_eq (P := P) (c := c) (c' := c') (a := 3 + P.msgs + j) (a' := 1) (by omega)
+        (by rw [size_eq]; omega) (by omega); omega)
+    | (have := chan_eq (P := P) (c := c) (c' := c') (a := 3 + P.msgs + j) (a' := 2) (by omega)
+        (by rw [size_eq]; omega) (by omega); omega)
 
 theorem sig_inside {o : Op} {c j : Nat} (hc : c < P.chans) (hj : j < P.sigLen o) :
-    P.places ≤ P.sig o c + j ∧ P.sig o c + j < P.places + P.chans * P.size := by
+    P.places ≤ P.sig o c + j ∧ P.sig o c + j < P.top := by
   have := chan_end hc
   have := places_le_chan (P := P) (c := c)
   have := sig_in hj
   rw [sig_eq]
   omega
 
-theorem cnt_inside {q : Ctr} {c : Nat} (hc : c < P.chans) :
-    P.places ≤ P.cnt q c ∧ P.cnt q c < P.places + P.chans * P.size := by
-  have := chan_end hc
-  have := places_le_chan (P := P) (c := c)
-  have := idx_in (P := P) q
-  simp only [cnt]
-  omega
+theorem cnt_inside {q : Ctr} {c : Nat} (hc : P.Has q c) :
+    P.places ≤ P.cnt q c ∧ P.cnt q c < P.top := by
+  have hs : 2 < P.size := by rw [size_eq]; omega
+  rcases q with ⟨_ | _⟩ | _ | _ | _ <;> simp only [cnt, Ctr.idx, Has] at hc ⊢ <;>
+    first
+    | (have := chan_end hc; have := places_le_chan (P := P) (c := c); omega)
+    | (unfold top; omega)
 
 theorem data_inside {c j : Nat} (hc : c < P.chans) (hj : j < P.msgs) :
-    P.places ≤ P.data c + j ∧ P.data c + j < P.places + P.chans * P.size := by
+    P.places ≤ P.data c + j ∧ P.data c + j < P.top := by
   have := chan_end hc
   have := places_le_chan (P := P) (c := c)
   simp only [data]
@@ -347,14 +432,14 @@ theorem data_inside {c j : Nat} (hc : c < P.chans) (hj : j < P.msgs) :
 variable (P)
 
 /-- An access that the code of the program can make: a fence, or an access outside the
-channels. -/
+channels and the locks. -/
 def Avoid (k : Kind) (_ : Order) (x : Nat) : Prop :=
-  k = .fence ∨ x < P.places ∨ P.places + P.chans * P.size ≤ x
+  k = .fence ∨ x < P.places ∨ P.top ≤ x
 
 /-- Where a thread is in an operation of a channel. -/
 inductive Phase where
   | idle
-  /-- It read the counter `q` of the channel `c`, and got the number `k`. -/
+  /-- It read the counter `q` of the channel or the lock `c`, and got the number `k`. -/
   | took (q : Ctr) (c : Nat) (k : Int)
   /-- It wrote the counter, and did not read the flag that it waits for yet. -/
   | counted (o : Op) (c : Nat) (k : Int)
@@ -367,10 +452,13 @@ inductive Trans : Phase → Option Label → Phase → Prop
   | counted_silent {o c k} : Trans (.counted o c k) none (.counted o c k)
   | waited_silent {o c k} : Trans (.waited o c k) none (.waited o c k)
   | other {l : Label} : P.Avoid l.kind l.order l.loc → Trans .idle (some l) .idle
-  | take {q c k} : c < P.chans → Trans .idle (some ⟨.read, .sc, P.cnt q c, k, false⟩) (.took q c k)
+  | take {q c k} : P.Has q c → Trans .idle (some ⟨.read, .sc, P.cnt q c, k, false⟩) (.took q c k)
   | count {o c k} :
     Trans (.took (.op o) c k) (some ⟨.write, .sc, P.ctr o c, k + 1, true⟩) (.counted o c k)
-  | dropped {c k} : Trans (.took .drop c k) (some ⟨.write, .sc, P.drp c, k + 1, true⟩) .idle
+  | bumped {q c k} : q.Bump → P.Has q c →
+    Trans (.took q c k) (some ⟨.write, .sc, P.cnt q c, k + 1, true⟩) .idle
+  /-- A `lock` reads `serving` while it waits. -/
+  | peek {m v} : m < P.locks → Trans .idle (some ⟨.read, .sc, P.cnt .serving m, v, false⟩) .idle
   /-- A `recv` reads the counter of drops while it waits. -/
   | poll {c k v ph} : ph = .counted .recv c k ∨ ph = .waited .recv c k →
     Trans ph (some ⟨.read, .sc, P.drp c, v, false⟩) ph
@@ -391,7 +479,8 @@ inductive Clean : Stmt → Prop
   | other {s} : s.Accesses P.Avoid → Clean s
   | op {o c d} : c < P.chans → P.Mid o c d → Clean (P.opCode o c d)
   | recv {c r s} : c < P.chans → r ≠ P.tmp → s ≠ P.tmp → Clean (P.recvCode c r s)
-  | drop {c} : c < P.chans → Clean (P.dropCode c)
+  | bump {q c} : q.Bump → P.Has q c → Clean (P.bump q c)
+  | peek {m} : m < P.locks → Clean (P.peek m)
   | seq {s t} : Clean s → Clean t → Clean (.seq s t)
   | ite {e s t} : Clean s → Clean t → Clean (.ite e s t)
   | loop {e s} : Clean s → Clean (.loop e s)
@@ -413,7 +502,7 @@ inductive Good (regs : Nat → Int) : Phase → Stmt → Prop
     Good regs (.waited o c k) (.seq d (P.fin o c))
   | moved {o c k} : regs P.tmp = k → Good regs (.waited o c k) (.seq .skip (P.fin o c))
   | setting {o c k} : regs P.tmp = k → Good regs (.waited o c k) (P.fin o c)
-  | dtook {c k} : Good regs (.took .drop c k) (.rmwStore (P.drp c) (k + 1) .sc)
+  | bumping {q c k} : q.Bump → P.Has q c → Good regs (.took q c k) (.rmwStore (P.cnt q c) (k + 1) .sc)
   | rtook {c r s k} : r ≠ P.tmp → s ≠ P.tmp → regs P.tmp = k →
     Good regs (.took (.op .recv) c k)
       (.seq (.rmwStore (P.ctr .recv c) (k + 1) .sc) (P.recvRest c r s))
@@ -478,10 +567,14 @@ theorem Clean.step {s} (hcl : P.Clean s) :
     | seq h =>
       cases h with
       | fetchAdd v => exact ⟨_, .rtook hr hs (by simp [update]), .take hc⟩
-  | drop hc =>
+  | bump hb hc =>
     intro regs a s' regs' h
     cases h with
-    | fetchAdd v => exact ⟨_, .dtook, .take hc⟩
+    | fetchAdd v => exact ⟨_, .bumping hb hc, .take hc⟩
+  | peek hm =>
+    intro regs a s' regs' h
+    cases h with
+    | load v => exact ⟨_, .clean (.other trivial), .peek hm⟩
   | seq _ ht ih =>
     intro regs a s' regs' h
     cases h with
@@ -562,10 +655,10 @@ theorem Good.step {ph s regs} (hg : P.Good regs ph s) :
       refine ⟨_, .clean (.other trivial), .set ?_ hj⟩
       simp only [Expr.eval] at hi
       omega
-  | dtook =>
+  | bumping hb hc =>
     intro a s' regs' h
     cases h with
-    | rmwStore => exact ⟨_, .clean (.other trivial), .dropped⟩
+    | rmwStore => exact ⟨_, .clean (.other trivial), .bumped hb hc⟩
   | rtook hr hs hk =>
     intro a s' regs' h
     cases h with
@@ -684,14 +777,14 @@ theorem Runs.accepts {s regs L} (h : Runs s regs L) : ∀ {ph}, P.Good regs ph s
 
 /-- An access of the code of the program is outside the channels. -/
 theorem Avoid.not_inside {k o x} (h : P.Avoid k o x) (hk : k ≠ .fence) (h1 : P.places ≤ x)
-    (h2 : x < P.places + P.chans * P.size) : False := by
+    (h2 : x < P.top) : False := by
   rcases h with h | h | h
   · exact hk h
   · omega
   · omega
 
 /-- Each write of a counter is the write of a `fetchAdd`. -/
-theorem Accepts.cnt_rmw {ph L} (h : P.Accepts ph L) {q c} (hc : c < P.chans) :
+theorem Accepts.cnt_rmw {ph L} (h : P.Accepts ph L) {q c} (hc : P.Has q c) :
     ∀ {m : Nat} {l : Label}, L[m]? = some l → l.kind = .write → l.loc = P.cnt q c → l.rmw = true := by
   induction h with
   | nil => intro m l h; simp at h
@@ -705,13 +798,13 @@ theorem Accepts.cnt_rmw {ph L} (h : P.Accepts ph L) {q c} (hc : c < P.chans) :
       cases htr with
       | other hav => exact (hav.not_inside (by rw [hk]; nofun) (hx ▸ (cnt_inside hc).1)
           (hx ▸ (cnt_inside hc).2)).elim
-      | take | wait | poll => cases hk
-      | count | dropped => rfl
-      | move _ hj => exact (data_ne_cnt hj hx).elim
-      | set _ hj => exact (cnt_ne_sig hj hx.symm).elim
+      | take | wait | poll | peek => cases hk
+      | count | bumped => rfl
+      | move _ hj => exact (data_ne_cnt hc.lockOk hj hx).elim
+      | set _ hj => exact (cnt_ne_sig hc.lockOk hj hx.symm).elim
 
 /-- Each access of a counter is `sc`. -/
-theorem Accepts.cnt_sc {ph L} (h : P.Accepts ph L) {q c} (hc : c < P.chans) :
+theorem Accepts.cnt_sc {ph L} (h : P.Accepts ph L) {q c} (hc : P.Has q c) :
     ∀ {m : Nat} {l : Label}, L[m]? = some l → l.kind ≠ .fence → l.loc = P.cnt q c → l.order = .sc := by
   induction h with
   | nil => intro m l h; simp at h
@@ -725,8 +818,8 @@ theorem Accepts.cnt_sc {ph L} (h : P.Accepts ph L) {q c} (hc : c < P.chans) :
       cases htr with
       | other hav => exact (hav.not_inside hk (hx ▸ (cnt_inside hc).1)
           (hx ▸ (cnt_inside hc).2)).elim
-      | take | count | dropped | poll | wait | set => rfl
-      | move _ hj => exact (data_ne_cnt hj hx).elim
+      | take | count | bumped | poll | peek | wait | set => rfl
+      | move _ hj => exact (data_ne_cnt hc.lockOk hj hx).elim
 
 /-- The read of the counter of an operation comes right before the write of its `fetchAdd`. -/
 theorem Accepts.take_count {ph L} (h : P.Accepts ph L) {o c} (hc : c < P.chans) :
@@ -743,10 +836,10 @@ theorem Accepts.take_count {ph L} (h : P.Accepts ph L) {o c} (hc : c < P.chans) 
       simp only [List.getElem?_cons_succ] at hl'
       subst hl
       cases htr with
-      | other hav => exact (hav.not_inside (by rw [hk]; nofun) (hx ▸ (cnt_inside hc).1)
-          (hx ▸ (cnt_inside hc).2)).elim
-      | take =>
-        obtain ⟨rfl, rfl⟩ := cnt_inj hx
+      | other hav => exact (hav.not_inside (by rw [hk]; nofun) (hx ▸ (cnt_inside (q := .op o) hc).1)
+          (hx ▸ (cnt_inside (q := .op o) hc).2)).elim
+      | take hq =>
+        obtain ⟨rfl, rfl⟩ := cnt_inj (q' := .op o) hx hq.lockOk trivial
         cases hacc with
         | nil => simp at hl'
         | cons htr' _ =>
@@ -755,13 +848,15 @@ theorem Accepts.take_count {ph L} (h : P.Accepts ph L) {o c} (hc : c < P.chans) 
           cases htr' with
           | count => rfl
           | wait hph | poll hph => rcases hph with h | h <;> cases h
-      | count | set | dropped => cases hk
-      | poll => exact absurd (cnt_inj hx).1 nofun
-      | wait _ _ hj => exact (cnt_ne_sig hj hx.symm).elim
-      | move _ hj => exact (data_ne_cnt hj hx).elim
+          | bumped hb => exact hb.elim
+      | count | set | bumped => cases hk
+      | poll => exact absurd (cnt_inj (q := .drop) (q' := .op o) hx trivial trivial).1 nofun
+      | peek hm => exact absurd (cnt_inj (q := .serving) (q' := .op o) hx hm trivial).1 nofun
+      | wait _ _ hj => exact (cnt_ne_sig (q := .op o) trivial hj hx.symm).elim
+      | move _ hj => exact (data_ne_cnt (q := .op o) trivial hj hx).elim
 
 /-- The write of a `fetchAdd` of a counter comes right after the read of the counter. -/
-theorem Accepts.count_take {ph L} (h : P.Accepts ph L) {q c} (hc : c < P.chans) :
+theorem Accepts.count_take {ph L} (h : P.Accepts ph L) {q c} (hc : P.Has q c) :
     ∀ {m : Nat} {l : Label}, L[m]? = some l → l.kind = .write → l.rmw = true →
       l.loc = P.cnt q c → (m = 0 ∧ ph = .took q c (l.val - 1)) ∨
         ∃ m', m = m' + 1 ∧ L[m']? = some ⟨.read, .sc, P.cnt q c, l.val - 1, false⟩ := by
@@ -776,9 +871,12 @@ theorem Accepts.count_take {ph L} (h : P.Accepts ph L) {q c} (hc : c < P.chans) 
       cases htr with
       | other hav => exact (hav.not_inside (by rw [hw]; nofun)
           (hx ▸ (cnt_inside hc).1) (hx ▸ (cnt_inside hc).2)).elim
-      | take | wait | move | set | poll => cases hr
-      | count | dropped =>
-        obtain ⟨rfl, rfl⟩ := cnt_inj hx
+      | take | wait | move | set | poll | peek => cases hr
+      | count =>
+        obtain ⟨rfl, rfl⟩ := cnt_inj (q := .op _) (q' := q) hx trivial hc.lockOk
+        exact Or.inl ⟨rfl, by simp⟩
+      | bumped _ hq =>
+        obtain ⟨rfl, rfl⟩ := cnt_inj (by exact hx) hq.lockOk hc.lockOk
         exact Or.inl ⟨rfl, by simp⟩
     | succ m =>
       rcases ih (by simpa using hl) hw hr hx with ⟨rfl, rfl⟩ | ⟨m', rfl, hm'⟩
@@ -803,7 +901,7 @@ theorem Accepts.sig_sc {ph L} (h : P.Accepts ph L) {o c j} (hc : c < P.chans)
       cases htr with
       | other hav => exact (hav.not_inside hk (hx ▸ (sig_inside hc hj).1)
           (hx ▸ (sig_inside hc hj).2)).elim
-      | take | count | dropped | poll | wait | set => rfl
+      | take | count | bumped | poll | peek | wait | set => rfl
       | move _ hj' => exact (data_ne_sig hj' hj hx).elim
 
 variable (P) in
@@ -871,8 +969,9 @@ theorem Accepts.set_hist {ph L} (h : P.Accepts ph L) {o c j} (hc : c < P.chans)
       cases htr with
       | other hav => exact (hav.not_inside (by rw [hk]; nofun) (hx ▸ (sig_inside hc hj).1)
           (hx ▸ (sig_inside hc hj).2)).elim
-      | take | wait | poll => cases hk
-      | count | dropped => exact (cnt_ne_sig hj hx).elim
+      | take | wait | poll | peek => cases hk
+      | count => exact (cnt_ne_sig (q := .op _) trivial hj hx).elim
+      | bumped _ hq => exact (cnt_ne_sig hq.lockOk hj hx).elim
       | move _ hj' => exact (data_ne_sig hj' hj hx).elim
       | set hk' hj' =>
         obtain ⟨rfl, rfl, rfl⟩ := sig_inj hj' hj hx
@@ -884,7 +983,7 @@ theorem Accepts.set_hist {ph L} (h : P.Accepts ph L) {o c j} (hc : c < P.chans)
         rintro ⟨hw, j'', hj'', hl''⟩
         rcases hb with hb | hb | ⟨j', hj', hb⟩
         · exact hb hw
-        · exact cnt_ne_sig hj'' (hb.symm.trans hl'')
+        · exact cnt_ne_sig (q := .op o) trivial hj'' (hb.symm.trans hl'')
         · exact data_ne_sig hj' hj'' (hb.symm.trans hl'')
       rcases ih (by simpa using hl) hk hx with hpre | ⟨i', hi', hread, hno, hw⟩
       · cases ph' with
@@ -1013,7 +1112,8 @@ theorem clean_lower {s : CStmt} (h : P.StmtOk s) : P.Clean (P.toTaskProg.lower (
   | base s => exact .other (lower_avoid h)
   | send c e => exact .op h .send
   | recv r s c => exact .recv h.1 h.2.1 h.2.2
-  | drop c => exact .drop h
+  | drop c | unlock c => exact .bump trivial h
+  | lock m => exact .seq (.bump trivial h) (.seq (.peek h) (.loop (.peek h)))
   | seq _ _ ih1 ih2 => exact .seq (ih1 h.1) (ih2 h.2)
   | ite _ _ _ ih1 ih2 => exact .ite (ih1 h.1) (ih2 h.2)
   | loop _ _ ih => exact .loop (ih h)
@@ -1089,48 +1189,70 @@ theorem trace_split (hP : P.Ok) {t n : Nat} {f : Nat → Label}
 
 /-! ## The writes at the start -/
 
+variable (P) in
 /-- The position of each counter in `initList`. -/
-def initIdx (q : Ctr) (c : Nat) : Nat := 3 * c + q.idx
+def initIdx (q : Ctr) (c : Nat) : Nat :=
+  match q with
+  | .next | .serving => 2 * c + q.idx
+  | _ => 2 * P.locks + 3 * c + q.idx
 
 theorem initList_cases {i : Nat} {p : Nat × Int} (h : P.initList[i]? = some p) :
-    (i < 3 * P.chans ∧ p = (P.ctrPlace i, 0)) ∨
+    (i < 2 * P.locks ∧ p = (P.places + i, 0)) ∨
+      (2 * P.locks ≤ i ∧ i < 2 * P.locks + 3 * P.chans ∧ p = (P.ctrPlace (i - 2 * P.locks), 0)) ∨
       (∃ c < P.chans, ∃ j < P.msgs, p = (P.sig .send c + j, 0)) ∨
       ∃ c < P.chans, ∃ j < P.cap c, p = (P.sig .recv c + j, 1) := by
   unfold initList at h
-  by_cases hi : i < 3 * P.chans
-  · rw [List.append_assoc, List.getElem?_append_left (by simpa using hi), List.getElem?_map,
+  simp only [List.append_assoc] at h
+  by_cases hi : i < 2 * P.locks
+  · rw [List.getElem?_append_left (by simpa using hi), List.getElem?_map,
       List.getElem?_range hi] at h
     exact Or.inl ⟨hi, (Option.some.inj h).symm⟩
-  · right
-    rw [List.append_assoc, List.getElem?_append_right (by simp; omega)] at h
-    rcases List.mem_append.1 (List.mem_of_getElem? h) with hp | hp
-    · obtain ⟨c, hc, hp⟩ := List.mem_flatMap.1 hp
-      obtain ⟨j, hj, rfl⟩ := List.mem_map.1 hp
-      exact Or.inl ⟨c, List.mem_range.1 hc, j, List.mem_range.1 hj, rfl⟩
-    · obtain ⟨c, hc, hp⟩ := List.mem_flatMap.1 hp
-      obtain ⟨j, hj, rfl⟩ := List.mem_map.1 hp
-      exact Or.inr ⟨c, List.mem_range.1 hc, j, List.mem_range.1 hj, rfl⟩
+  rw [List.getElem?_append_right (by simp; omega)] at h
+  simp only [List.length_map, List.length_range] at h
+  by_cases hi' : i - 2 * P.locks < 3 * P.chans
+  · rw [List.getElem?_append_left (by simpa using hi'), List.getElem?_map,
+      List.getElem?_range hi'] at h
+    exact Or.inr (Or.inl ⟨by omega, by omega, (Option.some.inj h).symm⟩)
+  right; right
+  rw [List.getElem?_append_right (by simp; omega)] at h
+  rcases List.mem_append.1 (List.mem_of_getElem? h) with hp | hp
+  · obtain ⟨c, hc, hp⟩ := List.mem_flatMap.1 hp
+    obtain ⟨j, hj, rfl⟩ := List.mem_map.1 hp
+    exact Or.inl ⟨c, List.mem_range.1 hc, j, List.mem_range.1 hj, rfl⟩
+  · obtain ⟨c, hc, hp⟩ := List.mem_flatMap.1 hp
+    obtain ⟨j, hj, rfl⟩ := List.mem_map.1 hp
+    exact Or.inr ⟨c, List.mem_range.1 hc, j, List.mem_range.1 hj, rfl⟩
 
 /-- The writes at the start write each counter once. -/
 theorem initList_ctr (hP : P.Ok) {i : Nat} {p : Nat × Int} (h : P.initList[i]? = some p) {q c}
-    (hp : p.1 = P.cnt q c) : i = initIdx q c := by
+    (hq : P.LockOk q c) (hp : p.1 = P.cnt q c) : i = initIdx P q c := by
   have hs : 2 < P.size := by rw [size_eq]; omega
-  rcases initList_cases h with ⟨hi, rfl⟩ | ⟨c', hc', j, hj, rfl⟩ | ⟨c', hc', j, hj, rfl⟩
-  · simp only [ctrPlace, cnt] at hp
-    have h3 : i % 3 < 3 := Nat.mod_lt _ (by omega)
-    obtain ⟨rfl, h⟩ := chan_eq hp (by omega) (idx_in q)
-    simp only [initIdx]
-    omega
-  · exact (cnt_ne_sig (o' := .send) hj hp.symm).elim
+  have hg := chan_ge (P := P) (c := c)
+  rcases initList_cases h with ⟨hi, rfl⟩ | ⟨hi, hi', rfl⟩ | ⟨c', hc', j, hj, rfl⟩ |
+      ⟨c', hc', j, hj, rfl⟩
+  · rcases q with ⟨_ | _⟩ | _ | _ | _ <;> simp only [cnt, Ctr.idx, initIdx] at hp ⊢ <;> omega
+  · have hg' := chan_ge (P := P) (c := (i - 2 * P.locks) / 3)
+    have h3 : (i - 2 * P.locks) % 3 < 3 := Nat.mod_lt _ (by omega)
+    simp only [ctrPlace] at hp
+    rcases q with ⟨_ | _⟩ | _ | _ | _ <;> simp only [cnt, Ctr.idx, initIdx, LockOk] at hp hq ⊢ <;>
+      first
+      | omega
+      | (obtain ⟨rfl, h⟩ := chan_eq hp (by omega) (by omega); omega)
+  · exact (cnt_ne_sig (o' := .send) hq hj hp.symm).elim
   · have := hP.cap c' hc'
-    exact (cnt_ne_sig (o' := .recv) (by simp only [sigLen]; omega) hp.symm).elim
+    exact (cnt_ne_sig (o' := .recv) hq (by simp only [sigLen]; omega) hp.symm).elim
 
 /-- The writes at the start set the flags `full` to 0, and the first `cap c` flags `taken` to 1. -/
 theorem initList_sig (hP : P.Ok) {i : Nat} {p : Nat × Int} (h : P.initList[i]? = some p) {o c j}
     (hj : j < P.sigLen o) (hp : p.1 = P.sig o c + j) :
     (o = .send ∧ p.2 = 0) ∨ (o = .recv ∧ j < P.cap c) := by
   have hs : 2 < P.size := by rw [size_eq]; omega
-  rcases initList_cases h with ⟨hi, rfl⟩ | ⟨c', hc', j', hj', rfl⟩ | ⟨c', hc', j', hj', rfl⟩
+  have hg := chan_ge (P := P) (c := c)
+  rcases initList_cases h with ⟨hi, rfl⟩ | ⟨hi, hi', rfl⟩ | ⟨c', hc', j', hj', rfl⟩ |
+      ⟨c', hc', j', hj', rfl⟩
+  · rw [sig_eq] at hp
+    simp only at hp
+    omega
   · simp only [ctrPlace] at hp
     rw [sig_eq] at hp
     have := chan_eq hp (Nat.lt_of_lt_of_le (Nat.mod_lt _ (by omega)) (by omega)) (sig_in hj)
@@ -1146,7 +1268,7 @@ theorem seqCstOnly_lowerC {s : CStmt}
   induction s with
   | base s => exact h s rfl
   | send => exact ⟨Or.inr rfl, trivial, Or.inl rfl, Or.inr rfl⟩
-  | recv | drop => simp [lowerC, Stmt.SeqCstOnly]
+  | recv | drop | lock | unlock => simp [lowerC, Stmt.SeqCstOnly]
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 =>
     exact ⟨ih1 fun b hb => h b (Or.inl hb), ih2 fun b hb => h b (Or.inr hb)⟩
   | loop _ _ ih | tasksBlock _ ih => exact ih h
@@ -1222,7 +1344,7 @@ theorem init_val (hP : P.Ok) {d : X.E} (hp : run.idx d < P.pre (X.thread d)) {p 
   exact this.2.2.2.1.symm
 
 /-- Each counter of a channel is a counter in the sense of `Counter.lean`. -/
-theorem counter (hP : P.Ok) (wf : X.WellFormed) {q c} (hc : c < P.chans) :
+theorem counter (hP : P.Ok) (wf : X.WellFormed) {q c} (hc : P.Has q c) :
     X.Counter run.val (P.cnt q c) := by
   have hadd : ∀ r w, X.rmw r w → X.loc w = P.cnt q c →
       X.loc r = P.cnt q c ∧ run.val w = run.val r + 1 := by
@@ -1243,11 +1365,11 @@ theorem counter (hP : P.Ok) (wf : X.WellFormed) {q c} (hc : c < P.chans) :
         obtain ⟨-, -, h3, h4, -⟩ := this
         exact ⟨h3.symm, by omega⟩
   have hfirst : ∀ a, X.IsWrite a → X.loc a = P.cnt q c → (∀ r, ¬ X.rmw r a) →
-      X.thread a = 0 ∧ run.idx a = initIdx q c := by
+      X.thread a = 0 ∧ run.idx a = initIdx P q c := by
     intro a haw hal hna
     by_cases hp : run.idx a < P.pre (X.thread a)
     · obtain ⟨ht, p, hi, -, -, hl, -⟩ := init_of run hP hp
-      exact ⟨ht, initList_ctr hP hi (hl.symm.trans hal)⟩
+      exact ⟨ht, initList_ctr hP hi hc.lockOk (hl.symm.trans hal)⟩
     · have hacc := (view run hP a).2
       have hget := view_get run (e := a) rfl (Nat.le_refl _) (by omega)
       have hrm := hacc.cnt_rmw hc hget haw hal
@@ -1269,7 +1391,7 @@ theorem counter (hP : P.Ok) (wf : X.WellFormed) {q c} (hc : c < P.chans) :
       exact run.idx_inj r1 r2 (ht1.trans ht2.symm) (by omega) }
 
 /-- Each access of a counter is `sc`. -/
-theorem cnt_sc (hP : P.Ok) {q c} (hc : c < P.chans) {e : X.E} (hk : X.kind e ≠ .fence)
+theorem cnt_sc (hP : P.Ok) {q c} (hc : P.Has q c) {e : X.E} (hk : X.kind e ≠ .fence)
     (hl : X.loc e = P.cnt q c) : X.IsSeqCst e := by
   by_cases hp : run.idx e < P.pre (X.thread e)
   · obtain ⟨-, -, -, -, h, -⟩ := init_of run hP hp
@@ -1343,7 +1465,7 @@ theorem set_unique (hP : P.Ok) (wf : X.WellFormed) (hcons : X.Consistent) (ho : 
     (hz2 : o = .recv ∨ run.val w2 ≠ 0) : w1 = w2 := by
   obtain ⟨r1, r1', hrw1, hrl1, hv1, ht1, hi1, hno1, -⟩ := set_writer run hP hc hj hoff hw1 hl1 hz1
   obtain ⟨r2, r2', hrw2, hrl2, hv2, ht2, hi2, hno2, -⟩ := set_writer run hP hc hj hoff hw2 hl2 hz2
-  have := (counter run hP wf hc).tickets wf hcons ho hfin hrw1 hrl1 hrw2 hrl2 (hv1.trans hv2.symm)
+  have := (counter run hP wf (q := .op o) hc).tickets wf hcons ho hfin hrw1 hrl1 hrw2 hrl2 (hv1.trans hv2.symm)
   subst this
   rcases Nat.lt_trichotomy (run.idx w1) (run.idx w2) with h | h | h
   · exact (hno2 w1 (ht1.symm.trans ht2) hi1 h ⟨hw1, j, hj, hl1⟩).elim
@@ -1389,18 +1511,38 @@ theorem recv_hb_send_capacity (hP : P.Ok) (wf : X.WellFormed) (hcons : X.Consist
   exact X.hb_of_signal hat ht (sig_sc run hP hc hj htk htl) hrf hes
     (Or.inr ((run.po_iff e w).2 ⟨het, hew⟩))
 
+/-- A `fetchAdd` of 1 on a counter happens before each read of the counter that sees a larger
+value. The counter has `sc` accesses, so the read gets its value from a chain of `fetchAdd`s that
+starts at this one. -/
+theorem bump_hb (hP : P.Ok) (wf : X.WellFormed) (hcons : X.Consistent) (ho : X.CoOrder)
+    (hfin : X.Finite) {q c} (hc : P.Has q c) {a r w e b : X.E} (hrw : X.rmw r w)
+    (hwl : X.loc w = P.cnt q c) (har : a = r ∨ X.po a r) (her : X.IsRead e)
+    (hel : X.loc e = P.cnt q c) (hlt : run.val r < run.val e) (heb : e = b ∨ X.po e b) :
+    X.hb a b := by
+  have hre := (counter run hP wf hc).hb_of_lt wf hcons ho hfin
+    (fun d hd hk => cnt_sc run hP hc hk hd) hrw hwl e her hel hlt
+  have hae : X.hb a e := har.elim (fun h => h ▸ hre) (fun h => Relation.TransGen.head (Or.inl h) hre)
+  exact heb.elim (fun h => h ▸ hae) (fun h => hae.tail (Or.inl h))
+
 /-- Each of the first `senders c` drops of the channel `c` happens before each read that sees all
-of them. A `recv` returns no value only after such a read. Each drop adds 1 to the counter of
-drops, so the read gets its value from a chain of `fetchAdd`s that starts at each drop. -/
+of them. A `recv` returns no value only after such a read. -/
 theorem drop_hb_closed (hP : P.Ok) (wf : X.WellFormed) (hcons : X.Consistent) (ho : X.CoOrder)
     (hfin : X.Finite) {c} (hc : c < P.chans) {a r w e b : X.E} (hrw : X.rmw r w)
     (hwl : X.loc w = P.drp c) (har : a = r ∨ X.po a r) (hr : run.val r < P.senders c)
     (her : X.IsRead e) (hel : X.loc e = P.drp c) (hev : run.val e = P.senders c)
-    (heb : e = b ∨ X.po e b) : X.hb a b := by
-  have hre := (counter run hP wf hc).hb_of_lt wf hcons ho hfin
-    (fun d hd hk => cnt_sc run hP hc hk hd) hrw hwl e her hel (by omega)
-  have hae : X.hb a e := har.elim (fun h => h ▸ hre) (fun h => Relation.TransGen.head (Or.inl h) hre)
-  exact heb.elim (fun h => h ▸ hae) (fun h => hae.tail (Or.inl h))
+    (heb : e = b ∨ X.po e b) : X.hb a b :=
+  bump_hb run hP wf hcons ho hfin (q := .drop) hc hrw hwl har her hel (by omega) heb
+
+/-- An `unlock` of the lock `m` happens before each later `lock` of it. The `unlock` that moves
+`serving` from `j` to `j + 1` happens before each read of `serving` that sees a larger value. The
+`lock` with the ticket `k` waits until it reads `serving` as `k`, so each `unlock` before it in the
+order of the counter happens before it. -/
+theorem unlock_hb_lock (hP : P.Ok) (wf : X.WellFormed) (hcons : X.Consistent) (ho : X.CoOrder)
+    (hfin : X.Finite) {m} (hm : m < P.locks) {a r w e b : X.E} (hrw : X.rmw r w)
+    (hwl : X.loc w = P.cnt .serving m) (har : a = r ∨ X.po a r) (her : X.IsRead e)
+    (hel : X.loc e = P.cnt .serving m) (hlt : run.val r < run.val e) (heb : e = b ∨ X.po e b) :
+    X.hb a b :=
+  bump_hb run hP wf hcons ho hfin (q := .serving) hm hrw hwl har her hel hlt heb
 
 end ChanProg
 
