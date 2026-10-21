@@ -17,6 +17,7 @@
 // RUN: not grep __local_depot %t.log
 // CHECK: image={{.*}}.entry vx_npu_kernel_0({{.*}}mma.sync.aligned.m16n8k16{{.*}}bra
 // CHECK: image={{.*}}.entry vx_npu_kernel_1(
+// CHECK: image={{.*}}.entry vx_npu_kernel_2(
 
 fn mma_step(acc : &mut Tensor<f32, [32], Memory::REG>, a : i32, b : i32) on Topology::Device -> i32 {
   return mlir!( inputs : (%acc = acc : memref<32xf32>, %a = a : i32, %b = b : i32), returns : i32, dialects : ["llvm", "memref", "arith"]) {
@@ -124,6 +125,23 @@ b: &Tensor<i32, [?], Memory::HBM>, sizes: &Tensor<i32, [?], Memory::HBM>) -> voi
         out[out_hi + col] = acc[4 * j + 2];
         out[out_hi + col + 1] = acc[4 * j + 3];
       }
+    }
+  }
+  return;
+}
+
+// `::fill` on 64 registers: the compiler writes each element with a constant index. A fill loop
+// with a variable index left the tensor in local memory.
+pub fn sums_from_a_fill(out : &mut Tensor<f32, [?], Memory::HBM>, s : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    let mut acc = Tensor<f32, [64], Memory::REG>::fill(0.0);
+    for k in 0..16 {
+      for r in 0..64 {
+        acc[r] = acc[r] + s[k * 64 + r];
+      }
+    }
+    for r in 0..64 {
+      out[r] = acc[r];
     }
   }
   return;
