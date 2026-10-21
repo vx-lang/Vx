@@ -294,10 +294,23 @@ CUDA backend (`runtime/cuda_dispatch.cpp`). These rules hold for such a call:
 - **Context.** Vx uses the primary context of each GPU, the one that the CUDA runtime API uses.
   Make it current (`cuDevicePrimaryCtxRetain`, then `cuCtxSetCurrent`) and allocate in it. Vx
   stops the program with a message when it finds another context current.
-- **Stream.** Each Vx launch and copy goes on the legacy default stream, and a launch does not
-  wait for the GPU (#25). Work of the host program on the legacy default stream, on the
-  per-thread default stream, or on a blocking stream is ordered with Vx's. Work on a stream
-  made with `cudaStreamNonBlocking` is not. `VX_CUDA_SYNC=1` makes Vx wait after each launch.
+- **Stream.** By default, each Vx launch and copy goes on the legacy default stream, and a
+  launch does not wait for the GPU (#25). Work of the host program on the legacy default stream,
+  on the per-thread default stream, or on a blocking stream is ordered with Vx's. Work on a
+  stream made with `cudaStreamNonBlocking` is not. `VX_CUDA_SYNC=1` makes Vx wait after each
+  launch.
+- **A stream of the host program.** `void vx_cuda_set_stream(void *stream)` sets a `CUstream`
+  for the calling thread, and null gives back the legacy default stream. Then Vx's kernels,
+  cuBLAS calls and copies go on that stream. A wait (before a copy to host memory, at the end of
+  a region) waits for that stream only. Vx allocates its temporaries with `cudaMallocAsync` on the
+  stream and frees them with `cudaFreeAsync`, with no wait. A build without CUDA has the call,
+  and it does nothing.
+- **CUDA graphs.** A host program can record a call into a graph with `cudaStreamBeginCapture`
+  on its stream. A function whose tensors are all in device memory and whose results stay there
+  records cleanly. While the stream records, Vx stops the program with a message at anything a
+  graph cannot hold: a wait, a copy from or to host memory, or a free of memory that needs a
+  wait. Call the function once before the recording, because its first call loads the kernel
+  image.
 - **Launch shape.** The function computes the sizes of `grid([..]) block(n)` and launches that
   shape (§3.5 and `docs/spawn_on.md` §8).
 - **No GPU.** When no GPU takes a launch, the region runs on the CPU. A region with a launch
