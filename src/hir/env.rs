@@ -1705,7 +1705,9 @@ impl<'a> TypeChecker<'a> {
         let prev_declared_mut_vars = std::mem::take(&mut self.declared_mut_vars);
         let prev_literal_typed_lets = std::mem::take(&mut self.literal_typed_lets);
         let prev_changed_vars = std::mem::take(&mut self.changed_vars);
-        // The same for W1010: the callee's `unsafe` blocks are not inside the caller's.
+        // The same for `unsafe`: a generic body is checked at the call that needs it, which may
+        // be inside the caller's `unsafe` block, but the body is not inside that block.
+        let prev_in_unsafe = std::mem::take(&mut self.in_unsafe_block);
         let prev_written_unsafe = std::mem::take(&mut self.in_written_unsafe_block);
         let prev_unsafe_op_seen = std::mem::take(&mut self.unsafe_op_seen);
         self.push_scope();
@@ -1890,6 +1892,7 @@ impl<'a> TypeChecker<'a> {
         self.literal_typed_lets = prev_literal_typed_lets;
         self.changed_vars = prev_changed_vars;
         self.tasks.exit_function(prev_tasks);
+        self.in_unsafe_block = prev_in_unsafe;
         self.in_written_unsafe_block = prev_written_unsafe;
         self.unsafe_op_seen = prev_unsafe_op_seen;
     }

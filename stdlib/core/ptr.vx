@@ -39,10 +39,10 @@ fn null_mut<T>() -> *mut T {
 
 /// The value the pointer addresses. The caller promises there is one.
 unsafe fn read<T>(p : *const T) -> T {
-  return *p;
+  return unsafe { *p };
 }
 
 /// Puts a value where the pointer addresses. The caller promises it may.
 unsafe fn write<T>(p : *mut T, v : T) -> void {
-  *p = v;
+  unsafe { *p = v; }
 }

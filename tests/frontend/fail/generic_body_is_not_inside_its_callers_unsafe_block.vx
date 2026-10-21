@@ -1,0 +1,64 @@
+//===- generic_body_is_not_inside_its_callers_unsafe_block.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// The compiler checks a generic function's body at the first call that needs it. That call can be
+// inside the caller's `unsafe` block, but the body is not inside that block. So a raw pointer
+// dereference in the body needs its own `unsafe` block, whichever call comes first.
+
+struct Holder<T> {
+  p : *const T,
+}
+
+impl<T> Holder<T> {
+  // A method of a generic struct, called inside `unsafe`.
+  fn get(self : &Holder<T>) -> T {
+    // CHECK-DAG: Error[E5002] at [[@LINE+1]]:12: Dereferencing a raw pointer requires an unsafe block
+    return *self.p;
+  }
+}
+
+// Called only inside `unsafe`.
+fn read_in_unsafe<T>(p : *const T) -> T {
+  // CHECK-DAG: Error[E5002] at [[@LINE+1]]:10: Dereferencing a raw pointer requires an unsafe block
+  return *p;
+}
+
+// Called inside `unsafe` first, then outside.
+fn read_unsafe_call_first<T>(p : *const T) -> T {
+  // CHECK-DAG: Error[E5002] at [[@LINE+1]]:10: Dereferencing a raw pointer requires an unsafe block
+  return *p;
+}
+
+// Called outside `unsafe` first, then inside.
+fn read_plain_call_first<T>(p : *const T) -> T {
+  // CHECK-DAG: Error[E5002] at [[@LINE+1]]:10: Dereferencing a raw pointer requires an unsafe block
+  return *p;
+}
+
+// A generic `unsafe fn`. Every call to it is inside `unsafe`.
+unsafe fn read_in_unsafe_fn<T>(p : *const T) -> T {
+  // CHECK-DAG: Error[E5002] at [[@LINE+1]]:10: Dereferencing a raw pointer requires an unsafe block
+  return *p;
+}
+
+fn main() -> i32 {
+  let x : i32 = 7;
+  let p = (&x) as *const i32;
+  let a = unsafe { read_in_unsafe(p) };
+  let b = unsafe { read_unsafe_call_first(p) };
+  let c = read_unsafe_call_first(p);
+  let d = read_plain_call_first(p);
+  let e = unsafe { read_plain_call_first(p) };
+  let f = unsafe { read_in_unsafe_fn(p) };
+  let h = Holder<i32> {
+    p : p
+  };
+  let g = unsafe { h.get() };
+  return a + b + c + d + e + f + g - 49;
+}
