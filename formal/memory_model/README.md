@@ -128,6 +128,12 @@ each event of the block of ticket `k` happens before each event of the block of 
 `recv` with the number `k` reads element `k` of the values, and only the `send` with the number
 `k` writes it. By `ring_once`, two reads of the same write belong to the same `recv`, so no value
 arrives twice.
+`Cancel.lean` gives a program a failure slot and a cancel flag. `fail v` writes the error `v` to
+the slot with a CAS from 0. If the CAS wrote the slot, it sets the flag with a release write.
+`checkCancel` reads the flag with acquire, and fails with `cancelled` if the flag is set.
+`one_failure_wins` shows that at most one CAS writes the slot. `block_value_is_failure` shows
+that a read of the slot that the winning CAS happens before gets its value.
+`block_value_not_cancelled` shows that `cancelled` never reaches the slot.
 `ChannelExample.lean` builds a run where the main code sends 7 and drops its sender, and a task
 makes two `recv`s. The first gets 7, and the second finds the channel closed. `check` finds that
 the model allows this run with no data race. `MutexExample.lean` builds a run where a lock orders
@@ -206,6 +212,11 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - `lock_excl` speaks of the reads of `serving` that let a later ticket in. That the `lock` of a
   ticket ends with such a read follows from `Hold` in `Lock.lean`. No theorem states it on its
   own.
+- A program has one failure slot, so only one `tasks` block can fail. A task that sees the cancel
+  flag does not stop: the model shows only that its CAS fails. `ChanProg.drf_sc` needs code with
+  no failures, because the flag uses release and acquire. `run_lean.py` has no read-modify-writes,
+  so no herd7 test has the CAS of a failure. `message_passing_release_acquire` checks the edge of
+  the flag.
 - `ring_fifo` speaks of each read of the values. A `recv` reads its element once, and only after
   it reads `full k` as 1. A `send` writes its element once. This follows from their code, but no
   theorem states it yet.

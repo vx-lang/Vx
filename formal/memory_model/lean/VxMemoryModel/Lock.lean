@@ -307,11 +307,15 @@ theorem lower_notLock {s : CStmt} (hs : P.StmtOk s) (hn : ¬ s.Locks m) :
   | tasksBlock _ ih =>
     exact ⟨(clearMarks_avoid _).mono fun _ _ _ h => Avoid.notLock hm h, ih hs hn,
       (joinMarked_avoid _).mono fun _ _ _ h => Avoid.notLock hm h⟩
+  | fail => exact (failCode_avoid _).mono fun _ _ _ h => Avoid.notLock hm h
+  | checkCancel => exact checkCode_avoid.mono fun _ _ _ h => Avoid.notLock hm h
+  | result => exact Avoid.notLock hm slot_avoid
 
 theorem hclean_lower {s : CStmt} (hs : P.StmtOk s) :
     P.HClean m (P.toTaskProg.lower (P.lowerC s)) := by
   induction s with
-  | base | send | recv | drop => exact .other (lower_notLock hm hs nofun)
+  | base | send | recv | drop | fail | checkCancel | result =>
+    exact .other (lower_notLock hm hs nofun)
   | locked m' s ih =>
     by_cases hne : m' = m
     · subst hne
@@ -471,13 +475,16 @@ theorem init_zero (hP : P.Ok) {q c} (hc : P.Has q c) {a : X.E} (haw : X.IsWrite 
   by_cases hp : run.idx a < P.pre (X.thread a)
   · obtain ⟨-, p, hi, -, -, hl, -⟩ := init_of run hP hp
     rw [init_val run hP hp hi]
-    rcases initList_cases hi with ⟨-, rfl⟩ | ⟨-, -, rfl⟩ | ⟨c', -, j, -, rfl⟩ | ⟨c', hc', j, hj, rfl⟩
+    rcases initList_cases hi with ⟨-, rfl⟩ | ⟨-, -, rfl⟩ | ⟨c', -, j, -, rfl⟩ | ⟨c', hc', j, hj, rfl⟩ |
+        ⟨-, rfl | rfl⟩
     · rfl
     · rfl
     · rfl
     · have := hP.cap c' hc'
       exact (cnt_ne_sig (o' := .recv) hc.lockOk (by simp only [sigLen]; omega)
         (hal.symm.trans hl)).elim
+    · rfl
+    · rfl
   · have hacc := (view run hP a).2
     have hget := view_get run (e := a) rfl (Nat.le_refl _) (by omega)
     have hrm := hacc.cnt_rmw hc hget haw hal

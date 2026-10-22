@@ -160,6 +160,16 @@ The theorems:
   `join()` never gives one to the code of the block. The ownership model of #1937
   (`TaskErrorOwnership.lean`) checks the same property, with `join` giving the caller nothing.
 
+`Cancel.lean` has the first three theorems. `fail v`, `checkCancel` and `result r` are
+statements of `Channel.lean`, so a program with failures can also use channels and locks. A
+program has one failure slot and one cancel flag, after the flags of the tasks. The writes at the
+start set both to 0. A task that sees the flag fails with `cancelled`, so its CAS shows what a
+cancelled task would write. `one_failure_wins` says that at most one CAS writes the slot.
+`block_value_is_failure` takes the edge from the winning CAS to the read of the slot as a
+hypothesis: the joins of the block give it. `block_value_from_fail` shows that a value other than 0
+comes from the CAS of a failure. `ChanProg.drf_sc` now asks for code with no failures, because
+the flag uses release and acquire. `each_error_once` comes next.
+
 Sabotage, one at a time: set the flag before the slot, and make the write of the flag relaxed.
 Each one must break `block_value_not_cancelled`. Let `join()` give the error to its caller: that
 must break `each_error_once`. Nested `tasks` blocks come later.

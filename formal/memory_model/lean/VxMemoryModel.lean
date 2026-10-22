@@ -21,3 +21,4 @@ import VxMemoryModel.ChannelExample
 import VxMemoryModel.MutexExample
 import VxMemoryModel.Lock
 import VxMemoryModel.Fifo
+import VxMemoryModel.Cancel

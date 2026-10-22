@@ -102,7 +102,7 @@ variable {X : Execution} (run : P.toTaskProg.toProg.Run X)
 include run
 
 /-- The writes at the start do not write the values. -/
-theorem data_not_init (hP : P.Ok) {c j} (hj : j < P.msgs) {d : X.E}
+theorem data_not_init (hP : P.Ok) {c j} (hc : c < P.chans) (hj : j < P.msgs) {d : X.E}
     (hl : X.loc d = P.data c + j) : P.pre (X.thread d) ≤ run.idx d := by
   refine Nat.le_of_not_lt fun hp => ?_
   obtain ⟨-, p, hi, -, -, hl', -⟩ := init_of run hP hp
@@ -110,7 +110,7 @@ theorem data_not_init (hP : P.Ok) {c j} (hj : j < P.msgs) {d : X.E}
   have hg := chan_ge (P := P) (c := c)
   have hx : P.data c + j = p.1 := hl.symm.trans hl'
   rcases initList_cases hi with ⟨hi, rfl⟩ | ⟨hi, hi', rfl⟩ | ⟨c', hc', j', hj', rfl⟩ |
-      ⟨c', hc', j', hj', rfl⟩
+      ⟨c', hc', j', hj', rfl⟩ | ⟨-, rfl | rfl⟩
   · simp only [data] at hx
     omega
   · simp only [ctrPlace, data] at hx
@@ -121,6 +121,11 @@ theorem data_not_init (hP : P.Ok) {c j} (hj : j < P.msgs) {d : X.E}
   · exact data_ne_sig (o := .send) hj hj' hx
   · have := hP.cap c' hc'
     exact data_ne_sig (o := .recv) hj (by simp only [sigLen]; omega) hx
+  all_goals
+    have := (data_inside hc hj).2
+    have := top_le_slot (P := P)
+    simp only [flag] at hx
+    omega
 
 /-- Each access of element `j` of the values comes from the operation with the number `j`. In the
 thread of the access, a `fetchAdd` of the counter gave that number before it, and the thread set
@@ -131,7 +136,7 @@ theorem data_op (hP : P.Ok) {c j} (hc : c < P.chans) (hj : j < P.msgs) {d : X.E}
       X.thread r = X.thread d ∧ run.idx r < run.idx d ∧
       ∀ d', X.thread d' = X.thread d → run.idx r < run.idx d' → run.idx d' < run.idx d →
         ¬ (X.IsWrite d' ∧ ∃ j' < P.sigLen o, X.loc d' = P.sig o c + j') := by
-  have hp := data_not_init run hP hj hl
+  have hp := data_not_init run hP hc hj hl
   have hacc := (view run hP d).2
   have hget := view_get run (e := d) rfl (Nat.le_refl _) hp
   obtain ⟨o, hko, hpre | ⟨i', hi', hread, hno⟩⟩ := hacc.data_hist hc hj hget hk hl

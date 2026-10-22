@@ -29,6 +29,10 @@ same time.
 has one writer. Then `send_hb_recv`, `recv_hb_send_capacity`, `drop_hb_closed` and
 `unlock_hb_lock` give the edges of M4 in `docs/discussions/waiting_tasks_channels_and_task_errors.md`.
 
+A program with errors also has a failure slot and a cancel flag, after the flags of the tasks.
+`fail`, `checkCancel` and `result` use them. They use release and acquire, so `drf_sc` asks for
+code with no failures. `Cancel.lean` has their theorems.
+
 Each channel can carry `msgs` values in a run. A `send` or a `recv` with the number `msgs` or more
 stops its thread, as a failed bounds check does. This keeps the number of places finite. The
 theorems need `CoOrder` (see `Counter.lean`).
@@ -54,20 +58,34 @@ inductive CStmt where
   | loop (c : Expr) (s : CStmt)
   /-- A `tasks` block: it joins at its end each task that it started. -/
   | tasksBlock (s : CStmt)
+  /-- Fail with the error `v`: write it to the failure slot if no failure came first, and then
+  set the cancel flag. -/
+  | fail (v : Int)
+  /-- A wait that can be cancelled: if the cancel flag is set, fail with `Cancelled`. -/
+  | checkCancel
+  /-- Read the failure slot into the register `r`: the value of the block. -/
+  | result (r : Nat)
 
 /-- `s` holds the code `b` of `Tasks.lean`. -/
 def CStmt.Bases : CStmt → Stmt → Prop
   | .base s, b => s = b
-  | .send .., _ | .recv .., _ | .drop _, _ => False
+  | .send .., _ | .recv .., _ | .drop _, _ | .fail _, _ | .checkCancel, _ | .result _, _ => False
   | .seq s t, b | .ite _ s t, b => s.Bases b ∨ t.Bases b
   | .loop _ s, b | .tasksBlock s, b | .locked _ s, b => s.Bases b
 
 /-- `s` holds a `locked` block of the lock `m`. -/
 def CStmt.Locks (m : Nat) : CStmt → Prop
   | .locked m' s => m' = m ∨ s.Locks m
-  | .base _ | .send .. | .recv .. | .drop _ => False
+  | .base _ | .send .. | .recv .. | .drop _ | .fail _ | .checkCancel | .result _ => False
   | .seq s t | .ite _ s t => s.Locks m ∨ t.Locks m
   | .loop _ s | .tasksBlock s => s.Locks m
+
+/-- `s` uses the failure slot or the cancel flag. -/
+def CStmt.Fails : CStmt → Prop
+  | .fail _ | .checkCancel | .result _ => True
+  | .base _ | .send .. | .recv .. | .drop _ => False
+  | .seq s t | .ite _ s t => s.Fails ∨ t.Fails
+  | .loop _ s | .tasksBlock s | .locked _ s => s.Fails
 
 /-- The two operations of a channel. -/
 inductive Op where
@@ -139,6 +157,8 @@ structure ChanProg where
   /-- The register that holds the number of a `send` or a `recv`. The two registers after it hold
   what a `recv` read while it waits. -/
   tmp : Nat
+  /-- The program has a failure slot and a cancel flag. -/
+  errors : Bool := false
 
 namespace ChanProg
 
@@ -152,6 +172,12 @@ def chan (c : Nat) : Nat := P.places + 2 * P.locks + c * P.size
 
 /-- The place after the channels. The flags of the tasks start here. -/
 def top : Nat := P.places + 2 * P.locks + P.chans * P.size
+
+/-- The failure slot comes after the flags of the tasks. 0 means that no failure came. -/
+def slot : Nat := P.top + 2 * P.count
+
+/-- The cancel flag. -/
+def flag : Nat := P.slot + 1
 
 /-- The counter `q` of the channel or the lock `c`. -/
 def cnt (q : Ctr) (c : Nat) : Nat :=
@@ -255,6 +281,20 @@ abbrev waitCond : Expr := .eq (.eq (.reg P.ctrReg) (.reg P.tmp)) (.const 0)
 abbrev lockCode (m : Nat) : Stmt :=
   .seq (P.bump .next m) (.seq (P.peek m) (.loop P.waitCond (P.peek m)))
 
+/-- The value that a task that was cancelled writes to the failure slot. -/
+def cancelled : Int := -1
+
+/-- After the CAS of a failure: if it wrote the slot, set the cancel flag. -/
+abbrev raise : Stmt := .ite (.eq (.reg P.ctrReg) (.const 0)) (.store P.flag (.const 1) .rel) .skip
+
+/-- Write the error `v` to the failure slot if it holds 0, and then set the cancel flag. -/
+abbrev failCode (v : Int) : Stmt := .seq (.cas P.ctrReg P.slot (.const 0) (.const v) .sc) P.raise
+
+/-- After the read of the cancel flag: fail with `cancelled` if it is set. -/
+abbrev checkTail : Stmt := .ite (.reg P.ctrReg) (P.failCode cancelled) .skip
+
+abbrev checkCode : Stmt := .seq (.load P.ctrReg P.flag .acq) P.checkTail
+
 /-- Replace `send`, `recv` and `drop` with their code. -/
 def lowerC : CStmt → Stmt
   | .base s => s
@@ -266,6 +306,9 @@ def lowerC : CStmt → Stmt
   | .ite e s t => .ite e (lowerC s) (lowerC t)
   | .loop e s => .loop e (lowerC s)
   | .tasksBlock s => .tasksBlock (lowerC s)
+  | .fail v => P.failCode v
+  | .checkCancel => P.checkCode
+  | .result r => .load r P.slot .acq
 
 /-- `sc` writes of constants, in order. -/
 def stores : List (Nat × Int) → Stmt
@@ -275,14 +318,19 @@ def stores : List (Nat × Int) → Stmt
 /-- The counters of the channels: the three counters of channel 0, then of channel 1, and so on. -/
 def ctrPlace (i : Nat) : Nat := P.chan (i / 3) + i % 3
 
-/-- The writes at the start of thread 0: 0 to each counter and each flag `full`, and 1 to the first
-`cap c` flags `taken` of each channel `c`. A `recv` on a closed channel reads `full k` while it is
-0, so that write must exist. -/
-def initList : List (Nat × Int) :=
+/-- The writes at the start to the counters and the flags of the channels and the locks. -/
+def initFirst : List (Nat × Int) :=
   (List.range (2 * P.locks)).map (fun i => (P.places + i, 0)) ++
   (List.range (3 * P.chans)).map (fun i => (P.ctrPlace i, 0)) ++
     ((List.range P.chans).flatMap fun c => (List.range P.msgs).map fun j => (P.sig .send c + j, 0)) ++
     (List.range P.chans).flatMap fun c => (List.range (P.cap c)).map fun j => (P.sig .recv c + j, 1)
+
+/-- The writes at the start of thread 0: 0 to each counter and each flag `full`, and 1 to the first
+`cap c` flags `taken` of each channel `c`. A `recv` on a closed channel reads `full k` while it is
+0, so that write must exist. Last, 0 to the failure slot and the cancel flag, if the program has
+them. -/
+def initList : List (Nat × Int) :=
+  P.initFirst ++ if P.errors then [(P.slot, 0), (P.flag, 0)] else []
 
 def toTaskProg : TaskProg where
   main := .seq (stores P.initList) (P.lowerC P.main)
@@ -301,6 +349,8 @@ def StmtOk : CStmt → Prop
   | .recv r s c => c < P.chans ∧ r ≠ P.tmp ∧ s ≠ P.tmp
   | .seq s t | .ite _ s t => StmtOk s ∧ StmtOk t
   | .loop _ s | .tasksBlock s => StmtOk s
+  | .fail v => P.errors ∧ 0 < v
+  | .checkCancel | .result _ => P.errors
 
 structure Ok : Prop where
   main : P.StmtOk P.main
@@ -440,6 +490,10 @@ theorem data_inside {c j : Nat} (hc : c < P.chans) (hj : j < P.msgs) :
   have := places_le_chan (P := P) (c := c)
   simp only [data]
   rw [size_eq] at *
+  omega
+
+theorem top_le_slot : P.top ≤ P.slot := by
+  unfold slot
   omega
 
 /-! ## The states of lowered code -/
@@ -1101,6 +1155,18 @@ theorem joinMarked_avoid (ids : List Nat) : (P.toTaskProg.joinMarked ids).Access
     simp only [TaskProg.done, toTaskProg]
     omega
 
+theorem slot_avoid {k o} : P.Avoid k o P.slot :=
+  Or.inr (Or.inr (top_le_slot (P := P)))
+
+theorem flag_avoid {k o} : P.Avoid k o P.flag :=
+  Or.inr (Or.inr (by have := top_le_slot (P := P); unfold flag; omega))
+
+theorem failCode_avoid (v : Int) : (P.failCode v).Accesses P.Avoid :=
+  ⟨⟨slot_avoid, slot_avoid⟩, flag_avoid, trivial⟩
+
+theorem checkCode_avoid : P.checkCode.Accesses P.Avoid :=
+  ⟨flag_avoid, failCode_avoid _, trivial⟩
+
 theorem lower_avoid {s : Stmt} (h : s.Below P.places P.count) :
     (P.toTaskProg.lower s).Accesses P.Avoid := by
   induction s with
@@ -1135,6 +1201,9 @@ theorem clean_lower {s : CStmt} (h : P.StmtOk s) : P.Clean (P.toTaskProg.lower (
   | ite _ _ _ ih1 ih2 => exact .ite (ih1 h.1) (ih2 h.2)
   | loop _ _ ih => exact .loop (ih h)
   | tasksBlock _ ih => exact .seq (.other (clearMarks_avoid _)) (.seq (ih h) (.other (joinMarked_avoid _)))
+  | fail => exact .other (failCode_avoid _)
+  | checkCancel => exact .other checkCode_avoid
+  | result => exact .other (slot_avoid (P := P))
 
 theorem code_zero :
     P.toTaskProg.toProg.code 0 = .seq (stores P.initList) (P.toTaskProg.lower (P.lowerC P.main)) := by
@@ -1234,8 +1303,9 @@ theorem initList_cases {i : Nat} {p : Nat × Int} (h : P.initList[i]? = some p) 
     (i < 2 * P.locks ∧ p = (P.places + i, 0)) ∨
       (2 * P.locks ≤ i ∧ i < 2 * P.locks + 3 * P.chans ∧ p = (P.ctrPlace (i - 2 * P.locks), 0)) ∨
       (∃ c < P.chans, ∃ j < P.msgs, p = (P.sig .send c + j, 0)) ∨
-      ∃ c < P.chans, ∃ j < P.cap c, p = (P.sig .recv c + j, 1) := by
-  unfold initList at h
+      (∃ c < P.chans, ∃ j < P.cap c, p = (P.sig .recv c + j, 1)) ∨
+      P.errors ∧ (p = (P.slot, 0) ∨ p = (P.flag, 0)) := by
+  unfold initList initFirst at h
   simp only [List.append_assoc] at h
   by_cases hi : i < 2 * P.locks
   · rw [List.getElem?_append_left (by simpa using hi), List.getElem?_map,
@@ -1253,17 +1323,22 @@ theorem initList_cases {i : Nat} {p : Nat × Int} (h : P.initList[i]? = some p) 
   · obtain ⟨c, hc, hp⟩ := List.mem_flatMap.1 hp
     obtain ⟨j, hj, rfl⟩ := List.mem_map.1 hp
     exact Or.inl ⟨c, List.mem_range.1 hc, j, List.mem_range.1 hj, rfl⟩
+  rcases List.mem_append.1 hp with hp | hp
   · obtain ⟨c, hc, hp⟩ := List.mem_flatMap.1 hp
     obtain ⟨j, hj, rfl⟩ := List.mem_map.1 hp
-    exact Or.inr ⟨c, List.mem_range.1 hc, j, List.mem_range.1 hj, rfl⟩
+    exact Or.inr (Or.inl ⟨c, List.mem_range.1 hc, j, List.mem_range.1 hj, rfl⟩)
+  · cases he : P.errors <;> simp only [he, ite_false, ite_true, List.mem_cons, List.not_mem_nil,
+      or_false, Bool.false_eq_true] at hp
+    exact Or.inr (Or.inr ⟨rfl, hp⟩)
 
 /-- The writes at the start write each counter once. -/
 theorem initList_ctr (hP : P.Ok) {i : Nat} {p : Nat × Int} (h : P.initList[i]? = some p) {q c}
-    (hq : P.LockOk q c) (hp : p.1 = P.cnt q c) : i = initIdx P q c := by
+    (hc : P.Has q c) (hp : p.1 = P.cnt q c) : i = initIdx P q c := by
+  have hq := hc.lockOk
   have hs : 2 < P.size := by rw [size_eq]; omega
   have hg := chan_ge (P := P) (c := c)
   rcases initList_cases h with ⟨hi, rfl⟩ | ⟨hi, hi', rfl⟩ | ⟨c', hc', j, hj, rfl⟩ |
-      ⟨c', hc', j, hj, rfl⟩
+      ⟨c', hc', j, hj, rfl⟩ | ⟨-, rfl | rfl⟩
   · rcases q with ⟨_ | _⟩ | _ | _ | _ <;> simp only [cnt, Ctr.idx, initIdx] at hp ⊢ <;> omega
   · have hg' := chan_ge (P := P) (c := (i - 2 * P.locks) / 3)
     have h3 : (i - 2 * P.locks) % 3 < 3 := Nat.mod_lt _ (by omega)
@@ -1275,15 +1350,20 @@ theorem initList_ctr (hP : P.Ok) {i : Nat} {p : Nat × Int} (h : P.initList[i]? 
   · exact (cnt_ne_sig (o' := .send) hq hj hp.symm).elim
   · have := hP.cap c' hc'
     exact (cnt_ne_sig (o' := .recv) hq (by simp only [sigLen]; omega) hp.symm).elim
+  all_goals
+    have := (cnt_inside hc).2
+    have := top_le_slot (P := P)
+    simp only [flag] at hp
+    omega
 
 /-- The writes at the start set the flags `full` to 0, and the first `cap c` flags `taken` to 1. -/
 theorem initList_sig (hP : P.Ok) {i : Nat} {p : Nat × Int} (h : P.initList[i]? = some p) {o c j}
-    (hj : j < P.sigLen o) (hp : p.1 = P.sig o c + j) :
+    (hc : c < P.chans) (hj : j < P.sigLen o) (hp : p.1 = P.sig o c + j) :
     (o = .send ∧ p.2 = 0) ∨ (o = .recv ∧ j < P.cap c) := by
   have hs : 2 < P.size := by rw [size_eq]; omega
   have hg := chan_ge (P := P) (c := c)
   rcases initList_cases h with ⟨hi, rfl⟩ | ⟨hi, hi', rfl⟩ | ⟨c', hc', j', hj', rfl⟩ |
-      ⟨c', hc', j', hj', rfl⟩
+      ⟨c', hc', j', hj', rfl⟩ | ⟨-, rfl | rfl⟩
   · rw [sig_eq] at hp
     simp only at hp
     omega
@@ -1296,26 +1376,35 @@ theorem initList_sig (hP : P.Ok) {i : Nat} {p : Nat × Int} (h : P.initList[i]? 
   · have := hP.cap c' hc'
     obtain ⟨rfl, rfl, rfl⟩ := sig_inj (o := .recv) (by simp only [sigLen]; omega) hj hp
     exact Or.inr ⟨rfl, hj'⟩
+  all_goals
+    have := (sig_inside hc hj).2
+    have := top_le_slot (P := P)
+    simp only [flag] at hp
+    omega
 
 theorem seqCstOnly_lowerC {s : CStmt}
-    (h : ∀ b, s.Bases b → b.SeqCstOnly) : (P.lowerC s).SeqCstOnly := by
+    (h : ∀ b, s.Bases b → b.SeqCstOnly) (hf : ¬ s.Fails) : (P.lowerC s).SeqCstOnly := by
   induction s with
   | base s => exact h s rfl
   | send => exact ⟨Or.inr rfl, trivial, Or.inl rfl, Or.inr rfl⟩
   | recv | drop => simp [lowerC, Stmt.SeqCstOnly]
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 =>
-    exact ⟨ih1 fun b hb => h b (Or.inl hb), ih2 fun b hb => h b (Or.inr hb)⟩
-  | loop _ _ ih | tasksBlock _ ih => exact ih h
-  | locked _ _ ih => exact ⟨by simp [Stmt.SeqCstOnly], ih h, by simp [Stmt.SeqCstOnly]⟩
+    exact ⟨ih1 (fun b hb => h b (Or.inl hb)) fun h => hf (Or.inl h),
+      ih2 (fun b hb => h b (Or.inr hb)) fun h => hf (Or.inr h)⟩
+  | loop _ _ ih | tasksBlock _ ih => exact ih h hf
+  | locked _ _ ih => exact ⟨by simp [Stmt.SeqCstOnly], ih h hf, by simp [Stmt.SeqCstOnly]⟩
+  | fail | checkCancel | result => exact (hf trivial).elim
 
-/-- DRF-SC for programs with tasks and channels. -/
+/-- DRF-SC for programs with tasks and channels. A failure uses release and acquire, so the code
+has no failures. -/
 theorem drf_sc (P : ChanProg) (hm : ∀ b, P.main.Bases b → b.SeqCstOnly)
-    (ht : ∀ t b, (P.task t).Bases b → b.SeqCstOnly)
+    (ht : ∀ t b, (P.task t).Bases b → b.SeqCstOnly) (hmf : ¬ P.main.Fails)
+    (htf : ∀ t, ¬ (P.task t).Fails)
     (hP : ∀ Y, P.toTaskProg.toProg.Execs Y → Y.WellFormed → Y.SeqConsistent → Y.RaceFree)
     {X : Execution} (hX : P.toTaskProg.toProg.Execs X) (wf : X.WellFormed) (hfin : X.Finite)
     (hc : X.Consistent) : X.SeqConsistent :=
-  P.toTaskProg.drf_sc ⟨stores_seqCstOnly _, seqCstOnly_lowerC hm⟩
-    (fun t => seqCstOnly_lowerC (ht t)) hP hX wf hfin hc
+  P.toTaskProg.drf_sc ⟨stores_seqCstOnly _, seqCstOnly_lowerC hm hmf⟩
+    (fun t => seqCstOnly_lowerC (ht t) (htf t)) hP hX wf hfin hc
 
 /-! ## The executions of a program with channels -/
 
@@ -1404,7 +1493,7 @@ theorem counter (hP : P.Ok) (wf : X.WellFormed) {q c} (hc : P.Has q c) :
     intro a haw hal hna
     by_cases hp : run.idx a < P.pre (X.thread a)
     · obtain ⟨ht, p, hi, -, -, hl, -⟩ := init_of run hP hp
-      exact ⟨ht, initList_ctr hP hi hc.lockOk (hl.symm.trans hal)⟩
+      exact ⟨ht, initList_ctr hP hi hc (hl.symm.trans hal)⟩
     · have hacc := (view run hP a).2
       have hget := view_get run (e := a) rfl (Nat.le_refl _) (by omega)
       have hrm := hacc.cnt_rmw hc hget haw hal
@@ -1457,7 +1546,7 @@ theorem set_writer (hP : P.Ok) {o c j} (hc : c < P.chans) (hj : j < P.sigLen o)
   have hp : P.pre (X.thread w) ≤ run.idx w := by
     refine Nat.le_of_not_lt fun hp => ?_
     obtain ⟨-, p, hi, -, -, hl, -⟩ := init_of run hP hp
-    rcases initList_sig hP hi hj (hl.symm.trans hwl) with ⟨rfl, hp2⟩ | ⟨rfl, hj'⟩
+    rcases initList_sig hP hi hc hj (hl.symm.trans hwl) with ⟨rfl, hp2⟩ | ⟨rfl, hj'⟩
     · rcases hv with h | h
       · cases h
       · exact h ((init_val run hP hp hi).trans hp2)
