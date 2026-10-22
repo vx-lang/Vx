@@ -324,6 +324,25 @@ pub fn negate(e: &Expr) -> Expr {
     })
 }
 
+/// A fact that is always true, `0 == 0`: what stands in for a fact that stopped holding, so the
+/// facts after it keep their places.
+pub fn true_fact() -> Expr {
+    let number = |v: &str| {
+        Box::new(Expr::Number(NumberExpr::new(
+            v.to_string(),
+            None,
+            Span::default(),
+        )))
+    };
+    Expr::RelationalOp(RelationalOpExpr {
+        lhs: number("0"),
+        op: RelationalOp::Eq,
+        rhs: number("0"),
+        span: Span::default(),
+        operand_ty: None,
+    })
+}
+
 /// A fact that is never true, `0 == 1`: what is known where control cannot reach.
 pub fn unreachable_fact() -> Expr {
     let number = |v: &str| {

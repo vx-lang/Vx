@@ -1409,6 +1409,28 @@ impl<'a> TypeChecker<'a> {
             );
         }
 
+        // A fact the prover holds about the assigned variable stops being true here. A write to
+        // a field, an element or through a pointer drops every fact about the variable.
+        fn assigned_root(place: &Expr) -> Option<&crate::symbol::Symbol> {
+            match place {
+                Expr::Identifier(id) => Some(&id.name),
+                Expr::IndexAccess(access) => assigned_root(&access.base),
+                Expr::MemberAccess(access) => assigned_root(&access.base),
+                Expr::Dereference(deref) => assigned_root(&deref.expr),
+                _ => None,
+            }
+        }
+        if let Some(root) = assigned_root(lhs) {
+            let root = root.to_string();
+            // Replaced, not removed: the checker splits this list at saved positions.
+            for fact in self.consteval.constraints.iter_mut() {
+                let mut uses = std::collections::HashSet::new();
+                Self::extract_uses_expr(fact, &mut uses);
+                if uses.contains(&root) {
+                    *fact = crate::hir::prover::true_fact();
+                }
+            }
+        }
         // Keep the compile-time value of the assigned variable in step with the assignment.
         // An assignment the evaluator cannot compute makes the variable unknown rather than
         // leaving the previous value behind, which later reads would report as a certainty.
