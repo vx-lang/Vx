@@ -28,14 +28,16 @@ for n in 0..tiles_n across blocks { for m in 0..tiles_m across blocks {
   init_barriers(&mut bars);                      // lane 0, then the block barrier
   for w in 0..5 across subgroups {
     if w == 4 {                                  // the producer warp
-      for l in 0..1 across lanes {
-        for kb in 0..blocks_k {
-          let _w = mbar_wait(&bars, 4 + kb % 4, parity(kb) ^ 1);    // the stage is empty
-          let _t = tma_load(&mut ring_a, &mut ring_b, kb % 4, maps, &bars, kb);
+      for l in 0..32 across lanes {
+        if l == 0 {
+          for kb in 0..blocks_k {
+            let _w = mbar_wait(&bars, 4 + kb % 4, parity(kb) ^ 1);  // the stage is empty
+            let _t = tma_load(&mut ring_a, &mut ring_b, kb % 4, maps, &bars, kb);
+          }
         }
       }
     } else {                                     // 4 consumer warps
-      for g in 0..8 across lanes { for q in 0..4 across lanes {
+      for l in 0..32 across lanes {
         let mut acc = Tensor<f32, [64], Memory::REG>::fill(0.0);
         for kb in 0..blocks_k {
           let _w = mbar_wait(&bars, kb % 4, parity(kb));            // the stage is full
@@ -43,20 +45,24 @@ for n in 0..tiles_n across blocks { for m in 0..tiles_m across blocks {
           let _a = mbar_arrive(&bars, 4 + kb % 4);
         }
         for j in 0..16 { for h in 0..2 { for e in 0..2 {    // the wgmma fragment
-          out[m * 64 + w * 16 + h * 8 + g, n * 128 + j * 8 + q * 2 + e] = acc[j * 4 + h * 2 + e];
+          out[m * 64 + w * 16 + h * 8 + l / 4, n * 128 + j * 8 + (l % 4) * 2 + e] =
+              acc[j * 4 + h * 2 + e];
         } } }
-      } }
+      }
     }
   }
 } }
 ```
+
+The epilogue's `l / 4` and `l % 4` need L4 to read `/` and `%` by a number (section 6,
+question 4).
 
 The writes are of four kinds:
 
 | Kind | In the GEMM | What makes it race-free |
 | --- | --- | --- |
 | A tensor that one pass makes | `acc` (REG), written by wgmma | No other pass sees it. |
-| Elements at an affine index | `out` in the epilogue | L4 as it is today. |
+| Elements at an affine index | `out` in the epilogue | L4, once it reads `/` and `%` by a number. |
 | Atomic operations | `bars`: `mbarrier.init`, `arrive`, `try_wait` | The hardware. |
 | Data whose order a protocol gives | `ring_a`, `ring_b`: TMA writes, wgmma reads | The `full`/`empty` mbarrier handshake, not `barrier()`. |
 
@@ -156,23 +162,28 @@ follow. So this note leaves the barrier out.
 
 The audit lists both kinds, as it lists `!keeps` today.
 
-## 6. Questions for the `across` design
+## 6. What the `across` stack does today
 
-1. **Roles in one loop.** The producer and the consumers must run at the same time. Two lane
-   loops one after the other would put a barrier between them. The example branches on the
-   subgroup index inside `across subgroups`, with a lane loop in each branch. Do L8 and L10 allow a
-   condition on a subgroup index around a lane loop, when the condition is the same for every lane
-   of the subgroup?
-1. **Lane loops of different widths in one subgroup loop.** The producer's lane loop has 1 lane,
-   and the consumers' nest has 32. With the masking of N2, lanes 1 to 31 of the producer warp skip
-   their loop. Is that the intended reading?
-1. **Warpgroup ops.** wgmma runs on 4 warps together (128 lanes), and `setmaxnreg` on a warpgroup.
-   Is `across subgroups(4)` nested in a loop of warpgroups the place for them, or is that a new
-   level?
-1. **Indices without `/` and `%`.** L4 reads `+`, `-` and multiplication by a number. The fragment
-   index of wgmma is `lane / 4` and `lane % 4`, so the example nests two lane loops (`g`, `q`)
-   instead. A grid that is one axis today (`tile = m + tiles_m * n`) becomes two block loops.
-   Both work. Is that the style that `across` wants?
+The answers below describe #2072 to #2074 as they are. The open choices are for the design's
+owner, so section Decisions stays empty.
+
+1. **Roles in one loop: works.** L8 (`uniform_around` in `src/hir/check/across.rs`) accepts an
+   `if` on a subgroup index around a lane loop. A lane loop directly in a subgroup loop ends with
+   a subgroup barrier (`vx.barrier {subgroup}`), not a block barrier. So the producer warp and the
+   consumer warps do not wait for each other.
+1. **Lane loops of different widths in one subgroup loop: refused.** In a subgroup loop, a lane
+   loop must have exactly the subgroup's lane count of passes, and no lane loop may be inside
+   another. The masking of N2 applies only to a nest directly in the blocks loop. In a subgroup
+   loop a pass is `lane % width`, so a loop of 1 would run on all 32 lanes. The producer is
+   therefore a loop of 32 with `if l == 0` inside, as in the example.
+1. **Warpgroup ops: no level for them.** `across subgroups(4)` gives 128 lanes, but its barriers
+   are per warp, so the convergence that wgmma needs is not proved. Open: a warpgroup level
+   (`across warpgroups`), which wgmma and `setmaxnreg` would need.
+1. **Indices: `/` and `%` are not read.** Nested lane loops for `lane / 4` and `lane % 4` hit the
+   rule of 2 inside a subgroup loop; directly in the blocks loop, up to 3 lane axes nest. Open:
+   teach L4 floor division and remainder by a number, as affine maps have them, and keep the
+   nesting rule. The example assumes that. A one-axis grid (`tile = m + tiles_m * n`) can also
+   stay one axis then.
 
 ## Decisions
 
