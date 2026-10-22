@@ -2009,6 +2009,9 @@ pub(crate) struct FnEmit<'a> {
     /// value can be given its result name when the value is known. Empty outside a spawn.
     /// The third field is the spawn's name index, as its `imm` carries it.
     pub(crate) spawn_stack: Vec<(i64, usize, u64)>,
+    /// For each open `vx.spawn`, where its stack slots go: the end of the slots in its first
+    /// block for a region with `across` loops, and `None` for another region.
+    pub(crate) region_slots: Vec<Option<usize>>,
     /// Per-function sub-space bump allocator (space dispatch id -> next free byte), mirroring the
     /// AST path's `MeliorGenerator::subspace_offsets`: each `Transfer` into a granule'd space
     /// claims the next granule-rounded `offset` and advances the cursor, so both paths assign
@@ -2059,6 +2062,13 @@ impl<'a> FnEmit<'a> {
     /// scratch. So a region keeps its slots, and a `let` in a loop *inside* a
     /// spawn still allocates per iteration.
     pub(crate) fn emit_slot(&mut self, text: &str) {
+        // A region with `across` loops keeps its slots in its own first block, which every
+        // block of the region is under.
+        if let Some(Some(at)) = self.region_slots.last_mut() {
+            self.body.insert_str(*at, text);
+            *at += text.len();
+            return;
+        }
         match self.spawn_stack.last() {
             // A device region is outlined into its own function, so a slot
             // lifted out of it stops being the kernel's own scratch and becomes
@@ -2229,6 +2239,8 @@ impl<'a> FnEmit<'a> {
             Opcode::Barrier => self.op_barrier(idx, ins),
             Opcode::LaunchDim => self.op_launch_dim(idx, ins),
             Opcode::GridIndex => self.op_grid_index(idx, ins),
+            Opcode::AcrossId => self.op_across_id(idx, ins),
+            Opcode::AcrossRegion => self.op_across_region(idx, ins),
             Opcode::TensorDrop => self.op_tensor_drop(idx, ins),
             Opcode::Abort => self.op_abort(idx, ins),
             Opcode::PrintStr => self.op_print_str(idx, ins),
@@ -2407,6 +2419,7 @@ pub fn emit_function_mlir(
         terminated: false,
         pending_args: Vec::new(),
         spawn_stack: Vec::new(),
+        region_slots: Vec::new(),
         subspace_offsets: HashMap::new(),
         filled: hir
             .iter()

@@ -282,6 +282,10 @@ A kernel whose region sets `grid([..]) block(n)` also has `launch`: `grid`, one 
 axis, and `block`. An entry is a number, `{"param": "rows"}` for the value of a parameter, or
 `{"computed": "(rows + 3) / 4"}` for a size that the host computes from parameters and numbers.
 A size is not a parameter of the kernel, so a launcher computes it and launches that shape.
+A kernel from a region with `across` loops has `launch` too: a `grid` entry for each loop of
+blocks, `block` for the lanes of a block, and `"grid_loops": true`. A loop of blocks steps over
+the blocks of the grid, so a smaller grid is also correct. The kernel needs exactly the lanes of
+`block`.
 
 With no `launch`, the program that launches the kernel chooses the grid and the block.
 

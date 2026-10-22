@@ -1899,7 +1899,7 @@ impl<'a> TypeChecker<'a> {
         }
         // E6035: an `across` loop in a place or with a size that it may not have.
         if !self.speculating {
-            self.check_across_loops(&func.body);
+            self.check_across_loops(&mut func.body);
         }
 
         // The whole function has been checked; verify the working set of each memory space

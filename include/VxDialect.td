@@ -154,9 +154,10 @@ def Vx_BarrierOp : Vx_Op<"barrier", [MemoryEffects<[MemRead, MemWrite]>]> {
     let assemblyFormat = "attr-dict";
 }
 
-// The launch shape of a `vx.spawn` region (#252): the blocks on grid axis 0 to
-// 2, or the threads of a block (axis 3). In the region, so that the outlined
-// kernel takes the value, and the runtime reads it before the launch.
+// The launch shape of a `vx.spawn` region with `grid([..]) block(n)` or
+// `across` loops (#252): the blocks on grid axis 0 to 2, or the threads of a
+// block (axis 3). The outlining passes the value after the kernel's arguments,
+// and the runtime reads it there.
 def Vx_LaunchDimOp : Vx_Op<"launch_dim", [MemoryEffects<[MemWrite]>]> {
     let summary = "One size of the launch shape of a spawn region.";
     let arguments = (ins I32:$value, I32Attr:$axis);

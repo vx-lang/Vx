@@ -286,14 +286,35 @@ pub enum Opcode {
     /// elements in row order and then zeros. With `TENSOR_PAD_EACH_AXIS` in `imm` it is
     /// `t.pad(shape)` instead: each element keeps its index, and the zeros follow on every axis.
     TensorPad = 63,
-    /// The first instructions of a `spawn` region with `grid([..]) block(n)` (#252): one for each
-    /// grid axis, `imm` 0 to 2, then one for the block, `imm` 3. `operand1` is the value, which
-    /// the host computed before the region. The region takes it, and the runtime reads it to
-    /// launch the kernel.
+    /// The first instructions of a `spawn` region with `grid([..]) block(n)` or `across` loops
+    /// (#252): one for each grid axis, `imm` 0 to 2, then one for the block, `imm` 3. `operand1`
+    /// is the value, which the host computed before the region. The region takes it, and the
+    /// runtime reads it to launch the kernel.
     LaunchDim = 64,
     /// `grid_index(i)` (#252): the index of this block on axis `imm` of the grid, an `i32`.
     GridIndex = 65,
+    /// Where this lane is in the launch, an `i32`: one of the `ACROSS_*` kinds in the low two
+    /// bits of `imm`, and the grid axis or the lanes in `imm >> 2`. On the CPU copy of the region
+    /// an index is 0 and a count is 1.
+    AcrossId = 69,
+    /// The first instruction of a region with `across` loops, after `Spawn`. The stack slots of
+    /// the region go in its first block, so that code that lane 0 alone runs can declare a value
+    /// that later code reads.
+    AcrossRegion = 70,
 }
+
+/// `Opcode::AcrossId`: the index of this lane in its block.
+pub const ACROSS_LANE: u64 = 0;
+/// `Opcode::AcrossId`: the step of a lane loop that shares its passes among the `imm >> 2` lanes:
+/// that number on the GPU, and 1 on the CPU copy, which has one lane.
+pub const ACROSS_STRIDE: u64 = 1;
+/// `Opcode::AcrossId`: the index of this block on a grid axis.
+pub const ACROSS_BLOCK: u64 = 2;
+/// `Opcode::AcrossId`: the blocks on a grid axis.
+pub const ACROSS_BLOCKS: u64 = 3;
+
+/// `Opcode::Barrier`'s `imm`: the lanes of one subgroup wait for each other, not the block.
+pub const BARRIER_SUBGROUP: u64 = 1;
 
 /// `Opcode::TensorPad`'s `imm`: pad each axis (`t.pad(shape)`), not the flat row order.
 pub const TENSOR_PAD_EACH_AXIS: u64 = 1;
@@ -336,6 +357,10 @@ impl Opcode {
             60 => ConstTable,
             61 => TensorDataPtr,
             62 => TensorDrop,
+            64 => LaunchDim,
+            65 => GridIndex,
+            69 => AcrossId,
+            70 => AcrossRegion,
             8 => Call,
             9 => Ret,
             10 => Matmul,

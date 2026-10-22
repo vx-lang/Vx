@@ -239,11 +239,14 @@ static inline long vx_launch_size(const char **text, void *const *device_args,
   return value;
 }
 
-/* The launch shape that the program set with `grid([..]) block(n)` (#252),
-   from the payload's `grid=` and `block=` entries. Returns 1 and fills `grid`
-   and `block`, 0 when the payload has no shape, or -1 with the reason in `why`
-   when a size is not one a GPU can launch. A smaller launch would skip work, so
-   the caller stops the program on -1. */
+/* The launch shape of a region, from the payload's `grid=` and `block=`
+   entries: what the program set with `grid([..]) block(n)`, or what the
+   `across` loops give (#252). Returns 1 and fills `grid` and `block`, 0 when
+   the payload has no shape, or -1 with the reason in `why` when a size is not
+   one a GPU can launch. A smaller launch would skip work, so the caller stops
+   the program on -1. With `grid_loops=1`, a loop of blocks steps over the
+   blocks of the grid, so any grid covers its passes: a grid size below 1 is 1,
+   and one above what the GPU launches on that axis is that limit. */
 static inline int vx_launch_shape(const void *payload, size_t payload_size,
                                   void *const *device_args,
                                   const int32_t *arg_tags, int64_t num_args,
@@ -255,9 +258,13 @@ static inline int vx_launch_shape(const void *payload, size_t payload_size,
   if (!at || !block_text) {
     return 0;
   }
+  const int loops =
+      vx_payload_field(payload, payload_size, "grid_loops=") != NULL;
   for (int axis = 0; axis < 3; ++axis) {
     long n = *at ? vx_launch_size(&at, device_args, arg_tags, num_args) : 1;
-    if (n < 1 || n > limits[axis]) {
+    if (loops) {
+      n = n < 1 ? 1 : n > limits[axis] ? limits[axis] : n;
+    } else if (n < 1 || n > limits[axis]) {
       snprintf(why, why_size,
                "grid axis %d has %ld blocks, and a GPU launches 1 to %ld on "
                "that axis",

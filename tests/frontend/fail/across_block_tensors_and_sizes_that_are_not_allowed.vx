@@ -1,0 +1,74 @@
+//===- across_block_tensors_and_sizes_that_are_not_allowed.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Code of a block outside its lane loops runs once for the block, so the lanes of the block
+// share a tensor that it makes. Such a tensor must be in a memory with `scope: cta` or
+// `scope: sm`, such as `Memory::SMEM` of the H100 file. A subgroup has no memory of its own.
+// The host computes the size of a loop of blocks before the launch, and the kernel computes it
+// again, so the size may not call a function. Each function gets E6035.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6035
+// CHECK: Error[E6035] at 23:{{.*}}the lanes of a block share a tensor that the code of the block makes
+// CHECK: Error[E6035] at 36:{{.*}}the lanes of a block share a tensor that the code of the block makes
+// CHECK: Error[E6035] at 50:{{.*}}a subgroup has no memory of its own
+// CHECK: Error[E6035] at 67:{{.*}}So the size may not call a function
+
+pub fn tensor_in_default_memory(o : &mut Tensor<f32, [?, 8], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut t = Tensor<f32, [8]>::new();
+      t[0] = 2.0;
+      for l in 0..8 across lanes {
+        o[b][l] = t[0];
+      }
+    }
+  }
+  return;
+}
+
+pub fn tensor_in_device_memory(o : &mut Tensor<f32, [?, 8], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut t = unsafe { Tensor<f32, [8], Memory::HBM>::uninit() };
+      for l in 0..8 across lanes {
+        t[l] = 1.0;
+        o[b][l] = t[l];
+      }
+    }
+  }
+  return;
+}
+
+pub fn tensor_in_subgroup_code(o : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for w in 0..4 across subgroups {
+        let mut t = unsafe { Tensor<f32, [32], Memory::SMEM>::uninit() };
+        for l in 0..32 across lanes {
+          t[l] = 1.0;
+          o[b * 4 + w][l] = t[l];
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn half(n : i32) on Topology::Device -> i32 {
+  return n / 2;
+}
+
+pub fn size_that_calls(o : &mut Tensor<f32, [?, 8], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..half(n) across blocks {
+      for l in 0..8 across lanes {
+        o[b][l] = 1.0;
+      }
+    }
+  }
+  return;
+}

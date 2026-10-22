@@ -153,13 +153,13 @@ decision.
 | Value of a device spawn | the kernel stores it in a host slot and the host loads it after the launch; such a kernel gets no GPU device image and runs on the host | the slot staged to device memory, so the GPU twin can run |
 | Runtime device index `NPU[i]` | W1030, device 0 | separate issue |
 | Launch shape | `grid([..]) block(n)`, §8 | `semantics([..])` and roles, #252 stage 2 |
+| `for i in a..b across <level>` (#252) | E6035 checks its place and its size. It also checks that no pass touches what another pass writes (L4), and that every lane reaches the end of each lane loop (L5, L8, L10). The loops give the launch shape: each loop of blocks is a grid axis, and the lane and subgroup loops give the lanes of a block. Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes memory. The CPU copy runs one block of one lane. | lane loops fuse, and per-lane arrays go in registers |
 
 The `cuda` backend puts every launch and copy on the default stream, so the GPU runs them in
 program order, and a copy to the host waits for the kernels before it. A fault shows at the next
 wait: a copy to the host, a free, or the end of the program. That message names the last kernel
 that the GPU started. `VX_CUDA_SYNC=1` waits after each launch, so that the message names the
 kernel that faulted.
-| `for i in a..b across <level>` (#252) | E6035 checks its place and its size. It also checks that no pass touches what another pass writes (L4), and that every lane reaches the end of each lane loop (L5, L8, L10). It runs as a plain `for`. | the loops give the launch shape |
 
 Order of work: the value stub first, since any model needs it; then non-blocking dispatch plus
 a real `await_future` in the runtimes, with the wait emitted at region exit so nothing

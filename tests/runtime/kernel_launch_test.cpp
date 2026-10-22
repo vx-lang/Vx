@@ -244,16 +244,18 @@ void entry_parameter_counting() {
 
 } // namespace
 
-/// `grid([..]) block(n)` (#252): the payload names the sizes. A size `$j` is
-/// the `i32` launch value j, which comes after the kernel's arguments.
+/// The launch shape of a region with `grid([..]) block(n)` or `across` loops
+/// (#252): the payload names the sizes. A size `$j` is the `i32` launch value
+/// j, which comes after the kernel's arguments.
 void launch_shapes() {
   int32_t rows = 7;
+  int32_t none = 0;
   int64_t wide = 7;
   float data[4] = {};
   void *ptr = data;
   /* One kernel argument, then the launch values. */
-  void *args[3] = {&ptr, &rows, &wide};
-  const int32_t tags[3] = {0, 4, 5};
+  void *args[4] = {&ptr, &rows, &wide, &none};
+  const int32_t tags[4] = {0, 4, 5, 4};
   unsigned grid[3] = {0, 0, 0};
   unsigned block = 0;
   char why[160] = "";
@@ -282,6 +284,13 @@ void launch_shapes() {
                         &block, why, sizeof why) == -1 &&
             strstr(why, "grid axis 0 has 0 blocks"),
         "a grid axis with no blocks is refused");
+
+  const char loops[] = "k\0grid=$2,100000\0block=32\0grid_loops=1\0";
+  check(vx_launch_shape(loops, sizeof loops, args, tags, 1, grid, &block, why,
+                        sizeof why) == 1 &&
+            grid[0] == 1 && grid[1] == 65535,
+        "with a loop of blocks, a grid axis of 0 blocks launches 1, and one "
+        "above the limit the limit");
 
   const char not_i32[] = "k\0grid=$1\0block=32\0";
   check(vx_launch_shape(not_i32, sizeof not_i32, args, tags, 1, grid, &block,

@@ -18,6 +18,7 @@
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/FunctionCallUtils.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -584,8 +585,6 @@ static void useStackScratchIn(Region &kernel, PatternRewriter &rewriter) {
   }
 }
 
-// Inline `vx.spawn` in place for the CPU topology, or outline it into a
-// kernel + `vx.launch` for device topologies.
 /// A launch size as source text, from the parameters of `func` and numbers,
 /// for the `--emit-ptx` manifest: `(rows + 3) / 4`. Empty when the size comes
 /// from anything else.
@@ -650,6 +649,8 @@ static std::string launchSizeText(Value v, func::FuncOp func, int depth = 0) {
   return lhs + " " + sign + " " + rhs;
 }
 
+// Inline `vx.spawn` in place for the CPU topology, or outline it into a
+// kernel + `vx.launch` for device topologies.
 struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
   using OpRewritePattern<SpawnOp>::OpRewritePattern;
 
@@ -748,7 +749,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       }
     }
 
-    // The launch shape that the program set (#252), as payload text: a number
+    // The launch shape that the program set with `grid([..]) block(n)`, or that
+    // the `across` loops give (#252), as payload text: a number
     // for a constant, and `$j` for launch value j. The `vx.launch_dim` ops go
     // away here, so the kernel does not take a launch value. The launch passes
     // each one after the kernel's arguments, and the runtime reads it there.
@@ -898,6 +900,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     if (!launchGrid.empty()) {
       kernelOp->setAttr("vx.launch_grid", rewriter.getStringAttr(launchGrid));
       kernelOp->setAttr("vx.launch_block", rewriter.getStringAttr(launchBlock));
+      if (op->hasAttr("vx.across"))
+        kernelOp->setAttr("vx.across", rewriter.getUnitAttr());
       kernelOp->setAttr("vx.launch_text", rewriter.getArrayAttr(launchTexts));
     }
     // Keeps the kernel off the GPU device image: the slot is host stack.
@@ -1019,6 +1023,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     if (!launchGrid.empty()) {
       launchOp->setAttr("vx.launch_grid", rewriter.getStringAttr(launchGrid));
       launchOp->setAttr("vx.launch_block", rewriter.getStringAttr(launchBlock));
+      if (op->hasAttr("vx.across"))
+        launchOp->setAttr("vx.across", rewriter.getUnitAttr());
       launchOp->setAttr("vx.launch_values",
                         rewriter.getI32IntegerAttr(launchValues.size()));
     }
@@ -1559,7 +1565,8 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
 /// the fill, a slow thread can write its zeros over a value that a fast thread
 /// already wrote. The barrier is safe only where every thread of the block
 /// reaches it: in the first block of the kernel. A fill in a branch or a loop
-/// gets a warning instead.
+/// gets a warning instead. In a kernel with `across` loops, lane 0 alone runs
+/// the fill, and the frontend put a barrier after it.
 static void fillToDeviceLoops(linalg::FillOp fill) {
   Value buffer = fill.getOutputs()[0];
   auto type = dyn_cast<MemRefType>(buffer.getType());
@@ -1569,13 +1576,14 @@ static void fillToDeviceLoops(linalg::FillOp fill) {
   bool shared = space && space.getInt() == 3;
   auto kernel = fill->getParentOfType<vx::KernelOp>();
   bool everyThread = kernel && fill->getBlock() == &kernel.getBody().front();
-  if (shared && !everyThread)
+  bool across = kernel && kernel->hasAttr("vx.across");
+  if (shared && !everyThread && !across)
     fill->getParentOp()->emitWarning()
         << "Warning: a GPU region sets shared memory to zero in a branch or a "
            "loop, so the compiler adds no barrier after it. Another thread "
            "can write the memory before the zero fill ends. Make the shared "
            "tensor at the start of the region.";
-  bool sync = shared && everyThread;
+  bool sync = shared && everyThread && !across;
   OpBuilder b(fill);
   Location loc = fill.getLoc();
   Value value = fill.getInputs()[0];
@@ -1739,7 +1747,8 @@ static constexpr int64_t kMaxStaticSharedBytes = 48 * 1024;
 static bool runsOnDevice(Operation *op, ModuleOp module,
                          DeviceCallees &callees) {
   // Rewritten to `gpu.return` and `gpu.barrier` in the device clone (Vx#379).
-  if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp>(op))
+  // A `vx.launch_dim` leaves the region when it is outlined.
+  if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp>(op))
     return true;
   // A DYNAMIC shared-memory tile cannot become a `.shared` global (those
   // need a static shape), and leaving the alloca as-is ships a kernel that
@@ -2769,10 +2778,10 @@ struct ConvertVxToStandardPass
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry
-        .insert<async::AsyncDialect, cf::ControlFlowDialect, func::FuncDialect,
-                LLVM::LLVMDialect, memref::MemRefDialect, arith::ArithDialect,
-                gpu::GPUDialect, math::MathDialect, scf::SCFDialect>();
+    registry.insert<async::AsyncDialect, cf::ControlFlowDialect,
+                    func::FuncDialect, LLVM::LLVMDialect, memref::MemRefDialect,
+                    arith::ArithDialect, gpu::GPUDialect, math::MathDialect,
+                    scf::SCFDialect, NVVM::NVVMDialect>();
   }
 
   /// Give every device kernel a `gpu.func` beside its `vx.kernel`.
@@ -2818,8 +2827,9 @@ struct ConvertVxToStandardPass
       // device pipeline for -- `applegpu` reaches its device through the plugin
       // ABI, not NVVM -- is excluded here exactly like NPU/AccCore below.
       // A region with `grid([..]) block(n)` runs only on a GPU (#252). The CPU
-      // cannot run its blocks and threads.
-      bool gpuOnly = k->hasAttr("vx.launch_grid");
+      // cannot run its blocks and threads. A region with `across` loops can:
+      // its CPU copy runs one block of one lane.
+      bool gpuOnly = k->hasAttr("vx.launch_grid") && !k->hasAttr("vx.across");
       auto refuse = [&](const Twine &why) {
         k.emitError("a GPU region with `grid([..]) block(n)` cannot run on the "
                     "GPU, because ")
@@ -2903,7 +2913,8 @@ struct ConvertVxToStandardPass
     // A region with `grid([..]) block(n)` that gets no GPU copy cannot run.
     module.walk([&](vx::KernelOp k) {
       // The two refusals above already named the other reasons.
-      if (!k->hasAttr("vx.launch_grid") || llvm::is_contained(kernels, k) ||
+      if (!k->hasAttr("vx.launch_grid") || k->hasAttr("vx.across") ||
+          llvm::is_contained(kernels, k) ||
           !hasDevicePipeline(k, static_cast<int32_t>(k.getTopology())) ||
           k->hasAttr("vx.result_slot"))
         return;
@@ -3298,7 +3309,15 @@ struct ConvertVxToStandardPass
         gpuFunc.walk([&](vx::BarrierOp bar) { barriers.push_back(bar); });
         for (vx::BarrierOp bar : barriers) {
           OpBuilder b(bar);
-          b.create<gpu::BarrierOp>(bar.getLoc());
+          // The end of a lane loop in a subgroup loop: the lanes of one warp
+          // wait for each other, and the other warps go on.
+          if (bar->hasAttr("subgroup")) {
+            Value all = b.create<arith::ConstantIntOp>(bar.getLoc(),
+                                                       b.getI32Type(), -1);
+            b.create<NVVM::SyncWarpOp>(bar.getLoc(), all);
+          } else {
+            b.create<gpu::BarrierOp>(bar.getLoc());
+          }
           bar.erase();
         }
       }
@@ -3856,9 +3875,9 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     // Grid-striding makes any configuration correct, so this is a sizing
     // hint with a correctness floor, not a contract the runtime must honour
     // exactly.
-    // The launch shape that the program set (#252): `grid=` with one entry
-    // for each axis, and `block=`. An entry `#k` is the value of kernel
-    // argument k, an `i32`. A number is that size.
+    // The launch shape (#252): `grid=` with one entry for each axis, and
+    // `block=`. An entry `$j` is launch value j, an `i32` that the launch
+    // passes after the kernel's arguments. A number is that size.
     if (auto grid = op->getAttrOfType<StringAttr>("vx.launch_grid")) {
       payload += "grid=" + grid.getValue().str();
       payload.push_back('\0');
@@ -3866,6 +3885,12 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
           "block=" +
           op->getAttrOfType<StringAttr>("vx.launch_block").getValue().str();
       payload.push_back('\0');
+      // A loop of blocks steps over the grid, so any grid size covers its
+      // passes, and the runtime may launch fewer blocks than it asks for.
+      if (op->hasAttr("vx.across")) {
+        payload += "grid_loops=1";
+        payload.push_back('\0');
+      }
     }
 
     if (auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip")) {
@@ -4716,8 +4741,12 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
                           "numbers, with + - * / and %";
         return failure();
       }
-      entry["launch"] = llvm::json::Object{{"grid", std::move(gridSizes)},
-                                           {"block", std::move(block[0])}};
+      llvm::json::Object launch{{"grid", std::move(gridSizes)},
+                                {"block", std::move(block[0])}};
+      // A loop of blocks steps over the grid, so a smaller grid is correct.
+      if (kernel->hasAttr("vx.across"))
+        launch["grid_loops"] = true;
+      entry["launch"] = std::move(launch);
     }
     kernels.push_back(std::move(entry));
   }
@@ -4942,7 +4971,7 @@ struct ConvertVxToLLVMPass
     // copy, which runs when no GPU took the launch, writes a message and stops
     // the program.
     getOperation().walk([&](vx::KernelOp kernel) {
-      if (!kernel->hasAttr("vx.launch_grid"))
+      if (!kernel->hasAttr("vx.launch_grid") || kernel->hasAttr("vx.across"))
         return;
       MLIRContext *ctx = kernel.getContext();
       Location loc = kernel.getLoc();
@@ -4988,6 +5017,20 @@ struct ConvertVxToLLVMPass
         t.erase();
       });
       kernel.walk([&](gpu::BlockDimOp d) {
+        OpBuilder b(d);
+        Value one = b.create<arith::ConstantOp>(d.getLoc(), b.getIndexAttr(1));
+        d.getResult().replaceAllUsesWith(one);
+        d.erase();
+      });
+      // An `across` loop of blocks: one block, the first.
+      kernel.walk([&](gpu::BlockIdOp id) {
+        OpBuilder b(id);
+        Value zero =
+            b.create<arith::ConstantOp>(id.getLoc(), b.getIndexAttr(0));
+        id.getResult().replaceAllUsesWith(zero);
+        id.erase();
+      });
+      kernel.walk([&](gpu::GridDimOp d) {
         OpBuilder b(d);
         Value one = b.create<arith::ConstantOp>(d.getLoc(), b.getIndexAttr(1));
         d.getResult().replaceAllUsesWith(one);
