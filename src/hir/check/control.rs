@@ -445,6 +445,48 @@ impl<'a> TypeChecker<'a> {
         })
     }
 
+    /// The values known after paths join: a value stays known only when every path leaves it
+    /// the same. Each path is the checker's scopes of known values at the join.
+    fn join_known_values(
+        paths: Vec<Vec<HashMap<crate::symbol::Symbol, Value>>>,
+    ) -> Vec<HashMap<crate::symbol::Symbol, Value>> {
+        let mut paths = paths.into_iter();
+        let mut joined = paths.next().unwrap_or_default();
+        for path in paths {
+            assert_eq!(
+                joined.len(),
+                path.len(),
+                "paths join at the same scope depth"
+            );
+            for (scope, other) in joined.iter_mut().zip(&path) {
+                scope.retain(|name, value| other.get(name) == Some(value));
+            }
+        }
+        joined
+    }
+
+    /// The value of an `if` condition when the checker knows it. A condition that calls a
+    /// function is not evaluated: the call could run a whole function body while checking.
+    fn known_condition(&self, cond: &Expr) -> Option<bool> {
+        fn calls_nothing(expr: &Expr) -> bool {
+            match expr {
+                Expr::Identifier(_) | Expr::Number(_) => true,
+                Expr::BinaryOp(op) => calls_nothing(&op.lhs) && calls_nothing(&op.rhs),
+                Expr::RelationalOp(op) => calls_nothing(&op.lhs) && calls_nothing(&op.rhs),
+                Expr::LogicalOp(op) => calls_nothing(&op.lhs) && calls_nothing(&op.rhs),
+                Expr::UnaryOp(op) => calls_nothing(&op.expr),
+                _ => false,
+            }
+        }
+        if !calls_nothing(cond) {
+            return None;
+        }
+        match self.eval_expr(cond, &self.consteval_snapshot()) {
+            Some(Value::Bool(b)) => Some(b),
+            _ => None,
+        }
+    }
+
     pub(crate) fn check_if_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let unused = std::mem::replace(&mut self.value_unused, false);
         let if_expr = match expr {
@@ -458,9 +500,11 @@ impl<'a> TypeChecker<'a> {
                 .push("Condition in if expression must be of type bool (i1)".to_string());
         }
 
+        let mut taken = None;
         if if_expr.is_comptime {
             let tmp_env = self.consteval_snapshot();
             if let Some(Value::Bool(b)) = self.eval_expr(&if_expr.cond, &tmp_env) {
+                taken = Some(b);
                 if b {
                     if_expr.else_block = None;
                 } else {
@@ -486,6 +530,9 @@ impl<'a> TypeChecker<'a> {
         if let Some(c) = &cond_fact {
             self.consteval.constraints.push(c.clone());
         }
+        // Each branch starts from the values known before the `if`, and the paths join after it.
+        let taken = taken.or_else(|| self.known_condition(&if_expr.cond));
+        let values_before = self.consteval.env.clone();
         self.push_releasing_scope();
         let mut then_ty = Type::Struct("void".into(), None);
         if !self.speculating && !if_expr.then_block.is_empty() {
@@ -500,6 +547,7 @@ impl<'a> TypeChecker<'a> {
                 .push(crate::hir::prover::negate(c));
         }
         let marks_after_then = self.branch_end(&if_expr.then_block);
+        let values_after_then = std::mem::replace(&mut self.consteval.env, values_before);
         self.restore_moved(marks_before.clone());
         let then_borrows = self.borrow.added_since(&borrows_before);
         self.borrow.forget(&then_borrows);
@@ -556,6 +604,12 @@ impl<'a> TypeChecker<'a> {
             .else_block
             .as_ref()
             .is_some_and(|b| self.branch_ends_early(b));
+        let values_after_else = std::mem::take(&mut self.consteval.env);
+        self.consteval.env = match (taken, then_ends, else_ends) {
+            (Some(true), _, _) | (None, false, true) => values_after_then,
+            (Some(false), _, _) | (None, true, false) => values_after_else,
+            (None, _, _) => Self::join_known_values(vec![values_after_then, values_after_else]),
+        };
         match (then_ends, else_ends) {
             (true, false) => self.consteval.constraints.extend(else_facts),
             (false, true) => self.consteval.constraints.extend(then_facts),
@@ -972,7 +1026,10 @@ impl<'a> TypeChecker<'a> {
                 // it cannot say which arm the code after the `match` came through.
                 let facts_before = self.consteval.constraints.len();
                 let mut every_arm_ends = !arms.is_empty();
+                let values_before = self.consteval.env.clone();
+                let mut values_after_arms = Vec::new();
                 for arm in arms {
+                    self.consteval.env = values_before.clone();
                     self.consteval.constraints.truncate(facts_before);
                     self.restore_moved(marks_before.clone());
                     let added = self.borrow.added_since(&borrows_before);
@@ -1016,6 +1073,9 @@ impl<'a> TypeChecker<'a> {
                     };
                     self.pop_scope();
                     every_arm_ends &= self.branch_ends_early(&arm.body);
+                    if !self.branch_ends_early(&arm.body) {
+                        values_after_arms.push(self.consteval.env.clone());
+                    }
                     if let Some(after) = self.branch_end(&arm.body) {
                         joined = Some(match joined.take() {
                             Some(j) => Self::union_moved(j, after),
@@ -1042,6 +1102,11 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.restore_moved(joined.unwrap_or(marks_before));
                 self.borrow.add_back(arm_borrows);
+                // With no `_` arm, the value may match no arm at all.
+                if !has_wildcard || values_after_arms.is_empty() {
+                    values_after_arms.push(values_before);
+                }
+                self.consteval.env = Self::join_known_values(values_after_arms);
                 self.consteval.constraints.truncate(facts_before);
                 if every_arm_ends {
                     self.consteval
