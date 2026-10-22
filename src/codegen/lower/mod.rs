@@ -587,6 +587,15 @@ pub fn generate_match_chain<'c>(
         gen.close_blocks_to(depth);
         return Ok(block);
     }
+    // A name arm (`other => ..`) matches every value, like `_`, and gives the value that name.
+    if let Pattern::Identifier(name) = &arm.pattern {
+        gen.note_shadow(name.as_ref());
+        gen.env
+            .insert(name.to_string().into(), (match_val, _match_ty));
+        lower_match_arm_body(gen, &arm.body, block, merge_block, value_ty)?;
+        gen.close_blocks_to(depth);
+        return Ok(block);
+    }
 
     let parent_region = block.parent_region().unwrap();
     let then_block = parent_region.append_block(melior::ir::Block::new(&[]));
