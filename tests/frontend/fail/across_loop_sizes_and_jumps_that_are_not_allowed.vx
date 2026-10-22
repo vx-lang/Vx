@@ -1,0 +1,239 @@
+//===- across_loop_sizes_and_jumps_that_are_not_allowed.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The size of a block must be known when the kernel is compiled, and at most 1024 lanes on the
+// H100 topology `Device`. A subgroup has 32 lanes. Every lane must reach the end of an `across`
+// loop, so no `break`, `continue` or `return` may leave one. Each function below breaks one of
+// these rules and gets E6035.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6035
+// CHECK-DAG: Error[E6035] at 34:{{.*}}the bound of the loop is a number such as 256
+// CHECK-DAG: Error[E6035] at 45:{{.*}}the `n` of `across lanes(n)` is a number such as 256
+// CHECK-DAG: Error[E6035] at 56:{{.*}}this loop asks for 4096 lanes, but a block of `Device` has at most 1024. Write `across lanes(n)`
+// CHECK-DAG: Error[E6035] at 68:{{.*}}this loop asks for 2048 lanes, but a block of `Device` has at most 1024
+// CHECK-DAG: Error[E6035] at 82:{{.*}}a lane loop inside another one is the whole body of the outer loop
+// CHECK-DAG: Error[E6035] at 94:{{.*}}64 subgroups of 32 lanes are 2048 lanes
+// CHECK-DAG: Error[E6035] at 108:{{.*}}runs once for each lane of the subgroup, so it has 32 passes or is `across lanes(32)`, not 16
+// CHECK-DAG: Error[E6035] at 121:{{.*}}a subgroup loop may not be inside another one
+// CHECK-DAG: Error[E6035] at 135:{{.*}}`break` may not leave an `across` loop
+// CHECK-DAG: Error[E6035] at 149:{{.*}}`continue` may not leave a pass of an `across` loop
+// CHECK-DAG: Error[E6035] at 163:{{.*}}`return` may not leave an `across` loop
+// CHECK-DAG: Error[E6035] at 174:{{.*}}the count of an `across` loop is an `i32`
+// CHECK-DAG: Error[E6035] at 183:{{.*}}an `across` loop goes over a range such as `0..n`
+// CHECK-DAG: Error[E6035] at 195:{{.*}}a region has at most three axes of blocks
+// CHECK-DAG: Error[E6035] at 211:{{.*}}a block has at most three axes of lanes
+// CHECK-DAG: Error[E6035] at 227:{{.*}}in a subgroup loop, a lane loop may not be inside another one
+
+pub fn bound_not_a_number(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..n across lanes {
+        o[t] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn count_not_a_number(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..n across lanes(n) {
+        o[t] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn too_many_lanes(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..4096 across lanes {
+        o[t] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn too_many_nested_lanes(o : &mut Tensor<f32, [?, ?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for i in 0..64 across lanes {
+        for j in 0..32 across lanes {
+          o[i][j] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn nested_lanes_with_other_code(o : &mut Tensor<f32, [?, ?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for i in 0..16 across lanes {
+        let k = i * 2;
+        for j in 0..16 across lanes {
+          o[i][j] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn too_many_subgroups(o : &mut Tensor<f32, [?, ?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for w in 0..64 across subgroups {
+        for l in 0..32 across lanes {
+          o[w][l] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn lanes_in_a_subgroup_not_32(o : &mut Tensor<f32, [?, ?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for w in 0..4 across subgroups {
+        for l in 0..16 across lanes {
+          o[w][l] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn subgroups_in_subgroups(o : &mut Tensor<f32, [?, ?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for w in 0..4 across subgroups {
+        for v in 0..2 across subgroups {
+          o[w][v] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn break_out(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        if t > 4 {
+          break;
+        }
+        o[t] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn continue_out(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        if t > 4 {
+          continue;
+        }
+        o[t] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn return_out(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        if t > 4 {
+          return;
+        }
+        o[t] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn count_not_an_i32(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks(1.5) {
+      o[b] = 1.0;
+    }
+  }
+  return;
+}
+
+pub fn not_a_range(o : &mut Tensor<f32, [4], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for v in o across blocks {
+      o[0] = 1.0;
+    }
+  }
+  return;
+}
+
+pub fn four_axes_of_blocks(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for a in 0..n across blocks {
+      for b in 0..n across blocks {
+        for c in 0..n across blocks {
+          for d in 0..n across blocks {
+            o[0] = 1.0;
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn four_axes_of_lanes(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for i in 0..2 across lanes {
+        for j in 0..2 across lanes {
+          for k in 0..2 across lanes {
+            for l in 0..2 across lanes {
+              o[i] = 1.0;
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn lanes_in_lanes_in_a_subgroup(o : &mut Tensor<f32, [?, ?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for w in 0..4 across subgroups {
+        for l in 0..32 across lanes {
+          for m in 0..32 across lanes {
+            o[l][m] = 1.0;
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

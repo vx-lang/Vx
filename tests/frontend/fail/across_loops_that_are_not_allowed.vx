@@ -1,0 +1,105 @@
+//===- across_loops_that_are_not_allowed.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `for i in a..b across <level>` makes the loop one axis of a GPU launch (#252). Each function
+// below has an `across` loop in a place, or with a size, that the rules do not allow, and gets
+// E6035. The H100 topology `Device` has the levels `blocks`, `subgroups` and `lanes`, and a block
+// has at most 1024 lanes.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6035
+// CHECK-DAG: Error[E6035] at 24:{{.*}}an `across` loop is valid only in a `spawn on` region
+// CHECK-DAG: Error[E6035] at 32:{{.*}}`across lanes`: the topology `CPU` has no levels
+// CHECK-DAG: Error[E6035] at 41:{{.*}}`across warps`: the topology `Device` has the levels `blocks`, `subgroups`, `lanes`
+// CHECK-DAG: Error[E6035] at 52:{{.*}}a block loop may not be inside a lane loop
+// CHECK-DAG: Error[E6035] at 63:{{.*}}a lane loop is valid only inside the `across` loop of blocks
+// CHECK-DAG: Error[E6035] at 73:{{.*}}the `across` loop of blocks is directly in the `spawn on` region
+// CHECK-DAG: Error[E6035] at 86:{{.*}}a region has one `across` nest of blocks
+// CHECK-DAG: Error[E6035] at 96:{{.*}}reads `n`, which the region declares
+
+fn not_in_a_region(o : &mut Tensor<f32, [4]>) -> void {
+  for i in 0..4 across lanes {
+    o[i] = 1.0;
+  }
+  return;
+}
+
+pub fn cpu_has_no_levels(o : &mut Tensor<f32, [4]>) -> void {
+  spawn on(Topology::CPU) {
+    for i in 0..4 across lanes {
+      o[i] = 1.0;
+    }
+  }
+  return;
+}
+
+pub fn unknown_level(o : &mut Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..4 across warps {
+      o[i] = 1.0;
+    }
+  }
+  return;
+}
+
+pub fn blocks_inside_lanes(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..4 across lanes {
+        for c in 0..n across blocks {
+          o[t] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn lanes_without_blocks(o : &mut Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for t in 0..4 across lanes {
+      o[t] = 1.0;
+    }
+  }
+  return;
+}
+
+pub fn blocks_in_an_if(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    if n > 0 {
+      for b in 0..n across blocks {
+        o[b] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn two_nests(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      o[b] = 1.0;
+    }
+    for c in 0..n across blocks {
+      o[c] = 2.0;
+    }
+  }
+  return;
+}
+
+pub fn bound_from_the_region(o : &mut Tensor<f32, [?], Memory::HBM>, m : i32) -> void {
+  spawn on(Topology::Device) {
+    let n = m * 2;
+    for b in 0..n across blocks {
+      o[b] = 1.0;
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

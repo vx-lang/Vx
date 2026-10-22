@@ -20,7 +20,7 @@ the test suite has one, a program that triggers it.
 - [Type Errors](#type-errors) — `E3001`–`E3058` (57 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4014` (14 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
-- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6034` (34 codes)
+- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6035` (35 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
 - [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8006` (6 codes)
 
@@ -224,6 +224,7 @@ Raised by the placement and capacity rules — the checks that make Vx different
 | [`E6032`](/errors/E6032/) | A launch shape that is not valid: `grid([..]) block(n)` on a topology that is not a GPU, a grid size or block size that is not an `i32`, or `grid_index(i)` outside such a region or with an axis that its grid does not have. |
 | [`E6033`](/errors/E6033/) | An index into a tensor in a `scope: thread` space that is not known when compiling. Such a tensor stays in registers, and a register has no address. So each index must be a constant, or made of constants and the variables of `for` loops with constant bounds, at most 1024 passes each. The code generator unrolls those loops. |
 | [`E6034`](/errors/E6034/) | An `aligned(N)` in a tensor type that the compiler cannot give: the space is not one whose storage the compiler lays out (`scope: sm`, `cta` or `thread`), or N is less than the `alignment:` of the space, which every tensor there has. |
+| [`E6035`](/errors/E6035/) | An `across` loop that the topology or its place cannot have: a level the topology does not name, a loop outside a `spawn on` region or in the wrong order, a size that is not known when the kernel is compiled or is over the limit, or a jump out of the loop. |
 
 ## Tensor/Math Errors
 
@@ -251,4 +252,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-162 diagnostics.
+163 diagnostics.

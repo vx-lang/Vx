@@ -159,6 +159,7 @@ program order, and a copy to the host waits for the kernels before it. A fault s
 wait: a copy to the host, a free, or the end of the program. That message names the last kernel
 that the GPU started. `VX_CUDA_SYNC=1` waits after each launch, so that the message names the
 kernel that faulted.
+| `for i in a..b across <level>` (#252) | E6035 checks its place and its size; it runs as a plain `for` | the loops give the launch shape, and L4 proves the passes independent |
 
 Order of work: the value stub first, since any model needs it; then non-blocking dispatch plus
 a real `await_future` in the runtimes, with the wait emitted at region exit so nothing

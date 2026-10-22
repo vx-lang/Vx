@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 pub mod access;
+pub mod across;
 pub mod autodiff;
 pub mod calls;
 pub mod capacity_fold;

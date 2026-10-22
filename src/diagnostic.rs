@@ -634,6 +634,10 @@ pub enum DiagnosticCode {
     /// storage the compiler lays out (`scope: sm`, `cta` or `thread`), or N is less than the
     /// `alignment:` of the space, which every tensor there has.
     E6034,
+    /// An `across` loop that the topology or its place cannot have: a level the topology does
+    /// not name, a loop outside a `spawn on` region or in the wrong order, a size that is not
+    /// known when the kernel is compiled or is over the limit, or a jump out of the loop.
+    E6035,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

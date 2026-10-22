@@ -214,6 +214,82 @@ pub struct TopologyDescriptor {
     /// the declaration. `arch:` names the instruction set and not the part, and code for a newer
     /// part does not load on an older one. `None` compiles for `sm_80`.
     pub chip: Option<crate::symbol::Symbol>,
+    /// The levels of a launch that `across` loops name -- `levels: [..]` in the declaration,
+    /// outside in. `None` takes the default levels of `arch` (`default_levels`).
+    pub levels: Option<Vec<Level>>,
+}
+
+/// What a level of a launch is, given by its place in `levels:`: the first is a block, the last
+/// a lane, and a middle one a subgroup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LevelKind {
+    /// Lanes that share a memory with `scope: cta` and can wait for each other.
+    Blocks,
+    /// Lanes that the hardware runs together: a warp.
+    Subgroups,
+    /// One thread.
+    Lanes,
+}
+
+/// One entry of `levels:`, such as `blocks(max_lanes: 1024, memory: cta)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Level {
+    /// The word after `across`.
+    pub name: crate::symbol::Symbol,
+    pub kind: LevelKind,
+    /// For a block: the most lanes that one block can have.
+    pub max_lanes: Option<u64>,
+    /// For a subgroup: its size in lanes.
+    pub lanes: Option<u64>,
+    /// The scope whose memory has one copy for each pass of this level.
+    pub memory: Option<crate::syntax::Scope>,
+}
+
+/// The levels of `arch` when a topology does not give `levels:`. Only `nvptx64` has them.
+pub fn default_levels(arch: Option<&str>) -> Option<Vec<Level>> {
+    if arch != Some("nvptx64") {
+        return None;
+    }
+    let level = |name: &str, kind, max_lanes, lanes, memory| Level {
+        name: name.into(),
+        kind,
+        max_lanes,
+        lanes,
+        memory,
+    };
+    Some(vec![
+        level(
+            "blocks",
+            LevelKind::Blocks,
+            Some(1024),
+            None,
+            Some(crate::syntax::Scope::Cta),
+        ),
+        level("subgroups", LevelKind::Subgroups, None, Some(32), None),
+        level(
+            "lanes",
+            LevelKind::Lanes,
+            None,
+            None,
+            Some(crate::syntax::Scope::Thread),
+        ),
+    ])
+}
+
+impl TopologyDescriptor {
+    /// The levels that `across` loops in a region on this topology may name. The built-in GPU
+    /// has the levels of `nvptx64`.
+    pub fn levels_of(&self, kind: &crate::syntax::TopologyKind) -> Option<Vec<Level>> {
+        if let Some(levels) = &self.levels {
+            return Some(levels.clone());
+        }
+        let arch = match (&self.arch, kind) {
+            (Some(a), _) => Some(a.as_ref()),
+            (None, crate::syntax::TopologyKind::GPU) => Some("nvptx64"),
+            (None, _) => None,
+        };
+        default_levels(arch)
+    }
 }
 
 /// A user-declared topology: its name plus its descriptor. Carried on the AST
@@ -835,6 +911,7 @@ fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescrip
         // GPU has is a property of the part. Undeclared, so they constrain nothing.
         dtypes: None,
         chip: None,
+        levels: None,
     };
     let mut m = HashMap::new();
     m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM]));
@@ -2039,6 +2116,7 @@ mod tests {
             arch: None,
             dtypes: None,
             chip: None,
+            levels: None,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -2073,6 +2151,7 @@ mod tests {
             arch: None,
             dtypes: None,
             chip: None,
+            levels: None,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -2112,6 +2191,7 @@ mod tests {
             arch: None,
             dtypes: None,
             chip: None,
+            levels: None,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -2362,6 +2442,7 @@ mod tests {
                 transfers: Vec::new(),
                 dtypes: None,
                 chip: None,
+                levels: None,
             },
         }
     }
@@ -2444,6 +2525,7 @@ mod tests {
             }],
             dtypes: None,
             chip: None,
+            levels: None,
         };
         graph.apply_descriptor_edges(&desc);
         graph.precompute_costs();
@@ -2476,6 +2558,7 @@ mod tests {
             }],
             dtypes: None,
             chip: None,
+            levels: None,
         };
         graph.apply_descriptor_edges(&desc);
         graph.precompute_costs();
@@ -2496,6 +2579,7 @@ mod tests {
             transfers: Vec::new(),
             dtypes: None,
             chip: None,
+            levels: None,
         };
         assert!(
             descriptor_coherence(&bad, &graph).contains(&CoherenceIssue::MemoryUnreachableFromHost)
@@ -2509,6 +2593,7 @@ mod tests {
             transfers: Vec::new(),
             dtypes: None,
             chip: None,
+            levels: None,
         };
         assert!(descriptor_coherence(&bad2, &graph).contains(&CoherenceIssue::DefaultNotVisible));
 
@@ -2520,6 +2605,7 @@ mod tests {
             transfers: Vec::new(),
             dtypes: None,
             chip: None,
+            levels: None,
         };
         assert!(descriptor_coherence(&good, &graph).is_empty());
     }
@@ -2624,6 +2710,7 @@ mod tests {
                     transfers: Vec::new(),
                     dtypes: None,
                     chip: None,
+                    levels: None,
                 },
             );
         }
