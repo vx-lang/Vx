@@ -102,8 +102,12 @@ accesses stay `memref.load`, and the passes leave them alone.
 1. **Bounds.** The loop holds a constant bound as a number. Any other bound is cast to `index`
    just before the outermost open affine loop, so the cast is a valid symbol. A bound that is
    the variable of an enclosing affine loop uses that loop's index directly.
-1. **The pipeline.** `affine-raise-from-memref` runs before `vx-fuse-and-tile-loops` at `-O1`
-   and above. At `-O0`, `lower-affine` turns the loops back into branches.
+1. **The pipeline.** `vx-raise-loop-accesses` runs before `vx-fuse-and-tile-loops` at `-O1` and
+   above. It runs `affine-raise-from-memref`, and then turns back to `memref` each access that
+   does not reach an `affine.for` through regions of one block. At `-O0`, `lower-affine` turns
+   the loops back into branches.
+1. **GPU kernels.** A function that a kernel calls can hold an affine loop. The device check
+   accepts the affine dialect, and the GPU module pipeline lowers it.
 1. **Measure.** Count the loops in `tests/` and in the book that become affine. Count how many
    of them are in functions that `vx-fuse-and-tile-loops` skips.
 
@@ -113,6 +117,13 @@ accesses stay `memref.load`, and the passes leave them alone.
   through a `reinterpret_cast` view. Many tensor accesses use a view. To fuse those loops, the
   frontend must pass alias facts to MLIR. That is later work.
 - The affine passes do not understand `gpu.barrier`. Lane-loop fusion stays in the frontend.
+- `affine-scalrep` assumes that no branches run between the accesses it sees. The upstream
+  `affine-raise-from-memref` also raises an access in a region of several blocks. With the two
+  together, `affine-scalrep` reused a load across a store in a branch, and
+  `core_libm_logs_bf16.vx` printed wrong hashes at `-O2`. So only an access in a loop without
+  branches stays affine.
+- A bound that the loop around it computes, such as `a.extent(1)` in a matmul, keeps the inner
+  loop in branch form. Hoisting a bound that has no side effects would make more loops qualify.
 - The AST code generator keeps its own loops. It stays a debugging oracle, so it does not need
   the same speed.
 
