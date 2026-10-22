@@ -2412,16 +2412,9 @@ impl<'a> TypeChecker<'a> {
         args: &[Expr],
         env: &HashMap<crate::symbol::Symbol, Value>,
     ) -> Option<Value> {
-        eprintln!("[ic] indirect call, callee = {:?}", callee);
         let Expr::Identifier(IdentifierExpr { name, span: _ }) = callee else {
             return None;
         };
-        eprintln!(
-            "[ic] name={:?} body={:?}",
-            name.as_ref(),
-            self.closure_call_body(name.as_ref())
-                .map(|f| f.name.to_string())
-        );
         let func = self.closure_call_body(name.as_ref())?;
         // The first parameter is the captured environment, which the call does not write.
         let skip = func.params.len().checked_sub(args.len())?;
