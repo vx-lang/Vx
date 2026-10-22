@@ -20,8 +20,8 @@
 // RUN: not vxc %t/twice.vx 2>&1 | FileCheck %s --check-prefix=TWICE
 // RUN: not vxc %t/lanes_fact.vx 2>&1 | FileCheck %s --check-prefix=LANES
 // RUN: not vxc %t/max_fact.vx 2>&1 | FileCheck %s --check-prefix=MAXFACT
-// SMALL-DAG: Error[E6035] at 16:{{.*}}this loop asks for 512 lanes, but a block of `Dev` has at most 256
-// SMALL-DAG: Error[E6035] at 27:{{.*}}`across subgroups`: the topology `Dev` has the levels `blocks`, `lanes`
+// SMALL: Error[E6035] at 16:{{.*}}this loop asks for 512 lanes, but a block of `Dev` has at most 256
+// SMALL: Error[E6035] at 27:{{.*}}`across subgroups`: the topology `Dev` has the levels `blocks`, `lanes`
 // MAX: `max_lanes: 2048` is more than a block of `nvptx64` can have, which is 1024
 // WIDTH: `lanes: 64`: a subgroup of `nvptx64` has 32 lanes
 // ONE: `levels:` has 1 entries. It needs two (blocks and lanes) or three (blocks, subgroups and lanes)
@@ -47,7 +47,7 @@ pub fn wide(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
   spawn on(Topology::Dev) {
     for b in 0..n across blocks {
       for t in 0..512 across lanes {
-        o[t] = 1.0;
+        let x = 1.0;
       }
     }
   }
@@ -58,7 +58,7 @@ pub fn warps(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
   spawn on(Topology::Dev) {
     for b in 0..n across blocks {
       for w in 0..4 across subgroups {
-        o[w] = 1.0;
+        let x = 1.0;
       }
     }
   }

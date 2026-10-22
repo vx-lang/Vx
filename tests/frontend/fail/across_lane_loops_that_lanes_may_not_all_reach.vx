@@ -1,0 +1,181 @@
+//===- across_lane_loops_that_lanes_may_not_all_reach.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The end of a lane loop is a barrier that every lane of the block must reach (#252). So a
+// condition or a bound around a lane loop must be the same for every lane (L8). Code that
+// writes memory between lane loops runs on lane 0 only, so a lane loop may not read a value that
+// it sets (L5). Before the nest of blocks, every lane runs the code, so it may only declare
+// values that it does not write (L10). Each function below breaks one of these rules.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6035
+// CHECK: Error[E6035] at 30:{{.*}}this condition decides whether the lanes reach the end of a lane loop, so it must be the same for every lane of the block. {{.*}} but it reads memory
+// CHECK: Error[E6035] at 44:{{.*}}this condition {{.*}} but `m` is not one of these
+// CHECK: Error[E6035] at 58:{{.*}}the bound of this loop decides whether the lanes reach {{.*}} but `m` is not one of these
+// CHECK: Error[E6035] at 73:{{.*}}this condition {{.*}} every lane of the subgroup. {{.*}} but `m` is not one of these
+// CHECK: Error[E6035] at 88:{{.*}}this condition {{.*}} but it reads memory
+// CHECK: Error[E6035] at 111:{{.*}}this lane loop reads `total`, which only lane 0 has
+// CHECK: Error[E6035] at 120:{{.*}}before the `across` nest of blocks, a region may only declare values with `let`
+// CHECK: Error[E6035] at 134:{{.*}}before the `across` nest of blocks, every lane runs the code, so a `let` there may only compute a value
+// CHECK: Error[E6035] at 144:{{.*}}before the `across` nest of blocks, this reads `y`, which the blocks write
+// CHECK: Error[E6035] at 157:{{.*}}a region with `across` loops does nothing after its nest of blocks
+// CHECK: Error[E6035] at 172:{{.*}}this lane loop reads `m`, which only lane 0 has
+
+pub fn if_on_memory(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      if y[b][0] > 0.0 {
+        for t in 0..32 across lanes {
+          y[b][t] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn if_on_a_mutable_value(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut m = b;
+      if m > 2 {
+        for t in 0..32 across lanes {
+          y[b][t] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn bound_from_a_mutable_value(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut m = b;
+      for k in 0..m {
+        for t in 0..32 across lanes {
+          y[b][t] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn if_in_a_subgroup(y : &mut Tensor<f32, [?, 4, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for w in 0..4 across subgroups {
+        let mut m = w;
+        if m > 1 {
+          for l in 0..32 across lanes {
+            y[b][w][l] = 1.0;
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+// `while` decides each pass whether to go on, and every pass of it ends at a barrier.
+pub fn while_on_memory(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      while y[b][0] < 4.0 {
+        for t in 0..32 across lanes {
+          y[b][t] = y[b][t] + 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn reads_what_lane_0_set(y : &mut Tensor<f32, [?, 256], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut part = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for t in 0..256 across lanes {
+        part[t] = 1.0;
+      }
+      let mut total : f32 = 0.0;
+      for t in 0..256 {
+        total = total + part[t];
+      }
+      part[0] = total;
+      for t in 0..256 across lanes {
+        y[b][t] = total;
+      }
+    }
+  }
+  return;
+}
+
+pub fn writes_before_the_nest(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    y[0][0] = 1.0;
+    for b in 0..n across blocks {
+      y[b][1] = 1.0;
+    }
+  }
+  return;
+}
+
+fn seven() on Topology::Device -> i32 {
+  return 7;
+}
+
+pub fn calls_before_the_nest(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    let s = seven();
+    for b in 0..n across blocks {
+      y[b][1] = 1.0;
+    }
+  }
+  return;
+}
+
+pub fn reads_before_the_nest(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    let first = y[0][0];
+    for b in 0..n across blocks {
+      y[b][1] = 1.0;
+    }
+  }
+  return;
+}
+
+pub fn code_after_the_nest(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      y[b][1] = 1.0;
+    }
+    y[0][0] = 2.0;
+  }
+  return;
+}
+
+// `m = 2.0` changes a value that the stretch did not declare, so lane 0 runs it.
+pub fn reads_a_value_lane_0_changed(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut m : f32 = 1.0;
+      for t in 0..32 across lanes {
+        y[b][t] = m;
+      }
+      m = 2.0;
+      for t in 0..32 across lanes {
+        y[b][t] = m;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
