@@ -1275,6 +1275,53 @@ impl<'r> Lowerer<'r> {
                                 what: "an index of a rank-0 value",
                             }); // cannot index a rank-0 value
                         }
+
+                        // `q[a..b]`: a window of rows `a` to `b - 1` that shares `q`'s memory.
+                        if let Expr::Range(range) = &*ix.index {
+                            let start = self.lower_expr(&range.start)?;
+                            if !matches!(start.ty, LoweredTy::Scalar(_)) {
+                                return Err(Decline::TypeNotModelled {
+                                    what: "the start of a range index is not a scalar",
+                                });
+                            }
+                            let end = self.lower_expr(&range.end)?;
+                            if !matches!(end.ty, LoweredTy::Scalar(_)) {
+                                return Err(Decline::TypeNotModelled {
+                                    what: "the end of a range index is not a scalar",
+                                });
+                            }
+                            // The result has `b - a` rows, which is only known now when both
+                            // ends are literal numbers.
+                            let literal = |e: &Expr| match e {
+                                Expr::Number(n) => n.value.parse::<i64>().ok(),
+                                _ => None,
+                            };
+                            let (Some(a), Some(b)) = (literal(&range.start), literal(&range.end))
+                            else {
+                                return Err(Decline::TypeNotModelled {
+                                    what: "a range index whose ends are not literal numbers",
+                                });
+                            };
+                            if a < 0 || b <= a {
+                                return Err(Decline::TypeNotModelled {
+                                    what: "a range index that is empty or runs backwards",
+                                });
+                            }
+                            let mut new_shape = shape;
+                            new_shape[0] = (b - a).to_string();
+                            let result_ty = LoweredTy::Tensor {
+                                elem,
+                                shape: new_shape,
+                            };
+                            return Ok(self.emit_typed(
+                                Opcode::TensorRange,
+                                base.reg,
+                                start.reg,
+                                result_ty,
+                                end.reg.0 as u64,
+                            ));
+                        }
+
                         let index = self.lower_expr(&ix.index)?;
                         if !matches!(index.ty, LoweredTy::Scalar(_)) {
                             return Err(Decline::TypeNotModelled {
@@ -4879,7 +4926,10 @@ impl<'r> Lowerer<'r> {
             }
             match ins.opcode {
                 // A view of `r` or `r` under another type: dead when that is.
-                Opcode::Cast | Opcode::TensorIndex | Opcode::TensorReshape => {
+                Opcode::Cast
+                | Opcode::TensorIndex
+                | Opcode::TensorRange
+                | Opcode::TensorReshape => {
                     if !self.temp_is_dead(Register(i as u32), keep) {
                         return false;
                     }
@@ -6525,6 +6575,11 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             Opcode::TensorDrop => assert!(
                 ins.operand1.0 < i
                     && (ins.imm & crate::bytecode::TENSOR_DROP_FLAG == 0 || ins.operand2.0 < i),
+                "HIR operand not dominated at instruction {i}"
+            ),
+            // The end of the range is a register in `imm`.
+            Opcode::TensorRange => assert!(
+                ins.operand1.0 < i && ins.operand2.0 < i && ins.imm < u64::from(i),
                 "HIR operand not dominated at instruction {i}"
             ),
             Opcode::CondBr => {

@@ -2109,6 +2109,8 @@ impl<'a> FnEmit<'a> {
             // tensor GID) rank-reduces the base to a row via `memref.reinterpret_cast` (contiguous
             // base only; a further sub-view of a strided row is deferred).
             Opcode::TensorIndex => self.op_tensor_index(idx, ins),
+            // `q[a..b]`: rows `a` to `b - 1` as a window onto `q`'s memory (contiguous base only).
+            Opcode::TensorRange => self.op_tensor_range(idx, ins),
             // Reduce a rank-1 float slice to a scalar. `operand1` (and `operand2` for `dot`) are the
             // slices; `imm` the kind (0 = dot, 1 = sum, 2 = max, 3 = min). Each slice is `vector.load`ed
             // to a `vector<Nxf32>`; `dot` fuses the two with `arith.mulf`; then `vector.reduction`.

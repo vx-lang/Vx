@@ -1034,6 +1034,87 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    // `q[a..b]`: rows `a` to `b - 1` of a tensor, as a window onto the same memory (no copy).
+    // `operand1` is the base tensor and `operand2` is `a`. The number of rows is already in the
+    // result type, so the register in `imm` (`b`) is not read yet.
+    pub(crate) fn op_tensor_range(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let result_gid = *self
+            .types
+            .get(ins.type_idx.0 as usize)
+            .ok_or(crate::emitter_gap!())?;
+        let base = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let base_memty = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        if base_memty.contains("strided") {
+            return Err(Decline::TypeNotModelled {
+                what: "a range of a tensor that is already a view",
+            });
+        }
+        let imt = mlir_scalar(&self.elem_at(ins.operand2.0).ok_or(crate::emitter_gap!())?)
+            .ok_or(crate::emitter_gap!())?;
+        let start = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let ic = format!("%ic{idx}");
+        self.body += &format!("  {ic} = arith.index_cast {start} : {imt} to index\n");
+
+        let (elem, shape) = self
+            .ctx
+            .tensors
+            .get(&result_gid)
+            .ok_or(crate::emitter_gap!())?;
+        let et = mlir_scalar(elem).ok_or(crate::emitter_gap!())?.to_string();
+        let dims: Vec<i64> = shape
+            .iter()
+            .map(|d| d.parse::<i64>().ok())
+            .collect::<Option<_>>()
+            .ok_or(Decline::TypeNotModelled {
+                what: "a range of a tensor whose extents are not all literals",
+            })?;
+        // One step in the first dimension skips all the other dimensions' elements.
+        let step: i64 = dims[1..].iter().product();
+        let mut strides = vec![1i64; dims.len()];
+        for i in (0..dims.len() - 1).rev() {
+            strides[i] = strides[i + 1] * dims[i + 1];
+        }
+        let off = if step == 1 {
+            ic
+        } else {
+            let cst = format!("%cs{idx}");
+            let o = format!("%off{idx}");
+            self.body += &format!("  {cst} = arith.constant {step} : index\n");
+            self.body += &format!("  {o} = arith.muli {ic}, {cst} : index\n");
+            o
+        };
+        let sizes_s = join_i64(&dims);
+        let strides_s = join_i64(&strides);
+        let dimx: String = dims.iter().map(|d| format!("{d}x")).collect();
+        // A window of shared storage stays in its memory space, as a row does.
+        let space_sfx = if base_memty.ends_with(", 3>") {
+            ", 3"
+        } else {
+            ""
+        };
+        let result_ty = format!("memref<{dimx}{et}, strided<[{strides_s}], offset: ?>{space_sfx}>");
+        let n = format!("%v{idx}");
+        self.body += &format!(
+            "  {n} = memref.reinterpret_cast {base} to offset: [{off}], sizes: [{sizes_s}], strides: [{strides_s}] : {base_memty} to {result_ty}\n"
+        );
+        self.names[idx] = n;
+        self.mem_of[idx] = Some(result_ty);
+        Ok(())
+    }
+
     /// The rank-1 row of a rank-2 dynamically shaped tensor. Its extent is not a number to
     /// compute with, so it is read off the base with `memref.dim` and the flat offset is
     /// computed against that value. The stride is 1: a row of a row-major rank-2 is contiguous

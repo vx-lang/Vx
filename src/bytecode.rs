@@ -286,6 +286,10 @@ pub enum Opcode {
     /// elements in row order and then zeros. With `TENSOR_PAD_EACH_AXIS` in `imm` it is
     /// `t.pad(shape)` instead: each element keeps its index, and the zeros follow on every axis.
     TensorPad = 63,
+    /// A window of rows of a tensor (`q[a..b]`): `operand1` is the tensor, `operand2` is the
+    /// register holding `a`, and `imm` is the number of the register holding `b`. The result is
+    /// a tensor of rows `a` to `b - 1`. It shares the memory of the original and is not a copy.
+    TensorRange = 64,
 }
 
 /// `Opcode::TensorPad`'s `imm`: pad each axis (`t.pad(shape)`), not the flat row order.
@@ -329,6 +333,7 @@ impl Opcode {
             60 => ConstTable,
             61 => TensorDataPtr,
             62 => TensorDrop,
+            64 => TensorRange,
             8 => Call,
             9 => Ret,
             10 => Matmul,

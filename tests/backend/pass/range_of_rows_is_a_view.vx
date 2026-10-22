@@ -1,0 +1,75 @@
+//===- range_of_rows_is_a_view.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `q[1..3]` is rows 1 and 2 of `q` (the end is not included). It is a view of `q`,
+// not a copy: writing through it changes `q`.
+//
+// Default code generator only: the legacy one refuses a range index with an error message.
+//
+// REQUIRES: flat-codegen
+// EXPECT: 7 9 5 0 1 6
+fn two_dimensions() -> f32 {
+  let mut q = Tensor<f32, [4, 2]>::new();
+  let mut r = q[1..3];
+  r[0][1] = 7.0;
+  return q[1][1];
+}
+
+// The second row of the range is row 2 of `q`.
+fn second_row_of_the_range() -> f32 {
+  let mut q = Tensor<f32, [4, 2]>::new();
+  let mut r = q[1..3];
+  r[1][0] = 9.0;
+  return q[2][0];
+}
+
+// A tensor with three dimensions: the range only cuts the first one.
+fn three_dimensions() -> f32 {
+  let mut q = Tensor<f32, [4, 3, 2]>::new();
+  let mut r = q[1..3];
+  r[1][2][1] = 5.0;
+  return q[2][2][1];
+}
+
+// Rows outside the range are not changed.
+fn rows_outside_the_range() -> f32 {
+  let mut q = Tensor<f32, [4, 2]>::new();
+  let mut r = q[1..3];
+  r[0][0] = 1.0;
+  r[1][1] = 1.0;
+  return q[0][0] + q[0][1] + q[3][0] + q[3][1];
+}
+
+fn range_from_zero() -> f32 {
+  let mut q = Tensor<f32, [4, 2]>::new();
+  let mut r = q[0..2];
+  r[0][0] = 1.0;
+  return q[0][0] + q[2][0] + q[3][0];
+}
+
+// The same with the tensor made from a list of sizes.
+fn tensor_made_from_a_list_of_sizes() -> f32 {
+  let mut q = Tensor<f32>([ 4, 8 ]);
+  let mut r = q[1..3];
+  r[1][7] = 6.0;
+  return q[2][7];
+}
+
+fn main() -> i32 {
+  print(two_dimensions() as i32);
+  print!(" ");
+  print(second_row_of_the_range() as i32);
+  print!(" ");
+  print(three_dimensions() as i32);
+  print!(" ");
+  print(rows_outside_the_range() as i32);
+  print!(" ");
+  print(range_from_zero() as i32);
+  print!(" ");
+  print(tensor_made_from_a_list_of_sizes() as i32);
+  return 0;
+}
