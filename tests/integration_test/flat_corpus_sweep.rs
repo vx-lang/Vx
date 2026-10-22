@@ -41,6 +41,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // `let u = if c { ..; };`: the flat path declines a `let` of a `void` value, with or
     // without `: void` ("a let with no type annotation"). The file is about the AST path.
     "backend/pass/if_else_with_no_value_bound_by_let.vx",
+    // A `match` that gives a `bool`: the flat path declines a match used as a value. The file
+    // is about the AST path.
+    "optimizations/pass/match_that_gives_a_bool.vx",
     // A struct passed to `grad`: the flat path declines it ("an autodiff argument that is not a
     // scalar"). The file is about the AST path.
     "backend/pass/autodiff/autodiff_for_variable_argument.vx",

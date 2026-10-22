@@ -4053,6 +4053,12 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
             }
             .or(gen.expected_type)
         });
+        // An arm gives a value, so the placeholder below would replace it with a wrong one.
+        if tail_expr.is_some() && !in_statement && value_ty.is_none() {
+            return Err(LowerError::ParseType(
+                "cannot find the type of the value that this `match` gives".to_string(),
+            ));
+        }
 
         let parent_region = block.parent_region().unwrap();
         let merge_block = match value_ty {
