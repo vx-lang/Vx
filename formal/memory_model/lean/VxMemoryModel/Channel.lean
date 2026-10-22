@@ -80,6 +80,12 @@ def Op.other : Op → Op
   | .send => .recv
   | .recv => .send
 
+/-- How an operation accesses its element of the values: a `send` writes it, and a `recv` reads
+it. -/
+def Op.moveKind : Op → Kind
+  | .send => .write
+  | .recv => .read
+
 /-- The counters. A channel has three: one for each operation, and one for the drops of senders.
 A lock has two: `next` gives the tickets, and `serving` names the ticket that may hold the lock. -/
 inductive Ctr where
@@ -474,8 +480,8 @@ inductive Trans : Phase → Option Label → Phase → Prop
   | wait {o c k v ph} {j : Nat} : ph = .counted o c k ∨ ph = .waited o c k → (j : Int) = k →
     j < P.sigLen o.other →
     Trans ph (some ⟨.read, .sc, P.sig o.other c + j, v, false⟩) (.waited o c k)
-  | move {o c k kd v} {j : Nat} : (j : Int) = k → j < P.msgs →
-    Trans (.waited o c k) (some ⟨kd, .plain, P.data c + j, v, false⟩) (.waited o c k)
+  | move {o c k v} {j : Nat} : (j : Int) = k → j < P.msgs →
+    Trans (.waited o c k) (some ⟨o.moveKind, .plain, P.data c + j, v, false⟩) (.waited o c k)
   | set {o c k} {j : Nat} : (j : Int) = k + P.off o c → j < P.sigLen o →
     Trans (.waited o c k) (some ⟨.write, .sc, P.sig o c + j, 1, false⟩) .idle
 

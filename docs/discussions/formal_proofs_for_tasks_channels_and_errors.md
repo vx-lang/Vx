@@ -129,7 +129,10 @@ the library. `ChanProg.drf_sc` is the DRF-SC theorem. Step 4 adds the two theore
   `lock`. `unlock_ticket` shows that the `unlock` of the ticket `k` reads `serving` as `k`. Then
   each event of the block of ticket `k` happens before each read of `serving` that sees more than
   `k`. The `lock` of a later ticket ends with such a read.
-- `ring_fifo` comes next.
+- `ring_fifo` (`Fifo.lean`). Only a `send` writes an element of the values, and only a `recv`
+  reads one. Each access of element `k` comes after the `fetchAdd` that gave its thread the number
+  `k`. So the `recv` with the number `k` gets a value that the `send` with the number `k` wrote.
+  `ring_once` shows that two reads of the same write belong to the same `recv`.
 
 DRF-SC for a client holds only with this `sc` library. A later step can make an access release or
 acquire. Each such access then needs its own edge proof and a litmus test.
