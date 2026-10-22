@@ -17,6 +17,7 @@ impl FnEmit<'_> {
             // `2^64 - 1` stays positive in a `u128`.
             ins.imm.to_string()
         } else {
+            self.int_consts.insert(idx, ins.imm as i64);
             (ins.imm as i64).to_string()
         };
         let n = format!("%v{idx}");

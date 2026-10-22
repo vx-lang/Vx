@@ -9,6 +9,7 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -1489,9 +1490,10 @@ static bool isDeviceLowerableDialect(StringRef ns) {
   // (`o[i] = o[i] + v[j] * p`) emit vector.load / elementwise vector arith,
   // and `convert-vector-to-llvm` in deviceImageOf turns those into LLVM
   // vectors that NVPTX renders as wide (v4) loads -- the fix for the measured
-  // per-SM load-issue bound.
-  return ns == "arith" || ns == "cf" || ns == "gpu" || ns == "math" ||
-         ns == "memref" || ns == "scf" || ns == "vector";
+  // per-SM load-issue bound. A function that a kernel calls can hold an
+  // `affine.for`, which the device pipeline lowers.
+  return ns == "affine" || ns == "arith" || ns == "cf" || ns == "gpu" ||
+         ns == "math" || ns == "memref" || ns == "scf" || ns == "vector";
 }
 
 /// Whether the device pipeline can take `op` as it is. `nvvm` ops are PTX
@@ -4134,9 +4136,11 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
     attach.linkLibs.push_back(libdevice);
   pm.addPass(createGpuNVVMAttachTarget(attach));
 
-  // A kernel body can arrive as `scf.for` rather than raw CFG. The NVVM
-  // conversion has no patterns for scf, so they lower to `cf` first or survive
-  // as unlowerable ops that fail the whole compile.
+  // A kernel body can arrive as `scf.for` rather than raw CFG, and a function
+  // the kernel calls can hold an `affine.for`. The NVVM conversion has no
+  // patterns for either, so they lower to `cf` first or survive as unlowerable
+  // ops that fail the whole compile.
+  pm.nest<gpu::GPUModuleOp>().addPass(createLowerAffinePass());
   pm.nest<gpu::GPUModuleOp>().addPass(createSCFToControlFlowPass());
   pm.nest<gpu::GPUModuleOp>().addPass(createConvertGpuOpsToNVVMOps());
   pm.addPass(createArithToLLVMConversionPass());
@@ -4858,6 +4862,89 @@ struct FuseAndTileLoopsPass
   }
 };
 
+// Raise the loads and stores in affine loops to affine ops, so that loop fusion
+// and `affine-scalrep` can see them.
+//
+// `affine-raise-from-memref` also raises an access in a region of several
+// blocks, such as an `scf.execute_region` or the function body, where branches
+// run between the blocks. `affine-scalrep` assumes that there are no branches:
+// it forwarded a store to a load that a branch could reach without the store.
+// So an access goes back to `memref` unless it reaches an `affine.for` through
+// regions of one block each.
+struct RaiseLoopAccessesPass
+    : public PassWrapper<RaiseLoopAccessesPass, OperationPass<func::FuncOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(RaiseLoopAccessesPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-raise-loop-accesses";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Raises the memref accesses in affine loops, outside any region "
+           "with branches, to affine accesses";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<affine::AffineDialect, memref::MemRefDialect>();
+  }
+
+  static bool inLoopWithoutBranches(Operation *op) {
+    for (Region *region = op->getParentRegion(); region;) {
+      if (!region->hasOneBlock())
+        return false;
+      Operation *parent = region->getParentOp();
+      if (isa<affine::AffineForOp>(parent))
+        return true;
+      if (isa<func::FuncOp>(parent))
+        return false;
+      region = parent->getParentRegion();
+    }
+    return false;
+  }
+
+  void runOnOperation() override {
+    func::FuncOp func = getOperation();
+    OpPassManager pm(func::FuncOp::getOperationName());
+    if (failed(parsePassPipeline("affine-raise-from-memref", pm)) ||
+        failed(runPipeline(pm, func))) {
+      signalPassFailure();
+      return;
+    }
+    SmallVector<Operation *> back;
+    func.walk([&](Operation *op) {
+      if (isa<affine::AffineLoadOp, affine::AffineStoreOp>(op) &&
+          !inLoopWithoutBranches(op))
+        back.push_back(op);
+    });
+    for (Operation *op : back) {
+      OpBuilder b(op);
+      Location loc = op->getLoc();
+      if (auto load = dyn_cast<affine::AffineLoadOp>(op)) {
+        auto indices = affine::expandAffineMap(b, loc, load.getAffineMap(),
+                                               load.getMapOperands());
+        if (!indices) {
+          signalPassFailure();
+          return;
+        }
+        Value v = b.create<memref::LoadOp>(loc, load.getMemRef(), *indices);
+        load.replaceAllUsesWith(v);
+        load.erase();
+      } else {
+        auto store = cast<affine::AffineStoreOp>(op);
+        auto indices = affine::expandAffineMap(b, loc, store.getAffineMap(),
+                                               store.getMapOperands());
+        if (!indices) {
+          signalPassFailure();
+          return;
+        }
+        b.create<memref::StoreOp>(loc, store.getValueToStore(),
+                                  store.getMemRef(), *indices);
+        store.erase();
+      }
+    }
+  }
+};
+
 // Make a stack buffer behave like the heap buffer it replaced:
 // `malloc`-compatible alignment, and in the entry block.
 //
@@ -5194,6 +5281,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<FuseAndTileLoopsPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<RaiseLoopAccessesPass>();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<ReorderableReductionsPass>();

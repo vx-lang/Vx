@@ -2,8 +2,7 @@
 // CHECK-LABEL: func.func @main() -> i32
 // CHECK: call @tile(%{{.*}}) : (i32) -> i32
 // CHECK-LABEL: func.func @tile(%arg0: i32) -> i32
-// CHECK: %[[C0:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : i32
-// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
+// CHECK: affine.for %{{.*}} = 0 to 10 {
 // CHECK: return %arg0 : i32
 fn tile(N : i32) -> i32
 requires N > 0

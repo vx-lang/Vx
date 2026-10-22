@@ -286,7 +286,16 @@ pub enum Opcode {
     /// elements in row order and then zeros. With `TENSOR_PAD_EACH_AXIS` in `imm` it is
     /// `t.pad(shape)` instead: each element keeps its index, and the zeros follow on every axis.
     TensorPad = 63,
+    /// Opens a counted loop that the code generator writes as `affine.for`, from `operand1` to
+    /// `operand2` with step 1. The result is the loop variable, of the range's type. With
+    /// `AFFINE_FOR_BRANCHES` in `imm`, the body has blocks of its own. `AffineForEnd` closes it.
+    AffineFor = 67,
+    /// Closes the innermost open `AffineFor`.
+    AffineForEnd = 68,
 }
+
+/// `Opcode::AffineFor`'s `imm`: the body branches, so it goes in an `scf.execute_region`.
+pub const AFFINE_FOR_BRANCHES: u64 = 1;
 
 /// `Opcode::TensorPad`'s `imm`: pad each axis (`t.pad(shape)`), not the flat row order.
 pub const TENSOR_PAD_EACH_AXIS: u64 = 1;
@@ -329,6 +338,8 @@ impl Opcode {
             60 => ConstTable,
             61 => TensorDataPtr,
             62 => TensorDrop,
+            67 => AffineFor,
+            68 => AffineForEnd,
             8 => Call,
             9 => Ret,
             10 => Matmul,

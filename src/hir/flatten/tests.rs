@@ -7,7 +7,9 @@
 //===----------------------------------------------------------------------===//
 
 use super::*;
-use crate::bytecode::{AUTODIFF_FORWARD, AUTODIFF_MODE_SHIFT, AUTODIFF_REVERSE};
+use crate::bytecode::{
+    AFFINE_FOR_BRANCHES, AUTODIFF_FORWARD, AUTODIFF_MODE_SHIFT, AUTODIFF_REVERSE,
+};
 use crate::session::GlobalSession;
 use std::sync::Arc;
 
@@ -1161,9 +1163,56 @@ fn void_call_lowers_and_mutates_through_a_reference() {
 }
 
 #[test]
-fn for_range_loop_lowers_header_body_latch_exit() {
+fn for_range_loop_lowers_as_an_affine_loop() {
     let f =
         parse_fn("fn sum(n: i32) -> i32 { let mut s = 0; for i in 0..n { s = s + i; } return s; }");
+    let mut w = worker();
+    lower_function_to_hir(&f, &mut w).expect("lowers");
+    assert_eq!(count(&w, Opcode::AffineFor), 1);
+    assert_eq!(count(&w, Opcode::AffineForEnd), 1);
+    assert_eq!(count(&w, Opcode::CondBr), 0, "no loop condition test");
+    let open = w
+        .local_hir_stream
+        .iter()
+        .find(|i| i.opcode == Opcode::AffineFor)
+        .unwrap();
+    assert_eq!(open.imm & AFFINE_FOR_BRANCHES, 0, "the body is one block");
+    verify_hir_stream(&w);
+}
+
+#[test]
+fn affine_loop_with_an_if_marks_its_branches() {
+    let f = parse_fn(
+        "fn f(n: i32) -> i32 { let mut s = 0; for i in 0..n { if i < 3 { s = s + i; } } return s; }",
+    );
+    let mut w = worker();
+    lower_function_to_hir(&f, &mut w).expect("lowers");
+    let open = w
+        .local_hir_stream
+        .iter()
+        .find(|i| i.opcode == Opcode::AffineFor)
+        .expect("an affine loop");
+    assert_eq!(open.imm & AFFINE_FOR_BRANCHES, AFFINE_FOR_BRANCHES);
+    verify_hir_stream(&w);
+}
+
+#[test]
+fn loop_that_break_leaves_keeps_its_blocks() {
+    let f = parse_fn(
+        "fn f(n: i32) -> i32 { let mut s = 0; for i in 0..n { if i == 3 { break; } s = s + i; } return s; }",
+    );
+    let mut w = worker();
+    lower_function_to_hir(&f, &mut w).expect("lowers");
+    assert_eq!(count(&w, Opcode::AffineFor), 0);
+    verify_hir_stream(&w);
+}
+
+#[test]
+fn for_range_loop_lowers_header_body_latch_exit() {
+    // An unsigned range is not an affine loop, so it keeps its blocks.
+    let f = parse_fn(
+        "fn sum(n: u32) -> u32 { let mut s = 0u32; for i in 0u32..n { s = s + i; } return s; }",
+    );
     let mut w = worker();
     lower_function_to_hir(&f, &mut w).expect("lowers");
     assert_eq!(count(&w, Opcode::CondBr), 1, "loop condition test");

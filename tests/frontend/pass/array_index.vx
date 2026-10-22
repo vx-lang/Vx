@@ -12,11 +12,9 @@
 // CHECK: call @sum_array() : () -> i32
 // CHECK: call @dot_product() : () -> i32
 // CHECK-LABEL: func.func @sum_array() -> i32
-// CHECK: %[[C0:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : i32
-// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
+// CHECK: affine.for %{{.*}} = 0 to 5 {
 // CHECK-LABEL: func.func @dot_product() -> i32
-// CHECK: %[[C0:.*]] = arith.cmpi slt, %{{.*}}, %{{.*}} : i32
-// CHECK: cf.cond_br %[[C0]], ^{{.*}}, ^{{.*}}
+// CHECK: affine.for %{{.*}} = 0 to 3 {
 
 fn sum_array() -> i32 {
   let arr = [10, 20, 30, 40, 50];

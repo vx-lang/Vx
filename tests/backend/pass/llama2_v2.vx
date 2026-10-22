@@ -18,8 +18,8 @@
 // CHECK: call @malloc_run_state(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (i32, i32, i32, i32, i32, i32, i32) -> !llvm.struct<{{.*}}(ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr)>
 // CHECK: call @"Tokenizer::load"(%{{.*}}, %{{.*}}) : (!llvm.ptr, i32) -> !llvm.struct<{{.*}}(ptr)>
 // CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
-// CHECK: %[[V0:.*]] = call @transformer(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (i32, i32, !llvm.ptr, !llvm.ptr, !llvm.ptr, memref<{{.*}}>) -> !llvm.ptr
-// CHECK: call @argmax(%[[V0]], %{{.*}}) : (!llvm.ptr, i32) -> i32
+// CHECK: %[[V0:.*]] = func.call @transformer(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (i32, i32, !llvm.ptr, !llvm.ptr, !llvm.ptr, memref<{{.*}}>) -> !llvm.ptr
+// CHECK: func.call @argmax(%[[V0]], %{{.*}}) : (!llvm.ptr, i32) -> i32
 
 import std::llama;
 import std::io;

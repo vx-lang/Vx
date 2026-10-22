@@ -26,7 +26,7 @@
 // subset, so nothing half-lowered is ever emitted.
 //
 //===----------------------------------------------------------------------===//
-use crate::bytecode::{HirInstruction, Opcode};
+use crate::bytecode::{HirInstruction, Opcode, AFFINE_FOR_BRANCHES};
 use crate::decline::{Decline, Lowered};
 use crate::gid::TypeId;
 use crate::hir::flatten::{ptr_gid, scalar_gid, tensor_gid_of, DYN_DIM};
@@ -1949,6 +1949,22 @@ pub(crate) struct FnEmit<'a> {
     pub(crate) filled: std::collections::HashSet<usize>,
     /// A filled tensor placed on a device: filled on the host, then copied to this topology.
     pub(crate) copy_after_fill: HashMap<usize, i32>,
+    /// The open `affine.for` loops, outermost first.
+    pub(crate) affine_loops: Vec<AffineLoop>,
+    /// The value of each integer `Const`, so that a loop bound can be a number.
+    pub(crate) int_consts: HashMap<usize, i64>,
+}
+
+/// An open `affine.for`.
+pub(crate) struct AffineLoop {
+    /// Where the loop's text starts in `body`.
+    pub(crate) at: usize,
+    /// The loop's index, of type `index`.
+    pub(crate) index: String,
+    /// The register of the loop variable.
+    pub(crate) var: usize,
+    /// The body is in an `scf.execute_region`.
+    pub(crate) branches: bool,
 }
 
 impl<'a> FnEmit<'a> {
@@ -2048,6 +2064,8 @@ impl<'a> FnEmit<'a> {
             // Block markers → MLIR blocks. Block 0 is the func's entry block (implicit; it carries the
             // params), so it gets no label; every other id opens `^bbN:`.
             Opcode::BlockStart => self.op_block_start(idx, ins),
+            Opcode::AffineFor => self.op_affine_for(idx, ins),
+            Opcode::AffineForEnd => self.op_affine_for_end(idx, ins),
             Opcode::Br => self.op_br(idx, ins),
             // `imm` packs the two targets as `then | (else << 32)` (see `flatten::pack_targets`).
             Opcode::CondBr => self.op_cond_br(idx, ins),
@@ -2343,6 +2361,8 @@ pub fn emit_function_mlir(
             .map(|i| i.operand1.0 as usize)
             .collect(),
         copy_after_fill: HashMap::new(),
+        affine_loops: Vec::new(),
+        int_consts: HashMap::new(),
     };
     // `main` installs the runtime crash handler first, exactly as the AST codegen does (`is_main` ->
     // `func.call @vx_init_signals`), so a wild memory access is caught + backtraced rather than exiting
@@ -2843,14 +2863,33 @@ mod tests {
     #[test]
     fn emits_verifiable_for_loop() {
         // A `for` range loop: header (compare + cond_br), body, increment latch, exit — all wired
-        // through slots for the induction variable and accumulator.
+        // through slots for the induction variable and accumulator. An unsigned range is not an
+        // affine loop, so it keeps this form.
         let mlir = emit_and_verify(
-            "fn sum(n: i32) -> i32 { let mut s = 0; for i in 0..n { s = s + i; } return s; }",
+            "fn sum(n: u32) -> u32 { let mut s = 0u32; for i in 0u32..n { s = s + i; } return s; }",
         );
-        assert!(mlir.contains("arith.cmpi slt, "), "{mlir}");
+        assert!(mlir.contains("arith.cmpi ult, "), "{mlir}");
         assert!(mlir.contains("memref.load "), "{mlir}");
         assert!(mlir.contains("memref.store "), "{mlir}");
         assert!(mlir.contains("cf.cond_br "), "{mlir}");
+        assert!(!mlir.contains("affine.for"), "{mlir}");
+    }
+
+    #[test]
+    fn emits_verifiable_affine_for_loop() {
+        // A signed range that nothing leaves is an `affine.for`. The bound `n` is cast to `index`
+        // before the loop, and the loop variable is cast back to `i32`.
+        let mlir = emit_and_verify(
+            "fn sum(n: i32) -> i32 { let mut s = 0; for i in 0..n { s = s + i; } return s; }",
+        );
+        assert!(
+            mlir.contains("arith.index_cast %arg0 : i32 to index"),
+            "{mlir}"
+        );
+        assert!(mlir.contains("affine.for "), "{mlir}");
+        assert!(mlir.contains(" : index to i32"), "{mlir}");
+        assert!(!mlir.contains("cf.cond_br "), "{mlir}");
+        assert!(!mlir.contains("scf.execute_region"), "{mlir}");
     }
 
     #[test]
