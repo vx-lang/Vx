@@ -1223,10 +1223,12 @@ impl<'a> TypeChecker<'a> {
     /// which is what keeps a `comptime` block from leaving anything behind. A call it cannot
     /// fold -- an argument only known at run time, say -- has nowhere to go and is refused.
     /// That is stricter than a C++ `constexpr`, which would fall back to a run-time call.
+    /// `ty` is the call's type, which the folded value takes.
     pub(crate) fn fold_comptime_lambda_call(
         &mut self,
         expr: &mut Expr,
         span: &crate::syntax::Span,
+        ty: &Type,
     ) {
         let Expr::FunctionCall(call) = expr else {
             return;
@@ -1253,7 +1255,11 @@ impl<'a> TypeChecker<'a> {
             .eval_expr(expr, &env)
             .and_then(|value| Self::value_to_expr(&value, span));
         match folded {
-            Some(constant) => *expr = constant,
+            // Left bare, a number literal is an `i32`.
+            Some(mut constant) => {
+                Self::give_numbers_the_type(&mut constant, ty);
+                *expr = constant
+            }
             None => {
                 if !self.speculating {
                     self.errors.error_with_code(
