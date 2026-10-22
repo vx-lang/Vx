@@ -1949,7 +1949,8 @@ impl<'a> TypeChecker<'a> {
                 if !is_float {
                     return n_str.parse::<i64>().ok().map(Value::Int);
                 }
-                n_str.parse::<f64>().ok().map(Value::Number)
+                let value = n_str.parse::<f64>().ok()?;
+                ComptimeInterpreter::round_float(value, ty.as_ref()).map(Value::Number)
             }
             // `Reachable<A, B>`: true iff a transfer path exists in the cost graph. Topology
             // variables have already been substituted during monomorphization.
@@ -1984,22 +1985,33 @@ impl<'a> TypeChecker<'a> {
             }
 
             Expr::Identifier(IdentifierExpr { name: n, span: _ }) => env.get(n.as_ref()).cloned(),
-            Expr::BinaryOp(BinaryOpExpr { lhs, op, rhs, .. }) => {
+            Expr::BinaryOp(BinaryOpExpr {
+                lhs,
+                op,
+                rhs,
+                operand_ty,
+                ..
+            }) => {
                 let l = self.eval_expr(lhs, env)?;
                 let r = self.eval_expr(rhs, env)?;
                 // Two integers stay integers, so `/` truncates the way the emitted code does
-                // and a large value keeps every bit. A result that overflows has no value
-                // rather than a wrapped one, which would be baked into the program unnoticed.
+                // and a large value keeps every bit. A result outside the operands' type has no
+                // value rather than a wrapped one, which would be baked into the program
+                // unnoticed. So has a zero divisor, and the minimum value divided by -1.
                 if let (Value::Int(a), Value::Int(b)) = (&l, &r) {
                     let (a, b) = (*a, *b);
+                    let range = operand_ty
+                        .as_ref()
+                        .and_then(ComptimeInterpreter::integer_range)
+                        .unwrap_or(crate::hir::comptime_interpreter::I64_RANGE);
                     return match op {
-                        BinaryOp::Add => a.checked_add(b).map(Value::Int),
-                        BinaryOp::Sub => a.checked_sub(b).map(Value::Int),
-                        BinaryOp::Mul => a.checked_mul(b).map(Value::Int),
-                        // The checked forms answer None for a zero divisor, and for the one
-                        // signed division that overflows.
-                        BinaryOp::Div => a.checked_div(b).map(Value::Int),
-                        BinaryOp::Rem => a.checked_rem(b).map(Value::Int),
+                        BinaryOp::Add
+                        | BinaryOp::Sub
+                        | BinaryOp::Mul
+                        | BinaryOp::Div
+                        | BinaryOp::Rem => {
+                            ComptimeInterpreter::integer_op(a, b, op, range).map(Value::Int)
+                        }
                         // The bit pattern is exact now, but `>>` reads it one way for a
                         // signed type and another for an unsigned one, and this value does
                         // not record which it came from. Left unfolded until it does.
@@ -2014,12 +2026,15 @@ impl<'a> TypeChecker<'a> {
                 // Anything else numeric is float arithmetic, an integer mixed with a float
                 // included.
                 let (a, b) = (l.as_f64()?, r.as_f64()?);
+                let round = |x: f64| {
+                    ComptimeInterpreter::round_float(x, operand_ty.as_ref()).map(Value::Number)
+                };
                 match op {
-                    BinaryOp::Add => Some(Value::Number(a + b)),
-                    BinaryOp::Sub => Some(Value::Number(a - b)),
-                    BinaryOp::Mul => Some(Value::Number(a * b)),
-                    BinaryOp::Div => Some(Value::Number(a / b)),
-                    BinaryOp::Rem => (b != 0.0).then(|| Value::Number(a % b)),
+                    BinaryOp::Add => round(a + b),
+                    BinaryOp::Sub => round(a - b),
+                    BinaryOp::Mul => round(a * b),
+                    BinaryOp::Div => round(a / b),
+                    BinaryOp::Rem => (b != 0.0).then(|| round(a % b)).flatten(),
                     // A bit pattern read out of an `f64` would not be the bit pattern the
                     // program is talking about. Left unfolded rather than folded wrongly.
                     BinaryOp::BitAnd

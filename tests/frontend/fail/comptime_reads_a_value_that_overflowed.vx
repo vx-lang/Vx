@@ -1,0 +1,43 @@
+//===- comptime_reads_a_value_that_overflowed.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// Each value below overflows its type before a `comptime` block or an `if comptime` reads it.
+// At run time the program wraps it, so it has no compile-time value. The compiler used to keep
+// the 64-bit result: `a / 2i32` folded to 1073741824 where the program computes -1073741824,
+// and the `if comptime` took the branch for 128 where the program holds -128.
+
+const BIG : i32 = 2147483647 + 1;
+
+fn let_that_overflowed() -> i32 {
+  let a : i32 = 2147483647i32 + 1i32;
+  let x = comptime {
+    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
+    a / 2i32
+  };
+  return x;
+}
+
+fn if_comptime_on_an_i8() -> i32 {
+  let a : i8 = 127i8 + 1i8;
+  // CHECK-DAG: Error: Cannot statically evaluate comptime if condition
+  if comptime a > 0i8 {
+    return 1i32;
+  }
+  return 0i32;
+}
+
+fn const_that_overflowed() -> i32 {
+  // CHECK-DAG: {{.*}}BIG{{.*}}has a value that does not fit its declared type
+  return BIG / 2;
+}
+
+fn main() -> i32 {
+  print(let_that_overflowed() + if_comptime_on_an_i8() + const_that_overflowed());
+  return 0;
+}

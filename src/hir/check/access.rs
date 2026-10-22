@@ -107,8 +107,15 @@ impl<'a> TypeChecker<'a> {
             }));
         }
         let mut visiting = vec![decl.name.clone()];
-        let value = match self.const_value(&decl.expr, &mut visiting) {
+        let value = match self.const_value(&Self::typed_const_expr(decl), &mut visiting) {
             Some(value) => value,
+            // Worked out in 64 bits, a value that its own type cannot hold.
+            None if self
+                .const_value(&decl.expr, &mut vec![decl.name.clone()])
+                .is_some() =>
+            {
+                return report(self, "has a value that does not fit its declared type")
+            }
             None => {
                 return report(
                     self,
@@ -138,6 +145,32 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The expression of `decl`, with its declared type on each number and arithmetic operation
+    /// that has none, so that the arithmetic is done at that type.
+    fn typed_const_expr(decl: &crate::syntax::ConstDecl) -> Expr {
+        fn give(expr: &mut Expr, elem: &ElementType) {
+            match expr {
+                Expr::BinaryOp(op) => {
+                    op.operand_ty.get_or_insert_with(|| elem.clone());
+                    give(&mut op.lhs, elem);
+                    give(&mut op.rhs, elem);
+                }
+                Expr::UnaryOp(op) => give(&mut op.expr, elem),
+                Expr::Number(n) => {
+                    n.ty.get_or_insert_with(|| elem.clone());
+                }
+                _ => {}
+            }
+        }
+        let mut expr = decl.expr.clone();
+        if let Type::Scalar(elem) = &decl.ty {
+            if *elem != ElementType::Bool {
+                give(&mut expr, elem);
+            }
+        }
+        expr
+    }
+
     /// `expr` evaluated while compiling, with the values of the `const`s it names. `visiting`
     /// holds the `const`s being evaluated, so one defined through itself has no value.
     fn const_value(&self, expr: &Expr, visiting: &mut Vec<crate::symbol::Symbol>) -> Option<Value> {
@@ -150,7 +183,7 @@ impl<'a> TypeChecker<'a> {
             }
             if let Some(decl) = self.env.consts.get(&name).copied() {
                 visiting.push(name.clone());
-                let value = self.const_value(&decl.expr, visiting);
+                let value = self.const_value(&Self::typed_const_expr(decl), visiting);
                 visiting.pop();
                 env.insert(name, value?);
             }
@@ -170,7 +203,7 @@ impl<'a> TypeChecker<'a> {
         {
             return None;
         }
-        match self.const_value(&decl.expr, &mut vec![name.clone()])? {
+        match self.const_value(&Self::typed_const_expr(decl), &mut vec![name.clone()])? {
             Value::Int(i) => Some(i),
             _ => None,
         }

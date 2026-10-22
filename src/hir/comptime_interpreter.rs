@@ -127,7 +127,7 @@ pub(crate) struct ComptimeInterpreter<'graph, 'bodies> {
 }
 
 /// The values an `i64` holds, for an integer whose type the checker did not record.
-const I64_RANGE: (i128, i128) = (i64::MIN as i128, i64::MAX as i128);
+pub(crate) const I64_RANGE: (i128, i128) = (i64::MIN as i128, i64::MAX as i128);
 
 /// How many bytes one `comptime` block may put in byte buffers.
 const MAX_HEAP_BYTES: usize = 1 << 20;
@@ -453,8 +453,11 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 let reference_place = self.binding_reference_place(&let_decl.expr);
                 self.context
                     .declare(let_decl.name.clone(), outcome.value.facts.clone());
-                self.env
-                    .insert(let_decl.name.clone(), outcome.value.clone());
+                let mut value = outcome.value.clone();
+                if let Some(Type::Scalar(elem)) = &let_decl.ty_ann {
+                    value.ty = Some(elem.clone());
+                }
+                self.env.insert(let_decl.name.clone(), value);
                 if let Some(place) = reference_place {
                     self.reference_places.insert(let_decl.name.clone(), place);
                 } else {
@@ -1160,6 +1163,13 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         operand_ty: Option<&ElementType>,
         span: Span,
     ) -> ComptimeEvalOutcome {
+        // A body the checker has not typed has no operand type. The operands' own types stand
+        // in for it.
+        let ty = operand_ty
+            .cloned()
+            .or_else(|| lhs.value.ty.clone())
+            .or_else(|| rhs.value.ty.clone());
+        let operand_ty = ty.as_ref();
         let range = operand_ty.and_then(Self::integer_range);
         if matches!(op, BinaryOp::Div | BinaryOp::Rem)
             && !operand_ty.is_some_and(|ty| ty.is_float())
@@ -1177,22 +1187,37 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 Self::integer_op(*a, *b, op, range.unwrap_or(I64_RANGE)).map(Value::Int)
             }
             (Some(left), Some(right)) => match (left.as_f64(), right.as_f64(), op) {
-                (Some(a), Some(b), BinaryOp::Add) => Some(Value::Number(a + b)),
-                (Some(a), Some(b), BinaryOp::Sub) => Some(Value::Number(a - b)),
-                (Some(a), Some(b), BinaryOp::Mul) => Some(Value::Number(a * b)),
-                (Some(a), Some(b), BinaryOp::Div) => Some(Value::Number(a / b)),
-                (Some(a), Some(b), BinaryOp::Rem) if b != 0.0 => Some(Value::Number(a % b)),
+                (Some(a), Some(b), BinaryOp::Add) => Self::round_float(a + b, operand_ty),
+                (Some(a), Some(b), BinaryOp::Sub) => Self::round_float(a - b, operand_ty),
+                (Some(a), Some(b), BinaryOp::Mul) => Self::round_float(a * b, operand_ty),
+                (Some(a), Some(b), BinaryOp::Div) => Self::round_float(a / b, operand_ty),
+                (Some(a), Some(b), BinaryOp::Rem) if b != 0.0 => {
+                    Self::round_float(a % b, operand_ty)
+                }
                 _ => None,
-            },
+            }
+            .map(Value::Number),
             _ => None,
         };
         let mut outcome = self.unknown_after([lhs, rhs]);
         outcome.value.concrete = concrete;
+        outcome.value.ty = ty;
         outcome
     }
 
+    /// `value` as the float type `ty` holds it. An `f32` operation on `f32` inputs, done in
+    /// `f64` and then rounded once, gives the `f32` result. The smaller float types have no
+    /// value until they are rounded too.
+    pub(crate) fn round_float(value: f64, ty: Option<&ElementType>) -> Option<f64> {
+        match ty {
+            Some(ElementType::F32) => Some(value as f32 as f64),
+            Some(ty) if ty.is_float() && *ty != ElementType::F64 => None,
+            _ => Some(value),
+        }
+    }
+
     /// The values an integer type holds, or `None` for a type that is not an integer.
-    fn integer_range(ty: &ElementType) -> Option<(i128, i128)> {
+    pub(crate) fn integer_range(ty: &ElementType) -> Option<(i128, i128)> {
         use ElementType::*;
         let bits = match ty {
             I4 | U4 => 4,
@@ -1215,7 +1240,12 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
     /// `a op b` for integers of the type whose values are `min..=max`. A result outside the
     /// type has no value: the program wraps it, and a wrapped value folded into the program
     /// would look like something the compiler worked out.
-    fn integer_op(a: i64, b: i64, op: &BinaryOp, (min, max): (i128, i128)) -> Option<i64> {
+    pub(crate) fn integer_op(
+        a: i64,
+        b: i64,
+        op: &BinaryOp,
+        (min, max): (i128, i128),
+    ) -> Option<i64> {
         let (a, b) = (i128::from(a), i128::from(b));
         let result = match op {
             BinaryOp::Add => a + b,
@@ -1460,7 +1490,10 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             .map(|(place, target)| (place.clone(), target.clone()))
             .collect();
         self.context.push_scope();
-        for ((((parameter, _), parameter_can_carry_mut_reference), argument), writeback) in function
+        for (
+            (((parameter, parameter_ty), parameter_can_carry_mut_reference), argument),
+            writeback,
+        ) in function
             .params
             .iter()
             .zip(&mutable_reference_params)
@@ -1469,7 +1502,11 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         {
             self.context
                 .declare(parameter.clone(), argument.value.facts.clone());
-            self.env.insert(parameter.clone(), argument.value.clone());
+            let mut value = argument.value.clone();
+            if let Type::Scalar(elem) = parameter_ty {
+                value.ty = Some(elem.clone());
+            }
+            self.env.insert(parameter.clone(), value);
             if *parameter_can_carry_mut_reference && writeback.is_some() {
                 // The parameter's private binding is its lvalue inside this call. When the call
                 // returns, its final value is copied to the caller's tracked place below.
@@ -1539,6 +1576,9 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         if !writebacks_supported {
             outcome.mark_unsupported();
         }
+        if let Type::Scalar(elem) = &function.return_type {
+            outcome.value.ty = Some(elem.clone());
+        }
         outcome
     }
 
@@ -1571,6 +1611,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                         concrete: None,
                         facts: environment.clone(),
                         aggregate: None,
+                        ty: None,
                     },
                     ..ComptimeEvalOutcome::default()
                 },
@@ -1589,6 +1630,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                             concrete: None,
                             facts: environment.clone(),
                             aggregate: None,
+                            ty: None,
                         },
                         ..ComptimeEvalOutcome::default()
                     },
@@ -1950,7 +1992,8 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                     || number.value.contains('e')
                     || number.value.contains('E')));
         if is_float {
-            number.value.parse::<f64>().ok().map(Value::Number)
+            let value = number.value.parse::<f64>().ok()?;
+            Self::round_float(value, number.ty.as_ref()).map(Value::Number)
         } else {
             // An integer too big for an i64 has no value, rather than a float's rounded one.
             number.value.parse::<i64>().ok().map(Value::Int)
@@ -2123,6 +2166,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             if end.flow != ComptimeEvalFlow::Normal {
                 return end;
             }
+            let iterator_ty = start.value.ty.clone().or_else(|| end.value.ty.clone());
             if let (Some(Value::Int(start_index)), Some(Value::Int(end_index))) =
                 (&start.value.concrete, &end.value.concrete)
             {
@@ -2141,10 +2185,9 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                         outcome.mark_unsupported();
                         break;
                     }
-                    self.env.insert(
-                        iterator.clone(),
-                        ComptimeEvalValue::known(Value::Int(index)),
-                    );
+                    let mut value = ComptimeEvalValue::known(Value::Int(index));
+                    value.ty = iterator_ty.clone();
+                    self.env.insert(iterator.clone(), value);
                     self.reference_places.remove(&iterator);
                     let body = self.block(&loop_stmt.body);
                     outcome.support.merge_from(body.support);
@@ -2277,9 +2320,14 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                     ..Default::default()
                 }
             }
-            Expr::Number(number) => Self::number_literal(number)
-                .map(ComptimeEvalOutcome::known)
-                .unwrap_or_else(ComptimeEvalOutcome::unsupported),
+            Expr::Number(number) => match Self::number_literal(number) {
+                Some(value) => {
+                    let mut outcome = ComptimeEvalOutcome::known(value);
+                    outcome.value.ty = number.ty.clone();
+                    outcome
+                }
+                None => ComptimeEvalOutcome::unsupported(),
+            },
             Expr::EnumVariant(variant) => {
                 let values = variant
                     .payload
@@ -2459,10 +2507,17 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 let mut outcome = self.unknown_after([inner.clone()]);
                 outcome.value.concrete = match (&inner.value.concrete, &op.op) {
                     (Some(Value::Bool(value)), UnaryOp::Not) => Some(Value::Bool(!value)),
-                    (Some(Value::Int(value)), UnaryOp::Neg) => value.checked_neg().map(Value::Int),
+                    (Some(Value::Int(value)), UnaryOp::Neg) => {
+                        let range = inner.value.ty.as_ref().and_then(Self::integer_range);
+                        Self::integer_op(0, *value, &BinaryOp::Sub, range.unwrap_or(I64_RANGE))
+                            .map(Value::Int)
+                    }
                     (Some(Value::Number(value)), UnaryOp::Neg) => Some(Value::Number(-value)),
                     _ => None,
                 };
+                if matches!(op.op, UnaryOp::Neg) {
+                    outcome.value.ty = inner.value.ty.clone();
+                }
                 outcome
             }
             Expr::Borrow(borrow) => {
@@ -2647,6 +2702,9 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 };
                 let mut outcome = self.unknown_after([value]);
                 outcome.value.concrete = Some(concrete);
+                if let Type::Scalar(elem) = &cast.target_ty {
+                    outcome.value.ty = Some(elem.clone());
+                }
                 outcome
             }
             Expr::Print(print) => {
