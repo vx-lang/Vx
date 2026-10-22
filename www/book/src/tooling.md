@@ -7,7 +7,7 @@
 | Flag | What it does |
 | --- | --- |
 | `--run` | Compile and execute immediately, propagating the program's exit code |
-| `-c` | Compile to an object file |
+| `-c` | Compile to an object file — it does not link; see [Linking](linking.md) for the executable step |
 | `--emit-mlir` | Emit the MLIR representation |
 | `--emit-llvm` | Emit LLVM IR |
 | `--print-ast` | Parse and typecheck, then print the AST |

@@ -34,8 +34,8 @@
 - [Diagnostic index](error-index.md)
 
 # Tooling
-
 - [The compiler](tooling.md)
+- [Linking an object file into an executable](linking.md)
 - [Editor support](editors.md)
 
 ______________________________________________________________________
