@@ -48,12 +48,15 @@ impl<'a> TypeChecker<'a> {
     /// leave nothing behind, so there is no such thing as one that half-ran: until now those
     /// were emitted as ordinary run-time code, which is how a loop or a call the evaluator
     /// skipped stayed invisible.
+    /// `return_is_value`: the block is a closure's whole body or the value of a `return`, so a
+    /// `return` in it gives the block's value.
     fn fold_comptime_block(
         &mut self,
         stmts: &[Statement],
         ret: Option<&Expr>,
         block_span: Span,
         before: &HashMap<crate::symbol::Symbol, Value>,
+        return_is_value: bool,
     ) -> ComptimeFold {
         let interpretation = self.observe_comptime_block(stmts, ret, before);
         // At the block's last expression; at the `comptime` keyword when there is none, or when
@@ -115,6 +118,14 @@ impl<'a> TypeChecker<'a> {
         // that body's value -- `|| comptime { ..; return x; }` is how the closure fixtures
         // are written. Answer with it, the same as a trailing expression.
         if interpretation.outcome.flow == ComptimeEvalFlow::Return {
+            if !return_is_value {
+                self.report_comptime_block_failure(
+                    "a `return` in it leaves the function, which a block that runs while \
+                     compiling cannot do",
+                    &span,
+                );
+                return ComptimeFold::Refused;
+            }
             return self.fold_value(interpretation.outcome.value.concrete, &span);
         }
         if interpretation.outcome.flow != ComptimeEvalFlow::Normal {
@@ -324,6 +335,7 @@ impl<'a> TypeChecker<'a> {
                 span: block_span,
             }) => {
                 let block_span = *block_span;
+                let return_is_value = std::mem::take(&mut self.consteval.comptime_return_is_value);
                 // What is known before the block runs. Its own `let`s live in the scope
                 // pushed below and are gone by the time the fold needs them, so the block
                 // is run again from here rather than read out of the checker's environment.
@@ -350,7 +362,13 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.consteval.comptime_depth -= 1;
                 self.pop_scope();
-                let folded = self.fold_comptime_block(stmts, ret.as_deref(), block_span, &before);
+                let folded = self.fold_comptime_block(
+                    stmts,
+                    ret.as_deref(),
+                    block_span,
+                    &before,
+                    return_is_value,
+                );
                 // An assertion the placement fold answered `true` is discharged here: nothing
                 // at run time holds a placement, so nothing is left to check. (The fold
                 // reported a false one.) Asserts on anything else stay, as the program wrote
@@ -1204,7 +1222,9 @@ impl<'a> TypeChecker<'a> {
                 // A `return` in the body leaves the closure, not the function around it.
                 self.drops_enter_function(Vec::new(), &[]);
                 self.traffic.closure_depth += 1;
+                self.consteval.comptime_return_is_value = matches!(*b, Expr::ComptimeBlock(_));
                 let expr_ret_ty = self.check_expr_type(&mut b);
+                self.consteval.comptime_return_is_value = false;
                 self.traffic.closure_depth -= 1;
                 self.drops_exit_function();
                 self.consteval.closure_body_depth -= 1;

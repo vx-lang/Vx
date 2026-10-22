@@ -67,6 +67,9 @@ pub struct ConstEvalState {
     /// time walking a trip count that belongs to the program. What still happens everywhere
     /// is the settling up: see `settle_loop_consteval`.
     pub comptime_depth: u32,
+    /// Set just before checking a `comptime` block whose `return` gives its value: the whole
+    /// body of a closure, or the value of a `return`.
+    pub comptime_return_is_value: bool,
 }
 
 /// Provenance carried by a value while a `comptime` block is interpreted.
@@ -647,6 +650,7 @@ impl Default for ConstEvalState {
             loop_steps: std::cell::Cell::new(0),
             steps_exceeded: std::cell::Cell::new(false),
             comptime_depth: 0,
+            comptime_return_is_value: false,
             closure_body_depth: 0,
         }
     }

@@ -7,10 +7,15 @@
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: module
+//
+// The write to `outside` comes after a `return` that always runs, so it never happens, and the
+// block does not write outside itself. The block is the value of a `return`, so the inner
+// `return 1i32` gives the block's value. A `return` anywhere else would leave the function,
+// which a block that runs while compiling cannot do (E3033).
 
-fn main() -> i32 {
+fn pick() -> i32 {
   let mut outside : i32 = 0i32;
-  let value = comptime {
+  return comptime {
     let selected = if true {
       if true {
         return 1i32;
@@ -22,5 +27,8 @@ fn main() -> i32 {
     };
     selected
   };
-  return value;
+}
+
+fn main() -> i32 {
+  return pick();
 }

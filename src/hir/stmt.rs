@@ -1673,7 +1673,9 @@ impl<'a> TypeChecker<'a> {
 
         let prev_expected = self.expected_type.take();
         self.expected_type = Some(return_type.clone());
+        self.consteval.comptime_return_is_value = matches!(&*expr, Expr::ComptimeBlock(_));
         let ty = self.check_expr_type_flag(expr, consume);
+        self.consteval.comptime_return_is_value = false;
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, Some(return_type));
         self.expected_type = prev_expected;
         self.drops_exit("return", span.line, false);
