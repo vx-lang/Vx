@@ -1278,10 +1278,10 @@ bool run_device_image(const void *payload, size_t payload_size,
     cudaEventCreate(&t1);
     cudaEventRecord(t0, caller_stream);
   }
-  CUresult rc = driver().LaunchKernel(
-      fn, grid, shape[1], shape[2], block, 1, 1,
-      dynamic_shared_bytes(payload, payload_size), (CUstream)caller_stream,
-      params.params, nullptr);
+  CUresult rc =
+      driver().LaunchKernel(fn, grid, shape[1], shape[2], block, 1, 1,
+                            dynamic_shared_bytes(payload, payload_size),
+                            (CUstream)caller_stream, params.params, nullptr);
   if (rc != CUDA_SUCCESS) {
     const char *name = nullptr;
     driver().GetErrorName(rc, &name);
