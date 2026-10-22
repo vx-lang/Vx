@@ -2957,8 +2957,11 @@ struct ConvertVxToStandardPass
                 a.getLoc(), t, view.getResult());
             offset += bytesOf(a);
             a.replaceAllUsesWith(shared.getResult());
-            a.erase();
           }
+          // Not in the loop above: the first alloca can be where `atEntry`
+          // inserts.
+          for (memref::AllocaOp a : smemAllocas)
+            a.erase();
           gpuFunc->setAttr("vx.dynamic_shared",
                            atEntry.getI64IntegerAttr(total));
           gpuFunc->setAttr("vx.dynamic_shared_align",
