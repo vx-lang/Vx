@@ -1250,16 +1250,16 @@ impl<'a> Parser<'a> {
                         let mut ret_expr = None;
                         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
                             let stmt = self.parse_statement()?;
+                            // Only a last expression with no `;` is the block's value. A last
+                            // statement that ends with `;` stays one of the block's statements.
                             if self.check(&TokenType::RightBrace) {
                                 if let Statement::ExprStmt(ExprStmtStmt {
                                     expr: e,
-                                    has_semi,
+                                    has_semi: false,
                                     span: _,
                                 }) = stmt
                                 {
-                                    if !has_semi {
-                                        ret_expr = Some(Box::new(e));
-                                    }
+                                    ret_expr = Some(Box::new(e));
                                     break;
                                 }
                             }
