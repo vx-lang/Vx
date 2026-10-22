@@ -1,0 +1,25 @@
+//===- comptime_reads_a_compound_assignment_in_a_branch.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// `x += 5i32` runs only when `argc > 1`, so `x` depends on `argc`, and the block that reads it
+// cannot be worked out (E3033). The compiler used to fold it to 10: it took 5 as the value of
+// `x` after the `+=`, and kept the value that the branch wrote.
+
+fn main(argc : i32) -> i32 {
+  let mut x : i32 = 10i32;
+  if argc > 1i32 {
+    x += 5i32;
+  }
+  let y = comptime {
+    // CHECK: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
+    x * 2i32
+  };
+  print(y);
+  return 0;
+}

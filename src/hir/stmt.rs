@@ -1434,10 +1434,24 @@ impl<'a> TypeChecker<'a> {
         // Keep the compile-time value of the assigned variable in step with the assignment.
         // An assignment the evaluator cannot compute makes the variable unknown rather than
         // leaving the previous value behind, which later reads would report as a certainty.
+        // `x op= v` gives `x` the value of `x op v`.
+        let assigned = match op {
+            Some(op) => Expr::BinaryOp(BinaryOpExpr {
+                lhs: Box::new(lhs.clone()),
+                op: op.clone(),
+                rhs: Box::new(rhs.clone()),
+                span: Span::default(),
+                operand_ty: match &lhs_ty {
+                    Type::Scalar(elem) => Some(elem.clone()),
+                    _ => None,
+                },
+            }),
+            None => rhs.clone(),
+        };
         match lhs {
             Expr::Identifier(IdentifierExpr { name, span: _ }) => {
                 let tmp_env = self.consteval_snapshot();
-                let new_val = self.eval_expr(rhs, &tmp_env);
+                let new_val = self.eval_expr(&assigned, &tmp_env);
                 if let Some(scope) = self.consteval_scope_of(name.as_ref()) {
                     let env = &mut self.consteval.env[scope];
                     match new_val {
@@ -1467,7 +1481,7 @@ impl<'a> TypeChecker<'a> {
                         None
                     };
                     let new_val = if direct {
-                        self.eval_expr(rhs, &tmp_env)
+                        self.eval_expr(&assigned, &tmp_env)
                     } else {
                         None
                     };

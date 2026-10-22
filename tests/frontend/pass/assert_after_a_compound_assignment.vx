@@ -1,0 +1,23 @@
+//===- assert_after_a_compound_assignment.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// After `x op= v`, the checker knows `x op v` as the value of `x`. It used to take `v`, so each
+// true assert below failed to compile (E8002): `x` was 3 and `a[1]` was 5.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-LABEL: func.func @main
+
+fn main() -> i32 {
+  let mut x : i64 = 10i64;
+  x -= 3i64;
+  assert(x == 7i64, "x is 7");
+  let mut a : Tensor<i64, [3]> = [ 1i64, 2i64, 3i64 ];
+  a[1] += 5i64;
+  assert(a[1] == 7i64, "a[1] is 7");
+  print(x + a[1]);
+  return 0;
+}
