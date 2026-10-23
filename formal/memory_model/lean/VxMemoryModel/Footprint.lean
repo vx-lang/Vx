@@ -24,9 +24,9 @@ read, or both are atomic. -/
 def Compat (k : Kind) (o : Order) (x : Nat) (k' : Kind) (o' : Order) (x' : Nat) : Prop :=
   k = .fence ∨ k' = .fence ∨ x ≠ x' ∨ (k = .read ∧ k' = .read) ∨ (o ≠ .plain ∧ o' ≠ .plain)
 
-/-- No access of `s` to a place below `lim` can race with an access of `t`. -/
-def Stmt.Apart (lim : Nat) (s t : Stmt) : Prop :=
-  s.Accesses fun k o x => x < lim → t.Accesses (Compat k o x)
+/-- No access of `s` to a place of `own` can race with an access of `t`. -/
+def Stmt.Apart (own : Nat → Prop) (s t : Stmt) : Prop :=
+  s.Accesses fun k o x => own x → t.Accesses (Compat k o x)
 
 /-- `s` starts no task and joins no task. -/
 def Stmt.NoTasks : Stmt → Prop
@@ -94,40 +94,40 @@ def seqAll : List Phase → Stmt
   | [] => .skip
   | p :: ps => .seq p.stmt (seqAll ps)
 
-variable (P : TaskProg) (lim : Nat)
+variable (P : TaskProg) (own : Nat → Prop)
 
-/-- The rule for one phase, for the places below `lim`. The code of a block and each task of the
+/-- The rule for one phase, for the places of `own`. The code of a block and each task of the
 block are apart, and two tasks of the block are apart. -/
 def Phase.Ok : Phase → Prop
   | .code s => s.NoTasks
-  | .block s => s.NoBlocks ∧ s.RegsBelow P.marks ∧ (∀ u ∈ s.spawnIds, s.Apart lim (P.task u)) ∧
-      ∀ u ∈ s.spawnIds, ∀ v ∈ s.spawnIds, u ≠ v → (P.task u).Apart lim (P.task v)
+  | .block s => s.NoBlocks ∧ s.RegsBelow P.marks ∧ (∀ u ∈ s.spawnIds, s.Apart own (P.task u)) ∧
+      ∀ u ∈ s.spawnIds, ∀ v ∈ s.spawnIds, u ≠ v → (P.task u).Apart own (P.task v)
 
 /-- Each phase follows its rule, and no two phases start the same task. -/
 def PhasesOk : List Phase → Prop
   | [] => True
-  | p :: ps => p.Ok P lim ∧ (∀ u ∈ p.ids, ∀ q ∈ ps, u ∉ q.ids) ∧ PhasesOk ps
+  | p :: ps => p.Ok P own ∧ (∀ u ∈ p.ids, ∀ q ∈ ps, u ∉ q.ids) ∧ PhasesOk ps
 
-/-- The rule on the code, for the places below `lim`: the main code is the phases `ps`, and the
-tasks start no tasks. Each place below `flags` that a program uses is below `lim`, or other
+/-- The rule on the code, for the places of `own`: the main code is the phases `ps`, and the
+tasks start no tasks. Each place below `flags` that a program uses is in `own`, or other
 theorems show that it cannot race. -/
 structure Footprints (ps : List Phase) : Prop where
   ok : P.Ok
-  le_flags : lim ≤ P.flags
+  le_flags : ∀ x, own x → x < P.flags
   main : P.main = seqAll ps
-  phases : P.PhasesOk lim ps
+  phases : P.PhasesOk own ps
   tasks : ∀ t, (P.task t).NoTasks
 
-/-- What a block allows for an access in its lowered code. Below `lim`, the access cannot race
+/-- What a block allows for an access in its lowered code. At a place of `own`, it cannot race
 with a task of the block. It writes `start v` only for a task `v` of the block. -/
 def InBlock (B : Stmt) (k : Kind) (o : Order) (x : Nat) : Prop :=
-  (x < lim → ∀ v ∈ B.spawnIds, (P.task v).Accesses (Compat k o x)) ∧
+  (own x → ∀ v ∈ B.spawnIds, (P.task v).Accesses (Compat k o x)) ∧
     (k = .write → ∀ v, x = P.start v → v ∈ B.spawnIds)
 
 /-- What a phase allows for an access in its lowered code. -/
 def PhasePred : Phase → Kind → Order → Nat → Prop
   | .code _ => fun k _ x => k = .fence ∨ x < P.flags
-  | .block B => P.InBlock lim B
+  | .block B => P.InBlock own B
 
 /-- The label writes the flag `start u`. -/
 def StartW (u : Nat) (l : Label) : Prop := l.kind = .write ∧ l.loc = P.start u
@@ -137,14 +137,14 @@ each write of `start u`, or it is in the block of `u`, or it comes after a run o
 wrote `start u`. -/
 def Status (u : Nat) (L : List Label) (m : Nat) : Prop :=
   (∀ m' l, L[m']? = some l → P.StartW u l → m < m') ∨
-  (∃ B, u ∈ B.spawnIds ∧ (Phase.block B).Ok P lim ∧
-    ∀ l, L[m]? = some l → P.InBlock lim B l.kind l.order l.loc) ∨
-  (∃ B n L' regs regs', (Phase.block B).Ok P lim ∧ B.Below P.flags P.count ∧
+  (∃ B, u ∈ B.spawnIds ∧ (Phase.block B).Ok P own ∧
+    ∀ l, L[m]? = some l → P.InBlock own B l.kind l.order l.loc) ∨
+  (∃ B n L' regs regs', (Phase.block B).Ok P own ∧ B.Below P.flags P.count ∧
     Steps (P.lower (.tasksBlock B)) regs L' .skip regs' ∧
     (∀ i (hi : i < L'.length), L[n + i]? = some L'[i]) ∧ n + L'.length ≤ m ∧
     ∃ i, ∃ hi : i < L'.length, P.StartW u L'[i])
 
-variable {P lim}
+variable {P own}
 
 theorem lower_noTasks {s : Stmt} (h : s.NoTasks) : P.lower s = s := by
   induction s with
@@ -214,8 +214,8 @@ theorem lower_inBlock {q : Kind → Order → Nat → Prop} {ids : List Nat} {s 
   | skip | assign | assignAt => trivial
 
 /-- Each access of the lowered code of a phase follows `PhasePred`. -/
-theorem phase_accesses (hlim : lim ≤ P.flags) {p : Phase} (hp : p.Ok P lim)
-    (hb : p.stmt.Below P.flags P.count) : (P.lower p.stmt).Accesses (P.PhasePred lim p) := by
+theorem phase_accesses (hlim : ∀ x, own x → x < P.flags) {p : Phase} (hp : p.Ok P own)
+    (hb : p.stmt.Below P.flags P.count) : (P.lower p.stmt).Accesses (P.PhasePred own p) := by
   cases p with
   | code s =>
     show (P.lower s).Accesses _
@@ -223,15 +223,16 @@ theorem phase_accesses (hlim : lim ≤ P.flags) {p : Phase} (hp : p.Ok P lim)
     exact code_accesses hb hp
   | block B =>
     obtain ⟨hn, -, hap, -⟩ := hp
-    show (P.lower (.tasksBlock B)).Accesses (P.InBlock lim B)
+    show (P.lower (.tasksBlock B)).Accesses (P.InBlock own B)
     refine ⟨P.clearMarks_accesses _ _, (lower_inBlock (s := B) (ids := B.spawnIds) hb hn (fun _ h => h)
-      (Stmt.Accesses.forall_mem (q := fun v k o x => x < lim → (P.task v).Accesses (Compat k o x))
-        hap)).mono fun _ _ _ h => ⟨fun hx v hv => h.1 (by omega) v hv hx, h.2⟩,
+      (Stmt.Accesses.forall_mem (q := fun v k o x => own x → (P.task v).Accesses (Compat k o x))
+        hap)).mono fun _ _ _ h => ⟨fun hx v hv => h.1 (hlim _ hx) v hv hx, h.2⟩,
       P.joinMarked_accesses fun u _ => ⟨fun hx => ?_, nofun⟩⟩
-    simp only [done] at hx
+    have := hlim _ hx
+    simp only [done] at this
     omega
 
-theorem PhasePred.ids_of_start {p : Phase} {k o x} (h : P.PhasePred lim p k o x) (hk : k = .write)
+theorem PhasePred.ids_of_start {p : Phase} {k o x} (h : P.PhasePred own p k o x) (hk : k = .write)
     {u} (hx : x = P.start u) : u ∈ p.ids := by
   cases p with
   | code s =>
@@ -244,7 +245,7 @@ theorem PhasePred.ids_of_start {p : Phase} {k o x} (h : P.PhasePred lim p k o x)
   | block B => exact h.2 hk u hx
 
 /-- The main code writes `start u` only for a task `u` of one of its blocks. -/
-theorem seqAll_accesses (hlim : lim ≤ P.flags) {ps : List Phase} (hok : P.PhasesOk lim ps)
+theorem seqAll_accesses (hlim : ∀ x, own x → x < P.flags) {ps : List Phase} (hok : P.PhasesOk own ps)
     (hb : (seqAll ps).Below P.flags P.count) :
     (P.lower (seqAll ps)).Accesses fun k _ x =>
       k = .write → ∀ u, x = P.start u → ∃ p ∈ ps, u ∈ p.ids := by
@@ -258,9 +259,9 @@ theorem seqAll_accesses (hlim : lim ≤ P.flags) {ps : List Phase} (hok : P.Phas
     exact ⟨q, List.mem_cons_of_mem _ hq, hu⟩
 
 /-- Each position of a run of the main code has a `Status` for each task. -/
-theorem status (hlim : lim ≤ P.flags) {ps : List Phase} (hok : P.PhasesOk lim ps)
+theorem status (hlim : ∀ x, own x → x < P.flags) {ps : List Phase} (hok : P.PhasesOk own ps)
     (hb : (seqAll ps).Below P.flags P.count) {regs L} (hr : Runs (P.lower (seqAll ps)) regs L)
-    (u : Nat) {m : Nat} (hm : m < L.length) : P.Status lim u L m := by
+    (u : Nat) {m : Nat} (hm : m < L.length) : P.Status own u L m := by
   induction ps generalizing regs L m with
   | nil =>
     have := Runs.skip_nil (regs := regs) hr
@@ -344,7 +345,7 @@ theorem not_compat {a b : X.E} (hc : X.Conflict a b) (hat : ¬ (X.IsAtomic a ∧
   · exact hat ⟨h1, h2⟩
 
 /-- An access to a place from `flags` up is atomic. -/
-theorem atomic_of_flags (hF : P.Footprints lim ps) (r : P.toProg.Run X) {e : X.E}
+theorem atomic_of_flags (hF : P.Footprints own ps) (r : P.toProg.Run X) {e : X.E}
     (he : X.IsAccess e) (hx : P.flags ≤ X.loc e) : X.IsAtomic e := by
   rcases access hF.ok r e with hk | hlt | ⟨hsc, -⟩
   · simp [Execution.IsAccess, Execution.IsRead, Execution.IsWrite, hk] at he
@@ -355,7 +356,7 @@ theorem atomic_of_flags (hF : P.Footprints lim ps) (r : P.toProg.Run X) {e : X.E
 
 /-- An access of task `t` to a place below `flags` follows each rule that the code of the task
 follows. -/
-theorem task_access (hF : P.Footprints lim ps) (r : P.toProg.Run X) {e : X.E} {t : Nat}
+theorem task_access (hF : P.Footprints own ps) (r : P.toProg.Run X) {e : X.E} {t : Nat}
     (he : X.thread e = t + 1) (hx : X.loc e < P.flags) {q : Kind → Order → Nat → Prop}
     (hq : (P.task t).Accesses q) : q (X.kind e) (X.order e) (X.loc e) := by
   have htc := task_lt r he
@@ -372,7 +373,7 @@ theorem task_access (hF : P.Footprints lim ps) (r : P.toProg.Run X) {e : X.E} {t
   exact h hx
 
 /-- A task does not write a `start` flag. -/
-theorem task_not_start (hF : P.Footprints lim ps) (r : P.toProg.Run X) {e : X.E} {t u : Nat}
+theorem task_not_start (hF : P.Footprints own ps) (r : P.toProg.Run X) {e : X.E} {t u : Nat}
     (he : X.thread e = t + 1) (hw : X.IsWrite e) (hu : u < P.count) : X.loc e ≠ P.start u := by
   have htc := task_lt r he
   have hc : (P.toProg.code (X.thread e)).Accesses fun k _ x => k = .write → x ≠ P.start u := by
@@ -391,7 +392,7 @@ theorem task_not_start (hF : P.Footprints lim ps) (r : P.toProg.Run X) {e : X.E}
   exact h hw
 
 /-- The accesses of the main code up to `e` are a run of the phases. -/
-theorem main_runs (hF : P.Footprints lim ps) (r : P.toProg.Run X) {e : X.E} (he : X.thread e = 0) :
+theorem main_runs (hF : P.Footprints own ps) (r : P.toProg.Run X) {e : X.E} (he : X.thread e = 0) :
     Runs (P.lower (seqAll ps)) (fun _ => 0) ((List.range (r.idx e + 1)).map (r.lab 0)) := by
   have h := r.trace e
   rw [he] at h
@@ -404,7 +405,7 @@ theorem lab_zero (r : P.toProg.Run X) {e : X.E} (he : X.thread e = 0) :
   exact r.lab_eq e
 
 /-- Task `t` read `start t` from a write of the main code. -/
-theorem spawn_of (hF : P.Footprints lim ps) (r : P.toProg.Run X) {b : X.E} {t : Nat}
+theorem spawn_of (hF : P.Footprints own ps) (r : P.toProg.Run X) {b : X.E} {t : Nat}
     (hb : X.thread b = t + 1) :
     ∃ w e, X.thread w = 0 ∧ X.IsWrite w ∧ X.IsSeqCst w ∧ X.loc w = P.start t ∧ X.rf w e ∧
       X.IsSeqCst e ∧ (e = b ∨ X.po e b) := by
@@ -437,9 +438,9 @@ theorem spawn_of (hF : P.Footprints lim ps) (r : P.toProg.Run X) {b : X.E} {t : 
 
 /-- An event `c` of the main code comes after a run of a block that wrote `start t`. Then each
 access of task `t` happens before `c`. -/
-theorem after_hb (hF : P.Footprints lim ps) (r : P.toProg.Run X) {N t : Nat} {c d : X.E}
+theorem after_hb (hF : P.Footprints own ps) (r : P.toProg.Run X) {N t : Nat} {c d : X.E}
     (hc : X.thread c = 0) (hcN : r.idx c < N) (hd : X.thread d = t + 1)
-    {B : Stmt} {n : Nat} {L' : List Label} {regs regs' : Nat → Int} (hB : (Phase.block B).Ok P lim)
+    {B : Stmt} {n : Nat} {L' : List Label} {regs regs' : Nat → Int} (hB : (Phase.block B).Ok P own)
     (hBb : B.Below P.flags P.count) (hs : Steps (P.lower (.tasksBlock B)) regs L' .skip regs')
     (hlab : ∀ i (hi : i < L'.length), ((List.range N).map (r.lab 0))[n + i]? = some L'[i])
     (hn : n + L'.length ≤ r.idx c) {i : Nat} (hi : i < L'.length) (hw : P.StartW t L'[i]) :
@@ -464,9 +465,9 @@ theorem after_hb (hF : P.Footprints lim ps) (r : P.toProg.Run X) {N t : Nat} {c 
 
 /-- An access `a` of the main code and an access `b` of task `t`, both below `flags`:
 happens-before orders them, or they are `Compat`. -/
-theorem main_task (hF : P.Footprints lim ps) (r : P.toProg.Run X) {a b : X.E} {t : Nat}
-    (ha : X.thread a = 0) (hb : X.thread b = t + 1) (hxa : X.loc a < lim)
-    (hxb : X.loc b < lim) :
+theorem main_task (hF : P.Footprints own ps) (r : P.toProg.Run X) {a b : X.E} {t : Nat}
+    (ha : X.thread a = 0) (hb : X.thread b = t + 1) (hxa : own (X.loc a))
+    (hxb : own (X.loc b)) :
     X.hb a b ∨ X.hb b a ∨
       Compat (X.kind a) (X.order a) (X.loc a) (X.kind b) (X.order b) (X.loc b) := by
   have htc := task_lt r hb
@@ -488,21 +489,21 @@ theorem main_task (hF : P.Footprints lim ps) (r : P.toProg.Run X) {a b : X.E} {t
       exact hbef _ _ hgw ⟨hww, hwl⟩
     · omega
   · -- `a` is in the block of task `t`.
-    exact Or.inr (Or.inr (task_access hF r hb (by have := hF.le_flags; omega)
+    exact Or.inr (Or.inr (task_access hF r hb (hF.le_flags _ hxb)
       ((hin _ hga).1 hxa t hu)))
   · -- `a` comes after the block of task `t`.
     exact Or.inr (Or.inl (after_hb hF r ha (Nat.lt_succ_self _) hb hB hBb hs hlab hn hi hw))
 
 /-- Accesses `a` of task `u` and `b` of task `v`, both below `flags`: happens-before orders them,
 or they are `Compat`. -/
-theorem task_task (hF : P.Footprints lim ps) (r : P.toProg.Run X) {a b : X.E} {u v : Nat}
-    (ha : X.thread a = u + 1) (hb : X.thread b = v + 1) (huv : u ≠ v) (hxa : X.loc a < lim)
-    (hxb : X.loc b < lim) :
+theorem task_task (hF : P.Footprints own ps) (r : P.toProg.Run X) {a b : X.E} {u v : Nat}
+    (ha : X.thread a = u + 1) (hb : X.thread b = v + 1) (huv : u ≠ v) (hxa : own (X.loc a))
+    (hxb : own (X.loc b)) :
     X.hb a b ∨ X.hb b a ∨
       Compat (X.kind a) (X.order a) (X.loc a) (X.kind b) (X.order b) (X.loc b) ∨
       Compat (X.kind b) (X.order b) (X.loc b) (X.kind a) (X.order a) (X.loc a) := by
-  have hxa' : X.loc a < P.flags := by have := hF.le_flags; omega
-  have hxb' : X.loc b < P.flags := by have := hF.le_flags; omega
+  have hxa' : X.loc a < P.flags := hF.le_flags _ hxa
+  have hxb' : X.loc b < P.flags := hF.le_flags _ hxb
   obtain ⟨wu, eu, hwu0, hwuw, hwus, hwul, hwurf, heus, heua⟩ := spawn_of hF r ha
   obtain ⟨wv, ev, hwv0, hwvw, hwvs, hwvl, hwvrf, hevs, hevb⟩ := spawn_of hF r hb
   -- One run of the main code that holds both spawns.
@@ -542,15 +543,15 @@ theorem task_task (hF : P.Footprints lim ps) (r : P.toProg.Run X) {a b : X.E} {u
     exact Or.inl ((after_hb hF r hwv0 (Nat.lt_succ_of_le hwv) ha hB hBb hs hlab hn hi hw).trans
       hv_hb)
 
-/-- A program that follows the rule has no data race at a place below `lim`, in each execution. -/
-theorem no_race_below (hF : P.Footprints lim ps) (hX : P.toProg.Execs X) {a b : X.E}
-    (hr : X.DataRace a b) (hxa : X.loc a < lim) : False := by
+/-- A program that follows the rule has no data race at a place of `own`, in each execution. -/
+theorem no_race_below (hF : P.Footprints own ps) (hX : P.toProg.Execs X) {a b : X.E}
+    (hr : X.DataRace a b) (hxa : own (X.loc a)) : False := by
   obtain ⟨r⟩ := hX
   obtain ⟨hc, hthr, hab, hba, hat⟩ := hr
   have nc := not_compat hc hat
   obtain ⟨hne, hacc_a, hacc_b, hl, hw⟩ := hc
   have nc' := not_compat ⟨hne.symm, hacc_b, hacc_a, hl.symm, hw.symm⟩ fun h => hat ⟨h.2, h.1⟩
-  have hxb : X.loc b < lim := hl ▸ hxa
+  have hxb : own (X.loc b) := hl ▸ hxa
   cases hta : X.thread a with
   | zero =>
     cases htb : X.thread b with
@@ -577,7 +578,7 @@ theorem no_race_below (hF : P.Footprints lim ps) (hX : P.toProg.Execs X) {a b : 
 
 /-- A program that follows the rule for the places below `flags` has no data race, in each
 execution. The places from `flags` up have only atomic accesses. -/
-theorem raceFree (hF : P.Footprints P.flags ps) (hX : P.toProg.Execs X) : X.RaceFree := by
+theorem raceFree (hF : P.Footprints (· < P.flags) ps) (hX : P.toProg.Execs X) : X.RaceFree := by
   intro a b hr
   obtain ⟨r⟩ := hX
   obtain ⟨⟨-, hacc_a, hacc_b, hl, -⟩, -, -, -, hat⟩ := id hr
@@ -586,7 +587,7 @@ theorem raceFree (hF : P.Footprints P.flags ps) (hX : P.toProg.Execs X) : X.Race
 
 /-- DRF-SC from the rule: for a program that follows it, each finite execution that the model
 allows is an interleaving. -/
-theorem drf_sc_of_footprints (hF : P.Footprints P.flags ps) (hm : P.main.SeqCstOnly)
+theorem drf_sc_of_footprints (hF : P.Footprints (· < P.flags) ps) (hm : P.main.SeqCstOnly)
     (ht : ∀ t, (P.task t).SeqCstOnly) (hX : P.toProg.Execs X) (wf : X.WellFormed)
     (hfin : X.Finite) (hc : X.Consistent) : X.SeqConsistent :=
   P.drf_sc hm ht (fun _ hY _ _ => raceFree hF hY) hX wf hfin hc

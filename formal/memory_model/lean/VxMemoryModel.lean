@@ -26,4 +26,5 @@ import VxMemoryModel.Cancel
 import VxMemoryModel.Footprint
 import VxMemoryModel.FootprintExample
 import VxMemoryModel.ChanFootprint
+import VxMemoryModel.LockFootprint
 import VxMemoryModel.ChanFootprintExample

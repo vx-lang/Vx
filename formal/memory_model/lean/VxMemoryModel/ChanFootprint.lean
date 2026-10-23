@@ -1,7 +1,6 @@
 import VxMemoryModel.Footprint
 import VxMemoryModel.Recv
 import VxMemoryModel.Cancel
-import VxMemoryModel.ScIsRc11
 
 /-!
 # Race freedom from footprints, for programs with channels
@@ -11,12 +10,13 @@ the code of the program uses, below `places`. `send`, `recv`, `drop` and `locked
 of the channels and the locks, and those never race (`chan_no_race`). So the rule needs only the
 accesses of the code `b` of `Tasks.lean` in the program.
 
-The lowered program follows the rule of `Footprint.lean` for the places below `places`. So no two
-accesses to those places race. The places from `places` to `top` belong to the channels and the
+The lowered program follows the rule of `Footprint.lean` for the places below `places` that have
+no lock. So no two accesses to those places race. The places from `places` to `top` belong to the channels and the
 locks. The places from `top` up are the flags of the tasks, and they have only `sc` accesses.
 
-The rule does not use the lock yet: two tasks of a block cannot share a place, even in `locked`
-blocks of one lock. The program has no failures.
+The rule can give a place of the code a lock. The code then accesses that place only in
+`locked` blocks of the lock, and two tasks of a block can share it. `LockFootprint.lean` shows
+that such places never race. The program has no failures.
 -/
 
 namespace Vx
@@ -28,8 +28,18 @@ def CStmt.Accesses (q : Kind → Order → Nat → Prop) : CStmt → Prop
   | .locked _ s | .loop _ s | .tasksBlock s => s.Accesses q
   | .seq s t | .ite _ s t => s.Accesses q ∧ t.Accesses q
 
-/-- No access of `s` can race with an access of `t`. -/
-def CStmt.Apart (s t : CStmt) : Prop := s.Accesses fun k o x => t.Accesses (Compat k o x)
+/-- No access of `s` can race with an access of `t`, at a place that `g` gives no lock. -/
+def CStmt.Apart (g : Nat → Option Nat) (s t : CStmt) : Prop :=
+  s.Accesses fun k o x => g x = none → t.Accesses (Compat k o x)
+
+/-- Each access of the code of `Tasks.lean` in `s`, to a place that `g` gives the lock `m`, is in a
+`locked` block of `m`. `held` lists the locks of the blocks around `s`. -/
+def CStmt.Guarded (g : Nat → Option Nat) (held : List Nat) : CStmt → Prop
+  | .base s => s.Accesses fun k _ x => k = .fence ∨ ∀ m, g x = some m → m ∈ held
+  | .locked m s => s.Guarded g (m :: held)
+  | .loop _ s | .tasksBlock s => s.Guarded g held
+  | .seq s t | .ite _ s t => s.Guarded g held ∧ t.Guarded g held
+  | _ => True
 
 /-- `s` starts no task and joins no task. -/
 def CStmt.NoTasks : CStmt → Prop
@@ -85,37 +95,42 @@ def cseqAll : List CPhase → CStmt
   | [] => .base .skip
   | p :: ps => .seq p.stmt (cseqAll ps)
 
-variable (P : ChanProg)
+variable (P : ChanProg) (g : Nat → Option Nat)
 
 /-- The phase of the lowered program. -/
 def CPhase.lower : CPhase → TaskProg.Phase
   | .code s => .code (P.lowerC s)
   | .block s => .block (P.lowerC s)
 
-/-- The rule for one phase. The code of a block and each task of the block are apart, and two
-tasks of the block are apart. The code of a block uses only the registers below `tmp + 3`, since
-the block keeps its marks from there. -/
+/-- The rule for one phase, at the places that `g` gives no lock. The code of a block and each
+task of the block are apart, and two tasks of the block are apart. The code of a block uses only
+the registers below `tmp + 3`, since the block keeps its marks from there. -/
 def CPhase.Ok : CPhase → Prop
   | .code s => s.NoTasks
   | .block s => s.NoBlocks ∧ s.RegsBelow (P.tmp + 3) ∧
-      (∀ u ∈ (P.lowerC s).spawnIds, s.Apart (P.task u)) ∧
-      ∀ u ∈ (P.lowerC s).spawnIds, ∀ v ∈ (P.lowerC s).spawnIds, u ≠ v → (P.task u).Apart (P.task v)
+      (∀ u ∈ (P.lowerC s).spawnIds, s.Apart g (P.task u)) ∧
+      ∀ u ∈ (P.lowerC s).spawnIds, ∀ v ∈ (P.lowerC s).spawnIds, u ≠ v →
+        (P.task u).Apart g (P.task v)
 
 /-- Each phase follows its rule, and no two phases start the same task. -/
 def CPhasesOk : List CPhase → Prop
   | [] => True
-  | p :: ps => p.Ok P ∧ (∀ u ∈ (p.lower P).ids, ∀ q ∈ ps, u ∉ (q.lower P).ids) ∧ CPhasesOk ps
+  | p :: ps => p.Ok P g ∧ (∀ u ∈ (p.lower P).ids, ∀ q ∈ ps, u ∉ (q.lower P).ids) ∧ CPhasesOk ps
 
 /-- The rule on the code: the main code is the phases `ps`, the tasks start no tasks, and the
-program has no failures. -/
+program has no failures. `g` gives some places of the code a lock, and the code accesses such a
+place only in a `locked` block of its lock. -/
 structure CFootprints (ps : List CPhase) : Prop where
   ok : P.Ok
   errors : P.errors = false
   main : P.main = cseqAll ps
-  phases : P.CPhasesOk ps
+  phases : P.CPhasesOk g ps
   tasks : ∀ t, (P.task t).NoTasks
+  guard : ∀ x m, g x = some m → x < P.places ∧ m < P.locks
+  guarded_main : P.main.Guarded g []
+  guarded_task : ∀ t, (P.task t).Guarded g []
 
-variable {P}
+variable {P g}
 
 /-! ## The lowered program follows the rule of `Footprint.lean` -/
 
@@ -248,16 +263,21 @@ theorem lowerC_accesses (he : P.errors = false) {q : Kind → Order → Nat → 
   | tasksBlock => trivial
   | fail | checkCancel | result => simp [StmtOk, he] at hs
 
+variable (P g) in
+/-- The places that the rule of `Footprint.lean` covers: the places of the code that `g` gives no
+lock. -/
+def Own (x : Nat) : Prop := x < P.places ∧ g x = none
+
 theorem apart_lower (he : P.errors = false) {s t : CStmt} (hs : P.StmtOk s) (ht : P.StmtOk t)
-    (h : s.Apart t) : (P.lowerC s).Apart P.places (P.lowerC t) :=
+    (h : s.Apart g t) : (P.lowerC s).Apart (P.Own g) (P.lowerC t) :=
   (lowerC_accesses he hs h).mono fun _ _ x h hx =>
-    (lowerC_accesses he ht (h hx)).mono fun _ _ x' h' => by
+    (lowerC_accesses he ht (h hx.1 hx.2)).mono fun _ _ x' h' => by
       by_cases hx' : x' < P.places
       · exact h' hx'
-      · exact Or.inr (Or.inr (Or.inl (by omega)))
+      · exact Or.inr (Or.inr (Or.inl (by have := hx.1; omega)))
 
 theorem cphase_ok (he : P.errors = false) (htask : ∀ t, P.StmtOk (P.task t)) {p : CPhase}
-    (hp : p.Ok P) (hs : P.StmtOk p.stmt) : (p.lower P).Ok P.toTaskProg P.places := by
+    (hp : p.Ok P g) (hs : P.StmtOk p.stmt) : (p.lower P).Ok P.toTaskProg (P.Own g) := by
   cases p with
   | code s => exact lowerC_noTasks hp
   | block s =>
@@ -267,20 +287,21 @@ theorem cphase_ok (he : P.errors = false) (htask : ∀ t, P.StmtOk (P.task t)) {
       fun u hu v hv huv => apart_lower he (htask u) (htask v) (hpair u hu v hv huv)⟩
 
 theorem cphasesOk_lower (he : P.errors = false) (htask : ∀ t, P.StmtOk (P.task t)) :
-    ∀ {ps : List CPhase}, P.CPhasesOk ps → P.StmtOk (cseqAll ps) →
-      P.toTaskProg.PhasesOk P.places (ps.map (CPhase.lower P))
+    ∀ {ps : List CPhase}, P.CPhasesOk g ps → P.StmtOk (cseqAll ps) →
+      P.toTaskProg.PhasesOk (P.Own g) (ps.map (CPhase.lower P))
   | [], _, _ => trivial
   | _ :: _, ⟨hp, hids, hrest⟩, ⟨hs, hss⟩ => by
     refine ⟨cphase_ok he htask hp hs, fun u hu q hq => ?_, cphasesOk_lower he htask hrest hss⟩
     obtain ⟨q', hq', rfl⟩ := List.mem_map.1 hq
     exact hids u hu q' hq'
 
-/-- The lowered program follows the rule of `Footprint.lean` for the places below `places`. -/
-theorem toFootprints {ps : List CPhase} (hF : P.CFootprints ps) :
-    P.toTaskProg.Footprints P.places (.code (stores P.initList) :: ps.map (CPhase.lower P)) where
+/-- The lowered program follows the rule of `Footprint.lean` for the places of `Own`. -/
+theorem toFootprints {ps : List CPhase} (hF : P.CFootprints g ps) :
+    P.toTaskProg.Footprints (P.Own g) (.code (stores P.initList) :: ps.map (CPhase.lower P)) where
   ok := toTaskProg_ok hF.ok hF.errors
-  le_flags := by
-    show P.places ≤ P.top
+  le_flags x hx := by
+    show x < P.top
+    have := hx.1
     unfold top
     omega
   main := by
@@ -294,31 +315,24 @@ theorem toFootprints {ps : List CPhase} (hF : P.CFootprints ps) :
 /-! ## The executions of a program that follows the rule -/
 
 /-- A program with channels that follows the rule has no data race, in each execution whose
-`co` orders the writes to each place. -/
-theorem raceFree {ps : List CPhase} (hF : P.CFootprints ps) {X : Execution}
+`co` orders the writes to each place, if it has none at the places that `g` gives a lock.
+`LockFootprint.lean` shows that it has none there. -/
+theorem raceFree_of {ps : List CPhase} (hF : P.CFootprints g ps) {X : Execution}
     (hX : P.toTaskProg.toProg.Execs X) (wf : X.WellFormed) (hcons : X.Consistent)
-    (ho : X.CoOrder) (hfin : X.Finite) : X.RaceFree := by
+    (ho : X.CoOrder) (hfin : X.Finite)
+    (hg : ∀ {a b : X.E} {m}, X.DataRace a b → g (X.loc a) = some m → False) : X.RaceFree := by
   intro a b hr
   obtain ⟨run⟩ := hX
   have hT := toFootprints hF
   by_cases h1 : X.loc a < P.places
-  · exact TaskProg.no_race_below hT ⟨run⟩ hr h1
+  · cases hga : g (X.loc a) with
+    | none => exact TaskProg.no_race_below hT ⟨run⟩ hr ⟨h1, hga⟩
+    | some m => exact hg hr hga
   by_cases h2 : X.loc a < P.top
   · exact chan_no_race run hF.ok wf hcons ho hfin hr (by omega) h2
   · obtain ⟨⟨-, ha, hb, hl, -⟩, -, -, -, hat⟩ := hr
     exact hat ⟨TaskProg.atomic_of_flags hT run ha (by show P.top ≤ _; omega),
       TaskProg.atomic_of_flags hT run hb (by show P.top ≤ _; omega)⟩
-
-/-- DRF-SC from the rule: for a program with channels that follows it, each finite execution
-that the model allows, with a `co` that orders the writes to each place, is an interleaving. -/
-theorem drf_sc_of_footprints {ps : List CPhase} (hF : P.CFootprints ps)
-    (hm : ∀ b, P.main.Bases b → b.SeqCstOnly) (ht : ∀ t b, (P.task t).Bases b → b.SeqCstOnly)
-    {X : Execution} (hX : P.toTaskProg.toProg.Execs X) (wf : X.WellFormed) (hfin : X.Finite)
-    (ho : X.CoOrder) (hc : X.Consistent) : X.SeqConsistent :=
-  P.drf_sc_co hm ht (not_fails hF.errors hF.ok.main) (fun t => not_fails hF.errors (hF.ok.task t))
-    (fun _ hY wfY hsc hfinY hoY =>
-      raceFree hF hY wfY (Execution.consistent_of_seqConsistent wfY hsc) hoY hfinY)
-    hX wf hfin ho hc
 
 end ChanProg
 
