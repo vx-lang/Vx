@@ -1421,15 +1421,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
         if let Some(root) = assigned_root(lhs) {
-            let root = root.to_string();
-            // Replaced, not removed: the checker splits this list at saved positions.
-            for fact in self.consteval.constraints.iter_mut() {
-                let mut uses = std::collections::HashSet::new();
-                Self::extract_uses_expr(fact, &mut uses);
-                if uses.contains(&root) {
-                    *fact = crate::hir::prover::true_fact();
-                }
-            }
+            self.neutralize_facts_mentioning(root.as_ref());
         }
         // Keep the compile-time value of the assigned variable in step with the assignment.
         // An assignment the evaluator cannot compute makes the variable unknown rather than

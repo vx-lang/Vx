@@ -1335,7 +1335,7 @@ fn scan_expr(e: &Expr, in_closure: bool, out: &mut RawScan) {
 
 impl<'a> TypeChecker<'a> {
     /// Overwrite every recorded prover fact that mentions `name` with `0 == 0`.
-    /// Called when `name` is rebound (a shadowing `let`, a loop induction variable):
+    /// Called when `name` is rebound (a shadowing `let`, a loop induction variable, an assignment):
     /// facts are keyed by bare symbol name, so a fact about the OUTER binding would
     /// otherwise keep "proving" things about the inner one -- reviewed and reproduced
     /// as a forged out-of-bounds proof. Overwritten in place rather than removed so
