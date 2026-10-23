@@ -732,6 +732,20 @@ impl<'a> TypeChecker<'a> {
                 // one the return keeps alive.
                 let reborrow_plan =
                     self.prepare_reference_arg_reborrows(resolved_name.clone(), args.as_slice());
+                // A lane reduction gives a number, so the borrows of its tensors end with the
+                // call. It has no signature for the plan to read.
+                let lane_bases: Vec<(String, Option<Vec<BorrowRecord>>)> =
+                    if resolved_name.as_ref().starts_with("lanes::") && !self.speculating {
+                        args.iter()
+                            .filter_map(Self::arg_reborrow_base)
+                            .map(|(base, _)| {
+                                let snap = self.borrow.snapshot_base(&base);
+                                (base, snap)
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
                 let errors_before_args = self.errors.inner.len();
                 for arg in args.iter_mut() {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume));
@@ -764,6 +778,10 @@ impl<'a> TypeChecker<'a> {
                     self.check_views_passed_by_value(resolved_name.as_ref(), &params, args);
                 }
                 self.commit_reference_arg_reborrows(&reborrow_plan, &arg_types, span);
+                for (base, snap) in &lane_bases {
+                    self.borrow
+                        .retain_present(base, snap.as_deref().unwrap_or(&[]));
+                }
                 if resolved_name == "print".into() && args.len() == 1 {
                     Self::prepare_print_operand(&mut args[0], &arg_types[0]);
                 }
