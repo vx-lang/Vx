@@ -621,9 +621,11 @@ pub enum DiagnosticCode {
     /// the most an allocation can ask for. The size is known, and it is not one the generated
     /// code can allocate: it would wrap.
     E6031,
-    /// An `across` loop that the topology or its place cannot have: a level the topology does
-    /// not name, a loop outside a `spawn on` region or in the wrong order, a size that is not
-    /// known when the kernel is compiled or is over the limit, or a jump out of the loop.
+    /// An `across` loop that the topology or its place cannot have: a topology with no `levels:`
+    /// or one whose arch cannot launch them (without `-fauto-schedule-levels`), a level the
+    /// topology does not name, a loop outside a `spawn on` region or in the wrong order, a size
+    /// that is not known when the kernel is compiled or is over the limit, or a jump out of the
+    /// loop.
     E6032,
     /// An index into a tensor in a `scope: thread` space that is not known when compiling. Such
     /// a tensor stays in registers, and a register has no address. So each index must be a

@@ -1,0 +1,71 @@
+//===- across_loops_on_a_topology_that_cannot_launch_them.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `across` loop needs `levels:` on its topology, and only the `nvptx64` code generator can
+// launch them. `Cores` is `x86_64` and `Plain` has no `arch:`, so their loops are E6032 unless
+// `-fauto-schedule-levels` makes them plain loops. The last of it and `-fno-auto-schedule-levels`
+// counts. With no machine file, the built-in `GPU` topology has no levels, with the flag too.
+//
+// RUN: not vxc %s --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
+// RUN: not vxc %s -fauto-schedule-levels -fno-auto-schedule-levels --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
+// RUN: not vxc %s -fauto-schedule-levels --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=AUTO --implicit-check-not=E6032
+// CHECK-DAG: Error[E6032] at 38:{{.*}}`across blocks`: no code generator can launch the levels of the topology `Cores`, whose arch is `x86_64`. Pass `-fauto-schedule-levels`
+// CHECK-DAG: Error[E6032] at 49:{{.*}}`across blocks`: no code generator can launch the levels of the topology `Plain`, which has no `arch:`
+// CHECK-DAG: Error[E6032] at 60:{{.*}}`across blocks`: the topology `GPU[0]` has no levels. Give its fleet file `levels:`
+// AUTO: Error[E6032] at 60:{{.*}}`across blocks`: the topology `GPU[0]` has no levels
+
+Memory DRAM {}
+
+Topology Cores {
+  arch: x86_64,
+  memory: Memory::DRAM,
+  visible: [Memory::DRAM],
+  levels: [blocks(max_lanes: 8), lanes]
+}
+
+Topology Plain {
+  memory: Memory::DRAM,
+  visible: [Memory::DRAM],
+  levels: [blocks(max_lanes: 8), lanes]
+}
+
+pub fn on_x86(o : &mut Tensor<f32, [16], Memory::DRAM>) -> void {
+  spawn on(Topology::Cores) {
+    for b in 0..2 across blocks {
+      for t in 0..8 across lanes {
+        o[b * 8 + t] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn with_no_arch(o : &mut Tensor<f32, [16], Memory::DRAM>) -> void {
+  spawn on(Topology::Plain) {
+    for b in 0..2 across blocks {
+      for t in 0..8 across lanes {
+        o[b * 8 + t] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn on_the_built_in_gpu(o : &mut Tensor<f32, [16], Memory::GPU_HBM>) -> void {
+  spawn on(Topology::GPU) {
+    for b in 0..2 across blocks {
+      for t in 0..8 across lanes {
+        o[b * 8 + t] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

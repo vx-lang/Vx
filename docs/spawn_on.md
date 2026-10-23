@@ -197,7 +197,9 @@ spawn on(Topology::Gpu) {
 
 - Each loop of blocks is a grid axis, and the lane and subgroup loops give the lanes of a
   block. The host computes each bound before the region. The levels come from the topology's
-  `levels:`, and `nvptx64` has `blocks`, `subgroups` and `lanes`.
+  `levels:` in the fleet file, and the NVIDIA files give `blocks`, `subgroups` and `lanes`.
+- Only `nvptx64` launches the levels. On another arch, `-fauto-schedule-levels` runs each
+  `across` loop as a plain `for` that carries its level as metadata (`fleet/README.md`).
 - E6032 checks the place and the size of each `across` loop. It also checks that no pass
   touches what another pass writes (L4), and that every lane reaches the end of each lane loop
   (L5, L8, L10).

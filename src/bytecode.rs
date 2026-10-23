@@ -305,7 +305,18 @@ pub enum Opcode {
     AffineFor = 67,
     /// Closes the innermost open `AffineFor`.
     AffineForEnd = 68,
+    /// Just before the `Br` back to the header of a loop that `-fauto-schedule-levels` made a
+    /// plain loop: `imm` is the kind of its `across` level, one of `LOOP_HINT_*`. The code
+    /// generator puts the level on that `Br` as metadata.
+    LoopHint = 69,
 }
+
+/// `Opcode::LoopHint`: the loop was `across` a level of blocks.
+pub const LOOP_HINT_BLOCKS: u64 = 0;
+/// `Opcode::LoopHint`: the loop was `across` a level of subgroups.
+pub const LOOP_HINT_SUBGROUPS: u64 = 1;
+/// `Opcode::LoopHint`: the loop was `across` a level of lanes.
+pub const LOOP_HINT_LANES: u64 = 2;
 
 /// `Opcode::AffineFor`'s `imm`: the body branches, so it goes in an `scf.execute_region`.
 pub const AFFINE_FOR_BRANCHES: u64 = 1;
@@ -369,6 +380,7 @@ impl Opcode {
             66 => AcrossRegion,
             67 => AffineFor,
             68 => AffineForEnd,
+            69 => LoopHint,
             8 => Call,
             9 => Ret,
             10 => Matmul,

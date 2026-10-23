@@ -208,6 +208,12 @@ pub struct DriverOptions {
     #[arg(long = "disable-llvm-optimizations")]
     pub disable_llvm_optimizations: bool,
 
+    /// `-fauto-schedule-levels`: an `across` loop on an arch that cannot launch its levels runs
+    /// as a plain `for` that carries its level as metadata for MLIR and LLVM. The default,
+    /// `-fno-auto-schedule-levels`, makes such a loop an error. The last one wins
+    #[arg(short = 'f', value_name = "FEATURE", value_parser = ["auto-schedule-levels", "no-auto-schedule-levels"])]
+    pub features: Vec<String>,
+
     /// Optimization level (-O0 to -O3)
     #[arg(short = 'O', num_args = 0..=1, default_missing_value = "3", default_value_t = 0)]
     pub opt_level: u8,
@@ -227,6 +233,15 @@ pub struct DriverOptions {
     /// Arguments to pass to the running program
     #[arg(last = true)]
     pub program_args: Vec<String>,
+}
+
+impl DriverOptions {
+    /// Whether `-fauto-schedule-levels` is on: the last of it and `-fno-auto-schedule-levels`.
+    pub fn auto_schedule_levels(&self) -> bool {
+        self.features
+            .last()
+            .is_some_and(|f| f == "auto-schedule-levels")
+    }
 }
 
 /// `name=dir` for `--package`.
@@ -473,15 +488,20 @@ impl CompilerDriver {
             // sequential driver keeps from its own import pass.
             let reported = crate::pipeline::Reported::OnlyEntry(filename.into());
             // A failed check ends with the line the sequential driver prints, with the file.
-            let text =
-                crate::pipeline::compile_modules_mlir_in(programs, sched, intern_mode, reported)
-                    .map_err(|e| match e {
-                        crate::pipeline::PipelineError::Failed { count, .. } => format!(
-                            "Semantic check failed on '{}': {} error(s) emitted",
-                            filename, count
-                        ),
-                        other => other.to_string(),
-                    })?;
+            let text = crate::pipeline::compile_modules_mlir_in(
+                programs,
+                sched,
+                intern_mode,
+                self.options.auto_schedule_levels(),
+                reported,
+            )
+            .map_err(|e| match e {
+                crate::pipeline::PipelineError::Failed { count, .. } => format!(
+                    "Semantic check failed on '{}': {} error(s) emitted",
+                    filename, count
+                ),
+                other => other.to_string(),
+            })?;
             let Some(text) = text else {
                 // Worded so it cannot be mistaken for the flat emitter's own decline, which
                 // `flat_corpus_sweep` classifies a program by: the two say different things
@@ -834,9 +854,12 @@ impl CompilerDriver {
     /// With no interfaces, an empty registry — the AST env resolves everything, as before.
     fn session_with_interfaces(
         interfaces: &[Vec<u8>],
+        auto_schedule_levels: bool,
     ) -> Result<std::sync::Arc<GlobalSession>, String> {
         if interfaces.is_empty() {
-            return Ok(std::sync::Arc::new(GlobalSession::new(1)));
+            return Ok(std::sync::Arc::new(
+                GlobalSession::new(1).auto_schedule_levels(auto_schedule_levels),
+            ));
         }
         let load = |b: &[u8]| {
             crate::metadata::deserialize_registry_interface(b)
@@ -850,7 +873,9 @@ impl CompilerDriver {
         for bytes in interfaces {
             reg.merge_from(load(bytes)?);
         }
-        Ok(std::sync::Arc::new(GlobalSession::with_registry(1, reg)))
+        Ok(std::sync::Arc::new(
+            GlobalSession::with_registry(1, reg).auto_schedule_levels(auto_schedule_levels),
+        ))
     }
 
     fn handle_parse_only(
@@ -1007,7 +1032,8 @@ impl CompilerDriver {
         // Imported calls whose module resolved to a `.vxlib` (auto-loaded or `--link-interface`) are
         // never parsed; the session carries the merged interface registry so those calls resolve
         // against it. With no interfaces, an empty registry — the AST env resolves everything (#219).
-        let global_session = Self::session_with_interfaces(interfaces)?;
+        let global_session =
+            Self::session_with_interfaces(interfaces, self.options.auto_schedule_levels())?;
 
         // Build the resolution env from *owned* clones: full bodies for the imported modules (so
         // their methods/generics can be instantiated) plus the entry module's signature. Owning the
@@ -1407,6 +1433,7 @@ impl CompilerDriver {
                 &module_syntaxes,
                 interfaces,
                 self.options.action == Action::EmitPtx,
+                self.options.auto_schedule_levels(),
             )
             .transpose()?
         };
@@ -1676,6 +1703,7 @@ impl CompilerDriver {
         module_syntaxes: &std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Program>,
         interfaces: &[Vec<u8>],
         describe_params: bool,
+        auto_schedule_levels: bool,
     ) -> Option<Result<melior::ir::Module<'c>, String>> {
         // The main module first (its monomorphs win any name collision), then the imports; resolve
         // names so the registry freeze sees settled struct/enum GIDs.
@@ -1695,7 +1723,9 @@ impl CompilerDriver {
             let imported = crate::metadata::deserialize_registry_interface(bytes).ok()?;
             registry.merge_from(imported);
         }
-        let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
+        let session = std::sync::Arc::new(
+            GlobalSession::with_registry(1, registry).auto_schedule_levels(auto_schedule_levels),
+        );
 
         // Re-run the type checker against the *frozen registry* purely to annotate each `StructInit`
         // with its struct GID (the driver's own semantic analysis ran against an empty registry, so
@@ -2215,7 +2245,7 @@ mod flat_codegen_tests {
              fn main() -> i32 { return add(3, 4) * 5; }",
         );
         assert!(matches!(
-            CompilerDriver::build_flat_module(&context, &prog, &empty, &[], false),
+            CompilerDriver::build_flat_module(&context, &prog, &empty, &[], false, false),
             Some(Ok(_))
         ));
 
@@ -2225,7 +2255,7 @@ mod flat_codegen_tests {
              fn main() -> i32 { print(sqrtf(16.0)); return 0; }",
         );
         assert!(matches!(
-            CompilerDriver::build_flat_module(&context, &ext, &empty, &[], false),
+            CompilerDriver::build_flat_module(&context, &ext, &empty, &[], false, false),
             Some(Ok(_))
         ));
 
@@ -2237,7 +2267,7 @@ mod flat_codegen_tests {
              fn main() -> i32 { let p = mk(); return p.x + p.y; }",
         );
         assert!(matches!(
-            CompilerDriver::build_flat_module(&context, &strukt, &empty, &[], false),
+            CompilerDriver::build_flat_module(&context, &strukt, &empty, &[], false, false),
             Some(Ok(_))
         ));
 
@@ -2245,7 +2275,8 @@ mod flat_codegen_tests {
         // whole program declines -> AST fallback (never a wrong result).
         let unknown = parse("fn main() -> i32 { return mystery(1); }");
         assert!(
-            CompilerDriver::build_flat_module(&context, &unknown, &empty, &[], false).is_none()
+            CompilerDriver::build_flat_module(&context, &unknown, &empty, &[], false, false)
+                .is_none()
         );
     }
 }

@@ -74,6 +74,8 @@ Memory PEER_HBM {
 Topology Node {
   // spec: Eight NVIDIA parts; the node's compute ISA is theirs.
   arch: nvptx64,
+  // spec: CUDA: at most 1024 threads in a block, and 32 lanes in a warp.
+  levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(memory: thread)],
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::REG, Memory::PEER_HBM],
   // spec: PCIe Gen5 x16 = 63 GB/s per direction (32 GT/s x 16 lanes, 128b/130b).

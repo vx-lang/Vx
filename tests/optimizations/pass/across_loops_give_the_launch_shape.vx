@@ -24,8 +24,11 @@
 // - `subgroup_rows`: after the lanes of a subgroup write its row, the first lane of the subgroup
 //   marks the row done. A barrier of the subgroup follows each.
 //
+// `-fauto-schedule-levels` changes nothing here, because `nvptx64` launches the levels.
+//
 // REQUIRES: flat-codegen
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD --implicit-check-not=W1033 --implicit-check-not=Warning:
+// RUN: vxc %s -fauto-schedule-levels --host default --machine fleet/h100-sxm.vx --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD --implicit-check-not=W1033 --implicit-check-not=Warning: --implicit-check-not=vx.across
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
 // RUN: FileCheck %s --check-prefix=JSON < %t.json
 // RUN: FileCheck %s --check-prefix=PTX < %t.ptx

@@ -17,8 +17,36 @@ impl FnEmit<'_> {
     }
 
     pub(crate) fn op_br(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        self.body += &format!("  cf.br ^bb{}\n", ins.imm);
+        match self.loop_hint.take() {
+            Some(attrs) => self.body += &format!("  cf.br ^bb{} {attrs}\n", ins.imm),
+            None => self.body += &format!("  cf.br ^bb{}\n", ins.imm),
+        }
         self.terminated = true;
+        Ok(())
+    }
+
+    /// The `across` level of a loop that `-fauto-schedule-levels` made a plain loop, for the
+    /// `cf.br` back to its header. `vx.across` is for MLIR passes. A loop over lanes or subgroups
+    /// also asks LLVM to vectorize it: the checker proved that no pass writes what another reads.
+    /// Its access group has no accesses yet. It makes the loop's metadata its own, as LLVM needs.
+    pub(crate) fn op_loop_hint(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let kind = match ins.imm {
+            crate::bytecode::LOOP_HINT_BLOCKS => {
+                self.loop_hint = Some("{vx.across = \"blocks\"}".to_string());
+                return Ok(());
+            }
+            crate::bytecode::LOOP_HINT_SUBGROUPS => "subgroups",
+            crate::bytecode::LOOP_HINT_LANES => "lanes",
+            _ => return Err(crate::emitter_gap!()),
+        };
+        let group = self.next_distinct;
+        self.next_distinct += 1;
+        let attrs = format!(
+            "{{loop_annotation = #llvm.loop_annotation<vectorize = \
+             #llvm.loop_vectorize<disable = false>, parallelAccesses = \
+             #llvm.access_group<id = distinct[{group}]<>>>, vx.across = \"{kind}\"}}"
+        );
+        self.loop_hint = Some(attrs);
         Ok(())
     }
 

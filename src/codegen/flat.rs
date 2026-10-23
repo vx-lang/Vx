@@ -1419,7 +1419,7 @@ pub fn emit_module_mlir(
     {
         let mut str_base = 0usize;
         let mut distinct_ctr: u32 = 1;
-        for fi in 0..funcs.len() {
+        for (fi, (_, hir, _)) in funcs.iter().enumerate() {
             str_bases.push(str_base);
             str_base += string_tables.get(fi).copied().unwrap_or(&[]).len();
             distinct_bases.push(distinct_ctr);
@@ -1431,6 +1431,8 @@ pub fn emit_module_mlir(
                 .map(|(_, g, _)| *g as u32 + 1)
                 .max()
                 .unwrap_or(0);
+            // One access group for each loop hint, which keeps each loop's metadata its own.
+            distinct_ctr += hir.iter().filter(|i| i.opcode == Opcode::LoopHint).count() as u32;
         }
     }
 
@@ -2012,6 +2014,10 @@ pub(crate) struct FnEmit<'a> {
     /// For each open `vx.spawn`, where its stack slots go: the end of the slots in its first
     /// block for a region with `across` loops, and `None` for another region.
     pub(crate) region_slots: Vec<Option<usize>>,
+    /// The attributes of the next `cf.br`, from a `LoopHint` just before it.
+    pub(crate) loop_hint: Option<String>,
+    /// The next `distinct[]` id of this function's block, after its alias scopes.
+    pub(crate) next_distinct: u32,
     /// Per-function sub-space bump allocator (space dispatch id -> next free byte), mirroring the
     /// AST path's `MeliorGenerator::subspace_offsets`: each `Transfer` into a granule'd space
     /// claims the next granule-rounded `offset` and advances the cursor, so both paths assign
@@ -2256,6 +2262,7 @@ impl<'a> FnEmit<'a> {
             // `gpu.barrier`; the host lowering erases it instead (a serial loop IS the barrier).
             Opcode::Barrier => self.op_barrier(idx, ins),
             Opcode::LaunchDim => self.op_launch_dim(idx, ins),
+            Opcode::LoopHint => self.op_loop_hint(idx, ins),
             Opcode::AcrossId => self.op_across_id(idx, ins),
             Opcode::AcrossRegion => self.op_across_region(idx, ins),
             Opcode::TensorDrop => self.op_tensor_drop(idx, ins),
@@ -2437,6 +2444,8 @@ pub fn emit_function_mlir(
         pending_args: Vec::new(),
         spawn_stack: Vec::new(),
         region_slots: Vec::new(),
+        loop_hint: None,
+        next_distinct: *distinct_ctr,
         subspace_offsets: HashMap::new(),
         filled: hir
             .iter()

@@ -2755,6 +2755,19 @@ impl<'r> Lowerer<'r> {
         };
         let inc = self.emit_value(Opcode::Add, i2.reg, one.reg, elem, step_imm);
         self.emit_effect(Opcode::Store, i_slot.reg, inc.reg, 0);
+        if let Some(kind) = f
+            .across
+            .as_ref()
+            .filter(|a| a.auto_schedule)
+            .and_then(|a| a.kind)
+        {
+            let hint = match kind {
+                crate::arch::LevelKind::Blocks => crate::bytecode::LOOP_HINT_BLOCKS,
+                crate::arch::LevelKind::Subgroups => crate::bytecode::LOOP_HINT_SUBGROUPS,
+                crate::arch::LevelKind::Lanes => crate::bytecode::LOOP_HINT_LANES,
+            };
+            self.emit_effect(Opcode::LoopHint, Register(0), Register(0), hint);
+        }
         self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
 
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), exit as u64);

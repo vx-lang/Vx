@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `levels:` on a `Topology` replaces the default levels of its arch, which `across` loops name.
+// `levels:` on a `Topology` gives the levels that its `across` loops can name.
 // In `small.vx`, a block has at most 256 lanes and there is no subgroup level, so a loop of 512
 // lanes and an `across subgroups` loop get E6032. An `nvptx64` block has at most 1024 lanes and
 // a subgroup has 32, so `levels:` cannot give more lanes or another subgroup size. The other

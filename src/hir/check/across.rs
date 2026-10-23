@@ -24,6 +24,9 @@ struct Region {
     /// The name of its topology, for messages.
     name: String,
     levels: Option<Vec<Level>>,
+    /// The `arch:` of its topology, and whether its code generator can launch the levels.
+    arch: Option<String>,
+    launches: bool,
     /// The names that the region declares. A `blocks` bound may not read them: the host
     /// computes it before the region starts.
     locals: HashSet<String>,
@@ -62,8 +65,10 @@ struct Walk<'g> {
     graph: &'g crate::arch::TransferCostGraph,
     errors: Vec<(String, Span)>,
     /// The level of each `across` loop, by the position of its clause, with the lanes of a
-    /// subgroup of its topology.
-    found: HashMap<Span, (LevelKind, Option<u64>)>,
+    /// subgroup of its topology, and whether `-fauto-schedule-levels` makes it a plain `for`.
+    found: HashMap<Span, (LevelKind, Option<u64>, bool)>,
+    /// `-fauto-schedule-levels`.
+    auto_schedule: bool,
     /// The memories with `scope: cta` or `scope: sm`, whose tensors the lanes of a block share.
     shared: HashSet<String>,
 }
@@ -88,6 +93,7 @@ impl crate::hir::TypeChecker<'_> {
             graph: self.transfer_cost_graph,
             errors: Vec::new(),
             found: HashMap::new(),
+            auto_schedule: self.worker.global.auto_schedule_levels,
             shared,
         };
         walk.stmts(body, &Ctx::default());
@@ -349,14 +355,13 @@ impl Walk<'_> {
         match e {
             Expr::SpawnOn(sp) => {
                 let kind = sp.top.kind();
-                let levels = self
-                    .graph
-                    .descriptor(&kind)
-                    .and_then(|d| d.levels_of(&kind));
+                let desc = self.graph.descriptor(&kind);
                 let region = Ctx {
                     region: Some(Region {
                         name: sp.top.display_name(),
-                        levels,
+                        levels: desc.and_then(|d| d.levels.clone()),
+                        arch: desc.and_then(|d| d.arch.as_ref()).map(|a| a.to_string()),
+                        launches: desc.is_some_and(|d| d.launches_levels(&kind)),
                         locals: HashSet::new(),
                     }),
                     top: true,
@@ -443,16 +448,20 @@ impl Walk<'_> {
 
     /// L10: a region with `across` has one `blocks` nest, directly in it.
     fn region_nests(&mut self, stmts: &[Statement], region: &Ctx) {
-        let blocks = region
+        // A topology with no levels has no nest of blocks.
+        let Some(blocks) = region
             .region
             .as_ref()
             .and_then(|r| r.levels.as_ref())
             .and_then(|l| l.first())
-            .map(|l| l.name.clone());
+            .map(|l| l.name.clone())
+        else {
+            return;
+        };
         let nests: Vec<&ForLoopStmt> = stmts
             .iter()
             .filter_map(|s| match s {
-                Statement::ForLoop(f) if f.across.as_ref().map(|a| &a.level) == blocks.as_ref() => {
+                Statement::ForLoop(f) if f.across.as_ref().map(|a| &a.level) == Some(&blocks) => {
                     Some(f)
                 }
                 _ => None,
@@ -531,8 +540,8 @@ impl Walk<'_> {
         let Some(levels) = &region.levels else {
             self.error(
                 format!(
-                    "`across {}`: the topology `{}` has no levels, so its regions use plain `for` \
-                     loops. A GPU topology has `blocks`, `subgroups` and `lanes`",
+                    "`across {}`: the topology `{}` has no levels. Give its fleet file `levels:`, \
+                     such as `levels: [blocks(max_lanes: 1024), lanes]`",
                     a.level, region.name
                 ),
                 a.span,
@@ -565,7 +574,24 @@ impl Walk<'_> {
         };
         let max_lanes = levels.iter().find_map(|l| l.max_lanes);
         let subgroup = levels.iter().find_map(|l| l.lanes);
-        self.found.insert(a.span, (level.kind, subgroup));
+        let auto = !region.launches;
+        if auto && !self.auto_schedule {
+            let arch = match &region.arch {
+                Some(arch) => format!("whose arch is `{arch}`"),
+                None => "which has no `arch:`".to_string(),
+            };
+            self.error(
+                format!(
+                    "`across {}`: no code generator can launch the levels of the topology `{}`, \
+                     {arch}. Pass `-fauto-schedule-levels` to run the loop as a plain `for` that \
+                     carries its level as metadata",
+                    a.level, region.name
+                ),
+                a.span,
+            );
+            return;
+        }
+        self.found.insert(a.span, (level.kind, subgroup, auto));
         let outer = ctx.axes.last();
 
         // N1: blocks, then subgroups, then lanes.
@@ -847,14 +873,15 @@ impl Walk<'_> {
 
 /// Gives each `across` loop in `stmts` the level that the walk found for it. A loop in a place
 /// that this does not visit keeps `None`, and the code generator runs it as a plain `for`.
-fn mark_stmts(stmts: &mut [Statement], found: &HashMap<Span, (LevelKind, Option<u64>)>) {
+fn mark_stmts(stmts: &mut [Statement], found: &HashMap<Span, (LevelKind, Option<u64>, bool)>) {
     for s in stmts {
         match s {
             Statement::ForLoop(f) => {
                 if let Some(a) = f.across.as_mut() {
-                    if let Some(&(kind, lanes)) = found.get(&a.span) {
+                    if let Some(&(kind, lanes, auto)) = found.get(&a.span) {
                         a.kind = Some(kind);
                         a.subgroup_lanes = lanes;
+                        a.auto_schedule = auto;
                     }
                 }
                 mark_stmts(&mut f.body, found);
@@ -872,7 +899,7 @@ fn mark_stmts(stmts: &mut [Statement], found: &HashMap<Span, (LevelKind, Option<
     }
 }
 
-fn mark_expr(e: &mut Expr, found: &HashMap<Span, (LevelKind, Option<u64>)>) {
+fn mark_expr(e: &mut Expr, found: &HashMap<Span, (LevelKind, Option<u64>, bool)>) {
     match e {
         Expr::SpawnOn(sp) => {
             mark_stmts(&mut sp.stmts, found);

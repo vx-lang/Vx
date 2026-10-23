@@ -69,11 +69,14 @@ pub(super) fn across_block_lanes(stmts: &[Statement]) -> Option<u64> {
     Some(lanes)
 }
 
-/// The loop of blocks in `stmts`, when the checker found one.
+/// The loop of blocks in `stmts`, when the checker found one that the GPU launches. A loop that
+/// `-fauto-schedule-levels` made a plain loop is not one.
 pub(super) fn blocks_loop(stmts: &[Statement]) -> Option<&crate::syntax::ForLoopStmt> {
     stmts.iter().find_map(|s| match s {
         Statement::ForLoop(f)
-            if f.across.as_ref().and_then(|a| a.kind) == Some(LevelKind::Blocks) =>
+            if f.across
+                .as_ref()
+                .is_some_and(|a| a.kind == Some(LevelKind::Blocks) && !a.auto_schedule) =>
         {
             Some(f)
         }

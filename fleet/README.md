@@ -103,8 +103,15 @@ for each pass of the level.
 levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(memory: thread)]
 ```
 
-These are the default levels of `nvptx64`, so the GPU topologies here need no `levels:`. A
-`levels:` on `nvptx64` may give fewer lanes, but not more than 1024, and its subgroup has 32 lanes.
+The compiler has no default levels. Each NVIDIA file here gives the line above, and a topology with
+no `levels:` refuses `across` loops (E6032). On `nvptx64`, a block has at most 1024 lanes and a
+subgroup has 32.
+
+Only the `nvptx64` code generator can launch the levels. On another arch, an `across` loop is
+E6032, unless `-fauto-schedule-levels` is given. With that flag, the loop runs as a plain `for`. Its
+branch back to the loop header carries `vx.across` with the kind of its level, for MLIR passes. A
+loop over lanes or subgroups also gets LLVM loop metadata that asks for vectorization. The default
+is `-fno-auto-schedule-levels`.
 
 ## Element type vocabularies
 

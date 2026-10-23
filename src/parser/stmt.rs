@@ -427,6 +427,7 @@ impl<'a> Parser<'a> {
             span,
             kind: None,
             subgroup_lanes: None,
+            auto_schedule: false,
         }))
     }
 

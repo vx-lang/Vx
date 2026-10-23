@@ -215,7 +215,7 @@ pub struct TopologyDescriptor {
     /// part does not load on an older one. `None` compiles for `sm_80`.
     pub chip: Option<crate::symbol::Symbol>,
     /// The levels of a launch that `across` loops name -- `levels: [..]` in the declaration,
-    /// outside in. `None` takes the default levels of `arch` (`default_levels`).
+    /// outside in. `None` when the fleet file gives none: an `across` loop on it is E6032.
     pub levels: Option<Vec<Level>>,
 }
 
@@ -245,50 +245,18 @@ pub struct Level {
     pub memory: Option<crate::syntax::Scope>,
 }
 
-/// The levels of `arch` when a topology does not give `levels:`. Only `nvptx64` has them.
-pub fn default_levels(arch: Option<&str>) -> Option<Vec<Level>> {
-    if arch != Some("nvptx64") {
-        return None;
-    }
-    let level = |name: &str, kind, max_lanes, lanes, memory| Level {
-        name: name.into(),
-        kind,
-        max_lanes,
-        lanes,
-        memory,
-    };
-    Some(vec![
-        level(
-            "blocks",
-            LevelKind::Blocks,
-            Some(1024),
-            None,
-            Some(crate::syntax::Scope::Cta),
-        ),
-        level("subgroups", LevelKind::Subgroups, None, Some(32), None),
-        level(
-            "lanes",
-            LevelKind::Lanes,
-            None,
-            None,
-            Some(crate::syntax::Scope::Thread),
-        ),
-    ])
-}
-
 impl TopologyDescriptor {
-    /// The levels that `across` loops in a region on this topology may name. The built-in GPU
-    /// has the levels of `nvptx64`.
-    pub fn levels_of(&self, kind: &crate::syntax::TopologyKind) -> Option<Vec<Level>> {
-        if let Some(levels) = &self.levels {
-            return Some(levels.clone());
-        }
+    /// Whether the code generator of this topology's arch can launch the levels of `across`
+    /// loops. The built-in GPU, which has no `arch:`, is `nvptx64`.
+    pub fn launches_levels(&self, kind: &crate::syntax::TopologyKind) -> bool {
         let arch = match (&self.arch, kind) {
             (Some(a), _) => Some(a.as_ref()),
             (None, crate::syntax::TopologyKind::GPU) => Some("nvptx64"),
             (None, _) => None,
         };
-        default_levels(arch)
+        arch.and_then(DeviceTarget::from_arch)
+            .and_then(DeviceTarget::launch_limits)
+            .is_some()
     }
 }
 
@@ -647,6 +615,18 @@ impl DeviceTarget {
             "amdgcn" => Some(DeviceTarget::AmdGcn),
             "spirv64" => Some(DeviceTarget::Spirv64),
             _ => None,
+        }
+    }
+
+    /// The most lanes in a block and the lanes in a subgroup, on a target whose code generator
+    /// can launch the levels of `across` loops. Only NVPTX can today.
+    pub fn launch_limits(self) -> Option<(u64, u64)> {
+        match self {
+            DeviceTarget::Nvptx64 => Some((1024, 32)),
+            DeviceTarget::X86_64
+            | DeviceTarget::Aarch64
+            | DeviceTarget::AmdGcn
+            | DeviceTarget::Spirv64 => None,
         }
     }
 

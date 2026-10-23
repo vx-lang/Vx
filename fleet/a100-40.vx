@@ -44,6 +44,8 @@ Memory REG {
 Topology Device {
   // spec: NVIDIA Ampere GA100; LLVM's NVPTX target.
   arch: nvptx64,
+  // spec: CUDA: at most 1024 threads in a block, and 32 lanes in a warp.
+  levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(memory: thread)],
   chip: sm_80,
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::REG],

@@ -58,6 +58,8 @@ Memory REG {
 Topology Device {
   // spec: NVIDIA Hopper GH100; LLVM's NVPTX target.
   arch: nvptx64,
+  // spec: CUDA: at most 1024 threads in a block, and 32 lanes in a warp.
+  levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(memory: thread)],
   // The `a` chip adds wgmma. Its code loads only on Hopper.
   chip: sm_90a,
   memory: Memory::HBM,

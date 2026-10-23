@@ -617,27 +617,28 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// A `levels:` stays within what its arch can give, when the arch has default levels.
+    /// A `levels:` stays within what its arch can launch, when its code generator can launch them.
     fn check_levels_for_arch(
         &self,
         levels: &[crate::arch::Level],
         arch: Option<&str>,
     ) -> ParseResult<'a, ()> {
-        let Some(defaults) = crate::arch::default_levels(arch) else {
+        let Some((max, size)) = arch
+            .and_then(crate::arch::DeviceTarget::from_arch)
+            .and_then(crate::arch::DeviceTarget::launch_limits)
+        else {
             return Ok(());
         };
         let arch = arch.unwrap_or_default();
-        let max = defaults.iter().find_map(|l| l.max_lanes);
-        let size = defaults.iter().find_map(|l| l.lanes);
         for l in levels {
-            if let (Some(n), Some(max)) = (l.max_lanes, max) {
+            if let Some(n) = l.max_lanes {
                 if n > max {
                     return Err(self.error(&format!(
                         "`max_lanes: {n}` is more than a block of `{arch}` can have, which is {max}"
                     )));
                 }
             }
-            if let (Some(n), Some(size)) = (l.lanes, size) {
+            if let Some(n) = l.lanes {
                 if n != size {
                     return Err(self.error(&format!(
                         "`lanes: {n}`: a subgroup of `{arch}` has {size} lanes"

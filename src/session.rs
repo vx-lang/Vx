@@ -46,6 +46,9 @@ pub struct GlobalSession {
     /// process-global until Vx#381 -- set from `--intern-mode` on one thread and read by every
     /// worker from inside the parallel type-check.
     pub intern_mode: crate::intern_mode::InternMode,
+    /// `-fauto-schedule-levels`: an `across` loop on an arch that cannot launch its levels runs
+    /// as a plain `for` that carries its level, instead of E6032.
+    pub auto_schedule_levels: bool,
     pub registry: Arc<ImmutableGlobalRegistry>,
 
     /// The dense, homogeneous arena for complex parameter and lifetime evaluation.
@@ -74,6 +77,7 @@ impl GlobalSession {
         Self {
             epoch,
             intern_mode: crate::intern_mode::InternMode::Deferred,
+            auto_schedule_levels: false,
             registry: Arc::new(registry),
             slow_path_arena: Arc::new(Vec::new()),
             generics_arena: Arc::new(Vec::new()),
@@ -86,6 +90,12 @@ impl GlobalSession {
     /// `&`, so it must be settled before it is wrapped.
     pub fn in_intern_mode(mut self, mode: crate::intern_mode::InternMode) -> Self {
         self.intern_mode = mode;
+        self
+    }
+
+    /// The same session with `-fauto-schedule-levels` on or off.
+    pub fn auto_schedule_levels(mut self, on: bool) -> Self {
+        self.auto_schedule_levels = on;
         self
     }
 }

@@ -348,7 +348,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/gpu_kernel_stack_slots_keep_their_order.vx",      // needs --machine
             "optimizations/pass/across_loops_run_in_order_on_the_cpu.vx",         // needs --machine
             "optimizations/pass/across_kernels_that_pass_the_checks.vx",          // needs --machine
-            "frontend/pass/packages/import_from_a_package.vx",                    // needs --package
+            "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
+            "frontend/pass/packages/import_from_a_package.vx", // needs --package
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {
             continue;

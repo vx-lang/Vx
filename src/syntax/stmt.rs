@@ -91,6 +91,10 @@ pub struct AcrossClause {
     /// topology. The code generator reads them. `None` before the check.
     pub kind: Option<crate::arch::LevelKind>,
     pub subgroup_lanes: Option<u64>,
+    /// Set by the checker under `-fauto-schedule-levels`, when the code generator of the
+    /// region's arch cannot launch the levels. The loop runs as a plain `for` that carries its
+    /// level as metadata.
+    pub auto_schedule: bool,
 }
 
 impl ForLoopStmt {
@@ -361,6 +365,7 @@ impl Statement {
                     span: a.span,
                     kind: a.kind,
                     subgroup_lanes: a.subgroup_lanes,
+                    auto_schedule: a.auto_schedule,
                 }),
             }),
             Statement::Assign(e) => Statement::Assign(AssignStmt {
