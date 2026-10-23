@@ -25,3 +25,5 @@ import VxMemoryModel.Recv
 import VxMemoryModel.Cancel
 import VxMemoryModel.Footprint
 import VxMemoryModel.FootprintExample
+import VxMemoryModel.ChanFootprint
+import VxMemoryModel.ChanFootprintExample

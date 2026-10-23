@@ -4,9 +4,9 @@ import VxMemoryModel.Fifo
 # The places of a channel never race
 
 A `recv` with the number `k` reads element `k` of the values only after a read of the flag
-`full k` that saw it set. `recv_full` shows this. `RState` follows one element `j` of one channel
-`c` through a thread: it is `true` when the last read of `full j` saw a value that is not 0. A
-read of element `j` needs `true`.
+`full k` that saw it set. `recv_full` shows this. `RTrans` follows one element `j` of one channel
+`c` through a thread. Its state is `true` when the last read of `full j` saw a value that is not
+0. A read of element `j` needs `true`.
 
 Then `data_hb` follows. Only the `send` with the number `j` writes element `j`. It sets `full j`
 after it, so it happens before each `recv` that reads element `j`. The other places of a channel

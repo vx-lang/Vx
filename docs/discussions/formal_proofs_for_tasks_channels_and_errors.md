@@ -198,7 +198,9 @@ because tasks then share places only through the channel and the lock.
 `fork_hb`, `join_hb` and `block_hb`. `Footprint.lean` has the first part, for `TaskProg`. The main
 code is a list of phases, and each phase is code that starts no task or a block. `raceFree` shows
 that each execution of a program that follows the rule has no data race. Tasks do not start
-tasks yet. Channels, the lock and failures come next.
+tasks yet. `ChanFootprint.lean` has the second part, for programs with channels. The places of the
+channels and the locks never race (`chan_no_race` in `Recv.lean`), so the rule speaks only of the
+places of the code. The lock and failures come next.
 
 ## Later
 

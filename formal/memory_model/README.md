@@ -104,6 +104,15 @@ outside the blocks can access any place. `raceFree` shows that each execution of
 has no data race, so `drf_sc_of_footprints` needs no hypothesis on its executions.
 `FootprintExample.lean` shows that the tasks of `forkJoin` in a block follow the rule.
 
+`ChanFootprint.lean` gives the same rule to programs with channels and locks. The rule speaks only
+of the places of the code of the program, below `places`. `Recv.lean` shows that the places of the
+channels and the locks never race (`chan_no_race`). Their counters and flags have only `sc`
+accesses. A `recv` reads its value only after it reads the flag `full k` as set (`recv_full`), so
+the `send` happens before it (`data_hb`). `ChanFootprintExample.lean` has a block where one task
+sends a value to the other. The edges of channels need a finite execution whose `co` orders the
+writes to each place. So these theorems use `drf_sc_co`, which gives the race-freedom hypothesis
+only such executions.
+
 ```bash
 lake -d formal/memory_model/lean build    # Lean 4.35, no other libraries
 ```
@@ -229,9 +238,10 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   the flag.
 - `each_error_once` follows an error by the CAS of its failure, not by a value with an owner. A
   CAS that loses still reads the error that won, but only to see that the slot is set.
-- The footprint rule covers only `TaskProg`: no channels, no locks and no failures. A task cannot
-  start a task, and a block cannot be in a loop. The rule is stricter than needed: two blocks
-  that run one after the other can share places, but two tasks of one block cannot.
-- `ring_fifo` speaks of each read of the values. A `recv` reads its element once, and only after
-  it reads `full k` as 1. A `send` writes its element once. This follows from their code, but no
-  theorem states it yet.
+- The footprint rule does not cover failures, and it does not use the lock: two tasks of a block
+  cannot share a place, even in `locked` blocks of one lock. A task cannot start a task, and a
+  block cannot be in a loop. The rule is stricter than needed: two blocks that run one after the
+  other can share places, but two tasks of one block cannot.
+- `ring_fifo` speaks of each read of the values. A `recv` reads its element once, and a `send`
+  writes its element once. This follows from their code, but no theorem states it yet.
+  `recv_full` shows that a `recv` reads its element only after it reads `full k` as set.
