@@ -1,0 +1,146 @@
+//===- across_kernels_from_llm_c_that_are_refused.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Kernels from llm.c's CUDA training code, written with `across` loops, that the checker refuses
+// (E6032), and two forms that a CUDA programmer would write for llm.c's layernorm and for padded
+// rows. Each has a passing form in across_kernels_from_llm_c.vx, except `encoder_backward`: its
+// write goes to the row of the token id, which only the data knows.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
+// CHECK: Error[E6032] at 29:{{.*}}two passes of this block loop may write the same element of `dwte`: an index of the write
+// CHECK: Error[E6032] at 68:{{.*}}the call to `f32$rsqrt` may write through an argument, and the checker does not read its
+// CHECK: Error[E6032] at 88:{{.*}}two passes of this block loop may write the same element of `dbias`: an index of the
+// CHECK: Error[E6032] at 107:{{.*}}this lane loop reads `mean`, which only lane 0 has: lane 0 alone runs the code that sets
+// CHECK: Error[E6032] at 119:{{.*}}this condition decides whether the lanes reach the end of a lane loop, so it must be the
+// CHECK: Error[E6032] at 134:{{.*}}this condition decides whether the lanes reach the end of a lane loop, so it must be the
+
+import core::num;
+
+// dwte[ix[b][t]][c] += dout[b][t][c]: two tokens with one id add to one row.
+pub fn encoder_backward(dwte : &mut Tensor<f32, [?, 768], Memory::HBM>, dout : &Tensor<f32, [?, ?, 768], Memory::HBM>, ix : &Tensor<i32, [?, ?], Memory::HBM>, batch : i32, seq : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..batch across blocks {
+      for t in 0..seq across blocks {
+        for c in 0..768 across lanes(256) {
+          dwte[ix[b][t]][c] = dwte[ix[b][t]][c] + dout[b][t][c];
+        }
+      }
+    }
+  }
+  return;
+}
+
+// llm.c's layernorm, with the inverse square root that llm.c takes with rsqrtf. `rsqrt` is not on
+// the list of calls that the checker knows to write nothing, so the checker refuses the call.
+pub fn layernorm_forward_with_rsqrt(out : &mut Tensor<f32, [?, 768], Memory::HBM>, mean : &mut Tensor<f32, [?], Memory::HBM>, rstd : &mut Tensor<f32, [?], Memory::HBM>, inp : &Tensor<f32, [?, 768], Memory::HBM>, weight : &Tensor<f32, [768], Memory::HBM>, bias : &Tensor<f32, [768], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      let mut part = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      let mut stat = unsafe { Tensor<f32, [2], Memory::SMEM>::uninit() };
+      for l in 0..256 across lanes {
+        let mut s : f32 = 0.0;
+        for k in 0..3 {
+          s = s + inp[r][k * 256 + l];
+        }
+        part[l] = s;
+      }
+      let mut total : f32 = 0.0;
+      for k in 0..256 {
+        total = total + part[k];
+      }
+      stat[0] = total / 768.0;
+      for l in 0..256 across lanes {
+        let mut s : f32 = 0.0;
+        for k in 0..3 {
+          let d = inp[r][k * 256 + l] - stat[0];
+          s = s + d * d;
+        }
+        part[l] = s;
+      }
+      let mut var : f32 = 0.0;
+      for k in 0..256 {
+        var = var + part[k];
+      }
+      stat[1] = (var / 768.0 + 0.00001).rsqrt();
+      mean[r] = stat[0];
+      rstd[r] = stat[1];
+      for l in 0..256 across lanes {
+        for k in 0..3 {
+          let c = k * 256 + l;
+          out[r][c] = (inp[r][c] - stat[0]) * stat[1] * weight[c] + bias[c];
+        }
+      }
+    }
+  }
+  return;
+}
+
+// dbias[o] += sum over rows of dout[r][o], one block for each row. llm.c adds the sums of its
+// blocks with atomicAdd. Here every block adds to the same `dbias[o]`.
+pub fn matmul_backward_bias(dbias : &mut Tensor<f32, [?], Memory::HBM>, dout : &Tensor<f32, [?, ?], Memory::HBM>, rows : i32, outs : i32) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      for o in 0..outs across lanes(256) {
+        dbias[o] = dbias[o] + dout[r][o];
+      }
+    }
+  }
+  return;
+}
+
+// The block also writes the mean to memory, so lane 0 alone runs the code that computes `mean`,
+// and the lanes cannot read it. Shared memory, as in `layernorm_forward`, passes it on.
+pub fn layernorm_mean_from_lane_0(out : &mut Tensor<f32, [?, 256], Memory::HBM>, means : &mut Tensor<f32, [?], Memory::HBM>, inp : &Tensor<f32, [?, 256], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      let mut total : f32 = 0.0;
+      for k in 0..256 {
+        total = total + inp[r][k];
+      }
+      let mean = total / 256.0;
+      means[r] = mean;
+      for l in 0..256 across lanes {
+        out[r][l] = inp[r][l] - mean;
+      }
+    }
+  }
+  return;
+}
+
+// The kernel skips rows with no tokens, with the condition around the lane loop. The condition
+// reads memory, so the lanes may not agree on it. The checker accepts it in each lane.
+pub fn skip_empty_rows(out : &mut Tensor<f32, [?, 256], Memory::HBM>, inp : &Tensor<f32, [?, 256], Memory::HBM>, lengths : &Tensor<i32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      if lengths[r] > 0 {
+        for l in 0..256 across lanes {
+          out[r][l] = inp[r][l] * 2.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// The same condition through a `let`: the name holds a value read from memory.
+pub fn skip_empty_rows_from_shared(out : &mut Tensor<f32, [?, 256], Memory::HBM>, inp : &Tensor<f32, [?, 256], Memory::HBM>, lengths : &Tensor<i32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      let n = lengths[r];
+      if n > 0 {
+        for l in 0..256 across lanes {
+          out[r][l] = inp[r][l] * 2.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

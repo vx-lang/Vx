@@ -1,0 +1,93 @@
+//===- across_tensor_core_kernels_that_are_refused.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The shape of a tensor-core GEMM and of a tensor-core probe, written with `across` loops. The
+// checker refuses both (E6032): it does not read the body of a device function, and it does not
+// look into an `mlir!` block, so it cannot see what they write. The GEMM follows the block-FP8
+// GEMM of mlir_declared_writes_in_across.md. The same GEMM on the SIMT cores passes:
+// `gemm_shared_tiles` in across_kernels_from_polybench_and_rodinia.vx.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
+// CHECK: Error[E6032] at 47:{{.*}}the call to `init_barriers` may write through an argument, and the checker does not read
+// CHECK: Error[E6032] at 53:{{.*}}the call to `tma_load` may write through an argument, and the checker does not read its
+// CHECK: Error[E6032] at 61:{{.*}}the call to `wgmma` may write through an argument, and the checker does not read its
+// CHECK: Error[E6032] at 80:{{.*}}an `mlir!` block in an `across` loop may write memory that the checker cannot
+
+import core::num;
+
+// Stand-ins for the device functions of a tensor-core GEMM. In a real kernel each one is an
+// `mlir!` block of mbarrier, TMA or wgmma operations.
+fn init_barriers(bars : &mut Tensor<i64, [8], Memory::SMEM>) on Topology::Device -> void {
+  bars[0] = 0;
+  return;
+}
+
+fn tma_load(ring : &mut Tensor<i32, [8192], Memory::SMEM>, stage : i32, bars : &Tensor<i64, [8], Memory::SMEM>) on Topology::Device -> void {
+  ring[stage] = 0;
+  return;
+}
+
+fn wgmma(acc : &mut Tensor<f32, [64], Memory::REG>, ring : &Tensor<i32, [8192], Memory::SMEM>, stage : i32) on Topology::Device -> void {
+  acc[0] = acc[0] + 1.0;
+  return;
+}
+
+// The block-FP8 GEMM shape: one block for each output tile, a producer warp that loads the ring
+// and four consumer warps that multiply from it, in step through mbarriers.
+pub fn fp8_gemm_warp_specialized(out : &mut Tensor<f32, [?, ?], Memory::HBM>, tiles_m : i32, tiles_n : i32, blocks_k : i32) -> void {
+  spawn on(Topology::Device) {
+    for n in 0..tiles_n across blocks {
+      for m in 0..tiles_m across blocks {
+        let mut ring = unsafe { Tensor<i32, [8192], Memory::SMEM>::uninit() };
+        let mut bars = unsafe { Tensor<i64, [8], Memory::SMEM>::uninit() };
+        init_barriers(&mut bars);
+        for w in 0..5 across subgroups {
+          if w == 4 {
+            for l in 0..32 across lanes {
+              if l == 0 {
+                for kb in 0..blocks_k {
+                  tma_load(&mut ring, kb, &bars);
+                }
+              }
+            }
+          } else {
+            for l in 0..32 across lanes {
+              let mut acc = Tensor<f32, [64], Memory::REG>::fill(0.0);
+              for kb in 0..blocks_k {
+                wgmma(&mut acc, &ring, kb);
+              }
+              for j in 0..64 {
+                out[m * 128 + w * 32 + l][n * 64 + j] = acc[j];
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+// A tensor-core probe: one warp, and the multiply is an `mlir!` block in its lane loop.
+pub fn mma_probe(out : &mut Tensor<f32, [?, 32], Memory::HBM>, tiles : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..tiles across blocks {
+      for l in 0..32 across lanes {
+        let v = mlir!( inputs : (), returns : f32, dialects : ["arith"]) {
+          %v = arith.constant 1.0 : f32
+          macro.yield %v : f32
+        };
+        out[b][l] = v;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

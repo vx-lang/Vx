@@ -1,0 +1,284 @@
+//===- across_kernels_from_polybench_and_rodinia.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Kernels from PolyBench/GPU (2mm, gemver, atax, jacobi-2d) and Rodinia (hotspot), written with
+// `across` loops, that the checker accepts, and a GEMM with tiles in shared memory. Each keeps the
+// algorithm of its source. `hotspot_pyramid_inner_write` changes how Rodinia's kernel writes its
+// tile back, as its comment says. The kernels that the checker refuses are in
+// across_kernels_from_polybench_and_rodinia_that_are_refused.vx.
+//
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --allow-empty --implicit-check-not=Error
+
+import core::num;
+
+// PolyBench/GPU 2mm, its first kernel: tmp = alpha * A * B. A block of 8x32 lanes for each tile.
+pub fn two_mm_first(tmp : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f32, [?, ?], Memory::HBM>, b : &Tensor<f32, [?, ?], Memory::HBM>, ni : i32, nj : i32, nk : i32, alpha : f32) -> void {
+  spawn on(Topology::Device) {
+    for bi in 0..(ni + 7) / 8 across blocks {
+      for bj in 0..(nj + 31) / 32 across blocks {
+        for ty in 0..8 across lanes {
+          for tx in 0..32 across lanes {
+            let i = bi * 8 + ty;
+            let j = bj * 32 + tx;
+            if i < ni && j < nj {
+              let mut s : f32 = 0.0;
+              for k in 0..nk {
+                s = s + alpha * a[i][k] * b[k][j];
+              }
+              tmp[i][j] = s;
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+// 2mm, its second kernel: D = beta * D + tmp * C.
+pub fn two_mm_second(d : &mut Tensor<f32, [?, ?], Memory::HBM>, tmp : &Tensor<f32, [?, ?], Memory::HBM>, c : &Tensor<f32, [?, ?], Memory::HBM>, ni : i32, nl : i32, nj : i32, beta : f32) -> void {
+  spawn on(Topology::Device) {
+    for bi in 0..(ni + 7) / 8 across blocks {
+      for bj in 0..(nl + 31) / 32 across blocks {
+        for ty in 0..8 across lanes {
+          for tx in 0..32 across lanes {
+            let i = bi * 8 + ty;
+            let j = bj * 32 + tx;
+            if i < ni && j < nl {
+              let mut s : f32 = d[i][j] * beta;
+              for k in 0..nj {
+                s = s + tmp[i][k] * c[k][j];
+              }
+              d[i][j] = s;
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+// PolyBench/GPU gemver: A += u1 v1^T + u2 v2^T, then x += beta A^T y, x += z, w += alpha A x.
+pub fn gemver_outer(a : &mut Tensor<f32, [?, ?], Memory::HBM>, u1 : &Tensor<f32, [?], Memory::HBM>, v1 : &Tensor<f32, [?], Memory::HBM>, u2 : &Tensor<f32, [?], Memory::HBM>, v2 : &Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..n across blocks {
+      for j in 0..n across lanes(256) {
+        a[i][j] = a[i][j] + u1[i] * v1[j] + u2[i] * v2[j];
+      }
+    }
+  }
+  return;
+}
+
+pub fn gemver_transposed(x : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<f32, [?, ?], Memory::HBM>, y : &Tensor<f32, [?], Memory::HBM>, z : &Tensor<f32, [?], Memory::HBM>, n : i32, beta : f32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          let mut s : f32 = x[i];
+          for j in 0..n {
+            s = s + beta * a[j][i] * y[j];
+          }
+          x[i] = s + z[i];
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn gemver_product(w : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<f32, [?, ?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, n : i32, alpha : f32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          let mut s : f32 = w[i];
+          for j in 0..n {
+            s = s + alpha * a[i][j] * x[j];
+          }
+          w[i] = s;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// PolyBench/GPU atax: tmp = A x, then y = A^T tmp.
+pub fn atax_first(tmp : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<f32, [?, ?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, nx : i32, ny : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(nx + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < nx {
+          let mut s : f32 = 0.0;
+          for j in 0..ny {
+            s = s + a[i][j] * x[j];
+          }
+          tmp[i] = s;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn atax_second(y : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<f32, [?, ?], Memory::HBM>, tmp : &Tensor<f32, [?], Memory::HBM>, nx : i32, ny : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(ny + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let j = b * 256 + l;
+        if j < ny {
+          let mut s : f32 = 0.0;
+          for i in 0..nx {
+            s = s + a[i][j] * tmp[i];
+          }
+          y[j] = s;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// PolyBench/GPU jacobi-2d: B from the neighbors in A, then A = B, for each time step.
+pub fn jacobi_2d(a : &mut Tensor<f32, [?, ?], Memory::HBM>, b : &mut Tensor<f32, [?, ?], Memory::HBM>, n : i32, steps : i32) -> void {
+  for t in 0..steps {
+    spawn on(Topology::Device) {
+      for i in 1..n - 1 across blocks {
+        for j in 1..n - 1 across lanes(256) {
+          b[i][j] = 0.2 * (a[i][j] + a[i][j - 1] + a[i][j + 1] + a[i + 1][j] + a[i - 1][j]);
+        }
+      }
+    }
+    spawn on(Topology::Device) {
+      for i in 1..n - 1 across blocks {
+        for j in 1..n - 1 across lanes(256) {
+          a[i][j] = b[i][j];
+        }
+      }
+    }
+  }
+  return;
+}
+
+// Rodinia hotspot, one time step for each launch: the new temperature of each cell from its own,
+// its power, and its four neighbors, with the edge cells using themselves for a missing one.
+pub fn hotspot_step(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, power : &Tensor<f32, [?, ?], Memory::HBM>, rows : i32, cols : i32, cap : f32, rx : f32, ry : f32, rz : f32, amb : f32, step : f32) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..rows across blocks {
+      for j in 0..cols across lanes(256) {
+        let c = src[i][j];
+        let mut north = c;
+        if i > 0 {
+          north = src[i - 1][j];
+        }
+        let mut south = c;
+        if i < rows - 1 {
+          south = src[i + 1][j];
+        }
+        let mut west = c;
+        if j > 0 {
+          west = src[i][j - 1];
+        }
+        let mut east = c;
+        if j < cols - 1 {
+          east = src[i][j + 1];
+        }
+        let delta = step / cap * (power[i][j] + (north + south - 2.0 * c) / ry + (east + west - 2.0 * c) / rx + (amb - c) / rz);
+        dst[i][j] = c + delta;
+      }
+    }
+  }
+  return;
+}
+
+// The same kernel, but the write-back runs over the 12x12 cells only.
+pub fn hotspot_pyramid_inner_write(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, power : &Tensor<f32, [?, ?], Memory::HBM>, tiles : i32, step : f32) -> void {
+  spawn on(Topology::Device) {
+    for bi in 0..tiles across blocks {
+      for bj in 0..tiles across blocks {
+        let mut now = unsafe { Tensor<f32, [16, 16], Memory::SMEM>::uninit() };
+        let mut next = unsafe {
+          Tensor<f32, [16, 16], Memory::SMEM>::uninit()
+        };
+        for ty in 0..16 across lanes {
+          for tx in 0..16 across lanes {
+            now[ty][tx] = src[bi * 12 + ty][bj * 12 + tx];
+          }
+        }
+        for s in 0..2 {
+          for ty in 1..15 across lanes {
+            for tx in 1..15 across lanes {
+              let c = now[ty][tx];
+              next[ty][tx] = c + step * (power[bi * 12 + ty][bj * 12 + tx] + now[ty - 1][tx] + now[ty + 1][tx] + now[ty][tx - 1] + now[ty][tx + 1] - 4.0 * c);
+            }
+          }
+          for ty in 1..15 across lanes {
+            for tx in 1..15 across lanes {
+              now[ty][tx] = next[ty][tx];
+            }
+          }
+        }
+        for wy in 0..12 across lanes {
+          for wx in 0..12 across lanes {
+            dst[bi * 12 + wy + 2][bj * 12 + wx + 2] = now[wy + 2][wx + 2];
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+// The classic GEMM with 16x16 tiles of A and B in shared memory, and one output for each lane.
+pub fn gemm_shared_tiles(c : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f32, [?, ?], Memory::HBM>, b : &Tensor<f32, [?, ?], Memory::HBM>, tiles : i32) -> void {
+  spawn on(Topology::Device) {
+    for bi in 0..tiles across blocks {
+      for bj in 0..tiles across blocks {
+        let mut ta = unsafe { Tensor<f32, [16, 16], Memory::SMEM>::uninit() };
+        let mut tb = unsafe { Tensor<f32, [16, 16], Memory::SMEM>::uninit() };
+        let mut acc = unsafe { Tensor<f32, [16, 16], Memory::SMEM>::uninit() };
+        for ty in 0..16 across lanes {
+          for tx in 0..16 across lanes {
+            acc[ty][tx] = 0.0;
+          }
+        }
+        for kt in 0..tiles {
+          for ty in 0..16 across lanes {
+            for tx in 0..16 across lanes {
+              ta[ty][tx] = a[bi * 16 + ty][kt * 16 + tx];
+              tb[ty][tx] = b[kt * 16 + ty][bj * 16 + tx];
+            }
+          }
+          for ty in 0..16 across lanes {
+            for tx in 0..16 across lanes {
+              let mut s : f32 = acc[ty][tx];
+              for k in 0..16 {
+                s = s + ta[ty][k] * tb[k][tx];
+              }
+              acc[ty][tx] = s;
+            }
+          }
+        }
+        for ty in 0..16 across lanes {
+          for tx in 0..16 across lanes {
+            c[bi * 16 + ty][bj * 16 + tx] = acc[ty][tx];
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
