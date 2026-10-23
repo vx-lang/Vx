@@ -194,6 +194,12 @@ places that it uses only through atomics. The rule:
 so DRF-SC becomes a property of the code. This is the core of S6. It comes after steps 2 to 4,
 because tasks then share places only through the channel and the lock.
 
+#2107 has the design. The rule applies to each `tasks` block, so the proof needs only the edges of
+`fork_hb`, `join_hb` and `block_hb`. `Footprint.lean` has the first part, for `TaskProg`. The main
+code is a list of phases, and each phase is code that starts no task or a block. `raceFree` shows
+that each execution of a program that follows the rule has no data race. Tasks do not start
+tasks yet. Channels, the lock and failures come next.
+
 ## Later
 
 - **Progress (W6, W7, M3, F9).** The current model cannot say "finishes". This needs a new model:

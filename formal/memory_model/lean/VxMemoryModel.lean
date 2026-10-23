@@ -22,3 +22,5 @@ import VxMemoryModel.MutexExample
 import VxMemoryModel.Lock
 import VxMemoryModel.Fifo
 import VxMemoryModel.Cancel
+import VxMemoryModel.Footprint
+import VxMemoryModel.FootprintExample

@@ -97,6 +97,13 @@ the block joins each task that has its mark set, so it waits only for the tasks 
 `BlocksExample.lean` applies `block_hb` to a run, and shows a block that starts no task and does
 not wait.
 
+`Footprint.lean` proves race freedom from a rule on the code. The main code is a list of phases:
+code that starts no task, or a `tasks` block. In a block, two tasks make no accesses that can
+race, and the code of the block makes no access that can race with a task of the block. Code
+outside the blocks can access any place. `raceFree` shows that each execution of such a program
+has no data race, so `drf_sc_of_footprints` needs no hypothesis on its executions.
+`FootprintExample.lean` shows that the tasks of `forkJoin` in a block follow the rule.
+
 ```bash
 lake -d formal/memory_model/lean build    # Lean 4.35, no other libraries
 ```
@@ -222,6 +229,9 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   the flag.
 - `each_error_once` follows an error by the CAS of its failure, not by a value with an owner. A
   CAS that loses still reads the error that won, but only to see that the slot is set.
+- The footprint rule covers only `TaskProg`: no channels, no locks and no failures. A task cannot
+  start a task, and a block cannot be in a loop. The rule is stricter than needed: two blocks
+  that run one after the other can share places, but two tasks of one block cannot.
 - `ring_fifo` speaks of each read of the values. A `recv` reads its element once, and only after
   it reads `full k` as 1. A `send` writes its element once. This follows from their code, but no
   theorem states it yet.
