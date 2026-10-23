@@ -343,6 +343,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/gpu_register_tensor_stays_in_registers.vx",       // needs --machine
             "optimizations/pass/register_tensor_loops_are_unrolled.vx",           // needs --machine
             "optimizations/pass/gpu_kernel_stack_slots_keep_their_order.vx",      // needs --machine
+            "optimizations/pass/across_loops_run_in_order_on_the_cpu.vx",         // needs --machine
             "frontend/pass/packages/import_from_a_package.vx",                    // needs --package
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {
