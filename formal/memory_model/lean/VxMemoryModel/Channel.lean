@@ -1413,6 +1413,18 @@ theorem drf_sc (P : ChanProg) (hm : ∀ b, P.main.Bases b → b.SeqCstOnly)
   P.toTaskProg.drf_sc ⟨stores_seqCstOnly _, seqCstOnly_lowerC hm hmf⟩
     (fun t => seqCstOnly_lowerC (ht t) (htf t)) hP hX wf hfin hc
 
+/-- `drf_sc`, when `co` orders the writes to each place. The theorems about channels and locks
+need that order. -/
+theorem drf_sc_co (P : ChanProg) (hm : ∀ b, P.main.Bases b → b.SeqCstOnly)
+    (ht : ∀ t b, (P.task t).Bases b → b.SeqCstOnly) (hmf : ¬ P.main.Fails)
+    (htf : ∀ t, ¬ (P.task t).Fails)
+    (hP : ∀ Y, P.toTaskProg.toProg.Execs Y → Y.WellFormed → Y.SeqConsistent → Y.Finite →
+      Y.CoOrder → Y.RaceFree)
+    {X : Execution} (hX : P.toTaskProg.toProg.Execs X) (wf : X.WellFormed) (hfin : X.Finite)
+    (ho : X.CoOrder) (hc : X.Consistent) : X.SeqConsistent :=
+  P.toTaskProg.drf_sc_co ⟨stores_seqCstOnly _, seqCstOnly_lowerC hm hmf⟩
+    (fun t => seqCstOnly_lowerC (ht t) (htf t)) hP hX wf hfin ho hc
+
 /-! ## The executions of a program with channels -/
 
 variable {X : Execution} (run : P.toTaskProg.toProg.Run X)
