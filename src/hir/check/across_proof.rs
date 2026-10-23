@@ -451,7 +451,8 @@ impl Proof {
                 (c.abs(), span)
             })
             .collect();
-        digits.sort_by_key(|d| d.0);
+        // For equal coefficients, a smaller range goes first, and a range of unknown size last.
+        digits.sort_by_key(|&(c, span)| (c, span.unwrap_or(i64::MAX)));
         let last = digits.len() - 1;
         let mut most: i64 = 0;
         for (i, (c, span)) in digits.into_iter().enumerate() {

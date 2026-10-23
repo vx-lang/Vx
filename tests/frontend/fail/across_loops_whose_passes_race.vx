@@ -10,17 +10,18 @@
 // checker cannot see what a pass writes, so the loop gets E6032.
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
-// CHECK: Error[E6032] at 28:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
-// CHECK: Error[E6032] at 38:{{.*}}a pass of this lane loop may read an element of `a` that another pass writes
-// CHECK: Error[E6032] at 50:{{.*}}each pass writes `total`, which is declared outside the loop
-// CHECK: Error[E6032] at 64:{{.*}}two passes of this lane loop may write the same element of `y`: an index of the write must fix `l`
-// CHECK: Error[E6032] at 77:{{.*}}two passes of this lane loop may write the same element of `o`: the writes must use the same index
-// CHECK: Error[E6032] at 93:{{.*}}the call to `scale` may write through an argument
-// CHECK: Error[E6032] at 103:{{.*}}printing in an `across` loop
-// CHECK: Error[E6032] at 115:{{.*}}a `&mut` borrow in an `across` loop may write any element
-// CHECK: Error[E6032] at 127:{{.*}}a pass uses all of `o`, which the passes of this {{block|lane}} loop write
-// CHECK: Error[E6032] at 139:{{.*}}`barrier()` may not be in an `across` loop
-// CHECK: Error[E6032] at 150:{{.*}}an `mlir!` block in an `across` loop may write memory that the checker cannot see
+// CHECK: Error[E6032] at 29:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at 39:{{.*}}a pass of this lane loop may read an element of `a` that another pass writes
+// CHECK: Error[E6032] at 51:{{.*}}each pass writes `total`, which is declared outside the loop
+// CHECK: Error[E6032] at 65:{{.*}}two passes of this lane loop may write the same element of `y`: an index of the write must fix `l`
+// CHECK: Error[E6032] at 78:{{.*}}two passes of this lane loop may write the same element of `o`: the writes must use the same index
+// CHECK: Error[E6032] at 94:{{.*}}the call to `scale` may write through an argument
+// CHECK: Error[E6032] at 104:{{.*}}printing in an `across` loop
+// CHECK: Error[E6032] at 116:{{.*}}a `&mut` borrow in an `across` loop may write any element
+// CHECK: Error[E6032] at 128:{{.*}}a pass uses all of `o`, which the passes of this {{block|lane}} loop write
+// CHECK: Error[E6032] at 140:{{.*}}`barrier()` may not be in an `across` loop
+// CHECK: Error[E6032] at 151:{{.*}}an `mlir!` block in an `across` loop may write memory that the checker cannot see
+// CHECK: Error[E6032] at 166:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
 
 pub fn every_block_adds_to_one_element(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
   spawn on(Topology::Device) {
@@ -151,6 +152,18 @@ pub fn has_mlir(o : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
           %v = arith.constant 1 : i32
           macro.yield %v : i32
         };
+      }
+    }
+  }
+  return;
+}
+
+// `b + t` gives blocks 0 and 1 one element when there are 2 lanes.
+pub fn blocks_overlap_by_one(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..2 across lanes {
+        out[b + t] = 1.0;
       }
     }
   }

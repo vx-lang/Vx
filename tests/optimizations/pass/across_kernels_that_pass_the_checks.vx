@@ -15,6 +15,7 @@
 // - `tiles`: a 16x16 tile for each block, in a plain loop whose bound comes from the host.
 // - `zeroed`: lane 0 fills a tensor in shared memory with zeros, and then every lane reads it.
 //   The tensor is memory of the block, not a value that only lane 0 has.
+// - `one_lane`: `b + t` fixes `b`, because the lane loop has one pass.
 //
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --allow-empty --implicit-check-not=Error
 
@@ -85,6 +86,17 @@ pub fn zeroed(y : &mut Tensor<f32, [?, 64], Memory::HBM>, n : i32) -> void {
       let mut part = Tensor<f32, [64], Memory::SMEM>::fill(0.0);
       for t in 0..64 across lanes {
         y[b][t] = part[t];
+      }
+    }
+  }
+  return;
+}
+
+pub fn one_lane(y : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..1 across lanes {
+        y[b + t] = 1.0;
       }
     }
   }
