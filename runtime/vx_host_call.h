@@ -102,10 +102,34 @@ static inline void vx_host_refuse_coop(const void *payload,
 /// Resolve an outlined kernel's C-interface entry point. Returns NULL when the
 /// symbol is absent; what to do about that is the caller's policy, which
 /// differs between backends.
+///
+/// `kernel_name` is the start of the payload, a constant in the library that
+/// made the call. The symbol is looked up in that library first: every library
+/// names its kernels `vx_npu_kernel_0`, `vx_npu_kernel_1` and so on, and a
+/// process can load more than one.
 static inline void *vx_host_kernel_symbol(const char *kernel_name) {
   char ciface_name[256];
   snprintf(ciface_name, sizeof(ciface_name), "_vx_ciface_%s", kernel_name);
+  Dl_info info;
+  if (dladdr(kernel_name, &info) && info.dli_fname) {
+    void *lib = dlopen(info.dli_fname, RTLD_LAZY | RTLD_NOLOAD);
+    if (lib) {
+      void *kernel = dlsym(lib, ciface_name);
+      dlclose(lib);
+      if (kernel) {
+        return kernel;
+      }
+    }
+  }
   return dlsym(RTLD_DEFAULT, ciface_name);
+}
+
+/// The base address of the library that holds `payload`, or NULL when it is
+/// not in a library (a payload that came over the network). A cache of loaded
+/// kernels keys on it, because two libraries can use the same kernel name.
+static inline const void *vx_payload_library(const void *payload) {
+  Dl_info info;
+  return dladdr(payload, &info) ? info.dli_fbase : nullptr;
 }
 
 /// Which worker is running this kernel, and how many there are.
