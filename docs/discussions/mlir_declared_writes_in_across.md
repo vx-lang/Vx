@@ -1,7 +1,7 @@
 # Declared writes for `mlir!` blocks in `across` loops
 
 Status: proposed. Issue: #252. Builds on the L4 race proof (`src/hir/check/across_proof.rs`,
-#2073) and on the contract clauses of `contracts_for_extern_and_unsafe_code.md` (X1, X3).
+#2085) and on the contract clauses of `contracts_for_extern_and_unsafe_code.md` (X1, X3).
 
 The L4 proof refuses an `mlir!` block, a method call, an indirect call, and a call to any
 function whose body it does not read, in an `across` loop: "... may write memory that the
@@ -55,7 +55,8 @@ for n in 0..tiles_n across blocks { for m in 0..tiles_m across blocks {
 ```
 
 The epilogue's `l / 4` and `l % 4` need L4 to read `/` and `%` by a number (section 6,
-question 4).
+question 4). Under the Decisions below, the fragment layout, wgmma and the warp roles move to
+MLIR passes, so this example shows the declared-writes problem, not the final form of the kernel.
 
 The writes are of four kinds:
 
@@ -164,8 +165,8 @@ The audit lists both kinds, as it lists `!keeps` today.
 
 ## 6. What the `across` stack does today
 
-The answers below describe #2072 to #2074 as they are. The open choices are for the design's
-owner, so section Decisions stays empty.
+The answers below describe #2084 to #2086 as they are. Section Decisions closes or moves the
+open items.
 
 1. **Roles in one loop: works.** L8 (`uniform_around` in `src/hir/check/across.rs`) accepts an
    `if` on a subgroup index around a lane loop. A lane loop directly in a subgroup loop ends with
@@ -187,13 +188,23 @@ owner, so section Decisions stays empty.
 
 ## Decisions
 
-None yet.
+The language has only general abstractions. Chip details belong in MLIR passes that we write.
+
+- No warpgroup level, in the language or in a topology. Warpgroup grouping, fragment layout,
+  wgmma, setmaxnreg and producer/consumer warp specialization are jobs for MLIR passes. We may
+  write those passes ourselves (nvgpu.warpgroup.mma, TMA, nvvm.setmaxregister).
+- Question 3 is closed. Question 4 no longer applies to the GEMM, because fragment indices are
+  now an MLIR job. L4 may still need `/` and `%` by a number for other kernels, so that stays
+  open as a separate item.
+- Question 1 is closed in favor of a warp specialization pass. Until that pass exists, a kernel
+  may still state the roles with `across subgroups` and an `if`.
+- Declared writes on `mlir!` remain for the ops that the passes do not generate yet.
 
 ## The work, in order
 
 1. D1 to D3 in the proof: the `ensures:` entry of `mlir!`, the predicates, pass-local `&mut`.
 1. D4: contracts on device functions, with the body check.
 1. D5 and D6: `ordered` and `atomic`, the MLIR-level check, and the audit entries.
-1. The glm-vx FP8 GEMM and probes move to `across`, and `grid(..) block(..)` (#2065) can go.
+1. The glm-vx FP8 GEMM and probes move to `across`.
 
-The code goes on the `across` stack (#2072, #2073, #2074).
+The code goes on the `across` stack (#2084, #2085, #2086).
