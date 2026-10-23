@@ -234,6 +234,23 @@ pub fn lanes_in_lanes_in_a_subgroup(o : &mut Tensor<f32, [?, ?], Memory::HBM>, n
   return;
 }
 
+// A lane loop in an `if` in a lane loop is not the whole body of the outer loop either.
+// CHECK: Error[E6032] at [[# @LINE + 6]]:{{.*}}a lane loop inside another one is the whole body of the outer loop
+pub fn lanes_in_an_if_in_lanes(o : &mut Tensor<f32, [?, ?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for i in 0..16 across lanes {
+        if n > 2 {
+          for j in 0..16 across lanes {
+            let x = 1.0;
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
 fn main() -> i32 {
   return 0;
 }

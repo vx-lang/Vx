@@ -66,9 +66,10 @@ Concretely:
   the value — the region wrote through memory it shares with the host and the recorded region
   traffic does not name it — it joins at region exit. The answer stays right; only the overlap
   is lost.
-- **CPU regions stay inlined.** There is nothing to dispatch to. If the host should ever run
-  two regions at the same time, that is a separate keyword; `unroll across` is reserved for
-  that shape.
+- **CPU regions stay inlined.** There is nothing to dispatch to. Host work that runs at the
+  same time is a `tasks` block
+  ([`waiting_tasks_channels_and_task_errors.md`](discussions/waiting_tasks_channels_and_task_errors.md)),
+  not a `spawn on`.
 
 Why the wait points are complete: the host cannot compute with a `Pinned<T, τ>` (E3004),
 cannot read a tensor in an `explicit` space without `transfer` (E6003), and every allowed read
@@ -152,7 +153,7 @@ decision.
 | Wait insertion in the compiler | none | at first host use (§3) |
 | Value of a device spawn | the kernel stores it in a host slot and the host loads it after the launch; such a kernel gets no GPU device image and runs on the host | the slot staged to device memory, so the GPU twin can run |
 | Runtime device index `NPU[i]` | W1030, device 0 | separate issue |
-| `for i in a..b across <level>` (#252) | E6032 checks its place and its size. It also checks that no pass touches what another pass writes (L4), and that every lane reaches the end of each lane loop (L5, L8, L10). It runs as a plain `for`. | the loops give the launch shape |
+| `for i in a..b across <level>` (#252) | §8 | lane loops fuse, and per-lane arrays go in registers |
 
 Order of work: the value stub first, since any model needs it; then non-blocking dispatch plus
 a real `await_future` in the runtimes, with the wait emitted at region exit so nothing
@@ -172,3 +173,33 @@ tracks the runtime wiring.
 
 Precedent: X10 `at`, Chapel `on`, CUDA streams, and PyTorch's eager mode, which is
 asynchronous under the hood while the program reads as sequential.
+
+## 8. The launch shape (#252)
+
+A region on a GPU gets its launch shape from its loops:
+
+<!-- vx-doctest: skip (needs a GPU topology) -->
+
+```vx
+spawn on(Topology::Gpu) {
+  for row in 0..rows across blocks {
+    for t in 0..256 across lanes { .. }
+  }
+}
+```
+
+- Each loop of blocks is a grid axis, and the lane and subgroup loops give the lanes of a
+  block. The host computes each bound before the region. The levels come from the topology's
+  `levels:`, and `nvptx64` has `blocks`, `subgroups` and `lanes`.
+- E6032 checks the place and the size of each `across` loop. It also checks that no pass
+  touches what another pass writes (L4), and that every lane reaches the end of each lane loop
+  (L5, L8, L10).
+- Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
+  memory.
+- Delete each `across` and the program means the same. The CPU copy of the region runs one
+  block of one lane, and a loop steps over the passes of the others.
+- A size is not a kernel argument. The launch passes each size that is not a number after the
+  kernel's arguments, and the payload names the sizes in `grid=` and `block=`.
+- `--emit-ptx` gives the shape in its `.json` file (`lang/abi.md` §3.5).
+- The rules L1 to L10 and N1 to N4 are in the design on
+  [#252](https://github.com/vx-lang/Vx/issues/252#issuecomment-6321577866).

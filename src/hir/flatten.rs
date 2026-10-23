@@ -356,6 +356,13 @@ enum Binding {
     Place { place: Box<Expr> },
 }
 
+/// The launch shape of a `spawn` region: each size with its axis, from its `across` loops, and
+/// whether it has `across` loops.
+struct RegionLaunch<'a> {
+    shape: &'a [(u64, Val)],
+    across: bool,
+}
+
 /// A name a `let` in a block shadows, with the binding and type it had before the block.
 type Shadowed = (Symbol, Option<Binding>, Option<Type>);
 
@@ -457,6 +464,8 @@ struct Lowerer<'r> {
     /// AST node identity (the AST does not move during lowering). `lower_for` consults it to pick
     /// block/thread stride tags; any loop not in the plan lowers serially.
     stride_plan: Option<TwoLevelPlan>,
+    /// The region with `across` loops being lowered, when there is one (#252).
+    across: AcrossState,
     /// Place-write field stores collected during lowering, as `(stream position, borrowed root, field
     /// path)`. Post-lowering these reduce to a numeric group/sibling table (`reduce_place_alias`) so
     /// codegen can attach `alias_scopes`/`noalias_scopes` — carrying the borrow checker's disjointness
@@ -520,6 +529,7 @@ impl<'r> Lowerer<'r> {
             stride_next_for: false,
             spawn_depth: 0,
             stride_plan: None,
+            across: AcrossState::default(),
             queued_drops: Vec::new(),
             value_drops: Vec::new(),
             temps: Vec::new(),
@@ -798,8 +808,12 @@ impl<'r> Lowerer<'r> {
     /// Lower a block's statements, with `scoped`'s rule for the names it declares.
     fn lower_block(&mut self, stmts: &[Statement]) -> Lowered<()> {
         self.scoped(|me| {
-            for s in stmts {
-                me.lower_stmt(s)?;
+            if let Some(level) = me.across.level {
+                me.lower_stretches(stmts, level)?;
+            } else {
+                for s in stmts {
+                    me.lower_stmt(s)?;
+                }
             }
             me.run_queued_drops()
         })
@@ -963,12 +977,16 @@ impl<'r> Lowerer<'r> {
         // path declines to the AST oracle rather than ever silently miscompiling.
         let needs_slot = match &v.ty {
             LoweredTy::Aggregate(_) => true,
+            // Code that lane 0 alone runs keeps each name in a slot, which later code can read.
             LoweredTy::Scalar(_) => {
-                materialized_scalar || (self.has_control_flow && self.mutated.contains(&name))
+                materialized_scalar
+                    || (self.has_control_flow && self.mutated.contains(&name))
+                    || self.across.on_lane0
             }
             LoweredTy::Ptr => {
                 self.materialized.contains(&name)
                     || (self.has_control_flow && self.mutated.contains(&name))
+                    || self.across.on_lane0
             }
             _ => self.memory,
         };
@@ -2591,6 +2609,15 @@ impl<'r> Lowerer<'r> {
     /// The loop variable is a binding of its own: an outer variable of the same name is out of
     /// sight in the body and means what it did before once the loop ends, as in Rust.
     fn lower_for(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
+        if self.across.lanes > 0 {
+            if let Some(kind) = f.across.as_ref().and_then(|a| a.kind) {
+                return self.lower_across_for(f, kind);
+            }
+        }
+        self.lower_plain_for(f)
+    }
+
+    fn lower_plain_for(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
         self.scoped(|me| {
             let name: Symbol = f.iter.as_str().into();
             me.note_shadow(&name);
@@ -2602,6 +2629,7 @@ impl<'r> Lowerer<'r> {
     fn lower_for_loop(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
         // Taken (not read) so the tag cannot leak into the nested loops this body lowers.
         let stride = std::mem::take(&mut self.stride_next_for);
+        let across = self.across.next_loop.take();
         // The two-level plan addresses loops by node identity, so membership is exact and
         // nesting-proof: the block loop and each thread loop pick up their own tag kind, and
         // every other loop -- including sequential loops BETWEEN the two levels -- gets none.
@@ -2640,6 +2668,19 @@ impl<'r> Lowerer<'r> {
         };
         // Induction variable `i` and the loop bound both need to survive across blocks -> slots.
         let i_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
+        // An `across` loop starts at its own pass and steps over the passes of the others.
+        let (start, step) = match across {
+            Some((offset, step)) => {
+                if elem != ElementType::I32 {
+                    return Err(Decline::Unsupported {
+                        what: "an `across` loop over a range that is not `i32`",
+                    });
+                }
+                let first = self.emit_value(Opcode::Add, start.reg, offset.reg, elem.clone(), 0);
+                (first, Some(step))
+            }
+            None => (start, None),
+        };
         // The bound tag rides alongside the init/step pair, but only for the two loop kinds a
         // host worker can own whole: the single-level stridable loop, and the block loop of a
         // two-level region. A thread-mapped loop gets none -- see `IMM_BLOCK_BOUND`.
@@ -2698,7 +2739,10 @@ impl<'r> Lowerer<'r> {
         // latch: i = i + 1; back to header
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), latch as u64);
         let i2 = self.emit_value(Opcode::SlotLoad, i_slot.reg, Register(0), elem.clone(), 0);
-        let one = self.emit_value(Opcode::Const, Register(0), Register(0), elem.clone(), 1);
+        let one = match step {
+            Some(step) => step,
+            None => self.emit_value(Opcode::Const, Register(0), Register(0), elem.clone(), 1),
+        };
         let inc = self.emit_value(Opcode::Add, i2.reg, one.reg, elem, step_imm);
         self.emit_effect(Opcode::Store, i_slot.reg, inc.reg, 0);
         self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
@@ -2960,13 +3004,67 @@ impl<'r> Lowerer<'r> {
         let top_id = crate::arch::topology_dispatch_id(&s.top) as u32 as u64;
         let name = self.strings.len() as u64 + 1;
         self.strings.push(s.top.display_name());
-        self.lower_region(
+        // The host computes the launch shape before the region starts, from the loops of blocks
+        // of a region with `across` loops (#252), whose block has a number of lanes.
+        let lanes = across_block_lanes(&s.stmts);
+        let mut shape = Vec::new();
+        if let Some(lanes) = lanes {
+            let mut axis = 0;
+            let mut level = Some(s.stmts.as_slice());
+            while let Some(f) = level.and_then(blocks_loop) {
+                let Expr::Range(range) = &*f.iterable else {
+                    return Err(crate::emitter_gap!());
+                };
+                let size = match f.across.as_ref().and_then(|a| a.share.as_deref()) {
+                    Some(n) => self.lower_expr(n)?,
+                    None if matches!(&*range.start, Expr::Number(n) if n.value.as_ref() == "0") => {
+                        self.lower_expr(&range.end)?
+                    }
+                    None => {
+                        let end = self.lower_expr(&range.end)?;
+                        let start = self.lower_expr(&range.start)?;
+                        self.emit_value(Opcode::Sub, end.reg, start.reg, ElementType::I32, 0)
+                    }
+                };
+                let size = self.read_rank0(size);
+                if !matches!(size.ty, LoweredTy::Scalar(ElementType::I32)) {
+                    return Err(Decline::Unsupported {
+                        what: "an `across` loop of blocks whose size is not `i32`",
+                    });
+                }
+                shape.push((axis, size));
+                axis += 1;
+                level = Some(f.body.as_slice());
+            }
+            let block = self.emit_value(
+                Opcode::Const,
+                Register(0),
+                Register(0),
+                ElementType::I32,
+                lanes,
+            );
+            shape.push((3, block));
+        }
+        let outer = std::mem::replace(
+            &mut self.across,
+            AcrossState {
+                lanes: lanes.unwrap_or(0),
+                ..AcrossState::default()
+            },
+        );
+        let lowered = self.lower_region(
             top_id | (name << 32),
+            RegionLaunch {
+                shape: &shape,
+                across: lanes.is_some(),
+            },
             &s.stmts,
             s.ret.as_deref(),
             want_value,
             true,
-        )
+        );
+        self.across = outer;
+        lowered
     }
 
     /// A `tasks` block or a task body: a `vx.spawn` region with the topology id of its kind.
@@ -2988,6 +3086,10 @@ impl<'r> Lowerer<'r> {
         };
         self.lower_region(
             id as u32 as u64,
+            RegionLaunch {
+                shape: &[],
+                across: false,
+            },
             &u.stmts,
             u.ret.as_deref(),
             want_value,
@@ -3000,12 +3102,21 @@ impl<'r> Lowerer<'r> {
     fn lower_region(
         &mut self,
         imm: u64,
+        launch: RegionLaunch<'_>,
         stmts: &[Statement],
         ret: Option<&Expr>,
         want_value: bool,
         offer_parallel: bool,
     ) -> Lowered<Option<Val>> {
         self.emit_effect(Opcode::Spawn, Register(0), Register(0), imm);
+        if launch.across {
+            self.emit_effect(Opcode::AcrossRegion, Register(0), Register(0), 0);
+        }
+        for (axis, v) in launch.shape {
+            self.emit_effect(Opcode::LaunchDim, v.reg, Register(0), *axis);
+        }
+        // A region with `across` loops maps its work to lanes itself.
+        let offer_parallel = offer_parallel && !launch.across;
         // Two proofs are offered, FLAT FIRST. The flat grid-stride (#251) is the measured
         // record shape -- one thread per iteration, slice bodies vectorized -- so a region it
         // covers must keep it: since the block-row write rule (Vx#379 R3) landed, a plain
@@ -6640,6 +6751,9 @@ pub const SPAWN_TWO_LEVEL: u64 = 1 << 62;
 /// whole walk before the next thread stages its rows, which is a different program. The
 /// runtime must refuse to run it on the host rather than compute confidently wrong numbers.
 pub const SPAWN_COOP: u64 = 1 << 61;
+
+mod across;
+use across::{across_block_lanes, blocks_loop, AcrossState};
 
 #[cfg(test)]
 mod tests;

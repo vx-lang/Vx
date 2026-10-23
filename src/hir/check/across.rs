@@ -16,7 +16,7 @@ use crate::arch::{Level, LevelKind};
 use crate::hir::check::across_lanes;
 use crate::syntax::stmt::{ForLoopStmt, Statement};
 use crate::syntax::{Expr, Span};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// The `spawn on` region that a statement is in.
 #[derive(Clone)]
@@ -61,16 +61,37 @@ struct Ctx {
 struct Walk<'g> {
     graph: &'g crate::arch::TransferCostGraph,
     errors: Vec<(String, Span)>,
+    /// The level of each `across` loop, by the position of its clause, with the lanes of a
+    /// subgroup of its topology.
+    found: HashMap<Span, (LevelKind, Option<u64>)>,
+    /// The memories with `scope: cta` or `scope: sm`, whose tensors the lanes of a block share.
+    shared: HashSet<String>,
 }
 
 impl crate::hir::TypeChecker<'_> {
-    /// E6032 for each `across` loop in `body` that its place or its size does not allow.
-    pub(crate) fn check_across_loops(&mut self, body: &[Statement]) {
+    /// E6032 for each `across` loop in `body` that its place or its size does not allow. Each
+    /// loop gets the kind of its level, for the code generator.
+    pub(crate) fn check_across_loops(&mut self, body: &mut [Statement]) {
+        let shared = self
+            .env
+            .memories
+            .values()
+            .filter(|d| {
+                matches!(
+                    d.scope,
+                    Some(crate::syntax::Scope::Cta | crate::syntax::Scope::Sm)
+                )
+            })
+            .map(|d| d.name.as_ref().to_string())
+            .collect();
         let mut walk = Walk {
             graph: self.transfer_cost_graph,
             errors: Vec::new(),
+            found: HashMap::new(),
+            shared,
         };
         walk.stmts(body, &Ctx::default());
+        mark_stmts(body, &walk.found);
         // The proof of an outer loop also walks the inner loops, so one place can come twice.
         let mut seen = HashSet::new();
         walk.errors
@@ -178,17 +199,41 @@ impl Walk<'_> {
             while i < stmts.len() && !across_lanes::holds_across(&stmts[i]) {
                 i += 1;
             }
-            let part: Vec<&Statement> = stmts[start..i].iter().collect();
-            let owned: Vec<Statement> = part.iter().map(|s| (*s).clone()).collect();
-            let st = across_lanes::stretch(&part);
-            // A stretch that reads what only lane 0 has also runs on lane 0.
-            if st.writes || across_lanes::reads_any(&owned, &lane0).is_some() {
-                lane0.extend(st.values);
-                lane0.extend(st.assigned);
-            }
+            across_lanes::runs_on_lane0(&stmts[start..i], &mut lane0);
             after.extend(std::iter::repeat_n(lane0.clone(), i - start));
         }
         after
+    }
+
+    /// A tensor that the code of a block makes outside its lane loops is one for the block, which
+    /// its lanes share. So it is in a memory of the block. A subgroup has no memory of its own.
+    fn block_tensor(&mut self, l: &crate::syntax::stmt::LetDeclStmt, ctx: &Ctx) {
+        let Expr::FunctionCall(fc) = crate::syntax::bare_unsafe_value(&l.expr) else {
+            return;
+        };
+        if !crate::hir::flatten::is_tensor_alloc_call(fc) {
+            return;
+        }
+        if ctx.axes.last().map(|a| a.kind) == Some(LevelKind::Subgroups) {
+            self.error(
+                "a subgroup has no memory of its own, so the code of a subgroup loop outside its \
+                 lane loop may not make a tensor. Make it in the code of the block, in a memory \
+                 such as `Memory::SMEM`"
+                    .to_string(),
+                l.span,
+            );
+            return;
+        }
+        let space = crate::hir::flatten::tensor_alloc_placement(fc).map(|p| p.space.name());
+        if !space.as_ref().is_some_and(|s| self.shared.contains(s)) {
+            self.error(
+                "the lanes of a block share a tensor that the code of the block makes outside its \
+                 lane loops, so it goes in a memory with `scope: cta` or `scope: sm`, such as \
+                 `Memory::SMEM`. A tensor for each lane is made inside a lane loop"
+                    .to_string(),
+                l.span,
+            );
+        }
     }
 
     /// L8: a condition or a bound around a lane or subgroup loop is the same for every lane.
@@ -275,7 +320,12 @@ impl Walk<'_> {
                     self.expr(e, ctx);
                 }
             }
-            Statement::LetDecl(l) => self.expr(&l.expr, ctx),
+            Statement::LetDecl(l) => {
+                if Self::stretch_level(ctx) {
+                    self.block_tensor(l, ctx);
+                }
+                self.expr(&l.expr, ctx)
+            }
             Statement::ExprStmt(e) => self.expr(&e.expr, ctx),
             Statement::Assign(a) => {
                 self.expr(&a.lhs, ctx);
@@ -515,6 +565,7 @@ impl Walk<'_> {
         };
         let max_lanes = levels.iter().find_map(|l| l.max_lanes);
         let subgroup = levels.iter().find_map(|l| l.lanes);
+        self.found.insert(a.span, (level.kind, subgroup));
         let outer = ctx.axes.last();
 
         // N1: blocks, then subgroups, then lanes.
@@ -576,6 +627,14 @@ impl Walk<'_> {
                                  starts, so it may read only values from outside the region"
                             ),
                             b.span(),
+                        );
+                    } else if let Some(at) = across_lanes::may_write(b) {
+                        self.error(
+                            "the host computes the size of an `across` loop of blocks before the \
+                             region starts, and the kernel computes it again. So the size may \
+                             not call a function"
+                                .to_string(),
+                            at,
                         );
                     }
                 }
@@ -719,19 +778,34 @@ impl Walk<'_> {
         }
         // N2: an inner axis of the same level is the whole body of the outer one.
         if level.kind != LevelKind::Subgroups {
+            let same_level = |s: &Statement| match s {
+                Statement::ForLoop(g) if g.across.as_ref().map(|x| &x.level) == Some(&a.level) => {
+                    Some(g.across.as_ref().map_or(g.span, |x| x.span))
+                }
+                _ => None,
+            };
+            let whole_body = f.body.len() == 1 && same_level(&f.body[0]).is_some();
             for s in &f.body {
-                if let Statement::ForLoop(inner) = s {
-                    if inner.across.as_ref().map(|x| &x.level) == Some(&a.level)
-                        && f.body.len() != 1
-                    {
-                        self.error(
-                            format!(
-                                "a {} loop inside another one is the whole body of the outer loop",
-                                kind_word(level.kind)
-                            ),
-                            inner.across.as_ref().map_or(inner.span, |x| x.span),
-                        );
-                    }
+                if whole_body {
+                    break;
+                }
+                // A lane loop at any depth, but a block loop only directly in the body: a block
+                // loop in a lane loop gets the error of N1. The first one is the outermost, and
+                // the loops in it get their own check.
+                let mut found = same_level(s);
+                if level.kind == LevelKind::Lanes {
+                    across_lanes::visit_stmts(std::slice::from_ref(s), &mut |s| {
+                        found = found.or_else(|| same_level(s));
+                    });
+                }
+                if let Some(at) = found {
+                    self.error(
+                        format!(
+                            "a {} loop inside another one is the whole body of the outer loop",
+                            kind_word(level.kind)
+                        ),
+                        at,
+                    );
                 }
             }
         }
@@ -768,6 +842,62 @@ impl Walk<'_> {
             r.locals.insert(f.iter.clone());
         }
         self.stmts(&f.body, &body);
+    }
+}
+
+/// Gives each `across` loop in `stmts` the level that the walk found for it. A loop in a place
+/// that this does not visit keeps `None`, and the code generator runs it as a plain `for`.
+fn mark_stmts(stmts: &mut [Statement], found: &HashMap<Span, (LevelKind, Option<u64>)>) {
+    for s in stmts {
+        match s {
+            Statement::ForLoop(f) => {
+                if let Some(a) = f.across.as_mut() {
+                    if let Some(&(kind, lanes)) = found.get(&a.span) {
+                        a.kind = Some(kind);
+                        a.subgroup_lanes = lanes;
+                    }
+                }
+                mark_stmts(&mut f.body, found);
+            }
+            Statement::Loop(l) => mark_stmts(&mut l.body, found),
+            Statement::LetDecl(l) => mark_expr(&mut l.expr, found),
+            Statement::ExprStmt(e) => mark_expr(&mut e.expr, found),
+            Statement::Return(r) => {
+                if let Some(e) = r.expr.as_mut() {
+                    mark_expr(e, found);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn mark_expr(e: &mut Expr, found: &HashMap<Span, (LevelKind, Option<u64>)>) {
+    match e {
+        Expr::SpawnOn(sp) => {
+            mark_stmts(&mut sp.stmts, found);
+            if let Some(r) = sp.ret.as_mut() {
+                mark_expr(r, found);
+            }
+        }
+        Expr::If(i) => {
+            mark_stmts(&mut i.then_block, found);
+            if let Some(b) = i.else_block.as_mut() {
+                mark_stmts(b, found);
+            }
+        }
+        Expr::Match(m) => {
+            for arm in &mut m.arms {
+                mark_stmts(&mut arm.body, found);
+            }
+        }
+        Expr::UnsafeBlock(b) => {
+            mark_stmts(&mut b.stmts, found);
+            if let Some(r) = b.ret.as_mut() {
+                mark_expr(r, found);
+            }
+        }
+        _ => {}
     }
 }
 
