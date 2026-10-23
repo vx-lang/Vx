@@ -10,7 +10,8 @@
 // sum from left to right differ in the last bit of these values. `sum_unordered` adds from left
 // to right on the CPU. The other lines are the reductions of a subgroup, a count below the size
 // of the tensor, a count of 0, a count above the size, and the larger of 40 negative values, where
-// the pad is a value of the tensor and not 0. A line with `tree`, `top` or `group` puts the
+// the pad is a value of the tensor and not 0. `again` sums 256 copies of `ordered_sum`, after a
+// lane loop writes the tensor that the first sum read. A line with `tree`, `top` or `group` puts the
 // value of plain loops beside the reduction.
 //
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
@@ -24,6 +25,7 @@
 // CHECK-NEXT: none 0 -inf
 // CHECK-NEXT: above 4.730733
 // CHECK-NEXT: negative max -1
+// CHECK-NEXT: again 1211.0676 times 256 1211.0676
 
 // The value of each element: no two orders of adding them give the same bits.
 fn value(i : i32) -> f32 {
@@ -80,6 +82,11 @@ fn main() -> i32 {
         negs[t] = -1.0 - (t as f32);
       }
       let neg_max = lanes::max(&negs, 40);
+      // A lane loop writes `part` again, while `s` is still used.
+      for t in 0..256 across lanes {
+        part[t] = s;
+      }
+      let again = lanes::sum(&part, 256);
       out[0] = s;
       out[1] = u;
       out[2] = m;
@@ -88,6 +95,7 @@ fn main() -> i32 {
       out[5] = none_max;
       out[6] = above;
       out[7] = neg_max;
+      out[8] = again;
     }
   }
   let mut warps = transfer(Tensor<f32, [2, 2]>::fill(0.0), Memory::HBM);
@@ -133,5 +141,6 @@ fn main() -> i32 {
   println!("none {} {}", o[4], o[5]);
   println!("above {}", o[6]);
   println!("negative max {}", o[7]);
+  println!("again {} times 256 {}", o[8], o[0] * 256.0);
   return 0;
 }
