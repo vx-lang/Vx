@@ -87,6 +87,10 @@ pub struct AcrossClause {
     pub level: Symbol,
     pub share: Option<Box<Expr>>,
     pub span: Span,
+    /// What the checker found: the kind of the level, and the lanes of a subgroup of the
+    /// topology. The code generator reads them. `None` before the check.
+    pub kind: Option<crate::arch::LevelKind>,
+    pub subgroup_lanes: Option<u64>,
 }
 
 impl ForLoopStmt {
@@ -355,6 +359,8 @@ impl Statement {
                     level: a.level.clone(),
                     share: a.share.as_ref().map(|n| Box::new(n.substitute(mapping))),
                     span: a.span,
+                    kind: a.kind,
+                    subgroup_lanes: a.subgroup_lanes,
                 }),
             }),
             Statement::Assign(e) => Statement::Assign(AssignStmt {

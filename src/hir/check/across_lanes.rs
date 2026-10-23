@@ -26,7 +26,7 @@ pub(crate) fn holds_across(s: &Statement) -> bool {
 }
 
 /// Calls `f` on each statement in `stmts`, at any depth.
-fn visit_stmts(stmts: &[Statement], f: &mut dyn FnMut(&Statement)) {
+pub(crate) fn visit_stmts(stmts: &[Statement], f: &mut dyn FnMut(&Statement)) {
     for s in stmts {
         f(s);
         match s {
@@ -166,6 +166,19 @@ pub(crate) fn stretch(stmts: &[&Statement]) -> Stretch {
         values,
         assigned,
     }
+}
+
+/// Whether lane 0 alone runs the stretch `part` (L5): it writes memory, or it reads a name in
+/// `lane0`, which only lane 0 has. Then `lane0` gains the names that the stretch sets.
+pub(crate) fn runs_on_lane0(part: &[Statement], lane0: &mut HashSet<String>) -> bool {
+    let refs: Vec<&Statement> = part.iter().collect();
+    let st = stretch(&refs);
+    let on_lane0 = st.writes || reads_any(part, lane0).is_some();
+    if on_lane0 {
+        lane0.extend(st.values);
+        lane0.extend(st.assigned);
+    }
+    on_lane0
 }
 
 fn note_target(lhs: &Expr, writes: &mut bool, assigned: &mut HashSet<String>) {

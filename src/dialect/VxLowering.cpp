@@ -19,6 +19,7 @@
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/FunctionCallUtils.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -48,6 +49,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
@@ -584,6 +586,70 @@ static void useStackScratchIn(Region &kernel, PatternRewriter &rewriter) {
   }
 }
 
+/// A launch size as source text, from the parameters of `func` and numbers,
+/// for the `--emit-ptx` manifest: `(rows + 3) / 4`. Empty when the size comes
+/// from anything else.
+static std::string launchSizeText(Value v, func::FuncOp func, int depth = 0) {
+  if (depth > 16)
+    return {};
+  auto names = func->getAttrOfType<ArrayAttr>("vx.param_names");
+  if (auto arg = dyn_cast<BlockArgument>(v)) {
+    int64_t k = int64_t(arg.getArgNumber()) -
+                (int64_t(func.getNumArguments()) - (names ? names.size() : 0));
+    if (names && arg.getOwner() == &func.getBody().front() && k >= 0)
+      return cast<StringAttr>(names[k]).getValue().str();
+    return {};
+  }
+  APInt constant;
+  if (matchPattern(v, m_ConstantInt(&constant)))
+    return std::to_string(constant.getSExtValue());
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return {};
+  if (isa<arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp, arith::IndexCastOp>(
+          def))
+    return launchSizeText(def->getOperand(0), func, depth + 1);
+  // A local with one store, such as `let blocks: i32 = (rows + 3) / 4;`.
+  Value slot;
+  if (auto load = dyn_cast<memref::LoadOp>(def))
+    slot = load.getMemRef();
+  else if (auto load = dyn_cast<LLVM::LoadOp>(def))
+    slot = load.getAddr();
+  if (slot) {
+    Value stored;
+    int stores = 0;
+    for (Operation *user : slot.getUsers()) {
+      if (auto store = dyn_cast<memref::StoreOp>(user))
+        stored = store.getValue(), ++stores;
+      else if (auto store = dyn_cast<LLVM::StoreOp>(user))
+        stored = store.getValue(), ++stores;
+    }
+    return stores == 1 ? launchSizeText(stored, func, depth + 1) : "";
+  }
+  const char *sign =
+      llvm::TypeSwitch<Operation *, const char *>(def)
+          .Case<arith::AddIOp>([](auto) { return "+"; })
+          .Case<arith::SubIOp>([](auto) { return "-"; })
+          .Case<arith::MulIOp>([](auto) { return "*"; })
+          .Case<arith::DivSIOp, arith::DivUIOp>([](auto) { return "/"; })
+          .Case<arith::RemSIOp, arith::RemUIOp>([](auto) { return "%"; })
+          .Default([](auto) { return nullptr; });
+  if (!sign)
+    return {};
+  auto side = [&](Value operand) -> std::string {
+    std::string text = launchSizeText(operand, func, depth + 1);
+    Operation *d = operand.getDefiningOp();
+    bool binary =
+        d && isa<arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::DivSIOp,
+                 arith::DivUIOp, arith::RemSIOp, arith::RemUIOp>(d);
+    return binary && !text.empty() ? "(" + text + ")" : text;
+  };
+  std::string lhs = side(def->getOperand(0)), rhs = side(def->getOperand(1));
+  if (lhs.empty() || rhs.empty())
+    return {};
+  return lhs + " " + sign + " " + rhs;
+}
+
 // Inline `vx.spawn` in place for the CPU topology, or outline it into a
 // kernel + `vx.launch` for device topologies.
 struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
@@ -681,6 +747,39 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
         rewriter.create<memref::StoreOp>(y.getLoc(), y.getOperand(0),
                                          resultSlot);
         rewriter.modifyOpInPlace(y, [&] { y->setOperands({}); });
+      }
+    }
+
+    // The launch shape that the `across` loops give (#252), as payload text: a
+    // number for a constant, and `$j` for launch value j. The `vx.launch_dim`
+    // ops go away here, so the kernel does not take a launch value. The launch
+    // passes each one after the kernel's arguments, and the runtime reads it
+    // there.
+    std::string launchGrid, launchBlock;
+    SmallVector<Value> launchValues;
+    SmallVector<Attribute> launchTexts;
+    {
+      auto func = op->getParentOfType<func::FuncOp>();
+      bool exporting =
+          op->getParentOfType<ModuleOp>()->hasAttr("vx.export_kernels");
+      SmallVector<vx::LaunchDimOp> dims;
+      spawnBody.walk([&](vx::LaunchDimOp d) { dims.push_back(d); });
+      for (vx::LaunchDimOp d : dims) {
+        std::string text;
+        APInt constant;
+        if (matchPattern(d.getValue(), m_ConstantInt(&constant))) {
+          text = std::to_string(constant.getSExtValue());
+        } else {
+          text = "$" + std::to_string(launchValues.size());
+          launchValues.push_back(d.getValue());
+          launchTexts.push_back(rewriter.getStringAttr(
+              exporting && func ? launchSizeText(d.getValue(), func) : ""));
+        }
+        std::string &into = d.getAxis() == 3 ? launchBlock : launchGrid;
+        if (!into.empty())
+          into += ",";
+        into += text;
+        rewriter.eraseOp(d);
       }
     }
 
@@ -799,6 +898,13 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
       }
       kernelOp->setAttr("vx.param_of", rewriter.getDenseI64ArrayAttr(paramOf));
     }
+    if (!launchGrid.empty()) {
+      kernelOp->setAttr("vx.launch_grid", rewriter.getStringAttr(launchGrid));
+      kernelOp->setAttr("vx.launch_block", rewriter.getStringAttr(launchBlock));
+      if (op->hasAttr("vx.across"))
+        kernelOp->setAttr("vx.across", rewriter.getUnitAttr());
+      kernelOp->setAttr("vx.launch_text", rewriter.getArrayAttr(launchTexts));
+    }
     // Keeps the kernel off the GPU device image: the slot is host stack.
     if (resultSlot)
       kernelOp->setAttr("vx.result_slot", rewriter.getUnitAttr());
@@ -893,6 +999,7 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     rewriter.restoreInsertionPoint(ip);
 
     SmallVector<Value> launchOperands(captures.begin(), captures.end());
+    llvm::append_range(launchOperands, launchValues);
     auto launchOp = rewriter.create<vx::LaunchOp>(
         op.getLoc(), resultTypes,
         SymbolRefAttr::get(rewriter.getContext(), funcName),
@@ -914,6 +1021,14 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // runtime learns how wide the strided kernel's work is (#251).
     if (auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip"))
       launchOp->setAttr("vx_parallel_trip", trip);
+    if (!launchGrid.empty()) {
+      launchOp->setAttr("vx.launch_grid", rewriter.getStringAttr(launchGrid));
+      launchOp->setAttr("vx.launch_block", rewriter.getStringAttr(launchBlock));
+      if (op->hasAttr("vx.across"))
+        launchOp->setAttr("vx.across", rewriter.getUnitAttr());
+      launchOp->setAttr("vx.launch_values",
+                        rewriter.getI32IntegerAttr(launchValues.size()));
+    }
     if (op->hasAttr("vx_parallel_two_level"))
       launchOp->setAttr("vx_parallel_two_level", rewriter.getUnitAttr());
     if (auto th = op->getAttrOfType<IntegerAttr>("vx_parallel_threads"))
@@ -1451,7 +1566,8 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
 /// the fill, a slow thread can write its zeros over a value that a fast thread
 /// already wrote. The barrier is safe only where every thread of the block
 /// reaches it: in the first block of the kernel. A fill in a branch or a loop
-/// gets a warning instead.
+/// gets a warning instead. In a kernel with `across` loops, lane 0 alone runs
+/// the fill, and the frontend put a barrier after it.
 static void fillToDeviceLoops(linalg::FillOp fill) {
   Value buffer = fill.getOutputs()[0];
   auto type = dyn_cast<MemRefType>(buffer.getType());
@@ -1461,13 +1577,14 @@ static void fillToDeviceLoops(linalg::FillOp fill) {
   bool shared = space && space.getInt() == 3;
   auto kernel = fill->getParentOfType<vx::KernelOp>();
   bool everyThread = kernel && fill->getBlock() == &kernel.getBody().front();
-  if (shared && !everyThread)
+  bool across = kernel && kernel->hasAttr("vx.across");
+  if (shared && !everyThread && !across)
     fill->getParentOp()->emitWarning()
         << "Warning: a GPU region sets shared memory to zero in a branch or a "
            "loop, so the compiler adds no barrier after it. Another thread "
            "can write the memory before the zero fill ends. Make the shared "
            "tensor at the start of the region.";
-  bool sync = shared && everyThread;
+  bool sync = shared && everyThread && !across;
   OpBuilder b(fill);
   Location loc = fill.getLoc();
   Value value = fill.getInputs()[0];
@@ -1632,7 +1749,8 @@ static constexpr int64_t kMaxStaticSharedBytes = 48 * 1024;
 static bool runsOnDevice(Operation *op, ModuleOp module,
                          DeviceCallees &callees) {
   // Rewritten to `gpu.return` and `gpu.barrier` in the device clone (Vx#379).
-  if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp>(op))
+  // A `vx.launch_dim` leaves the region when it is outlined.
+  if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp>(op))
     return true;
   // A DYNAMIC shared-memory tile cannot become a `.shared` global (those
   // need a static shape), and leaving the alloca as-is ships a kernel that
@@ -2662,10 +2780,10 @@ struct ConvertVxToStandardPass
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry
-        .insert<async::AsyncDialect, cf::ControlFlowDialect, func::FuncDialect,
-                LLVM::LLVMDialect, memref::MemRefDialect, arith::ArithDialect,
-                gpu::GPUDialect, math::MathDialect, scf::SCFDialect>();
+    registry.insert<async::AsyncDialect, cf::ControlFlowDialect,
+                    func::FuncDialect, LLVM::LLVMDialect, memref::MemRefDialect,
+                    arith::ArithDialect, gpu::GPUDialect, math::MathDialect,
+                    scf::SCFDialect, NVVM::NVVMDialect>();
   }
 
   /// Give every device kernel a `gpu.func` beside its `vx.kernel`.
@@ -3152,7 +3270,15 @@ struct ConvertVxToStandardPass
         gpuFunc.walk([&](vx::BarrierOp bar) { barriers.push_back(bar); });
         for (vx::BarrierOp bar : barriers) {
           OpBuilder b(bar);
-          b.create<gpu::BarrierOp>(bar.getLoc());
+          // The end of a lane loop in a subgroup loop: the lanes of one warp
+          // wait for each other, and the other warps go on.
+          if (bar->hasAttr("subgroup")) {
+            Value all = b.create<arith::ConstantIntOp>(bar.getLoc(),
+                                                       b.getI32Type(), -1);
+            b.create<NVVM::SyncWarpOp>(bar.getLoc(), all);
+          } else {
+            b.create<gpu::BarrierOp>(bar.getLoc());
+          }
           bar.erase();
         }
       }
@@ -3710,6 +3836,24 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     // Grid-striding makes any configuration correct, so this is a sizing
     // hint with a correctness floor, not a contract the runtime must honour
     // exactly.
+    // The launch shape (#252): `grid=` with one entry for each axis, and
+    // `block=`. An entry `$j` is launch value j, an `i32` that the launch
+    // passes after the kernel's arguments. A number is that size.
+    if (auto grid = op->getAttrOfType<StringAttr>("vx.launch_grid")) {
+      payload += "grid=" + grid.getValue().str();
+      payload.push_back('\0');
+      payload +=
+          "block=" +
+          op->getAttrOfType<StringAttr>("vx.launch_block").getValue().str();
+      payload.push_back('\0');
+      // A loop of blocks steps over the grid, so any grid size covers its
+      // passes, and the runtime may launch fewer blocks than it asks for.
+      if (op->hasAttr("vx.across")) {
+        payload += "grid_loops=1";
+        payload.push_back('\0');
+      }
+    }
+
     if (auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip")) {
       payload += "launch=";
       payload += std::to_string(trip.getInt());
@@ -3900,8 +4044,13 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     Value payloadSize = rewriter.create<LLVM::ConstantOp>(
         loc, llvmI64Type,
         rewriter.getI64IntegerAttr(static_cast<int64_t>(payload.size())));
+    // The launch values come after the kernel's arguments (#252), so they
+    // are not arguments of the kernel.
+    int64_t kernelArgs = numArgs;
+    if (auto launch = op->getAttrOfType<IntegerAttr>("vx.launch_values"))
+      kernelArgs -= launch.getInt();
     Value numArgsVal = rewriter.create<LLVM::ConstantOp>(
-        loc, llvmI64Type, rewriter.getI64IntegerAttr(numArgs));
+        loc, llvmI64Type, rewriter.getI64IntegerAttr(kernelArgs));
     auto callOp = rewriter.create<LLVM::CallOp>(
         loc, dispatchFunc,
         ValueRange{globalPtr, payloadSize, argsArray, tagsArray, numArgsVal});
@@ -4515,6 +4664,53 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
     // A launch of this kernel passes this many bytes of dynamic shared memory.
     if (auto bytes = f->getAttrOfType<IntegerAttr>("vx.dynamic_shared"))
       entry["dynamic_shared_bytes"] = bytes.getInt();
+    // The launch shape that the program set (#252): each size is a parameter
+    // of the kernel, by name, or a number.
+    if (auto grid = kernel->getAttrOfType<StringAttr>("vx.launch_grid")) {
+      auto texts = kernel->getAttrOfType<ArrayAttr>("vx.launch_text");
+      bool failedSize = false;
+      auto sizes = [&](StringRef text) {
+        llvm::json::Array out;
+        SmallVector<StringRef> items;
+        text.split(items, ',');
+        for (StringRef item : items) {
+          int64_t n = 0;
+          if (item.consume_front("$")) {
+            item.getAsInteger(10, n);
+            StringRef text = cast<StringAttr>(texts[n]).getValue();
+            bool isParam = llvm::any_of(names, [&](Attribute a) {
+              return cast<StringAttr>(a).getValue() == text;
+            });
+            if (text.empty())
+              failedSize = true;
+            else if (isParam)
+              out.push_back(llvm::json::Object{{"param", text}});
+            else
+              out.push_back(llvm::json::Object{{"computed", text}});
+          } else {
+            item.getAsInteger(10, n);
+            out.push_back(n);
+          }
+        }
+        return out;
+      };
+      llvm::json::Array block = sizes(
+          kernel->getAttrOfType<StringAttr>("vx.launch_block").getValue());
+      llvm::json::Array gridSizes = sizes(grid.getValue());
+      if (failedSize) {
+        emitError(loc) << "the GPU kernel in function '" << name
+                       << "' has a launch size that --emit-ptx cannot "
+                          "describe. A size can come from parameters and "
+                          "numbers, with + - * / and %";
+        return failure();
+      }
+      llvm::json::Object launch{{"grid", std::move(gridSizes)},
+                                {"block", std::move(block[0])}};
+      // A loop of blocks steps over the grid, so a smaller grid is correct.
+      if (kernel->hasAttr("vx.across"))
+        launch["grid_loops"] = true;
+      entry["launch"] = std::move(launch);
+    }
     kernels.push_back(std::move(entry));
   }
   return kernels;
@@ -4742,6 +4938,20 @@ struct ConvertVxToLLVMPass
         t.erase();
       });
       kernel.walk([&](gpu::BlockDimOp d) {
+        OpBuilder b(d);
+        Value one = b.create<arith::ConstantOp>(d.getLoc(), b.getIndexAttr(1));
+        d.getResult().replaceAllUsesWith(one);
+        d.erase();
+      });
+      // An `across` loop of blocks: one block, the first.
+      kernel.walk([&](gpu::BlockIdOp id) {
+        OpBuilder b(id);
+        Value zero =
+            b.create<arith::ConstantOp>(id.getLoc(), b.getIndexAttr(0));
+        id.getResult().replaceAllUsesWith(zero);
+        id.erase();
+      });
+      kernel.walk([&](gpu::GridDimOp d) {
         OpBuilder b(d);
         Value one = b.create<arith::ConstantOp>(d.getLoc(), b.getIndexAttr(1));
         d.getResult().replaceAllUsesWith(one);

@@ -278,7 +278,14 @@ shared memory, and its entry also gives `dynamic_shared_bytes`. A program that
 launches it calls `cuFuncSetAttribute(f, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, n)` once, and passes `n` as
 the `sharedMemBytes` of `cuLaunchKernel`. Vx's own launch does both.
 
-The program that launches the kernel chooses the grid and the block.
+A kernel from a region with `across` loops also has `launch`: `grid`, one entry for each loop
+of blocks, `block` for the lanes of a block, and `"grid_loops": true`. An entry is a number,
+`{"param": "rows"}` for the value of a parameter, or `{"computed": "(rows + 3) / 4"}` for a size
+that the host computes from parameters and numbers. A size is not a parameter of the kernel, so
+a launcher computes it and launches that shape. A loop of blocks steps over the blocks of the
+grid, so a smaller grid is also correct. The kernel needs exactly the lanes of `block`.
+
+With no `launch`, the program that launches the kernel chooses the grid and the block.
 
 ## 4. Symbol names
 

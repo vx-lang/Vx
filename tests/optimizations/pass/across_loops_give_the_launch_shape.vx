@@ -1,0 +1,295 @@
+//===- across_loops_give_the_launch_shape.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The `across` loops of a region give its launch shape. A loop of blocks is a grid axis, and its
+// size is a value that the host computes. The lanes of a block are a number: the most that a lane
+// loop asks for, or a subgroup loop times 32. The end of a lane loop is a barrier, and so is the
+// end of the code that lane 0 alone runs because it writes memory.
+//
+// - `rmsnorm`: one block of 256 lanes for each row. Three barriers: after each lane loop, and
+//   after the sum that lane 0 runs.
+// - `warps`: four subgroups of 32 lanes for each block, so 128 lanes. The end of the lane loop is
+//   a barrier of the subgroup (`bar.warp.sync`), and the end of the subgroup loop one of the block.
+// - `tiles`: two grid axes, and three lane axes of 4, 4 and 16, so 256 lanes.
+// - `shared`: 8 blocks share the rows (`blocks(8)`). The block has 64 lanes for `lanes(64)`, and
+//   the lanes 32 and up skip the loop of 32 passes.
+// - `zeroed`: lane 0 fills a tensor in shared memory, and one barrier follows. The fill adds no
+//   barrier of its own, which only lane 0 would reach.
+// - `four_blocks`: number bounds, which the older parallel plans could also take. The `across`
+//   launch keeps it, so the MLIR has none of their `vx_parallel` marks.
+// - `subgroup_rows`: after the lanes of a subgroup write its row, the first lane of the subgroup
+//   marks the row done. A barrier of the subgroup follows each.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD --implicit-check-not=W1033 --implicit-check-not=Warning:
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s --check-prefix=JSON < %t.json
+// RUN: FileCheck %s --check-prefix=PTX < %t.ptx
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir > %t.mlir
+// RUN: FileCheck %s --check-prefix=LANE0 < %t.mlir
+// RUN: FileCheck %s --check-prefix=MASK < %t.mlir
+// RUN: FileCheck %s --check-prefix=TILE --implicit-check-not=vx_parallel --implicit-check-not=vx.parallel < %t.mlir
+// RUN: FileCheck %s --check-prefix=SUB < %t.mlir
+//
+// In the payload, `$j` is launch value j, which the host computes. A loop of blocks steps over
+// the grid, so `grid_loops=1` lets the runtime launch fewer blocks.
+// PAYLOAD-DAG: grid=$0\00block=256\00grid_loops=1\00
+// PAYLOAD-DAG: grid=$0\00block=128\00
+// PAYLOAD-DAG: grid=$0,$1\00block=256\00
+// PAYLOAD-DAG: grid=8\00block=64\00
+// PAYLOAD-DAG: grid=4\00block=1\00
+//
+// JSON:      "launch": {
+// JSON-NEXT:   "block": 256,
+// JSON-NEXT:   "grid": [
+// JSON-NEXT:     {
+// JSON-NEXT:       "param": "rows"
+// JSON-NEXT:     }
+// JSON-NEXT:   ],
+// JSON-NEXT:   "grid_loops": true
+// JSON-NEXT: },
+// JSON-NEXT: "name": "rmsnorm",
+// JSON:      "launch": {
+// JSON-NEXT:   "block": 128,
+// JSON-NEXT:   "grid": [
+// JSON-NEXT:     {
+// JSON-NEXT:       "computed": "(rows + 3) / 4"
+// JSON-NEXT:     }
+// JSON-NEXT:   ],
+// JSON-NEXT:   "grid_loops": true
+// JSON-NEXT: },
+// JSON-NEXT: "name": "warps",
+// JSON:      "launch": {
+// JSON-NEXT:   "block": 256,
+// JSON-NEXT:   "grid": [
+// JSON-NEXT:     {
+// JSON-NEXT:       "param": "rows"
+// JSON-NEXT:     },
+// JSON-NEXT:     {
+// JSON-NEXT:       "param": "cols"
+// JSON-NEXT:     }
+// JSON-NEXT:   ],
+// JSON-NEXT:   "grid_loops": true
+// JSON-NEXT: },
+// JSON-NEXT: "name": "tiles",
+// JSON:      "launch": {
+// JSON-NEXT:   "block": 64,
+// JSON-NEXT:   "grid": [
+// JSON-NEXT:     8
+// JSON-NEXT:   ],
+// JSON-NEXT:   "grid_loops": true
+// JSON-NEXT: },
+// JSON-NEXT: "name": "shared",
+//
+// PTX-LABEL: .entry rmsnorm(
+// PTX-COUNT-3: bar.sync 0;
+// PTX-NOT: bar.
+// PTX-LABEL: .entry warps(
+// PTX-DAG: bar.warp.sync -1;
+// PTX-DAG: bar.sync 0;
+// PTX-NOT: bar.
+// PTX-LABEL: .entry tiles(
+// PTX-DAG: %ctaid.y
+// PTX-DAG: %nctaid.y
+// PTX: bar.sync 0;
+// PTX-NOT: bar.
+// PTX-LABEL: .entry shared(
+// PTX-COUNT-2: bar.sync 0;
+// PTX-NOT: bar.
+// PTX-LABEL: .entry zeroed(
+// PTX-COUNT-2: bar.sync 0;
+// PTX-NOT: bar.
+// PTX-LABEL: .entry subgroup_rows(
+// PTX-DAG: bar.warp.sync -1;
+// PTX-DAG: bar.warp.sync -1;
+// PTX-DAG: bar.sync 0;
+// PTX-NOT: bar.
+// PTX-LABEL: .entry four_blocks(
+// PTX: bar.sync 0;
+// PTX-NOT: bar.
+//
+// Each lane loop starts at the pass of its lane and steps over its lanes: `min(n, block size)`
+// is `n` on the GPU and 1 on the CPU copy. In `tiles`, lane `t` takes `p = t / 64`,
+// `q = (t / 16) % 4` and `r = t % 16`.
+// TILE-LABEL: func.func @tiles(
+// TILE:      gpu.block_id x
+// TILE:      gpu.grid_dim x
+// TILE:      gpu.block_id y
+// TILE:      gpu.grid_dim y
+// TILE:      %[[L1:.*]] = arith.index_cast %thread_id_x{{.*}} : index to i32
+// TILE-NEXT: %[[C64:.*]] = arith.constant 64 : i32
+// TILE-NEXT: %[[P:.*]] = arith.divsi %[[L1]], %[[C64]] : i32
+// TILE:      arith.minsi %c4_i32{{.*}}, %{{.*}} : i32
+// TILE:      arith.addi %c0_i32{{.*}}, %[[P]] : i32
+// TILE:      %[[L2:.*]] = arith.index_cast %thread_id_x{{.*}} : index to i32
+// TILE-NEXT: %[[C16:.*]] = arith.constant 16 : i32
+// TILE-NEXT: %[[D:.*]] = arith.divsi %[[L2]], %[[C16]] : i32
+// TILE-NEXT: %[[C4:.*]] = arith.constant 4 : i32
+// TILE-NEXT: %[[Q:.*]] = arith.remsi %[[D]], %[[C4]] : i32
+// TILE:      arith.minsi %c4_i32{{.*}}, %{{.*}} : i32
+// TILE:      arith.addi %c0_i32{{.*}}, %[[Q]] : i32
+// TILE:      %[[L3:.*]] = arith.index_cast %thread_id_x{{.*}} : index to i32
+// TILE-NEXT: %[[C16B:.*]] = arith.constant 16 : i32
+// TILE-NEXT: %[[R:.*]] = arith.remsi %[[L3]], %[[C16B]] : i32
+// TILE:      arith.minsi %c16_i32{{.*}}, %{{.*}} : i32
+// TILE:      arith.addi %c0_i32{{.*}}, %[[R]] : i32
+//
+// In `subgroup_rows`, subgroup `w` is `t / 32` and its lane `t % 32`. The lanes with
+// `t % 32 == 0` mark the rows done.
+// SUB-LABEL: func.func @subgroup_rows(
+// SUB:      %[[L1:.*]] = arith.index_cast %thread_id_x{{.*}} : index to i32
+// SUB-NEXT: %[[C32:.*]] = arith.constant 32 : i32
+// SUB-NEXT: %[[W:.*]] = arith.divsi %[[L1]], %[[C32]] : i32
+// SUB:      arith.minsi %c4_i32{{.*}}, %{{.*}} : i32
+// SUB:      arith.addi %c0_i32{{.*}}, %[[W]] : i32
+// SUB:      %[[L2:.*]] = arith.index_cast %thread_id_x{{.*}} : index to i32
+// SUB-NEXT: %[[C32B:.*]] = arith.constant 32 : i32
+// SUB-NEXT: %[[L:.*]] = arith.remsi %[[L2]], %[[C32B]] : i32
+// SUB:      arith.minsi %c32_i32{{.*}}, %{{.*}} : i32
+// SUB:      arith.addi %c0_i32{{.*}}, %[[L]] : i32
+// SUB:      vx.barrier {subgroup}
+// SUB-NEXT: %thread_id_x{{.*}} = gpu.thread_id x
+// SUB-NEXT: %[[L3:.*]] = arith.index_cast %thread_id_x{{.*}} : index to i32
+// SUB-NEXT: %[[C32C:.*]] = arith.constant 32 : i32
+// SUB-NEXT: %[[M:.*]] = arith.remsi %[[L3]], %[[C32C]] : i32
+// SUB-NEXT: %[[ZERO:.*]] = arith.constant 0 : i32
+// SUB-NEXT: %[[FIRST:.*]] = arith.cmpi eq, %[[M]], %[[ZERO]] : i32
+// SUB-NEXT: cf.cond_br %[[FIRST]], ^{{bb[0-9]+}}, ^[[AFTER:bb[0-9]+]]
+// SUB:      ^[[AFTER]]:
+// SUB-NEXT: vx.barrier {subgroup}
+//
+// After the first lane loop of `rmsnorm`, lane 0 alone runs the sum, and a barrier follows.
+// LANE0-LABEL: func.func @rmsnorm(
+// LANE0:      vx.barrier
+// LANE0-NEXT: %thread_id_x{{.*}} = gpu.thread_id x
+// LANE0-NEXT: %[[LANE:.*]] = arith.index_cast %thread_id_x{{.*}} : index to i32
+// LANE0-NEXT: %[[ZERO:.*]] = arith.constant 0 : i32
+// LANE0-NEXT: %[[FIRST:.*]] = arith.cmpi eq, %[[LANE]], %[[ZERO]] : i32
+// LANE0-NEXT: cf.cond_br %[[FIRST]], ^{{bb[0-9]+}}, ^[[AFTER:bb[0-9]+]]
+// LANE0:      ^[[AFTER]]:
+// LANE0-NEXT: vx.barrier
+//
+// In `shared`, the lanes 32 and up go straight to the barrier after the loop of 32 passes.
+// MASK-LABEL: func.func @shared(
+// MASK:      vx.barrier
+// MASK-NEXT: %thread_id_x{{.*}} = gpu.thread_id x
+// MASK-NEXT: %[[LANE:.*]] = arith.index_cast %thread_id_x{{.*}} : index to i32
+// MASK-NEXT: %[[N:.*]] = arith.constant 32 : i32
+// MASK-NEXT: %[[IN:.*]] = arith.cmpi slt, %[[LANE]], %[[N]] : i32
+// MASK-NEXT: cf.cond_br %[[IN]], ^{{bb[0-9]+}}, ^[[SKIP:bb[0-9]+]]
+// MASK:      ^[[SKIP]]:
+// MASK-NEXT: vx.barrier
+
+pub fn rmsnorm(y : &mut Tensor<f32, [?, 4096], Memory::HBM>, x : &Tensor<f32, [?, 4096], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for row in 0..rows across blocks {
+      let mut part = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for t in 0..256 across lanes {
+        let mut s : f32 = 0.0;
+        for k in 0..16 {
+          let v = x[row][k * 256 + t];
+          s = s + v * v;
+        }
+        part[t] = s;
+      }
+      let mut total : f32 = 0.0;
+      for t in 0..256 {
+        total = total + part[t];
+      }
+      part[0] = total;
+      for t in 0..256 across lanes {
+        let inv = 1.0 / (part[0] / 4096.0 + 0.00001);
+        for k in 0..16 {
+          y[row][k * 256 + t] = x[row][k * 256 + t] * inv;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn warps(y : &mut Tensor<f32, [?, ?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, rows : i32, cols : i32, scale : f32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(rows + 3) / 4 across blocks {
+      for w in 0..4 across subgroups {
+        let row = b * 4 + w;
+        if row < rows {
+          for c in 0..cols across lanes(32) {
+            y[row][c] = x[row][c] * scale;
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn tiles(o : &mut Tensor<f32, [?, ?, 256], Memory::HBM>, rows : i32, cols : i32) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..rows across blocks {
+      for j in 0..cols across blocks {
+        for p in 0..4 across lanes {
+          for q in 0..4 across lanes {
+            for r in 0..16 across lanes {
+              o[i][j][p * 64 + q * 16 + r] = 1.0;
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn shared(o : &mut Tensor<f32, [?, ?], Memory::HBM>, rows : i32, cols : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks(8) {
+      for c in 0..cols across lanes(64) {
+        o[b][c] = 1.0;
+      }
+      for c in 0..32 across lanes {
+        o[b][c] = o[b][c] + 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn zeroed(y : &mut Tensor<f32, [?, 64], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let part = Tensor<f32, [64], Memory::SMEM>::fill(0.0);
+      for t in 0..64 across lanes {
+        y[b][t] = part[t];
+      }
+    }
+  }
+  return;
+}
+
+pub fn subgroup_rows(y : &mut Tensor<f32, [?, 32], Memory::HBM>, done : &mut Tensor<f32, [?, 4], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for w in 0..4 across subgroups {
+        for l in 0..32 across lanes {
+          y[b * 4 + w][l] = 1.0;
+        }
+        done[b][w] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn four_blocks(o : &mut Tensor<f32, [4], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      o[b] = 1.0;
+    }
+  }
+  return;
+}
