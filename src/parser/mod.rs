@@ -82,6 +82,8 @@ pub struct Parser<'a> {
     /// Set once tuple syntax is seen: the module then imports `core::tuple`, where the structs
     /// it stands for are declared.
     uses_tuples: bool,
+    /// Set by `&[T]`/`&mut [T]`; their backing structs live in `core::slice`.
+    uses_slices: bool,
     /// Statements a desugaring produced after the one it returned: `let (a, b) = e;` is a `let`
     /// of `e` followed by one per name. `parse_statement_into` appends them.
     pending_stmts: Vec<crate::syntax::Statement>,
@@ -116,6 +118,7 @@ impl<'a> Parser<'a> {
             mut_params: Vec::new(),
             source,
             uses_tuples: false,
+            uses_slices: false,
             pending_stmts: Vec::new(),
             tuple_lets: 0,
             prefix_stmts: Vec::new(),
@@ -322,6 +325,22 @@ mod tests {
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, input);
         parser.parse_type().expect("Failed to parse type")
+    }
+
+    #[test]
+    fn slice_references_keep_element_type_and_mutability() {
+        let shared = parse_type("&[i32]");
+        let mutable = parse_type("&mut [Vec<u8>]");
+
+        let (shared_elem, shared_mut) = crate::syntax::slice_borrow_parts(&shared).unwrap();
+        assert_eq!(shared_elem, &Type::Scalar(ElementType::I32));
+        assert!(!shared_mut);
+        assert_eq!(shared.to_string(), "&[i32]");
+
+        let (mutable_elem, mutable_mut) = crate::syntax::slice_borrow_parts(&mutable).unwrap();
+        assert_eq!(mutable_elem.to_string(), "Vec<u8>");
+        assert!(mutable_mut);
+        assert_eq!(mutable.to_string(), "&mut [Vec<u8>]");
     }
 
     #[test]

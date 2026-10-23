@@ -387,6 +387,17 @@ impl BorrowCx {
         }
     }
 
+    /// Keep only borrow records that were present in `before` and remain present now. Unlike a
+    /// restore, this cannot resurrect an NLL-expired record. It also removes new bases introduced
+    /// while evaluating a value-returning call's arguments.
+    pub(crate) fn retain_present_snapshot(&mut self, before: &HashMap<Symbol, Vec<BorrowRecord>>) {
+        self.active_borrows.retain(|base, records| {
+            let previous = before.get(base).map(Vec::as_slice).unwrap_or(&[]);
+            records.retain(|record| previous.contains(record));
+            !records.is_empty()
+        });
+    }
+
     /// The records added since `before`, a [`Self::snapshot`].
     pub(crate) fn added_since(
         &self,

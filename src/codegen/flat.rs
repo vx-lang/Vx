@@ -258,6 +258,9 @@ fn nrvo_candidate(hir: &[HirInstruction]) -> Option<usize> {
 }
 
 fn is_ptr_ty(ty: &Type) -> bool {
+    if crate::syntax::slice_borrow_parts(ty).is_some() {
+        return false;
+    }
     matches!(
         ty,
         Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..) | Type::Closure(..)
@@ -310,6 +313,9 @@ pub(crate) fn placed_device(id: u64, ctx: &EmitCtx) -> Option<i32> {
 
 fn param_alias_attrs(ty: &Type, ctx: &EmitCtx) -> String {
     match ty {
+        // A slice borrow is passed as its two-word aggregate. Pointer-only LLVM
+        // alias attributes do not apply to the aggregate parameter itself.
+        Type::Borrow { .. } if crate::syntax::slice_borrow_parts(ty).is_some() => String::new(),
         Type::Borrow { is_mut: true, .. } => " {llvm.noalias}".to_string(),
         // A `SharedCell` in the value lets code write through the `&`.
         Type::Borrow {
@@ -1173,6 +1179,9 @@ pub(crate) fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
                                 // (Vx#417).
     let ty = match ty {
         Type::Borrow { inner, .. } if crate::hir::flatten::tensor_gid_of(inner).is_some() => {
+            peel_wrappers(inner)
+        }
+        Type::Borrow { inner, .. } if crate::syntax::slice_borrow_parts(ty).is_some() => {
             peel_wrappers(inner)
         }
         other => other,

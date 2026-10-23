@@ -209,7 +209,7 @@ Track B can be completed; the rest are tagged with the phase that needs them.
 | A14 | **A generic enum constructed at a method-level type parameter lowers.** `fn map<U>(..) -> Option<U> { return Option<U>::Some(..); }` | `Option::map`, `Result::map`, `Iterator::map`'s `next`. | `unrealized_conversion_cast i32 to Opt_i32` on both code generators (§9 M1). | M | **P1** for `option` |
 | A15 | **`char` and `str` as language types**, or the compiler treating a string literal as `(ptr, len)`. | `core::char`, `core::str`. Phase 2 ships them as library types (`Char { code : u32 }`, `Str { ptr : *const u8, len : i64 }`), which is faithful to what Rust's are underneath. What the library cannot do is know a literal's length without scanning for NUL, or write `'a'`. | String literal types as `*const i8`; indexing one and comparing the byte fails in the AST code generator (§9 M4). | M | P2 |
 | A16 | **Tuples** (types, literals, patterns). | `zip`, `enumerate`, `split_at`, `Option::zip`, `unzip`, `overflowing_add -> (T, bool)`. Phase 1 uses `Pair<A, B>` / `Triple<A, B, C>` structs in `core::tuple`; tuples replace them. | Types, literals, `.0` access and `let` patterns, two to six elements: the parser spells each as `core::tuple`'s `Tuple2`..`Tuple6`, and a struct literal infers its type arguments. Patterns in `match` remain (Vx#533). | L | P3 |
-| A17 | **Slices `&[T]` / `&mut [T]` as fat references.** | `core::slice` is a quarter of Rust's `core`. Phase 2 ships `Slice<T>` / `SliceMut<T>` structs over `(ptr, len)` with a `get`/`set` API; `&[T]` sugar and `s[i]` indexing come with A11 and A17. | `Vec::as_slice` returns `&T`. | L | P3 |
+| A17 | **Slices `&[T]` / `&mut [T]` as fat references.** | `core::slice` is a quarter of Rust's `core`. | Done in #534: the surface borrow wraps a `Slice<T>` / `SliceMut<T>` `(ptr, len)` backing aggregate, preserving borrow checking while sharing ordinary struct lowering; indexing dispatches through `Index` / `IndexMut`, and `Vec` returns length-carrying slices. | L | P3 |
 | A18 | **Const generics on methods.** | `core::array`: `[T; N]::map`, `from_fn`, `IntoIter`. | `const_generics_methods.vx` is `XFAIL`. | M | P3 |
 | A19 | **`Drop`.** | Not for `core` itself (its owning types are `Cell` and `ManuallyDrop`, which are trivial), but `mem::drop`, `mem::forget`, `ManuallyDrop` and `MaybeUninit` only mean something once it exists, and every `alloc` type needs it. Vx#495 is the decision. | Reserved bit, nothing set. | L | P3 / alloc |
 | A20 | **`pub` visibility** (Vx#489) and **`while`** (Vx#506), **`if let`**, **`?`**. | Quality of life for writing `core`; none is required for its API. `?` desugars to a `match` on `Result`; `if let` to a two-arm `match`. | `while` landed in Vx#506, parsed as `loop { if cond { body } else { break } }`. The others: none. | S each | any |
@@ -487,8 +487,9 @@ range loop stays as the fast path for a literal range so `for i in 0..n` keeps l
 
 #### `core::slice`
 
-`Slice<T> { ptr : *const T, len : i64 }` and `SliceMut<T> { ptr : *mut T, len : i64 }` as library
-types until A17 gives them the `&[T]` spelling. Constructors are `unsafe fn from_raw_parts`.
+`Slice<T> { ptr : *const T, len : i64 }` and `SliceMut<T> { ptr : *mut T, len : i64 }` are the
+library backing types for the A17 `&[T]` and `&mut [T]` spellings. Constructors are
+`unsafe fn from_raw_parts`.
 Surface: `len`, `is_empty`, `first`, `last`, `get`, `get_mut`, `get_unchecked`, `split_at`,
 `split_first`, `split_last`, `iter`, `iter_mut`, `windows`, `chunks`, `chunks_exact`, `rchunks`,
 `split`, `contains`, `starts_with`, `ends_with`, `binary_search`, `binary_search_by`,

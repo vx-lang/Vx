@@ -1552,6 +1552,15 @@ impl<'a> Parser<'a> {
                 path: vec!["core".into(), "tuple".into()],
             });
         }
+        if self.uses_slices
+            && !imports.iter().any(|i: &ImportDecl| {
+                i.path.len() == 2 && &*i.path[0] == "core" && &*i.path[1] == "slice"
+            })
+        {
+            imports.push(ImportDecl {
+                path: vec!["core".into(), "slice".into()],
+            });
+        }
         Ok(Program {
             module_path: self.source.to_string().into(), // Default fallback, should be overridden by pipeline
             item_macros,

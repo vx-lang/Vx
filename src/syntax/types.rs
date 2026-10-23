@@ -809,6 +809,28 @@ pub enum Type {
     Unknown,
 }
 
+/// The element and mutability of a language slice reference. Slices retain the ordinary
+/// `Type::Borrow` wrapper so the lifetime checker sees them; its inner nominal is the library
+/// layout (`Slice<T>` or `SliceMut<T>`), shared by both code generators.
+pub fn slice_borrow_parts(ty: &Type) -> Option<(&Type, bool)> {
+    let Type::Borrow { inner, is_mut, .. } = ty else {
+        return None;
+    };
+    let Type::GenericInstance(base, args) = inner.as_ref() else {
+        return None;
+    };
+    let Type::Struct(name, _) = base.as_ref() else {
+        return None;
+    };
+    if args.len() == 1
+        && ((!*is_mut && name.as_ref() == "Slice") || (*is_mut && name.as_ref() == "SliceMut"))
+    {
+        Some((&args[0], *is_mut))
+    } else {
+        None
+    }
+}
+
 pub trait Mangle {
     fn mangle_to(&self, w: &mut dyn std::fmt::Write) -> std::fmt::Result;
     fn mangle(&self) -> String {
@@ -1375,6 +1397,13 @@ impl std::fmt::Display for Type {
                 }
             }
             Type::Borrow { inner, is_mut, .. } => {
+                if let Some((elem, mutable)) = slice_borrow_parts(self) {
+                    return if mutable {
+                        write!(f, "&mut [{}]", elem)
+                    } else {
+                        write!(f, "&[{}]", elem)
+                    };
+                }
                 if *is_mut {
                     write!(f, "&mut {}", inner)
                 } else {

@@ -1276,7 +1276,12 @@ impl<'a> TypeChecker<'a> {
             } else {
                 "index"
             };
-            let ty = self.operand_type(base);
+            let mut ty = self.operand_type(base);
+            if crate::syntax::slice_borrow_parts(&ty).is_some() {
+                if let Type::Borrow { inner, .. } = ty {
+                    ty = *inner;
+                }
+            }
             if Self::is_user_type(&ty)
                 && self
                     .resolve_method_in_impls(&ty, &method.into(), &mut HashMap::new())
@@ -1294,7 +1299,12 @@ impl<'a> TypeChecker<'a> {
                     ty: None,
                     span,
                 });
+                // The synthetic `index()` call returns `&T`, but `a[i]` immediately dereferences
+                // it. Do not make the surrounding assignment target borrow the collection as if
+                // that intermediate reference escaped.
+                let assignment_target = self.current_assignment_target.take();
                 let t = self.check_expr_type_flag(&mut read, consume);
+                self.current_assignment_target = assignment_target;
                 *expr = read;
                 return t;
             }

@@ -2729,6 +2729,7 @@ fn comptime_sizeof_bytes(ty: &Type) -> Option<i64> {
         Type::Scalar(element) => {
             crate::layout::scalar_size_align(element).map(|(size, _)| size as i64)
         }
+        Type::Borrow { .. } if crate::syntax::slice_borrow_parts(ty).is_some() => None,
         Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => Some(8),
         _ => None,
     }

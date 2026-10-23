@@ -4286,12 +4286,22 @@ impl<'r> Lowerer<'r> {
             .ok_or(Decline::TypeNotModelled {
                 what: "an indirect callee with no recorded AST type",
             })? {
-            Type::Function(_, ret, _) | Type::Closure(_, ret) => match ret.as_ref() {
-                Type::Borrow { .. } | Type::Ref(..) | Type::Pointer(..) => LoweredTy::Ptr,
-                other => LoweredTy::Scalar(scalar_of(other).ok_or(Decline::TypeNotModelled {
-                    what: "an indirect callee returning a non-scalar",
-                })?),
-            },
+            Type::Function(_, ret, _) | Type::Closure(_, ret) => {
+                if crate::syntax::slice_borrow_parts(ret).is_some() {
+                    lowered_ty(ret, self.registry).ok_or(Decline::TypeNotModelled {
+                        what: "an indirect callee returning a slice",
+                    })?
+                } else {
+                    match ret.as_ref() {
+                        Type::Borrow { .. } | Type::Ref(..) | Type::Pointer(..) => LoweredTy::Ptr,
+                        other => {
+                            LoweredTy::Scalar(scalar_of(other).ok_or(Decline::TypeNotModelled {
+                                what: "an indirect callee returning a non-scalar",
+                            })?)
+                        }
+                    }
+                }
+            }
             _ => {
                 return Err(Decline::TypeNotModelled {
                     what: "an indirect callee that is not a function type",
@@ -5590,6 +5600,9 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
     // the memref itself. Reading it as an opaque pointer gave a function body a parameter type its
     // own signature contradicts (Vx#417).
     if let Type::Borrow { inner, .. } = ty {
+        if crate::syntax::slice_borrow_parts(ty).is_some() {
+            return lowered_ty(inner, registry);
+        }
         if let Some((elem, shape)) = tensor_elem_shape(inner) {
             return Some(LoweredTy::Tensor { elem, shape });
         }
@@ -6316,6 +6329,7 @@ fn enum_payload_field(ty: &Type) -> Option<(u64, u64, String)> {
                 crate::mlir_ty::mlir_scalar(e)?.to_string(),
             ))
         }
+        Type::Borrow { .. } if crate::syntax::slice_borrow_parts(ty).is_some() => None,
         Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => {
             Some((8, 8, "!llvm.ptr".to_string()))
         }
@@ -6421,7 +6435,9 @@ fn agg_gid_of_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<TypeId
 /// such a param binds as an SSA register even in memory mode (a block argument that dominates all
 /// blocks; mutation flows through the pointer to the pointee, not to the register). (#242)
 fn is_ptr_to_agg(ty: &Type, registry: &ImmutableGlobalRegistry) -> bool {
-    matches!(ty, Type::Borrow { .. } | Type::Pointer(..)) && agg_gid_of_ty(ty, registry).is_some()
+    crate::syntax::slice_borrow_parts(ty).is_none()
+        && matches!(ty, Type::Borrow { .. } | Type::Pointer(..))
+        && agg_gid_of_ty(ty, registry).is_some()
 }
 
 /// Pack an `if`'s two branch targets into `CondBr`'s `imm`: `then | (else << 32)`.
@@ -6439,6 +6455,10 @@ fn sizeof_bytes(ty: &Type) -> Option<u64> {
         Type::Scalar(F64 | I64 | U64 | USize) => 8,
         Type::Scalar(I8 | U8 | Bool) => 1,
         Type::Scalar(I16 | U16 | BF16 | F16) => 2,
+        Type::Borrow { inner, .. } if crate::syntax::slice_borrow_parts(ty).is_some() => {
+            let _ = inner;
+            return None;
+        }
         Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..) => 8,
         _ => return None,
     })
