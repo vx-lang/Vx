@@ -10,15 +10,14 @@
 // must be reported once. The parallel frontend used to print its warnings as it found them, so
 // every warning in a declining program appeared twice.
 //
-// The `match` whose arms give the returned value is what puts it outside the flat subset; the
-// unused binding is what warns.
+// The match over an i64 puts it outside the flat subset. The unused binding produces the warning.
 //
 // This test checks the fallback, so it unsets VX_NO_AST_FALLBACK, which the test runner sets.
 // RUN: (env -u VX_NO_AST_FALLBACK vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
 
-fn seven_or_nine(n : i32) -> i32 {
+fn seven_or_nine(n : i64) -> i32 {
   return match n {
-    0 => {
+    0i64 => {
       7
     }
     _ => {
@@ -29,7 +28,7 @@ fn seven_or_nine(n : i32) -> i32 {
 
 fn main() -> i32 {
   let unused_here = 5;
-  return seven_or_nine(0);
+  return seven_or_nine(0i64);
 }
 
 // Reported once. The sequential driver is what prints it on this path -- it re-checks the whole

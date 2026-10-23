@@ -32,18 +32,12 @@ const KNOWN_DECLINES: &[&str] = &[
     // pointer): the flat path only fills the destination in place, and declines the rest.
     "backend/pass/matmul_assign_alias.vx",
     "backend/pass/matmul_into_a_tensor_read_through_a_view.vx",
-    // A tuple holding an `Option<i32>`: the flat path has no layout for a generic struct holding
-    // an enum ("a struct with no GID"), and it also declines a `match` used as a value.
-    "backend/pass/tuple_match_with_enum_variants_as_a_value.vx",
     // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
     // ("an aggregate slot with no struct type").
     "backend/pass/tensor_views_end_at_their_last_use.vx",
     // `let u = if c { ..; };`: the flat path declines a `let` of a `void` value, with or
     // without `: void` ("a let with no type annotation"). The file is about the AST path.
     "backend/pass/if_else_with_no_value_bound_by_let.vx",
-    // A `match` that gives a `bool`: the flat path declines a match used as a value. The file
-    // is about the AST path.
-    "optimizations/pass/match_that_gives_a_bool.vx",
     // A struct passed to `grad`: the flat path declines it ("an autodiff argument that is not a
     // scalar"). The file is about the AST path.
     "backend/pass/autodiff/autodiff_for_variable_argument.vx",

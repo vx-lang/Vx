@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 // A program the flat path declines is still compiled under `-j`: the parallel frontend says
-// so and the sequential driver takes over, through its AST codegen. A `match` whose arms give
-// the returned value is outside the flat subset today.
+// so and the sequential driver takes over, through its AST codegen. A match over an i64
+// remains outside the flat subset.
 //
 // The phase table is the second claim here: it describes the compile that produced the output.
 // Draining it when the parallel frontend declined printed the half that was thrown away, and
@@ -17,9 +17,9 @@
 // RUN: (env -u VX_NO_AST_FALLBACK vxc -j 2 --emit-mlir %s 2>&1; echo "exit=$?") | FileCheck %s
 // RUN: (VX_PIPELINE_PHASES=1 env -u VX_NO_AST_FALLBACK vxc -j 2 --emit-mlir %s 2>&1 >/dev/null) | FileCheck --check-prefix=PHASES %s
 
-fn seven_or_nine(n : i32) -> i32 {
+fn seven_or_nine(n : i64) -> i32 {
   return match n {
-    0 => {
+    0i64 => {
       7
     }
     _ => {
@@ -29,7 +29,7 @@ fn seven_or_nine(n : i32) -> i32 {
 }
 
 fn main() -> i32 {
-  return seven_or_nine(0);
+  return seven_or_nine(0i64);
 }
 
 // `flat_corpus_sweep` decides which codegen path a program took by looking for the flat emitter's

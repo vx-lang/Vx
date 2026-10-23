@@ -3838,3 +3838,164 @@ fn a_generic_over_two_tensor_shapes_gets_two_monomorphs() {
         "expected 1.0 + 7.0 through two distinct monomorphs, got:\n{out}"
     );
 }
+
+#[rstest::rstest]
+#[case(0, 7)]
+#[case(1, 9)]
+fn flat_matches_ast_returned_match_value(#[case] input: i32, #[case] expected: i32) {
+    assert_parity(
+        &format!("fn main() -> i32 {{ return match {input} {{ 0 => {{ 7 }}, _ => {{ 9 }}, }}; }}"),
+        expected,
+    );
+}
+
+#[test]
+fn flat_matches_ast_match_value_in_local_and_call() {
+    assert_parity(
+        "fn add_one(x: i32) -> i32 { return x + 1; }
+        fn main() -> i32 {
+            let n = match 0 { 0 => { 7 }, _ => { 9 }, };
+            return add_one(match n { 7 => { 20 }, _ => { 30 }, });
+        }",
+        21,
+    );
+}
+
+#[test]
+fn flat_matches_ast_nested_match_value() {
+    assert_parity(
+        "fn main() -> i32 {
+        return if true { match 1 { 0 => { 7 }, _ => { 9 }, } } else { 3 };
+    }",
+        9,
+    );
+}
+
+#[test]
+fn flat_matches_ast_match_value_with_side_effects() {
+    assert_parity(
+        "fn main() -> i32 {
+        let mut count = 0;
+        let value = match 0 {
+            0 => { count += 1; 7 },
+            _ => { count += 10; 9 },
+        };
+        return value + count;
+    }",
+        8,
+    );
+}
+
+#[test]
+fn flat_matches_ast_enum_match_value() {
+    assert_parity(
+        "enum Choice { First, Second }
+        fn main() -> i32 {
+            return match Choice::Second {
+                Choice::First => { 7 }, Choice::Second => { 9 },
+            };
+        }",
+        9,
+    );
+}
+
+#[test]
+fn flat_matches_ast_payload_match_value() {
+    assert_parity(
+        "enum Number { Some(i32), None }
+        fn main() -> i32 {
+            let n = Number::Some(12);
+            return match n { Number::Some(value) => { value }, Number::None => { 0 }, };
+        }",
+        12,
+    );
+}
+
+#[test]
+fn flat_matches_ast_match_value_with_early_return() {
+    assert_parity(
+        "fn main() -> i32 {
+        return match 0 { 0 => { return 7; }, _ => { 9 }, };
+    }",
+        7,
+    );
+}
+
+// Each case checks both possible Boolean results. The older generator supplies a working baseline.
+// The default generator must also succeed, so missing inference cannot pass through fallback.
+#[rstest::rstest]
+#[case::comparison("a == a", "a == b")]
+#[case::boolean_literals("true", "false")]
+#[case::logical_and("a && a", "a && b")]
+#[case::logical_or("b || a", "b || b")]
+fn boolean_match_result_inference(#[case] true_expr: &str, #[case] false_expr: &str) {
+    for (subject, expected) in [(0, 7), (1, 9)] {
+        let src = format!(
+            "fn choose(n: i32, a: bool, b: bool) -> bool {{
+                return match n {{ 0 => {{ {true_expr} }}, _ => {{ {false_expr} }}, }};
+            }}
+            fn main() -> i32 {{
+                if choose({subject}, true, false) {{ return 7; }}
+                return 9;
+            }}"
+        );
+        assert_eq!(
+            ast_exit_code(&src),
+            expected,
+            "older generator: subject {subject}"
+        );
+        let flat = flat_exit_code(&src)
+            .expect("the default generator must infer the Boolean match result");
+        assert_eq!(flat, expected, "default generator: subject {subject}");
+    }
+}
+
+#[rstest::rstest]
+#[case(0, 77)]
+#[case(1, 99)]
+fn struct_match_result_from_construction(#[case] subject: i32, #[case] expected: i32) {
+    let src = format!(
+        "struct Point {{ x: i32, y: i32 }}
+        fn choose(n: i32) -> Point {{
+            return match n {{
+                0 => {{ Point {{ x: 7, y: 70 }} }},
+                _ => {{ Point {{ x: 9, y: 90 }} }},
+            }};
+        }}
+        fn main() -> i32 {{ let p = choose({subject}); return p.x + p.y; }}"
+    );
+    assert_eq!(ast_exit_code(&src), expected);
+    assert_parity(&src, expected);
+}
+
+#[rstest::rstest]
+#[case(0, 77)]
+#[case(1, 99)]
+fn struct_match_result_from_local(#[case] subject: i32, #[case] expected: i32) {
+    let src = format!(
+        "struct Point {{ x: i32, y: i32 }}
+        fn choose(n: i32) -> Point {{
+            let left = Point {{ x: 7, y: 70 }};
+            let right = Point {{ x: 9, y: 90 }};
+            return match n {{ 0 => {{ left }}, _ => {{ right }}, }};
+        }}
+        fn main() -> i32 {{ let p = choose({subject}); return p.x + p.y; }}"
+    );
+    assert_eq!(ast_exit_code(&src), expected);
+    assert_parity(&src, expected);
+}
+
+#[rstest::rstest]
+#[case(0, 77)]
+#[case(1, 99)]
+fn struct_if_result_from_construction(#[case] subject: i32, #[case] expected: i32) {
+    let src = format!(
+        "struct Point {{ x: i32, y: i32 }}
+        fn choose(n: i32) -> Point {{
+            return if n == 0 {{ Point {{ x: 7, y: 70 }} }} else {{ Point {{ x: 9, y: 90 }} }};
+        }}
+        fn main() -> i32 {{ let p = choose({subject}); return p.x + p.y; }}"
+    );
+    assert_eq!(ast_exit_code(&src), expected);
+    assert_parity(&src, expected);
+}
