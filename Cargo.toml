@@ -7,7 +7,8 @@
 #===----------------------------------------------------------------------===#
 [package]
 name = "vxc"
-version = "0.0.3"
+# Same product as the analyzer, so it shares the version from [workspace.package].
+version.workspace = true
 edition = "2021"
 description = "A heterogeneous-systems programming language that puts placement and reachability in the type system."
 authors = ["Aditya"]
@@ -57,6 +58,11 @@ default-members = [".", "stdlib/rust_core"]
 # The crates.io name-reservation stubs are packages, but they are not part of this build: they are
 # a few lines published to hold `vxc` and `vxlang`, copied out of the tree before `cargo publish`.
 exclude = ["scripts/release/crates-io"]
+
+# The product version in one place. Members that ship as the product inherit it; internal
+# crates keep their own version, which is not a release number.
+[workspace.package]
+version = "0.0.3"
 
 [lints.clippy]
 if_same_then_else = "allow"
