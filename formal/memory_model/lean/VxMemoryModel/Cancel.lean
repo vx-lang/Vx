@@ -13,6 +13,9 @@ the block.
 one CAS writes the slot. `block_value_is_failure` shows that a read of the slot that the winning
 CAS happens before gets its value. `block_value_not_cancelled` shows that `cancelled` never
 reaches the slot. A task that sees the flag set also sees the slot set, so its CAS fails.
+`each_error_once` shows that the error of at most one failure moves into the slot, and that each
+other failure drops its error. A task with no `result` never reads the slot, so `join` gives no
+error to its caller.
 
 This is safety only: the model does not say that a cancelled task stops.
 -/
@@ -37,6 +40,10 @@ variable (P : ChanProg)
 /-- An access that is not to the failure slot or the cancel flag. -/
 def NotFail (k : Kind) (_ : Order) (x : Nat) : Prop :=
   k = .fence ∨ (x ≠ P.slot ∧ x ≠ P.flag)
+
+/-- An access that is not an acquire read of the slot: not a `result`. -/
+def NoResult (k : Kind) (o : Order) (x : Nat) : Prop :=
+  k = .read → x = P.slot → o = .sc
 
 /-- Where a thread is in a failure. -/
 inductive FState where
@@ -68,21 +75,22 @@ inductive FTrans : FState → Option Label → FState → Prop
   /-- `result` reads the slot. -/
   | result {v} : FTrans .free (some ⟨.read, .acq, P.slot, v, false⟩) .free
 
-/-- Lowered code, with each failure, each `checkCancel` and each `result` whole. -/
-inductive FClean : Stmt → Prop
-  | other {s} : s.Accesses P.NotFail → FClean s
-  | fail {v} : v ≠ 0 → v ≠ cancelled → FClean (P.failCode v)
-  | check : FClean P.checkCode
-  | result {r} : FClean (.load r P.slot .acq)
-  | seq {s t} : FClean s → FClean t → FClean (.seq s t)
-  | ite {e s t} : FClean s → FClean t → FClean (.ite e s t)
-  | loop {e s} : FClean s → FClean (.loop e s)
+/-- Lowered code, with each failure, each `checkCancel` and each `result` whole. A `result` needs
+`R`. -/
+inductive FClean (R : Prop) : Stmt → Prop
+  | other {s} : s.Accesses P.NotFail → FClean R s
+  | fail {v} : v ≠ 0 → v ≠ cancelled → FClean R (P.failCode v)
+  | check : FClean R P.checkCode
+  | result {r} : R → FClean R (.load r P.slot .acq)
+  | seq {s t} : FClean R s → FClean R t → FClean R (.seq s t)
+  | ite {e s t} : FClean R s → FClean R t → FClean R (.ite e s t)
+  | loop {e s} : FClean R s → FClean R (.loop e s)
 
 /-- The states of lowered code, with their state of `FState`. After the CAS of a failure or the
 read of the cancel flag, the register `ctrReg` holds the value that it read. -/
 inductive FGood (regs : Nat → Int) : FState → Stmt → Prop
-  | clean {s} : P.FClean s → FGood regs .free s
-  | seq {f s t} : FGood regs f s → P.FClean t → FGood regs f (.seq s t)
+  | clean {s} : P.FClean True s → FGood regs .free s
+  | seq {f s t} : FGood regs f s → P.FClean True t → FGood regs f (.seq s t)
   | zero {c v} : v ≠ 0 → (v = cancelled → c = true) → regs P.ctrReg = 0 →
     FGood regs (.zero c) (.seq (.rmwStore P.slot v .sc) P.raise)
   | wrote : regs P.ctrReg = 0 → FGood regs .won (.seq .skip P.raise)
@@ -98,7 +106,7 @@ inductive FGood (regs : Nat → Int) : FState → Stmt → Prop
 
 variable {P}
 
-theorem FClean.step {s} (hcl : P.FClean s) :
+theorem FClean.step {s} (hcl : P.FClean True s) :
     ∀ {regs a s' regs'}, Step s regs a s' regs' → ∃ f, P.FGood regs' f s' ∧ P.FTrans .free a f := by
   induction hcl with
   | other hs =>
@@ -130,7 +138,7 @@ theorem FClean.step {s} (hcl : P.FClean s) :
         · subst hv
           exact ⟨_, .looked (Or.inl ⟨by simp [update], rfl⟩), .clear⟩
         · exact ⟨_, .looked (Or.inr ⟨by simpa [update] using hv, rfl⟩), .see hv⟩
-  | result =>
+  | result _ =>
     intro regs a s' regs' h
     cases h with
     | load v => exact ⟨_, .clean (.other trivial), .result⟩
@@ -312,7 +320,8 @@ theorem spawnIds_lowerC {s : CStmt} (hs : P.StmtOk s) : ∀ u ∈ (P.lowerC s).s
     · exact ih2 hs.2 u h
   | loop _ _ ih => exact ih hs
 
-theorem fclean_lower {s : CStmt} (hs : P.StmtOk s) : P.FClean (P.toTaskProg.lower (P.lowerC s)) := by
+theorem fclean_lower {R : Prop} {s : CStmt} (hs : P.StmtOk s) (hr : s.Results → R) :
+    P.FClean R (P.toTaskProg.lower (P.lowerC s)) := by
   induction s with
   | base s => exact .other (lower_notFail hs)
   | send c e =>
@@ -337,35 +346,54 @@ theorem fclean_lower {s : CStmt} (hs : P.StmtOk s) : P.FClean (P.toTaskProg.lowe
         notFail_of_top (cnt_inside (q := .next) hs.1).2⟩,
       notFail_of_top (k := .read) (o := .sc) (cnt_inside (q := .serving) hs.1).2,
       notFail_of_top (k := .read) (o := .sc) (cnt_inside (q := .serving) hs.1).2⟩)
-      (.seq (ih hs.2.2) (.other ⟨notFail_of_top (cnt_inside (q := .serving) hs.1).2,
+      (.seq (ih hs.2.2 hr) (.other ⟨notFail_of_top (cnt_inside (q := .serving) hs.1).2,
         notFail_of_top (cnt_inside (q := .serving) hs.1).2⟩))
-  | seq _ _ ih1 ih2 => exact .seq (ih1 hs.1) (ih2 hs.2)
-  | ite _ _ _ ih1 ih2 => exact .ite (ih1 hs.1) (ih2 hs.2)
-  | loop _ _ ih => exact .loop (ih hs)
+  | seq _ _ ih1 ih2 => exact .seq (ih1 hs.1 fun h => hr (.inl h)) (ih2 hs.2 fun h => hr (.inr h))
+  | ite _ _ _ ih1 ih2 => exact .ite (ih1 hs.1 fun h => hr (.inl h)) (ih2 hs.2 fun h => hr (.inr h))
+  | loop _ _ ih => exact .loop (ih hs hr)
   | tasksBlock s ih =>
     refine .seq (.other (P.toTaskProg.clearMarks_accesses _ _))
-      (.seq (ih hs) (.other (P.toTaskProg.joinMarked_accesses fun u hu => notFail_of_lt ?_)))
+      (.seq (ih hs hr) (.other (P.toTaskProg.joinMarked_accesses fun u hu => notFail_of_lt ?_)))
     have := spawnIds_lowerC (s := s) hs u hu
     simp only [TaskProg.done, toTaskProg, slot]
     omega
   | fail v => exact .fail (by have := hs.2; omega) (by have := hs.2; simp only [cancelled]; omega)
   | checkCancel => exact .check
-  | result => exact .result
+  | result => exact .result (hr trivial)
 
-theorem fclean_body (hP : P.Ok) (t : Nat) : P.FClean (P.body t) := by
+theorem fclean_task {R : Prop} (hP : P.Ok) (t : Nat) (hr : (P.task t).Results → R) :
+    P.FClean R (P.body (t + 1)) := by
+  show P.FClean R (P.toTaskProg.taskCode t)
+  unfold TaskProg.taskCode
+  split
+  · refine .seq (.other (notFail_of_lt ?_)) (.seq (fclean_lower (hP.task t) hr)
+      (.other (notFail_of_lt ?_)))
+    · simp only [TaskProg.start, toTaskProg, slot] at *
+      omega
+    · simp only [TaskProg.done, toTaskProg, slot] at *
+      omega
+  · exact .other trivial
+
+theorem fclean_body (hP : P.Ok) (t : Nat) : P.FClean True (P.body t) := by
   cases t with
-  | zero => exact fclean_lower hP.main
-  | succ t =>
-    show P.FClean (P.toTaskProg.taskCode t)
-    unfold TaskProg.taskCode
-    split
-    · refine .seq (.other (notFail_of_lt ?_)) (.seq (fclean_lower (hP.task t))
-        (.other (notFail_of_lt ?_)))
-      · simp only [TaskProg.start, toTaskProg, slot] at *
-        omega
-      · simp only [TaskProg.done, toTaskProg, slot] at *
-        omega
-    · exact .other trivial
+  | zero => exact fclean_lower hP.main fun _ => trivial
+  | succ t => exact fclean_task hP t fun _ => trivial
+
+/-- Code with no `result` never reads the slot with acquire. -/
+theorem FClean.noResult {s} (h : P.FClean False s) : s.Accesses P.NoResult := by
+  have hsf := slot_ne_flag (P := P)
+  induction h with
+  | other hs =>
+    refine hs.mono fun k o x h hk hx => ?_
+    rcases h with h | h
+    · rw [h] at hk
+      cases hk
+    · exact (h.1 hx).elim
+  | fail => exact ⟨⟨fun _ _ => rfl, nofun⟩, nofun, trivial⟩
+  | check => exact ⟨fun _ hx => (hsf hx.symm).elim, ⟨⟨fun _ _ => rfl, nofun⟩, nofun, trivial⟩, trivial⟩
+  | result h => exact h.elim
+  | seq _ _ ih1 ih2 | ite _ _ ih1 ih2 => exact ⟨ih1, ih2⟩
+  | loop _ ih => exact ih
 
 /-! ## The history of a failure -/
 
@@ -730,6 +758,49 @@ theorem block_value_not_cancelled (hP : P.Ok) (wf : X.WellFormed) (hcons : X.Con
   have := zero_unique run hP hs0w (hs0l.trans hrl) ((run.rf_val s0 r hs0).trans hrv) hi0w hi0l hi0v
   subst this
   exact hcons.coherence s r hhb (Or.inr (Relation.TransGen.single (Or.inr (Or.inr ⟨s0, hs0, hco⟩))))
+
+/-! ## Each error once -/
+
+/-- A task with no `result` never reads the slot with acquire. -/
+theorem task_noResult (hP : P.Ok) (htr : ∀ t, ¬ (P.task t).Results) {e : X.E}
+    (he : X.thread e ≠ 0) : P.NoResult (X.kind e) (X.order e) (X.loc e) := by
+  obtain ⟨t, ht⟩ := Nat.exists_eq_succ_of_ne_zero he
+  have hc : P.FClean False (P.toTaskProg.toProg.code (X.thread e)) := by
+    have := fclean_task hP t (htr t)
+    rw [ht]
+    simpa [body] using this
+  have h := (accessRule P.NoResult).trace (run.trace e) hc.noResult
+  simp only [accessRule, run.lab_eq e] at h
+  exact h
+
+theorem rmw_eq {r r' w : X.E} (h : X.rmw r w) (h' : X.rmw r' w) : r = r' := by
+  obtain ⟨ht, hi, -⟩ := (run.rmw_iff r w).1 h
+  obtain ⟨ht', hi', -⟩ := (run.rmw_iff r' w).1 h'
+  exact run.idx_inj r r' (ht.trans ht'.symm) (by omega)
+
+/-- The block owns each error, and `join` gives none to its caller. The error of at most one
+failure moves into the slot, by the CAS of that failure. A CAS that read the slot set does not
+write it: its failure drops its error. Other than a CAS, only the code of the block reads the
+slot. A value other than 0 that it reads is the error that moved. -/
+theorem each_error_once (hP : P.Ok) (htr : ∀ t, ¬ (P.task t).Results) (wf : X.WellFormed)
+    (hcons : X.Consistent) (ho : X.CoOrder) :
+    (∀ {r1 w1 r2 w2 : X.E}, X.rmw r1 w1 → X.loc w1 = P.slot → run.val w1 ≠ 0 →
+      X.rmw r2 w2 → X.loc w2 = P.slot → run.val w2 ≠ 0 → r1 = r2) ∧
+    (∀ {r w : X.E}, X.rmw r w → X.loc w = P.slot → run.val w ≠ 0 → run.val r = 0) ∧
+    (∀ {e : X.E}, X.IsRead e → X.loc e = P.slot → X.order e ≠ .sc →
+      X.thread e = 0 ∧ (run.val e ≠ 0 → ∃ r w, X.rmw r w ∧ X.rf w e)) := by
+  refine ⟨fun h1 hl1 hv1 h2 hl2 hv2 => ?_, fun h hl hv => ?_, fun he hel ho' => ⟨?_, fun hv => ?_⟩⟩
+  · have := one_failure_wins run hP wf hcons ho (wf.rmw_atomic _ _ h1).2.1 hl1 hv1
+      (wf.rmw_atomic _ _ h2).2.1 hl2 hv2
+    subst this
+    exact rmw_eq run h1 h2
+  · obtain ⟨r', hr', -, -, hv', -⟩ := slot_win run hP (wf.rmw_atomic _ _ h).2.1 hl hv
+    rw [rmw_eq run h hr']
+    exact hv'
+  · refine Classical.byContradiction fun ht => ho' ?_
+    exact task_noResult run hP htr ht he hel
+  · obtain ⟨w, r, hrf, hrw, -⟩ := block_value_from_fail run hP he hel hv
+    exact ⟨r, w, hrw, hrf⟩
 
 end ChanProg
 

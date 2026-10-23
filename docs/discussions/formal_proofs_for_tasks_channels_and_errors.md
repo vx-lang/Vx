@@ -168,11 +168,18 @@ cancelled task would write. `one_failure_wins` says that at most one CAS writes 
 `block_value_is_failure` takes the edge from the winning CAS to the read of the slot as a
 hypothesis: the joins of the block give it. `block_value_from_fail` shows that a value other than 0
 comes from the CAS of a failure. `ChanProg.drf_sc` now asks for code with no failures, because
-the flag uses release and acquire. `each_error_once` comes next.
+the flag uses release and acquire.
+
+`each_error_once` follows each error by the CAS of its failure. The error of at most one failure
+moves into the slot. A CAS that read the slot set does not write it, so its failure drops its
+error. Other than a CAS, only the code of the block reads the slot. A task has no `result`, so
+`join` gives no error to its caller. A value other than 0 that the block reads is the error that
+moved.
 
 Sabotage, one at a time: set the flag before the slot, and make the write of the flag relaxed.
 Each one must break `block_value_not_cancelled`. Let `join()` give the error to its caller: that
-must break `each_error_once`. Nested `tasks` blocks come later.
+must break `each_error_once`. It breaks `fclean_lower`, which `each_error_once` uses for the code
+of a task. Nested `tasks` blocks come later.
 
 ### Step 6: race freedom from footprints (C3, T5, U4, S5 without types)
 

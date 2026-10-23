@@ -87,6 +87,13 @@ def CStmt.Fails : CStmt → Prop
   | .seq s t | .ite _ s t => s.Fails ∨ t.Fails
   | .loop _ s | .tasksBlock s | .locked _ s => s.Fails
 
+/-- `s` reads the failure slot with `result`. -/
+def CStmt.Results : CStmt → Prop
+  | .result _ => True
+  | .base _ | .send .. | .recv .. | .drop _ | .fail _ | .checkCancel => False
+  | .seq s t | .ite _ s t => s.Results ∨ t.Results
+  | .loop _ s | .tasksBlock s | .locked _ s => s.Results
+
 /-- The two operations of a channel. -/
 inductive Op where
   | send

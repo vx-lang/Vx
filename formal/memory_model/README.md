@@ -133,7 +133,10 @@ the slot with a CAS from 0. If the CAS wrote the slot, it sets the flag with a r
 `checkCancel` reads the flag with acquire, and fails with `cancelled` if the flag is set.
 `one_failure_wins` shows that at most one CAS writes the slot. `block_value_is_failure` shows
 that a read of the slot that the winning CAS happens before gets its value.
-`block_value_not_cancelled` shows that `cancelled` never reaches the slot.
+`block_value_not_cancelled` shows that `cancelled` never reaches the slot. `each_error_once`
+shows that the error of at most one failure moves into the slot. The CAS of each other failure
+does not write, so that failure drops its error. A task with no `result` never reads the slot, so
+`join` gives no error to its caller.
 `ChannelExample.lean` builds a run where the main code sends 7 and drops its sender, and a task
 makes two `recv`s. The first gets 7, and the second finds the channel closed. `check` finds that
 the model allows this run with no data race. `MutexExample.lean` builds a run where a lock orders
@@ -217,6 +220,8 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   no failures, because the flag uses release and acquire. `run_lean.py` has no read-modify-writes,
   so no herd7 test has the CAS of a failure. `message_passing_release_acquire` checks the edge of
   the flag.
+- `each_error_once` follows an error by the CAS of its failure, not by a value with an owner. A
+  CAS that loses still reads the error that won, but only to see that the slot is set.
 - `ring_fifo` speaks of each read of the values. A `recv` reads its element once, and only after
   it reads `full k` as 1. A `send` writes its element once. This follows from their code, but no
   theorem states it yet.
