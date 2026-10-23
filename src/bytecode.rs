@@ -346,6 +346,10 @@ pub const LANE_REDUCE_MAX: u64 = 1;
 pub const LANE_REDUCE_ORDERED: u64 = 2;
 /// `Opcode::LaneReduce`: over the lanes of a subgroup, not of a block.
 pub const LANE_REDUCE_SUBGROUP: u64 = 4;
+/// `Opcode::LaneReduce`: the index of the larger value. `operand1` is the tensor of values,
+/// `operand2` the tensor of indices, and the `Arg` just before is the count. The result is an
+/// `i32`.
+pub const LANE_REDUCE_ARGMAX: u64 = 8;
 
 /// `Opcode::LoopHint`: the loop was `across` a level of blocks.
 pub const LOOP_HINT_BLOCKS: u64 = 0;

@@ -1,0 +1,168 @@
+//===- lane_argmax_on_the_cpu.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lanes::argmax(&values, &indices, n)` gives the index of the larger value. A pair with an
+// index below 0 is empty, and of two equal values the lower index wins. The kernels run on the
+// CPU copy (`CUDA_VISIBLE_DEVICES=`), and `pairs` gives the same tree in plain loops beside the
+// results of a subgroup: a tie, an empty pair that holds the largest value, no full pair, a NaN,
+// a count below the size, and empty pairs with the largest values in the upper half of the warp.
+// `unordered` has the tie, and in a block of 64 lanes the larger value is at position 40, which
+// has the index 140.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: tie 107 pairs 107
+// CHECK-NEXT: empty 103 pairs 103
+// CHECK-NEXT: none -1 pairs -1
+// CHECK-NEXT: nan 103 pairs 103
+// CHECK-NEXT: below 103 pairs 103
+// CHECK-NEXT: empty half 103 pairs 103
+// CHECK-NEXT: unordered 107
+// CHECK-NEXT: block 140
+
+// The value of case `c` at position `i`.
+fn value(c : i32, i : i32) -> f32 {
+  let v = ((i * 7) % 11) as f32;
+  if c == 0 && (i == 7 || i == 20) {
+    return 50.0;
+  }
+  if c == 1 && i == 9 {
+    return 99.0;
+  }
+  if c == 3 && i == 0 {
+    return 0.0 / 0.0;
+  }
+  if c == 3 && i == 5 {
+    return 0.0 / 0.0;
+  }
+  if c == 4 && i >= 16 {
+    return 1000.0;
+  }
+  return v;
+}
+
+// The index of case `c` at position `i`: empty at 9 in case 1, everywhere in case 2, at 0 in case
+// 3, and from 16 in case 4.
+fn index(c : i32, i : i32) -> i32 {
+  if c == 2 || (c == 1 && i == 9) || (c == 3 && i == 0) || (c == 4 && i >= 16) {
+    return -1;
+  }
+  return 100 + i;
+}
+
+// The rule of one step: `other` wins when it is full, and `own` is empty, or `other` is larger,
+// or equal with a lower index.
+fn takes(v : f32, ix : i32, ov : f32, oi : i32) -> bool {
+  return oi >= 0 && (ix < 0 || ov > v || (ov == v && oi < ix));
+}
+
+// The group of 32 of case `c` over its first `n` positions, from `base`.
+fn pairs(c : i32, base : i32, n : i32) -> i32 {
+  let mut v = Tensor<f32, [32]>::fill(0.0);
+  let mut ix = Tensor<i32, [32]>::fill(-1);
+  for i in 0..32 {
+    if base + i < n {
+      v[i] = value(c, base + i);
+      ix[i] = index(c, base + i);
+    }
+  }
+  let mut off = 16;
+  while off > 0 {
+    for i in 0..off {
+      if takes(v[i], ix[i], v[i + off], ix[i + off]) {
+        v[i] = v[i + off];
+        ix[i] = ix[i + off];
+      }
+    }
+    off = off / 2;
+  }
+  return ix[0];
+}
+
+fn main() -> i32 {
+  let mut out = transfer(Tensor<i32, [5, 2]>::fill(0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut vs = unsafe { Tensor<f32, [5, 32], Memory::SMEM>::uninit() };
+      let mut ix = unsafe { Tensor<i32, [5, 32], Memory::SMEM>::uninit() };
+      for w in 0..5 across subgroups {
+        for i in 0..32 across lanes {
+          let v = ((i * 7) % 11) as f32;
+          let tie = w == 0 && (i == 7 || i == 20);
+          let big = w == 1 && i == 9;
+          let nan = w == 3 && (i == 0 || i == 5);
+          let high = w == 4 && i >= 16;
+          vs[w][i] = if tie {
+            50.0
+          } else {
+            if big {
+              99.0
+            } else {
+              if nan {
+                0.0 / 0.0
+              } else {
+                if high {
+                  1000.0
+                } else {
+                  v
+                }
+              }
+            }
+          };
+          let empty = w == 2 || (w == 1 && i == 9) || (w == 3 && i == 0) || high;
+          ix[w][i] = if empty {
+            -1
+          } else {
+            100 + i
+          };
+        }
+        let chosen = lanes::argmax(&vs[w], &ix[w], 32);
+        let fewer = lanes::argmax(&vs[w], &ix[w], 5);
+        out[w][0] = chosen;
+        out[w][1] = fewer;
+      }
+    }
+  }
+  let mut unordered = transfer(Tensor<i32, [1]>::fill(0), Memory::HBM);
+  let mut wide = transfer(Tensor<i32, [1]>::fill(0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut vs = unsafe { Tensor<f32, [64], Memory::SMEM>::uninit() };
+      let mut ws = unsafe { Tensor<f32, [64], Memory::SMEM>::uninit() };
+      let mut ix = unsafe { Tensor<i32, [64], Memory::SMEM>::uninit() };
+      for i in 0..64 across lanes {
+        vs[i] = if i == 7 || i == 20 {
+          50.0
+        } else {
+          ((i * 7) % 11) as f32
+        };
+        ws[i] = if i == 40 {
+          60.0
+        } else {
+          vs[i]
+        };
+        ix[i] = 100 + i;
+      }
+      let u = lanes::argmax_unordered(&vs, &ix, 32);
+      let all = lanes::argmax(&ws, &ix, 64);
+      unordered[0] = u;
+      wide[0] = all;
+    }
+  }
+  let o = transfer(out, Memory::CPU_DRAM);
+  let u = transfer(unordered, Memory::CPU_DRAM);
+  let wd = transfer(wide, Memory::CPU_DRAM);
+  println!("tie {} pairs {}", o[0][0], pairs(0, 0, 32));
+  println!("empty {} pairs {}", o[1][0], pairs(1, 0, 32));
+  println!("none {} pairs {}", o[2][0], pairs(2, 0, 32));
+  println!("nan {} pairs {}", o[3][0], pairs(3, 0, 32));
+  println!("below {} pairs {}", o[0][1], pairs(0, 0, 5));
+  println!("empty half {} pairs {}", o[4][0], pairs(4, 0, 32));
+  println!("unordered {}", u[0]);
+  println!("block {}", wd[0]);
+  return 0;
+}

@@ -5362,7 +5362,7 @@ fn function_type<'c>(gen: &MeliorGenerator<'c>, args: &[Type<'c>], ret: Type<'c>
     melior::ir::r#type::FunctionType::new(gen.context, args, results).into()
 }
 
-/// `lanes::sum(&t, n)` and the other lane reductions, as `vx.lane_reduce`. This code generator
+/// `lanes::sum(&t, n)` and the other lane reductions, as `vx.lane_reduce` or `vx.lane_argmax`. This code generator
 /// runs `across` loops as plain loops, on one lane, so the op is `serial`: both copies of the
 /// kernel expand it into the loops of the CPU.
 fn lower_lane_reduce<'c>(
@@ -5379,51 +5379,61 @@ fn lower_lane_reduce<'c>(
     ),
     LowerError,
 > {
-    let [tensor, n] = args else {
+    let argmax = op == crate::hir::check::lanes::LaneOp::ArgMax;
+    let Some((n, tensors)) = args.split_last() else {
         return Err(LowerError::ParseType(
-            "a lane reduction takes two arguments".to_string(),
+            "a lane reduction takes arguments".to_string(),
         ));
     };
-    let (mut t, mut t_ty, block) = gen.generate_expr(tensor, block)?;
-    // A tensor that the code generator keeps behind a pointer.
-    if let Ok(outer) = melior::ir::r#type::MemRefType::try_from(t_ty) {
-        use melior::ir::r#type::ShapedTypeLike;
-        let inner = outer.element();
-        if melior::ir::r#type::MemRefType::try_from(inner).is_ok() {
-            let load = OperationBuilder::new("memref.load", gen.loc())
-                .add_operands(&[t])
-                .add_results(&[inner])
-                .build()?;
-            t = block.append_operation(load).result(0)?.into();
-            t_ty = inner;
+    let mut block = block;
+    let mut operands = Vec::new();
+    for tensor in tensors {
+        let (mut t, t_ty, b) = gen.generate_expr(tensor, block)?;
+        block = b;
+        // A tensor that the code generator keeps behind a pointer.
+        if let Ok(outer) = melior::ir::r#type::MemRefType::try_from(t_ty) {
+            use melior::ir::r#type::ShapedTypeLike;
+            let inner = outer.element();
+            if melior::ir::r#type::MemRefType::try_from(inner).is_ok() {
+                let load = OperationBuilder::new("memref.load", gen.loc())
+                    .add_operands(&[t])
+                    .add_results(&[inner])
+                    .build()?;
+                t = block.append_operation(load).result(0)?.into();
+            }
         }
+        operands.push(t);
     }
     let (count, count_ty, block) = gen.generate_expr(n, block)?;
-    let count = gen.coerce_type(&block, count, count_ty, gen.i32_ty)?;
-    let _ = t_ty;
+    operands.push(gen.coerce_type(&block, count, count_ty, gen.i32_ty)?);
     let kind = match op {
         crate::hir::check::lanes::LaneOp::Sum => "sum",
-        crate::hir::check::lanes::LaneOp::Max => "max",
+        crate::hir::check::lanes::LaneOp::Max | crate::hir::check::lanes::LaneOp::ArgMax => "max",
     };
     let unit = melior::ir::attribute::Attribute::unit(gen.context);
-    let mut attrs = vec![
-        (
+    let mut attrs = vec![(Identifier::new(gen.context, "serial"), unit)];
+    if !argmax {
+        attrs.push((
             Identifier::new(gen.context, "kind"),
             StringAttribute::new(gen.context, kind).into(),
-        ),
-        (Identifier::new(gen.context, "serial"), unit),
-    ];
+        ));
+    }
     if ordered {
         attrs.push((Identifier::new(gen.context, "ordered"), unit));
     }
     if gen.across_kinds.last() == Some(&crate::arch::LevelKind::Subgroups) {
         attrs.push((Identifier::new(gen.context, "subgroup"), unit));
     }
-    let reduce = OperationBuilder::new("vx.lane_reduce", gen.loc())
-        .add_operands(&[t, count])
+    let (name, ty) = if argmax {
+        ("vx.lane_argmax", gen.i32_ty)
+    } else {
+        ("vx.lane_reduce", gen.f32_ty)
+    };
+    let reduce = OperationBuilder::new(name, gen.loc())
+        .add_operands(&operands)
         .add_attributes(&attrs)
-        .add_results(&[gen.f32_ty])
+        .add_results(&[ty])
         .build()?;
     let v = block.append_operation(reduce).result(0)?.into();
-    Ok((v, gen.f32_ty, block))
+    Ok((v, ty, block))
 }

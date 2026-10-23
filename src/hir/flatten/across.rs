@@ -19,8 +19,8 @@
 use super::*;
 use crate::arch::LevelKind;
 use crate::bytecode::{
-    ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP, LANE_REDUCE_MAX,
-    LANE_REDUCE_ORDERED, LANE_REDUCE_SUBGROUP,
+    ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP, LANE_REDUCE_ARGMAX,
+    LANE_REDUCE_MAX, LANE_REDUCE_ORDERED, LANE_REDUCE_SUBGROUP,
 };
 use crate::hir::check::across_lanes;
 
@@ -238,19 +238,27 @@ impl Lowerer<'_> {
         op: crate::hir::check::lanes::LaneOp,
         ordered: bool,
     ) -> Lowered<Val> {
-        let [tensor, n] = fc.args.as_slice() else {
+        let argmax = op == crate::hir::check::lanes::LaneOp::ArgMax;
+        let (n, tensors) = fc.args.split_last().ok_or(crate::emitter_gap!())?;
+        if tensors.len() != if argmax { 2 } else { 1 } {
             return Err(crate::emitter_gap!());
-        };
-        let tensor = self.lower_expr(tensor)?;
-        if !matches!(&tensor.ty, LoweredTy::Tensor { shape, .. } if shape.len() == 1) {
-            return Err(Decline::TypeNotModelled {
-                what: "a lane reduction of something that is not a rank-1 tensor",
-            });
+        }
+        let mut regs = Vec::new();
+        for t in tensors {
+            let t = self.lower_expr(t)?;
+            if !matches!(&t.ty, LoweredTy::Tensor { shape, .. } if shape.len() == 1) {
+                return Err(Decline::TypeNotModelled {
+                    what: "a lane reduction of something that is not a rank-1 tensor",
+                });
+            }
+            regs.push(t.reg);
         }
         let n = self.lower_expr(n)?;
         let mut imm = 0;
-        if op == crate::hir::check::lanes::LaneOp::Max {
-            imm |= LANE_REDUCE_MAX;
+        match op {
+            crate::hir::check::lanes::LaneOp::Max => imm |= LANE_REDUCE_MAX,
+            crate::hir::check::lanes::LaneOp::ArgMax => imm |= LANE_REDUCE_ARGMAX,
+            crate::hir::check::lanes::LaneOp::Sum => {}
         }
         if ordered {
             imm |= LANE_REDUCE_ORDERED;
@@ -258,7 +266,17 @@ impl Lowerer<'_> {
         if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
             imm |= LANE_REDUCE_SUBGROUP;
         }
-        Ok(self.emit_value(Opcode::LaneReduce, tensor.reg, n.reg, ElementType::F32, imm))
+        if argmax {
+            self.emit_effect(Opcode::Arg, n.reg, Register(0), 0);
+            return Ok(self.emit_value(
+                Opcode::LaneReduce,
+                regs[0],
+                regs[1],
+                ElementType::I32,
+                imm,
+            ));
+        }
+        Ok(self.emit_value(Opcode::LaneReduce, regs[0], n.reg, ElementType::F32, imm))
     }
 
     /// The lanes of a subgroup of the region's topology.
