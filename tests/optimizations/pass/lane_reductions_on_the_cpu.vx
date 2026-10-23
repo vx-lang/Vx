@@ -1,0 +1,137 @@
+//===- lane_reductions_on_the_cpu.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The lane reductions on the CPU copy of a kernel (`CUDA_VISIBLE_DEVICES=`). `ordered_sum` adds
+// in the order of docs/lane_reductions.md, as the plain loops of this file do. That order and a
+// sum from left to right differ in the last bit of these values. `sum_unordered` adds from left
+// to right on the CPU. The other lines are the reductions of a subgroup, a count below the size
+// of the tensor, a count of 0, a count above the size, and the larger of 40 negative values, where
+// the pad is a value of the tensor and not 0. A line with `tree`, `top` or `group` puts the
+// value of plain loops beside the reduction.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: ordered_sum 4.730733 tree 4.730733 left 4.7307324
+// CHECK-NEXT: sum_unordered 4.7307324
+// CHECK-NEXT: max 0.099 top 0.099 subgroup_max 0.57
+// CHECK-NEXT: subgroup_sum 0.32185715 group 0.32185715
+// CHECK-NEXT: below 3.7086096 tree 3.7086096
+// CHECK-NEXT: none 0 -inf
+// CHECK-NEXT: above 4.730733
+// CHECK-NEXT: negative max -1
+
+// The value of each element: no two orders of adding them give the same bits.
+fn value(i : i32) -> f32 {
+  return ((i * 37) % 101) as f32 / ((i % 7 + 1) * 1000) as f32;
+}
+
+// One group of 32, in place: `a[i] + a[i + off]` for the offsets 16, 8, 4, 2 and 1.
+fn group(a : &mut Tensor<f32, [32]>) -> f32 {
+  let mut off = 16;
+  while off > 0 {
+    for i in 0..off {
+      a[i] = a[i] + a[i + off];
+    }
+    off = off / 2;
+  }
+  return a[0];
+}
+
+// The sum of a block over `value(0)` to `value(n - 1)`: a group of 32 for each 32 elements, and a
+// group of their results.
+fn tree(n : i32, size : i32) -> f32 {
+  let mut g = Tensor<f32, [32]>::fill(0.0);
+  let mut q = Tensor<f32, [32]>::fill(0.0);
+  for w in 0..size / 32 {
+    for i in 0..32 {
+      g[i] = if w * 32 + i < n {
+        value(w * 32 + i)
+      } else {
+        0.0
+      };
+    }
+    q[w] = group(&mut g);
+  }
+  return group(&mut q);
+}
+
+fn main() -> i32 {
+  let mut out = transfer(Tensor<f32, [12]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut part = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for t in 0..256 across lanes {
+        part[t] = ((t * 37) % 101) as f32 / ((t % 7 + 1) * 1000) as f32;
+      }
+      let s = lanes::sum(&part, 256);
+      let u = lanes::sum_unordered(&part, 256);
+      let m = lanes::max(&part, 256);
+      let below = lanes::sum(&part, 200);
+      let none = lanes::sum(&part, 0);
+      let none_max = lanes::max(&part, 0);
+      let above = lanes::sum(&part, 1000);
+      let mut negs = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for t in 0..256 across lanes {
+        negs[t] = -1.0 - (t as f32);
+      }
+      let neg_max = lanes::max(&negs, 40);
+      out[0] = s;
+      out[1] = u;
+      out[2] = m;
+      out[3] = below;
+      out[4] = none;
+      out[5] = none_max;
+      out[6] = above;
+      out[7] = neg_max;
+    }
+  }
+  let mut warps = transfer(Tensor<f32, [2, 2]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut rows = unsafe { Tensor<f32, [2, 32], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for t in 0..32 across lanes {
+          rows[w][t] = ((t * 37) % 101) as f32 / ((t % 7 + 1) * 1000) as f32 + (w as f32) * 0.5;
+        }
+        let m = lanes::max(&rows[w], 32);
+        let s = lanes::sum(&rows[w], 20);
+        warps[w][0] = m;
+        warps[w][1] = s;
+      }
+    }
+  }
+  let o = transfer(out, Memory::CPU_DRAM);
+  let wp = transfer(warps, Memory::CPU_DRAM);
+  let mut left : f32 = 0.0;
+  for i in 0..256 {
+    left = left + value(i);
+  }
+  let mut top : f32 = 0.0;
+  for i in 0..256 {
+    if value(i) > top {
+      top = value(i);
+    }
+  }
+  let mut g = Tensor<f32, [32]>::fill(0.0);
+  for i in 0..32 {
+    g[i] = if i < 20 {
+      value(i)
+    } else {
+      0.0
+    };
+  }
+  println!("ordered_sum {} tree {} left {}", o[0], tree(256, 256), left);
+  println!("sum_unordered {}", o[1]);
+  println!("max {} top {} subgroup_max {}", o[2], top, wp[1][0]);
+  println!("subgroup_sum {} group {}", wp[0][1], group(&mut g));
+  println!("below {} tree {}", o[3], tree(200, 256));
+  println!("none {} {}", o[4], o[5]);
+  println!("above {}", o[6]);
+  println!("negative max {}", o[7]);
+  return 0;
+}

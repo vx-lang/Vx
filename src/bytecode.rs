@@ -315,6 +315,9 @@ pub enum Opcode {
     /// `imm` encodes an `EnumPayloadIndex`. The layout supplies the field's address and metadata.
     /// `operand2` is unused and must be zero.
     EnumPayloadLoad = 70,
+    /// A lane reduction (`lanes::sum` and the others) of the tensor `operand1` over its first
+    /// `operand2` elements, an `f32` that every lane gets. `imm` holds `LANE_REDUCE_*`.
+    LaneReduce = 71,
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.
@@ -336,6 +339,13 @@ impl EnumPayloadIndex {
         }
     }
 }
+
+/// `Opcode::LaneReduce`: the larger value, not the sum.
+pub const LANE_REDUCE_MAX: u64 = 1;
+/// `Opcode::LaneReduce`: in the order that docs/lane_reductions.md gives.
+pub const LANE_REDUCE_ORDERED: u64 = 2;
+/// `Opcode::LaneReduce`: over the lanes of a subgroup, not of a block.
+pub const LANE_REDUCE_SUBGROUP: u64 = 4;
 
 /// `Opcode::LoopHint`: the loop was `across` a level of blocks.
 pub const LOOP_HINT_BLOCKS: u64 = 0;
@@ -408,6 +418,7 @@ impl Opcode {
             68 => AffineForEnd,
             69 => LoopHint,
             70 => EnumPayloadLoad,
+            71 => LaneReduce,
             8 => Call,
             9 => Ret,
             10 => Matmul,

@@ -2197,6 +2197,10 @@ impl<'a> TypeChecker<'a> {
         if let Some(prim) = resolved_name.strip_prefix("raw::") {
             return Some(self.check_raw_primitive(prim, args, arg_types, call_span));
         }
+        // `lanes::` is reserved for the lane reductions, in the same way.
+        if resolved_name.starts_with("lanes::") {
+            return Some(self.check_lane_routine(resolved_name, args, arg_types, call_span));
+        }
         // `Tensor<T, [..], P>::uninit()` and the run-time-extent form: the type is written, so it is
         // read off the call rather than rebuilt from the call's name and arguments. That
         // reconstruction is what the older spelling forces on three separate places, and it cannot

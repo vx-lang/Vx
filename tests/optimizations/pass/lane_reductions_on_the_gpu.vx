@@ -1,0 +1,73 @@
+//===- lane_reductions_on_the_gpu.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The PTX of the lane reductions. In the code of a block, each warp adds with 5 shuffles, its
+// first lane writes the result to 32 floats of shared memory, and after a barrier each warp adds
+// the 32 results with 5 more shuffles. In the code of a subgroup, one warp does 5 shuffles, with
+// no barrier. The scratch is `.shared` storage, not a stack slot. The AST code generator
+// (`--legacy-codegen`) runs a kernel on one lane, so its kernels have loops and no shuffles.
+//
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s < %t.ptx --implicit-check-not=local_depot
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/a100-80.vx --emit-llvm 2>&1 | FileCheck %s --check-prefix=AST --implicit-check-not=shfl
+// AST: .entry vx_npu_kernel_0
+// AST: .entry vx_npu_kernel_1
+
+// CHECK-LABEL: .entry block_sum(
+// CHECK: .shared .align 16 .b8 {{.*}}[128];
+// CHECK: st.shared.b32
+// CHECK: bar.sync 0;
+// CHECK-COUNT-5: shfl.sync.down.b32 {{.*}}, 31, -1;
+// CHECK: st.shared.b32
+// CHECK: bar.sync 0;
+// CHECK: ld.shared.b32
+// CHECK-COUNT-5: shfl.sync.down.b32 {{.*}}, 31, -1;
+// CHECK: shfl.sync.idx.b32 {{.*}}, 0, 31, -1;
+// CHECK-NEXT: bar.sync 0;
+pub fn block_sum(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut part = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for t in 0..256 across lanes {
+        part[t] = x[b * 256 + t];
+      }
+      let s = lanes::sum(&part, 256);
+      for t in 0..256 across lanes {
+        out[b * 256 + t] = x[b * 256 + t] / s;
+      }
+    }
+  }
+  return;
+}
+
+// The larger value keeps the lane's own value `a` unless the other is larger.
+// CHECK-LABEL: .entry warp_max(
+// CHECK: bar.warp.sync -1;
+// CHECK-NOT: bar.sync
+// CHECK: shfl.sync.down.b32 %r[[O:[0-9]+]], %r[[A:[0-9]+]], 16, 31, -1;
+// CHECK-NEXT: setp.gt.f32 %p[[P:[0-9]+]], %r[[O]], %r[[A]];
+// CHECK-NEXT: selp.f32 %r{{[0-9]+}}, %r[[O]], %r[[A]], %p[[P]];
+// CHECK-COUNT-4: shfl.sync.down.b32
+// CHECK-NOT: bar.sync
+// CHECK: shfl.sync.idx.b32 {{.*}}, 0, 31, -1;
+pub fn warp_max(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut part = unsafe { Tensor<f32, [4, 32], Memory::SMEM>::uninit() };
+      for w in 0..4 across subgroups {
+        for t in 0..32 across lanes {
+          part[w][t] = x[(b * 4 + w) * 32 + t];
+        }
+        let m = lanes::max(&part[w], 32);
+        for t in 0..32 across lanes {
+          out[(b * 4 + w) * 32 + t] = m;
+        }
+      }
+    }
+  }
+  return;
+}

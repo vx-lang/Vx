@@ -261,6 +261,45 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    /// `vx.lane_reduce`: the lowering of each copy of the kernel expands it, into shuffles on the
+    /// GPU and into loops on the CPU.
+    pub(crate) fn op_lane_reduce(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let t = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let memty = self
+            .mem_of
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone()
+            .ok_or(crate::emitter_gap!())?;
+        let n = self
+            .names
+            .get(ins.operand2.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        let kind = if ins.imm & crate::bytecode::LANE_REDUCE_MAX != 0 {
+            "max"
+        } else {
+            "sum"
+        };
+        let mut attrs = format!("kind = \"{kind}\"");
+        if ins.imm & crate::bytecode::LANE_REDUCE_ORDERED != 0 {
+            attrs += ", ordered";
+        }
+        if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
+            attrs += ", subgroup";
+        }
+        let v = format!("%v{idx}");
+        self.body +=
+            &format!("  {v} = \"vx.lane_reduce\"({t}, {n}) {{{attrs}}} : ({memty}, i32) -> f32\n");
+        self.names[idx] = v;
+        self.etypes[idx] = Some(ElementType::F32);
+        Ok(())
+    }
+
     pub(crate) fn op_launch_dim(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let v = self
             .names

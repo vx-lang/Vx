@@ -346,8 +346,11 @@ impl Proof<'_> {
             }
             Expr::FunctionCall(fc) => {
                 // Making a tensor writes only the new tensor.
+                // A lane reduction reads its tensor and writes nothing. The type checker
+                // refuses a name after `lanes::` that is not one.
                 let pure = crate::hir::check::parallel::parallel_pure_call(&fc.name)
-                    || is_tensor_alloc_call(fc);
+                    || is_tensor_alloc_call(fc)
+                    || fc.name.as_ref().starts_with("lanes::");
                 // A call with an atomic contract changes only the tensors that it names.
                 if let Some(params) = (!pure)
                     .then(|| self.contracts.get(fc.name.as_ref()))

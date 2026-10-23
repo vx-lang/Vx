@@ -283,7 +283,12 @@ impl<'c> LowerToMelior<'c> for ForLoopStmt {
         let depth = gen.open_block();
         gen.note_shadow(self.iter.as_str());
         gen.allocs.remove(self.iter.as_str());
+        let kind = self.across.as_ref().and_then(|a| a.kind);
+        gen.across_kinds.extend(kind);
         let result = lower_for_loop(self, gen, block);
+        if kind.is_some() {
+            gen.across_kinds.pop();
+        }
         gen.close_blocks_to(depth);
         result
     }
