@@ -59,7 +59,7 @@ struct Ctx {
     uniform: HashSet<String>,
     /// Names that code set which only lane 0 runs (L5). No lane loop may read them.
     lane0: HashSet<String>,
-    /// In a plain loop around a lane loop, where each `if` may `break` before a barrier.
+    /// In a plain loop around a lane loop, where an `if` may `break` before a barrier.
     strict_ifs: bool,
 }
 
@@ -452,12 +452,18 @@ impl Walk<'_> {
             }
             Expr::If(i) => {
                 self.expr(&i.cond, ctx);
-                let around = i
-                    .then_block
-                    .iter()
-                    .chain(i.else_block.iter().flatten())
-                    .any(across_lanes::holds_across);
-                if Self::stretch_level(ctx) && (around || ctx.strict_ifs) {
+                let branches = || i.then_block.iter().chain(i.else_block.iter().flatten());
+                let around = branches().any(across_lanes::holds_across);
+                // An `if` that cannot jump lets every lane get to the barrier.
+                let mut jumps = false;
+                let stmts: Vec<Statement> = branches().cloned().collect();
+                across_lanes::visit_stmts(&stmts, &mut |s| {
+                    jumps |= matches!(
+                        s,
+                        Statement::Break(_) | Statement::Continue(_) | Statement::Return(_)
+                    );
+                });
+                if Self::stretch_level(ctx) && (around || (ctx.strict_ifs && jumps)) {
                     self.uniform_around(&i.cond, "this condition", ctx);
                 }
                 let inner = Self::inner(ctx);
