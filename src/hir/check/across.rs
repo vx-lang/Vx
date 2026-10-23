@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 use crate::arch::{Level, LevelKind};
+use crate::hir::check::across_lanes;
 use crate::syntax::stmt::{ForLoopStmt, Statement};
 use crate::syntax::{Expr, Span};
 use std::collections::HashSet;
@@ -47,6 +48,14 @@ struct Ctx {
     top: bool,
     /// Inside a closure, where `return` leaves the closure and not the loop.
     in_closure: bool,
+    /// Names that are the same for every lane: indices of blocks and subgroups, and values
+    /// computed only from them and from the host (L8). A name that the region does not declare
+    /// is a value of the host.
+    uniform: HashSet<String>,
+    /// Names that code set which only lane 0 runs (L5). No lane loop may read them.
+    lane0: HashSet<String>,
+    /// In a plain loop around a lane loop, where each `if` may `break` before a barrier.
+    strict_ifs: bool,
 }
 
 struct Walk<'g> {
@@ -62,6 +71,10 @@ impl crate::hir::TypeChecker<'_> {
             errors: Vec::new(),
         };
         walk.stmts(body, &Ctx::default());
+        // The proof of an outer loop also walks the inner loops, so one place can come twice.
+        let mut seen = HashSet::new();
+        walk.errors
+            .retain(|(_, at)| seen.insert((at.line, at.column)));
         for (msg, at) in walk.errors {
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E6032,
@@ -95,12 +108,106 @@ impl Walk<'_> {
 
     fn stmts(&mut self, stmts: &[Statement], ctx: &Ctx) {
         let mut ctx = ctx.clone();
-        for s in stmts {
+        // L5: the code of a blocks or subgroups body outside its lane loops falls into
+        // stretches, and lane 0 runs each stretch that writes memory.
+        let lane0_after = if Self::stretch_level(&ctx) {
+            Self::lane0_names(stmts, &ctx.lane0)
+        } else {
+            vec![ctx.lane0.clone(); stmts.len()]
+        };
+        for (i, s) in stmts.iter().enumerate() {
             self.stmt(s, &ctx);
-            // A later `blocks` bound may not read a name that the region declares.
-            if let (Statement::LetDecl(l), Some(r)) = (s, ctx.region.as_mut()) {
-                r.locals.insert(l.name.as_ref().to_string());
+            ctx.lane0 = lane0_after[i].clone();
+            if let Statement::LetDecl(l) = s {
+                let name = l.name.as_ref().to_string();
+                // L8: an immutable value from uniform names is uniform too.
+                let at_top = ctx.top && ctx.axes.is_empty();
+                let uniform = !l.is_mut
+                    && !ctx.lane0.contains(&name)
+                    && (Self::stretch_level(&ctx) || at_top)
+                    && if at_top {
+                        across_lanes::may_write(&l.expr).is_none()
+                    } else {
+                        across_lanes::not_uniform(&l.expr, &|n| Self::is_uniform(&ctx, n)).is_none()
+                    };
+                if uniform {
+                    ctx.uniform.insert(name.clone());
+                } else {
+                    ctx.uniform.remove(&name);
+                }
+                // A later `blocks` bound may not read a name that the region declares.
+                if let Some(r) = ctx.region.as_mut() {
+                    r.locals.insert(name);
+                }
             }
+        }
+    }
+
+    /// Whether code here is in a blocks or subgroups body, outside every lane loop.
+    fn stretch_level(ctx: &Ctx) -> bool {
+        ctx.region.is_some()
+            && matches!(
+                ctx.axes.last().map(|a| a.kind),
+                Some(LevelKind::Blocks | LevelKind::Subgroups)
+            )
+    }
+
+    fn is_uniform(ctx: &Ctx, name: &str) -> bool {
+        if ctx.lane0.contains(name) {
+            return false;
+        }
+        ctx.uniform.contains(name)
+            || ctx
+                .region
+                .as_ref()
+                .is_some_and(|r| !r.locals.contains(name))
+    }
+
+    /// The names that only lane 0 has after each statement of `stmts`.
+    fn lane0_names(stmts: &[Statement], before: &HashSet<String>) -> Vec<HashSet<String>> {
+        let mut lane0 = before.clone();
+        let mut after = Vec::with_capacity(stmts.len());
+        let mut i = 0;
+        while i < stmts.len() {
+            if across_lanes::holds_across(&stmts[i]) {
+                after.push(lane0.clone());
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < stmts.len() && !across_lanes::holds_across(&stmts[i]) {
+                i += 1;
+            }
+            let part: Vec<&Statement> = stmts[start..i].iter().collect();
+            let owned: Vec<Statement> = part.iter().map(|s| (*s).clone()).collect();
+            let st = across_lanes::stretch(&part);
+            // A stretch that reads what only lane 0 has also runs on lane 0.
+            if st.writes || across_lanes::reads_any(&owned, &lane0).is_some() {
+                lane0.extend(st.values);
+                lane0.extend(st.assigned);
+            }
+            after.extend(std::iter::repeat_n(lane0.clone(), i - start));
+        }
+        after
+    }
+
+    /// L8: a condition or a bound around a lane or subgroup loop is the same for every lane.
+    fn uniform_around(&mut self, e: &Expr, what: &str, ctx: &Ctx) {
+        if let Some((why, at)) = across_lanes::not_uniform(e, &|n| Self::is_uniform(ctx, n)) {
+            let scope = if ctx.axes.last().map(|a| a.kind) == Some(LevelKind::Subgroups) {
+                "subgroup"
+            } else {
+                "block"
+            };
+            self.error(
+                format!(
+                    "{what} decides whether the lanes reach the end of a lane loop, so it must be \
+                     the same for every lane of the {scope}. It may read only the indices of \
+                     blocks and subgroups, values from the host, and names computed from them, \
+                     but {why}"
+                ),
+                at,
+            );
         }
     }
 
@@ -121,12 +228,27 @@ impl Walk<'_> {
                 } else {
                     let mut body = Self::inner(ctx);
                     body.plain_loops += 1;
+                    if Self::stretch_level(ctx) && across_lanes::holds_across(s) {
+                        self.uniform_around(&f.iterable, "the bound of this loop", ctx);
+                        body.strict_ifs = true;
+                        if across_lanes::not_uniform(&f.iterable, &|n| Self::is_uniform(ctx, n))
+                            .is_none()
+                        {
+                            body.uniform.insert(f.iter.clone());
+                        }
+                    }
+                    if let Some(r) = body.region.as_mut() {
+                        r.locals.insert(f.iter.clone());
+                    }
                     self.stmts(&f.body, &body);
                 }
             }
             Statement::Loop(l) => {
                 let mut body = Self::inner(ctx);
                 body.plain_loops += 1;
+                if Self::stretch_level(ctx) && across_lanes::holds_across(s) {
+                    body.strict_ifs = true;
+                }
                 self.stmts(&l.body, &body);
             }
             Statement::Break(b) if !ctx.axes.is_empty() && ctx.plain_loops == 0 => self.error(
@@ -187,10 +309,8 @@ impl Walk<'_> {
                         levels,
                         locals: HashSet::new(),
                     }),
-                    axes: Vec::new(),
-                    plain_loops: 0,
                     top: true,
-                    in_closure: false,
+                    ..Ctx::default()
                 };
                 self.region_nests(&sp.stmts, &region);
                 self.stmts(&sp.stmts, &region);
@@ -208,6 +328,14 @@ impl Walk<'_> {
             }
             Expr::If(i) => {
                 self.expr(&i.cond, ctx);
+                let around = i
+                    .then_block
+                    .iter()
+                    .chain(i.else_block.iter().flatten())
+                    .any(across_lanes::holds_across);
+                if Self::stretch_level(ctx) && (around || ctx.strict_ifs) {
+                    self.uniform_around(&i.cond, "this condition", ctx);
+                }
                 let inner = Self::inner(ctx);
                 self.stmts(&i.then_block, &inner);
                 if let Some(b) = &i.else_block {
@@ -280,6 +408,57 @@ impl Walk<'_> {
                 _ => None,
             })
             .collect();
+        // L10: before the nest, every lane runs the code, so it may only declare values, and
+        // it may not read what the blocks write. Nothing comes after the nest.
+        if let Some(first) = nests.first() {
+            let at = stmts
+                .iter()
+                .position(|s| matches!(s, Statement::ForLoop(f) if std::ptr::eq(f, *first)))
+                .expect("the nest is in the region");
+            let written = across_lanes::written_tensors(std::slice::from_ref(&stmts[at]));
+            for s in &stmts[..at] {
+                match s {
+                    Statement::Drop(_) => {}
+                    Statement::LetDecl(l) => {
+                        if let Some(w) = across_lanes::may_write(&l.expr) {
+                            self.error(
+                                "before the `across` nest of blocks, every lane runs the code, \
+                                 so a `let` there may only compute a value: no calls, blocks or \
+                                 `&mut`"
+                                    .to_string(),
+                                w,
+                            );
+                        } else if let Some((name, w)) =
+                            across_lanes::expr_reads_any(&l.expr, &written)
+                        {
+                            self.error(
+                                format!(
+                                    "before the `across` nest of blocks, this reads `{name}`, \
+                                     which the blocks write, so the read races with them"
+                                ),
+                                w,
+                            );
+                        }
+                    }
+                    other => self.error(
+                        "before the `across` nest of blocks, a region may only declare values \
+                         with `let`: every lane runs that code"
+                            .to_string(),
+                        other.span(),
+                    ),
+                }
+            }
+            for s in &stmts[at + 1..] {
+                let nest = matches!(s, Statement::ForLoop(f) if f.across.is_some());
+                if !nest && !matches!(s, Statement::Drop(_)) {
+                    self.error(
+                        "a region with `across` loops does nothing after its nest of blocks"
+                            .to_string(),
+                        s.span(),
+                    );
+                }
+            }
+        }
         for extra in nests.iter().skip(1) {
             self.error(
                 "a region has one `across` nest of blocks. A second one would be a second launch, \
@@ -556,7 +735,33 @@ impl Walk<'_> {
                 }
             }
         }
+        // L4: no pass may touch a place that another pass writes.
+        if let Some((why, at)) =
+            crate::hir::check::across_proof::across_loop_race(f, kind_word(level.kind))
+        {
+            self.error(why, at);
+        }
+        // L5: a lane loop may not read what only lane 0 has.
+        if level.kind != LevelKind::Blocks {
+            let read = across_lanes::expr_reads_any(&f.iterable, &ctx.lane0)
+                .or_else(|| across_lanes::reads_any(&f.body, &ctx.lane0));
+            if let Some((name, at)) = read {
+                self.error(
+                    format!(
+                        "this {} loop reads `{name}`, which only lane 0 has: lane 0 alone runs \
+                         the code that sets it, because that code writes memory. Pass the value \
+                         through memory, such as an element of a tensor in shared memory",
+                        kind_word(level.kind)
+                    ),
+                    at,
+                );
+            }
+        }
         let mut body = Self::inner(ctx);
+        if level.kind != LevelKind::Lanes {
+            body.uniform.insert(f.iter.clone());
+        }
+        body.strict_ifs = false;
         body.axes.push(axis);
         body.plain_loops = 0;
         if let Some(r) = body.region.as_mut() {
