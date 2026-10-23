@@ -205,6 +205,8 @@ spawn on(Topology::Gpu) {
   (L5, L8, L10).
 - Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
   memory.
+- `lanes::sum`, `lanes::max` and their `_unordered` versions combine a tensor over the lanes of
+  a block or a subgroup, and every lane gets the result (`docs/lane_reductions.md`).
 - Delete each `across` and the program means the same. The CPU copy of the region runs one
   block of one lane, and a loop steps over the passes of the others.
 - A size is not a kernel argument. The launch passes each size that is not a number after the

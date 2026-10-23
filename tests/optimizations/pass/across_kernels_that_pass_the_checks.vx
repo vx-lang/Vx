@@ -16,6 +16,8 @@
 // - `zeroed`: lane 0 fills a tensor in shared memory with zeros, and then every lane reads it.
 //   The tensor is memory of the block, not a value that only lane 0 has.
 // - `one_lane`: `b + t` fixes `b`, because the lane loop has one pass.
+// - `positive_rows`: every lane gets the same result from a lane reduction, so it can be the
+//   condition of an `if` around a lane loop.
 //
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --allow-empty --implicit-check-not=Error
 
@@ -97,6 +99,24 @@ pub fn one_lane(y : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
     for b in 0..n across blocks {
       for t in 0..1 across lanes {
         y[b + t] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn positive_rows(y : &mut Tensor<f32, [?, 128], Memory::HBM>, x : &Tensor<f32, [?, 128], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut part = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+      for t in 0..128 across lanes {
+        part[t] = x[b][t];
+      }
+      let total = lanes::sum(&part, 128);
+      if total > 0.0 {
+        for t in 0..128 across lanes {
+          y[b][t] = x[b][t] / total;
+        }
       }
     }
   }

@@ -154,6 +154,21 @@ def Vx_BarrierOp : Vx_Op<"barrier", [MemoryEffects<[MemRead, MemWrite]>]> {
     let assemblyFormat = "attr-dict";
 }
 
+// A lane reduction (`lanes::sum` and the others): every lane of the block, or of
+// the subgroup with `subgroup`, gets the sum or the larger of the first `count`
+// elements of `input`. With `ordered`, the order is the one that
+// docs/lane_reductions.md gives. The device clone expands it into shuffles and
+// barriers, and the host lowering into loops. With `serial`, the kernel runs on
+// one lane, and the device clone also gets the loops. It reads and writes memory so
+// that nothing moves it past a write of `input` or into a branch.
+def Vx_LaneReduceOp : Vx_Op<"lane_reduce", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Combine the first elements of a tensor over the lanes.";
+    let arguments = (ins AnyMemRef:$input, I32:$count, StrAttr:$kind,
+                     UnitAttr:$ordered, UnitAttr:$subgroup,
+                     UnitAttr:$serial);
+    let results = (outs F32:$result);
+}
+
 // The launch shape of a `vx.spawn` region with `across` loops (#252): the
 // blocks on grid axis 0 to 2, or the threads of a block (axis 3). The outlining passes the value after the kernel's arguments,
 // and the runtime reads it there.

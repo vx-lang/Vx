@@ -2263,6 +2263,7 @@ impl<'a> FnEmit<'a> {
             Opcode::Barrier => self.op_barrier(idx, ins),
             Opcode::LaunchDim => self.op_launch_dim(idx, ins),
             Opcode::LoopHint => self.op_loop_hint(idx, ins),
+            Opcode::LaneReduce => self.op_lane_reduce(idx, ins),
             Opcode::AcrossId => self.op_across_id(idx, ins),
             Opcode::AcrossRegion => self.op_across_region(idx, ins),
             Opcode::TensorDrop => self.op_tensor_drop(idx, ins),
