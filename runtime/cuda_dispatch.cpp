@@ -57,6 +57,7 @@
 #include "vx_host_call.h"
 #include "vx_kernel_launch.h"
 #include "vx_remote_routing.h"
+#include "vx_stream_policy.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -187,9 +188,52 @@ static bool sync_each_launch() {
   return sync;
 }
 
+/* The stream that the host program set for this thread with
+   `vx_cuda_set_stream` (#1986), or null for the legacy default stream. */
+static thread_local cudaStream_t caller_stream = nullptr;
+/* The last kernel this thread started on `caller_stream`. */
+static thread_local const char *last_on_stream = nullptr;
+
+/* Device memory that `cudaMallocAsync` gave on a caller's stream. Only this
+   memory may be freed in stream order. */
+static std::mutex on_stream_mutex;
+static std::unordered_map<void *, cudaStream_t> on_stream;
+
+/// Whether the caller's stream records a CUDA graph now.
+static bool recording() {
+  if (!caller_stream) {
+    return false;
+  }
+  cudaStreamCaptureStatus status = cudaStreamCaptureStatusNone;
+  const cudaError_t err = cudaStreamIsCapturing(caller_stream, &status);
+  if (err != cudaSuccess) {
+    fprintf(stderr,
+            "[Vx CUDA] FATAL: Vx could not ask whether the stream from "
+            "vx_cuda_set_stream records a CUDA graph: %s.\n",
+            cudaGetErrorString(err));
+    abort();
+  }
+  return status != cudaStreamCaptureStatusNone;
+}
+
+/// Stops the program: `what` cannot go into the CUDA graph that the caller's
+/// stream records. `fix` says what to do instead.
+[[noreturn]] static void
+refuse_in_recording(const char *what,
+                    const char *fix = "Give the function only tensors in "
+                                      "device memory, and read its results "
+                                      "after the recording ends.") {
+  fprintf(stderr,
+          "[Vx CUDA] FATAL: %s, while the stream from vx_cuda_set_stream "
+          "records a CUDA graph.\n"
+          "          A graph cannot hold this. %s\n",
+          what, fix);
+  abort();
+}
+
 /// Waits for every kernel that a GPU started. Stops the program if one
 /// faulted.
-static void wait_for_kernels() {
+static void wait_for_device() {
   std::unordered_map<int, std::string> started;
   {
     std::lock_guard<std::mutex> lock(unwaited_mutex);
@@ -215,12 +259,42 @@ static void wait_for_kernels() {
   cudaSetDevice(current);
 }
 
+/// Waits for the kernels before `why`: those on the caller's stream when the
+/// host program set one, else those of every GPU.
+static void wait_for_kernels(const char *why) {
+  switch (vx_wait_action_for(caller_stream != nullptr, recording())) {
+  case VX_WAIT_DEVICE:
+    wait_for_device();
+    return;
+  case VX_WAIT_REFUSE:
+    refuse_in_recording(why);
+  case VX_WAIT_STREAM:
+    break;
+  }
+  const cudaError_t err = cudaStreamSynchronize(caller_stream);
+  if (err != cudaSuccess) {
+    fprintf(stderr,
+            "[Vx CUDA] FATAL: a kernel faulted on the stream from "
+            "vx_cuda_set_stream: %s.\n"
+            "          The last kernel started there is %s. Set "
+            "VX_CUDA_SYNC=1 to name the kernel that faulted.\n",
+            cudaGetErrorString(err),
+            last_on_stream ? last_on_stream : "unknown");
+    abort();
+  }
+}
+
 /// After a launch of `name` on the current GPU.
 static void started_kernel(const char *name) {
   int device = 0;
   cudaGetDevice(&device);
   if (sync_each_launch()) {
-    const cudaError_t err = cudaDeviceSynchronize();
+    if (recording()) {
+      refuse_in_recording("VX_CUDA_SYNC=1 waits after each launch",
+                          "Unset VX_CUDA_SYNC for a recording.");
+    }
+    const cudaError_t err = caller_stream ? cudaStreamSynchronize(caller_stream)
+                                          : cudaDeviceSynchronize();
     if (err != cudaSuccess) {
       fprintf(stderr, "[Vx CUDA] FATAL: %s faulted on GPU %d: %s\n", name,
               device, cudaGetErrorString(err));
@@ -228,11 +302,55 @@ static void started_kernel(const char *name) {
     }
     return;
   }
+  if (caller_stream) {
+    last_on_stream = name;
+  }
   std::lock_guard<std::mutex> lock(unwaited_mutex);
   // A fault of a kernel that nothing waited for is reported at exit.
-  static const bool at_exit = atexit(wait_for_kernels) == 0;
+  static const bool at_exit = atexit(wait_for_device) == 0;
   (void)at_exit;
   unwaited[device] = name;
+}
+
+/// Device memory of `bytes`: in stream order on the caller's stream, if the
+/// host program set one.
+static cudaError_t device_alloc(void **ptr, size_t bytes) {
+  if (!caller_stream) {
+    return cudaMalloc(ptr, bytes);
+  }
+  const cudaError_t err = cudaMallocAsync(ptr, bytes, caller_stream);
+  if (err == cudaSuccess) {
+    std::lock_guard<std::mutex> lock(on_stream_mutex);
+    on_stream[*ptr] = caller_stream;
+  }
+  return err;
+}
+
+/// Frees device memory, by the rules of `vx_free_action_for`.
+static void device_free(void *ptr) {
+  cudaStream_t from = nullptr;
+  bool mine = false;
+  {
+    std::lock_guard<std::mutex> lock(on_stream_mutex);
+    auto found = on_stream.find(ptr);
+    if (found != on_stream.end()) {
+      from = found->second;
+      mine = true;
+      on_stream.erase(found);
+    }
+  }
+  switch (vx_free_action_for(caller_stream != nullptr, recording(), mine)) {
+  case VX_FREE_ON_STREAM:
+    cudaFreeAsync(ptr, from);
+    return;
+  case VX_FREE_REFUSE:
+    refuse_in_recording("Vx freed device memory that needs a wait first");
+  case VX_FREE_AFTER_DEVICE_WAIT:
+  case VX_FREE_AFTER_STREAM_WAIT:
+    wait_for_kernels("Vx freed device memory");
+    cudaFree(ptr);
+    return;
+  }
 }
 
 bool cuda_available() {
@@ -389,8 +507,18 @@ cublasHandle_t cublas_handle() {
     return it->second;
   }
 
+  if (recording()) {
+    refuse_in_recording("The first GEMM on this GPU created a cuBLAS handle",
+                        "Call the function once before the recording.");
+  }
   cublasHandle_t h = nullptr;
   VX_CUBLAS_CHECK(cublasCreate(&h));
+  /* A workspace of its own, so that a GEMM in a CUDA graph recording does not
+     allocate one. 32 MiB is what the cuBLAS documentation gives for Hopper. */
+  void *workspace = nullptr;
+  const size_t workspace_bytes = (size_t)32 << 20;
+  VX_CUDA_CHECK(cudaMalloc(&workspace, workspace_bytes));
+  VX_CUBLAS_CHECK(cublasSetWorkspace(h, workspace, workspace_bytes));
   /* TF32, opt-in (VX_TF32=1): f32 GEMMs keep f32 storage and f32 accumulation
      but the tensor-core mma truncates input mantissas to 10 bits -- roughly
      8x the FP32 CUDA-core rate at ~3 decimal digits of input precision. An
@@ -488,7 +616,8 @@ struct DeviceBuffer {
   void *ptr = nullptr;
   int64_t row_stride = 0; // in elements
   bool owned = false;
-  size_t bytes = 0; // what to hand back to the pool; 0 when borrowed
+  size_t bytes = 0;    // what to hand back to the pool; 0 when borrowed
+  bool stream = false; // from `device_alloc` on a caller's stream, not the pool
 
   DeviceBuffer() = default;
   DeviceBuffer(const DeviceBuffer &) = delete;
@@ -496,7 +625,7 @@ struct DeviceBuffer {
 
   DeviceBuffer(DeviceBuffer &&other) noexcept
       : ptr(other.ptr), row_stride(other.row_stride), owned(other.owned),
-        bytes(other.bytes) {
+        bytes(other.bytes), stream(other.stream) {
     other.ptr = nullptr;
     other.owned = false;
     other.bytes = 0;
@@ -504,13 +633,12 @@ struct DeviceBuffer {
 
   DeviceBuffer &operator=(DeviceBuffer &&other) noexcept {
     if (this != &other) {
-      if (owned && ptr) {
-        device_pool().release(ptr, bytes);
-      }
+      release();
       ptr = other.ptr;
       row_stride = other.row_stride;
       owned = other.owned;
       bytes = other.bytes;
+      stream = other.stream;
       other.ptr = nullptr;
       other.owned = false;
       other.bytes = 0;
@@ -518,9 +646,15 @@ struct DeviceBuffer {
     return *this;
   }
 
-  ~DeviceBuffer() {
+  ~DeviceBuffer() { release(); }
+
+  void release() {
     if (owned && ptr) {
-      device_pool().release(ptr, bytes);
+      if (stream) {
+        device_free(ptr);
+      } else {
+        device_pool().release(ptr, bytes);
+      }
     }
   }
 };
@@ -562,7 +696,18 @@ DeviceBuffer stage(const void *host_data, int64_t rows, int64_t cols,
 
   size_t width = (size_t)cols * elem_bytes;
   buf.bytes = (size_t)rows * width;
-  buf.ptr = device_pool().acquire(buf.bytes);
+  if (recording()) {
+    refuse_in_recording("Vx copied a tensor in host memory to the GPU");
+  }
+  if (caller_stream) {
+    buf.stream = device_alloc(&buf.ptr, buf.bytes) == cudaSuccess;
+    if (!buf.stream) {
+      cudaGetLastError();
+      buf.ptr = nullptr;
+    }
+  } else {
+    buf.ptr = device_pool().acquire(buf.bytes);
+  }
   if (!buf.ptr) {
     fprintf(stderr,
             "[Vx CUDA] FATAL: out of device memory staging %zu bytes "
@@ -572,9 +717,15 @@ DeviceBuffer stage(const void *host_data, int64_t rows, int64_t cols,
   }
   buf.owned = true;
   buf.row_stride = cols;
-  VX_CUDA_CHECK(cudaMemcpy2D(buf.ptr, width, host_data,
-                             (size_t)row_stride * elem_bytes, width,
-                             (size_t)rows, cudaMemcpyHostToDevice));
+  if (caller_stream) {
+    VX_CUDA_CHECK(cudaMemcpy2DAsync(
+        buf.ptr, width, host_data, (size_t)row_stride * elem_bytes, width,
+        (size_t)rows, cudaMemcpyHostToDevice, caller_stream));
+  } else {
+    VX_CUDA_CHECK(cudaMemcpy2D(buf.ptr, width, host_data,
+                               (size_t)row_stride * elem_bytes, width,
+                               (size_t)rows, cudaMemcpyHostToDevice));
+  }
   return buf;
 }
 
@@ -588,6 +739,7 @@ void gemm_on_device(int32_t dtype, int64_t m, int64_t n, int64_t k,
                     const DeviceBuffer &a, const DeviceBuffer &b, void *c_ptr,
                     int64_t c_row_stride) {
   cublasHandle_t handle = cublas_handle();
+  VX_CUBLAS_CHECK(cublasSetStream(handle, caller_stream));
   int mi = (int)m, ni = (int)n, ki = (int)k;
   int lda = (int)a.row_stride, ldb = (int)b.row_stride, ldc = (int)c_row_stride;
 
@@ -653,8 +805,9 @@ bool run_gemm(const vx_gemm_plan &plan) {
     c.row_stride = plan.out_row_stride;
     c.owned = false;
   } else {
-    VX_CUDA_CHECK(cudaMalloc(&c.ptr, (size_t)plan.m * (size_t)plan.n * esz));
+    VX_CUDA_CHECK(device_alloc(&c.ptr, (size_t)plan.m * (size_t)plan.n * esz));
     c.owned = true;
+    c.stream = caller_stream != nullptr;
     c.row_stride = plan.n;
   }
 
@@ -663,15 +816,19 @@ bool run_gemm(const vx_gemm_plan &plan) {
      and emitted regions needs both on one clock -- device events, because the
      wall includes staging and the JIT. */
   const bool time_kernel = getenv("VX_TIME_KERNEL") != nullptr;
+  if (time_kernel && recording()) {
+    refuse_in_recording("VX_TIME_KERNEL waits for each kernel",
+                        "Unset VX_TIME_KERNEL for a recording.");
+  }
   cudaEvent_t t0 = nullptr, t1 = nullptr;
   if (time_kernel) {
     cudaEventCreate(&t0);
     cudaEventCreate(&t1);
-    cudaEventRecord(t0);
+    cudaEventRecord(t0, caller_stream);
   }
   gemm_on_device(plan.dtype, plan.m, plan.n, plan.k, a, b, c.ptr, c.row_stride);
   if (time_kernel) {
-    cudaEventRecord(t1);
+    cudaEventRecord(t1, caller_stream);
     cudaEventSynchronize(t1);
     float ms = 0.0f;
     cudaEventElapsedTime(&ms, t0, t1);
@@ -685,7 +842,7 @@ bool run_gemm(const vx_gemm_plan &plan) {
   if (out_is_device) {
     return true;
   }
-  wait_for_kernels();
+  wait_for_kernels("Vx copied a GEMM result to host memory");
 
   size_t width = (size_t)plan.n * esz;
   if (plan.out_kind == VX_GEMM_OUT_SLOT) {
@@ -814,10 +971,18 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
   }
 
   void *device_ptr = nullptr;
-  VX_CUDA_CHECK(cudaMalloc(&device_ptr, bytes));
+  VX_CUDA_CHECK(device_alloc(&device_ptr, bytes));
   if (host_ptr) {
-    VX_CUDA_CHECK(
-        cudaMemcpy(device_ptr, host_ptr, bytes, cudaMemcpyHostToDevice));
+    if (recording()) {
+      refuse_in_recording("Vx copied a tensor in host memory to the GPU");
+    }
+    if (caller_stream) {
+      VX_CUDA_CHECK(cudaMemcpyAsync(device_ptr, host_ptr, bytes,
+                                    cudaMemcpyHostToDevice, caller_stream));
+    } else {
+      VX_CUDA_CHECK(
+          cudaMemcpy(device_ptr, host_ptr, bytes, cudaMemcpyHostToDevice));
+    }
   }
   return device_ptr;
 }
@@ -863,8 +1028,13 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
   // it gave you.
   select_device((int32_t)dst_topology_id, "peer");
   void *dst_ptr = nullptr;
-  VX_CUDA_CHECK(cudaMalloc(&dst_ptr, bytes));
-  VX_CUDA_CHECK(cudaMemcpyPeer(dst_ptr, dst, src_device_ptr, src, bytes));
+  VX_CUDA_CHECK(device_alloc(&dst_ptr, bytes));
+  if (caller_stream) {
+    VX_CUDA_CHECK(cudaMemcpyPeerAsync(dst_ptr, dst, src_device_ptr, src, bytes,
+                                      caller_stream));
+  } else {
+    VX_CUDA_CHECK(cudaMemcpyPeer(dst_ptr, dst, src_device_ptr, src, bytes));
+  }
 
   if (verbose()) {
     fprintf(stderr, "[Vx CUDA] peer %d -> %d, %zu bytes\n", src, dst, bytes);
@@ -926,6 +1096,12 @@ bool run_device_image(const void *payload, size_t payload_size,
     fn = found->second.fn;
     declared = found->second.params;
   } else {
+    if (recording()) {
+      char what[256];
+      snprintf(what, sizeof what,
+               "The first call of %s loaded its kernel image", kernel_name);
+      refuse_in_recording(what, "Call the function once before the recording.");
+    }
     /* The driver API needs a current context. The runtime API creates the
        primary one lazily, and this is the idiom that forces it: without it
        cuModuleLoadData returns CUDA_ERROR_INVALID_CONTEXT on a dispatch that
@@ -1080,6 +1256,10 @@ bool run_device_image(const void *payload, size_t payload_size,
      per-K slope. CUDA events are stamped by the device, so they are immune
      to everything the host does between enqueue and sync. */
   const bool time_kernel = getenv("VX_TIME_KERNEL") != nullptr;
+  if (time_kernel && recording()) {
+    refuse_in_recording("VX_TIME_KERNEL waits for each kernel",
+                        "Unset VX_TIME_KERNEL for a recording.");
+  }
   cudaEvent_t t0 = nullptr, t1 = nullptr;
   if (time_kernel) {
     /* The occupancy the DRIVER computed for this function as it will actually
@@ -1096,12 +1276,12 @@ bool run_device_image(const void *payload, size_t payload_size,
     }
     cudaEventCreate(&t0);
     cudaEventCreate(&t1);
-    cudaEventRecord(t0);
+    cudaEventRecord(t0, caller_stream);
   }
   CUresult rc =
       driver().LaunchKernel(fn, grid, shape[1], shape[2], block, 1, 1,
                             dynamic_shared_bytes(payload, payload_size),
-                            nullptr, params.params, nullptr);
+                            (CUstream)caller_stream, params.params, nullptr);
   if (rc != CUDA_SUCCESS) {
     const char *name = nullptr;
     driver().GetErrorName(rc, &name);
@@ -1112,7 +1292,7 @@ bool run_device_image(const void *payload, size_t payload_size,
   started_kernel(kernel_name);
 
   if (time_kernel) {
-    cudaEventRecord(t1);
+    cudaEventRecord(t1, caller_stream);
     cudaEventSynchronize(t1);
     float ms = 0.0f;
     cudaEventElapsedTime(&ms, t0, t1);
@@ -1230,7 +1410,8 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
               bytes, kernel_name);
       abort();
     }
-    wait_for_kernels();
+    wait_for_kernels("Vx copied a tensor to host memory to run a region on "
+                     "the CPU");
     VX_CUDA_CHECK(cudaMemcpy(host, aligned, bytes, cudaMemcpyDeviceToHost));
     void **ptrs = (void **)desc;
     copies.push_back({ptrs, ptrs[0], aligned, host, bytes});
@@ -1302,17 +1483,19 @@ uint64_t vx_plugin_dispatch_async_flat(float *xout, float *x, float *w, int n,
   if (out_is_device) {
     dy.ptr = xout;
   } else {
-    VX_CUDA_CHECK(cudaMalloc(&dy.ptr, (size_t)d * sizeof(float)));
+    VX_CUDA_CHECK(device_alloc(&dy.ptr, (size_t)d * sizeof(float)));
     dy.owned = true;
+    dy.stream = caller_stream != nullptr;
   }
 
+  VX_CUBLAS_CHECK(cublasSetStream(cublas_handle(), caller_stream));
   VX_CUBLAS_CHECK(cublasSgemv(cublas_handle(), CUBLAS_OP_T, n, d, &alpha,
                               (const float *)dw.ptr, n, (const float *)dx.ptr,
                               1, &beta, (float *)dy.ptr, 1));
   started_kernel("a matrix-vector product");
 
   if (!out_is_device) {
-    wait_for_kernels();
+    wait_for_kernels("Vx copied a matrix-vector product to host memory");
     VX_CUDA_CHECK(cudaMemcpy(xout, dy.ptr, (size_t)d * sizeof(float),
                              cudaMemcpyDeviceToHost));
   }
@@ -1322,7 +1505,7 @@ uint64_t vx_plugin_dispatch_async_flat(float *xout, float *x, float *w, int n,
 void vx_plugin_await_future(uint64_t future_id) {
   // One future for each GPU: the kernels that it started.
   (void)future_id;
-  wait_for_kernels();
+  wait_for_kernels("Vx waited for a GPU region to finish");
 }
 
 int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
@@ -1339,7 +1522,7 @@ int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
     // because the ABI is the contract a non-CUDA backend implements and nothing
     // guarantees that backend can infer anything from an address (#346).
     select_device((int32_t)topology_id, "fetch");
-    wait_for_kernels();
+    wait_for_kernels("Vx copied a tensor to host memory");
     VX_CUDA_CHECK(
         cudaMemcpy(host_ptr, device_ptr, bytes, cudaMemcpyDeviceToHost));
   } else {
@@ -1358,14 +1541,22 @@ void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
   vx_routing_refuse_handle("a free", device_ptr, topology_id);
   if (is_device_ptr(device_ptr)) {
     select_device((int32_t)topology_id, "free");
-    wait_for_kernels();
-    cudaFree(device_ptr);
+    device_free(device_ptr);
   } else {
     free(device_ptr);
   }
 }
 
 void vx_plugin_release_future(uint64_t future_id) { (void)future_id; }
+
+/// Sets the CUDA stream for Vx's GPU work on the calling thread (#1986). Null
+/// gives back the legacy default stream. See docs/lang/abi.md section 3.6.
+void vx_cuda_set_stream(void *stream) {
+  caller_stream = static_cast<cudaStream_t>(stream);
+}
+
+/// The stream that `vx_cuda_set_stream` set on the calling thread, or null.
+void *vx_cuda_get_stream(void) { return caller_stream; }
 
 int32_t vx_plugin_control(uint32_t opcode, void *payload) {
   switch (opcode) {
