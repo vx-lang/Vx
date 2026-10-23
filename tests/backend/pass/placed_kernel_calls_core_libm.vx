@@ -13,7 +13,7 @@
 import core::num;
 
 fn kernel_prep() -> f32 {
-  let mut o = Tensor<f32, [4, 4]>::uninit();
+  let mut o = transfer(unsafe { Tensor<f32, [4, 4]>::uninit() }, Memory::GPU_HBM);
   spawn on(Topology::GPU) {
     for i in 0..4 {
       for j in 0..4 {
@@ -21,7 +21,8 @@ fn kernel_prep() -> f32 {
       }
     }
   }
-  return o[1][2];
+  let back = transfer(o, Memory::CPU_DRAM);
+  return back[1][2];
 }
 
 fn main() -> i32 {

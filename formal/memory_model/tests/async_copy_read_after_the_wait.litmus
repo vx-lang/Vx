@@ -1,0 +1,14 @@
+LISA async_copy_read_after_the_wait
+(* A lane reads the destination of raw::async_copy after raw::async_wait, and sees the copied
+   value (C6). P0 is the lane: the release of go starts the copy, and the acquire of done is
+   the wait. P1 is the copy engine.
+   Expect: never, no data race. *)
+{ src = 1; dst = 0; go = 0; done = 0; }
+ P0                  | P1                   ;
+ w[rel] go 1         | r[acq] r0 go         ;
+ r[acq] r1 done      | r[plain] r2 src      ;
+ r[plain] r3 dst     | w[plain] dst r2      ;
+                     | w[rel] done 1        ;
+scopes: (device (block P0) (block P1))
+filter (1:r0 = 1 /\ 0:r1 = 1)
+exists (0:r3 = 0)

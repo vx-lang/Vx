@@ -9,8 +9,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::arch::TransferCostGraph;
 use crate::hir::check_state::{
-    ComptimeAggregateValue, ComptimeEvalContext, ComptimeEvalFlow, ComptimeEvalOutcome,
-    ComptimeEvalSupport, ComptimeEvalUnsupportedReason, ComptimeEvalValue, ComptimeValueFacts,
+    ComptimeAggregateValue, ComptimeCheck, ComptimeCheckProblem, ComptimeEvalContext,
+    ComptimeEvalFlow, ComptimeEvalOutcome, ComptimeEvalSupport, ComptimeEvalUnsupportedReason,
+    ComptimeEvalValue, ComptimeValueFacts,
 };
 use crate::hir::env::Value;
 use crate::symbol::Symbol;
@@ -30,6 +31,9 @@ pub(crate) struct ComptimeObservation {
     pub outcome: ComptimeEvalOutcome,
     pub escaping_write: Option<Symbol>,
     pub call_depth_exceeded: bool,
+    pub check_problems: Vec<ComptimeCheckProblem>,
+    /// The loop that was running when the block used its whole loop budget.
+    pub loop_limit_reached_at: Option<Span>,
 }
 
 #[derive(Clone)]
@@ -122,6 +126,9 @@ pub(crate) struct ComptimeInterpreter<'graph, 'bodies> {
     heap_bytes: usize,
 }
 
+/// The values an `i64` holds, for an integer whose type the checker did not record.
+pub(crate) const I64_RANGE: (i128, i128) = (i64::MIN as i128, i64::MAX as i128);
+
 /// How many bytes one `comptime` block may put in byte buffers.
 const MAX_HEAP_BYTES: usize = 1 << 20;
 
@@ -196,6 +203,8 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                     outcome: ComptimeEvalOutcome::refusal(),
                     escaping_write: None,
                     call_depth_exceeded: false,
+                    check_problems: Vec::new(),
+                    loop_limit_reached_at: None,
                 },
             }
         })
@@ -218,6 +227,8 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             outcome,
             escaping_write: self.context.escaping_write().cloned(),
             call_depth_exceeded: self.context.call_depth_exceeded(),
+            check_problems: self.context.check_problems().to_vec(),
+            loop_limit_reached_at: self.context.loop_limit_reached_at(),
         }
     }
 
@@ -442,8 +453,11 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 let reference_place = self.binding_reference_place(&let_decl.expr);
                 self.context
                     .declare(let_decl.name.clone(), outcome.value.facts.clone());
-                self.env
-                    .insert(let_decl.name.clone(), outcome.value.clone());
+                let mut value = outcome.value.clone();
+                if let Some(Type::Scalar(elem)) = &let_decl.ty_ann {
+                    value.ty = Some(elem.clone());
+                }
+                self.env.insert(let_decl.name.clone(), value);
                 if let Some(place) = reference_place {
                     self.reference_places.insert(let_decl.name.clone(), place);
                 } else {
@@ -464,10 +478,22 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             Statement::ExprStmt(expr) => self.expr(&expr.expr),
             Statement::ForLoop(loop_stmt) => self.for_loop(loop_stmt),
             Statement::Assign(assign) => self.assign(&assign.lhs, &assign.rhs),
-            Statement::CompoundAssign(assign) => {
-                self.compound_assign(&assign.lhs, &assign.op, &assign.rhs)
+            Statement::CompoundAssign(assign) => self.compound_assign(assign),
+            Statement::Assert(assert) => {
+                let outcome = self.expr(&assert.expr);
+                if outcome.flow == ComptimeEvalFlow::Normal {
+                    let condition = match outcome.value.concrete {
+                        Some(Value::Bool(value)) => Some(value),
+                        _ => None,
+                    };
+                    self.context.note_check(
+                        ComptimeCheck::Assert(assert.msg.clone()),
+                        condition,
+                        assert.span,
+                    );
+                }
+                outcome
             }
-            Statement::Assert(assert) => self.expr(&assert.expr),
             Statement::Loop(loop_stmt) => self.loop_stmt(loop_stmt),
             Statement::Break(_) => ComptimeEvalOutcome {
                 flow: ComptimeEvalFlow::Break,
@@ -574,10 +600,17 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         outcome
     }
 
-    fn compound_assign(&mut self, lhs: &Expr, op: &BinaryOp, rhs: &Expr) -> ComptimeEvalOutcome {
+    fn compound_assign(&mut self, assign: &CompoundAssignStmt) -> ComptimeEvalOutcome {
+        let lhs = &assign.lhs;
         let (left, place) = self.write_place(lhs);
-        let right = self.expr(rhs);
-        let mut updated = self.binary(left.clone(), right.clone(), op);
+        let right = self.expr(&assign.rhs);
+        let mut updated = self.binary(
+            left.clone(),
+            right.clone(),
+            &assign.op,
+            assign.operand_ty.as_ref(),
+            assign.span,
+        );
         if !self.store_place(lhs, place, updated.value.clone()) {
             updated.mark_unsupported();
         }
@@ -616,16 +649,48 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                     return ComptimeWritePlace::Unknown;
                 };
                 Self::project_place(
-                    self.direct_place(&access.base),
+                    self.base_place(&access.base),
                     ComptimePlaceProjection::ArrayElement(index),
                 )
             }
             Expr::MemberAccess(access) => Self::project_place(
-                self.direct_place(&access.base),
+                self.base_place(&access.base),
                 ComptimePlaceProjection::StructField(access.member.clone()),
             ),
             _ => ComptimeWritePlace::Unknown,
         }
+    }
+
+    /// The place that `r[i]` or `r.f` starts from. When `r` is a mutable reference, it is the
+    /// place `r` points at, as for `*r`.
+    fn base_place(&self, base: &Expr) -> ComptimeWritePlace {
+        match base {
+            Expr::Identifier(id) => self
+                .reference_places
+                .get(&id.name)
+                .cloned()
+                .unwrap_or_else(|| ComptimeWritePlace::Binding(id.name.clone())),
+            _ => self.direct_place(base),
+        }
+    }
+
+    /// The value of the base of `r[i]` or `r.f`. A mutable reference reads the value it points
+    /// at, as `*r` does.
+    fn base_value(&mut self, base: &Expr) -> ComptimeEvalOutcome {
+        let mut outcome = self.expr(base);
+        let referenced = match base {
+            Expr::Identifier(id) => self
+                .reference_places
+                .get(&id.name)
+                .and_then(|place| self.read_place(place)),
+            _ => None,
+        };
+        if let Some(referenced) = referenced {
+            let facts = std::mem::take(&mut outcome.value.facts);
+            outcome.value = referenced;
+            outcome.value.facts.merge_from(&facts);
+        }
+        outcome
     }
 
     fn place_index(&self, expr: &Expr) -> Option<usize> {
@@ -862,7 +927,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             Expr::MemberAccess(access) => &access.base,
             _ => return false,
         };
-        let place = self.direct_place(base);
+        let place = self.base_place(base);
         let Some(root) = Self::place_root(&place).cloned() else {
             return false;
         };
@@ -1089,34 +1154,130 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         }
     }
 
+    /// `operand_ty` is the operands' element type, which the checker records.
     fn binary(
         &mut self,
         lhs: ComptimeEvalOutcome,
         rhs: ComptimeEvalOutcome,
         op: &BinaryOp,
+        operand_ty: Option<&ElementType>,
+        span: Span,
     ) -> ComptimeEvalOutcome {
+        // A body the checker has not typed has no operand type. The operands' own types stand
+        // in for it.
+        let ty = operand_ty
+            .cloned()
+            .or_else(|| lhs.value.ty.clone())
+            .or_else(|| rhs.value.ty.clone());
+        let operand_ty = ty.as_ref();
+        let range = operand_ty.and_then(Self::integer_range);
+        if matches!(op, BinaryOp::Div | BinaryOp::Rem)
+            && !operand_ty.is_some_and(|ty| ty.is_float())
+        {
+            let passes = Self::division_passes(
+                lhs.value.concrete.as_ref(),
+                rhs.value.concrete.as_ref(),
+                range,
+            );
+            self.context
+                .note_check(ComptimeCheck::Division, passes, span);
+        }
         let concrete = match (&lhs.value.concrete, &rhs.value.concrete) {
-            (Some(Value::Int(a)), Some(Value::Int(b))) => match op {
-                BinaryOp::Add => a.checked_add(*b).map(Value::Int),
-                BinaryOp::Sub => a.checked_sub(*b).map(Value::Int),
-                BinaryOp::Mul => a.checked_mul(*b).map(Value::Int),
-                BinaryOp::Div => a.checked_div(*b).map(Value::Int),
-                BinaryOp::Rem => a.checked_rem(*b).map(Value::Int),
-                _ => None,
-            },
+            (Some(Value::Int(a)), Some(Value::Int(b))) => {
+                Self::integer_op(*a, *b, op, range.unwrap_or(I64_RANGE)).map(Value::Int)
+            }
             (Some(left), Some(right)) => match (left.as_f64(), right.as_f64(), op) {
-                (Some(a), Some(b), BinaryOp::Add) => Some(Value::Number(a + b)),
-                (Some(a), Some(b), BinaryOp::Sub) => Some(Value::Number(a - b)),
-                (Some(a), Some(b), BinaryOp::Mul) => Some(Value::Number(a * b)),
-                (Some(a), Some(b), BinaryOp::Div) => Some(Value::Number(a / b)),
-                (Some(a), Some(b), BinaryOp::Rem) if b != 0.0 => Some(Value::Number(a % b)),
+                (Some(a), Some(b), BinaryOp::Add) => Self::round_float(a + b, operand_ty),
+                (Some(a), Some(b), BinaryOp::Sub) => Self::round_float(a - b, operand_ty),
+                (Some(a), Some(b), BinaryOp::Mul) => Self::round_float(a * b, operand_ty),
+                (Some(a), Some(b), BinaryOp::Div) => Self::round_float(a / b, operand_ty),
+                (Some(a), Some(b), BinaryOp::Rem) if b != 0.0 => {
+                    Self::round_float(a % b, operand_ty)
+                }
                 _ => None,
-            },
+            }
+            .map(Value::Number),
             _ => None,
         };
         let mut outcome = self.unknown_after([lhs, rhs]);
         outcome.value.concrete = concrete;
+        outcome.value.ty = ty;
         outcome
+    }
+
+    /// `value` as the float type `ty` holds it. An `f32` operation on `f32` inputs, done in
+    /// `f64` and then rounded once, gives the `f32` result. The smaller float types have no
+    /// value until they are rounded too.
+    pub(crate) fn round_float(value: f64, ty: Option<&ElementType>) -> Option<f64> {
+        match ty {
+            Some(ElementType::F32) => Some(value as f32 as f64),
+            Some(ty) if ty.is_float() && *ty != ElementType::F64 => None,
+            _ => Some(value),
+        }
+    }
+
+    /// The values an integer type holds, or `None` for a type that is not an integer.
+    pub(crate) fn integer_range(ty: &ElementType) -> Option<(i128, i128)> {
+        use ElementType::*;
+        let bits = match ty {
+            I4 | U4 => 4,
+            I8 | U8 => 8,
+            I16 | U16 => 16,
+            I32 | U32 => 32,
+            I64 | U64 => 64,
+            I128 => return Some((i128::MIN, i128::MAX)),
+            U128 => return Some((0, i128::MAX)),
+            USize => return Some((0, i64::MAX as i128)),
+            _ => return None,
+        };
+        Some(if ty.is_signed_int() {
+            (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+        } else {
+            (0, (1i128 << bits) - 1)
+        })
+    }
+
+    /// `a op b` for integers of the type whose values are `min..=max`. A result outside the
+    /// type has no value: the program wraps it, and a wrapped value folded into the program
+    /// would look like something the compiler worked out.
+    pub(crate) fn integer_op(
+        a: i64,
+        b: i64,
+        op: &BinaryOp,
+        (min, max): (i128, i128),
+    ) -> Option<i64> {
+        let (a, b) = (i128::from(a), i128::from(b));
+        let result = match op {
+            BinaryOp::Add => a + b,
+            BinaryOp::Sub => a - b,
+            BinaryOp::Mul => a * b,
+            BinaryOp::Div => a.checked_div(b)?,
+            BinaryOp::Rem => a.checked_rem(b)?,
+            _ => return None,
+        };
+        if result < min || result > max {
+            return None;
+        }
+        i64::try_from(result).ok()
+    }
+
+    /// Whether an integer `/` or `%` runs without stopping the program: `None` when that
+    /// depends on a value known only at run time. The program stops on a divisor of 0, and
+    /// on the minimum value divided by -1.
+    fn division_passes(
+        dividend: Option<&Value>,
+        divisor: Option<&Value>,
+        range: Option<(i128, i128)>,
+    ) -> Option<bool> {
+        let (min, _) = range.unwrap_or(I64_RANGE);
+        let signed = min < 0;
+        match (dividend, divisor) {
+            (_, Some(Value::Int(0))) => Some(false),
+            (Some(Value::Int(a)), Some(Value::Int(-1))) => Some(!(signed && i128::from(*a) == min)),
+            (_, Some(Value::Int(-1))) if signed => None,
+            (_, Some(_)) => Some(true),
+            (_, None) => None,
+        }
     }
 
     fn relational_value(&self, lhs: &Value, rhs: &Value, op: &RelationalOp) -> Option<Value> {
@@ -1329,7 +1490,10 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             .map(|(place, target)| (place.clone(), target.clone()))
             .collect();
         self.context.push_scope();
-        for ((((parameter, _), parameter_can_carry_mut_reference), argument), writeback) in function
+        for (
+            (((parameter, parameter_ty), parameter_can_carry_mut_reference), argument),
+            writeback,
+        ) in function
             .params
             .iter()
             .zip(&mutable_reference_params)
@@ -1338,7 +1502,11 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         {
             self.context
                 .declare(parameter.clone(), argument.value.facts.clone());
-            self.env.insert(parameter.clone(), argument.value.clone());
+            let mut value = argument.value.clone();
+            if let Type::Scalar(elem) = parameter_ty {
+                value.ty = Some(elem.clone());
+            }
+            self.env.insert(parameter.clone(), value);
             if *parameter_can_carry_mut_reference && writeback.is_some() {
                 // The parameter's private binding is its lvalue inside this call. When the call
                 // returns, its final value is copied to the caller's tracked place below.
@@ -1408,6 +1576,9 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         if !writebacks_supported {
             outcome.mark_unsupported();
         }
+        if let Type::Scalar(elem) = &function.return_type {
+            outcome.value.ty = Some(elem.clone());
+        }
         outcome
     }
 
@@ -1427,6 +1598,10 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         };
 
         let mut merged = self.clone();
+        let outer_path = merged.context.enter_uncertain_path();
+        if facts.callable_targets.len() == 1 {
+            merged.context.leave_uncertain_path(outer_path);
+        }
         let mut first_args = args.clone();
         if let Some(environment) = facts.callable_environments.get(first_target) {
             first_args.insert(
@@ -1436,6 +1611,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                         concrete: None,
                         facts: environment.clone(),
                         aggregate: None,
+                        ty: None,
                     },
                     ..ComptimeEvalOutcome::default()
                 },
@@ -1444,6 +1620,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         let mut outcome = merged.known_function_call(first_target, first_args);
         for target in targets {
             let mut branch = self.clone();
+            branch.context.enter_uncertain_path();
             let mut branch_args = args.clone();
             if let Some(environment) = facts.callable_environments.get(target) {
                 branch_args.insert(
@@ -1453,6 +1630,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                             concrete: None,
                             facts: environment.clone(),
                             aggregate: None,
+                            ty: None,
                         },
                         ..ComptimeEvalOutcome::default()
                     },
@@ -1471,6 +1649,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             outcome.merge_from(&branch_outcome);
         }
         self.context = merged.context;
+        self.context.leave_uncertain_path(outer_path);
         self.env = merged.env;
         self.reference_places = merged.reference_places;
         self.reference_projection_places = merged.reference_projection_places;
@@ -1731,8 +1910,10 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         // the condition, then the states join: effects and reference origins union, while a
         // concrete value or binding survives only when both paths establish the same one.
         let mut then_interpreter = self.clone();
+        let outer_path = then_interpreter.context.enter_uncertain_path();
         let then_outcome = then_interpreter.block(&if_expr.then_block);
         let mut else_interpreter = self.clone();
+        else_interpreter.context.enter_uncertain_path();
         let else_outcome = if_expr
             .else_block
             .as_ref()
@@ -1743,6 +1924,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             .context
             .merge_branch(&else_interpreter.context);
         self.context = then_interpreter.context;
+        self.context.leave_uncertain_path(outer_path);
         self.env = Self::merge_environments(then_interpreter.env, &else_interpreter.env);
         self.reference_places = Self::merge_reference_places(
             then_interpreter.reference_places,
@@ -1775,13 +1957,20 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
     fn pattern_matches(pattern: &Pattern, value: &Value) -> Option<bool> {
         match pattern {
             Pattern::Wildcard | Pattern::Identifier(_) => Some(true),
-            Pattern::Literal(Expr::Identifier(id)) if id.name.as_ref() == "true" => {
+            Pattern::Literal(lit) => Self::literal_matches(lit, value),
+            Pattern::EnumVariant(..) => Some(false),
+        }
+    }
+
+    fn literal_matches(lit: &Expr, value: &Value) -> Option<bool> {
+        match lit {
+            Expr::Identifier(id) if id.name.as_ref() == "true" => {
                 Some(matches!(value, Value::Bool(true)))
             }
-            Pattern::Literal(Expr::Identifier(id)) if id.name.as_ref() == "false" => {
+            Expr::Identifier(id) if id.name.as_ref() == "false" => {
                 Some(matches!(value, Value::Bool(false)))
             }
-            Pattern::Literal(Expr::Number(number)) => match (value, Self::number_literal(number)) {
+            Expr::Number(number) => match (value, Self::number_literal(number)) {
                 (Value::Int(value), Some(Value::Int(other))) => Some(value == &other),
                 (Value::Number(value), Some(Value::Number(other))) => Some(value == &other),
                 (Value::Int(_), Some(Value::Number(_)))
@@ -1789,7 +1978,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 (_, None) => None,
                 _ => Some(false),
             },
-            Pattern::Literal(_) | Pattern::EnumVariant(..) => Some(false),
+            _ => Some(false),
         }
     }
 
@@ -1803,7 +1992,8 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                     || number.value.contains('e')
                     || number.value.contains('E')));
         if is_float {
-            number.value.parse::<f64>().ok().map(Value::Number)
+            let value = number.value.parse::<f64>().ok()?;
+            Self::round_float(value, number.ty.as_ref()).map(Value::Number)
         } else {
             // An integer too big for an i64 has no value, rather than a float's rounded one.
             number.value.parse::<i64>().ok().map(Value::Int)
@@ -1925,9 +2115,14 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         let scrutinee_requires_refusal = scrutinee.requires_refusal;
         let scrutinee_value = scrutinee.value.clone();
         let mut merged = self.clone();
+        let outer_path = merged.context.enter_uncertain_path();
+        if rest.is_empty() {
+            merged.context.leave_uncertain_path(outer_path);
+        }
         let mut outcome = merged.match_arm(first, &scrutinee_value);
         for arm in rest {
             let mut branch = self.clone();
+            branch.context.enter_uncertain_path();
             let branch_outcome = branch.match_arm(arm, &scrutinee_value);
             merged.context.merge_branch(&branch.context);
             merged.env = Self::merge_environments(merged.env, &branch.env);
@@ -1941,6 +2136,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             outcome.merge_from(&branch_outcome);
         }
         self.context = merged.context;
+        self.context.leave_uncertain_path(outer_path);
         self.env = merged.env;
         self.reference_places = merged.reference_places;
         self.reference_projection_places = merged.reference_projection_places;
@@ -1970,6 +2166,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             if end.flow != ComptimeEvalFlow::Normal {
                 return end;
             }
+            let iterator_ty = start.value.ty.clone().or_else(|| end.value.ty.clone());
             if let (Some(Value::Int(start_index)), Some(Value::Int(end_index))) =
                 (&start.value.concrete, &end.value.concrete)
             {
@@ -1984,14 +2181,13 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 let end_index = *end_index;
                 let mut outcome = self.unknown_after([start, end]);
                 while index < end_index {
-                    if !self.context.take_loop_step() {
+                    if !self.context.take_loop_step(loop_stmt.span) {
                         outcome.mark_unsupported();
                         break;
                     }
-                    self.env.insert(
-                        iterator.clone(),
-                        ComptimeEvalValue::known(Value::Int(index)),
-                    );
+                    let mut value = ComptimeEvalValue::known(Value::Int(index));
+                    value.ty = iterator_ty.clone();
+                    self.env.insert(iterator.clone(), value);
                     self.reference_places.remove(&iterator);
                     let body = self.block(&loop_stmt.body);
                     outcome.support.merge_from(body.support);
@@ -2048,6 +2244,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         // one abstract iteration. That retains writes through outer references while preventing
         // the loop variable and body-local declarations from escaping the loop.
         let mut one_iteration = self.clone();
+        one_iteration.context.enter_uncertain_path();
         one_iteration.context.push_scope();
         one_iteration
             .context
@@ -2080,7 +2277,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         // `return`; the shared budget gives an unproven recurrence the same fail-closed outcome
         // as the legacy evaluator's loop-step cap.
         let mut outcome = ComptimeEvalOutcome::unknown();
-        while self.context.take_loop_step() {
+        while self.context.take_loop_step(loop_stmt.span) {
             let body = self.block(&loop_stmt.body);
             outcome.support.merge_from(body.support);
             outcome
@@ -2123,9 +2320,14 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                     ..Default::default()
                 }
             }
-            Expr::Number(number) => Self::number_literal(number)
-                .map(ComptimeEvalOutcome::known)
-                .unwrap_or_else(ComptimeEvalOutcome::unsupported),
+            Expr::Number(number) => match Self::number_literal(number) {
+                Some(value) => {
+                    let mut outcome = ComptimeEvalOutcome::known(value);
+                    outcome.value.ty = number.ty.clone();
+                    outcome
+                }
+                None => ComptimeEvalOutcome::unsupported(),
+            },
             Expr::EnumVariant(variant) => {
                 let values = variant
                     .payload
@@ -2213,11 +2415,11 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 self.array(elements)
             }
             Expr::MemberAccess(access) => {
-                let base = self.expr(&access.base);
+                let base = self.base_value(&access.base);
                 self.member_access(base, &access.member)
             }
             Expr::IndexAccess(access) => {
-                let base = self.expr(&access.base);
+                let base = self.base_value(&access.base);
                 let index = self.expr(&access.index);
                 self.index_access(base, index)
             }
@@ -2232,7 +2434,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             Expr::BinaryOp(op) => {
                 let lhs = self.expr(&op.lhs);
                 let rhs = self.expr(&op.rhs);
-                self.binary(lhs, rhs, &op.op)
+                self.binary(lhs, rhs, &op.op, op.operand_ty.as_ref(), op.span)
             }
             Expr::RelationalOp(op) => {
                 let lhs = self.expr(&op.lhs);
@@ -2281,7 +2483,13 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                     }
                     _ => {}
                 }
+                // With the left side unknown, the right side runs only for some run-time values.
+                let outer_path = self.context.enter_uncertain_path();
+                if lhs.value.concrete.is_some() {
+                    self.context.leave_uncertain_path(outer_path);
+                }
                 let rhs = self.expr(&op.rhs);
+                self.context.leave_uncertain_path(outer_path);
                 let mut outcome = self.unknown_after([lhs.clone(), rhs.clone()]);
                 outcome.value.concrete = match (&lhs.value.concrete, &rhs.value.concrete, &op.op) {
                     (Some(Value::Bool(a)), Some(Value::Bool(b)), LogicalOp::And) => {
@@ -2299,10 +2507,17 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 let mut outcome = self.unknown_after([inner.clone()]);
                 outcome.value.concrete = match (&inner.value.concrete, &op.op) {
                     (Some(Value::Bool(value)), UnaryOp::Not) => Some(Value::Bool(!value)),
-                    (Some(Value::Int(value)), UnaryOp::Neg) => value.checked_neg().map(Value::Int),
+                    (Some(Value::Int(value)), UnaryOp::Neg) => {
+                        let range = inner.value.ty.as_ref().and_then(Self::integer_range);
+                        Self::integer_op(0, *value, &BinaryOp::Sub, range.unwrap_or(I64_RANGE))
+                            .map(Value::Int)
+                    }
                     (Some(Value::Number(value)), UnaryOp::Neg) => Some(Value::Number(-value)),
                     _ => None,
                 };
+                if matches!(op.op, UnaryOp::Neg) {
+                    outcome.value.ty = inner.value.ty.clone();
+                }
                 outcome
             }
             Expr::Borrow(borrow) => {
@@ -2436,6 +2651,10 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 children.push(self.expr(&jvp.tangent));
                 self.refusal_after(children)
             }
+            Expr::TaskBlock(block) => {
+                let body = self.block_with_tail(&block.stmts, block.ret.as_deref());
+                self.refusal_after([body])
+            }
             Expr::SpawnOn(spawn) => {
                 let topology = self.topology(&spawn.top);
                 let body = self.block_with_tail(&spawn.stmts, spawn.ret.as_deref());
@@ -2483,6 +2702,9 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 };
                 let mut outcome = self.unknown_after([value]);
                 outcome.value.concrete = Some(concrete);
+                if let Type::Scalar(elem) = &cast.target_ty {
+                    outcome.value.ty = Some(elem.clone());
+                }
                 outcome
             }
             Expr::Print(print) => {

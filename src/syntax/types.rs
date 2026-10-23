@@ -98,6 +98,9 @@ pub struct Span {
     pub line: usize,
     pub column: usize,
     pub length: usize,
+    /// Which macro expansion made this node, or 0 for source code. Two expansions of one
+    /// macro share positions, so this is what tells their nodes apart.
+    pub expansion: u32,
 }
 
 /// Do two topology indices denote the same device?
@@ -228,6 +231,9 @@ pub struct Placement {
     /// topology whose memory is not its like-named space are indistinguishable from the pair
     /// alone.
     stated: Stated,
+    /// `aligned(N)` in the tensor type: the tensor starts at a multiple of N bytes. `None` is the
+    /// least alignment of the space.
+    pub alignment: Option<u64>,
 }
 
 /// Which half of a [`Placement`] the source wrote.
@@ -245,10 +251,12 @@ pub enum Written {
 }
 
 /// Two spellings of one location are one type, so which projection the source happened to write
-/// is not part of equality -- that is the whole point of carrying both.
+/// is not part of equality -- that is the whole point of carrying both. The alignment is.
 impl PartialEq for Placement {
     fn eq(&self, other: &Self) -> bool {
-        self.topology == other.topology && self.space == other.space
+        self.topology == other.topology
+            && self.space == other.space
+            && self.alignment == other.alignment
     }
 }
 
@@ -260,6 +268,7 @@ impl Placement {
             topology,
             space,
             stated: Stated::Device,
+            alignment: None,
         }
     }
 
@@ -276,6 +285,7 @@ impl Placement {
             topology,
             space,
             stated: Stated::Space,
+            alignment: None,
         }
     }
 
@@ -290,6 +300,7 @@ impl Placement {
             topology,
             space,
             stated: Stated::Space,
+            alignment: None,
         }
     }
 
@@ -473,6 +484,24 @@ impl std::fmt::Display for Topology {
                 write!(f, "]")
             }
             _ => write!(f, "{}", self.kind()),
+        }
+    }
+}
+
+impl TopologyKind {
+    /// The built-in topology a name means, or `Custom` for any other name.
+    pub fn from_name(name: &str) -> TopologyKind {
+        match name {
+            "CPU" => TopologyKind::CPU,
+            "NPU" => TopologyKind::NPU,
+            "AccCore" => TopologyKind::AccCore,
+            "AMX" => TopologyKind::AMX,
+            "ANE" => TopologyKind::ANE,
+            "GPU" => TopologyKind::GPU,
+            "CpuAvx512" | "CPU_AVX512" => TopologyKind::CpuAvx512,
+            "CpuNeon" | "CPU_Neon" => TopologyKind::CpuNeon,
+            "Current" => TopologyKind::Current,
+            other => TopologyKind::Custom(crate::symbol::Symbol::from(other)),
         }
     }
 }
@@ -1168,6 +1197,50 @@ impl ElementType {
     /// 4 dense bits vs 1 padded byte, both from independent tables). `None` for an un-instantiated
     /// generic. Adding a numeric format sets its width here, in one place. (See the
     /// heterogeneous gap analysis §9.8.1.)
+    /// Whether this is one of the fp8 or fp4 types, which have conversions but no arithmetic yet.
+    pub fn is_narrow_float(&self) -> bool {
+        matches!(
+            self,
+            ElementType::F8E4M3 | ElementType::F8E5M2 | ElementType::F4E2M1
+        )
+    }
+
+    /// The value of this fp8 or fp4 type nearest to `x`. A tie goes to the value whose encoding
+    /// ends in 0, and a value too large for the type gives its largest one. These are the rules
+    /// of the `vx-expand-narrow-floats` pass, for a constant that never reaches it: MLIR would
+    /// fold a literal too large for `f8e4m3` to NaN. `None` for any other type.
+    pub fn nearest_narrow_value(&self, x: f64) -> Option<f64> {
+        let (mant_bits, bias, max_finite): (i32, i32, u32) = match self {
+            ElementType::F8E4M3 => (3, 7, 0x7E),
+            ElementType::F8E5M2 => (2, 15, 0x7B),
+            ElementType::F4E2M1 => (1, 1, 0x7),
+            _ => return None,
+        };
+        assert!(!x.is_nan(), "a narrow float literal is never NaN");
+        let value = |enc: u32| {
+            let exp = (enc >> mant_bits) as i32;
+            let mant = f64::from(enc & ((1 << mant_bits) - 1));
+            if exp == 0 {
+                mant * 2f64.powi(1 - bias - mant_bits)
+            } else {
+                (1.0 + mant / f64::from(1u32 << mant_bits)) * 2f64.powi(exp - bias)
+            }
+        };
+        let a = x.abs();
+        let enc = (0..max_finite)
+            .find(|&k| a < value(k + 1))
+            .map(|k| {
+                let mid = (value(k) + value(k + 1)) / 2.0;
+                if a < mid || (a == mid && k % 2 == 0) {
+                    k
+                } else {
+                    k + 1
+                }
+            })
+            .unwrap_or(max_finite);
+        Some(value(enc).copysign(x))
+    }
+
     pub fn bits(&self) -> Option<u32> {
         Some(match self {
             ElementType::Bool => 1,
@@ -1352,6 +1425,9 @@ impl std::fmt::Display for Type {
                 // The placement as the program writes it in a tensor type, `Memory::GPU_HBM`.
                 if let Some(p) = top {
                     write!(f, ", {}", p.as_written())?;
+                    if let Some(n) = p.alignment {
+                        write!(f, ", aligned({n})")?;
+                    }
                 }
                 write!(f, ">")
             }
@@ -1898,6 +1974,7 @@ mod tests {
             line: 7,
             column: 3,
             length: 1,
+            expansion: 0,
         };
         assert_eq!(
             Topology::GPU(Box::new(Expr::Number(spanned))),
@@ -1960,6 +2037,28 @@ mod tests {
                     assert_ne!(a, b, "distinct topologies compared equal: {a:?} vs {b:?}");
                 }
             }
+        }
+    }
+
+    /// `Display` and `from_name` each list the built-in names, so the two lists must agree:
+    /// the printed name of a built-in reads back as the same kind. `Slice` is left out because
+    /// no program writes it, so `from_name("Slice")` is `Custom`.
+    #[test]
+    fn builtin_topology_names_read_back_as_the_same_kind() {
+        let builtins = [
+            TopologyKind::CPU,
+            TopologyKind::NPU,
+            TopologyKind::AccCore,
+            TopologyKind::AMX,
+            TopologyKind::ANE,
+            TopologyKind::GPU,
+            TopologyKind::CpuAvx512,
+            TopologyKind::CpuNeon,
+            TopologyKind::Current,
+        ];
+        for kind in builtins {
+            let name = kind.to_string();
+            assert_eq!(TopologyKind::from_name(&name), kind, "name {name:?}");
         }
     }
 }

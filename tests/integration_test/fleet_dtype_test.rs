@@ -40,10 +40,15 @@ const MATRIX: &[(&str, &str, bool)] = &[
     ("mi300x", "f4e2m1", false),
     // int4 goes the other way: Ampere has it, Hopper and Blackwell do not.
     ("a100-80", "i4", true),
+    // The Arc's XMX units take INT4, so it joins Ampere in this column.
+    ("arc-a770", "i4", true),
     ("h100-sxm", "i4", false),
     ("b200", "i4", false),
-    // Metal has no double, so the Apple part is the one row with no f64.
+    // Metal has no double, so the Apple part refuses f64, and the Arc is the
+    // second part with no double -- measured on the card, which exposes no
+    // cl_khr_fp64 and reports shaderFloat64 false.
     ("m4-uma", "f64", false),
+    ("arc-a770", "f64", false),
     ("a100-80", "f64", true),
     ("h100-sxm", "f64", true),
     // Every part takes f32 and f16; a machine that refused those would be wrong
@@ -54,6 +59,11 @@ const MATRIX: &[(&str, &str, bool)] = &[
     ("mi300x", "f32", true),
     ("m4-uma", "f32", true),
     ("m4-uma", "f16", true),
+    ("arc-a770", "f32", true),
+    ("arc-a770", "f16", true),
+    // Intel's XMX type list names BF16 in the same sentence as INT4, so the
+    // Arc declares both; the machine file's `dtypes:` comment quotes it.
+    ("arc-a770", "bf16", true),
 ];
 
 #[test]
@@ -72,7 +82,7 @@ fn the_fleet_admits_exactly_the_element_types_its_sources_claim() {
             &src,
             format!(
                 "fn main() -> i32 {{\n  \
-                 let t = Tensor<{elem}, [8, 8]>::uninit();\n  \
+                 let t = unsafe {{ Tensor<{elem}, [8, 8]>::uninit() }};\n  \
                  let _s = transfer(t, Memory::HBM);\n  \
                  return 0;\n}}\n"
             ),

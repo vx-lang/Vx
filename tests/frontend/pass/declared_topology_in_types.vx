@@ -1,0 +1,41 @@
+//===- declared_topology_in_types.vx ----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+//
+// A topology the program declares can be named wherever a built-in one can: in a
+// `Tensor` type, in a `Pinned` type, and in `spawn on(...)`. The compiler knows
+// nothing about `MyChip` except this file's declaration.
+//
+// The spawn is dispatched by a number made from the name "MyChip". If the name
+// were read as anything else, the number would differ.
+// CHECK: vx.spawn topology(1071043665)
+
+Memory CHIP_RAM {
+  capacity: 1 GB, bandwidth: 1 TB/s
+}
+
+Topology MyChip {
+  memory: Memory::CHIP_RAM,
+  visible: [ Memory::CHIP_RAM ],
+  transfer Memory::CPU_DRAM -> Memory::CHIP_RAM : 100,
+}
+
+fn read_on_chip(t : Tensor<f32, [4], Topology::MyChip>) -> i32 {
+  spawn on(Topology::MyChip) {
+    let _x = t[0];
+  }
+  return 0;
+}
+
+fn keep_on_chip(_p : Pinned<i32, Topology::MyChip>) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  return 0;
+}

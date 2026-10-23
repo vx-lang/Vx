@@ -29,6 +29,7 @@ pub enum TokenTypeBase<S, C> {
     Continue,
     Return,
     Spawn,
+    Tasks,
     On,
     Where,
     Transfer,
@@ -39,6 +40,8 @@ pub enum TokenTypeBase<S, C> {
     Unsafe,
     Safe,
     Extern,
+    /// `pub fn`: the function is exported from the object file.
+    Pub,
     Trait,
     /// `type Item;` in a trait, `type Item = i64;` in an impl.
     TypeKw,
@@ -143,6 +146,7 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::Continue => write!(f, "continue"),
             TokenTypeBase::Return => write!(f, "return"),
             TokenTypeBase::Spawn => write!(f, "spawn"),
+            TokenTypeBase::Tasks => write!(f, "tasks"),
             TokenTypeBase::On => write!(f, "on"),
             TokenTypeBase::Where => write!(f, "where"),
             TokenTypeBase::Transfer => write!(f, "transfer"),
@@ -153,6 +157,7 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::Unsafe => write!(f, "unsafe"),
             TokenTypeBase::Safe => write!(f, "safe"),
             TokenTypeBase::Extern => write!(f, "extern"),
+            TokenTypeBase::Pub => write!(f, "pub"),
             TokenTypeBase::Trait => write!(f, "trait"),
             TokenTypeBase::TypeKw => write!(f, "type"),
             TokenTypeBase::Impl => write!(f, "impl"),
@@ -235,12 +240,70 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
     }
 }
 
+impl<S, C> TokenTypeBase<S, C> {
+    /// True for reserved words and reserved type/topology names the lexer
+    /// classifies as their own token kinds rather than as identifiers.
+    pub fn is_keyword(&self) -> bool {
+        matches!(
+            self,
+            TokenTypeBase::Fn
+                | TokenTypeBase::Let
+                | TokenTypeBase::Mut
+                | TokenTypeBase::For
+                | TokenTypeBase::In
+                | TokenTypeBase::If
+                | TokenTypeBase::Else
+                | TokenTypeBase::Loop
+                | TokenTypeBase::While
+                | TokenTypeBase::Break
+                | TokenTypeBase::Continue
+                | TokenTypeBase::Return
+                | TokenTypeBase::Spawn
+                | TokenTypeBase::Tasks
+                | TokenTypeBase::On
+                | TokenTypeBase::Where
+                | TokenTypeBase::Transfer
+                | TokenTypeBase::Unroll
+                | TokenTypeBase::Across
+                | TokenTypeBase::Match
+                | TokenTypeBase::Struct
+                | TokenTypeBase::Unsafe
+                | TokenTypeBase::Safe
+                | TokenTypeBase::Extern
+                | TokenTypeBase::Pub
+                | TokenTypeBase::Trait
+                | TokenTypeBase::TypeKw
+                | TokenTypeBase::Impl
+                | TokenTypeBase::Comptime
+                | TokenTypeBase::Import
+                | TokenTypeBase::Assert
+                | TokenTypeBase::Enum
+                | TokenTypeBase::As
+                | TokenTypeBase::Grad
+                | TokenTypeBase::Vjp
+                | TokenTypeBase::Jvp
+                | TokenTypeBase::Requires
+                | TokenTypeBase::Ensures
+                | TokenTypeBase::Invariant
+                | TokenTypeBase::MacroRules
+                | TokenTypeBase::Topology
+                | TokenTypeBase::Memory
+                | TokenTypeBase::Ref
+                | TokenTypeBase::Verified
+                | TokenTypeBase::Pinned
+                | TokenTypeBase::HardwareState
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TokenBase<S, C> {
     pub kind: TokenTypeBase<S, C>,
     pub line: usize,
     pub column: usize,
     pub length: usize,
+    /// Which macro expansion made this token, or 0 for a token from the source.
+    pub expansion: u32,
 }
 
 pub type Token<'a> = TokenBase<&'a str, std::borrow::Cow<'a, str>>;
@@ -266,6 +329,7 @@ static KEYWORDS: Lazy<
     m.insert("continue", TokenTypeBase::Continue);
     m.insert("return", TokenTypeBase::Return);
     m.insert("spawn", TokenTypeBase::Spawn);
+    m.insert("tasks", TokenTypeBase::Tasks);
     m.insert("on", TokenTypeBase::On);
     m.insert("where", TokenTypeBase::Where);
     m.insert("transfer", TokenTypeBase::Transfer);
@@ -282,6 +346,7 @@ static KEYWORDS: Lazy<
     m.insert("unsafe", TokenTypeBase::Unsafe);
     m.insert("safe", TokenTypeBase::Safe);
     m.insert("extern", TokenTypeBase::Extern);
+    m.insert("pub", TokenTypeBase::Pub);
     m.insert("trait", TokenTypeBase::Trait);
     m.insert("type", TokenTypeBase::TypeKw);
     m.insert("impl", TokenTypeBase::Impl);
@@ -414,6 +479,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: self.current_byte_offset() - start_byte,
+            expansion: 0,
         }
     }
 
@@ -441,16 +507,20 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: self.current_byte_offset() - start_byte,
+            expansion: 0,
         }
     }
 
     fn string_literal(&mut self, start_byte: usize, start_col: usize) -> Token<'a> {
+        let start_line = self.line;
         let mut text: Option<String> = None;
         let mut raw_len = 0;
         let mut unknown_escape = None;
+        let mut closed = false;
         while let Some(next_c) = self.peek_char() {
             if next_c == '"' {
                 self.advance();
+                closed = true;
                 break;
             }
             let mut char_to_push = self.advance().unwrap().1;
@@ -501,12 +571,40 @@ impl<'a> Lexer<'a> {
 
         let end_byte = self.current_byte_offset();
 
+        // The file ended inside the string. The parser reports an unknown `"` as a string
+        // with no closing quote, at the quote that opened it. The token still covers the rest
+        // of the file, so a tool that copies tokens back out loses none of it.
+        if !closed {
+            return TokenBase {
+                kind: TokenTypeBase::Unknown('"'),
+                line: start_line,
+                column: start_col,
+                length: end_byte - start_byte,
+                expansion: 0,
+            };
+        }
+
+        // The formatter writes each string back as it is written, escapes included. Decoded,
+        // `"\n"` came back as a line break inside the quotes.
+        if self.preserve_comments && end_byte >= start_byte + 2 {
+            return TokenBase {
+                kind: TokenTypeBase::StringLiteral(std::borrow::Cow::Borrowed(
+                    &self.source[start_byte + 1..end_byte - 1],
+                )),
+                line: self.line,
+                column: start_col,
+                length: end_byte - start_byte,
+                expansion: 0,
+            };
+        }
+
         if let Some(c) = unknown_escape {
             return TokenBase {
                 kind: TokenTypeBase::Unknown(c),
                 line: self.line,
                 column: start_col,
                 length: self.current_byte_offset() - start_byte,
+                expansion: 0,
             };
         }
 
@@ -521,6 +619,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: self.current_byte_offset() - start_byte,
+            expansion: 0,
         }
     }
 
@@ -542,6 +641,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: end_byte - start_byte,
+            expansion: 0,
         }
     }
 
@@ -560,6 +660,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: end_byte - start_byte,
+            expansion: 0,
         }
     }
 
@@ -596,6 +697,7 @@ impl<'a> Lexer<'a> {
                     line: self.line,
                     column: self.column,
                     length: 0,
+                    expansion: 0,
                 }
             }
         };
@@ -769,6 +871,7 @@ impl<'a> Lexer<'a> {
             line: self.line,
             column: start_col,
             length: self.current_byte_offset() - start_byte,
+            expansion: 0,
         }
     }
 
@@ -802,6 +905,7 @@ impl<'a> Token<'a> {
             TokenTypeBase::Continue => TokenTypeBase::Continue,
             TokenTypeBase::Return => TokenTypeBase::Return,
             TokenTypeBase::Spawn => TokenTypeBase::Spawn,
+            TokenTypeBase::Tasks => TokenTypeBase::Tasks,
             TokenTypeBase::On => TokenTypeBase::On,
             TokenTypeBase::Where => TokenTypeBase::Where,
             TokenTypeBase::Transfer => TokenTypeBase::Transfer,
@@ -812,6 +916,7 @@ impl<'a> Token<'a> {
             TokenTypeBase::Unsafe => TokenTypeBase::Unsafe,
             TokenTypeBase::Safe => TokenTypeBase::Safe,
             TokenTypeBase::Extern => TokenTypeBase::Extern,
+            TokenTypeBase::Pub => TokenTypeBase::Pub,
             TokenTypeBase::Trait => TokenTypeBase::Trait,
             TokenTypeBase::TypeKw => TokenTypeBase::TypeKw,
             TokenTypeBase::Impl => TokenTypeBase::Impl,
@@ -896,6 +1001,7 @@ impl<'a> Token<'a> {
             line: self.line,
             column: self.column,
             length: self.length,
+            expansion: self.expansion,
         }
     }
 }
@@ -916,6 +1022,7 @@ impl OwnedToken {
             TokenTypeBase::Continue => TokenTypeBase::Continue,
             TokenTypeBase::Return => TokenTypeBase::Return,
             TokenTypeBase::Spawn => TokenTypeBase::Spawn,
+            TokenTypeBase::Tasks => TokenTypeBase::Tasks,
             TokenTypeBase::On => TokenTypeBase::On,
             TokenTypeBase::Where => TokenTypeBase::Where,
             TokenTypeBase::Transfer => TokenTypeBase::Transfer,
@@ -926,6 +1033,7 @@ impl OwnedToken {
             TokenTypeBase::Unsafe => TokenTypeBase::Unsafe,
             TokenTypeBase::Safe => TokenTypeBase::Safe,
             TokenTypeBase::Extern => TokenTypeBase::Extern,
+            TokenTypeBase::Pub => TokenTypeBase::Pub,
             TokenTypeBase::Trait => TokenTypeBase::Trait,
             TokenTypeBase::TypeKw => TokenTypeBase::TypeKw,
             TokenTypeBase::Impl => TokenTypeBase::Impl,
@@ -1006,6 +1114,7 @@ impl OwnedToken {
             line: self.line,
             column: self.column,
             length: self.length,
+            expansion: self.expansion,
         }
     }
 }
@@ -1140,6 +1249,30 @@ mod tests {
         let tokens = lexer.tokenize();
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0].kind, TokenTypeBase::Eof);
+    }
+
+    #[test]
+    fn test_is_keyword_distinguishes_reserved_words() {
+        let across = Lexer::new("across").tokenize();
+        assert!(across[0].kind.is_keyword());
+        assert_eq!(format!("{}", across[0].kind), "across");
+        let ident = Lexer::new("across_width").tokenize();
+        assert!(!ident[0].kind.is_keyword());
+        let eq = Lexer::new("=").tokenize();
+        assert!(!eq[0].kind.is_keyword());
+    }
+
+    #[test]
+    fn test_is_keyword_covers_every_keywords_map_entry() {
+        // is_keyword mirrors KEYWORDS by hand; this catches a new map entry that
+        // never got added to the match.
+        for word in KEYWORDS.keys() {
+            let tokens = Lexer::new(word).tokenize();
+            assert!(
+                tokens[0].kind.is_keyword(),
+                "KEYWORDS entry `{word}` must report is_keyword()"
+            );
+        }
     }
 
     #[test]

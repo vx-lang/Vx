@@ -1,0 +1,34 @@
+//===- copied_struct_keeps_every_borrow_it_holds.vx -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `t` borrows both fields of `q`, and `let t2 = t` gives `t2` both borrows. So `q.b` cannot be
+// assigned while `t2.y` is still used.
+
+struct Q {
+  a : i32,
+  b : i32,
+}
+
+struct Two {
+  x : &i32,
+  y : &i32,
+}
+
+fn main() -> i32 {
+  let mut q = Q {
+    a : 1, b : 2
+  };
+  let t = Two {
+    x : &q.a, y : &q.b
+  };
+  let t2 = t;
+  // CHECK: Error[E4009] at [[@LINE+1]]:5: `q.b` is assigned while it is borrowed
+  q.b = 5;
+  return *t2.y;
+}

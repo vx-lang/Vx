@@ -97,7 +97,11 @@ impl FnEmit<'_> {
         let param_tensors = callee.param_tensors.clone();
         for (k, declared) in param_tensors.iter().enumerate().take(n) {
             if let Some(declared) = declared {
-                if arg_types[k].starts_with("memref<") && arg_types[k] != *declared {
+                // A tensor in shared memory: the callee's header has the same memory space.
+                let shared = declared
+                    .strip_suffix('>')
+                    .is_some_and(|d| arg_types[k] == format!("{d}, {}>", self.shared_addrspace()));
+                if arg_types[k].starts_with("memref<") && arg_types[k] != *declared && !shared {
                     arg_names[k] = self.cast_memref_value(
                         &format!("pc{idx}_{k}"),
                         &arg_names[k],
@@ -200,8 +204,17 @@ impl FnEmit<'_> {
             };
             let same = actual.replace(' ', "") == declared.replace(' ', "");
             if !same && actual.starts_with("memref<") {
+                // The comments let `parse_emitted_module` name this input when the cast fails.
+                let input = &blk.inputs[k].0;
+                self.body += &format!(
+                    "{}{} {} input {input} | {actual} | {declared}\n",
+                    crate::codegen::flat::MLIR_BLOCK_START,
+                    blk.line,
+                    blk.column
+                );
                 let c =
                     self.cast_memref_value(&format!("imc{idx}_{k}"), &name, &actual, declared)?;
+                self.body += &format!("{}\n", crate::codegen::flat::MLIR_BLOCK_END);
                 operands.push(c);
             } else {
                 operands.push(name);
@@ -232,6 +245,9 @@ impl FnEmit<'_> {
             } else if let Some(agg) = self.ctx.aggs.get(&gid) {
                 self.agg_val_of[idx] = Some(gid);
                 Some(agg.struct_ty.clone())
+            } else if gid == ptr_gid() {
+                self.ptr_of[idx] = true;
+                Some("!llvm.ptr".to_string())
             } else {
                 return Err(crate::emitter_gap!());
             }
@@ -255,10 +271,15 @@ impl FnEmit<'_> {
             }
         }
         let ret_sig = ret.map(|rt| format!(" -> {rt}")).unwrap_or_default();
+        // The comments let `parse_emitted_module` find the block that an MLIR error is in.
         self.wrappers += &format!(
-            "func.func private @{fname}({}){ret_sig} {{\n{}\n}}\n",
+            "{}{} {}\nfunc.func private @{fname}({}){ret_sig} {{\n{}\n}}\n{}\n",
+            crate::codegen::flat::MLIR_BLOCK_START,
+            blk.line,
+            blk.column,
             params.join(", "),
-            blk.body.replace("macro.yield", "return")
+            blk.body.replace("macro.yield", "return"),
+            crate::codegen::flat::MLIR_BLOCK_END,
         );
         Ok(())
     }

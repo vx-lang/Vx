@@ -57,12 +57,16 @@
 #include "vx_host_call.h"
 #include "vx_kernel_launch.h"
 #include "vx_remote_routing.h"
+#include "vx_stream_policy.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
+#include <vector>
 
 #include <cublas_v2.h>
 // The driver API, for loading a module the compiler emitted. The runtime API
@@ -71,6 +75,7 @@
 // creates lazily -- `run_device_image` forces it with the usual `cudaFree(0)`.
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <dlfcn.h>
 
 namespace {
 
@@ -108,11 +113,246 @@ bool verbose() {
     }                                                                          \
   } while (0)
 
+/// The driver API functions this file calls. They come from libcuda.so.1
+/// through dlopen, not from a link: only the NVIDIA driver installs that
+/// library, and a build server with the toolkit but no driver must still link
+/// every program.
+struct DriverApi {
+  decltype(&cuGetErrorName) GetErrorName;
+  decltype(&cuModuleLoadData) ModuleLoadData;
+  decltype(&cuModuleLoadDataEx) ModuleLoadDataEx;
+  decltype(&cuModuleGetFunction) ModuleGetFunction;
+  decltype(&cuOccupancyMaxActiveBlocksPerMultiprocessor)
+      OccupancyMaxActiveBlocksPerMultiprocessor;
+  decltype(&cuLaunchKernel) LaunchKernel;
+  decltype(&cuFuncSetAttribute) FuncSetAttribute;
+  decltype(&cuCtxGetCurrent) CtxGetCurrent;
+  decltype(&cuCtxGetDevice) CtxGetDevice;
+  decltype(&cuDevicePrimaryCtxRetain) DevicePrimaryCtxRetain;
+  decltype(&cuDevicePrimaryCtxRelease) DevicePrimaryCtxRelease;
+};
+
+/// Loads the driver API once. Returns null and says why if it cannot.
+const DriverApi *load_driver_api() {
+  static const DriverApi *api = []() -> const DriverApi * {
+    void *lib = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
+    if (!lib) {
+      fprintf(stderr, "[Vx CUDA] cannot load the CUDA driver: %s\n", dlerror());
+      return nullptr;
+    }
+    static DriverApi d;
+    bool ok = true;
+    auto find = [&](auto &slot, const char *name) {
+      slot = reinterpret_cast<std::remove_reference_t<decltype(slot)>>(
+          dlsym(lib, name));
+      if (!slot) {
+        fprintf(stderr, "[Vx CUDA] the CUDA driver has no %s\n", name);
+        ok = false;
+      }
+    };
+    find(d.GetErrorName, "cuGetErrorName");
+    find(d.ModuleLoadData, "cuModuleLoadData");
+    find(d.ModuleLoadDataEx, "cuModuleLoadDataEx");
+    find(d.ModuleGetFunction, "cuModuleGetFunction");
+    find(d.OccupancyMaxActiveBlocksPerMultiprocessor,
+         "cuOccupancyMaxActiveBlocksPerMultiprocessor");
+    find(d.LaunchKernel, "cuLaunchKernel");
+    find(d.FuncSetAttribute, "cuFuncSetAttribute");
+    find(d.CtxGetCurrent, "cuCtxGetCurrent");
+    find(d.CtxGetDevice, "cuCtxGetDevice");
+    find(d.DevicePrimaryCtxRetain, "cuDevicePrimaryCtxRetain");
+    // cuda.h maps the name to its second version.
+    find(d.DevicePrimaryCtxRelease, "cuDevicePrimaryCtxRelease_v2");
+    return ok ? &d : nullptr;
+  }();
+  return api;
+}
+
 /// Whether a usable device exists, decided once.
 ///
 /// A build with the CUDA backend compiled in can still run on a machine with no
 /// GPU -- the same binary, a different box. That is a reason to run kernels on
 /// the host, not to fail, so it is reported once and then taken as read.
+/* A launch does not wait for the GPU (#25). Every launch and copy goes on the
+   default stream, so the GPU runs them in program order, and a copy to the
+   host waits for the kernels before it. This records the last kernel that
+   each GPU started, so that the next wait can name a kernel when the GPU
+   reports a fault: before a copy to the host, a free, and at exit.
+   `VX_CUDA_SYNC=1` waits after each launch instead, which names the kernel
+   that faulted. */
+static std::mutex unwaited_mutex;
+static std::unordered_map<int, std::string> unwaited;
+
+static bool sync_each_launch() {
+  static const bool sync = getenv("VX_CUDA_SYNC") != nullptr;
+  return sync;
+}
+
+/* The stream that the host program set for this thread with
+   `vx_cuda_set_stream` (#1986), or null for the legacy default stream. */
+static thread_local cudaStream_t caller_stream = nullptr;
+/* The last kernel this thread started on `caller_stream`. */
+static thread_local const char *last_on_stream = nullptr;
+
+/* Device memory that `cudaMallocAsync` gave on a caller's stream. Only this
+   memory may be freed in stream order. */
+static std::mutex on_stream_mutex;
+static std::unordered_map<void *, cudaStream_t> on_stream;
+
+/// Whether the caller's stream records a CUDA graph now.
+static bool recording() {
+  if (!caller_stream) {
+    return false;
+  }
+  cudaStreamCaptureStatus status = cudaStreamCaptureStatusNone;
+  const cudaError_t err = cudaStreamIsCapturing(caller_stream, &status);
+  if (err != cudaSuccess) {
+    fprintf(stderr,
+            "[Vx CUDA] FATAL: Vx could not ask whether the stream from "
+            "vx_cuda_set_stream records a CUDA graph: %s.\n",
+            cudaGetErrorString(err));
+    abort();
+  }
+  return status != cudaStreamCaptureStatusNone;
+}
+
+/// Stops the program: `what` cannot go into the CUDA graph that the caller's
+/// stream records. `fix` says what to do instead.
+[[noreturn]] static void
+refuse_in_recording(const char *what,
+                    const char *fix = "Give the function only tensors in "
+                                      "device memory, and read its results "
+                                      "after the recording ends.") {
+  fprintf(stderr,
+          "[Vx CUDA] FATAL: %s, while the stream from vx_cuda_set_stream "
+          "records a CUDA graph.\n"
+          "          A graph cannot hold this. %s\n",
+          what, fix);
+  abort();
+}
+
+/// Waits for every kernel that a GPU started. Stops the program if one
+/// faulted.
+static void wait_for_device() {
+  std::unordered_map<int, std::string> started;
+  {
+    std::lock_guard<std::mutex> lock(unwaited_mutex);
+    started.swap(unwaited);
+  }
+  if (started.empty()) {
+    return;
+  }
+  int current = 0;
+  cudaGetDevice(&current);
+  for (const auto &[device, name] : started) {
+    cudaSetDevice(device);
+    const cudaError_t err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+      fprintf(stderr,
+              "[Vx CUDA] FATAL: a kernel faulted on GPU %d: %s.\n"
+              "          The last kernel started there is %s. Set "
+              "VX_CUDA_SYNC=1 to name the kernel that faulted.\n",
+              device, cudaGetErrorString(err), name.c_str());
+      abort();
+    }
+  }
+  cudaSetDevice(current);
+}
+
+/// Waits for the kernels before `why`: those on the caller's stream when the
+/// host program set one, else those of every GPU.
+static void wait_for_kernels(const char *why) {
+  switch (vx_wait_action_for(caller_stream != nullptr, recording())) {
+  case VX_WAIT_DEVICE:
+    wait_for_device();
+    return;
+  case VX_WAIT_REFUSE:
+    refuse_in_recording(why);
+  case VX_WAIT_STREAM:
+    break;
+  }
+  const cudaError_t err = cudaStreamSynchronize(caller_stream);
+  if (err != cudaSuccess) {
+    fprintf(stderr,
+            "[Vx CUDA] FATAL: a kernel faulted on the stream from "
+            "vx_cuda_set_stream: %s.\n"
+            "          The last kernel started there is %s. Set "
+            "VX_CUDA_SYNC=1 to name the kernel that faulted.\n",
+            cudaGetErrorString(err),
+            last_on_stream ? last_on_stream : "unknown");
+    abort();
+  }
+}
+
+/// After a launch of `name` on the current GPU.
+static void started_kernel(const char *name) {
+  int device = 0;
+  cudaGetDevice(&device);
+  if (sync_each_launch()) {
+    if (recording()) {
+      refuse_in_recording("VX_CUDA_SYNC=1 waits after each launch",
+                          "Unset VX_CUDA_SYNC for a recording.");
+    }
+    const cudaError_t err = caller_stream ? cudaStreamSynchronize(caller_stream)
+                                          : cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+      fprintf(stderr, "[Vx CUDA] FATAL: %s faulted on GPU %d: %s\n", name,
+              device, cudaGetErrorString(err));
+      abort();
+    }
+    return;
+  }
+  if (caller_stream) {
+    last_on_stream = name;
+  }
+  std::lock_guard<std::mutex> lock(unwaited_mutex);
+  // A fault of a kernel that nothing waited for is reported at exit.
+  static const bool at_exit = atexit(wait_for_device) == 0;
+  (void)at_exit;
+  unwaited[device] = name;
+}
+
+/// Device memory of `bytes`: in stream order on the caller's stream, if the
+/// host program set one.
+static cudaError_t device_alloc(void **ptr, size_t bytes) {
+  if (!caller_stream) {
+    return cudaMalloc(ptr, bytes);
+  }
+  const cudaError_t err = cudaMallocAsync(ptr, bytes, caller_stream);
+  if (err == cudaSuccess) {
+    std::lock_guard<std::mutex> lock(on_stream_mutex);
+    on_stream[*ptr] = caller_stream;
+  }
+  return err;
+}
+
+/// Frees device memory, by the rules of `vx_free_action_for`.
+static void device_free(void *ptr) {
+  cudaStream_t from = nullptr;
+  bool mine = false;
+  {
+    std::lock_guard<std::mutex> lock(on_stream_mutex);
+    auto found = on_stream.find(ptr);
+    if (found != on_stream.end()) {
+      from = found->second;
+      mine = true;
+      on_stream.erase(found);
+    }
+  }
+  switch (vx_free_action_for(caller_stream != nullptr, recording(), mine)) {
+  case VX_FREE_ON_STREAM:
+    cudaFreeAsync(ptr, from);
+    return;
+  case VX_FREE_REFUSE:
+    refuse_in_recording("Vx freed device memory that needs a wait first");
+  case VX_FREE_AFTER_DEVICE_WAIT:
+  case VX_FREE_AFTER_STREAM_WAIT:
+    wait_for_kernels("Vx freed device memory");
+    cudaFree(ptr);
+    return;
+  }
+}
+
 bool cuda_available() {
   static const bool available = [] {
     int count = 0;
@@ -123,9 +363,24 @@ bool cuda_available() {
               err == cudaSuccess ? "none present" : cudaGetErrorString(err));
       return false;
     }
+    if (!load_driver_api()) {
+      fprintf(stderr, "[Vx CUDA] kernels will run on the host\n");
+      return false;
+    }
     return true;
   }();
   return available;
+}
+
+/// The driver API. Call it only after `cuda_available()` returned true.
+const DriverApi &driver() {
+  const DriverApi *api = load_driver_api();
+  if (!api) {
+    fprintf(stderr, "[Vx CUDA] FATAL: the driver API was used before "
+                    "cuda_available() found a device\n");
+    abort();
+  }
+  return *api;
 }
 
 /// Declared ids the program said are local devices (VX_CTRL_LOCAL_DEVICE),
@@ -169,7 +424,40 @@ int gpu_index(int32_t topology_id) {
 /// saw thirteen of them, reported two devices, and the token comparison agreed
 /// because it was the same computation run twice on one GPU. Both halves of the
 /// evidence passed for a run that never disaggregated anything.
+/// Vx works in the primary context of each GPU, the one that the runtime API
+/// uses (docs/lang/abi.md, section 3.6). A host program that calls Vx with a
+/// context of its own current gives Vx buffers that Vx's kernels cannot use,
+/// and `cudaSetDevice` would replace that context with no message. So stop.
+static void require_primary_context(const char *why) {
+  const DriverApi *d = load_driver_api();
+  CUcontext current = nullptr;
+  if (!d || d->CtxGetCurrent(&current) != CUDA_SUCCESS || !current) {
+    return;
+  }
+  CUdevice device = 0;
+  CUcontext primary = nullptr;
+  if (d->CtxGetDevice(&device) != CUDA_SUCCESS ||
+      d->DevicePrimaryCtxRetain(&primary, device) != CUDA_SUCCESS) {
+    return;
+  }
+  d->DevicePrimaryCtxRelease(device);
+  if (current != primary) {
+    fprintf(stderr,
+            "[Vx CUDA] FATAL: a %s found a CUDA context that is not the "
+            "primary context of GPU %d.\n"
+            "          Vx uses the primary context. Make it current with "
+            "cuDevicePrimaryCtxRetain and\n"
+            "          cuCtxSetCurrent, and allocate the buffers that you give "
+            "Vx in it.\n",
+            why, (int)device);
+    abort();
+  }
+}
+
 bool select_device(int32_t topology_id, const char *why) {
+  if (cuda_available()) {
+    require_primary_context(why);
+  }
   int index = gpu_index(topology_id);
   if (index < 0) {
     return true;
@@ -219,8 +507,18 @@ cublasHandle_t cublas_handle() {
     return it->second;
   }
 
+  if (recording()) {
+    refuse_in_recording("The first GEMM on this GPU created a cuBLAS handle",
+                        "Call the function once before the recording.");
+  }
   cublasHandle_t h = nullptr;
   VX_CUBLAS_CHECK(cublasCreate(&h));
+  /* A workspace of its own, so that a GEMM in a CUDA graph recording does not
+     allocate one. 32 MiB is what the cuBLAS documentation gives for Hopper. */
+  void *workspace = nullptr;
+  const size_t workspace_bytes = (size_t)32 << 20;
+  VX_CUDA_CHECK(cudaMalloc(&workspace, workspace_bytes));
+  VX_CUBLAS_CHECK(cublasSetWorkspace(h, workspace, workspace_bytes));
   /* TF32, opt-in (VX_TF32=1): f32 GEMMs keep f32 storage and f32 accumulation
      but the tensor-core mma truncates input mantissas to 10 bits -- roughly
      8x the FP32 CUDA-core rate at ~3 decimal digits of input precision. An
@@ -230,9 +528,10 @@ cublasHandle_t cublas_handle() {
   const char *tf32 = getenv("VX_TF32");
   if (tf32 && *tf32 && *tf32 != '0') {
     VX_CUBLAS_CHECK(cublasSetMathMode(h, CUBLAS_TF32_TENSOR_OP_MATH));
-    fprintf(stderr,
-            "[Vx CUDA] cuBLAS math mode: TF32 tensor ops (VX_TF32, device %d)\n",
-            device);
+    fprintf(
+        stderr,
+        "[Vx CUDA] cuBLAS math mode: TF32 tensor ops (VX_TF32, device %d)\n",
+        device);
   }
   handles.emplace(device, h);
   return h;
@@ -317,7 +616,8 @@ struct DeviceBuffer {
   void *ptr = nullptr;
   int64_t row_stride = 0; // in elements
   bool owned = false;
-  size_t bytes = 0; // what to hand back to the pool; 0 when borrowed
+  size_t bytes = 0;    // what to hand back to the pool; 0 when borrowed
+  bool stream = false; // from `device_alloc` on a caller's stream, not the pool
 
   DeviceBuffer() = default;
   DeviceBuffer(const DeviceBuffer &) = delete;
@@ -325,7 +625,7 @@ struct DeviceBuffer {
 
   DeviceBuffer(DeviceBuffer &&other) noexcept
       : ptr(other.ptr), row_stride(other.row_stride), owned(other.owned),
-        bytes(other.bytes) {
+        bytes(other.bytes), stream(other.stream) {
     other.ptr = nullptr;
     other.owned = false;
     other.bytes = 0;
@@ -333,13 +633,12 @@ struct DeviceBuffer {
 
   DeviceBuffer &operator=(DeviceBuffer &&other) noexcept {
     if (this != &other) {
-      if (owned && ptr) {
-        device_pool().release(ptr, bytes);
-      }
+      release();
       ptr = other.ptr;
       row_stride = other.row_stride;
       owned = other.owned;
       bytes = other.bytes;
+      stream = other.stream;
       other.ptr = nullptr;
       other.owned = false;
       other.bytes = 0;
@@ -347,9 +646,15 @@ struct DeviceBuffer {
     return *this;
   }
 
-  ~DeviceBuffer() {
+  ~DeviceBuffer() { release(); }
+
+  void release() {
     if (owned && ptr) {
-      device_pool().release(ptr, bytes);
+      if (stream) {
+        device_free(ptr);
+      } else {
+        device_pool().release(ptr, bytes);
+      }
     }
   }
 };
@@ -391,7 +696,18 @@ DeviceBuffer stage(const void *host_data, int64_t rows, int64_t cols,
 
   size_t width = (size_t)cols * elem_bytes;
   buf.bytes = (size_t)rows * width;
-  buf.ptr = device_pool().acquire(buf.bytes);
+  if (recording()) {
+    refuse_in_recording("Vx copied a tensor in host memory to the GPU");
+  }
+  if (caller_stream) {
+    buf.stream = device_alloc(&buf.ptr, buf.bytes) == cudaSuccess;
+    if (!buf.stream) {
+      cudaGetLastError();
+      buf.ptr = nullptr;
+    }
+  } else {
+    buf.ptr = device_pool().acquire(buf.bytes);
+  }
   if (!buf.ptr) {
     fprintf(stderr,
             "[Vx CUDA] FATAL: out of device memory staging %zu bytes "
@@ -401,9 +717,15 @@ DeviceBuffer stage(const void *host_data, int64_t rows, int64_t cols,
   }
   buf.owned = true;
   buf.row_stride = cols;
-  VX_CUDA_CHECK(cudaMemcpy2D(buf.ptr, width, host_data,
-                             (size_t)row_stride * elem_bytes, width,
-                             (size_t)rows, cudaMemcpyHostToDevice));
+  if (caller_stream) {
+    VX_CUDA_CHECK(cudaMemcpy2DAsync(
+        buf.ptr, width, host_data, (size_t)row_stride * elem_bytes, width,
+        (size_t)rows, cudaMemcpyHostToDevice, caller_stream));
+  } else {
+    VX_CUDA_CHECK(cudaMemcpy2D(buf.ptr, width, host_data,
+                               (size_t)row_stride * elem_bytes, width,
+                               (size_t)rows, cudaMemcpyHostToDevice));
+  }
   return buf;
 }
 
@@ -417,6 +739,7 @@ void gemm_on_device(int32_t dtype, int64_t m, int64_t n, int64_t k,
                     const DeviceBuffer &a, const DeviceBuffer &b, void *c_ptr,
                     int64_t c_row_stride) {
   cublasHandle_t handle = cublas_handle();
+  VX_CUBLAS_CHECK(cublasSetStream(handle, caller_stream));
   int mi = (int)m, ni = (int)n, ki = (int)k;
   int lda = (int)a.row_stride, ldb = (int)b.row_stride, ldc = (int)c_row_stride;
 
@@ -482,8 +805,9 @@ bool run_gemm(const vx_gemm_plan &plan) {
     c.row_stride = plan.out_row_stride;
     c.owned = false;
   } else {
-    VX_CUDA_CHECK(cudaMalloc(&c.ptr, (size_t)plan.m * (size_t)plan.n * esz));
+    VX_CUDA_CHECK(device_alloc(&c.ptr, (size_t)plan.m * (size_t)plan.n * esz));
     c.owned = true;
+    c.stream = caller_stream != nullptr;
     c.row_stride = plan.n;
   }
 
@@ -492,15 +816,19 @@ bool run_gemm(const vx_gemm_plan &plan) {
      and emitted regions needs both on one clock -- device events, because the
      wall includes staging and the JIT. */
   const bool time_kernel = getenv("VX_TIME_KERNEL") != nullptr;
+  if (time_kernel && recording()) {
+    refuse_in_recording("VX_TIME_KERNEL waits for each kernel",
+                        "Unset VX_TIME_KERNEL for a recording.");
+  }
   cudaEvent_t t0 = nullptr, t1 = nullptr;
   if (time_kernel) {
     cudaEventCreate(&t0);
     cudaEventCreate(&t1);
-    cudaEventRecord(t0);
+    cudaEventRecord(t0, caller_stream);
   }
   gemm_on_device(plan.dtype, plan.m, plan.n, plan.k, a, b, c.ptr, c.row_stride);
   if (time_kernel) {
-    cudaEventRecord(t1);
+    cudaEventRecord(t1, caller_stream);
     cudaEventSynchronize(t1);
     float ms = 0.0f;
     cudaEventElapsedTime(&ms, t0, t1);
@@ -509,11 +837,12 @@ bool run_gemm(const vx_gemm_plan &plan) {
     cudaEventDestroy(t0);
     cudaEventDestroy(t1);
   }
-  VX_CUDA_CHECK(cudaDeviceSynchronize());
+  started_kernel("a GEMM");
 
   if (out_is_device) {
     return true;
   }
+  wait_for_kernels("Vx copied a GEMM result to host memory");
 
   size_t width = (size_t)plan.n * esz;
   if (plan.out_kind == VX_GEMM_OUT_SLOT) {
@@ -642,10 +971,18 @@ void *vx_plugin_alloc_and_transfer(size_t bytes, void *host_ptr,
   }
 
   void *device_ptr = nullptr;
-  VX_CUDA_CHECK(cudaMalloc(&device_ptr, bytes));
+  VX_CUDA_CHECK(device_alloc(&device_ptr, bytes));
   if (host_ptr) {
-    VX_CUDA_CHECK(
-        cudaMemcpy(device_ptr, host_ptr, bytes, cudaMemcpyHostToDevice));
+    if (recording()) {
+      refuse_in_recording("Vx copied a tensor in host memory to the GPU");
+    }
+    if (caller_stream) {
+      VX_CUDA_CHECK(cudaMemcpyAsync(device_ptr, host_ptr, bytes,
+                                    cudaMemcpyHostToDevice, caller_stream));
+    } else {
+      VX_CUDA_CHECK(
+          cudaMemcpy(device_ptr, host_ptr, bytes, cudaMemcpyHostToDevice));
+    }
   }
   return device_ptr;
 }
@@ -691,13 +1028,25 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
   // it gave you.
   select_device((int32_t)dst_topology_id, "peer");
   void *dst_ptr = nullptr;
-  VX_CUDA_CHECK(cudaMalloc(&dst_ptr, bytes));
-  VX_CUDA_CHECK(cudaMemcpyPeer(dst_ptr, dst, src_device_ptr, src, bytes));
+  VX_CUDA_CHECK(device_alloc(&dst_ptr, bytes));
+  if (caller_stream) {
+    VX_CUDA_CHECK(cudaMemcpyPeerAsync(dst_ptr, dst, src_device_ptr, src, bytes,
+                                      caller_stream));
+  } else {
+    VX_CUDA_CHECK(cudaMemcpyPeer(dst_ptr, dst, src_device_ptr, src, bytes));
+  }
 
   if (verbose()) {
     fprintf(stderr, "[Vx CUDA] peer %d -> %d, %zu bytes\n", src, dst, bytes);
   }
   return dst_ptr;
+}
+
+/// The bytes of dynamic shared memory that a launch of the payload's kernel
+/// passes: its `shared=` field, or 0.
+static unsigned dynamic_shared_bytes(const void *payload, size_t payload_size) {
+  const char *field = vx_payload_field(payload, payload_size, "shared=");
+  return field ? (unsigned)strtoul(field, nullptr, 10) : 0;
 }
 
 /// Run the kernel the payload carries, on this device.
@@ -725,7 +1074,15 @@ bool run_device_image(const void *payload, size_t payload_size,
      for. Keyed by both, because keying by name alone hands GPU 1 a function
      belonging to GPU 0's context -- which fails at launch rather than
      silently, but fails a long way from the cause. */
-  static std::unordered_map<std::string, CUfunction> loaded;
+  struct Loaded {
+    CUfunction fn;
+    /* The parameters that the entry declares, read from the image once. */
+    int params;
+  };
+  static std::unordered_map<std::string, Loaded> loaded;
+  /* Tasks (#1863) can dispatch from several threads at once. */
+  static std::mutex loaded_mutex;
+  std::unique_lock<std::mutex> lock(loaded_mutex);
 
   int device = 0;
   cudaGetDevice(&device);
@@ -733,10 +1090,18 @@ bool run_device_image(const void *payload, size_t payload_size,
       std::string(kernel_name) + "@" + std::to_string(device);
 
   CUfunction fn = nullptr;
+  int declared = 0;
   auto found = loaded.find(key);
   if (found != loaded.end()) {
-    fn = found->second;
+    fn = found->second.fn;
+    declared = found->second.params;
   } else {
+    if (recording()) {
+      char what[256];
+      snprintf(what, sizeof what,
+               "The first call of %s loaded its kernel image", kernel_name);
+      refuse_in_recording(what, "Call the function once before the recording.");
+    }
     /* The driver API needs a current context. The runtime API creates the
        primary one lazily, and this is the idiom that forces it: without it
        cuModuleLoadData returns CUDA_ERROR_INVALID_CONTEXT on a dispatch that
@@ -760,33 +1125,28 @@ bool run_device_image(const void *payload, size_t payload_size,
       unsigned int cap = (unsigned int)atoi(maxrreg);
       CUjit_option opts[1] = {CU_JIT_MAX_REGISTERS};
       void *vals[1] = {(void *)(uintptr_t)cap};
-      rc = cuModuleLoadDataEx(&mod, image, 1, opts, vals);
+      rc = driver().ModuleLoadDataEx(&mod, image, 1, opts, vals);
       if (verbose()) {
         fprintf(stderr, "[Vx CUDA] JIT register cap: %u (VX_MAXRREG)\n", cap);
       }
     } else {
-      rc = cuModuleLoadData(&mod, image);
+      rc = driver().ModuleLoadData(&mod, image);
     }
     if (rc != CUDA_SUCCESS) {
       const char *name = nullptr;
-      cuGetErrorName(rc, &name);
+      driver().GetErrorName(rc, &name);
       fprintf(stderr,
               "[Vx CUDA] FATAL: the device image for %s did not load: %s.\n"
-              "          It was compiled for %s. Two known causes: an "
+              "          It was compiled for %s. A known cause is an "
               "unresolved `__nv_` symbol\n"
-              "          (libdevice was not linked -- set VX_LIBDEVICE), or "
-              "static `.shared`\n"
-              "          storage over the 48 KiB ceiling -- a cooperative "
-              "kernel's SMEM tiles\n"
-              "          must fit it (Vx#379; sum the .with_memory tensors' "
-              "bytes).\n",
+              "          (libdevice was not linked -- set VX_LIBDEVICE).\n",
               kernel_name, name ? name : "?",
               vx_payload_field(payload, payload_size, "chip=")
                   ? vx_payload_field(payload, payload_size, "chip=")
                   : "sm_80");
       abort();
     }
-    rc = cuModuleGetFunction(&fn, mod, kernel_name);
+    rc = driver().ModuleGetFunction(&fn, mod, kernel_name);
     if (rc != CUDA_SUCCESS) {
       fprintf(stderr,
               "[Vx CUDA] FATAL: the device image loaded but has no entry "
@@ -794,8 +1154,29 @@ bool run_device_image(const void *payload, size_t payload_size,
               kernel_name);
       abort();
     }
-    loaded.emplace(key, fn);
+    /* Dynamic shared memory over 48 KiB needs the kernel's permission, given
+       once (#1984). */
+    const unsigned shared = dynamic_shared_bytes(payload, payload_size);
+    if (shared > 48 * 1024) {
+      rc = driver().FuncSetAttribute(
+          fn, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, (int)shared);
+      if (rc != CUDA_SUCCESS) {
+        int most = 0;
+        cudaDeviceGetAttribute(&most, cudaDevAttrMaxSharedMemoryPerBlockOptin,
+                               device);
+        const char *name = nullptr;
+        driver().GetErrorName(rc, &name);
+        fprintf(stderr,
+                "[Vx CUDA] FATAL: %s needs %u bytes of shared memory, and GPU "
+                "%d gives a block at most %d: %s.\n",
+                kernel_name, shared, device, most, name ? name : "?");
+        abort();
+      }
+    }
+    declared = vx_launch_entry_param_count(image, kernel_name);
+    loaded.emplace(key, Loaded{fn, declared});
   }
+  lock.unlock();
 
   vx_launch_params params;
   if (!vx_launch_build_params(device_args, arg_tags, num_args, &params)) {
@@ -815,7 +1196,6 @@ bool run_device_image(const void *payload, size_t payload_size,
      on faith. `cuLaunchKernel` cannot check a parameter array against the
      kernel it launches: too few, and the kernel reads parameters that were
      never written, which is a wrong answer rather than an error. */
-  const int declared = vx_launch_entry_param_count(image, kernel_name);
   if (declared != params.count) {
     fprintf(stderr,
             "[Vx CUDA] FATAL: %s declares %d parameters and its arguments "
@@ -840,8 +1220,19 @@ bool run_device_image(const void *payload, size_t payload_size,
      enough blocks to cover the rest; the grid stride absorbs any remainder
      and any cap. */
   unsigned grid = 1, block = 1;
-  if (const char *launch =
-          vx_payload_field(payload, payload_size, "launch=")) {
+  unsigned shape[3] = {1, 1, 1};
+  char why[160];
+  const int set_by_program =
+      vx_launch_shape(payload, payload_size, device_args, arg_tags, num_args,
+                      shape, &block, why, sizeof why);
+  if (set_by_program < 0) {
+    fprintf(stderr, "[Vx CUDA] FATAL: %s: %s\n", kernel_name, why);
+    abort();
+  }
+  if (set_by_program) {
+    grid = shape[0];
+  } else if (const char *launch =
+                 vx_payload_field(payload, payload_size, "launch=")) {
     char *rest = nullptr;
     long trip = strtol(launch, &rest, 10);
     if (rest && *rest == ',') {
@@ -865,6 +1256,10 @@ bool run_device_image(const void *payload, size_t payload_size,
      per-K slope. CUDA events are stamped by the device, so they are immune
      to everything the host does between enqueue and sync. */
   const bool time_kernel = getenv("VX_TIME_KERNEL") != nullptr;
+  if (time_kernel && recording()) {
+    refuse_in_recording("VX_TIME_KERNEL waits for each kernel",
+                        "Unset VX_TIME_KERNEL for a recording.");
+  }
   cudaEvent_t t0 = nullptr, t1 = nullptr;
   if (time_kernel) {
     /* The occupancy the DRIVER computed for this function as it will actually
@@ -873,34 +1268,31 @@ bool run_device_image(const void *payload, size_t payload_size,
        the driver's decision or contention, without a profiler (rented pods
        refuse the performance counters: ERR_NVGPUCTRPERM). */
     int resident = 0;
-    if (cuOccupancyMaxActiveBlocksPerMultiprocessor(&resident, fn, (int)block,
-                                                    0) == CUDA_SUCCESS) {
+    if (driver().OccupancyMaxActiveBlocksPerMultiprocessor(
+            &resident, fn, (int)block, 0) == CUDA_SUCCESS) {
       fprintf(stderr,
               "[Vx CUDA] %s occupancy: %d block(s) of %u threads per SM\n",
               kernel_name, resident, block);
     }
     cudaEventCreate(&t0);
     cudaEventCreate(&t1);
-    cudaEventRecord(t0);
+    cudaEventRecord(t0, caller_stream);
   }
-  CUresult rc = cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, nullptr,
-                               params.params, nullptr);
+  CUresult rc =
+      driver().LaunchKernel(fn, grid, shape[1], shape[2], block, 1, 1,
+                            dynamic_shared_bytes(payload, payload_size),
+                            (CUstream)caller_stream, params.params, nullptr);
   if (rc != CUDA_SUCCESS) {
     const char *name = nullptr;
-    cuGetErrorName(rc, &name);
+    driver().GetErrorName(rc, &name);
     fprintf(stderr, "[Vx CUDA] FATAL: launching %s failed: %s\n", kernel_name,
             name ? name : "?");
     abort();
   }
-  const cudaError_t sync = cudaDeviceSynchronize();
-  if (sync != cudaSuccess) {
-    fprintf(stderr, "[Vx CUDA] FATAL: %s faulted on the device: %s\n",
-            kernel_name, cudaGetErrorString(sync));
-    abort();
-  }
+  started_kernel(kernel_name);
 
   if (time_kernel) {
-    cudaEventRecord(t1);
+    cudaEventRecord(t1, caller_stream);
     cudaEventSynchronize(t1);
     float ms = 0.0f;
     cudaEventElapsedTime(&ms, t0, t1);
@@ -973,38 +1365,63 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   // with a GPU the loop dereferences device memory and the process dies inside
   // the outlined kernel, three frames below anything that names the reason.
   //
-  // Copying the operands back, running, and copying them out again would make
-  // the fallback honest, and is the right fix. Until then this refuses in a way
-  // that says what happened, because a segmentation fault inside
-  // vx_npu_kernel_0 does not.
-  for (int64_t i = 0; i < num_args; ++i) {
+  // So each operand in device memory is copied to the host for the call, and
+  // copied back after it.
+  struct HostCopy {
+    void **desc; // {allocated, aligned, ...}, pointed at the copy for the call
+    void *allocated;
+    void *aligned;
+    void *host;
+    size_t bytes;
+  };
+  // The descriptor argument i refers to, or null. A slot holds a pointer to
+  // one.
+  auto arg_desc = [&](int64_t i) -> void * {
     if (VX_ABI_KIND(arg_tags[i]) != VX_ABI_KIND_MEMREF || !device_args[i]) {
-      continue;
+      return nullptr;
     }
-    const void *desc = *(const void **)device_args[i];
+    void *desc = *(void **)device_args[i];
+    if (desc && VX_ABI_IS_SLOT(arg_tags[i])) {
+      desc = vx_memref_aligned(desc);
+    }
+    return desc;
+  };
+  std::vector<HostCopy> copies;
+  for (int64_t i = 0; i < num_args; ++i) {
+    void *desc = arg_desc(i);
     if (!desc) {
       continue;
     }
-    if (VX_ABI_IS_SLOT(arg_tags[i])) {
-      desc = (const void *)vx_memref_aligned(desc);
-      if (!desc) {
-        continue;
-      }
+    void *aligned = vx_memref_aligned(desc);
+    if (!aligned || !is_device_ptr(aligned)) {
+      continue;
     }
-    const void *data = vx_memref_data(desc, (int32_t)VX_ABI_ELEM(arg_tags[i]));
-    if (data && is_device_ptr(data)) {
+    const int32_t rank = (int32_t)VX_ABI_RANK(arg_tags[i]);
+    const int64_t *sizes = vx_memref_sizes(desc);
+    const int64_t *strides = vx_memref_strides(desc, rank);
+    const int64_t span = rank > 0 ? sizes[0] * strides[0] : 1;
+    const size_t bytes = (size_t)(vx_memref_offset(desc) + span) *
+                         vx_dtype_bytes((int32_t)VX_ABI_ELEM(arg_tags[i]));
+    void *host = malloc(bytes ? bytes : 1);
+    if (!host) {
       fprintf(stderr,
-              "[Vx CUDA] FATAL: %s was not routed, so it would run on the "
-              "host,\n"
-              "          but argument %lld at %p is in device memory -- a "
-              "`transfer`\n"
-              "          into a device memory space put it there. The host "
-              "cannot read it.\n"
-              "          Either the kernel needs a device implementation "
-              "(#251), or its\n"
-              "          operands must stay in host memory.\n",
-              kernel_name, (long long)i, data);
+              "[Vx CUDA] FATAL: out of host memory copying %zu bytes "
+              "for %s\n",
+              bytes, kernel_name);
       abort();
+    }
+    wait_for_kernels("Vx copied a tensor to host memory to run a region on "
+                     "the CPU");
+    VX_CUDA_CHECK(cudaMemcpy(host, aligned, bytes, cudaMemcpyDeviceToHost));
+    void **ptrs = (void **)desc;
+    copies.push_back({ptrs, ptrs[0], aligned, host, bytes});
+    ptrs[0] = host;
+    ptrs[1] = host;
+    if (verbose()) {
+      fprintf(stderr,
+              "[Vx CUDA] %s runs on the host; argument %lld (%zu bytes) is "
+              "copied from device memory and back\n",
+              kernel_name, (long long)i, bytes);
     }
   }
 
@@ -1015,12 +1432,28 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
             kernel_name);
     abort();
   }
-  if (!vx_host_call_kernel(kernel, device_args, arg_tags, num_args,
-                           vx_host_worker_count_for(binary_payload,
-                                                    payload_size))) {
+  if (!vx_host_call_kernel(
+          kernel, device_args, arg_tags, num_args,
+          vx_host_worker_count_for(binary_payload, payload_size))) {
     fprintf(stderr, "[Vx CUDA] FATAL: could not build a call for %s\n",
             kernel_name);
     abort();
+  }
+  // A region that ends in an operand publishes that operand's descriptor, so
+  // every descriptor still pointing at a copy gets the device memory back.
+  for (const HostCopy &c : copies) {
+    VX_CUDA_CHECK(
+        cudaMemcpy(c.aligned, c.host, c.bytes, cudaMemcpyHostToDevice));
+    c.desc[0] = c.allocated;
+    c.desc[1] = c.aligned;
+    for (int64_t i = 0; i < num_args; ++i) {
+      void **d = (void **)arg_desc(i);
+      if (d && d[1] == c.host) {
+        d[0] = c.allocated;
+        d[1] = c.aligned;
+      }
+    }
+    free(c.host);
   }
   return 1;
 }
@@ -1050,16 +1483,19 @@ uint64_t vx_plugin_dispatch_async_flat(float *xout, float *x, float *w, int n,
   if (out_is_device) {
     dy.ptr = xout;
   } else {
-    VX_CUDA_CHECK(cudaMalloc(&dy.ptr, (size_t)d * sizeof(float)));
+    VX_CUDA_CHECK(device_alloc(&dy.ptr, (size_t)d * sizeof(float)));
     dy.owned = true;
+    dy.stream = caller_stream != nullptr;
   }
 
+  VX_CUBLAS_CHECK(cublasSetStream(cublas_handle(), caller_stream));
   VX_CUBLAS_CHECK(cublasSgemv(cublas_handle(), CUBLAS_OP_T, n, d, &alpha,
                               (const float *)dw.ptr, n, (const float *)dx.ptr,
                               1, &beta, (float *)dy.ptr, 1));
-  VX_CUDA_CHECK(cudaDeviceSynchronize());
+  started_kernel("a matrix-vector product");
 
   if (!out_is_device) {
+    wait_for_kernels("Vx copied a matrix-vector product to host memory");
     VX_CUDA_CHECK(cudaMemcpy(xout, dy.ptr, (size_t)d * sizeof(float),
                              cudaMemcpyDeviceToHost));
   }
@@ -1067,10 +1503,9 @@ uint64_t vx_plugin_dispatch_async_flat(float *xout, float *x, float *w, int n,
 }
 
 void vx_plugin_await_future(uint64_t future_id) {
-  // Dispatch synchronizes before returning, so the result is ready already.
-  // Overlapping it with host work is what the future ID is for and is part of
-  // the same milestone as device residency (#321).
+  // One future for each GPU: the kernels that it started.
   (void)future_id;
+  wait_for_kernels("Vx waited for a GPU region to finish");
 }
 
 int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
@@ -1087,6 +1522,7 @@ int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
     // because the ABI is the contract a non-CUDA backend implements and nothing
     // guarantees that backend can infer anything from an address (#346).
     select_device((int32_t)topology_id, "fetch");
+    wait_for_kernels("Vx copied a tensor to host memory");
     VX_CUDA_CHECK(
         cudaMemcpy(host_ptr, device_ptr, bytes, cudaMemcpyDeviceToHost));
   } else {
@@ -1105,13 +1541,22 @@ void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
   vx_routing_refuse_handle("a free", device_ptr, topology_id);
   if (is_device_ptr(device_ptr)) {
     select_device((int32_t)topology_id, "free");
-    cudaFree(device_ptr);
+    device_free(device_ptr);
   } else {
     free(device_ptr);
   }
 }
 
 void vx_plugin_release_future(uint64_t future_id) { (void)future_id; }
+
+/// Sets the CUDA stream for Vx's GPU work on the calling thread (#1986). Null
+/// gives back the legacy default stream. See docs/lang/abi.md section 3.6.
+void vx_cuda_set_stream(void *stream) {
+  caller_stream = static_cast<cudaStream_t>(stream);
+}
+
+/// The stream that `vx_cuda_set_stream` set on the calling thread, or null.
+void *vx_cuda_get_stream(void) { return caller_stream; }
 
 int32_t vx_plugin_control(uint32_t opcode, void *payload) {
   switch (opcode) {

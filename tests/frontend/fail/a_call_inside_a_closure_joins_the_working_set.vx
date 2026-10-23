@@ -1,0 +1,42 @@
+//===- a_call_inside_a_closure_joins_the_working_set.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `f` calls `g`, and `main` calls `f` while `a` is in `W`: 6 MiB in a 4 MiB space. A closure
+// runs where it is called, not where it is written, so the check counts the most that `main`
+// ever holds in `W` across the call to `g`. It used to count what `main` held where `f` is
+// written, which was nothing.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: E6027
+// CHECK-SAME: call path 'main -> g'
+// CHECK-SAME: 'main' holds 3145728 bytes across its call
+
+Memory CPU_DRAM {}
+Memory W {
+  within: Memory::CPU_DRAM, capacity: 4 MiB, managed: explicit
+}
+Topology Dev {
+  arch: nvptx64,
+  memory: Memory::W,
+  visible: [Memory::W],
+  transfer Memory::CPU_DRAM -> Memory::W : 10,
+  transfer Memory::W -> Memory::CPU_DRAM : 10
+}
+fn g() -> i32 {
+  let uT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
+  let u = transfer(uT, Memory::W);
+  let _ru = transfer(u, Memory::CPU_DRAM);
+  return 1;
+}
+fn main() -> i32 {
+  let f = |k : i32| unsafe { g() + k };
+  let aT = unsafe { Tensor<f32, [1024, 768]>::uninit() };
+  let a = transfer(aT, Memory::W);
+  let _x = f(1);
+  let _ra = transfer(a, Memory::CPU_DRAM);
+  return 0;
+}

@@ -54,7 +54,7 @@ have.</blockquote>
 the one that is already inside the machine on your desk — and it turns out to be the sharpest test
 of the idea, because the two memories are physically identical.</p>
 
-<h2>Why NUMA is a better demo than a GPU</h2>
+<h2 id="why-numa-is-a-better-demo-than-a-gpu">Why NUMA is a better demo than a GPU</h2>
 
 <p>Vx puts the memory space in the type. A tensor in <code>GPU_HBM</code> is a different type from
 one in <code>CPU_DRAM</code>, and a host read of the first is
@@ -68,7 +68,7 @@ are the same DDR4, at the same speed, from the same order. Nothing about the byt
 thing separating them is <strong>which core is asking</strong>. If a type system can express that,
 it is expressing locality itself rather than a taxonomy of parts.</p>
 
-<h2>The model needed nothing new</h2>
+<h2 id="the-model-needed-nothing-new">The model needed nothing new</h2>
 
 <p>A NUMA domain is a memory that some execution units reach cheaply and others reach across a link.
 That is structurally identical to two GPUs on a node, which Vx already describes as
@@ -103,7 +103,7 @@ no node holds 40&nbsp;GiB:</p>
 
 <p>That refusal costs nothing to obtain. It runs on a laptop, before a machine is booked.</p>
 
-<h2>The machine that lied</h2>
+<h2 id="the-machine-that-lied">The machine that lied</h2>
 
 <p>The interesting half is the prediction. Two declared rates — 140&nbsp;GB/s to a node's own memory,
 62&nbsp;GB/s across the interconnect — imply a remote access costs about 2.3&times; a local one, and
@@ -151,7 +151,7 @@ and the only evidence that survived here was a rate the hardware could not produ
 now refuses rather than reporting: bind to one node, interleave across both, and if the two agree
 within 10% the bind confined nothing and every number above it is measuring one undivided pool.</p>
 
-<h2>The number</h2>
+<h2 id="the-number">The number</h2>
 
 <p>On a <code>c5.metal</code> — bare metal, no hypervisor between the guest and the sockets — the
 same probe gives a clean signal:</p>
@@ -182,7 +182,7 @@ which is not a reason to have made it.</p>
 140&nbsp;GB/s peak, and comfortably <em>below</em> it. Staying below peak is the load-bearing
 property. A bind that measures above one socket's ceiling is not confining anything.</p>
 
-<h2>What placement is actually worth</h2>
+<h2 id="what-placement-is-actually-worth">What placement is actually worth</h2>
 
 <p>Pricing a hop is one thing; making the allocation land there is another. A <code>Memory</code>
 space declaring <code>node: N</code> now reaches the runtime as a number it can act on, and the
@@ -205,7 +205,7 @@ needs no source change, and is what anyone already does on a two-socket box. Quo
 against naive first-touch would be comparing against the worst case — the same move as a benchmark
 reporting a fourfold speedup for a quarter of the work.</p>
 
-<h2>What it delivers today, which is less</h2>
+<h2 id="what-it-delivers-today-which-is-less">What it delivers today, which is less</h2>
 
 <p>That 1.34&times; needs the threads placed as well as the pages, and Vx's host backend runs an
 outlined kernel on <strong>one thread</strong> — <code>vx_host_call_kernel</code> is a single
@@ -222,7 +222,7 @@ compile-time half — refusing a tile no node can hold, pricing the hop, and doi
 is complete and validated. The runtime half is real, verified against the kernel, and currently
 capped by something unrelated to NUMA.</p>
 
-<h2>The thing that kept recurring</h2>
+<h2 id="the-thing-that-kept-recurring">The thing that kept recurring</h2>
 
 <p>Three separate bugs this week had one shape: <strong>a declaration nobody downstream was obliged
 to honour.</strong></p>

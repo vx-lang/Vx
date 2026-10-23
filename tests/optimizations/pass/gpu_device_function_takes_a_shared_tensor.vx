@@ -1,0 +1,43 @@
+//===- gpu_device_function_takes_a_shared_tensor.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A GPU region gives its shared tensor to `put`. The parameter of `put` keeps the memory space
+// of shared memory (address space 3), so the call needs no cast, and `put` stores to shared
+// memory in the PTX.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not='runs on the CPU'
+// CHECK: image={{.*}}.visible .func put({{.*}}st.shared.b32
+// CHECK: llvm.func hidden @put(%arg0: !llvm.ptr<3>, %arg1: !llvm.ptr<3>,
+
+fn thread_id() on Topology::Device -> i32 {
+  return mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
+    %t = gpu.thread_id x
+    %r = "arith.index_cast"(%t) : (index) -> i32
+    macro.yield %r : i32
+  };
+}
+
+fn put(shared : &mut Tensor<f32, [32], Memory::SMEM>, i : i32, v : f32) on Topology::Device -> void {
+  shared[i] = v;
+  return;
+}
+
+pub fn reverse(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    let mut shared = unsafe { Tensor<f32, [32], Memory::SMEM>::uninit() };
+    let t = thread_id();
+    put(&mut shared, t, x[t]);
+    barrier();
+    out[t] = shared[31 - t];
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

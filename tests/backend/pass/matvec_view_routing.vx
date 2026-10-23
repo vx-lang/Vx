@@ -14,6 +14,9 @@
 // operand roles so a plugin can route it to a vendor kernel (#325). Each of
 // those was a separate hole; this is the composition, which is what matters.
 //
+// The GPU cannot see host memory. So the program copies both views to GPU memory
+// before the region, and copies `y` back before it prints `y`.
+//
 // The shape is `W[d,n] @ x[n,1]`, which is every matmul in a decoder: 4x3 by
 // 3x1 here. That the trailing dimension is 1 is the point -- a matvec still
 // classifies, since a GEMM with N = 1 is what a vendor library is given anyway.
@@ -62,17 +65,18 @@ fn main() -> i32 {
     }
   }
 
-  let w = unsafe { tensor_view_2d(pw, 4, 3) };
-  let x = unsafe { tensor_view_2d(px, 3, 1) };
+  let w = transfer(unsafe { tensor_view_2d(pw, 4, 3) }, Memory::GPU_HBM);
+  let x = transfer(unsafe { tensor_view_2d(px, 3, 1) }, Memory::GPU_HBM);
 
-  let mut y = Tensor<f32, [4, 1]>::uninit();
+  let mut y = unsafe { Tensor<f32, [4, 1], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU[0]) {
     y = &w @ &x;
   }
 
-  print(y[0][0]);
+  let back = transfer(y, Memory::CPU_DRAM);
+  print(back[0][0]);
   print!(" ");
-  print(y[3][0]);
+  print(back[3][0]);
 
   unsafe { vx_free_f32(pw, 12); vx_free_f32(px, 3); }
   return 0;

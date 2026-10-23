@@ -45,21 +45,8 @@ impl TypeChecker<'_> {
         // registers as Custom("GPU") and is unreachable from every use site. Found by review on
         // Vx#352: `Topology GPU { arch: applegpu }` still produced an NVPTX image via the band,
         // the machine file's word silently discarded.
-        const BUILTIN_TOPOLOGY_NAMES: &[&str] = &[
-            "CPU",
-            "Current",
-            "NPU",
-            "AccCore",
-            "AMX",
-            "ANE",
-            "GPU",
-            "CpuAvx512",
-            "CPU_AVX512",
-            "CpuNeon",
-            "CPU_Neon",
-        ];
         for decl in declared {
-            if BUILTIN_TOPOLOGY_NAMES.contains(&decl.name.as_ref()) {
+            if !matches!(TopologyKind::from_name(&decl.name), TopologyKind::Custom(_)) {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E6016,
                     format!(

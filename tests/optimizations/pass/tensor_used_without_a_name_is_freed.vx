@@ -1,0 +1,45 @@
+//===- tensor_used_without_a_name_is_freed.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A new tensor that is used without a name, such as `t.clone()[0][0]`, is freed
+// after its last use, in a `return` and in a `let`. The tensors are too large for
+// the stack, so each one is a `malloc`. Both code generators free it.
+//
+// RUN: vxc %s --disable-llvm-optimizations --action emit-llvm 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --disable-llvm-optimizations --action emit-llvm 2>&1 | FileCheck %s
+// CHECK-LABEL: llvm.func {{.*}}@transposed(
+// CHECK: %[[TR:.*]] = llvm.call @malloc(
+// CHECK: llvm.call @free(%[[TR]])
+// CHECK: llvm.return
+// CHECK-LABEL: llvm.func {{.*}}@in_a_return(
+// CHECK: %[[RET:.*]] = llvm.call @malloc(
+// CHECK: llvm.call @free(%[[RET]])
+// CHECK: llvm.return
+// CHECK-LABEL: llvm.func {{.*}}@in_a_let(
+// CHECK: %[[LET:.*]] = llvm.call @malloc(
+// CHECK: llvm.call @free(%[[LET]])
+// CHECK: llvm.return
+
+fn transposed(t : Tensor<f32, [1024, 1023]>) -> f32 {
+  return t.transpose([1, 0])[2][1];
+}
+
+fn in_a_return(t : Tensor<f32, [1024, 1024]>) -> f32 {
+  return t.clone()[0][0];
+}
+
+fn in_a_let(t : Tensor<f32, [1024, 1024]>) -> f32 {
+  let x = t.clone()[1][1] + 1.0;
+  return x;
+}
+
+fn main() -> i32 {
+  let a = Tensor<f32, [1024, 1024]>::fill(2.0);
+  let b = Tensor<f32, [1024, 1023]>::fill(3.0);
+  print(in_a_return(a.clone()) + in_a_let(a) + transposed(b));
+  return 0;
+}

@@ -73,7 +73,30 @@ pub struct ForLoopStmt {
     /// The `next` the checker resolved for this loop's iterator, by its instance name. Two
     /// instances of one generic iterator have two `next`s, and only the checker knows which.
     pub next_fn: Option<crate::symbol::Symbol>,
+    /// The bounds of a loop that the code generator writes out once for each pass, set by the
+    /// checker when the loop variable indexes a tensor that must stay in registers.
+    pub unroll: Option<(i64, i64)>,
+    /// `across <level>` or `across <level>(n)`: the loop is one axis of a GPU launch.
+    pub across: Option<AcrossClause>,
 }
+
+/// `across lanes` or `across lanes(n)` on a `for`. `level` is a level of the region's
+/// topology, and `share` is the `n` that the passes are shared among.
+#[derive(Debug, PartialEq, Clone)]
+pub struct AcrossClause {
+    pub level: Symbol,
+    pub share: Option<Box<Expr>>,
+    pub span: Span,
+    /// What the checker found: the kind of the level, and the lanes of a subgroup of the
+    /// topology. The code generator reads them. `None` before the check.
+    pub kind: Option<crate::arch::LevelKind>,
+    pub subgroup_lanes: Option<u64>,
+    /// Set by the checker under `-fauto-schedule-levels`, when the code generator of the
+    /// region's arch cannot launch the levels. The loop runs as a plain `for` that carries its
+    /// level as metadata.
+    pub auto_schedule: bool,
+}
+
 impl ForLoopStmt {
     pub fn new(
         iter: String,
@@ -89,6 +112,8 @@ impl ForLoopStmt {
             body,
             span,
             next_fn: None,
+            unroll: None,
+            across: None,
         }
     }
 }
@@ -333,6 +358,15 @@ impl Statement {
                 body: e.body.iter().map(|s| s.substitute(mapping)).collect(),
                 span: e.span,
                 next_fn: e.next_fn.clone(),
+                unroll: e.unroll,
+                across: e.across.as_ref().map(|a| AcrossClause {
+                    level: a.level.clone(),
+                    share: a.share.as_ref().map(|n| Box::new(n.substitute(mapping))),
+                    span: a.span,
+                    kind: a.kind,
+                    subgroup_lanes: a.subgroup_lanes,
+                    auto_schedule: a.auto_schedule,
+                }),
             }),
             Statement::Assign(e) => Statement::Assign(AssignStmt {
                 lhs: e.lhs.substitute(mapping),

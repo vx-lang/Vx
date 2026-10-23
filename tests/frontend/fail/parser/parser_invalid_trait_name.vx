@@ -6,10 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
-
+//
+// A trait with no name: the error points at the bad token `{`, not at the
+// next line.
+//
 // CHECK: Expected trait name
-// CHECK:   fn dim(self: Tensor<f32, [?, ?]>) -> Tensor<i32, [?, ?]>;
-// CHECK:   ^^~~~~
+// CHECK: trait {
+// CHECK: ~~~~^~~~~
 trait {
   fn dim(self: Tensor<f32, [?, ?]>) -> Tensor<i32, [?, ?]>;
 }

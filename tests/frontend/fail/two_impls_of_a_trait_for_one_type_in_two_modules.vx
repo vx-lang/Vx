@@ -1,0 +1,22 @@
+//===- two_impls_of_a_trait_for_one_type_in_two_modules.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s -j 4 2>&1 | FileCheck %s
+//
+// Two imported modules each implement `Describe` for `Point`. The error names both modules,
+// and comes even though the program calls neither impl.
+//
+// CHECK: Error[E3049]: `impl Describe for Point` is written in '{{.*}}describe_{{left|right}}' and in '{{.*}}describe_{{left|right}}'
+import tests::modules::describe_shape;
+import tests::modules::describe_left;
+import tests::modules::describe_right;
+
+fn main() -> i32 {
+  let p = make();
+  return p.x;
+}

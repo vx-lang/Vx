@@ -1,0 +1,14 @@
+// `::uninit()` inside `unsafe` is accepted, as a statement or as the block's value, and so is
+// `::new()`, whose storage starts at zero. No W1010 either: `::uninit()` is what those `unsafe`
+// blocks are for. The one warning is that `c` is not used.
+// WARN: Unused variable 'c'
+// NO-WARN: E5001
+// NO-WARN: W1010
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<f32, [4]>::uninit() };
+  a[0] = 1.0;
+  unsafe { let mut b = Tensor<f32, [4]>::uninit(); b[0] = 2.0; }
+  let c = Tensor<f32, [4]>::new();
+  return 0;
+}

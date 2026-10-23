@@ -141,12 +141,8 @@ if [ "$BACKEND" = cuda ]; then
     g++ -std=c++17 -O2 -Wall runtime/vx_worker_main.cpp runtime/cuda_dispatch.cpp \
       -Iinclude -Iruntime -I"$CUDA_HOME/include" \
       -L"$CUDA_HOME/lib64" -Wl,-rpath,"$CUDA_HOME/lib64" \
-      -L"$CUDA_HOME/lib64/stubs" \
-      -lcudart -lcublas -lcuda -lffi -o vx-worker'
-      # -lcuda is the driver API, for loading a device image the compiler
-      # emitted (#251). From the stubs, resolved at run time against the real
-      # driver -- so the stub directory is on -L and deliberately not on the
-      # rpath, where it would shadow the driver with do-nothing entry points.
+      -lcudart -lcublas -ldl -lffi -o vx-worker'
+      # No -lcuda: the backend loads the driver API with dlopen.
 else
   BUILD='
     g++ -std=c++17 -O2 -Wall runtime/vx_worker_main.cpp runtime/host_dispatch.cpp \
@@ -209,9 +205,9 @@ Memory HBM_A {
 Topology DevA { memory: Memory::HBM_A, visible: [ Memory::HBM_A ] }
 
 fn main() -> i32 {
-  let mut a_h = Tensor<f32, [64, 64]>::uninit();
-  let mut b_h = Tensor<f32, [64, 64]>::uninit();
-  let mut c_h = Tensor<f32, [64, 64]>::uninit();
+  let mut a_h = unsafe { Tensor<f32, [64, 64]>::uninit() };
+  let mut b_h = unsafe { Tensor<f32, [64, 64]>::uninit() };
+  let mut c_h = unsafe { Tensor<f32, [64, 64]>::uninit() };
   for i in 0..64 {
     for j in 0..64 {
       a_h[i][j] = ((i + j) as f32) * 0.01;
@@ -245,9 +241,9 @@ Topology DevA { memory: Memory::HBM_A, visible: [ Memory::HBM_A ] }
 Topology DevB { memory: Memory::HBM_B, visible: [ Memory::HBM_B ] }
 
 fn main() -> i32 {
-  let mut a_h = Tensor<f32, [64, 64]>::uninit();
-  let mut b_h = Tensor<f32, [64, 64]>::uninit();
-  let mut c_h = Tensor<f32, [64, 64]>::uninit();
+  let mut a_h = unsafe { Tensor<f32, [64, 64]>::uninit() };
+  let mut b_h = unsafe { Tensor<f32, [64, 64]>::uninit() };
+  let mut c_h = unsafe { Tensor<f32, [64, 64]>::uninit() };
   for i in 0..64 {
     for j in 0..64 {
       a_h[i][j] = ((i + j) as f32) * 0.01;
@@ -286,9 +282,9 @@ Memory HBM_A {
 Topology DevA { memory: Memory::HBM_A, visible: [ Memory::HBM_A ] }
 
 fn main() -> i32 {
-  let mut a_h = Tensor<f32, [64, 64]>::uninit();
-  let mut b_h = Tensor<f32, [64, 64]>::uninit();
-  let mut c_h = Tensor<f32, [64, 64]>::uninit();
+  let mut a_h = unsafe { Tensor<f32, [64, 64]>::uninit() };
+  let mut b_h = unsafe { Tensor<f32, [64, 64]>::uninit() };
+  let mut c_h = unsafe { Tensor<f32, [64, 64]>::uninit() };
   for i in 0..64 {
     for j in 0..64 {
       a_h[i][j] = ((i + j) - ((i + j) / 4) * 4) as f32;

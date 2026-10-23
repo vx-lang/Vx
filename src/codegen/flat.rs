@@ -26,7 +26,7 @@
 // subset, so nothing half-lowered is ever emitted.
 //
 //===----------------------------------------------------------------------===//
-use crate::bytecode::{HirInstruction, Opcode};
+use crate::bytecode::{HirInstruction, Opcode, AFFINE_FOR_BRANCHES};
 use crate::decline::{Decline, Lowered};
 use crate::gid::TypeId;
 use crate::hir::flatten::{ptr_gid, scalar_gid, tensor_gid_of, DYN_DIM};
@@ -64,6 +64,9 @@ fn elem_from_mlir_scalar(s: &str) -> Option<ElementType> {
         "bf16" => BF16,
         "f32" => F32,
         "f64" => F64,
+        "f8E4M3FN" => F8E4M3,
+        "f8E5M2" => F8E5M2,
+        "f4E2M1FN" => F4E2M1,
         "i1" => Bool,
         "i4" => I4,
         "i8" => I8,
@@ -97,6 +100,8 @@ fn int_bits(e: &ElementType) -> Option<u32> {
 fn float_bits(e: &ElementType) -> Option<u32> {
     use ElementType::*;
     Some(match e {
+        F4E2M1 => 4,
+        F8E4M3 | F8E5M2 => 8,
         F16 | BF16 => 16,
         F32 => 32,
         F64 => 64,
@@ -149,7 +154,8 @@ fn cast_op(src: &ElementType, tgt: &ElementType) -> Option<&'static str> {
 fn elem_of_gid(gid: TypeId) -> Option<ElementType> {
     use ElementType::*;
     [
-        F16, F32, F64, BF16, I4, U4, I8, U8, I16, U16, I32, U32, I64, U64, I128, U128, USize, Bool,
+        F16, F32, F64, BF16, F8E4M3, F8E5M2, F4E2M1, I4, U4, I8, U8, I16, U16, I32, U32, I64, U64,
+        I128, U128, USize, Bool,
     ]
     .into_iter()
     .find(|e| scalar_gid(e) == gid)
@@ -305,6 +311,17 @@ pub(crate) fn placed_device(id: u64, ctx: &EmitCtx) -> Option<i32> {
 fn param_alias_attrs(ty: &Type, ctx: &EmitCtx) -> String {
     match ty {
         Type::Borrow { is_mut: true, .. } => " {llvm.noalias}".to_string(),
+        // A `SharedCell` in the value lets code write through the `&`.
+        Type::Borrow {
+            is_mut: false,
+            inner,
+            ..
+        } if ctx
+            .shared_cell_types
+            .contains(&crate::syntax::types::Mangle::mangle(&**inner)) =>
+        {
+            String::new()
+        }
         Type::Borrow { is_mut: false, .. } => " {llvm.readonly}".to_string(),
         // A tensor taken by value belongs to the function, which frees it. One placed in
         // another memory names the topology its plugin frees it on.
@@ -870,6 +887,9 @@ pub type TensorMap = HashMap<TypeId, (ElementType, Vec<String>)>;
 /// reference none (scalar/control-flow-only functions).
 #[derive(Default)]
 pub struct EmitCtx {
+    /// Record the Vx name and type of each parameter of a function that holds a `spawn`, for
+    /// `--emit-ptx` to describe the parameters of a GPU kernel.
+    pub describe_params: bool,
     pub callees: CalleeMap,
     pub aggs: AggMap,
     /// Base struct/enum name → modelled layout GID, for resolving a monomorphized cross-module
@@ -895,10 +915,13 @@ pub struct EmitCtx {
     /// band -- which a custom topology can never enter (declared ids start at 3000 by
     /// construction, and the GPU band is [500, 600)). Built-in topologies are not in this map and
     /// keep riding the band.
-    pub topo_archs: HashMap<i64, String>,
+    pub topo_archs: HashMap<i64, DeclaredArch>,
     /// The program's `const` tables as (global name, memref type), in the registry's order, which
     /// is what a `ConstTable` instruction's `imm` counts in.
     pub const_tables: Vec<(String, String)>,
+    /// The mangled types, among those that a parameter's `&` points to, that hold a
+    /// `SharedCell`. A `&` to one of them is not `llvm.readonly`.
+    pub shared_cell_types: std::collections::HashSet<String>,
 }
 
 /// The declared properties of a memory sub-space the flat emitter re-attaches to a `vx.transfer`,
@@ -911,6 +934,8 @@ pub struct SubspaceInfo {
     pub name: String,
     pub within: Option<String>,
     pub granule: Option<u64>,
+    /// `alignment:`, the least alignment of a tensor in the space, in bytes.
+    pub alignment: Option<u64>,
     pub capacity: Option<u64>,
     pub scope: Option<String>,
     /// "explicit" or "cached". Decides whether the host may read this space, and
@@ -932,7 +957,7 @@ pub struct SubspaceInfo {
 /// `func.func private` declaration prepended. Order is load-bearing — the emit records which of
 /// these a function called as a bitmask over this array's indices, so inserting in the middle
 /// renumbers existing entries.
-const RUNTIME_HELPERS: [(&str, &str); 18] = [
+const RUNTIME_HELPERS: [(&str, &str); 22] = [
     ("printMemrefF32", "(memref<*xf32>)"),
     ("printMemrefF64", "(memref<*xf64>)"),
     ("printMemrefI32", "(memref<*xi32>)"),
@@ -951,7 +976,14 @@ const RUNTIME_HELPERS: [(&str, &str); 18] = [
     ("print_bool", "(i32) -> i32"),
     ("printMemrefU32", "(memref<*xi32>)"),
     ("printMemrefU64", "(memref<*xi64>)"),
+    ("printMemrefI8", "(memref<*xi8>)"),
+    ("printMemrefI16", "(memref<*xi16>)"),
+    ("printMemrefU8", "(memref<*xi8>)"),
+    ("printMemrefU16", "(memref<*xi16>)"),
 ];
+
+// The helper mask is a `u64`, so the table must not grow past 64 entries.
+const _: () = assert!(RUNTIME_HELPERS.len() <= 64);
 
 /// Recover the declared memory sub-spaces from a compilation's env, in the shape
 /// [`emit_module_mlir`] wants.
@@ -979,12 +1011,19 @@ pub fn local_devices_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i32, i32)>
     crate::arch::local_device_aliases(env.topologies.values().map(|d| (&d.name, &d.descriptor)))
 }
 
+/// A declared topology's `arch:`, and its `chip:` when it gives one.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DeclaredArch {
+    pub arch: String,
+    pub chip: Option<String>,
+}
+
 /// The declared-arch table for `EmitCtx::topo_archs`, from the per-compilation env: one entry per
 /// user-declared topology that states an `arch:`. A topology that declines to declare one gets no
 /// entry, no `arch` attribute, and therefore no device compilation -- refusing to guess is the
 /// same policy `fleet/m4-uma.vx` documents for its own arch field.
-pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, String)> {
-    let mut out: Vec<(i64, String)> = env
+pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, DeclaredArch)> {
+    let mut out: Vec<(i64, DeclaredArch)> = env
         .topologies
         .values()
         .filter_map(|decl| {
@@ -992,7 +1031,15 @@ pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, String)>
             let id = crate::arch::topology_dispatch_id(&crate::syntax::Topology::Custom(
                 decl.name.clone(),
             ));
-            Some((id as i64, arch.as_ref().to_string()))
+            let declared = DeclaredArch {
+                arch: arch.as_ref().to_string(),
+                chip: decl
+                    .descriptor
+                    .chip
+                    .as_ref()
+                    .map(|c| c.as_ref().to_string()),
+            };
+            Some((id as i64, declared))
         })
         .collect();
     // Sorted, because `env.topologies` is a HashMap and iteration order would otherwise decide
@@ -1013,6 +1060,7 @@ pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
                 name: space.name(),
                 within: decl.parent.as_ref().map(|p| p.name()),
                 granule: decl.granule.as_ref().map(|g| g.0),
+                alignment: decl.alignment.as_ref().map(|a| a.0),
                 capacity: decl.capacity.as_ref().map(|c| c.0),
                 scope: decl.scope.as_ref().map(|s| {
                     match s {
@@ -1070,6 +1118,8 @@ impl EmitCtx {
                 .iter()
                 .map(|t| (t.symbol(), t.memref_type()))
                 .collect(),
+            shared_cell_types: std::collections::HashSet::new(),
+            describe_params: false,
         }
     }
 
@@ -1116,7 +1166,7 @@ fn static_tile_bytes(elem: &ElementType, shape: &[String]) -> Option<u64> {
 /// tensor's memref, or a by-value aggregate's `!llvm.struct`. `None` for a void / unmodelled type.
 /// The single source of truth shared by the `func.func` header and a `FuncConst`'s `func.constant`
 /// signature, so a materialized function pointer's type matches its callee's header exactly. (#242)
-fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
+pub(crate) fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
     let ty = peel_wrappers(ty); // Verified/Ref/Pinned spell as their runtime inner type
                                 // A borrowed tensor is spelled as the tensor. A memref is already a reference, and a call
                                 // site hands over the memref itself; `!llvm.ptr` gave the signature a type nothing passes
@@ -1145,9 +1195,25 @@ fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
         let (elem, shape) = ctx.tensors.get(&gid).ok_or(Decline::TypeNotModelled {
             what: "a tensor with no recorded shape",
         })?;
-        tensor_memref_ty(elem, shape).ok_or(Decline::TypeNotModelled {
+        let memty = tensor_memref_ty(elem, shape).ok_or(Decline::TypeNotModelled {
             what: "a tensor with no memref spelling",
-        })
+        })?;
+        // A tensor in a `scope: sm` space is in shared memory, as where it is made, so a
+        // function can take it.
+        let shared = ty
+            .placement()
+            .map(|p| crate::arch::memory_space_dispatch_id(&p.space) as u64)
+            .and_then(|id| ctx.subspaces.get(&id))
+            .and_then(|s| s.scope.as_deref())
+            == Some("sm");
+        if !shared {
+            return Ok(memty);
+        }
+        let space = crate::arch::address_space_for_arch(None, crate::arch::AddressSpace::Workgroup);
+        Ok(format!(
+            "{}, {space}>",
+            memty.strip_suffix('>').ok_or(crate::emitter_gap!())?
+        ))
     } else if let Some(gid) = ctx.agg_gid(ty) {
         Ok(ctx
             .aggs
@@ -1162,6 +1228,72 @@ fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
             what: "a type with no MLIR spelling",
         })
     }
+}
+
+/// The comment before the wrapper of an `mlir!` block, followed by the block's line and column.
+pub(crate) const MLIR_BLOCK_START: &str = "// mlir! block at ";
+/// The comment after the wrapper of an `mlir!` block.
+pub(crate) const MLIR_BLOCK_END: &str = "// end of the mlir! block";
+
+/// Parses the text that `emit_module_mlir` returned. `Ok(None)` when it does not parse because
+/// of an emitter bug: the MLIR errors are printed. `Err` when it does not parse because an
+/// `mlir!` block of the program is not valid MLIR: the error names the block.
+pub fn parse_emitted_module<'c>(
+    context: &'c melior::Context,
+    text: &str,
+) -> Result<Option<melior::ir::Module<'c>>, String> {
+    let errors = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = errors.clone();
+    let id = context.attach_diagnostic_handler(move |d| {
+        seen.borrow_mut()
+            .push((d.location().to_string(), d.to_string()));
+        true
+    });
+    let parsed = melior::ir::Module::parse(context, text);
+    context.detach_diagnostic_handler(id);
+    if parsed.is_some() {
+        return Ok(parsed);
+    }
+    let errors = errors.borrow();
+    if let Some((location, message)) = errors.first() {
+        if let Some(why) = mlir_block_error(text, location, message) {
+            return Err(why);
+        }
+    }
+    for (_, message) in errors.iter() {
+        eprintln!("{message}");
+    }
+    Ok(None)
+}
+
+/// The error for an MLIR error at `location`, such as `loc("-":4:5)` in `text`, when it is in
+/// the code of an `mlir!` block: its wrapper, or the cast of one of its inputs.
+fn mlir_block_error(text: &str, location: &str, message: &str) -> Option<String> {
+    let mut parts = location.trim_end_matches(')').rsplit(':');
+    let _column = parts.next()?;
+    let line: usize = parts.next()?.parse().ok()?;
+    let before: Vec<&str> = text.lines().take(line.checked_sub(1)?).collect();
+    for l in before.into_iter().rev() {
+        if l.starts_with(MLIR_BLOCK_END) {
+            return None;
+        }
+        let Some(at) = l.strip_prefix(MLIR_BLOCK_START) else {
+            continue;
+        };
+        let (line, rest) = at.split_once(' ')?;
+        let (column, input) = rest.split_once(' ').unwrap_or((rest, ""));
+        let block = format!("The `mlir!` block at line {line}, column {column}");
+        let Some(input) = input.strip_prefix("input ") else {
+            return Some(format!("{block} is not valid MLIR: {message}"));
+        };
+        let mut fields = input.split(" | ");
+        let (name, actual, declared) = (fields.next()?, fields.next()?, fields.next()?);
+        return Some(format!(
+            "{block} takes its input `{name}` as `{declared}`, but the value is a `{actual}`: \
+             {message}"
+        ));
+    }
+    None
 }
 
 /// Emit a whole module — every function as a concatenated bare `func.func` — or `None` if *any*
@@ -1179,12 +1311,24 @@ pub fn emit_module_mlir(
     agg_layouts: &[(TypeId, Vec<u64>, Vec<String>)],
     alias_tables: &[&[(usize, usize, Vec<usize>)]],
     subspaces: &[SubspaceInfo],
-    topo_archs: &[(i64, String)],
+    topo_archs: &[(i64, DeclaredArch)],
     local_devices: &[(i32, i32)],
     sched: crate::config::Schedule,
+    describe_params: bool,
 ) -> Lowered<String> {
     let setup = std::time::Instant::now();
     let mut ctx = EmitCtx::from_registry(registry, sched);
+    ctx.describe_params = describe_params;
+    for (func, ..) in funcs {
+        for (_, ty) in &func.params {
+            if let Type::Borrow { inner, .. } = ty {
+                if registry.holds_shared_cell(inner) {
+                    ctx.shared_cell_types
+                        .insert(crate::syntax::types::Mangle::mangle(&**inner));
+                }
+            }
+        }
+    }
     for s in subspaces {
         ctx.subspaces.insert(s.dispatch_id, s.clone());
     }
@@ -1275,7 +1419,7 @@ pub fn emit_module_mlir(
     {
         let mut str_base = 0usize;
         let mut distinct_ctr: u32 = 1;
-        for fi in 0..funcs.len() {
+        for (fi, (_, hir, _)) in funcs.iter().enumerate() {
             str_bases.push(str_base);
             str_base += string_tables.get(fi).copied().unwrap_or(&[]).len();
             distinct_bases.push(distinct_ctr);
@@ -1287,6 +1431,8 @@ pub fn emit_module_mlir(
                 .map(|(_, g, _)| *g as u32 + 1)
                 .max()
                 .unwrap_or(0);
+            // One access group for each loop hint, which keeps each loop's metadata its own.
+            distinct_ctr += hir.iter().filter(|i| i.opcode == Opcode::LoopHint).count() as u32;
         }
     }
 
@@ -1302,7 +1448,7 @@ pub fn emit_module_mlir(
         .map(|(name, _)| format!("@{name}("))
         .collect();
 
-    type FnEmission = (String, Vec<(String, Vec<String>, String)>, u32);
+    type FnEmission = (String, Vec<(String, Vec<String>, String)>, u64);
     // An inline block's wrapper is named from a module-wide base, so two functions' do not collide.
     let inline_bases: Vec<usize> = {
         let mut bases = Vec::with_capacity(funcs.len());
@@ -1330,9 +1476,9 @@ pub fn emit_module_mlir(
                 alias_tables.get(fi).copied().unwrap_or(&[]),
                 &mut distinct_ctr,
             )?;
-            let helpers = helper_pats.iter().enumerate().fold(0u32, |m, (i, pat)| {
+            let helpers = helper_pats.iter().enumerate().fold(0u64, |m, (i, pat)| {
                 if text.contains(pat.as_str()) {
-                    m | (1 << i)
+                    m | (1u64 << i)
                 } else {
                     m
                 }
@@ -1370,7 +1516,7 @@ pub fn emit_module_mlir(
     //
     // A decline is reported for the *first* declining function rather than whichever thread noticed
     // first, so `VX_FLAT_DBG` says the same thing it always did.
-    let mut helper_mask = 0u32;
+    let mut helper_mask = 0u64;
     for (fi, emission) in emitted.iter_mut().enumerate() {
         let (_, fn_calls, helpers) = match emission {
             Ok(e) => e,
@@ -1865,6 +2011,13 @@ pub(crate) struct FnEmit<'a> {
     /// value can be given its result name when the value is known. Empty outside a spawn.
     /// The third field is the spawn's name index, as its `imm` carries it.
     pub(crate) spawn_stack: Vec<(i64, usize, u64)>,
+    /// For each open `vx.spawn`, where its stack slots go: the end of the slots in its first
+    /// block for a region with `across` loops, and `None` for another region.
+    pub(crate) region_slots: Vec<Option<usize>>,
+    /// The attributes of the next `cf.br`, from a `LoopHint` just before it.
+    pub(crate) loop_hint: Option<String>,
+    /// The next `distinct[]` id of this function's block, after its alias scopes.
+    pub(crate) next_distinct: u32,
     /// Per-function sub-space bump allocator (space dispatch id -> next free byte), mirroring the
     /// AST path's `MeliorGenerator::subspace_offsets`: each `Transfer` into a granule'd space
     /// claims the next granule-rounded `offset` and advances the cursor, so both paths assign
@@ -1874,6 +2027,22 @@ pub(crate) struct FnEmit<'a> {
     pub(crate) filled: std::collections::HashSet<usize>,
     /// A filled tensor placed on a device: filled on the host, then copied to this topology.
     pub(crate) copy_after_fill: HashMap<usize, i32>,
+    /// The open `affine.for` loops, outermost first.
+    pub(crate) affine_loops: Vec<AffineLoop>,
+    /// The value of each integer `Const`, so that a loop bound can be a number.
+    pub(crate) int_consts: HashMap<usize, i64>,
+}
+
+/// An open `affine.for`.
+pub(crate) struct AffineLoop {
+    /// Where the loop's text starts in `body`.
+    pub(crate) at: usize,
+    /// The loop's index, of type `index`.
+    pub(crate) index: String,
+    /// The register of the loop variable.
+    pub(crate) var: usize,
+    /// The body is in an `scf.execute_region`.
+    pub(crate) branches: bool,
 }
 
 impl<'a> FnEmit<'a> {
@@ -1915,6 +2084,13 @@ impl<'a> FnEmit<'a> {
     /// scratch. So a region keeps its slots, and a `let` in a loop *inside* a
     /// spawn still allocates per iteration.
     pub(crate) fn emit_slot(&mut self, text: &str) {
+        // A region with `across` loops keeps its slots in its own first block, which every
+        // block of the region is under.
+        if let Some(Some(at)) = self.region_slots.last_mut() {
+            self.body.insert_str(*at, text);
+            *at += text.len();
+            return;
+        }
         match self.spawn_stack.last() {
             // A device region is outlined into its own function, so a slot
             // lifted out of it stops being the kernel's own scratch and becomes
@@ -1973,6 +2149,8 @@ impl<'a> FnEmit<'a> {
             // Block markers → MLIR blocks. Block 0 is the func's entry block (implicit; it carries the
             // params), so it gets no label; every other id opens `^bbN:`.
             Opcode::BlockStart => self.op_block_start(idx, ins),
+            Opcode::AffineFor => self.op_affine_for(idx, ins),
+            Opcode::AffineForEnd => self.op_affine_for_end(idx, ins),
             Opcode::Br => self.op_br(idx, ins),
             // `imm` packs the two targets as `then | (else << 32)` (see `flatten::pack_targets`).
             Opcode::CondBr => self.op_cond_br(idx, ins),
@@ -2083,6 +2261,10 @@ impl<'a> FnEmit<'a> {
             // the greedy folder cannot erase it before the device clone rewrites it to
             // `gpu.barrier`; the host lowering erases it instead (a serial loop IS the barrier).
             Opcode::Barrier => self.op_barrier(idx, ins),
+            Opcode::LaunchDim => self.op_launch_dim(idx, ins),
+            Opcode::LoopHint => self.op_loop_hint(idx, ins),
+            Opcode::AcrossId => self.op_across_id(idx, ins),
+            Opcode::AcrossRegion => self.op_across_region(idx, ins),
             Opcode::TensorDrop => self.op_tensor_drop(idx, ins),
             Opcode::Abort => self.op_abort(idx, ins),
             Opcode::PrintStr => self.op_print_str(idx, ins),
@@ -2261,6 +2443,9 @@ pub fn emit_function_mlir(
         terminated: false,
         pending_args: Vec::new(),
         spawn_stack: Vec::new(),
+        region_slots: Vec::new(),
+        loop_hint: None,
+        next_distinct: *distinct_ctr,
         subspace_offsets: HashMap::new(),
         filled: hir
             .iter()
@@ -2268,6 +2453,8 @@ pub fn emit_function_mlir(
             .map(|i| i.operand1.0 as usize)
             .collect(),
         copy_after_fill: HashMap::new(),
+        affine_loops: Vec::new(),
+        int_consts: HashMap::new(),
     };
     // `main` installs the runtime crash handler first, exactly as the AST codegen does (`is_main` ->
     // `func.call @vx_init_signals`), so a wild memory access is caught + backtraced rather than exiting
@@ -2306,9 +2493,34 @@ pub fn emit_function_mlir(
         Some(t) => format!(" -> {t}"),
         None => String::new(),
     };
-    // A function declared `-> !` is `noreturn` to LLVM.
+    // A function declared `-> !` is `noreturn` to LLVM. A `pub fn` stays exported:
+    // `vx-hide-program-symbols` skips a function with `vx.pub`.
+    let mut attrs = Vec::new();
     if crate::syntax::is_never_ty(&func.return_type) {
-        ret_sig += " attributes {passthrough = [\"noreturn\"]}";
+        attrs.push("passthrough = [\"noreturn\"]".to_string());
+    }
+    if func.is_pub {
+        attrs.push("vx.pub".to_string());
+    }
+    // A function that holds a `spawn` keeps the Vx name and type of each parameter, so the
+    // compiler can describe the parameters of a GPU kernel that `--emit-ptx` writes.
+    if ctx.describe_params && hir.iter().any(|i| matches!(i.opcode, Opcode::Spawn)) {
+        let quoted = |s: String| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
+        let names: Vec<String> = func
+            .params
+            .iter()
+            .map(|(n, _)| quoted(n.to_string()))
+            .collect();
+        let types: Vec<String> = func
+            .params
+            .iter()
+            .map(|(_, t)| quoted(t.to_string()))
+            .collect();
+        attrs.push(format!("vx.param_names = [{}]", names.join(", ")));
+        attrs.push(format!("vx.param_types = [{}]", types.join(", ")));
+    }
+    if !attrs.is_empty() {
+        ret_sig += &format!(" attributes {{{}}}", attrs.join(", "));
     }
     let mut out = format!(
         "func.func {}({}){} {{\n",
@@ -2468,6 +2680,7 @@ mod tests {
             &[],
             &[],
             crate::config::Schedule::Parallel,
+            false,
         )
         .expect("emits flat module");
 
@@ -2742,14 +2955,33 @@ mod tests {
     #[test]
     fn emits_verifiable_for_loop() {
         // A `for` range loop: header (compare + cond_br), body, increment latch, exit — all wired
-        // through slots for the induction variable and accumulator.
+        // through slots for the induction variable and accumulator. An unsigned range is not an
+        // affine loop, so it keeps this form.
         let mlir = emit_and_verify(
-            "fn sum(n: i32) -> i32 { let mut s = 0; for i in 0..n { s = s + i; } return s; }",
+            "fn sum(n: u32) -> u32 { let mut s = 0u32; for i in 0u32..n { s = s + i; } return s; }",
         );
-        assert!(mlir.contains("arith.cmpi slt, "), "{mlir}");
+        assert!(mlir.contains("arith.cmpi ult, "), "{mlir}");
         assert!(mlir.contains("memref.load "), "{mlir}");
         assert!(mlir.contains("memref.store "), "{mlir}");
         assert!(mlir.contains("cf.cond_br "), "{mlir}");
+        assert!(!mlir.contains("affine.for"), "{mlir}");
+    }
+
+    #[test]
+    fn emits_verifiable_affine_for_loop() {
+        // A signed range that nothing leaves is an `affine.for`. The bound `n` is cast to `index`
+        // before the loop, and the loop variable is cast back to `i32`.
+        let mlir = emit_and_verify(
+            "fn sum(n: i32) -> i32 { let mut s = 0; for i in 0..n { s = s + i; } return s; }",
+        );
+        assert!(
+            mlir.contains("arith.index_cast %arg0 : i32 to index"),
+            "{mlir}"
+        );
+        assert!(mlir.contains("affine.for "), "{mlir}");
+        assert!(mlir.contains(" : index to i32"), "{mlir}");
+        assert!(!mlir.contains("cf.cond_br "), "{mlir}");
+        assert!(!mlir.contains("scf.execute_region"), "{mlir}");
     }
 
     #[test]

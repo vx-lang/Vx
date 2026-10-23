@@ -302,6 +302,8 @@ fn lower_for_loop<'c>(
             body,
             span: _,
             next_fn,
+            unroll: _,
+            across: _,
         } = for_loop;
 
         if let Expr::Range(syntax::expr::RangeExpr {

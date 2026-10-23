@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Breaking the borrow checker on purpose</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="Five days of work on Vx's borrow checker, and two tests of the tests. Breaking the checker on purpose, 108 ways: the tests caught 93, and the 15 they missed showed 11 untested rules and one real bug. Running 78 of Rust's borrow checker bug reports in Vx found 14 more holes.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Breaking the borrow checker on purpose">
+<meta property="og:description" content="We broke Vx's borrow checker 108 ways to see whether the tests would notice, then ran 78 of Rust's borrow checker bug reports in Vx. They found 11 untested rules and 15 holes.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-10-15T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/breaking-the-borrow-checker-on-purpose.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-breaking-the-borrow-checker-on-purpose.png">
+<meta property="og:image:alt" content="Breaking the borrow checker on purpose.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-breaking-the-borrow-checker-on-purpose.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Breaking the borrow checker on purpose</h1>
+<p class="post-meta">Aditya Kumar &middot; 15 October 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — In five days, Vx's borrow checker had twelve
+fixes for programs it accepted and should have refused, and five for correct programs it refused.
+Then we tested the tests. We broke the checker on purpose, 108 ways, one at a time, and ran the
+tests after each break. They caught 93. Of the 15 they missed, 11 were rules no test checked, and
+those tests are now added. Three changed code that no Vx program reaches today. One led to a real
+bug: a borrow made inside a block was forgotten when the block ended, and a program read freed
+memory. Then we translated 78 of Rust's borrow checker bug reports into Vx. They led to 14 more
+programs that Vx accepts and should refuse, now filed, and to two correct programs that Vx accepts
+and Rust still refuses.</blockquote>
+
+<p class="lede">The <a href="/blog/what-the-borrow-checker-let-through.html">previous post</a>
+went through the programs Vx's borrow checker let through, and how each was fixed. Every fix came
+with a test, and every test passed. That shows a test and its fix agree. It does not show what the
+tests miss. This post is about how we went looking for that, and what the whole effort added up
+to.</p>
+
+<h2 id="five-days-of-fixes">Five days of fixes</h2>
+
+<p>The work started on 10 October with a review of the checker, tracked in
+<a href="https://github.com/vx-lang/Vx/issues/1501">#1501</a>. A borrow checker can be wrong in
+two directions. It can accept a program that reaches memory it should not, which is the dangerous
+direction: the optimizer trusts the checker, and nothing later catches the mistake. Or it can refuse
+a correct program, which costs the person writing it.</p>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>What was wrong</th><th>Fixed</th><th>Open</th></tr></thead>
+<tbody>
+<tr><td>A program compiled that should have been refused</td><td>12</td><td>15: <a href="https://github.com/vx-lang/Vx/issues/1778">#1778</a>, found by breaking the checker, whose fix is in review, and <a href="https://github.com/vx-lang/Vx/issues/1791">#1791</a> to <a href="https://github.com/vx-lang/Vx/issues/1804">#1804</a>, found from Rust's bug reports</td></tr>
+<tr><td>A correct program was refused</td><td>5</td><td>1, <a href="https://github.com/vx-lang/Vx/issues/1784">#1784</a></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The twelve are in the previous post's table, with one more since: a second <code>&amp;mut
+x</code> was accepted while a reference to a reference still reached the first
+(<a href="https://github.com/vx-lang/Vx/issues/1768">#1768</a>). The five correct programs that
+were refused include Euclid's algorithm, which broke <code>gcd</code> in a bigint library written in
+Vx (<a href="https://github.com/vx-lang/Vx/issues/1646">#1646</a>).</p>
+
+<p>Some changes added new rules:</p>
+
+<ul>
+<li><code>Tensor&lt;..&gt;::uninit()</code> gives memory whose elements hold whatever was there before.
+Reading one before writing it reads data the program never wrote. A call outside
+<code>unsafe</code> is now an error
+(<a href="https://github.com/vx-lang/Vx/issues/1509">#1509</a>). Before the error went in, every
+call in the repository moved into <code>unsafe</code>, and the older
+<code>Tensor&lt;T&gt;([..])</code> spelling was changed to start at zero.</li>
+<li>A <code>spawn</code> loop that could run in parallel, and runs on one thread because something
+blocks it, now gets a warning that names what blocks it
+(<a href="https://github.com/vx-lang/Vx/issues/1515">#1515</a>).</li>
+<li>A field moved out of a struct is now tracked on its own. It can be moved out only once, and
+the rest of the struct is still dropped
+(<a href="https://github.com/vx-lang/Vx/issues/1512">#1512</a>).</li>
+</ul>
+
+<p>And a set of tests tries each of seven borrow rules inside each kind of block Vx has, 266
+programs in all (<a href="https://github.com/vx-lang/Vx/pull/1577">#1577</a>). The bug in the
+previous post whose answer changed with the optimization level was a rule that worked in a function
+body and failed inside an <code>if</code> arm, so the tests try every rule in every place.</p>
+
+<h2 id="do-the-tests-check-the-checker">Do the tests check the checker?</h2>
+
+<p>Here is a question those tests cannot answer by passing: if one part of the checker stopped
+working, would any test notice? The direct way to find out is to stop it on purpose and run the
+tests. This is called <em>mutation testing</em>. Each change to the program under test is a
+<em>mutant</em>, and a mutant the tests do not catch marks code that no test depends on. Tools
+such as <a href="https://github.com/sourcefrog/cargo-mutants">cargo-mutants</a> do this
+automatically for Rust code, by replacing function bodies and changing operators. The repository's
+rules already ask for this one test at a time: before a new test is trusted, break the code it
+covers and watch it fail. Here the same idea is applied to the whole checker.</p>
+
+<p>We wrote the breaks by hand, so each one meant something for a borrow checker. There were two
+kinds:</p>
+
+<ul>
+<li><strong>A report turned off.</strong> Each of the 42 places where the checker reports a borrow
+error, E4001 to E4013, was skipped in turn.</li>
+<li><strong>A decision turned off or weakened.</strong> These are the questions the reports
+depend on: when a borrow ends, what <code>let r2 = r1</code> copies, whether two places such as
+<code>q.a</code> and <code>q[i]</code> can overlap, where a reference points, what a move does, and
+whether one lifetime fits another. A first round turned each one off. A second round weakened
+them in narrower ways. For example, a borrow ended one statement early, a copy kept only one of
+two borrows, the moves made in an <code>else</code> arm were forgotten, or an <code>if</code>'s value
+was taken to point only where its first branch points.</li>
+</ul>
+
+<p>Building the compiler takes minutes. So we did not rebuild it for each break. We put every
+break behind a switch that an environment variable turns on, built once, and ran the tests once per
+switch:</p>
+
+<!-- vx-doctest: skip (Rust, from the compiler) -->
+<pre><code><span class="k">if</span> !<span class="f">sabotaged</span>(<span class="n">"A29"</span>) {
+    <span class="k">self</span>.errors.<span class="f">error_with_code</span>(<span class="t">DiagnosticCode</span>::E4009, message, span);
+}</code></pre>
+
+<p>The tests for each switch were the compiler's 595 unit tests and its test programs, almost
+1,500 of them, about a third of which must be refused. A run took about two minutes, and all 108
+took about three and a half hours on one machine. The switches were a local change only, and never
+went into the repository.</p>
+
+<h2 id="what-got-through">What got through</h2>
+
+<p>The first round broke the checker 79 ways, and the tests caught 78. The second round broke it
+29 ways, and the tests caught 15. For each of the 15 that got through, we wrote a short program
+that the break should change, and compiled it twice: once with the real checker, once with the
+break on.</p>
+
+<ul>
+<li>If the real checker refused it and the broken one accepted it, the checker was right and no
+test checked that rule. That was the case for 11.</li>
+<li>If the program could not be written at all, the code the break changed is never reached. That
+was the case for 3.</li>
+<li>If both accepted it, the real checker was wrong too. That was the case for 1.</li>
+</ul>
+
+<h3 id="eleven-rules-no-test-checked">Eleven rules no test checked</h3>
+
+<p>Here is one. A value moved in the <code>else</code> arm of an <code>if</code> may have been moved
+when the code after the <code>if</code> runs, so using it there is refused:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">moved_in_else</span>(c : <span class="t">bool</span>) -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> s = <span class="t">S</span> { v : <span class="n">1</span> };
+  <span class="k">if</span> c {
+    <span class="f">print!</span>(<span class="n">1</span>);
+  } <span class="k">else</span> {
+    <span class="f">take</span>(s);
+  }
+  <span class="k">return</span> <span class="f">take</span>(s);   <span class="c">// E4001: s may have been moved</span>
+}</code></pre>
+
+<p>The checker refuses this. But the tests only ever moved a value in the first branch, so
+forgetting the moves of the second branch broke nothing they looked at. The other ten were of the
+same kind:</p>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>The rule</th><th>Error</th></tr></thead>
+<tbody>
+<tr><td>A store through a reference that a call returns, such as <code>*slot(h) = &amp;local</code>, can put a local's address into the caller's memory</td><td>E4005</td></tr>
+<tr><td><code>let t2 = t</code> gives <code>t2</code> every borrow <code>t</code> holds, even two of the same variable, such as <code>&amp;q.a</code> and <code>&amp;q.b</code></td><td>E4009</td></tr>
+<tr><td>A value moved in a later arm of a <code>match</code> is moved after it</td><td>E4001</td></tr>
+<tr><td>A value that points at a local cannot be returned through the <code>else</code> of an <code>if</code>, a later <code>match</code> arm, an <code>unsafe</code> block, a <code>*p</code>, an enum payload, or a closure call such as <code>(|| &amp;local)()</code> (six rules, one per form)</td><td>E4005</td></tr>
+<tr><td>A method that returns a <code>&amp;mut</code> keeps its receiver borrowed as <code>&amp;mut</code> while the result is used</td><td>E4004</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Each now has a test (<a href="https://github.com/vx-lang/Vx/pull/1783">#1783</a>). Each test
+was checked the same way: with its break on, the error it expects goes away, and the other tests'
+errors stay.</p>
+
+<h3 id="three-breaks-that-changed-nothing">Three breaks that changed nothing</h3>
+
+<p>One break made reading an element, <code>a[i]</code>, forget where the element points. No Vx
+program can show this today: arrays and tensors hold only numbers, so no element holds a reference.
+Two others changed how a method call is checked. Before those questions are asked, the checker
+has already turned <code>a.f(b)</code> into a function call <code>f(a, b)</code>, so that code never
+runs. These will matter once arrays can hold references, or once a method call reaches those
+checks unchanged.</p>
+
+<h3 id="one-real-bug">One real bug</h3>
+
+<p>One break made a copied borrow keep the block it was made in, instead of the block of the
+variable it was copied to. To show what that changes, the program needs a borrow made inside a
+block and given to a variable declared outside it. Written that way, the real checker accepted the
+program too:</p>
+
+<pre><code><span class="k">import</span> std::vec;
+
+<span class="k">struct</span> <span class="t">W</span> {
+  r : &amp;<span class="t">i32</span>,
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> v = <span class="t">Vec</span>&lt;<span class="t">i32</span>&gt;::<span class="f">new</span>();
+  v.<span class="f">push</span>(<span class="n">7</span>);
+  <span class="k">let</span> y : <span class="t">i32</span> = <span class="n">2</span>;
+  <span class="k">let</span> <span class="k">mut</span> outer = <span class="t">W</span> { r : &amp;y };
+  <span class="k">if</span> <span class="k">true</span> {
+    outer = <span class="t">W</span> { r : v.<span class="f">as_slice</span>() };   <span class="c">// outer now borrows v</span>
+  }
+  <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">1000</span> {
+    v.<span class="f">push</span>(i);                        <span class="c">// v grows, and moves its elements</span>
+  }
+  <span class="k">let</span> <span class="k">mut</span> z = <span class="t">Vec</span>&lt;<span class="t">i32</span>&gt;::<span class="f">new</span>();
+  <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">8</span> {
+    z.<span class="f">push</span>(<span class="n">9999</span>);
+  }
+  <span class="f">print!</span>(*outer.r);                   <span class="c">// reads the old, freed buffer</span>
+  <span class="f">print!</span>(<span class="n">"\n"</span>);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>It compiled and printed a different large number on each run, such as
+<code>-151189382</code>. The right answer is 7, or better, a compile error at the first
+<code>push</code>, since <code>outer</code> still borrows <code>v</code>. Rust refuses the same
+program. With no <code>if</code> around the assignment, Vx refused it too.</p>
+
+<p>The checker lost the borrow in two places
+(<a href="https://github.com/vx-lang/Vx/issues/1778">#1778</a>):</p>
+
+<ul>
+<li>An <code>if</code>, <code>match</code>, <code>unsafe</code> or <code>while</code> written as a
+statement is checked as an expression. After an expression statement, the checker puts back the
+table of borrows it had before the statement. That is how the borrows a call makes end with the
+call. It also dropped the borrow that <code>outer</code> now held.</li>
+<li>At the end of a block, the checker dropped every borrow made in that block, whoever held it.
+That covered the <code>for</code> loop, whose body is a block.</li>
+</ul>
+
+<p>The struct is not needed. With <code>outer</code> a plain reference,
+<code>outer = v.as_slice()</code> inside the <code>if</code> read freed memory as well.
+<code>outer = &amp;v</code> was accepted too, and so was the <code>push</code> after it, when the
+type of <code>outer</code> was written out, as in <code>let mut outer : &amp;Vec&lt;i32&gt; =
+&amp;w;</code>. When that type is left to be inferred from <code>&amp;w</code>, a different check
+(E3004) refuses <code>outer = &amp;v</code> first, which is why a first look suggested the hole
+needed a struct. The fix (<a href="https://github.com/vx-lang/Vx/pull/1786">#1786</a>) keeps a
+borrow whose holder is still in scope after the block or statement, for as long as the holder
+lives. Built from that change, each of these forms is refused at the first <code>push</code>.</p>
+
+<p>The tests then caught the fix's first version. A program in the test suite does this:</p>
+
+<pre><code><span class="k">if</span> disagg == <span class="n">1</span> {
+  logits = <span class="f">transformer</span>&lt;<span class="n">1</span>&gt;(token, pos, &amp;config, &amp;<span class="k">mut</span> decode_state, &amp;decode_weights);
+} <span class="k">else</span> {
+  logits = <span class="f">transformer</span>&lt;<span class="n">0</span>&gt;(token, pos, &amp;config, &amp;<span class="k">mut</span> decode_state, &amp;decode_weights);
+}</code></pre>
+
+<p>With the borrow from the first branch kept in <code>logits</code>, the second branch's
+<code>&amp;mut decode_state</code> was refused as a second mutable borrow. But only one branch runs.
+The checker already handled moves this way: each branch starts from the moves made before the
+<code>if</code>, and the branches are joined after it. Borrows now get the same treatment.</p>
+
+<h2 id="what-breaking-the-checker-cannot-find">What breaking the checker cannot find</h2>
+
+<p>A break shows whether some test depends on a rule. A rule that was never written cannot be
+broken. So this method could not have found two of the bugs in the previous post. A reference into
+a value with no name, kept after the value was freed
+(<a href="https://github.com/vx-lang/Vx/issues/1752">#1752</a>), needed a check that did not exist
+yet. So did a struct holding both a <code>&amp;mut</code> to an outer variable and a reference to an
+inner one (<a href="https://github.com/vx-lang/Vx/issues/1746">#1746</a>). We found the first by
+reading an open item of an older lifetime issue
+(<a href="https://github.com/vx-lang/Vx/issues/860">#860</a>), and the second from a bug report
+against Rust.</p>
+
+<p>Rust's issue tracker has years of such reports, many with a short program attached. Many of
+them describe rules Vx has, written in a language Vx follows closely. Translating the ones Vx can
+express into Vx gives tests that nobody here had to think of, so we did that next.</p>
+
+<h2 id="rusts-bug-reports-run-in-vx">Rust's bug reports, run in Vx</h2>
+
+<p>We took 78 reports from Rust's issue tracker, each with a short program, from the labels Rust
+uses for soundness bugs and for the borrow checker (I-unsound, A-borrow-checker, A-NLL, NLL-sound
+and NLL-complete). Each program was translated into Vx and run with <code>main</code> and the fix
+for #1778:</p>
+
+<ul>
+<li>38 gave the right answer: Vx refused what should be refused, and accepted the rest.</li>
+<li>15 could not be written in Vx. Most need written lifetimes. Some need a <code>match</code>
+guard, or a <code>let</code> with no value.</li>
+<li>13 were correct programs that Vx refused.</li>
+<li>12 led to a program that Vx accepted and should have refused: for six, the report's own
+program, and for six, a close variant of it or the closest program Vx can write.</li>
+</ul>
+
+<p>Following those twelve, and three more programs written along the way, gave 14 holes, filed as
+<a href="https://github.com/vx-lang/Vx/issues/1791">#1791</a> to
+<a href="https://github.com/vx-lang/Vx/issues/1804">#1804</a>. All but one compile and then read
+a value that has changed, drop a value twice, or read freed memory.</p>
+
+<p>Some go past the Rust bug they came from. The previous post showed
+<a href="https://github.com/rust-lang/rust/issues/164163">rust-lang/rust#164163</a>, where a
+borrow is made inside a method call's argument and the argument also points <code>p</code>
+somewhere else. In Vx the second step is not needed
+(<a href="https://github.com/vx-lang/Vx/issues/1800">#1800</a>):</p>
+
+<pre><code><span class="k">import</span> std::vec;
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> a = <span class="t">Vec</span>&lt;<span class="t">i64</span>&gt;::<span class="f">with_capacity</span>(<span class="n">4</span>);
+  <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">4</span> {
+    a.<span class="f">push</span>(<span class="n">1i64</span>);
+  }
+  <span class="k">let</span> zero : <span class="t">i64</span> = <span class="n">0i64</span>;
+  <span class="k">let</span> <span class="k">mut</span> s : &amp;<span class="t">i64</span> = &amp;zero;
+  <span class="c">// The push grows `a` and frees its old buffer, which `s` points into.</span>
+  a.<span class="f">push</span>(<span class="k">if</span> <span class="k">true</span> {
+    s = a.<span class="f">get_ref</span>(<span class="n">0</span>);
+    <span class="n">0i64</span>
+  } <span class="k">else</span> {
+    <span class="n">0i64</span>
+  });
+  <span class="k">let</span> <span class="k">mut</span> c = <span class="t">Vec</span>&lt;<span class="t">i64</span>&gt;::<span class="f">with_capacity</span>(<span class="n">4</span>);
+  c.<span class="f">push</span>(<span class="n">99i64</span>);
+  <span class="f">println!</span>(<span class="n">"{}"</span>, *s);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>The argument of <code>a.push(..)</code> keeps a reference to <code>a[0]</code> in
+<code>s</code>, and the push then moves the buffer. The program compiles and prints 99, a value
+from the other vector, which took over the freed memory. Rust refuses this form with E0502.</p>
+
+<p>Two go the other way.
+<a href="https://github.com/rust-lang/rust/issues/54663">rust-lang/rust#54663</a> and
+<a href="https://github.com/rust-lang/rust/issues/145032">rust-lang/rust#145032</a> are correct
+programs that rustc 1.95 still refuses, and their Vx versions compile and print the right answer.
+In #54663, a function returns early from inside a <code>match</code> on a call that borrows its
+argument, and then borrows the argument again. Vx ends the call's borrow with the
+<code>match</code>, because only the arm that returns holds it. Keeping the call's result and using
+it after a write to the argument is still refused, as it should be.</p>
+
+<h2 id="what-is-left">What is left</h2>
+
+<ul>
+<li>The 14 holes found from Rust's bug reports,
+<a href="https://github.com/vx-lang/Vx/issues/1791">#1791</a> to
+<a href="https://github.com/vx-lang/Vx/issues/1804">#1804</a>, and the 13 correct programs from
+those reports that Vx refuses.</li>
+<li><a href="https://github.com/vx-lang/Vx/issues/1784">#1784</a>: <code>r = &amp;y</code> does
+not end <code>r</code>'s earlier borrow of <code>x</code>, so a later change to <code>x</code> is
+refused while <code>r</code> is used. Rust accepts this program.</li>
+<li>Vx gives a reference the block in which it was made, not the block of what it points at. So
+<code>outer = inner</code> is refused when the two references were made in different blocks, even
+when both point at variables that outlive them. Rust accepts this program too.</li>
+<li>The ideas from the post about the Zeta language that started this work are still design
+questions: building a value one field at a time
+(<a href="https://github.com/vx-lang/Vx/issues/1684">#1684</a>), proving that <code>a[i]</code> and
+<code>a[j]</code> are different elements
+(<a href="https://github.com/vx-lang/Vx/issues/1513">#1513</a>), and letting a signature say which
+parts of an argument a function uses
+(<a href="https://github.com/vx-lang/Vx/issues/1514">#1514</a>).</li>
+</ul>
+
+<p>If you find a program that compiles and should not, or one that should compile and does not,
+please open an <a href="https://github.com/vx-lang/Vx/issues">issue</a> with the program.</p>
+
+<p class="post-foot">Vx is Apache 2.0 with the LLVM exception &mdash;
+<a href="/docs/getting-started.html">install it</a> and try the examples.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+</body>
+</html>

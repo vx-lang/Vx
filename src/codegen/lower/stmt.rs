@@ -396,7 +396,7 @@ fn nominal_struct_name(ty: &syntax::Type) -> Option<crate::symbol::Symbol> {
 
 /// For `place.member = rhs` where `place` is itself a field (`a.b`), a struct literal that
 /// copies every field of `place` but `member`, which is `rhs`. `None` when `place` is not a
-/// field of a variable path, or is a generic struct.
+/// field of a variable path, or is a generic struct with no type arguments.
 fn struct_with_one_field_replaced(
     gen: &MeliorGenerator<'_>,
     place: &Expr,
@@ -414,11 +414,19 @@ fn struct_with_one_field_replaced(
     if !matches!(root, Expr::Identifier(_)) {
         return None;
     }
-    let syntax::Type::Struct(name, _) = gen.infer_ast_type(place)? else {
-        return None;
+    // `name` is the type as written, `Holder<i64>` for a generic struct. `base` is `Holder`.
+    let ty = gen.infer_ast_type(place)?;
+    let base = match &ty {
+        syntax::Type::Struct(name, _) => name.as_ref().split('<').next()?.to_string(),
+        syntax::Type::GenericInstance(base, _) => match &**base {
+            syntax::Type::Struct(name, _) => name.to_string(),
+            _ => return None,
+        },
+        _ => return None,
     };
-    let decl = gen.structs.get(&name)?;
-    if !decl.generics.is_empty() {
+    let name: crate::symbol::Symbol = ty.to_string().into();
+    let decl = gen.structs.get(base.as_str())?;
+    if !decl.generics.is_empty() && !name.contains('<') {
         return None;
     }
     let fields = decl
@@ -702,10 +710,10 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             }
         }
 
+        // With no type from the target, the value has no expected type. It must not keep the
+        // `none` of a statement around the assignment, such as a `spawn on` region.
         let prev_expected = gen.expected_type;
-        if expected_ty.is_some() {
-            gen.expected_type = expected_ty;
-        }
+        gen.expected_type = expected_ty;
         let (rhs_val, rhs_ty, block) = gen.generate_expr(rhs, block)?;
         gen.expected_type = prev_expected;
 
@@ -731,11 +739,7 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
         }
 
         // The old value's drops run now that the new value is computed, before it is stored.
-        let block = if matches!(lhs, Expr::Identifier(_)) {
-            gen.run_value_drops(block)?
-        } else {
-            block
-        };
+        let block = gen.run_value_drops(block)?;
         if let Expr::Identifier(IdentifierExpr { name, span: _ }) = lhs {
             if let Some((mem_val, mem_ty)) = gen.env.get(name).cloned() {
                 let mem_ty_str = mem_ty.to_string();
@@ -858,7 +862,49 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             // assignment fell through to the no-op tail below and was **silently dropped** (`Box`'s
             // `*p = val` never wrote, so a read-back saw uninitialized memory). The store type comes
             // from the RHS value, so there's no pointee-type guesswork. (#242)
-            let (ptr_val, ptr_ty, new_b) = gen.generate_expr(d.expr.as_ref(), block)?;
+            let (ptr_val, ptr_ty, new_b) =
+                crate::codegen::lower::expr::deref_target(gen, d.expr.as_ref(), block)?;
+            // `*t = v` with `t : &mut Tensor<..>`: the new tensor's elements are copied into the
+            // tensor `t` refers to.
+            if matches!(
+                gen.infer_ast_type(d.expr.as_ref()),
+                Some(syntax::Type::Borrow { ref inner, .. }) if matches!(**inner, syntax::Type::Tensor(..))
+            ) && gen.is_memref(&rhs_ty)
+            {
+                let mut dst_ty = ptr_ty;
+                let dst = crate::codegen::lower::expr::load_tensor_slot(
+                    gen,
+                    &new_b,
+                    ptr_val,
+                    &mut dst_ty,
+                )?;
+                let src = crate::codegen::lower::cast_memref(gen, &new_b, rhs_val, rhs_ty, dst_ty)?;
+                new_b.append_operation(
+                    OperationBuilder::new("memref.copy", gen.loc())
+                        .add_operands(&[src, dst])
+                        .build()?,
+                );
+                // A tensor made for this assignment is freed once copied. A named one is only
+                // read here, and is freed where its scope ends.
+                if !matches!(
+                    rhs,
+                    Expr::Identifier(_)
+                        | Expr::MemberAccess(_)
+                        | Expr::IndexAccess(_)
+                        | Expr::Dereference(_)
+                ) {
+                    new_b.append_operation(
+                        OperationBuilder::new("vx.drop", gen.loc())
+                            .add_operands(&[rhs_val])
+                            .add_attributes(&[(
+                                Identifier::new(gen.context, "owned_only"),
+                                melior::ir::attribute::Attribute::unit(gen.context),
+                            )])
+                            .build()?,
+                    );
+                }
+                return Ok(Some(new_b));
+            }
             // A `&mut` to a mutable local holds that local's scalar memref.
             let ptr_ty_str = ptr_ty.to_string();
             let op_name = if ptr_ty_str.starts_with("memref<") && !ptr_ty_str.contains('x') {

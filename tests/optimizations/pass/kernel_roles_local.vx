@@ -8,24 +8,15 @@
 // The operand roles have to resolve for tensors declared inside a function, not
 // only for parameters (#325).
 //
-// A parameter arrives as a buffer and is captured as one, so the matmul's
-// operand is the captured value itself. A local lives in a slot --
-// `memref<memref<?x?xf32>>` -- and the region loads the descriptor out of that
-// slot before use, so the captured value is the slot and the matmul's operand
-// is the load. Resolving only the first case left roles absent on every
-// ordinary program, with nothing to say why: a plugin would see `kind=matmul`,
-// find no roles, and fall back to the outlined loop nest. Silently, and
-// forever.
+// On the AST code generator a local lives in a slot, `memref<memref<?x?xf32>>`.
+// The region only reads the slots, so the lowering reads each one before the
+// spawn, and the launch gets the three buffers themselves. A GPU cannot read a
+// slot on the host stack. `kernel_kind_matmul.vx` covers the parameter case.
 //
-// Both operands here are locals, so all three launch operands are slots and the
-// roles are read through the loads. `kernel_kind_matmul.vx` covers the
-// parameter case; between them the two forms of the same program are pinned.
-//
-// The out kind is `buffer` even though the destination is a slot: `c = a @ b`
-// fills the buffer `c` already names rather than allocating a second one and
-// publishing a descriptor (Vx#391), and the runtime follows the one
-// indirection to reach it. `kernel_kind_matmul.vx` and `matvec_roles.vx` keep
-// the `slot` kind, whose operands carry no shape to compare against.
+// The out kind is `buffer`: `c = a @ b` fills the buffer `c` already names
+// rather than allocating a second one and publishing a descriptor (Vx#391).
+// `kernel_kind_matmul.vx` and `matvec_roles.vx` keep the `slot` kind, whose
+// operands carry no shape to compare against.
 //
 // The pass pipeline is pinned to the vx lowering alone, since that is where the
 // attribute is created and the later conversion consumes it.
@@ -38,25 +29,34 @@
 // which operand is A, B and the destination, and
 // tests/integration_test/gemm_plan_test.rs decodes the payload and checks it
 // describes the GEMM the program wrote.
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
+//
+// Only the AST code generator keeps a local in a slot, so this RUN line uses it.
+// RUN: vxc %s --legacy-codegen --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s
 // CHECK: vx.launch @vx_npu_kernel_0
 // CHECK: vx.kernel_kind = "matmul"
 // CHECK: vx.kernel_out_kind = "buffer"
 // CHECK: vx.kernel_roles = "a:1,b:2,out:0"
+// CHECK-SAME: : (memref<{{[^<>]*}}xf32>, memref<{{[^<>]*}}xf32>, memref<{{[^<>]*}}xf32>) -> ()
 //
-// The operands really are slots, which is what makes the indirection necessary
-// rather than incidental.
-// CHECK: memref<memref<?x?xf32>>, memref<memref<?x?xf32>>
+// The flat code generator passes the local buffers directly. The roles must
+// still resolve.
+// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=FLAT
+// FLAT: vx.launch @vx_npu_kernel_0
+// FLAT-SAME: vx.kernel_kind = "matmul"
+// FLAT-SAME: vx.kernel_out_kind = "buffer"
+// FLAT-SAME: vx.kernel_roles = "a:1,b:2,out:0"
+// FLAT-SAME: (memref<2x2xf32>, memref<2x2xf32>, memref<2x2xf32>)
 //
 // RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=PAYLOAD
 // PAYLOAD: \00kind=matmul\00roles=a:1,b:2,out:0\00outkind=buffer\00
 
 fn local_gemm() -> f32 {
-  let mut a = Tensor<f32, [2, 2]>::uninit();
-  let mut b = Tensor<f32, [2, 2]>::uninit();
-  let mut c = Tensor<f32, [2, 2]>::uninit();
+  let mut a = unsafe { Tensor<f32, [2, 2], Memory::GPU_HBM>::uninit() };
+  let mut b = unsafe { Tensor<f32, [2, 2], Memory::GPU_HBM>::uninit() };
+  let mut c = unsafe { Tensor<f32, [2, 2], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
     c = a @b;
   }
-  return c[0][0];
+  let back = transfer(c, Memory::CPU_DRAM);
+  return back[0][0];
 }

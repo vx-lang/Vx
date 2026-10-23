@@ -9,7 +9,8 @@
 // point for, and at a size past the one a 2x2 example can hide mistakes in
 // (#321). Like gpu_matmul_roles.vx, the expected numbers are the answer and say
 // nothing about which backend produced them: the host loop nest and cuBLAS have
-// to agree.
+// to agree. The GPU sees only GPU memory, so the operands are copied there and
+// the results are copied back.
 //
 // The dtypes matter because the routing splits on them -- cublasSgemm and
 // cublasDgemm are different calls, and a plugin that reads an f64 buffer as f32
@@ -45,8 +46,8 @@
 
 fn main() -> i32 {
   // f64: [[1,2],[3,4]] @ [[5,6],[7,8]] = [[19,22],[43,50]]
-  let mut ad = Tensor<f64, [2, 2]>::uninit();
-  let mut bd = Tensor<f64, [2, 2]>::uninit();
+  let mut ad = unsafe { Tensor<f64, [2, 2]>::uninit() };
+  let mut bd = unsafe { Tensor<f64, [2, 2]>::uninit() };
   for i in 0..2 {
     for j in 0..2 {
       ad[i][j] = (i * 2 + j + 1) as f64;
@@ -54,10 +55,13 @@ fn main() -> i32 {
     }
   }
 
-  let mut cd = Tensor<f64, [2, 2]>::uninit();
+  let adg = transfer(ad, Memory::GPU_HBM);
+  let bdg = transfer(bd, Memory::GPU_HBM);
+  let mut cdg = unsafe { Tensor<f64, [2, 2], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
-    cd = ad @bd;
+    cdg = adg @bdg;
   }
+  let cd = transfer(cdg, Memory::CPU_DRAM);
 
   print(cd[0][0]);
   print!(" ");
@@ -66,8 +70,8 @@ fn main() -> i32 {
 
   // 64x64: identity times B is B, so a transposed result is a different number
   // at every off-diagonal coordinate rather than the same one.
-  let mut e = Tensor<f32, [64, 64]>::uninit();
-  let mut b = Tensor<f32, [64, 64]>::uninit();
+  let mut e = unsafe { Tensor<f32, [64, 64]>::uninit() };
+  let mut b = unsafe { Tensor<f32, [64, 64]>::uninit() };
   for i in 0..64 {
     for j in 0..64 {
       e[i][j] = 0.0;
@@ -78,10 +82,13 @@ fn main() -> i32 {
     e[i][i] = 1.0;
   }
 
-  let mut r = Tensor<f32, [64, 64]>::uninit();
+  let eg = transfer(e, Memory::GPU_HBM);
+  let bg = transfer(b, Memory::GPU_HBM);
+  let mut rg = unsafe { Tensor<f32, [64, 64], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
-    r = e @b;
+    rg = eg @bg;
   }
+  let r = transfer(rg, Memory::CPU_DRAM);
 
   print(r[3][5]);
   print!(" ");

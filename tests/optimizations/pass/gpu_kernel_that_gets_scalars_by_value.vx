@@ -1,0 +1,29 @@
+//===- gpu_kernel_that_gets_scalars_by_value.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A GPU region uses the argument `n` and the `let` `twice` of the host. The PTX kernel gets
+// both as values (`.param .u32` and `.param .f32`), not as pointers into host memory.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: toponame=Device{{.*}}image={{.*}}.entry vx_npu_kernel_0({{.*}}\09.param .u32 vx_npu_kernel_0_param_{{[0-9]+}},\0A\09.param .f32 vx_npu_kernel_0_param_{{[0-9]+}}
+
+pub fn scale(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32, k : f32) -> void {
+  let twice = k * 2.0;
+  spawn on(Topology::Device) {
+    for i in 0..4 {
+      if i < n {
+        out[i] = twice;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

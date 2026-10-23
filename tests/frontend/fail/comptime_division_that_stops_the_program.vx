@@ -1,0 +1,45 @@
+//===- comptime_division_that_stops_the_program.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// An integer `/` or `%` stops the program when it divides by zero, or when it divides the
+// minimum value by -1. The compiler removes a `comptime` block after it runs, so such a
+// division would never run. So each block below is an error (E3033), also when nothing uses
+// the result. The compiler used to fold each block to 3.
+
+fn main(argc : i32) -> i32 {
+  // A division by zero on a path that always runs.
+  let a = comptime {
+    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:25: this `comptime` block cannot be evaluated: this division stops the program: it divides by zero, or it divides the minimum value by -1
+    let _q : i64 = 1i64 / 0i64;
+    3i32
+  };
+  // The minimum `i32` divided by -1, with `%`.
+  let b = comptime {
+    let min : i32 = 0i32 - 2147483647i32 - 1i32;
+    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:24: this `comptime` block cannot be evaluated: this division stops the program: it divides by zero, or it divides the minimum value by -1
+    let _r : i32 = min % (0i32 - 1i32);
+    3i32
+  };
+  // `/=` by zero, inside an `if` on `argc`.
+  let c = comptime {
+    let mut z : i64 = 1i64;
+    if argc > 1i32 {
+      // CHECK-DAG: Error[E3033] at [[@LINE+1]]:7: this `comptime` block cannot be evaluated: this division stops the program on a path that depends on a value known only when the program runs
+      z /= 0i64;
+    };
+    3i32
+  };
+  // A division by `argc`, which may be zero.
+  let d = comptime {
+    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:27: this `comptime` block cannot be evaluated: this division depends on a value known only when the program runs, and it may stop the program
+    let _q : i32 = 100i32 / argc;
+    3i32
+  };
+  return a + b + c + d;
+}

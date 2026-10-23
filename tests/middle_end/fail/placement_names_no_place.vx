@@ -64,12 +64,12 @@ fn as_a_device(t : Tensor<f32, [ 4, 4 ], Topology::Nowhere>) -> void {
 }
 
 fn as_a_return() -> Tensor<f32, [ 4, 4 ], Memory::Nowhere> {
-  return Tensor<f32, [ 4, 4 ], Memory::Nowhere>::uninit();
+  return unsafe { Tensor<f32, [ 4, 4 ], Memory::Nowhere>::uninit() };
 }
 
 // A declared space, held by a declared topology, in every position the ones above are refused in.
 fn declared_is_fine(t : Tensor<f32, [ 4, 4 ], Memory::Vault>) -> Tensor<f32, [ 4, 4 ], Memory::Vault> {
-  return Tensor<f32, [ 4, 4 ], Memory::Vault>::uninit();
+  return unsafe { Tensor<f32, [ 4, 4 ], Memory::Vault>::uninit() };
 }
 
 // A built-in space needs no declaration: its owning device is stated in the compiler.
@@ -82,6 +82,8 @@ fn holds_by_device(t : Tensor<f32, [ 4, 4 ], Topology::Island>) -> void {
 }
 
 fn main() -> i32 {
-  let annotated : Tensor<f32, [ 2, 2 ], Memory::Nowhere> = Tensor<f32, [ 2, 2 ], Memory::Nowhere>::uninit();
+  let annotated : Tensor<f32, [ 2, 2 ], Memory::Nowhere> = unsafe {
+    Tensor<f32, [ 2, 2 ], Memory::Nowhere>::uninit()
+  };
   return 0;
 }

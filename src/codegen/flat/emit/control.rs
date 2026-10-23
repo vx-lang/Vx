@@ -17,8 +17,36 @@ impl FnEmit<'_> {
     }
 
     pub(crate) fn op_br(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        self.body += &format!("  cf.br ^bb{}\n", ins.imm);
+        match self.loop_hint.take() {
+            Some(attrs) => self.body += &format!("  cf.br ^bb{} {attrs}\n", ins.imm),
+            None => self.body += &format!("  cf.br ^bb{}\n", ins.imm),
+        }
         self.terminated = true;
+        Ok(())
+    }
+
+    /// The `across` level of a loop that `-fauto-schedule-levels` made a plain loop, for the
+    /// `cf.br` back to its header. `vx.across` is for MLIR passes. A loop over lanes or subgroups
+    /// also asks LLVM to vectorize it: the checker proved that no pass writes what another reads.
+    /// Its access group has no accesses yet. It makes the loop's metadata its own, as LLVM needs.
+    pub(crate) fn op_loop_hint(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let kind = match ins.imm {
+            crate::bytecode::LOOP_HINT_BLOCKS => {
+                self.loop_hint = Some("{vx.across = \"blocks\"}".to_string());
+                return Ok(());
+            }
+            crate::bytecode::LOOP_HINT_SUBGROUPS => "subgroups",
+            crate::bytecode::LOOP_HINT_LANES => "lanes",
+            _ => return Err(crate::emitter_gap!()),
+        };
+        let group = self.next_distinct;
+        self.next_distinct += 1;
+        let attrs = format!(
+            "{{loop_annotation = #llvm.loop_annotation<vectorize = \
+             #llvm.loop_vectorize<disable = false>, parallelAccesses = \
+             #llvm.access_group<id = distinct[{group}]<>>>, vx.across = \"{kind}\"}}"
+        );
+        self.loop_hint = Some(attrs);
         Ok(())
     }
 
@@ -205,6 +233,75 @@ impl FnEmit<'_> {
             return Err(crate::emitter_gap!());
         }
         self.terminated = true;
+        Ok(())
+    }
+}
+
+impl FnEmit<'_> {
+    // `for i in a..b` as `affine.for`. A bound is a number, the index of an enclosing affine
+    // loop, or a value cast to `index` before the outermost affine loop: a value made inside an
+    // affine loop is not a valid bound.
+    pub(crate) fn op_affine_for(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let e = self.ty_at(ins.type_idx.0).ok_or(crate::emitter_gap!())?;
+        let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
+        let mut bounds = Vec::new();
+        for (r, which) in [
+            (ins.operand1.0 as usize, "lb"),
+            (ins.operand2.0 as usize, "ub"),
+        ] {
+            if let Some(c) = self.int_consts.get(&r) {
+                bounds.push(c.to_string());
+                continue;
+            }
+            // A loop index is a dimension, and a bound written as a bare value is a symbol.
+            if let Some(l) = self.affine_loops.iter().find(|l| l.var == r) {
+                bounds.push(format!("affine_map<(d0) -> (d0)>({})", l.index));
+                continue;
+            }
+            let src = self.names.get(r).ok_or(crate::emitter_gap!())?;
+            let n = format!("%v{idx}_{which}");
+            let cast = format!("  {n} = arith.index_cast {src} : {mt} to index\n");
+            match self.affine_loops.first().map(|l| l.at) {
+                Some(at) => {
+                    self.body.insert_str(at, &cast);
+                    for l in &mut self.affine_loops {
+                        l.at += cast.len();
+                    }
+                }
+                None => self.body += &cast,
+            }
+            bounds.push(n);
+        }
+        let index = format!("%v{idx}_i");
+        let branches = ins.imm & AFFINE_FOR_BRANCHES != 0;
+        let at = self.body.len();
+        self.body += &format!("  affine.for {index} = {} to {} {{\n", bounds[0], bounds[1]);
+        self.body += &format!("  %v{idx} = arith.index_cast {index} : index to {mt}\n");
+        if branches {
+            self.body += "  scf.execute_region {\n";
+        }
+        self.names[idx] = format!("%v{idx}");
+        self.etypes[idx] = Some(e);
+        self.affine_loops.push(AffineLoop {
+            at,
+            index,
+            var: idx,
+            branches,
+        });
+        self.terminated = false;
+        Ok(())
+    }
+
+    pub(crate) fn op_affine_for_end(&mut self, _idx: usize, _ins: &HirInstruction) -> Lowered<()> {
+        let l = self.affine_loops.pop().ok_or(crate::emitter_gap!())?;
+        if l.branches {
+            if !self.terminated {
+                self.body += "  scf.yield\n";
+            }
+            self.body += "  }\n";
+        }
+        self.body += "  }\n";
+        self.terminated = false;
         Ok(())
     }
 }

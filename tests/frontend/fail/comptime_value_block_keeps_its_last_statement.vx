@@ -1,0 +1,33 @@
+//===- comptime_value_block_keeps_its_last_statement.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// The last statement of a `comptime` block used as a value is part of the block, also when it
+// ends with `;`. Each block below writes to `hits`, a variable from outside the block (E3033).
+// The parser used to drop that last statement, so the write disappeared with no error.
+
+fn bump(v : &mut i32) -> void {
+  *v = *v + 1i32;
+}
+
+fn main() -> i32 {
+  let mut hits : i32 = 0i32;
+  // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: it writes to 'hits'
+  let _call = comptime {
+    bump(&mut hits);
+  };
+  // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: it writes to 'hits'
+  let _branch = comptime {
+    let k : i32 = 1i32;
+    if k == 1i32 {
+      hits = 5i32;
+    };
+  };
+  print(hits);
+  return 0;
+}

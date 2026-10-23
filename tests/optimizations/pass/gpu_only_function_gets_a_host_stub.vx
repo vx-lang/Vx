@@ -1,0 +1,49 @@
+//===- gpu_only_function_gets_a_host_stub.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `shfl_down` holds `gpu.shuffle`, which the CPU cannot run, and only a GPU kernel calls it. The
+// GPU image gets its real body. The CPU copy runs only when no GPU runs the kernel, so it
+// writes a message and stops the program. So the program compiles to an object file.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-obj -o %t.o 2>&1 | FileCheck %s --check-prefix=OBJ --allow-empty
+// RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// OBJ-NOT: LLVM Translation failed
+// OBJ-NOT: unsupported GPU operation
+// CHECK: image={{.*}}shfl.sync.down.b32
+// CHECK: __vx_gpu_only_shfl_down{{.*}}runs only on a GPU, but no GPU ran the kernel that calls it, so the CPU did
+// CHECK: llvm.func hidden @shfl_down(
+// CHECK-NOT: gpu.shuffle
+// CHECK: llvm.call @write(
+// CHECK: llvm.call @abort(
+// CHECK-NEXT: llvm.unreachable
+
+fn shfl_down(v : f32, delta : i32) on Topology::GPU -> f32 {
+  return mlir!( inputs : (%v = v : f32, %d = delta : i32), returns : f32, dialects : ["gpu", "arith"]) {
+    %w = "arith.constant"() {
+      value = 32 : i32
+    } : () -> i32
+    %r, %ok = gpu.shuffle down %v, %d, %w : f32
+    macro.yield %r : f32
+  };
+}
+
+fn main() -> i32 {
+  let mut x_host = Tensor<f32, [32]>::new();
+  for i in 0..32 {
+    x_host[i] = 1.0;
+  }
+  let mut x = transfer(x_host, Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for i in 0..32 {
+      x[i] = shfl_down(x[i], 16);
+    }
+  }
+  let r = transfer(x, Memory::CPU_DRAM);
+  print(r);
+  return 0;
+}

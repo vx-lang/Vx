@@ -15,14 +15,15 @@ fn main() -> i32 {
 }
 ```
 
-Everything inside has to be knowable at compile time. A `comptime` block cannot read a run-time
-value, call into C, or touch a device.
+The block's value, and every check in it, has to be knowable at compile time. A `comptime`
+block cannot call into C or touch a device. It may read a value that is known only when the
+program runs, but only where nothing the block produces depends on it. [A comptime block must
+run](#a-comptime-block-must-run) has the rules.
 
 Arithmetic gives the same answers it would at run time. Two integers divide as integers, so
-`7 / 2` is `3`, and an integer keeps every one of its bits however large it is. A computation
-that overflows produces no compile-time value at all, rather than a wrapped one: an `assert`
-about it is then left to run time instead of being decided on a number the program never
-computes.
+`7 / 2` is `3`. An integer result outside its type, such as an `i32` above 2147483647, has no
+compile-time value at all, rather than a wrapped one. A block whose value or whose `assert`
+depends on such a result is an error.
 
 ## comptime conditions
 
@@ -66,10 +67,10 @@ let a : Tensor<i64, [3]> = [ 3i64, 1i64, 2i64 ];
 let x = a[5];   // error[E8003]: index 5 is out of range: this array has 3 elements
 ```
 
-An index the compiler cannot work out — a loop variable, say — leaves it unable to follow the
-write. When that happens the array stops having a compile-time value entirely, rather than
-keeping the value it had before the write. A later `assert` on that array is then neither
-proved nor disproved, and is checked at run time like any other assert.
+An index the compiler cannot work out, such as the result of a call, leaves it unable to follow
+the write. When that happens the array stops having a compile-time value entirely, rather than
+keeping the value it had before the write. A later `assert` on that array cannot be decided, so
+it is an error (E3033).
 
 Only scalars can go in such an array today. Structs, arrays of arrays, and anything that grows
 are not compile-time values yet.
@@ -118,6 +119,57 @@ compiler holds you to both halves:
 - A block may not write to anything declared outside it. The block disappears, so the write would
   have to disappear with it.
 - A block may not sit inside another one. The outer block already runs while compiling.
+- The loops in a block, and in the functions it calls, may run 1,000,000 times in all. More is an
+  error (E8005).
+
+The program makes some checks while it runs. An `assert` stops it when its condition is false.
+An integer `/` or `%` stops it when it divides by zero, or when it divides the minimum value by
+-1. The block disappears, so a check in it would disappear too. The compiler makes each check
+while compiling instead.
+
+A false `assert` is an error (E8002):
+
+```rust
+fn main() -> i32 {
+    comptime {
+        let mut v : i64 = 1i64;
+        v = v + 1i64;
+        assert(v == 1i64, "v is 2");   // error[E8002]: Comptime assert failed: v is 2
+    }
+    return 0;
+}
+```
+
+A check that depends on a value known only when the program runs, such as `argc`, is an error
+(E3033). The compiler cannot decide it:
+
+```rust
+fn main(argc : i32) -> i32 {
+    comptime {
+        assert(argc > 0, "at least one argument");   // error[E3033]
+    }
+    return 0;
+}
+```
+
+A check on a path that runs only for some run-time values, such as one branch of an `if` on
+`argc`, is an error (E3033) when it fails on that path. The path may never run, but the
+compiler cannot know that:
+
+```rust
+fn main(argc : i32) -> i32 {
+    let x = comptime {
+        if argc > 1 {
+            let _q = 1i64 / 0i64;   // error[E3033]: this division stops the program
+        };
+        3
+    };
+    return x;
+}
+```
+
+An integer overflow does not stop the program, which wraps the result. So a block whose value
+does not depend on an overflow still runs.
 
 This is the same choice Zig makes with its `comptime`, and it is why C++ grew `consteval` alongside
 `constexpr`: a `constexpr` function only *may* be evaluated while compiling, and when it cannot be,

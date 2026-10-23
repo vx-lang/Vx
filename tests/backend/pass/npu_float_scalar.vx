@@ -12,7 +12,7 @@
 // dispatch this SIGSEGV'd: the runtime called the kernel C-interface through a
 // fixed void*-array signature, which cannot pass a float in a floating-point
 // register. See docs/lang/abi.md.
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-DAG: func.func private @print_str(
 // CHECK-DAG: func.func private @print_f32(
 // CHECK-LABEL: func.func @run() -> i32
@@ -22,8 +22,8 @@
 // CHECK: call @run() : () -> i32
 
 fn run() -> i32 {
-  let mut a = Tensor<f32, [4]>::uninit();
-  let mut c = Tensor<f32, [4], Memory::NPU_HBM>::uninit();
+  let mut a = unsafe { Tensor<f32, [4]>::uninit() };
+  let mut c = unsafe { Tensor<f32, [4], Memory::NPU_HBM>::uninit() };
   for i in 0..4 {
     a[i] = 1.0;
   }

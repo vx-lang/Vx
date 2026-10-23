@@ -6,14 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=FLAT
+// The CHECK lines hold for both code generators. The flat one writes the loop as an affine loop.
 // CHECK: module
-// CHECK: memref.alloca()
-// CHECK: cf.cond_br
 // CHECK: memref.store
 // CHECK: return
+// FLAT: affine.for %{{.*}} = 0 to 10 {
 
 fn test_loop(a : Tensor<f32, [10, 10]>, b : Tensor<f32, [10, 10]>) -> Tensor<f32, [10, 10]> {
-  let mut result = Tensor<f32, [10, 10]>::uninit();
+  let mut result = unsafe { Tensor<f32, [10, 10]>::uninit() };
   for i in 0..10 {
     result[i][i] = a[i][i] * b[i][i];
   }

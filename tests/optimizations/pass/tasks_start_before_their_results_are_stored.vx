@@ -1,0 +1,48 @@
+//===- tasks_start_before_their_results_are_stored.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `let a = spawn { .. }` stores the task's result in the stack slot of `a`. The task writes
+// its result into that slot, and a read of `a` waits for the task. So the second task starts
+// before the code waits for the first one, and the two run at the same time.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --emit-mlir --disable-mlir-optimizations | vx-opt --pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s
+// CHECK-LABEL: func.func @two_lengths
+// CHECK:       llvm.call @vx_tasks_begin
+// CHECK:       llvm.call @vx_task_start
+// CHECK-NOT:   llvm.call @vx_task_join
+// CHECK:       llvm.call @vx_task_start
+// CHECK:       llvm.call @vx_task_join
+// CHECK:       call @Vec$i32$len$i32
+// CHECK:       llvm.call @vx_tasks_end
+
+import std::vec;
+
+fn numbers(n : i32) -> Vec<i32> {
+  let mut v = Vec<i32>::new();
+  for i in 0..n {
+    v.push(i);
+  }
+  return v;
+}
+
+fn two_lengths() -> i32 {
+  return tasks {
+    let a = spawn {
+      numbers(3)
+    };
+    let b = spawn {
+      numbers(4)
+    };
+    a.join().len() + b.join().len()
+  };
+}
+
+fn main() -> i32 {
+  print(two_lengths());
+  return 0;
+}

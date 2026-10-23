@@ -36,6 +36,9 @@ use std::process::Command;
 ///
 /// Set VX_DISABLE_CUDA to build the host shim on a machine that has CUDA.
 fn cuda_root() -> Option<(PathBuf, PathBuf)> {
+    for var in ["VX_DISABLE_CUDA", "CUDA_HOME", "CUDA_PATH"] {
+        println!("cargo:rerun-if-env-changed={}", var);
+    }
     if env::var_os("VX_DISABLE_CUDA").is_some() {
         return None;
     }
@@ -489,14 +492,9 @@ fn main() {
             clang_shared_cmd.arg(format!("-I{}/include", root.display()));
             clang_shared_cmd.arg(format!("-L{}", libdir.display()));
             clang_shared_cmd.arg(format!("-Wl,-rpath,{}", libdir.display()));
-            // `-lcuda` is the driver API, for loading a device image the
-            // compiler emitted (#251). It is linked from the toolkit's stubs
-            // and resolved at run time against the real driver -- which is why
-            // the stub directory is on -L and deliberately not on the rpath: an
-            // rpath to it would find the stub first, and the stub's entry
-            // points do nothing.
-            clang_shared_cmd.arg(format!("-L{}/stubs", libdir.display()));
-            clang_shared_cmd.args(["-lcudart", "-lcublas", "-lcuda"]);
+            // No `-lcuda`: the driver API comes from libcuda.so.1 through dlopen,
+            // because only a driver installs that library.
+            clang_shared_cmd.args(["-lcudart", "-lcublas", "-ldl"]);
         }
 
         let status = clang_shared_cmd
@@ -656,11 +654,13 @@ fn main() {
     assert!(status.success(), "mlir-tblgen failed");
     println!("cargo:rerun-if-changed=src/dialect/VxLowering.cpp");
     println!("cargo:rerun-if-changed=src/dialect/vx-opt.cpp");
+    println!("cargo:rerun-if-changed=src/dialect/NarrowFloats.cpp");
 
     // Compile the dialect
     let dialect_obj_path = PathBuf::from(&out_dir).join("VxDialect.o");
     let lowering_obj_path = PathBuf::from(&out_dir).join("VxLowering.o");
     let vx_opt_obj_path = PathBuf::from(&out_dir).join("vx-opt.o");
+    let narrow_floats_obj_path = PathBuf::from(&out_dir).join("NarrowFloats.o");
     let dialect_lib_path = PathBuf::from(&out_dir).join("libvx_dialect.a");
 
     let mut dialect_cmd = Command::new(&cxx);
@@ -714,6 +714,23 @@ fn main() {
         .expect("Failed to execute cxx for vx-opt");
     assert!(status.success(), "clang++ compilation failed for vx-opt");
 
+    let mut narrow_floats_cmd = Command::new(&cxx);
+    narrow_floats_cmd.args([
+        "-c",
+        "src/dialect/NarrowFloats.cpp",
+        "-o",
+        narrow_floats_obj_path.to_str().unwrap(),
+        "-std=c++17",
+    ]);
+    narrow_floats_cmd.args(&llvm_cxxflags_vec);
+    let status = narrow_floats_cmd
+        .status()
+        .expect("Failed to execute cxx for NarrowFloats");
+    assert!(
+        status.success(),
+        "clang++ compilation failed for NarrowFloats"
+    );
+
     let mut ar_cmd = Command::new(&ar);
     ar_cmd.args(&arflags);
     ar_cmd.args([
@@ -721,6 +738,7 @@ fn main() {
         dialect_obj_path.to_str().unwrap(),
         lowering_obj_path.to_str().unwrap(),
         vx_opt_obj_path.to_str().unwrap(),
+        narrow_floats_obj_path.to_str().unwrap(),
     ]);
     let status = ar_cmd.status().expect("Failed to archive libvx_dialect.a");
     assert!(status.success(), "ar failed for libvx_dialect");

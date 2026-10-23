@@ -29,6 +29,10 @@ echo "=== [1/3] build dependencies ==="
 # compiler regressions -- a missing W1027, an expected-failure that passes --
 # rather than as a missing tool.
 #
+# Apt on Ubuntu 24.04 ships 4.8.12; that is the floor setup.sh warns below.
+# Do not leave the version unrecorded: a solver bump surfaces as a compiler
+# regression, not as "z3 disagreed".
+#
 # libffi is needed by the dispatch runtime, which calls outlined kernels through
 # their MLIR C-interface (runtime/host_dispatch.cpp).
 sudo apt-get update -qq
@@ -62,7 +66,7 @@ fi
 echo
 echo "Provisioned:"
 echo "  llvm-config : $("llvm-config-${LLVM_VERSION}" --version)"
-echo "  z3          : $(z3 --version)"
+echo "  z3          : $(z3 --version)  (setup.sh floor: ${Z3_MIN_VERSION:-4.8.12})"
 echo "  rustc       : $("$HOME/.cargo/bin/rustc" --version 2>/dev/null || rustc --version)"
 echo
 echo "The LLVM tools are under /usr/lib/llvm-${LLVM_VERSION}/bin, which must come"

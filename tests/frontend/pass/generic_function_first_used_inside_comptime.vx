@@ -1,0 +1,29 @@
+//===- generic_function_first_used_inside_comptime.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The compiler checks a generic function's body at its first call. Here that call is inside a
+// `comptime` block, and the body has a `comptime` block of its own. The body is not inside the
+// caller's block, so this is not a `comptime` block inside another one (E3034).
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-LABEL: func.func @main
+// CHECK: arith.constant 5 : i64
+
+fn unchanged<T>(x : T) -> T {
+  let _two : i64 = comptime {
+    2i64
+  };
+  return x;
+}
+
+fn main() -> i32 {
+  let a : i64 = comptime {
+    unchanged(5i64)
+  };
+  print(a);
+  return 0;
+}

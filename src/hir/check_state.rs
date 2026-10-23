@@ -14,7 +14,7 @@
 //! so they compose with the parallel pipeline's phase isolation.
 
 use crate::symbol::Symbol;
-use crate::syntax::{Expr, MemorySpace, StructDecl, Topology, Type};
+use crate::syntax::{ElementType, Expr, MemorySpace, Span, StructDecl, Topology, Type};
 use crate::{hir::env::Value, syntax::Function};
 use std::collections::{HashMap, HashSet};
 
@@ -67,6 +67,9 @@ pub struct ConstEvalState {
     /// time walking a trip count that belongs to the program. What still happens everywhere
     /// is the settling up: see `settle_loop_consteval`.
     pub comptime_depth: u32,
+    /// Set just before checking a `comptime` block whose `return` gives its value: the whole
+    /// body of a closure, or the value of a `return`.
+    pub comptime_return_is_value: bool,
 }
 
 /// Provenance carried by a value while a `comptime` block is interpreted.
@@ -134,6 +137,9 @@ pub(crate) struct ComptimeEvalValue {
     pub concrete: Option<Value>,
     pub facts: ComptimeValueFacts,
     pub aggregate: Option<ComptimeAggregateValue>,
+    /// The scalar type of the value, when the code says it. Arithmetic in a body the checker
+    /// has not typed takes its integer range from here.
+    pub ty: Option<ElementType>,
 }
 
 impl ComptimeEvalValue {
@@ -142,6 +148,7 @@ impl ComptimeEvalValue {
             concrete: Some(value),
             facts: ComptimeValueFacts::default(),
             aggregate: None,
+            ty: None,
         }
     }
 
@@ -150,6 +157,9 @@ impl ComptimeEvalValue {
     pub(crate) fn merge_from(&mut self, other: &Self) {
         if self.concrete != other.concrete {
             self.concrete = None;
+        }
+        if self.ty != other.ty {
+            self.ty = None;
         }
         let aggregates_match = match (&mut self.aggregate, &other.aggregate) {
             (
@@ -302,6 +312,34 @@ impl ComptimeEvalOutcome {
     }
 }
 
+/// A check that the program makes while it runs, in a `comptime` block, that the interpreter
+/// could not show to pass. The block is removed, so the check would never run.
+#[derive(Clone, PartialEq)]
+pub(crate) struct ComptimeCheckProblem {
+    pub span: Span,
+    pub check: ComptimeCheck,
+    pub kind: ComptimeCheckProblemKind,
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) enum ComptimeCheck {
+    /// An `assert`, with its message.
+    Assert(Option<String>),
+    /// An integer `/` or `%`, which stops the program on a divisor of 0, and on the minimum
+    /// value divided by -1.
+    Division,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum ComptimeCheckProblemKind {
+    /// The check fails, and it runs every time the block runs.
+    Fails,
+    /// The check fails, on a path that runs only for some run-time values.
+    MayFail,
+    /// The check depends on a value known only when the program runs.
+    Undecided,
+}
+
 /// Per-`comptime`-block state for the unified concrete/abstract interpreter.
 ///
 /// It replaces the old pattern of an evaluator plus a separately invoked effect walk. Its lexical
@@ -319,6 +357,13 @@ pub(crate) struct ComptimeEvalContext {
     /// Loop iterations run so far in this block, by every loop together, so nested loops share
     /// one `MAX_LOOP_STEPS` budget.
     loop_steps: u64,
+    /// The loop that was running when the budget ran out.
+    loop_limit_reached_at: Option<Span>,
+    /// Whether the code being run may not run in the program, such as a branch of an `if`
+    /// whose condition is known only at run time.
+    on_uncertain_path: bool,
+    /// The checks not shown to pass, in the order they ran.
+    check_problems: Vec<ComptimeCheckProblem>,
 }
 
 impl ComptimeEvalContext {
@@ -336,16 +381,57 @@ impl ComptimeEvalContext {
             call_depth_exceeded: false,
             escaping_writes: HashSet::new(),
             loop_steps: 0,
+            loop_limit_reached_at: None,
+            on_uncertain_path: false,
+            check_problems: Vec::new(),
         }
     }
 
-    /// Counts one loop iteration, or returns false when the block has used its whole budget.
-    pub(crate) fn take_loop_step(&mut self) -> bool {
+    /// Marks what runs next as a path that may not run, and answers the old mark to restore.
+    pub(crate) fn enter_uncertain_path(&mut self) -> bool {
+        std::mem::replace(&mut self.on_uncertain_path, true)
+    }
+
+    pub(crate) fn leave_uncertain_path(&mut self, outer: bool) {
+        self.on_uncertain_path = outer;
+    }
+
+    /// Records a check that passes when `passes` is `Some(true)`, and nothing in that case.
+    pub(crate) fn note_check(&mut self, check: ComptimeCheck, passes: Option<bool>, span: Span) {
+        let kind = match (passes, self.on_uncertain_path) {
+            (Some(true), _) => return,
+            (Some(false), false) => ComptimeCheckProblemKind::Fails,
+            (Some(false), true) => ComptimeCheckProblemKind::MayFail,
+            (None, _) => ComptimeCheckProblemKind::Undecided,
+        };
+        self.add_check_problem(ComptimeCheckProblem { span, check, kind });
+    }
+
+    fn add_check_problem(&mut self, problem: ComptimeCheckProblem) {
+        // A loop runs the same check many times, and both sides of a branch carry what ran
+        // before the branch.
+        if !self.check_problems.contains(&problem) {
+            self.check_problems.push(problem);
+        }
+    }
+
+    pub(crate) fn check_problems(&self) -> &[ComptimeCheckProblem] {
+        &self.check_problems
+    }
+
+    /// Counts one iteration of the loop at `span`, or returns false when the block has used
+    /// its whole budget.
+    pub(crate) fn take_loop_step(&mut self, span: Span) -> bool {
         if self.loop_steps >= MAX_LOOP_STEPS {
+            self.loop_limit_reached_at.get_or_insert(span);
             return false;
         }
         self.loop_steps += 1;
         true
+    }
+
+    pub(crate) fn loop_limit_reached_at(&self) -> Option<Span> {
+        self.loop_limit_reached_at
     }
 
     pub(crate) fn push_scope(&mut self) {
@@ -449,6 +535,10 @@ impl ComptimeEvalContext {
         }
         self.escaping_writes
             .extend(branch.escaping_writes.iter().cloned());
+        for problem in &branch.check_problems {
+            self.add_check_problem(problem.clone());
+        }
+        self.loop_limit_reached_at = self.loop_limit_reached_at.or(branch.loop_limit_reached_at);
         self.call_depth_exceeded |= branch.call_depth_exceeded;
         self.loop_steps = self.loop_steps.max(branch.loop_steps);
         debug_assert_eq!(self.analysis_call_depth, branch.analysis_call_depth);
@@ -567,6 +657,7 @@ impl Default for ConstEvalState {
             loop_steps: std::cell::Cell::new(0),
             steps_exceeded: std::cell::Cell::new(false),
             comptime_depth: 0,
+            comptime_return_is_value: false,
             closure_body_depth: 0,
         }
     }
@@ -707,6 +798,9 @@ pub struct TrafficState {
     /// copy said two of them never coexisted, when the emitted code holds both to the end of the
     /// block.
     pub consumed_by_transfer: bool,
+    /// How many closure bodies the checker is inside. A closure runs where it is called, not
+    /// where it is written.
+    pub closure_depth: u32,
     /// The calls the current function makes, keyed by call-site span (a probe may check the
     /// same expression twice; the first visit's program order wins). Taken, with the
     /// placements, when the function's summary is built.
@@ -723,4 +817,6 @@ pub struct CallSite {
     pub scope: Vec<u32>,
     pub order: usize,
     pub span: crate::syntax::Span,
+    /// Made from a closure body, which may run anywhere in the function.
+    pub in_closure: bool,
 }

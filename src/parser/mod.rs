@@ -68,6 +68,10 @@ impl<'a> ParserError<'a> {
 
 pub(crate) type ParseResult<'a, T> = Result<T, ParserError<'a>>;
 
+/// The error for a string the file ends inside: the lexer gives its opening quote as an
+/// unknown `"`.
+pub(crate) const UNCLOSED_STRING: &str = "this string has no closing `\"`: the file ends inside it";
+
 pub struct Parser<'a> {
     tokens: &'a [Token<'a>],
     pos: usize,
@@ -89,6 +93,8 @@ pub struct Parser<'a> {
     /// Set by `parse_statement_into` when the statement starts with `match`, and taken by that
     /// `match`: only a `match` that is a whole statement may put a temporary before it.
     match_is_statement: bool,
+    /// Inside an impl block, the type the impl is for: what `Self` means there.
+    impl_self: Option<crate::syntax::Type>,
 }
 
 impl<'a> Parser<'a> {
@@ -114,6 +120,7 @@ impl<'a> Parser<'a> {
             tuple_lets: 0,
             prefix_stmts: Vec::new(),
             match_is_statement: false,
+            impl_self: None,
         }
     }
 
@@ -143,6 +150,12 @@ impl<'a> Parser<'a> {
         out.push(stmt);
         out.append(&mut self.pending_stmts);
         Ok(())
+    }
+
+    /// The macro expansion these tokens came from, or 0 for source code. One parser reads one
+    /// expansion, so every span it makes carries the same id.
+    pub(crate) fn expansion(&self) -> u32 {
+        self.tokens.first().map_or(0, |t| t.expansion)
     }
 
     pub(crate) fn peek(&self) -> &'a Token<'a> {

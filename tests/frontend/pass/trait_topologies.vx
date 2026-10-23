@@ -5,8 +5,9 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=LLVM
+// The default code generator does not support a function whose return type it cannot spell in MLIR yet, so this uses the AST one.
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --action emit-llvm 2>&1 | FileCheck %s --check-prefix=LLVM
 
 struct CPU {}
 struct NPU {}
@@ -151,10 +152,10 @@ fn main() -> i32 {
 // that is what it asserts.
 //
 // LLVM: module attributes
-// LLVM: llvm.func @CPU$ExecuteArith$CPU$add_vector
-// LLVM: llvm.func @NPU$ExecuteArith$NPU$add_vector
-// LLVM: llvm.func @CPU$TransferDMA$CPU$transfer_vector
-// LLVM: llvm.func @NPU$TransferDMA$NPU$transfer_vector
+// LLVM: llvm.func {{(hidden )?}}@CPU$ExecuteArith$CPU$add_vector
+// LLVM: llvm.func {{(hidden )?}}@NPU$ExecuteArith$NPU$add_vector
+// LLVM: llvm.func {{(hidden )?}}@CPU$TransferDMA$CPU$transfer_vector
+// LLVM: llvm.func {{(hidden )?}}@NPU$TransferDMA$NPU$transfer_vector
 
 // CHECK: module attributes {llvm.module_flags = {"Debug Info Version" = 3 : i32, "Dwarf Version" = 4 : i32}, vx.drops} {
 // CHECK:   func.func private @vx_init_signals()

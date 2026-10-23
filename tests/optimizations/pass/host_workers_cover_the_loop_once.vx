@@ -21,8 +21,8 @@
 // one number: a range nobody ran leaves its rows at zero and the total falls, a
 // range run twice counts twice and it rises.
 //
-// That is also why the tensor is zeroed in an ordinary loop first. Accumulating
-// into `uninit()` would make the expected total depend on whatever the
+// That is also why the tensor is zeroed in an ordinary loop first and then copied to GPU
+// memory. Accumulating into `uninit()` would make the expected total depend on whatever the
 // allocator left behind.
 //
 // THE WORKER COUNTS ARE PINNED rather than left to the machine. The chunk is
@@ -52,12 +52,13 @@
 // CHECK: 143380
 
 fn probe() -> f32 {
-  let mut o = Tensor<f32, [67, 8]>::uninit();
+  let mut h = unsafe { Tensor<f32, [67, 8]>::uninit() };
   for i in 0..67 {
     for j in 0..8 {
-      o[i][j] = 0.0;
+      h[i][j] = 0.0;
     }
   }
+  let mut o = transfer(h, Memory::GPU_HBM);
   spawn on(Topology::GPU) {
     for i in 0..67 {
       for j in 0..8 {
@@ -65,10 +66,11 @@ fn probe() -> f32 {
       }
     }
   }
+  let back = transfer(o, Memory::CPU_DRAM);
   let mut acc = 0.0;
   for i in 0..67 {
     for j in 0..8 {
-      acc = acc + o[i][j];
+      acc = acc + back[i][j];
     }
   }
   return acc;

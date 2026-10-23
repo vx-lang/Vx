@@ -102,6 +102,11 @@ pub struct LayoutComputer<'a> {
     enums: FxHashMap<TypeId, &'a EnumDecl>,
     memo: FxHashMap<TypeId, Option<TypeLayout>>,
     visiting: FxHashSet<TypeId>,
+    /// The generic struct instances that a by-value field names with concrete arguments, such
+    /// as `SharedCell<i32>` in `Counter { v : SharedCell<i32> }`. Keyed by
+    /// `struct_instance_gid`, the ID the flat lowering gives the same instance. The value is
+    /// the instance's name and its layout, `None` when it cannot be computed.
+    instances: FxHashMap<TypeId, (String, Option<TypeLayout>)>,
 }
 
 impl<'a> LayoutComputer<'a> {
@@ -114,7 +119,16 @@ impl<'a> LayoutComputer<'a> {
             enums,
             memo: FxHashMap::default(),
             visiting: FxHashSet::default(),
+            instances: FxHashMap::default(),
         }
+    }
+
+    /// Each generic struct instance that a computed layout holds by value: its ID, a name for
+    /// it (`SharedCell<i32>`), and its layout. A layout that holds one names it by this ID.
+    pub fn instance_layouts(&self) -> impl Iterator<Item = (TypeId, &str, &TypeLayout)> {
+        self.instances
+            .iter()
+            .filter_map(|(id, (name, l))| Some((*id, name.as_str(), l.as_ref()?)))
     }
 
     /// The layout of the nominal type identified by `id`, or `None` if it is not
@@ -147,10 +161,15 @@ impl<'a> LayoutComputer<'a> {
     }
 
     fn struct_layout(&mut self, decl: &'a StructDecl) -> Option<TypeLayout> {
+        self.fields_layout(&decl.fields)
+    }
+
+    /// The layout of a struct with these fields, in order, each at its natural alignment.
+    fn fields_layout(&mut self, decl_fields: &[(Symbol, Type)]) -> Option<TypeLayout> {
         let mut offset = 0usize;
         let mut align = 1usize;
-        let mut fields = Vec::with_capacity(decl.fields.len());
-        for (name, ty) in &decl.fields {
+        let mut fields = Vec::with_capacity(decl_fields.len());
+        for (name, ty) in decl_fields {
             let (fsize, falign, fty) = self.field_info(ty)?;
             let foffset = align_up(offset, falign);
             fields.push(FieldLayout {
@@ -189,9 +208,9 @@ impl<'a> LayoutComputer<'a> {
 
     /// Size/align/type of a field. Nominals recurse (by GID); pointer-like wrappers
     /// are pointer-sized and `Opaque`; location/proof wrappers pass through to the
-    /// inner type. Anything not yet modelled (tensor, generic instance, closure,
-    /// unresolved nominal, …) returns `None`, making the enclosing layout
-    /// incomputable for now.
+    /// inner type. Anything not yet modelled (a generic instance with a type parameter
+    /// in its arguments, an unresolved nominal, …) returns `None`, making the enclosing
+    /// layout incomputable for now.
     fn field_info(&mut self, ty: &Type) -> Option<(usize, usize, FieldTy)> {
         match ty {
             Type::Scalar(et) => {
@@ -240,9 +259,9 @@ impl<'a> LayoutComputer<'a> {
             // parameter appears only behind a pointer, so the size is the same for any instantiation
             // (`VecIter<T>` = `{ *const Vec<T>, i32 }`). Resolve the base GID (the attached one, else by
             // name — a cross-module generic instance may leave the base's GID unattached, `Struct(
-            // "Closure1", None)`). An instance-dependent base (`Box<T> { value: T }`) leaves the base
-            // layout a stub, so `layout_of` returns `None` and the field declines. (#242)
-            Type::GenericInstance(base, _) => {
+            // "Closure1", None)`). An instance-dependent base (`Box<T> { value: T }`) has no layout
+            // of its own, so the instance with these arguments gets one (`instance_of`). (#242)
+            Type::GenericInstance(base, args) => {
                 let id = match base.as_ref() {
                     Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => *id,
                     Type::Struct(name, None) | Type::Enum(name, None) => *self
@@ -252,11 +271,55 @@ impl<'a> LayoutComputer<'a> {
                         .map(|(g, _)| g)?,
                     _ => return None,
                 };
-                let layout = self.layout_of(id)?;
+                if let Some(layout) = self.layout_of(id) {
+                    return Some((layout.size, layout.align, FieldTy::Nominal(id)));
+                }
+                // The base's size depends on its arguments (`SharedCell<T> { v : T }`). With
+                // concrete arguments, the instance has a layout of its own.
+                let id = self.instance_of(id, args)?;
+                let layout = self.instances.get(&id)?.1.as_ref()?;
                 Some((layout.size, layout.align, FieldTy::Nominal(id)))
             }
             _ => None,
         }
+    }
+
+    /// The ID of the instance of the generic struct `base` with these arguments, after its
+    /// layout is computed. `None` for a base that is not a generic struct, or for an argument
+    /// that is still a type parameter.
+    fn instance_of(&mut self, base: TypeId, args: &[Type]) -> Option<TypeId> {
+        let decl = *self.structs.get(&base)?;
+        if decl.generics.is_empty() || args.iter().any(Type::has_generic_params) {
+            return None;
+        }
+        let id = crate::hir::flatten::struct_instance_gid(decl.name.as_ref(), args);
+        if self.instances.contains_key(&id) {
+            return Some(id);
+        }
+        // A by-value cycle through an instance has no finite size, as for `layout_of`.
+        if !self.visiting.insert(id) {
+            return None;
+        }
+        let mapping: std::collections::HashMap<Symbol, Type> = decl
+            .generics
+            .iter()
+            .map(|g| Symbol::from(g.name()))
+            .zip(args.iter().cloned())
+            .collect();
+        let fields: Vec<(Symbol, Type)> = decl
+            .fields
+            .iter()
+            .map(|(n, t)| (n.clone(), t.substitute(&mapping)))
+            .collect();
+        let layout = self.fields_layout(&fields);
+        self.visiting.remove(&id);
+        let name = {
+            use crate::syntax::types::Mangle;
+            let args: Vec<String> = args.iter().map(|a| a.mangle()).collect();
+            format!("{}<{}>", decl.name, args.join(","))
+        };
+        self.instances.insert(id, (name, layout));
+        Some(id)
     }
 }
 

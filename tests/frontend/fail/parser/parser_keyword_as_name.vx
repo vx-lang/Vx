@@ -1,0 +1,19 @@
+//===- parser_keyword_as_name.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A reserved word used as a let name should say that word is a keyword and
+// point at that token (not at the next one). for/fn cases are covered by the
+// unit test; the parser stops at the first error, so they are not in this
+// fixture.
+//
+fn main() -> i32 {
+  // CHECK: Error at [[@LINE+1]]:11: `across` is a keyword and cannot be used as a name
+  let mut across = 3;
+  return 0;
+}

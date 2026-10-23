@@ -14,9 +14,15 @@
 // CHECK: memref.dim %arg0
 // CHECK: memref.dim %arg1
 // CHECK: memref.alloc(%{{.*}}, %{{.*}}) : memref<?x?xf32>
-// CHECK-COUNT-3: cf.cond_br
+// The outer loop is an affine loop. The inner loops compute their bounds in the loop
+// around them, so they keep their branches.
+// CHECK: affine.for
+// CHECK: scf.execute_region {
+// CHECK-COUNT-2: cf.cond_br
 fn custom_matmul(a : Tensor<f32, [?, ?]>, b : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
-  let mut result : Tensor<f32, [?, ?]> = Tensor<f32, [?, ?]>::uninit([a.extent(0), b.extent(1)]);
+  let mut result : Tensor<f32, [?, ?]> = unsafe {
+    Tensor<f32, [?, ?]>::uninit([a.extent(0), b.extent(1)])
+  };
   for i in 0..a.extent(0) {
     for j in 0..b.extent(1) {
       result[i][j] = 0.0;

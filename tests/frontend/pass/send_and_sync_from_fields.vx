@@ -1,0 +1,56 @@
+//===- send_and_sync_from_fields.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A struct is `Send` and `Sync` when each of its fields is. `Vec`, `Box` and `String` hold a raw
+// pointer, and opt in with `unsafe impl`. An atomic is `Sync`. A program with its own `unsafe impl`
+// gets the trait for its type.
+//
+// Each of the ten checks below adds 1.
+//
+// CHECK: {{^}}10{{$}}
+
+import core::marker;
+import core::sync::atomic;
+import std::box;
+import std::string;
+import std::vec;
+
+struct Point {
+  x : f64,
+  y : f64,
+}
+
+struct Handle {
+  p : *mut i32,
+}
+
+unsafe impl Send for Handle {}
+
+fn is_send<T : Send>(_x : &T) -> i32 {
+  return 1;
+}
+
+fn is_sync<T : Sync>(_x : &T) -> i32 {
+  return 1;
+}
+
+fn main() -> i32 {
+  let p = Point {
+    x : 1.0, y : 2.0
+  };
+  let v = Vec<Point>::new();
+  let b = Box<i64>::new(2);
+  let s = String::new();
+  let a = AtomicI32::new(0);
+  let h = unsafe { Handle { p : 0 as *mut i32 } };
+  let total = is_send(&p) + is_sync(&p) + is_send(&v) + is_sync(&v) + is_send(&b) + is_sync(&b)
+  + is_send(&s) + is_sync(&s) + is_sync(&a) + is_send(&h);
+  print(total);
+  return 0;
+}

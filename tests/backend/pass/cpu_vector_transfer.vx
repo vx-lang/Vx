@@ -5,7 +5,7 @@
 // FileCheck %s
 
 fn test_f32() -> i32 {
-  let mut a = Tensor<f32, [4]>::uninit();
+  let mut a = unsafe { Tensor<f32, [4]>::uninit() };
   a[0] = 1.0;
   a[1] = 2.0;
   a[2] = 3.0;
@@ -20,7 +20,7 @@ fn test_f32() -> i32 {
 }
 
 fn test_bf16() -> i32 {
-  let mut a = Tensor<bf16, [4]>::uninit();
+  let mut a = unsafe { Tensor<bf16, [4]>::uninit() };
   a[0] = 1.0;
   a[1] = 2.0;
   a[2] = 3.0;
@@ -39,19 +39,23 @@ fn main() -> i32 {
   return 0;
 }
 
-// Before the pass the extents are still i32 values that have to be cast to index; the buffer
-// is allocated from those casts.
+// The extent is a constant, so the buffer is allocated with a static shape. The transfer
+// reads that buffer.
 // CHECK-LABEL: func.func @test_f32() -> i32
-// CHECK: %[[N:.*]] = arith.index_cast %{{.*}} : i32 to index
-// CHECK: memref.alloc(%[[N:.*]]) : memref<?xf32>
+// CHECK: %[[A:.*]] = memref.alloc() : memref<4xf32>
+// CHECK: "vx.transfer"(%[[A]]) {{.*}}{space = "CPU_DRAM"} : (memref<4xf32>) -> memref<4xf32>
+// CHECK-LABEL: func.func @test_bf16() -> i32
+// CHECK: memref.alloc() : memref<4xbf16>
 
-// convert-vx-to-standard folds them, so the same allocation reads from index constants.
+// convert-vx-to-standard turns the transfer into a copy to a new buffer.
 // STD-LABEL: func.func @test_f32() -> i32
-// STD: %[[C:.*]] = arith.constant {{[0-9]+}} : index
-// STD: memref.alloc(%[[C:.*]]) : memref<?xf32>
+// STD: %[[A:.*]] = memref.alloc() : memref<4xf32>
+// STD: %[[B:.*]] = memref.alloc() : memref<4xf32>
+// STD: memref.copy %[[A]], %[[B]] : memref<4xf32> to memref<4xf32>
 
-// --emit-llvm stops at the LLVM dialect, where the same function is an llvm.func and the
-// buffers are raw allocations rather than memrefs.
-// LLVM-LABEL: llvm.func @test_f32() -> i32
-// LLVM: llvm.call @malloc
-// LLVM: llvm.func @main() -> i32
+// --emit-llvm stops at the LLVM dialect, where the same function is an llvm.func. Each
+// 4-element buffer becomes a stack allocation.
+// LLVM-LABEL: llvm.func {{(hidden )?}}@test_f32() -> i32
+// LLVM: %[[FOUR:.*]] = llvm.mlir.constant(4 : index) : i64
+// LLVM: llvm.alloca %[[FOUR]] x f32
+// LLVM-LABEL: llvm.func {{(hidden )?}}@test_bf16() -> i32

@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 use super::super::*;
+use crate::hir::check_state::ComptimeCheckProblemKind;
 use crate::hir::expr::{expected_numeric_elem, int_dim_expr};
 use std::collections::HashMap;
 
@@ -461,45 +462,53 @@ impl<'a> TypeChecker<'a> {
             .iter()
             .map(|(base, path, is_mut)| {
                 // An argument that is a reference variable, `a` after `let a = &mut x`, also
-                // reaches `x`: the call's other arguments must not borrow `x` either.
-                let mut places = vec![(base.clone(), path.clone())];
+                // reaches `x`: the call's other arguments must not borrow `x` either. It
+                // reaches `x` mutably only if it is mutable and borrows `x` mutably: `&mut s`,
+                // where `s` holds `&x`, cannot change `x`.
+                let mut places = vec![(base.clone(), path.clone(), *is_mut)];
                 for (borrowed, records) in snapshots {
                     for record in records.iter().flatten() {
                         if record.borrower_name.as_deref() == Some(base.as_str()) {
                             let mut through = record.path.clone();
                             through.extend(path.iter().cloned());
-                            places.push((borrowed.clone(), through));
+                            places.push((borrowed.clone(), through, *is_mut && record.is_mut));
                         }
                     }
                 }
-                (places, *is_mut)
+                places
             })
             .collect::<Vec<_>>();
-        for (i, (places, is_mut)) in borrows.iter().enumerate() {
-            for (other_places, other_is_mut) in &borrows[i + 1..] {
-                let shared = places.iter().find(|(base, path)| {
-                    other_places.iter().any(|(other_base, other_path)| {
-                        base == other_base && crate::hir::places::paths_may_alias(path, other_path)
+        for (i, places) in borrows.iter().enumerate() {
+            for other_places in &borrows[i + 1..] {
+                // Of the places both arguments reach, the one where the most is mutable.
+                let shared = places
+                    .iter()
+                    .flat_map(|(base, path, is_mut)| {
+                        other_places.iter().filter_map(
+                            move |(other_base, other_path, other_is_mut)| {
+                                (base == other_base
+                                    && crate::hir::places::paths_may_alias(path, other_path))
+                                .then_some((base, *is_mut as u8 + *other_is_mut as u8))
+                            },
+                        )
                     })
-                });
-                let Some((base, _)) = shared else {
+                    .max_by_key(|&(_, muts)| muts);
+                let Some((base, muts)) = shared else {
                     continue;
                 };
-                let (code, message) = if *is_mut && *other_is_mut {
-                    (
+                let (code, message) = match muts {
+                    2 => (
                         crate::diagnostic::DiagnosticCode::E4004,
                         format!("Cannot borrow '{}' as mutable twice in one call.", base),
-                    )
-                } else if *is_mut || *other_is_mut {
-                    (
+                    ),
+                    1 => (
                         crate::diagnostic::DiagnosticCode::E4003,
                         format!(
                             "Cannot borrow '{}' as mutable and as immutable in one call.",
                             base
                         ),
-                    )
-                } else {
-                    continue;
+                    ),
+                    _ => continue,
                 };
                 // A borrow still held after this statement is already reported by the argument's
                 // own borrow check.
@@ -697,6 +706,12 @@ impl<'a> TypeChecker<'a> {
                     base_name = resolved_name[..idx].to_string().into();
                 }
                 self.fold_const_generic_args(&mut explicit_generic_args);
+                // The code generators read `Tensor<f32, [N]>::new()`'s type off the call.
+                if let Some(written) = type_args.as_mut() {
+                    if *written != explicit_generic_args {
+                        *written = explicit_generic_args.clone();
+                    }
+                }
 
                 // Mocking built-ins
                 let mut arg_types = Vec::new();
@@ -718,6 +733,9 @@ impl<'a> TypeChecker<'a> {
                 let errors_before_args = self.errors.inner.len();
                 for arg in args.iter_mut() {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume));
+                }
+                if resolved_name == "Tensor".into() {
+                    self.fold_shape_args(args);
                 }
                 // A number literal given to `Tensor<T, ..>::fill` takes the element type `T`.
                 if resolved_name == "Tensor::fill".into() {
@@ -762,7 +780,7 @@ impl<'a> TypeChecker<'a> {
                 {
                     // The contract rides on the type, so a call through a name honours it just
                     // as a call through the declaration does.
-                    if callee_unsafe && !self.in_unsafe_block && !self.speculating {
+                    if callee_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!(
@@ -905,7 +923,7 @@ impl<'a> TypeChecker<'a> {
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
                     }
-                    if *is_unsafe && !self.in_unsafe_block && !self.speculating {
+                    if *is_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!("Call to unsafe function '{}' is unsafe and requires unsafe function or block", resolved_name),
@@ -921,7 +939,7 @@ impl<'a> TypeChecker<'a> {
                     );
                     self.check_call_requires(resolved_name.as_ref(), args, span);
                     ret_ty.clone()
-                } else if let Some((mono_topology, param_types, mono_ret)) = self
+                } else if let Some((mono_topology, param_types, mono_ret, mono_unsafe)) = self
                     .mono
                     .functions
                     .iter()
@@ -935,10 +953,23 @@ impl<'a> TypeChecker<'a> {
                                 .map(|(_, t)| t.clone())
                                 .collect::<Vec<Type>>(),
                             func.0.return_type.clone(),
+                            func.0.is_unsafe,
                         )
                     })
                 {
                     self.record_call_edge(resolved_name.as_ref(), span);
+                    // An instance made by an earlier call keeps the template's `unsafe`.
+                    if mono_unsafe && self.unsafe_is_missing() {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E5001,
+                            format!(
+                                "Call to unsafe function '{}' is unsafe and requires unsafe \
+                                 function or block",
+                                resolved_name
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
+                    }
                     if !mono_topology.same_device(&self.active_topology) && !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E6001,
@@ -964,7 +995,7 @@ impl<'a> TypeChecker<'a> {
                 {
                     // A generic `unsafe fn` resolves here rather than through `env.functions`,
                     // so the rule is repeated: being generic does not discharge a contract.
-                    if generic_func.is_unsafe && !self.in_unsafe_block && !self.speculating {
+                    if generic_func.is_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!(
@@ -1005,7 +1036,7 @@ impl<'a> TypeChecker<'a> {
                     // The signature carries the callee's unsafe-ness precisely so an importing
                     // module can refuse the call without seeing the body. Read it here, or the
                     // flag crosses the boundary and means nothing.
-                    if sig.is_unsafe && !self.in_unsafe_block && !self.speculating {
+                    if sig.is_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!(
@@ -1192,10 +1223,12 @@ impl<'a> TypeChecker<'a> {
     /// which is what keeps a `comptime` block from leaving anything behind. A call it cannot
     /// fold -- an argument only known at run time, say -- has nowhere to go and is refused.
     /// That is stricter than a C++ `constexpr`, which would fall back to a run-time call.
+    /// `ty` is the call's type, which the folded value takes.
     pub(crate) fn fold_comptime_lambda_call(
         &mut self,
         expr: &mut Expr,
         span: &crate::syntax::Span,
+        ty: &Type,
     ) {
         let Expr::FunctionCall(call) = expr else {
             return;
@@ -1222,13 +1255,18 @@ impl<'a> TypeChecker<'a> {
             .eval_expr(expr, &env)
             .and_then(|value| Self::value_to_expr(&value, span));
         match folded {
-            Some(constant) => *expr = constant,
+            // Left bare, a number literal is an `i32`.
+            Some(mut constant) => {
+                Self::give_numbers_the_type(&mut constant, ty);
+                *expr = constant
+            }
             None => {
                 if !self.speculating {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E3033,
                         "this call to a `comptime` lambda cannot be evaluated: a comptime \
-                         lambda runs while compiling, so every argument has to be known then"
+                         lambda runs while compiling, so every argument has to be known then, \
+                         and every assert in it has to hold"
                             .to_string(),
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
@@ -1256,7 +1294,26 @@ impl<'a> TypeChecker<'a> {
         let before = self.consteval_snapshot();
         let observed = self.observe_comptime_block(&[], Some(&*expr), &before);
         let outcome = &observed.outcome;
+        // Without parameters, the function's block reported these already.
+        if takes_params {
+            let failed: Vec<_> = observed
+                .check_problems
+                .iter()
+                .filter(|problem| problem.kind == ComptimeCheckProblemKind::Fails)
+                .collect();
+            if !failed.is_empty() {
+                for problem in failed {
+                    self.report_comptime_check_failure(problem);
+                }
+                return;
+            }
+            if let Some(loop_span) = observed.loop_limit_reached_at {
+                self.report_comptime_loop_limit(&loop_span);
+                return;
+            }
+        }
         let folded = (observed.escaping_write.is_none()
+            && observed.check_problems.is_empty()
             && !observed.call_depth_exceeded
             && !outcome.requires_refusal
             && outcome.support.is_supported())
@@ -1266,8 +1323,8 @@ impl<'a> TypeChecker<'a> {
         match folded {
             Some(mut constant) => {
                 // The literal takes the function's return type. Left bare it is an `i32`.
-                if let (Expr::Number(n), Some(Type::Scalar(elem))) = (&mut constant, &ret_ty) {
-                    n.ty.get_or_insert_with(|| elem.clone());
+                if let Some(ty) = &ret_ty {
+                    Self::give_numbers_the_type(&mut constant, ty);
                 }
                 *expr = constant;
             }
@@ -1319,6 +1376,29 @@ impl<'a> TypeChecker<'a> {
         })
     }
 
+    /// `Tensor<f32>([R * C])` in an instance of `<const R, const C>` reads `[2 * 3]`. Each extent
+    /// that works out is written as the number, checked like one written there, since the code
+    /// generators take only a number as a static extent.
+    fn fold_shape_args(&mut self, args: &mut [Expr]) {
+        if matches!(args, [Expr::Array(arr)] if arr.initializer_shape().is_some()) {
+            return;
+        }
+        let dims: &mut [Expr] = match args {
+            [Expr::Array(arr)] => &mut arr.elements,
+            _ => args,
+        };
+        for d in dims {
+            if let Some(v) = self.extent_value(d) {
+                *d = Expr::Number(NumberExpr {
+                    value: v.to_string().into(),
+                    ty: None,
+                    span: d.span(),
+                });
+                self.check_expr_type_flag(d, false);
+            }
+        }
+    }
+
     /// Reduce each constant generic argument to the number it works out to.
     ///
     /// `countdown<N - 1>()` inside `countdown<3>` has to become `countdown<2>`, not
@@ -1327,16 +1407,31 @@ impl<'a> TypeChecker<'a> {
     /// case -- it took the compiler's stack down rather than terminating.
     ///
     /// An argument the evaluator cannot work out is left as written, which is what it did
-    /// before this.
+    /// before this. A module `const` is worked out too: `fill<N>()`, where a name parses as a
+    /// type, becomes `fill<4>()`, and the extents of a type argument are folded.
     fn fold_const_generic_args(&mut self, args: &mut [Type]) {
         for arg in args.iter_mut() {
+            if let Type::Struct(name, None) = arg {
+                if !self.env.structs.contains_key(name) && !self.env.enums.contains_key(name) {
+                    if let Some(v) = self.const_int(name) {
+                        *arg = Type::Const(Box::new(Expr::Number(NumberExpr {
+                            value: v.to_string().into(),
+                            ty: None,
+                            span: Span::default(),
+                        })));
+                    }
+                }
+                continue;
+            }
             let Type::Const(expr) = arg else {
+                self.fold_extents(arg);
                 continue;
             };
             if matches!(&**expr, Expr::Number(_)) {
                 continue;
             }
-            let env = self.consteval_snapshot();
+            let mut env = self.consteval_snapshot();
+            self.add_const_ints(expr, &mut env);
             let Some(value) = self.eval_expr(expr, &env).and_then(|v| match v {
                 Value::Int(i) => Some(i.to_string()),
                 Value::Number(n) if n.fract() == 0.0 => Some((n as i64).to_string()),
@@ -1604,6 +1699,18 @@ impl<'a> TypeChecker<'a> {
         }
 
         if let Some(generic_func) = found_generic_func {
+            // `Type::method(..)` calling an `unsafe fn` needs an unsafe context too.
+            if generic_func.is_unsafe && self.unsafe_is_missing() {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E5001,
+                    format!(
+                        "Call to unsafe function '{}' is unsafe and requires unsafe \
+                         function or block",
+                        resolved_name
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                );
+            }
             // Whatever the explicit type arguments left open, the arguments may fix, the way a
             // generic free function's call does: `Holder::make(7i32)` binds `T` without `<i32>`.
             // Walk only as far as both lists reach; a count mismatch is reported below.
@@ -1683,7 +1790,7 @@ impl<'a> TypeChecker<'a> {
         origin_hash: u64,
         resolved_name: &str,
         name: &mut crate::symbol::Symbol,
-        args: &[Expr],
+        args: &mut [Expr],
         arg_types: &[Type],
         explicit_generic_args: &[Type],
         span: &crate::syntax::Span,
@@ -1722,6 +1829,24 @@ impl<'a> TypeChecker<'a> {
         result
     }
 
+    /// A parameter whose type the generic types already fix, `n : i64` or `p : *const T` once
+    /// `T` is known, takes what a call to a plain function takes there: a literal of that type,
+    /// or a `*mut` for a `*const`.
+    fn accepts_like_a_plain_call(
+        &mut self,
+        param_ty: &Type,
+        mapping: &HashMap<crate::symbol::Symbol, Type>,
+        arg: &mut Expr,
+        arg_ty: &Type,
+    ) -> bool {
+        let param_ty = param_ty.substitute(mapping);
+        if param_ty.has_generic_params() {
+            return false;
+        }
+        let arg_ty = self.refine_literal_arg(arg, &param_ty, arg_ty);
+        self.is_assignable(&param_ty, &arg_ty)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn instantiate_generic_function_call_inner(
         &mut self,
@@ -1729,7 +1854,7 @@ impl<'a> TypeChecker<'a> {
         origin_hash: u64,
         resolved_name: &str,
         name: &mut crate::symbol::Symbol,
-        args: &[Expr],
+        args: &mut [Expr],
         arg_types: &[Type],
         explicit_generic_args: &[Type],
         span: &crate::syntax::Span,
@@ -1772,19 +1897,25 @@ impl<'a> TypeChecker<'a> {
             // because no argument bound them.
             let explicit: Vec<crate::symbol::Symbol> = mapping.keys().cloned().collect();
             let mut bound_by: HashMap<crate::symbol::Symbol, usize> = HashMap::new();
-            for (i, _arg) in args.iter().enumerate() {
+            for (i, arg) in args.iter_mut().enumerate() {
                 let arg_ty = arg_types[i].clone();
                 let param_ty = &generic_func.params[i].1;
-                if !self.unify_types(param_ty, &arg_ty, &mut mapping) {
+                if !self.unify_types(param_ty, &arg_ty, &mut mapping)
+                    && !self.accepts_like_a_plain_call(param_ty, &mapping, arg, &arg_ty)
+                {
                     if !self.speculating {
-                        self.errors.push(format!(
-                            "Failed to deduce types for generic function '{}': Expected {}, got {}{}{}",
-                            name,
-                            param_ty,
-                            arg_ty,
-                            Self::const_extent_note(param_ty, &arg_ty),
-                            Self::dim_conflict_note(param_ty, &arg_ty, &mapping, &bound_by, i + 1)
-                        ));
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E3003,
+                            format!(
+                                "Failed to deduce types for generic function '{}': Expected {}, got {}{}{}",
+                                name,
+                                param_ty,
+                                arg_ty,
+                                Self::const_extent_note(param_ty, &arg_ty),
+                                Self::dim_conflict_note(param_ty, &arg_ty, &mapping, &bound_by, i + 1)
+                            ),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                        );
                     }
                     success = false;
                 } else {
@@ -1830,9 +1961,17 @@ impl<'a> TypeChecker<'a> {
                         let bound = self.substitute_bound(&bound, &mapping);
                         if !self.bound_holds(&bound, &concrete_ty) {
                             if !self.speculating {
+                                // For `Send` and `Sync`, say which field is the reason.
+                                let why =
+                                    super::thread_safety::ThreadTrait::from_name(&bound.trait_name)
+                                        .and_then(|which| {
+                                            self.why_not_thread_trait(&concrete_ty, which)
+                                        })
+                                        .map(|why| format!(": {why}"))
+                                        .unwrap_or_default();
                                 self.errors.push(format!(
-                                    "Type '{}' does not implement trait '{}' required by parameter '{}'",
-                                    concrete_ty, bound, g_name
+                                    "Type '{}' does not implement trait '{}' required by parameter '{}'{}",
+                                    concrete_ty, bound, g_name, why
                                 ));
                             }
                             success = false;
@@ -1948,13 +2087,17 @@ impl<'a> TypeChecker<'a> {
             (Expr::Borrow(b), Type::Borrow { inner, .. }) => (&mut *b.expr, &**inner),
             (arg, ty) => (arg, ty),
         };
-        // A tensor of `u32` or `u64` is marked the same way, for its runtime printer.
+        // A tensor of an unsigned element type is marked the same way, for its runtime
+        // printer.
         let unsigned = match ty {
             Type::Scalar(e) => matches!(
                 e,
                 ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64
             ),
-            Type::Tensor(e, _, _) => matches!(e, ElementType::U32 | ElementType::U64),
+            Type::Tensor(e, _, _) => matches!(
+                e,
+                ElementType::U8 | ElementType::U16 | ElementType::U32 | ElementType::U64
+            ),
             _ => false,
         };
         if !unsigned {
@@ -2081,14 +2224,14 @@ impl<'a> TypeChecker<'a> {
                 ));
             }
             // `unsafe` is where a program says it writes every element of `::uninit()` storage
-            // before reading it.
-            if resolved_name == "Tensor::uninit" && !self.in_unsafe_block && !self.speculating {
-                self.errors.warn(
-                    crate::diagnostic::DiagnosticCode::W1032,
-                    "`::uninit()` storage is not written: reading an element before writing it \
-                     reads whatever the memory held. Call it inside `unsafe { .. }` to say every \
-                     element is written first, or use `::new()` for zeroed storage. This will \
-                     become an error",
+            // before reading it, so the call is what an `unsafe` block around it is for (W1010).
+            if resolved_name == "Tensor::uninit" && self.unsafe_is_missing() {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E5001,
+                    "`::uninit()` is unsafe and needs an `unsafe` block: its elements hold \
+                     whatever the memory held, so reading one before writing it reads data the \
+                     program never wrote. Call it inside `unsafe { .. }` to say every element is \
+                     written first, or use `::new()` for zeroed storage",
                     Some(crate::diagnostic::SourceSpan::from_ast_span(&call_span)),
                 );
             }
@@ -2125,11 +2268,14 @@ impl<'a> TypeChecker<'a> {
                 }) {
                     self.errors.push(
                         "a Tensor's shape is part of its type, so every extent has to be known \
-                         at compile time; write `Tensor<T, [?, ?]>::uninit([..])` for a shape \
+                         at compile time; write `Tensor<T, [?, ?]>::new([..])` for a shape \
                          that is not"
                             .to_string(),
                     );
                 }
+            }
+            if let Type::Tensor(elem, dims, _) = ty {
+                self.refuse_unrepresentable_shape(elem, dims, &call_span);
             }
             return Some(ty.clone());
         }
@@ -2196,7 +2342,8 @@ impl<'a> TypeChecker<'a> {
                         Dim::Dyn
                     }
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            self.refuse_unrepresentable_shape(&el_ty, &dims, &call_span);
             Some(Type::Tensor(el_ty, dims, None))
         } else if resolved_name.starts_with("Math::") {
             if args.len() != 1 {
@@ -2302,7 +2449,7 @@ impl<'a> TypeChecker<'a> {
                 self.errors
                     .push("Function 'tensor_view_2d' expects (ptr, rows, cols)".to_string());
             }
-            if !self.in_unsafe_block && !self.speculating {
+            if self.unsafe_is_missing() {
                 self.errors
                     .push("Viewing raw memory as a tensor requires an unsafe block".to_string());
             }
@@ -2311,6 +2458,11 @@ impl<'a> TypeChecker<'a> {
                     Type::Scalar(e) => Some(e.clone()),
                     _ => None,
                 },
+                _ => None,
+            };
+            // A view of device memory is in device memory.
+            let place = match arg_types.first() {
+                Some(Type::Pointer(_, place, _)) => place.clone(),
                 _ => None,
             };
             match elem {
@@ -2337,7 +2489,7 @@ impl<'a> TypeChecker<'a> {
                             .collect(),
                         _ => vec![Dim::Dyn, Dim::Dyn],
                     };
-                    Some(Type::Tensor(e, dims, None))
+                    Some(Type::Tensor(e, dims, place))
                 }
                 None => {
                     if !self.speculating {
@@ -2731,6 +2883,7 @@ impl<'a> TypeChecker<'a> {
                 span: method_span,
             }) => {
                 let method_span = *method_span;
+                self.strip_tensor_deref(obj);
                 // Taking the address of a tensor does not read it, so `on_gpu.as_ptr()` is
                 // allowed from host code even though a host read of `on_gpu` is not. The
                 // pointer it gives carries the tensor's placement, and reading through that
@@ -2936,7 +3089,7 @@ impl<'a> TypeChecker<'a> {
                     // An `unsafe fn` method needs an unsafe context at its call, exactly as a
                     // free function does. Only the resolution differs, so the rule is repeated
                     // here rather than shared: a method never reaches `env.functions`.
-                    if generic_method.is_unsafe && !self.in_unsafe_block && !self.speculating {
+                    if generic_method.is_unsafe && self.unsafe_is_missing() {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E5001,
                             format!(
@@ -3035,10 +3188,12 @@ impl<'a> TypeChecker<'a> {
                         consume,
                         method_span,
                     );
-                    // A number or `bool` result holds no reference, so the borrows its
-                    // arguments made end with the call, as they do for a function call:
-                    // `let same = a.compare(&b)` leaves `b` free to assign.
-                    let holds_no_reference = matches!(&ret_ty, Type::Scalar(el) if !matches!(el, ElementType::Generic(_)));
+                    // A result that cannot hold a reference, such as a number or a struct of
+                    // owned fields, ends the borrows its arguments made, as for a function
+                    // call: `let same = a.compare(&b)` leaves `b` free to assign.
+                    let holds_no_reference =
+                        !matches!(&ret_ty, Type::Scalar(ElementType::Generic(_)))
+                            && !self.type_can_hold_reference(&ret_ty);
                     if holds_no_reference && !self.speculating {
                         for (base, snap) in &borrowed_snapshots {
                             let prev: &[BorrowRecord] = snap.as_deref().unwrap_or(&[]);
@@ -3290,6 +3445,12 @@ impl<'a> TypeChecker<'a> {
                 gf.return_type.clone(),
             ));
         }
+        // `Type::method(..)`: the method's declared signature, found the way
+        // `check_static_method_call` finds it. Before its first instance exists, nothing else
+        // knows it, and a reference the call returns would keep no borrow.
+        if let Some(sig) = self.static_method_signature(base) {
+            return Some(sig);
+        }
         // A function from an `extern` block. Without its signature, none of the borrows its
         // arguments make would end when the call returns.
         if let Some(ext) = self
@@ -3318,6 +3479,46 @@ impl<'a> TypeChecker<'a> {
             return Some((sig.params.clone(), sig.ret_ty.clone()));
         }
         None
+    }
+
+    /// The declared signature of `Type::method`: the inherent impl's method, or the one trait
+    /// impl that has it. `None` when two traits' impls have it, since only the arguments can
+    /// choose between them.
+    fn static_method_signature(&self, name: &str) -> Option<(Vec<Type>, Type)> {
+        let (ty, method) = name.split_once("::")?;
+        let ty = ty.split('<').next().unwrap_or(ty);
+        let mut from_traits = Vec::new();
+        for (trait_key, impl_blocks) in self.env.impls.iter() {
+            for ib in impl_blocks {
+                let target = match &ib.target_type {
+                    Type::Struct(n, _) | Type::Enum(n, _) | Type::Generic(n, _) => n.as_ref(),
+                    Type::GenericInstance(inner, _) => match &**inner {
+                        Type::Struct(n, _) | Type::Enum(n, _) => n.as_ref(),
+                        _ => continue,
+                    },
+                    _ => continue,
+                };
+                if target != ty {
+                    continue;
+                }
+                let Some(m) = ib.methods.iter().find(|m| m.name.as_ref() == method) else {
+                    continue;
+                };
+                let sig = (
+                    m.params.iter().map(|(_, t)| t.clone()).collect(),
+                    m.return_type.clone(),
+                );
+                if trait_key.as_ref() == "_inherent" {
+                    return Some(sig);
+                }
+                from_traits.push(sig);
+            }
+        }
+        if from_traits.len() == 1 {
+            from_traits.pop()
+        } else {
+            None
+        }
     }
 
     /// `t.reshape([d0, d1, ..])`, optionally with `PadMode::Pad` or `PadMode::Trim`. Every
@@ -3530,9 +3731,11 @@ impl<'a> TypeChecker<'a> {
         args: &mut [Expr],
         span: &crate::syntax::Span,
     ) -> Option<(Type, bool)> {
-        // `a.reduce(..)` with `a : &Tensor<..>` reads the tensor it points to.
+        // `a.reduce(..)` with `a : &Tensor<..>` reads the tensor it points to, and
+        // `a.reshape(..)` is a view of it.
         if let Type::Borrow { inner, .. } = base_ty {
-            if _method == "reduce" && args.len() == 2 && matches!(**inner, Type::Tensor(..)) {
+            let through = (_method == "reduce" && args.len() == 2) || _method == "reshape";
+            if through && matches!(**inner, Type::Tensor(..)) {
                 return self.resolve_intrinsic_method(inner, _method, args, span);
             }
         }

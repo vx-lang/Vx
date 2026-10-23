@@ -74,7 +74,7 @@ example was compiled and run on both of Vx's code generators, from commit e60244
 <tr><td>By hand</td><td><code>malloc</code>'d and <code>mmap</code>'d memory</td><td>When you call <code>free</code> or <code>munmap</code></td></tr>
 </table>
 
-<h2>Tensors: freed after their last use</h2>
+<h2 id="tensors-freed-after-their-last-use">Tensors: freed after their last use</h2>
 
 <pre><code><span class="n"> 1</span>  <span class="k">fn</span> <span class="f">total</span>(t : <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">4</span>]&gt;) -&gt; <span class="t">f32</span> {
 <span class="n"> 2</span>    <span class="k">return</span> t[<span class="n">0</span>] + t[<span class="n">1</span>];
@@ -122,7 +122,7 @@ on line 13.</li>
 <code>q[i]</code> or a field read, owns nothing and is never freed. It borrows its owner instead,
 so the owner is not freed before the view's last use.</p>
 
-<h2>Values with a <code>Drop</code> impl: freed at the end of their block</h2>
+<h2 id="values-with-a-drop-impl-freed-at-the-end-of-their-block">Values with a <code>Drop</code> impl: freed at the end of their block</h2>
 
 <p>Freeing a tensor changes nothing a program can see, so the earlier the better. A
 <code>Drop</code> impl is different: it can print, unlock, or close a file, and when it runs is
@@ -170,7 +170,7 @@ its buffer. <code>p</code> drops its fields in the order they are declared (1 2)
 is freed after its last use, like a tensor. <code>core::mem::drop(x)</code> drops a value early, and
 <code>core::mem::forget(x)</code> never drops it.</p>
 
-<h2>Tensors in GPU memory</h2>
+<h2 id="tensors-in-gpu-memory">Tensors in GPU memory</h2>
 
 <p>A tensor you <code>transfer</code> to another memory is freed by its drop too, through the
 allocator it came from: memory from <code>cudaMalloc</code> must go back through
@@ -219,7 +219,7 @@ sends that worker a FREE message. The program prints <code>2</code>.</p>
 before drops existed, frees a transfer's result after its last use, and it still handles exactly
 that case.</p>
 
-<h2>By hand</h2>
+<h2 id="by-hand">By hand</h2>
 
 <p>Memory you take from C stays yours to give back. <code>std::alloc</code> exposes
 <code>malloc</code>, <code>realloc</code> and <code>free</code>, and <code>std::mmap</code> exposes
@@ -238,7 +238,7 @@ you:</p>
   <span class="k">return</span> <span class="n">0</span>;
 }</code></pre>
 
-<h2>Memory that needs no free</h2>
+<h2 id="memory-that-needs-no-free">Memory that needs no free</h2>
 
 <ul>
 <li><strong>A kernel's stack.</strong> A small fixed-size tensor made at the start of a
@@ -251,7 +251,7 @@ The pool keeps the memory for the next launch, and calls <code>cudaFree</code> o
 it would take the pool past its limit.</li>
 </ul>
 
-<h2>How we check it</h2>
+<h2 id="how-we-check-it">How we check it</h2>
 
 <p>Vx's differential fuzzer writes random programs together with a Rust copy of each, and checks
 that both print the same thing. It can also preload a small library that counts the blocks a
@@ -262,7 +262,7 @@ allocates on the default code generator. The commit that made placed tensors dro
 new test, a GPU tensor returned from one function and given to another, the same way on both code
 generators.</p>
 
-<h2>What is left</h2>
+<h2 id="what-is-left">What is left</h2>
 
 <p>Writing this post turned up one bug, and the drop work lists three more:</p>
 

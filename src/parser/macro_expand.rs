@@ -25,6 +25,9 @@ pub struct MacroExpander<'a> {
     /// an impl a macro produced is entitled to the defaults, and nothing before expansion
     /// can see it.
     pub trait_defaults: &'a crate::resolver::TraitDefaults,
+    /// The id the last expansion in this module got. Counted per module, so a parallel compile
+    /// gives the same ids as a normal one.
+    expansions: std::cell::Cell<u32>,
 }
 
 fn take_expr(expr: &mut expr::Expr) -> expr::Expr {
@@ -139,6 +142,7 @@ impl<'a> MacroExpander<'a> {
         Self {
             macros,
             trait_defaults,
+            expansions: std::cell::Cell::new(0),
         }
     }
 
@@ -232,6 +236,7 @@ impl<'a> MacroExpander<'a> {
                     line: 0,
                     column: 0,
                     length: 0,
+                    expansion: 0,
                 });
                 let lexed: Vec<_> = transcribed.iter().map(|t| t.as_token()).collect();
                 let mut parser = crate::parser::Parser::new(&lexed, "");
@@ -244,6 +249,10 @@ impl<'a> MacroExpander<'a> {
     }
 
     pub fn expand_module(&self, module: &mut VxModule) -> Result<(), String> {
+        Self::new(self.macros, self.trait_defaults).expand_module_from_zero(module)
+    }
+
+    fn expand_module_from_zero(&self, module: &mut VxModule) -> Result<(), String> {
         // Item-position macro calls first, so the items they produce are expanded below like
         // any other. A produced item may call another item macro, so this drains a worklist
         // rather than walking the list once; the depth limit is what a macro that expands to
@@ -483,6 +492,17 @@ impl<'a> MacroExpander<'a> {
                 }
                 u.stmts = new_body;
             }
+            expr::Expr::TaskBlock(u) => {
+                if let Some(ret) = &mut u.ret {
+                    **ret = self.expand_expr(take_expr(ret))?;
+                }
+                let body = std::mem::take(&mut u.stmts);
+                let mut new_body = Vec::with_capacity(body.len());
+                for s in body {
+                    new_body.extend(self.expand_stmt(s)?);
+                }
+                u.stmts = new_body;
+            }
             expr::Expr::ComptimeBlock(u) => {
                 if let Some(ret) = &mut u.ret {
                     **ret = self.expand_expr(take_expr(ret))?;
@@ -525,7 +545,51 @@ impl<'a> MacroExpander<'a> {
                 }
                 *j_expr.tangent = self.expand_expr(take_expr(&mut j_expr.tangent))?;
             }
-            _ => {}
+            expr::Expr::AsCast(c) => {
+                *c.expr = self.expand_expr(take_expr(&mut c.expr))?;
+            }
+            expr::Expr::Transfer(t) => {
+                *t.expr = self.expand_expr(take_expr(&mut t.expr))?;
+            }
+            expr::Expr::IndirectCall(c) => {
+                *c.callee = self.expand_expr(take_expr(&mut c.callee))?;
+                for arg in &mut c.args {
+                    *arg = self.expand_expr(take_expr(arg))?;
+                }
+            }
+            expr::Expr::Print(p) => {
+                for arg in &mut p.args {
+                    *arg = self.expand_expr(take_expr(arg))?;
+                }
+            }
+            expr::Expr::Println(p) => {
+                for arg in &mut p.args {
+                    *arg = self.expand_expr(take_expr(arg))?;
+                }
+            }
+            expr::Expr::EnumVariant(e) => {
+                for arg in e.payload.iter_mut().flatten() {
+                    *arg = self.expand_expr(take_expr(arg))?;
+                }
+            }
+            expr::Expr::InlineMlir(m) => {
+                for (_, input, _) in &mut m.inputs {
+                    *input = self.expand_expr(take_expr(input))?;
+                }
+                for clobber in &mut m.clobbers {
+                    *clobber = self.expand_expr(take_expr(clobber))?;
+                }
+            }
+            // These hold no expression. A new kind of expression must be listed here or walked
+            // above, so that a macro call inside it is expanded.
+            expr::Expr::Identifier(_)
+            | expr::Expr::Number(_)
+            | expr::Expr::StringLiteral(_)
+            | expr::Expr::TransferPredicate(_)
+            | expr::Expr::MemorySpace(_)
+            | expr::Expr::Topology(_)
+            | expr::Expr::SizeOf(_) => {}
+            expr::Expr::MacroCall(_) => unreachable!("expanded above"),
         }
         Ok(expr)
     }
@@ -578,6 +642,7 @@ impl<'a> MacroExpander<'a> {
                     line: 0,
                     column: 0,
                     length: 0,
+                    expansion: 0,
                 });
                 return self.parse_expanded_expr(&transcribed);
             }
@@ -610,6 +675,7 @@ impl<'a> MacroExpander<'a> {
                     line: 0,
                     column: 0,
                     length: 0,
+                    expansion: 0,
                 });
                 for i in inner {
                     tokens.extend(self.flatten_tt(i));
@@ -619,6 +685,7 @@ impl<'a> MacroExpander<'a> {
                     line: 0,
                     column: 0,
                     length: 0,
+                    expansion: 0,
                 });
             }
         }
@@ -720,9 +787,16 @@ impl<'a> MacroExpander<'a> {
             transcriber_tokens.extend(self.flatten_tt(tt));
         }
 
+        // A capture wider than its `$name` moves the rest of that line right, so `$t to`
+        // with `f16` reads `f16 to`, not `f16to`: (line, columns moved).
+        let mut shift: (usize, isize) = (0, 0);
         let mut j = 0;
         while j < transcriber_tokens.len() {
-            let m_tok = &transcriber_tokens[j];
+            let mut m_tok = transcriber_tokens[j].clone();
+            if m_tok.line != 0 && m_tok.line == shift.0 {
+                m_tok.column = m_tok.column.saturating_add_signed(shift.1);
+            }
+            let m_tok = &m_tok;
             if m_tok.kind == OwnedTokenType::Dollar && j + 1 < transcriber_tokens.len() {
                 let name_tok = &transcriber_tokens[j + 1];
                 if let OwnedTokenType::Identifier(name) = &name_tok.kind {
@@ -749,6 +823,15 @@ impl<'a> MacroExpander<'a> {
                             }
                             tokens.push(placed);
                         }
+                        let one_line = captured.iter().all(|t| t.line == 0)
+                            || captured.iter().all(|t| t.line == anchor.map_or(0, |a| a.0));
+                        if let (true, Some(last)) = (one_line, tokens.last()) {
+                            if m_tok.line != 0 && last.line == m_tok.line {
+                                let name_end = (name_tok.column + name_tok.length) as isize;
+                                let capture_end = (last.column + last.length) as isize;
+                                shift = (m_tok.line, capture_end - name_end);
+                            }
+                        }
                         j += 2;
                         continue;
                     }
@@ -764,8 +847,16 @@ impl<'a> MacroExpander<'a> {
             line: 0,
             column: 0,
             length: 0,
+            expansion: 0,
         });
 
+        // Two expansions of one macro give their tokens the same positions, so the id is
+        // what keeps their nodes apart.
+        let id = self.expansions.get() + 1;
+        self.expansions.set(id);
+        for tok in &mut tokens {
+            tok.expansion = id;
+        }
         Ok(tokens)
     }
 
@@ -783,6 +874,7 @@ impl<'a> MacroExpander<'a> {
             line: 0,
             column: 0,
             length: 0,
+            expansion: 0,
         });
         let exprs = self.parse_expanded_exprs(&tokens)?;
         Ok(expr::Expr::VecMacro(expr::VecMacroExpr {
@@ -805,6 +897,7 @@ impl<'a> MacroExpander<'a> {
             line: 0,
             column: 0,
             length: 0,
+            expansion: 0,
         });
         let exprs = self.parse_expanded_exprs(&tokens)?;
         Ok(expr::Expr::Print(expr::PrintExpr {
@@ -827,6 +920,7 @@ impl<'a> MacroExpander<'a> {
             line: 0,
             column: 0,
             length: 0,
+            expansion: 0,
         });
         let exprs = self.parse_expanded_exprs(&tokens)?;
         Ok(expr::Expr::Println(expr::PrintlnExpr {
@@ -856,6 +950,7 @@ impl<'a> MacroExpander<'a> {
                     line: 0,
                     column: 0,
                     length: 0,
+                    expansion: 0,
                 });
                 t
             }
@@ -1055,6 +1150,7 @@ impl<'a> MacroExpander<'a> {
                 line: t.line,
                 column: t.column,
                 length: t.length,
+                expansion: t.expansion,
             })
             .unwrap_or_default();
 

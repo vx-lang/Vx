@@ -41,10 +41,10 @@ impl<'a> Parser<'a> {
             TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected hardware identifier after Topology::")),
         };
-        match ident.as_ref() {
-            "CPU" => Ok(Topology::CPU),
-            "Current" => Ok(Topology::Current),
-            "NPU" => {
+        match TopologyKind::from_name(ident.as_ref()) {
+            TopologyKind::CPU => Ok(Topology::CPU),
+            TopologyKind::Current => Ok(Topology::Current),
+            TopologyKind::NPU => {
                 if self.match_token(&TokenType::LeftBracket) {
                     let mut expr = self.parse_expr()?;
                     super::expr::stamp_dim_literals(&mut expr);
@@ -63,7 +63,7 @@ impl<'a> Parser<'a> {
                     Err(self.error("Expected index for NPU"))
                 }
             }
-            "AccCore" => {
+            TopologyKind::AccCore => {
                 if self.match_token(&TokenType::LeftBracket) {
                     let mut expr = self.parse_expr()?;
                     super::expr::stamp_dim_literals(&mut expr);
@@ -73,9 +73,9 @@ impl<'a> Parser<'a> {
                     Err(self.error("Expected index for AccCore"))
                 }
             }
-            "AMX" => Ok(Topology::AMX),
-            "ANE" => Ok(Topology::ANE),
-            "GPU" => {
+            TopologyKind::AMX => Ok(Topology::AMX),
+            TopologyKind::ANE => Ok(Topology::ANE),
+            TopologyKind::GPU => {
                 // The index is optional, unlike NPU's: bare `Topology::GPU` predates
                 // multi-device support and means device 0, which is what every program
                 // written against it meant.
@@ -96,13 +96,14 @@ impl<'a> Parser<'a> {
                     Ok(Topology::gpu(0))
                 }
             }
-            "CpuAvx512" | "CPU_AVX512" => Ok(Topology::CpuAvx512),
-            "CpuNeon" | "CPU_Neon" => Ok(Topology::CpuNeon),
+            TopologyKind::CpuAvx512 => Ok(Topology::CpuAvx512),
+            TopologyKind::CpuNeon => Ok(Topology::CpuNeon),
             // Any other identifier is a user-defined topology, kept as a bare name here; its
             // descriptor is resolved later from the AST-carried declarations
             // (`Program.topologies`, indexed by `GlobalAstEnv`). Because the topology set is open,
             // an unknown built-in typo is indistinguishable from a custom name here.
-            other => Ok(Topology::Custom(crate::symbol::Symbol::from(other))),
+            TopologyKind::Custom(name) => Ok(Topology::Custom(name)),
+            TopologyKind::Slice => unreachable!("from_name never returns Slice"),
         }
     }
 
@@ -115,6 +116,29 @@ impl<'a> Parser<'a> {
             let n = self.expect_identifier("Expected a topology name in Reachable<A, B>")?;
             Ok(Topology::Custom(n.into()))
         }
+    }
+
+    /// `aligned(N)` in a tensor type, with N a power of two.
+    fn parse_tensor_alignment(&mut self) -> ParseResult<'a, u64> {
+        match &self.advance().kind {
+            TokenType::Identifier(s) if *s == "aligned" => {}
+            other => {
+                return Err(self.error(&format!(
+                    "Expected `aligned(N)` after the placement of a tensor type, got {:?}",
+                    other
+                )))
+            }
+        }
+        self.consume(&TokenType::LeftParen, "Expected '(' after `aligned`")?;
+        let n = match &self.advance().kind {
+            TokenType::Number(s) => s.parse::<u64>().ok(),
+            _ => None,
+        };
+        let Some(n) = n.filter(|n| n.is_power_of_two()) else {
+            return Err(self.error("`aligned(N)` needs N to be a power of two, such as 1024"));
+        };
+        self.consume(&TokenType::RightParen, "Expected ')' after the alignment")?;
+        Ok(n)
     }
 
     pub(crate) fn parse_memory_space(&mut self) -> ParseResult<'a, MemorySpace> {
@@ -396,6 +420,12 @@ impl<'a> Parser<'a> {
             TokenType::Identifier(s) => s.to_string(),
             _ => return Err(self.error("Expected type identifier")),
         };
+        // `Self::Item` stays a path, and the impl binds it later.
+        if ident == "Self" && !self.check(&TokenType::DoubleColon) {
+            if let Some(target) = &self.impl_self {
+                return Ok(target.clone());
+            }
+        }
 
         // Qualified nominal path: `Mod::Sub::Name`. The leading segments name the *defining* module
         // and the leaf is the type; name resolution (`resolve_names`, #194) splits it back and
@@ -479,6 +509,13 @@ impl<'a> Parser<'a> {
                     let mut top = None;
                     if self.match_token(&TokenType::Comma) {
                         top = Some(self.parse_placement()?);
+                    }
+                    // `aligned(N)` after the placement: the tensor starts at a multiple of N
+                    // bytes.
+                    if let Some(p) = top.as_mut() {
+                        if self.match_token(&TokenType::Comma) {
+                            p.alignment = Some(self.parse_tensor_alignment()?);
+                        }
                     }
 
                     self.consume(

@@ -1,0 +1,28 @@
+//===- array_literal_takes_the_annotated_element_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The number literals in an array literal take the element type of the `let`'s annotation,
+// as a single literal does. 16777217.0 needs an f64 and 3000000000 needs an i64.
+//
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-LABEL: func.func @main() -> i32
+// EXPECT: 16777217
+// EXPECT: 3000000000
+// EXPECT: 16777217
+// EXPECT: 250
+
+fn main() -> i32 {
+  let a : Tensor<f64, [2]> = [1.0, 16777217.0];
+  println!("{}", a[1]);
+  let b : Tensor<i64, [2]> = [1, 3000000000];
+  println!("{}", b[1]);
+  let m : Tensor<f64, [2, 2]> = [[1.0, 2.0], [3.0, 16777217.0]];
+  println!("{}", m[1][1]);
+  let c : Tensor<u8, [2, 1, 2]> = [[[1, 2]], [[3, 250]]];
+  println!("{}", c[1][0][1]);
+  return 0;
+}

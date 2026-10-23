@@ -131,9 +131,14 @@ For `Topology::CPU` the body of `spawn on` is inlined where it stands; there is
 nothing to dispatch to. For accelerator topologies
 (NPU / ANE / GPU) the body is outlined into a function `vx_npu_kernel_N` carrying
 the `llvm.emit_c_interface` attribute, so MLIR additionally emits a C-interface
-wrapper `_mlir_ciface_vx_npu_kernel_N`. The captured values become the kernel's
+wrapper, which Vx exports as `_vx_ciface_vx_npu_kernel_N` (see §4). The captured values become the kernel's
 parameters, and memref-backed captures are passed as pointers to their memref
 descriptor structs (consistent with §2).
+
+The kernel takes the parameters of its function first, in the order that the
+function declares them. The other captured values come after them, in the order
+of their first use in the region. So an edit to the region body does not change
+the order of the function's parameters.
 
 The runtime (`runtime/npu_dispatch.mm`) receives the captures and invokes the
 kernel through libffi so that the platform calling convention is honored.
@@ -155,7 +160,7 @@ vx_plugin_dispatch_async(name, payload_size, device_args, arg_tags, num_args);
   `runtime/npu_dispatch.mm` — keep the two in sync).
 
 The runtime builds an `ffi_cif` from the tags and `ffi_call`s
-`_mlir_ciface_<name>`. libffi places each argument in the correct GP/FP register
+`_vx_ciface_<name>`. libffi places each argument in the correct GP/FP register
 or stack slot, so this is correct for **all** argument types, including by-value
 `f32`/`f64`.
 
@@ -214,9 +219,135 @@ Accelerate. The whole thing — runtime compilation, the libffi link, and the
   `<ffi.h>` (from `libffi-dev`), not macOS's `<ffi/ffi.h>`, and `-lffi` must stay
   gated to targets that actually link the runtime.
 
-## 4. Related
+### 3.5 GPU kernels that `--emit-ptx` writes
 
-- `docs/npu_hardware_dispatch.md` — the `_mlir_ciface` dispatch mechanism.
+`vxc --emit-ptx prog.vx -o kernels.ptx` writes the GPU kernels of a program to
+one PTX file, for a program that loads and launches them itself (for example
+with `cuModuleLoadData` and `cuLaunchKernel`). It also writes `kernels.json`
+beside the PTX. Without `-o`, the files are `prog.ptx` and `prog.json` beside
+the source.
+
+A GPU kernel is a `spawn on` region whose topology has `arch: nvptx64` and
+that can run on the GPU. Its PTX entry has the name of the function that holds
+the region:
+
+```vx
+pub fn add(out: &mut Tensor<f32, [?], Memory::HBM>, a: &Tensor<f32, [?], Memory::HBM>,
+           b: &Tensor<f32, [?], Memory::HBM>, n: i32) -> void {
+  spawn on(Topology::Device) { ... }   // .entry add
+  return;
+}
+```
+
+The name comes from the signature and not from the body, because a body
+declares nothing global (`docs/language_rules_for_a_parallel_compiler.md`).
+`--emit-ptx` refuses these kernels:
+
+- a function that holds two GPU kernels: put each kernel in a function of its own;
+- a kernel that uses a value that is not a parameter of its function;
+- a function whose name PTX cannot spell: use only letters, digits and `_`.
+
+The kernel's parameters are the function's parameters that the region uses, in
+the order that the function declares them. Each takes `words` PTX parameters:
+
+| Vx parameter | PTX parameters |
+| --- | --- |
+| a scalar | 1, of the scalar's width |
+| a tensor of rank r | 3 + 2r `.u64`: the base pointer, the aligned pointer, the offset, r sizes, r strides |
+
+The kernel reads elements through the aligned pointer. For a tensor that the
+host allocated, give the same pointer twice, offset 0, its sizes, and strides
+for row-major order.
+
+The `.json` file gives `target` (the `chip:` of the machine file, or
+`VX_GPU_CHIP`, `sm_80` by default) and, for each kernel, its `name` and its
+`params` in launch order. A parameter
+has `name` and `type` as the Vx source writes them, `mutable` (the type is
+`&mut`), `kind` (`scalar` or `tensor`), `element` (the MLIR element type),
+`rank` for a tensor, and `words`:
+
+```json
+{ "name": "n", "type": "i32", "mutable": false, "kind": "scalar", "element": "i32", "words": 1 }
+```
+
+An MLIR integer type has no sign, so `element` is `i16` for both `u16` and `i16`. Take the sign
+from `type`.
+
+A kernel whose shared tensors need more than 48 KiB keeps them in dynamic
+shared memory, and its entry also gives `dynamic_shared_bytes`. A program that
+launches it calls `cuFuncSetAttribute(f, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, n)` once, and passes `n` as
+the `sharedMemBytes` of `cuLaunchKernel`. Vx's own launch does both.
+
+A kernel from a region with `across` loops also has `launch`: `grid`, one entry for each loop
+of blocks, `block` for the lanes of a block, and `"grid_loops": true`. An entry is a number,
+`{"param": "rows"}` for the value of a parameter, or `{"computed": "(rows + 3) / 4"}` for a size
+that the host computes from parameters and numbers. A size is not a parameter of the kernel, so
+a launcher computes it and launches that shape. A loop of blocks steps over the blocks of the
+grid, so a smaller grid is also correct. The kernel needs exactly the lanes of `block`.
+
+With no `launch`, the program that launches the kernel chooses the grid and the block.
+
+### 3.6 Calling a Vx function that launches GPU kernels
+
+A host program that is not Vx, for example Python with `ctypes`, can call a `pub fn` from a
+library that `vxc --action emit-obj` builds. The function launches its GPU regions through the
+CUDA backend (`runtime/cuda_dispatch.cpp`). These rules hold for such a call:
+
+- **Parameters.** A `pub fn` takes the C signature of its MLIR function. A tensor parameter of
+  rank r is 3 + 2r values: the allocated pointer, the aligned pointer, the offset, r sizes and r
+  strides (the `words` of §3.5). A scalar is one value. For example,
+  `glm_vx_spawn_scale(out, x, alpha, n)` with two rank-1 tensors is
+  `(ptr, ptr, i64, i64, i64, ptr, ptr, i64, i64, i64, f32, i32)`.
+- **Device memory.** A tensor in a GPU space, such as `&Tensor<f32, [?], Memory::HBM>`, can
+  point at memory that is already on the GPU. The launch gives the descriptor to the kernel as
+  it is, with no copy.
+- **Context.** Vx uses the primary context of each GPU, the one that the CUDA runtime API uses.
+  Make it current (`cuDevicePrimaryCtxRetain`, then `cuCtxSetCurrent`) and allocate in it. Vx
+  stops the program with a message when it finds another context current.
+- **Stream.** By default, each Vx launch and copy goes on the legacy default stream, and a
+  launch does not wait for the GPU (#25). Work of the host program on the legacy default stream,
+  on the per-thread default stream, or on a blocking stream is ordered with Vx's. Work on a
+  stream made with `cudaStreamNonBlocking` is not. `VX_CUDA_SYNC=1` makes Vx wait after each
+  launch.
+- **A stream of the host program.** `void vx_cuda_set_stream(void *stream)` sets a `CUstream`
+  for the calling thread, and null gives back the legacy default stream. `vx_cuda_get_stream()`
+  returns it, so a host program can put back the stream it had before. Then Vx's kernels, cuBLAS
+  calls and copies go on that stream. A wait (before a copy to host memory, at the end of a region)
+  waits for that stream only. Vx allocates its temporaries with `cudaMallocAsync` on the stream,
+  and frees each with `cudaFreeAsync` on the stream it came from, with no wait. A build without
+  CUDA has both calls, and they do nothing.
+- **CUDA graphs.** A host program can record a call into a graph with `cudaStreamBeginCapture`
+  on its stream. A function whose tensors are all in device memory and whose results stay there
+  records cleanly. While the stream records, Vx stops the program with a message at anything a
+  graph cannot hold: a wait, a copy from or to host memory, a free of memory that needs a wait,
+  `VX_CUDA_SYNC=1` and `VX_TIME_KERNEL`. The first call of a function loads its kernel image, and
+  the first GEMM on a GPU creates a cuBLAS handle with a workspace of its own. Vx stops when
+  either happens in a recording, so call the function once before the recording.
+- **Launch shape.** The function computes the sizes that its `across` loops give and launches
+  that shape (§3.5 and `docs/spawn_on.md` §8).
+- **No GPU.** When no GPU takes a launch, the region runs on the CPU. A function that only GPU
+  code calls stops the program there with a message.
+- **Optimization level.** The device image follows `-O`. A library built at `-O 3` can hold
+  different PTX from `--emit-ptx` at the default level, so build both at the same level.
+
+## 4. Symbol names
+
+- A function the program defines keeps its name, and is `hidden` and `dso_local`.
+  The executable does not export it, so a program's `fn write` does not replace
+  libc's `write` for the runtime library.
+- A `pub fn` keeps its name and is exported, so a shared library built from the
+  program gives it to C. Only a top-level function that is not generic can be
+  `pub`. A `pub fn write` replaces libc's `write`, as any exported C function does.
+- Apart from `main` and `pub` functions, every symbol Vx exports starts with
+  `_vx_`. The kernel entry
+  points `_vx_ciface_<kernel>` are the only ones today. The dispatch runtime
+  finds them with `dlsym`.
+- `main` keeps its C name, because the C runtime calls it.
+- A function in an `extern` block keeps its C name and C linkage.
+
+## 5. Related
+
+- `docs/npu_hardware_dispatch.md` — the C-interface dispatch mechanism.
 - `docs/spawn_on.md` — `spawn on(...)` semantics and outlining.
 - `src/dialect/VxLowering.cpp` — `SpawnOpLowering` / `LaunchOpLowering`.
 - `runtime/npu_dispatch.mm` — the runtime dispatcher.

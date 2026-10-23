@@ -39,6 +39,24 @@ the half it did not state, which is why `Placement` records which half the sourc
 > falls back to the like-named device rather than being refused, which is what an undeclared
 > `Topology::X` already does.
 
+### A tensor can ask for an alignment
+
+`aligned(N)` after the placement makes the tensor start at a multiple of N bytes, with N a power
+of two. TMA's 128-byte swizzle, for example, needs each shared buffer aligned to 1024:
+
+```rust
+let stage = unsafe { Tensor<f8e4m3, [128, 128], Memory::SMEM, aligned(1024)>::uninit() };
+```
+
+A memory space in the machine file states the least alignment of every tensor in it, as
+`alignment: 16 B`. `aligned(N)` may ask for more, not less, and only in a space whose storage the
+compiler lays out: one declared with `scope: sm`, `cta` or `thread`. Anything else is E6034.
+
+The alignment is part of the type. A tensor fits where a smaller alignment is asked: a
+`&mut Tensor<f32, [16], Memory::SMEM, aligned(1024)>` can be given to a parameter of type
+`&mut Tensor<f32, [16], Memory::SMEM>`, and not the other way round. A tensor with no `aligned(N)`
+has the alignment of its space.
+
 ### A raw pointer can say which memory it points into
 
 A bare `*mut T` or `*const T` points into host memory. A pointer into another memory writes the
@@ -182,7 +200,7 @@ A `Pinned<T, TopologyA>` value can only be accessed from topologies that have vi
 | Active Topology | Default space | Directly visible memory spaces |
 |---|---|---|
 | CPU | CPU_DRAM | CPU_DRAM, NPU_HBM |
-| GPU | GPU_HBM | GPU_HBM, CPU_DRAM |
+| GPU | GPU_HBM | GPU_HBM |
 | NPU[i] | NPU_HBM | NPU_HBM |
 | ANE | NPU_HBM | NPU_HBM, CPU_DRAM |
 | AMX | CPU_DRAM | CPU_DRAM |
@@ -196,6 +214,11 @@ A `Pinned<T, TopologyA>` value can only be accessed from topologies that have vi
 > `transfer(...)` (the `NeedsSeam` verdict); only a space with no path at all is truly
 > `Unreachable`. User-defined `Topology` declarations (see [syntax.md](./syntax.md#31-user-defined-topologies))
 > contribute their own visibility sets and transfer edges to this matrix.
+>
+> The built-in GPU is a discrete GPU, so it cannot read host memory. A tensor goes to
+> `Memory::GPU_HBM` with `transfer` before code on the GPU uses it. A number or a pointer from
+> the host is copied to the GPU, so code on the GPU can use it without a transfer. A machine
+> whose GPU can read host memory lists `CPU_DRAM` in its `visible:` set.
 
 **Example — rejected at compile time:**
 
@@ -334,8 +357,8 @@ reach for otherwise: a name that promises a valid value should deliver one, and 
 greppable when a garbage-value bug is being hunted.
 
 `::uninit()` belongs inside `unsafe`, because the compiler cannot check that every element is
-written before it is read. Outside `unsafe` it is warned about (W1032), and a later version will
-refuse it.
+written before it is read. Outside `unsafe` it is refused (E5001). The older spelling,
+`Tensor<f32>([8, 8])`, which passes the shape as an argument, starts at zero, as `::new()` does.
 
 A `Tensor`'s extents are part of its type, so every one of them has to be known at compile time —
 a literal or a const generic. An extent that is a run-time value is refused, naming the `?` spelling,
@@ -363,6 +386,8 @@ When verifying `let target: TargetType = source_expression;`, the compiler permi
 1. **Borrow to Raw Pointer:** A borrow fits a raw pointer to the same type: `&mut T` fits `*mut T` or `*const T`, and `&T` fits `*const T`. A `&T` does not fit `*mut T`.
 1. **Dropping `mut`:** `&mut T` fits `&T`, and `*mut T` fits `*const T`. A raw pointer to `i8` fits a raw pointer to any type, and the other way round, as `void *` does in C.
 1. **Never:** A value of type `!`, such as a call to a function that never returns, fits any type.
+1. **More aligned to less aligned:** A tensor fits a tensor type that differs only in a smaller
+   `aligned(N)`. A tensor with no `aligned(N)` has the `alignment:` of its space.
 
 These are refused, and the compiler says so with E3001:
 
@@ -439,7 +464,7 @@ visits every position `t[i]` accepts. A rank-0 tensor has no `len()`.
 | Type | Example |
 |------|---------|
 | `Tensor<T, Shape>` | `let a : Tensor<f32, []> = 1.0;` |
-| `Tensor<T, Shape, Memory>` | `let d = Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit();` |
+| `Tensor<T, Shape, Memory>` | `let d = unsafe { Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit() };` |
 | `Matrix` | `let m : Matrix = ...;` |
 | `Verified<T>` | `let v : Verified<Tensor<f32, [4, 4]>> = ...;` |
 | `Pinned<T, Topology>` | `let p : Pinned<Tensor<f32, [4, 4]>, Topology::NPU[0]> = ...;` |

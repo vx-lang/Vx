@@ -1,0 +1,48 @@
+//===- moved_variable_read_in_an_assignment_to_itself.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The right side of `o = o` is read before `o` gets its new value, so it reads a moved `o`.
+// Each mistake gives one error.
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+import std::vec;
+
+struct P {
+  x : i32,
+  v : Vec<i32>,
+}
+
+fn take(v : Vec<i32>) -> void {}
+
+fn take_p(p : P) -> void {}
+
+fn whole() -> void {
+  let mut o = Vec<i32>::new();
+  take(o);
+  // CHECK: Error[E4001] at [[# @LINE + 1]]:7: Use of moved or consumed linear variable: o
+  o = o;
+  print(o.len());
+}
+
+fn field() -> void {
+  let mut origin = P {
+    x : 1, v : Vec<i32>::new()
+  };
+  take_p(origin);
+  // CHECK-NEXT: Error[E4001] at [[# @LINE + 2]]:17: Use of moved or consumed linear variable: origin
+  origin = P {
+    x : 10, v : origin.v
+  };
+  print(origin.x);
+}
+// CHECK-NEXT: 2 error(s) emitted
+
+fn main() -> i32 {
+  whole();
+  field();
+  return 0;
+}

@@ -1,0 +1,32 @@
+//===- comptime_loop_limit_in_a_called_function.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// The loop in `count_to` runs 2,000,000 times when the `comptime` block calls it, more than
+// the limit of 1,000,000 iterations. So the block gives E8005 at that loop. The compiler used
+// to give E3033 instead, "it holds a statement the evaluator cannot run", which is not true.
+
+fn count_to(limit : i64) -> i64 {
+  let mut i : i64 = 0i64;
+  // CHECK: Error[E8005] at [[@LINE+1]]:3: compile-time evaluation ran more than 1000000 loop iterations
+  loop {
+    i = i + 1i64;
+    if i >= limit {
+      break;
+    }
+  }
+  return i;
+}
+
+fn main() -> i32 {
+  let n : i64 = comptime {
+    count_to(2000000i64)
+  };
+  print(n);
+  return 0;
+}

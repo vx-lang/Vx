@@ -6,13 +6,18 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// CHECK-DAG: math.absf %{{.*}} : f32
+// The CHECK-NOT lines keep both calls inside main.
+// CHECK-LABEL: func.func @main() -> i32
+// CHECK-NOT: func.func
+// CHECK: call @f32$sin(%{{.*}}) : (f32) -> f32
+// CHECK-NOT: func.func
+// CHECK: call @f32$abs(%{{.*}}) : (f32) -> f32
 // CHECK-LABEL: func.func @f32$sin(%arg0: f32) -> f32
 // CHECK-NEXT: call @libm_sinf(%arg0) : (f32) -> f32
 // CHECK-LABEL: func.func @f32$abs(%arg0: f32) -> f32
-// CHECK-LABEL: func.func @main() -> i32
-// CHECK: call @f32$sin(%{{.*}}) : (f32) -> f32
-// CHECK: call @f32$abs(%{{.*}}) : (f32) -> f32
+// CHECK-NEXT: call @[[ABS:vx_flat_mlir_[0-9]+]](%arg0) : (f32) -> f32
+// CHECK: func.func private @[[ABS]](%arg0: f32) -> f32
+// CHECK-NEXT: math.absf %arg0 : f32
 import core::num;
 
 fn main() -> i32 {

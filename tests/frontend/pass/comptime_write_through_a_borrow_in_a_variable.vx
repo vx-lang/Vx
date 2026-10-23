@@ -1,0 +1,49 @@
+//===- comptime_write_through_a_borrow_in_a_variable.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A write through a mutable borrow kept in a variable `r` changes the variable that `r` borrows.
+// The compiler used to change only its own copy of `r`. So the first two blocks folded to 1,
+// while the program computes 9 and 5. The third block reads the value back through the borrow.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-LABEL: func.func @main
+// CHECK-DAG: arith.constant 9 : i64
+// CHECK-DAG: arith.constant 5 : i64
+// CHECK-DAG: arith.constant 7 : i64
+
+struct P {
+  x : i64,
+}
+
+fn main() -> i32 {
+  let element : i64 = comptime {
+    let mut d : Tensor<i64, [3]> = [ 1i64, 2i64, 3i64 ];
+    let r : &mut Tensor<i64, [3]> = &mut d;
+    r[0] = 9i64;
+    d[0]
+  };
+  let field : i64 = comptime {
+    let mut p = P {
+      x : 1i64
+    };
+    if true {
+      let q : &mut P = &mut p;
+      q.x = 5i64;
+    };
+    p.x
+  };
+  let read_back : i64 = comptime {
+    let mut e : Tensor<i64, [3]> = [ 1i64, 2i64, 3i64 ];
+    let s : &mut Tensor<i64, [3]> = &mut e;
+    s[1] = 7i64;
+    s[1]
+  };
+  print(element);
+  print(field);
+  print(read_back);
+  return 0;
+}

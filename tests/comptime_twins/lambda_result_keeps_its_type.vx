@@ -1,0 +1,17 @@
+//===- lambda_result_keeps_its_type.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A call to a `comptime` lambda keeps the lambda's `i64` result type. As an `i32`, three
+// results of 1000000000 would add up to a wrapped -1294967296.
+
+fn main() -> i32 {
+  let cube = |n : i64| comptime {
+    n * n * n
+  };
+  println!("{}", cube(1000i64) + cube(1000i64) + cube(1000i64));
+  return 0;
+}

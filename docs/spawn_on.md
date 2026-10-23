@@ -1,8 +1,9 @@
 # `spawn on`: sequential meaning, overlapped execution
 
 > **Status.** Decided 2026-09-25. The language rules in §2 are what the checker and the
-> lowering implement today. The overlap in §3 is designed and still to be built: every runtime
-> blocks inside dispatch, and the compiler never emits a wait. §6 lists that work.
+> lowering implement today. The overlap in §3 is designed and only partly built: the `cuda`
+> runtime returns once a launch is queued, the other runtimes block inside dispatch, and the
+> compiler never emits a wait. §6 lists that work.
 >
 > An earlier version of this file proposed `spawn on` returning `Future<Pinned<T, τ>>` with an
 > explicit `.await`. §4 says why that was rejected. The old text is in git history.
@@ -66,9 +67,10 @@ Concretely:
   the value — the region wrote through memory it shares with the host and the recorded region
   traffic does not name it — it joins at region exit. The answer stays right; only the overlap
   is lost.
-- **CPU regions stay inlined.** There is nothing to dispatch to. If the host should ever run
-  two regions at the same time, that is a separate keyword; `unroll across` is reserved for
-  that shape.
+- **CPU regions stay inlined.** There is nothing to dispatch to. Host work that runs at the
+  same time is a `tasks` block
+  ([`waiting_tasks_channels_and_task_errors.md`](discussions/waiting_tasks_channels_and_task_errors.md)),
+  not a `spawn on`.
 
 Why the wait points are complete: the host cannot compute with a `Pinned<T, τ>` (E3004),
 cannot read a tensor in an `explicit` space without `transfer` (E6003), and every allowed read
@@ -147,11 +149,18 @@ decision.
 | --- | --- | --- |
 | Result type `Pinned<T, τ>`, index in caller scope, region joined at exit | built | unchanged |
 | CPU region | inlined in place | unchanged |
-| Runtime dispatch (`cuda`, `npu`, host) | blocks before returning | returns a future id |
-| `vx_plugin_await_future` | no-op in every backend | blocks on that id |
+| Runtime dispatch (`cuda`, `npu`, host) | `cuda` returns once the launch is queued (#25); the others block before returning | returns a future id |
+| `vx_plugin_await_future` | `cuda` waits for every kernel that a GPU started; a no-op in the other backends | blocks on that id |
 | Wait insertion in the compiler | none | at first host use (§3) |
 | Value of a device spawn | the kernel stores it in a host slot and the host loads it after the launch; such a kernel gets no GPU device image and runs on the host | the slot staged to device memory, so the GPU twin can run |
 | Runtime device index `NPU[i]` | W1030, device 0 | separate issue |
+| `for i in a..b across <level>` (#252) | §8 | lane loops fuse, and per-lane arrays go in registers |
+
+The `cuda` backend puts every launch and copy on the default stream, so the GPU runs them in
+program order, and a copy to the host waits for the kernels before it. A fault shows at the next
+wait: a copy to the host, a free, or the end of the program. That message names the last kernel
+that the GPU started. `VX_CUDA_SYNC=1` waits after each launch, so that the message names the
+kernel that faulted.
 
 Order of work: the value stub first, since any model needs it; then non-blocking dispatch plus
 a real `await_future` in the runtimes, with the wait emitted at region exit so nothing
@@ -171,3 +180,35 @@ tracks the runtime wiring.
 
 Precedent: X10 `at`, Chapel `on`, CUDA streams, and PyTorch's eager mode, which is
 asynchronous under the hood while the program reads as sequential.
+
+## 8. The launch shape (#252)
+
+A region on a GPU gets its launch shape from its loops:
+
+<!-- vx-doctest: skip (needs a GPU topology) -->
+
+```vx
+spawn on(Topology::Gpu) {
+  for row in 0..rows across blocks {
+    for t in 0..256 across lanes { .. }
+  }
+}
+```
+
+- Each loop of blocks is a grid axis, and the lane and subgroup loops give the lanes of a
+  block. The host computes each bound before the region. The levels come from the topology's
+  `levels:` in the fleet file, and the NVIDIA files give `blocks`, `subgroups` and `lanes`.
+- Only `nvptx64` launches the levels. On another arch, `-fauto-schedule-levels` runs each
+  `across` loop as a plain `for` that carries its level as metadata (`fleet/README.md`).
+- E6032 checks the place and the size of each `across` loop. It also checks that no pass
+  touches what another pass writes (L4), and that every lane reaches the end of each lane loop
+  (L5, L8, L10).
+- Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
+  memory.
+- Delete each `across` and the program means the same. The CPU copy of the region runs one
+  block of one lane, and a loop steps over the passes of the others.
+- A size is not a kernel argument. The launch passes each size that is not a number after the
+  kernel's arguments, and the payload names the sizes in `grid=` and `block=`.
+- `--emit-ptx` gives the shape in its `.json` file (`lang/abi.md` §3.5).
+- The rules L1 to L10 and N1 to N4 are in the design on
+  [#252](https://github.com/vx-lang/Vx/issues/252#issuecomment-6321577866).

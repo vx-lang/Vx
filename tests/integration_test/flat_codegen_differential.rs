@@ -248,6 +248,7 @@ fn flat_llvm(src: &str) -> Option<String> {
         &[],
         &[],
         vxc::config::Schedule::Parallel,
+        false,
     )
     .ok()?;
 
@@ -348,6 +349,7 @@ fn flat_module_mlir(src: &str) -> Option<String> {
         &[],
         &[],
         vxc::config::Schedule::Parallel,
+        false,
     )
     .map_err(|e| eprintln!("flat path failed to emit: {e:?}"))
     .ok()
@@ -955,7 +957,7 @@ fn flat_matches_ast_placed_tensor() {
     // device-placement transfer *methods* (`to_device`/`to_host`) are a different thing and are
     // rewritten to `Expr::Transfer` by the type checker.
     assert_output_parity(
-        "fn main() -> i32 { let mut c = Tensor<f32, [2], Memory::NPU_HBM>::uninit(); \
+        "fn main() -> i32 { let mut c = unsafe { Tensor<f32, [2], Memory::NPU_HBM>::uninit() }; \
          c[0] = 3.0; c[1] = 4.0; print(c[0]); return 0; }",
     );
 }
@@ -968,8 +970,8 @@ fn flat_matches_ast_two_tensors_differing_only_in_placement() {
     // space is not a property the type carries into codegen, and this pins that it is not
     // one the type needs to.
     assert_output_parity(
-        "fn main() -> i32 { let mut h = Tensor<f32, [2]>::uninit(); \
-         let mut d = Tensor<f32, [2], Memory::NPU_HBM>::uninit(); \
+        "fn main() -> i32 { let mut h = unsafe { Tensor<f32, [2]>::uninit() }; \
+         let mut d = unsafe { Tensor<f32, [2], Memory::NPU_HBM>::uninit() }; \
          h[0] = 1.0; h[1] = 2.0; d[0] = 3.0; d[1] = 4.0; \
          print(h[1]); print(d[0]); return 0; }",
     );
@@ -1053,7 +1055,7 @@ fn flat_matches_ast_spawn_regions_with_a_value_a_tail_and_nesting() {
     // A trailing `if` with no semicolon is the region's tail as the parser reads it, and in
     // statement position it is the last thing the region does, not a value.
     assert_parity(
-        "fn main() -> i32 { let mut a = Tensor<f32, [1, 1]>::uninit(); a[0][0] = 0.0; \
+        "fn main() -> i32 { let mut a = unsafe { Tensor<f32, [1, 1]>::uninit() }; a[0][0] = 0.0; \
            let x : f32 = 2.0; \
            spawn on(Topology::CPU) { a[0][0] = 1.0; if x > 1.0 { a[0][0] = 3.0; } } \
            return a[0][0] as i32; }",
@@ -1069,7 +1071,7 @@ fn flat_matches_ast_spawn_regions_with_a_value_a_tail_and_nesting() {
     // A nested region: the inner one is the outer's tail, and each closes with its own
     // topology.
     assert_parity(
-        "fn main() -> i32 { let mut a = Tensor<f32, [1, 1]>::uninit(); a[0][0] = 0.0; \
+        "fn main() -> i32 { let mut a = unsafe { Tensor<f32, [1, 1]>::uninit() }; a[0][0] = 0.0; \
            spawn on(Topology::CPU) { let y = 1; spawn on(Topology::CPU) { a[0][0] = 5.0; } } \
            return a[0][0] as i32; }",
         5,
@@ -2155,6 +2157,7 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
         .clone();
     let synth = Function {
         is_unsafe: false,
+        is_pub: false,
         name: body.name.clone(),
         generics: vec![],
         params: body
@@ -2206,6 +2209,7 @@ fn program_links_a_function_body_from_a_vxlib_artifact() {
         &[],
         &[],
         vxc::config::Schedule::Parallel,
+        false,
     )
     .expect("flat codegen emits the linked module");
     let context = make_context();
@@ -2422,6 +2426,74 @@ fn driver_link_interface_runs_an_imported_enum() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A program can also build and match an enum it imports from a `.vxlib`, not only pass it
+/// between the library's functions. The type checker never sees the library's source, so it
+/// reads the enum's variants from the `.vxlib`.
+#[test]
+fn driver_link_interface_builds_and_matches_an_imported_enum() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("vx_link_enum_match_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (lib, app, vxlib) = (
+        dir.join("colors.vx"),
+        dir.join("app.vx"),
+        dir.join("colors.vxlib"),
+    );
+    std::fs::write(
+        &lib,
+        "enum Color { Red, Green, Blue }\n\
+         fn pick() -> Color { return Color::Blue; }\n\
+         fn number(c : Color) -> i32 { match c { Color::Red => { return 10; } \
+           Color::Green => { return 20; } Color::Blue => { return 30; } } }\n",
+    )
+    .unwrap();
+    // `c` is used again after the `match`: an enum without data is a plain value, not moved.
+    std::fs::write(
+        &app,
+        "fn main() -> i32 { let c = pick(); print(number(Color::Green)); print!(\" \"); \
+           match c { Color::Blue => { print!(\"blue\"); } _ => { print!(\"other\"); } } \
+           print!(\" \"); print(number(c)); print!(\"\\n\"); return 0; }\n",
+    )
+    .unwrap();
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    let emit = Command::new(vxc)
+        .args([
+            "--emit-interface",
+            lib.to_str().unwrap(),
+            "-o",
+            vxlib.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run vxc --emit-interface");
+    assert!(
+        emit.status.success(),
+        "emit-interface failed:\n{}",
+        String::from_utf8_lossy(&emit.stderr)
+    );
+
+    let run = Command::new(vxc)
+        .args([
+            "--link-interface",
+            vxlib.to_str().unwrap(),
+            app.to_str().unwrap(),
+            "--run",
+        ])
+        .output()
+        .expect("run vxc --link-interface --run");
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        out.lines().any(|l| l == "20 blue 30"),
+        "expected the imported enum to print 20 blue 30, got:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A number literal inside a library takes its type from the type checker, as it does in a
 /// program: `b == 32` with `b : u8` compares two `u8`s. A library saved without being checked
 /// kept the literal as an `i32`, and the program that called `is_space` failed to compile.
@@ -2504,7 +2576,7 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
     // this test used before, now lowers on the flat path.)
     std::fs::write(
         &app,
-        "fn main() -> i32 { let n = 3; let mut a = Tensor<f32, [n, n]>::uninit(); \
+        "fn main() -> i32 { let n = 3; let mut a = unsafe { Tensor<f32, [n, n]>::uninit() }; \
            a[0][0] = 1.0; return double(10) + (a[0][0] as i32); }\n",
     )
     .unwrap();
@@ -2541,12 +2613,80 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
         "linking an import into an out-of-flat-subset program must fail, got success:\n{out}"
     );
     assert!(
-        out.contains("flat-coverage") || out.contains("outside the flat-codegen subset"),
-        "expected a clean flat-coverage error, got:\n{out}"
+        out.contains("the default code generator does not support yet"),
+        "expected a clean error about the construct, got:\n{out}"
     );
     assert!(
         !out.contains("Internal Error") && !out.contains("panicked"),
         "must be a clean error, not an ICE, got:\n{out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--legacy-codegen` cannot link the functions of a `.vxlib`. A program that imports one fails
+/// with a message that names the option, even when the default code generator compiles it.
+#[test]
+fn legacy_codegen_names_itself_when_a_program_imports_a_vxlib() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("vx_legacy_vxlib_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (lib, app, vxlib) = (
+        dir.join("reflib.vx"),
+        dir.join("refapp.vx"),
+        dir.join("reflib.vxlib"),
+    );
+    std::fs::write(&lib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
+    std::fs::write(&app, "fn main() -> i32 { print(double(21)); return 0; }\n").unwrap();
+
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    assert!(Command::new(vxc)
+        .args([
+            "--emit-interface",
+            lib.to_str().unwrap(),
+            "-o",
+            vxlib.to_str().unwrap(),
+        ])
+        .output()
+        .expect("emit")
+        .status
+        .success());
+
+    let run = |extra: &[&str]| {
+        let out = Command::new(vxc)
+            .args([
+                "--link-interface",
+                vxlib.to_str().unwrap(),
+                app.to_str().unwrap(),
+            ])
+            .args(extra)
+            .arg("--run")
+            .output()
+            .expect("run");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.success(), text)
+    };
+    let (ok, out) = run(&[]);
+    assert!(
+        ok && out.contains("42"),
+        "the default code generator must run it, got:\n{out}"
+    );
+    let (ok, out) = run(&["--legacy-codegen"]);
+    assert!(
+        !ok,
+        "--legacy-codegen cannot link a .vxlib, but it succeeded:\n{out}"
+    );
+    assert!(
+        out.contains("with `--legacy-codegen`, because it imports a `.vxlib`"),
+        "expected the message to name --legacy-codegen, got:\n{out}"
+    );
+    assert!(
+        !out.contains("does not support yet"),
+        "the message must not blame a construct in the program, got:\n{out}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -1,0 +1,75 @@
+//===- a_let_that_hides_another_frees_each_tensor_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `let` that hides an earlier `let` of the same name. Each tensor is freed once, after its
+// own last use. The compiler used to give both the same last use, so it freed the first
+// tensor twice when the second one was never read.
+//
+// RUN: env VX_PRINT_DROPS=1 vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DROPS
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: 1 6 3 5
+
+fn total(t : &Tensor<f32, [2]>) -> f32 {
+  return t[0] + t[1];
+}
+
+fn scaled(t : &Tensor<f32, [2]>) -> Tensor<f32, [2]> {
+  let mut out = Tensor<f32, [2]>::new();
+  out[0] = t[0] * 2.0;
+  out[1] = t[1] * 2.0;
+  return out;
+}
+
+fn filled(x : f32) -> Tensor<f32, [2]> {
+  let mut t = Tensor<f32, [2]>::new();
+  t[0] = x;
+  t[1] = x;
+  return t;
+}
+
+// The second `a` is never read.
+fn never_read() -> f32 {
+  let a = filled(0.5);
+  // DROPS: drop in never_read: a, where it is made
+  // DROPS: drop in never_read: a, after the statement on line [[@LINE+1]]
+  let x = a[0] + a[1];
+  let a = filled(2.0);
+  return x;
+}
+
+// The `let` that hides `a` reads it.
+fn reads_the_old_one() -> f32 {
+  let a = filled(1.5);
+  // DROPS: drop in reads_the_old_one: a, once the `let` on line [[@LINE+1]] that hides it has its value
+  let a = scaled(&a);
+  return total(&a);
+}
+
+// Each `a` is read after the other one is made.
+fn both_read() -> f32 {
+  let a = filled(1.0);
+  let x = total(&a);
+  let a = filled(0.5);
+  return x + total(&a);
+}
+
+// A `return` after the second `let` frees only the second `a`.
+fn returns_early(c : bool) -> f32 {
+  let a = filled(1.0);
+  let x = total(&a);
+  let a = filled(1.5);
+  if c {
+    return x + total(&a);
+  }
+  return 0.0;
+}
+
+fn main() -> i32 {
+  println!("{} {} {} {}", never_read(), reads_the_old_one(), both_read(), returns_early(true));
+  return 0;
+}

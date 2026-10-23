@@ -1,0 +1,73 @@
+//===- comptime_reads_a_variable_written_in_a_branch.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// `n` depends on `argc` after each `if` and `match` below, so a `comptime` block that reads it
+// cannot be worked out (E3033), and neither can an `if comptime` on it. The compiler used to
+// keep the value that the last branch wrote: the first block folded to 70 and the second to 90,
+// for every `argc`.
+
+fn if_without_else(argc : i32) -> i64 {
+  let mut n : i64 = 5i64;
+  if argc > 1 {
+    n = 7i64;
+  };
+  let x = comptime {
+    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
+    n * 10i64
+  };
+  return x;
+}
+
+fn if_with_else(argc : i32) -> i64 {
+  let mut n : i64 = 5i64;
+  if argc > 1 {
+    n = 7i64;
+  } else {
+    n = 9i64;
+  };
+  let x = comptime {
+    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
+    n * 10i64
+  };
+  return x;
+}
+
+fn match_on_argc(argc : i32) -> i64 {
+  let mut n : i64 = 5i64;
+  match argc {
+    1 => {
+      n = 7i64;
+    }
+    _ => {}
+  };
+  let x = comptime {
+    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
+    n * 10i64
+  };
+  return x;
+}
+
+fn if_comptime_after_if(argc : i32) -> i64 {
+  let mut n : i64 = 5i64;
+  if argc > 1 {
+    n = 7i64;
+  } else {
+    n = 9i64;
+  };
+  // CHECK-DAG: Error: Cannot statically evaluate comptime if condition
+  if comptime n == 9i64 {
+    return 9i64;
+  }
+  return 0i64;
+}
+
+fn main(argc : i32) -> i32 {
+  print(if_without_else(argc) + if_with_else(argc) + match_on_argc(argc) + if_comptime_after_if(argc));
+  return 0;
+}

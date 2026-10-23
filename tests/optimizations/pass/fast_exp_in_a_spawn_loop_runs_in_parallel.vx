@@ -1,0 +1,53 @@
+//===- fast_exp_in_a_spawn_loop_runs_in_parallel.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn on` loop that calls `fast_exp` and `fast_tanh` still runs in parallel, and they are
+// the target's `math.exp` and `math.tanh`: in the kernel's PTX, libdevice's `__nv_expf` (or the
+// `ex2.approx` it becomes once linked) and no call into the correctly rounded `exp` written in
+// `core::libm`, which a GPU runs in f64.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// CHECK-DAG: launch=256
+// CHECK-DAG: {{__nv_expf|ex2.approx}}
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=NOLIBM
+// NOLIBM-NOT: libm_
+//
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
+// MLIR-DAG: func.call @f32$fast_exp
+// MLIR-DAG: func.call @f32$fast_tanh
+// MLIR-DAG: math.exp %{{.*}} : f32
+// MLIR-DAG: math.tanh %{{.*}} : f32
+//
+// Every element starts at 0, and e^0 + tanh(0) is exactly 1.
+// RUN: vxc %s 2>/dev/null | FileCheck %s --check-prefix=ANSWER
+// ANSWER: sum=256;
+
+import core::num;
+
+fn probe() -> f32 {
+  let mut o = Tensor<f32, [256, 1], Memory::GPU_HBM>::new();
+  spawn on(Topology::GPU) {
+    for r in 0..256 {
+      let x = o[r][0];
+      o[r][0] = x.fast_exp() + x.fast_tanh();
+    }
+  }
+  let back = transfer(o, Memory::CPU_DRAM);
+  let mut sum = 0.0;
+  for r in 0..256 {
+    sum = sum + back[r][0];
+  }
+  return sum;
+}
+
+fn main() -> i32 {
+  print!("sum=");
+  print(probe());
+  print!(";");
+  return 0;
+}

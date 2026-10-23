@@ -1,0 +1,32 @@
+//===- gpu_region_that_runs_on_the_cpu_gets_a_warning.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `first_of_new` makes a tensor on the heap, which nothing frees on the GPU. So the GPU code
+// generator cannot take the region, and the region runs on the CPU. The compiler says so, and
+// the launch has no device image.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=image= --implicit-check-not=Error
+// CHECK: Warning: a GPU region runs on the CPU, because the GPU code generator cannot take the call to 'first_of_new' or something that it calls.
+
+fn first_of_new() on Topology::Device -> f32 {
+  let t = Tensor<f32, [4]>::fill(2.0);
+  return t[0];
+}
+
+pub fn k(out : &mut Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..4 {
+      out[i] = first_of_new();
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

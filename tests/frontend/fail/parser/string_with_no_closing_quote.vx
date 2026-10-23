@@ -1,0 +1,16 @@
+//===- string_with_no_closing_quote.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The file ends inside a string, so the string has no closing quote. The error points at the
+// quote that opens it.
+//
+// CHECK: Error at 16:11: this string has no closing `"`: the file ends inside it
+
+fn main() -> i32 {
+  let s = "abc

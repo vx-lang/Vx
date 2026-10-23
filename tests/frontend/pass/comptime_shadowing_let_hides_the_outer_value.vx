@@ -1,0 +1,41 @@
+//===- comptime_shadowing_let_hides_the_outer_value.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `let` in a loop body or in an `if comptime` hides the outer variable of the same name, and
+// the outer value comes back after it. The asserts inside check the inner value, and the asserts
+// after check the outer one. A false assert would stop the compile (E8002).
+//
+// RUN: vxc %s | FileCheck %s
+
+fn seven() -> i64 {
+  return 7i64;
+}
+
+fn main() -> i32 {
+  let total = comptime {
+    let x = 5i64;
+    let y = 5i64;
+    let a : Tensor<i64, [2]> = [ 1i64, 2i64 ];
+    for i in 0..1 {
+      let x = i;
+      assert(x == 0, "x in the loop is the loop variable");
+    }
+    if comptime 1 < 2 {
+      let y = seven();
+      assert(y == 7i64, "y in the if is the result of seven()");
+      let a : Tensor<i64, [2]> = [ 3i64, 4i64 ];
+      assert(a[0] == 3i64, "a in the if is the inner array");
+    }
+    assert(x == 5i64, "x after the loop is the outer x");
+    assert(y == 5i64, "y after the if is the outer y");
+    assert(a[0] == 1i64, "a after the if is the outer array");
+    x + y + a[0]
+  };
+  // CHECK: 11
+  println!(total);
+  return 0;
+}

@@ -1,0 +1,37 @@
+//===- shared_cell_reference_is_not_readonly.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `add_one` writes through a shared reference to a `SharedCell`, so the compiler must not tell
+// LLVM that the reference is read-only (`llvm.readonly`). `read` takes a plain `&i32` and keeps
+// the mark.
+//
+// RUN: vxc %s --emit-mlir 2>&1 | FileCheck %s
+// EXPECT: 43
+
+// CHECK-DAG: func.func @read(%arg0: !llvm.ptr {llvm.readonly}) -> i32 {
+// CHECK-DAG: func.func @add_one(%arg0: !llvm.ptr) {
+
+import core::cell;
+
+fn add_one(c : &SharedCell<i32>) -> void {
+  let p = c.get();
+  unsafe { *p = *p + 1; }
+}
+
+fn read(x : &i32) -> i32 {
+  return *x;
+}
+
+fn main() -> i32 {
+  let c = SharedCell<i32>::new(41);
+  add_one(&c);
+  add_one(&c);
+  let n = c.into_inner();
+  let r = read(&n);
+  println!("{}", r);
+  return 0;
+}

@@ -1,0 +1,213 @@
+//===- across_loops_run_in_order_on_the_cpu.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Without each `across`, a program means the same (#252, L6), so its loops can run in order.
+// The regions run on the CPU here (`CUDA_VISIBLE_DEVICES=`): the CPU copy of a kernel has one
+// block of one lane. The kernels are a warp for each row with 40 columns, a 16x16 tile, a block
+// with lane loops of 256 and 128 and code between them that writes memory, blocks with no lane
+// loop, a sum that lane 0 makes and later lane-0 code reads, a plain loop and an `if` around lane
+// loops, `blocks(4)` with two axes of blocks and three of lanes, and `lanes(8)` beside a wider
+// lane loop. Each line is the sum of what a kernel wrote.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: warps 43900
+// CHECK-NEXT: tile 32640
+// CHECK-NEXT: two lane loops 137128
+// CHECK-NEXT: no lane loop 6
+// CHECK-NEXT: lane0 2354736
+// CHECK-NEXT: loops 2016
+// CHECK-NEXT: axes 1303920
+// CHECK-NEXT: shared 20000
+
+fn sum(t : &Tensor<f32, [?]>, n : i32) -> f32 {
+  let mut s = 0.0;
+  for i in 0..n {
+    s = s + t[i];
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  let rows = 5;
+  let cols = 40;
+  let mut y = transfer(Tensor<f32, [5, 40]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..(rows + 3) / 4 across blocks {
+      for w in 0..4 across subgroups {
+        let row = b * 4 + w;
+        if row < rows {
+          for c in 0..cols across lanes(32) {
+            y[row][c] = (row * 100 + c) as f32;
+          }
+        }
+      }
+    }
+  }
+  let y = transfer(y, Memory::CPU_DRAM);
+  let mut all = 0.0;
+  for r in 0..rows {
+    for c in 0..cols {
+      all = all + y[r][c];
+    }
+  }
+  println!("warps {}", all);
+
+  let mut t = transfer(Tensor<f32, [256]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for i in 0..16 across lanes {
+        for j in 0..16 across lanes {
+          t[i * 16 + j] = (i * 16 + j) as f32;
+        }
+      }
+    }
+  }
+  let t = transfer(t, Memory::CPU_DRAM);
+  println!("tile {}", sum(&t, 256));
+
+  let mut part = transfer(Tensor<f32, [256]>::fill(0.0), Memory::HBM);
+  let mut d = transfer(Tensor<f32, [128]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for i in 0..256 across lanes {
+        part[i] = i as f32;
+      }
+      part[0] = part[0] + 1000.0;
+      for i in 0..128 across lanes {
+        d[i] = part[i] + part[0];
+      }
+    }
+  }
+  let d = transfer(d, Memory::CPU_DRAM);
+  println!("two lane loops {}", sum(&d, 128));
+
+  let mut e = transfer(Tensor<f32, [3]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..3 across blocks {
+      e[b] = (b * 2) as f32;
+    }
+  }
+  let e = transfer(e, Memory::CPU_DRAM);
+  println!("no lane loop {}", sum(&e, 3));
+
+  let n = 3;
+  // A value that lane 0 sets, read by later code that lane 0 runs too.
+  let mut a = transfer(Tensor<f32, [3, 64]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut part = unsafe { Tensor<f32, [64], Memory::SMEM>::uninit() };
+      for l in 0..64 across lanes {
+        part[l] = (b * 64 + l) as f32;
+      }
+      let mut s : f32 = 0.0;
+      for k in 0..64 {
+        s = s + part[k];
+      }
+      let big = s * 2.0;
+      // A write to memory, so lane 0 alone runs this code, and `big` goes to later lane-0 code.
+      a[b][63] = 0.0;
+      for l in 0..32 across lanes {
+        a[b][l] = part[l] + 1.0;
+      }
+      part[1] = big;
+      for l in 0..64 across lanes {
+        a[b][l] = a[b][l] + part[1];
+      }
+    }
+  }
+  let ha = transfer(a, Memory::CPU_DRAM);
+  let mut sa = 0.0;
+  for r in 0..3 {
+    for c in 0..64 {
+      sa = sa + ha[r][c];
+    }
+  }
+  println!("lane0 {}", sa);
+
+  // A plain loop and an `if` around lane loops, with lane-0 code between them.
+  let mut c2 = transfer(Tensor<f32, [4, 16]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      let mut acc = unsafe { Tensor<f32, [16], Memory::SMEM>::uninit() };
+      for l in 0..16 across lanes {
+        acc[l] = 0.0;
+      }
+      for k in 0..n {
+        if b % 2 == 0 {
+          for l in 0..16 across lanes {
+            acc[l] = acc[l] + (k + l) as f32;
+          }
+        }
+        acc[0] = acc[0] + 100.0;
+      }
+      for l in 0..16 across lanes {
+        c2[b][l] = acc[l];
+      }
+    }
+  }
+  let h2 = transfer(c2, Memory::CPU_DRAM);
+  let mut s2 = 0.0;
+  for r in 0..4 {
+    for c in 0..16 {
+      s2 = s2 + h2[r][c];
+    }
+  }
+  println!("loops {}", s2);
+
+  // blocks(n), two axes of blocks, and three axes of lanes.
+  let mut d = transfer(Tensor<f32, [6, 5, 4, 2, 2]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for i in 0..6 across blocks(4) {
+      for j in 0..5 across blocks {
+        for p in 0..4 across lanes {
+          for q in 0..2 across lanes {
+            for r in 0..2 across lanes {
+              d[i][j][p][q][r] = (i * 1000 + j * 100 + p * 10 + q * 2 + r) as f32;
+            }
+          }
+        }
+      }
+    }
+  }
+  let hd = transfer(d, Memory::CPU_DRAM);
+  let mut sd = 0.0;
+  for i in 0..6 {
+    for j in 0..5 {
+      for p in 0..4 {
+        for q in 0..2 {
+          for r in 0..2 {
+            sd = sd + hd[i][j][p][q][r];
+          }
+        }
+      }
+    }
+  }
+  println!("axes {}", sd);
+
+  // lanes(n) with more passes than lanes, beside a wider nest.
+  let mut e = transfer(Tensor<f32, [2, 100]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..2 across blocks {
+      for c in 0..100 across lanes(8) {
+        e[b][c] = (b * 100 + c) as f32;
+      }
+      for c in 0..50 across lanes {
+        e[b][c] = e[b][c] + 1.0;
+      }
+    }
+  }
+  let he = transfer(e, Memory::CPU_DRAM);
+  let mut se = 0.0;
+  for r in 0..2 {
+    for c in 0..100 {
+      se = se + he[r][c];
+    }
+  }
+  println!("shared {}", se);
+  return 0;
+}

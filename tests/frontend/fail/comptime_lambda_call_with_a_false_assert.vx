@@ -1,0 +1,22 @@
+//===- comptime_lambda_call_with_a_false_assert.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A call to a `comptime` lambda runs while compiling. The lambda's assert is false for -4, so
+// the call is an error (E3033). The compiler used to skip the assert and fold the call to -4.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E3033] at {{.*}}: this call to a `comptime` lambda cannot be evaluated: a comptime lambda runs while compiling, so every argument has to be known then, and every assert in it has to hold
+
+fn main() -> i32 {
+  let positive = |v : i64| comptime {
+    assert(v > 0i64, "v must be positive");
+    v
+  };
+  let x : i64 = positive(0i64 - 4i64);
+  print(x);
+  return 0;
+}

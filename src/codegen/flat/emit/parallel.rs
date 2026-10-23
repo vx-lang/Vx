@@ -119,6 +119,7 @@ impl FnEmit<'_> {
     pub(crate) fn op_spawn(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         self.spawn_stack
             .push((ins.imm as u32 as i64, self.body.len(), ins.imm >> 32));
+        self.region_slots.push(None);
         self.body += &format!("  \"vx.spawn\"() ({{\n^bbspawn{idx}:\n");
         self.terminated = false;
         Ok(())
@@ -129,6 +130,7 @@ impl FnEmit<'_> {
     // the enclosing block (which the spawn op did not terminate).
     pub(crate) fn op_spawn_end(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let (topo, open_at, name) = self.spawn_stack.pop().ok_or(crate::emitter_gap!())?;
+        let across = matches!(self.region_slots.pop(), Some(Some(_)));
         // The topology's name as the program wrote it, from the function's string table.
         let name = match name.checked_sub(1) {
             Some(i) => {
@@ -141,13 +143,28 @@ impl FnEmit<'_> {
             None => String::new(),
         };
         // A region with a value yields `operand1`, and the op that opened at `open_at` gets
-        // the result name now that the value's type is known. A scalar or a tensor.
+        // the result name now that the value's type is known. A scalar, a tensor, or a struct
+        // (a task can return one). A struct in a slot is yielded as its value.
         let mut result_ty: Option<String> = None;
         if self.types.get(ins.type_idx.0 as usize).is_some() {
             let r = ins.operand1.0 as usize;
-            let v = self.names.get(r).ok_or(crate::emitter_gap!())?.clone();
+            let mut v = self.names.get(r).ok_or(crate::emitter_gap!())?.clone();
+            let struct_of = |gid: Option<TypeId>| {
+                gid.and_then(|g| self.ctx.aggs.get(&g))
+                    .map(|a| (gid.unwrap(), a.struct_ty.clone()))
+            };
+            let in_slot = struct_of(self.agg_of.get(r).copied().flatten());
+            let by_value = struct_of(self.agg_val_of.get(r).copied().flatten());
             let ty = if let Some(Some(m)) = self.mem_of.get(r) {
                 m.clone()
+            } else if let Some((gid, sty)) = in_slot.or(by_value.clone()) {
+                if by_value.is_none() && !self.terminated {
+                    let loaded = format!("%v{idx}_value");
+                    self.body += &format!("  {loaded} = llvm.load {v} : !llvm.ptr -> {sty}\n");
+                    v = loaded;
+                }
+                self.agg_val_of[idx] = Some(gid);
+                sty
             } else {
                 mlir_scalar(&self.elem_at(ins.operand1.0).ok_or(crate::emitter_gap!())?)
                     .ok_or(crate::emitter_gap!())?
@@ -161,7 +178,7 @@ impl FnEmit<'_> {
             self.names[idx] = n;
             if self.mem_of.get(r).is_some_and(|m| m.is_some()) {
                 self.mem_of[idx] = Some(ty.clone());
-            } else {
+            } else if self.agg_val_of[idx].is_none() {
                 self.etypes[idx] = self.elem_at(ins.operand1.0);
             }
             result_ty = Some(ty);
@@ -187,6 +204,7 @@ impl FnEmit<'_> {
         // Bits 32..47: the widest thread-loop trip, i.e. the block shape the launch
         // should use (Vx#379). Zero (a pre-two-level stream) falls back to 128.
         let threads = (ins.imm >> 32) & 0xffff;
+        let across = if across { ", vx.across" } else { "" };
         let trip = if trip_count > 0 {
             format!(
                 ", vx_parallel_trip = {trip_count} : i64{}",
@@ -203,13 +221,19 @@ impl FnEmit<'_> {
         } else {
             String::new()
         };
-        if let Some(arch) = self.ctx.topo_archs.get(&topo) {
+        if let Some(declared) = self.ctx.topo_archs.get(&topo) {
+            let arch = &declared.arch;
+            let chip = match &declared.chip {
+                Some(chip) => format!(", chip = \"{chip}\""),
+                None => String::new(),
+            };
             self.body += &format!(
-                "  }}) {{arch = \"{arch}\", topology = {topo} : i32{name}{trip}}} : () -> ({result_ty})\n"
+                "  }}) {{arch = \"{arch}\"{chip}, topology = {topo} : i32{name}{trip}{across}}} : () -> ({result_ty})\n"
             );
         } else {
-            self.body +=
-                &format!("  }}) {{topology = {topo} : i32{name}{trip}}} : () -> ({result_ty})\n");
+            self.body += &format!(
+                "  }}) {{topology = {topo} : i32{name}{trip}{across}}} : () -> ({result_ty})\n"
+            );
         }
         self.terminated = false;
         Ok(())
@@ -226,8 +250,64 @@ impl FnEmit<'_> {
     // Block-level sync (Vx#379). A registered op with no results and no Pure trait, so
     // the greedy folder cannot erase it before the device clone rewrites it to
     // `gpu.barrier`; the host lowering erases it instead (a serial loop IS the barrier).
-    pub(crate) fn op_barrier(&mut self, _idx: usize, _ins: &HirInstruction) -> Lowered<()> {
-        self.body += "  \"vx.barrier\"() : () -> ()\n";
+    // `subgroup`: only the lanes of one subgroup wait, as at the end of a lane loop in a
+    // subgroup loop.
+    pub(crate) fn op_barrier(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        if ins.imm == crate::bytecode::BARRIER_SUBGROUP {
+            self.body += "  \"vx.barrier\"() {subgroup} : () -> ()\n";
+        } else {
+            self.body += "  \"vx.barrier\"() : () -> ()\n";
+        }
+        Ok(())
+    }
+
+    pub(crate) fn op_launch_dim(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let v = self
+            .names
+            .get(ins.operand1.0 as usize)
+            .ok_or(crate::emitter_gap!())?
+            .clone();
+        self.body += &format!(
+            "  \"vx.launch_dim\"({v}) {{axis = {} : i32}} : (i32) -> ()\n",
+            ins.imm
+        );
+        Ok(())
+    }
+
+    // The GPU's own index ops. The CPU copy of the kernel reads an index as 0 and a count as 1,
+    // so a step of `min(lanes, block size)` is 1 there.
+    pub(crate) fn op_across_id(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let arg = ins.imm >> 2;
+        let axis = ["x", "y", "z"];
+        let (op, axis) = match ins.imm & 3 {
+            crate::bytecode::ACROSS_LANE => ("gpu.thread_id", "x"),
+            crate::bytecode::ACROSS_STRIDE => ("gpu.block_dim", "x"),
+            crate::bytecode::ACROSS_BLOCK => (
+                "gpu.block_id",
+                *axis.get(arg as usize).ok_or(crate::emitter_gap!())?,
+            ),
+            _ => (
+                "gpu.grid_dim",
+                *axis.get(arg as usize).ok_or(crate::emitter_gap!())?,
+            ),
+        };
+        let n = format!("%v{idx}");
+        self.body += &format!("  {n}_index = {op} {axis}\n");
+        if ins.imm & 3 == crate::bytecode::ACROSS_STRIDE {
+            self.body += &format!("  {n}_dim = arith.index_cast {n}_index : index to i32\n");
+            self.body += &format!("  {n}_lanes = arith.constant {arg} : i32\n");
+            self.body += &format!("  {n} = arith.minsi {n}_lanes, {n}_dim : i32\n");
+        } else {
+            self.body += &format!("  {n} = arith.index_cast {n}_index : index to i32\n");
+        }
+        self.names[idx] = n;
+        self.etypes[idx] = Some(ElementType::I32);
+        Ok(())
+    }
+
+    pub(crate) fn op_across_region(&mut self, _idx: usize, _ins: &HirInstruction) -> Lowered<()> {
+        let at = self.region_slots.last_mut().ok_or(crate::emitter_gap!())?;
+        *at = Some(self.body.len());
         Ok(())
     }
 }

@@ -9,7 +9,7 @@
 //
 // RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
 // RUN: vxc %s --action emit-llvm --legacy-codegen 2>&1 | FileCheck %s
-// CHECK: llvm.func @fail(%arg0: !llvm.ptr) attributes {passthrough = ["noreturn"]}
+// CHECK: llvm.func hidden @fail(%arg0: !llvm.ptr) attributes {dso_local, passthrough = ["noreturn"]}
 fn fail(msg : *const i8) -> ! {
   panic(msg);
 }

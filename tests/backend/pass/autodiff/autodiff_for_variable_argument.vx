@@ -1,0 +1,43 @@
+//===- autodiff_for_variable_argument.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `for` variable passed to grad and vjp for an `i32` parameter is converted to `i32`, as
+// in an ordinary call. The struct parameter makes the compiler use the AST code generator.
+//
+// EXPECT: grad 4 3
+// EXPECT: vjp 8 6
+
+struct P {
+  a : f64,
+}
+
+impl Copy for P {}
+
+fn f(x : f64, p : P, k : i32) -> f64 {
+  if k == 0 {
+    return p.a * x * x;
+  }
+  return 3.0 * x;
+}
+
+fn main() -> i32 {
+  let p = P {
+    a: 1.0
+  };
+  print!("grad");
+  for k in 0..2 {
+    print!(" ");
+    print(grad(f, 2.0, p, k) as i64);
+  }
+  print!("\nvjp");
+  for k in 0..2 {
+    print!(" ");
+    print(vjp(f, 2.0, p, k, 2.0) as i64);
+  }
+  print!("\n");
+  return 0;
+}

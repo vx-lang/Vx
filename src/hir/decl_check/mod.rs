@@ -19,6 +19,7 @@ mod conflicts;
 mod copy_impls;
 mod memory;
 mod placement;
+mod thread_safety_impls;
 mod topology;
 
 impl TypeChecker<'_> {
@@ -38,6 +39,8 @@ impl TypeChecker<'_> {
         self.check_declaration_conflicts();
         // `impl Copy for X` where one of X's fields moves rather than copies.
         self.check_copy_impls();
+        // `impl Send for X` with no `unsafe`, and `unsafe impl` of another trait.
+        self.check_thread_safety_impls();
         // An impl binds every associated type its trait declares. Nothing downstream can catch
         // this: the binding is substituted into the signatures before name resolution runs.
         self.check_associated_type_bindings();

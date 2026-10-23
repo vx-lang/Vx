@@ -14,10 +14,17 @@ use super::*;
 
 impl<'a> Parser<'a> {
     pub(crate) fn expect_identifier(&mut self, msg: &str) -> ParseResult<'a, String> {
-        match self.advance().kind {
+        let token = self.advance();
+        match &token.kind {
             TokenType::Identifier(s) => Ok(s.to_string()),
-            TokenType::Transfer => Ok("transfer".to_string()),
-            _ => Err(self.error(msg)),
+            // Keywords (including `transfer`) cannot bind a name. Capital `Transfer` for
+            // `impl Transfer<...>` is an Identifier, so it still parses; the `transfer(...)`
+            // call form is handled in the expression parser, not here.
+            other if other.is_keyword() => Err(self.error_at(
+                token,
+                &format!("`{}` is a keyword and cannot be used as a name", other),
+            )),
+            _ => Err(self.error_at(token, msg)),
         }
     }
 
@@ -135,6 +142,10 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_function(&mut self) -> ParseResult<'a, Function> {
+        // A top-level `pub fn` has its `pub` read before this, so one here is on a method.
+        if self.check(&TokenType::Pub) {
+            return Err(self.error("`pub` on a method is not supported yet"));
+        }
         let is_unsafe = self.match_token(&TokenType::Unsafe);
         self.consume(&TokenType::Fn, "Expected 'fn'")?;
 
@@ -245,6 +256,7 @@ impl<'a> Parser<'a> {
 
         Ok(Function {
             is_unsafe,
+            is_pub: false,
             name: name.into(),
             generics,
             params,
@@ -289,6 +301,8 @@ impl<'a> Parser<'a> {
         let mut visible_given = false;
         let mut transfers: Vec<crate::arch::TransferEdge> = Vec::new();
         let mut dtypes: Option<Vec<crate::syntax::ElementType>> = None;
+        let mut chip: Option<crate::symbol::Symbol> = None;
+        let mut levels: Option<Vec<crate::arch::Level>> = None;
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             // `transfer Memory::<From> -> Memory::<To> : <cost> [relaxed|sync]` -- a declared
@@ -419,6 +433,20 @@ impl<'a> Parser<'a> {
                     }
                     dtypes = Some(listed);
                 }
+                "chip" => {
+                    chip = Some(match &self.advance().kind {
+                        TokenType::Identifier(s) if s.starts_with("sm_") => {
+                            crate::symbol::Symbol::from(&**s)
+                        }
+                        other => {
+                            return Err(self.error(&format!(
+                                "`chip:` expects a GPU generation such as sm_90a, got {:?}",
+                                other
+                            )))
+                        }
+                    });
+                }
+                "levels" => levels = Some(self.parse_levels()?),
                 other => return Err(self.error(&format!("Unknown topology field '{}'", other))),
             }
             self.match_token(&TokenType::Comma);
@@ -432,6 +460,12 @@ impl<'a> Parser<'a> {
             Some(s) => s,
             None => return Err(self.error("topology declaration needs a `memory:` field")),
         };
+        if chip.is_some() && arch.as_ref().map(|a| a.as_ref()) != Some("nvptx64") {
+            return Err(self.error("`chip:` names an NVIDIA GPU, so it needs `arch: nvptx64`"));
+        }
+        if let Some(levels) = &levels {
+            self.check_levels_for_arch(levels, arch.as_ref().map(|a| a.as_ref()))?;
+        }
         // With no explicit `visible`, a topology sees exactly its own default space. An
         // explicit `visible` list is respected verbatim, so an inconsistent one (default
         // not listed) is caught by the coherence check (E6005) rather than silently fixed.
@@ -449,8 +483,170 @@ impl<'a> Parser<'a> {
                 visibility,
                 transfers,
                 dtypes,
+                chip,
+                levels,
             },
         })
+    }
+
+    /// `levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(..)]`. The
+    /// place of an entry gives its kind: the first is a block, the last a lane, and a middle one
+    /// a subgroup.
+    fn parse_levels(&mut self) -> ParseResult<'a, Vec<crate::arch::Level>> {
+        use crate::arch::LevelKind;
+        self.consume(&TokenType::LeftBracket, "Expected '[' after 'levels'")?;
+        let mut entries = Vec::new();
+        while !self.check(&TokenType::RightBracket) && !self.check(&TokenType::Eof) {
+            let name = match &self.advance().kind {
+                TokenType::Identifier(s) => crate::symbol::Symbol::from(*s),
+                other => {
+                    return Err(self.error(&format!(
+                        "`levels:` expects a level name such as `blocks`, got {:?}",
+                        other
+                    )))
+                }
+            };
+            let (mut max_lanes, mut lanes, mut memory) = (None, None, None);
+            if self.match_token(&TokenType::LeftParen) {
+                while !self.check(&TokenType::RightParen) && !self.check(&TokenType::Eof) {
+                    let fact = match &self.advance().kind {
+                        TokenType::Identifier(s) => s.to_string(),
+                        other => {
+                            return Err(self.error(&format!(
+                                "Expected `max_lanes`, `lanes` or `memory` in a level, got {:?}",
+                                other
+                            )))
+                        }
+                    };
+                    self.consume(&TokenType::Colon, "Expected ':' after a fact of a level")?;
+                    match fact.as_str() {
+                        "max_lanes" => max_lanes = Some(self.parse_level_count(&fact)?),
+                        "lanes" => lanes = Some(self.parse_level_count(&fact)?),
+                        "memory" => {
+                            memory = Some(match &self.advance().kind {
+                                TokenType::Identifier("cta") => crate::syntax::Scope::Cta,
+                                TokenType::Identifier("thread") => crate::syntax::Scope::Thread,
+                                other => {
+                                    return Err(self.error(&format!(
+                                        "`memory:` of a level expects `cta` or `thread`, got {:?}",
+                                        other
+                                    )))
+                                }
+                            })
+                        }
+                        other => {
+                            return Err(self.error(&format!(
+                                "A level has `max_lanes`, `lanes` and `memory`, not `{other}`"
+                            )))
+                        }
+                    }
+                    if !self.match_token(&TokenType::Comma) {
+                        break;
+                    }
+                }
+                self.consume(
+                    &TokenType::RightParen,
+                    "Expected ')' after the facts of a level",
+                )?;
+            }
+            entries.push((name, max_lanes, lanes, memory));
+            if !self.match_token(&TokenType::Comma) {
+                break;
+            }
+        }
+        self.consume(&TokenType::RightBracket, "Expected ']' after the levels")?;
+        if !(2..=3).contains(&entries.len()) {
+            return Err(self.error(&format!(
+                "`levels:` has {} entries. It needs two (blocks and lanes) or three (blocks, \
+                 subgroups and lanes)",
+                entries.len()
+            )));
+        }
+        let last = entries.len() - 1;
+        let mut levels: Vec<crate::arch::Level> = Vec::new();
+        for (i, (name, max_lanes, lanes, memory)) in entries.into_iter().enumerate() {
+            let kind = match i {
+                0 => LevelKind::Blocks,
+                i if i == last => LevelKind::Lanes,
+                _ => LevelKind::Subgroups,
+            };
+            if levels.iter().any(|l| l.name == name) {
+                return Err(self.error(&format!("`levels:` names `{name}` twice")));
+            }
+            match kind {
+                LevelKind::Blocks if max_lanes.is_none() => {
+                    return Err(self.error(&format!(
+                        "`{name}` is the block level, so it needs `max_lanes:`"
+                    )))
+                }
+                LevelKind::Subgroups if lanes.is_none() => {
+                    return Err(self.error(&format!(
+                        "`{name}` is the subgroup level, so it needs `lanes:`"
+                    )))
+                }
+                _ => {}
+            }
+            if max_lanes.is_some() && kind != LevelKind::Blocks {
+                return Err(self.error(&format!(
+                    "Only the first level, the block level, has `max_lanes:`, not `{name}`"
+                )));
+            }
+            if lanes.is_some() && kind != LevelKind::Subgroups {
+                return Err(self.error(&format!(
+                    "Only a middle level, the subgroup level, has `lanes:`, not `{name}`"
+                )));
+            }
+            levels.push(crate::arch::Level {
+                name,
+                kind,
+                max_lanes,
+                lanes,
+                memory,
+            });
+        }
+        Ok(levels)
+    }
+
+    fn parse_level_count(&mut self, fact: &str) -> ParseResult<'a, u64> {
+        match &self.advance().kind {
+            TokenType::Number(n) => match n.parse::<u64>() {
+                Ok(v) if v > 0 => Ok(v),
+                _ => Err(self.error(&format!("`{fact}:` expects a count above 0, got {n}"))),
+            },
+            other => Err(self.error(&format!("`{fact}:` expects a count, got {:?}", other))),
+        }
+    }
+
+    /// A `levels:` stays within what its arch can launch, when its code generator can launch them.
+    fn check_levels_for_arch(
+        &self,
+        levels: &[crate::arch::Level],
+        arch: Option<&str>,
+    ) -> ParseResult<'a, ()> {
+        let Some((max, size)) = arch
+            .and_then(crate::arch::DeviceTarget::from_arch)
+            .and_then(crate::arch::DeviceTarget::launch_limits)
+        else {
+            return Ok(());
+        };
+        let arch = arch.unwrap_or_default();
+        for l in levels {
+            if let Some(n) = l.max_lanes {
+                if n > max {
+                    return Err(self.error(&format!(
+                        "`max_lanes: {n}` is more than a block of `{arch}` can have, which is {max}"
+                    )));
+                }
+            }
+            if let Some(n) = l.lanes {
+                if n != size {
+                    return Err(self.error(&format!(
+                        "`lanes: {n}`: a subgroup of `{arch}` has {size} lanes"
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// `Memory <Name> { within:, capacity:, bandwidth:, managed:, granule: }` -- a first-class
@@ -472,6 +668,7 @@ impl<'a> Parser<'a> {
         let mut numa_node: Option<u64> = None;
         let mut managed = crate::syntax::Management::default();
         let mut granule: Option<crate::syntax::ByteSize> = None;
+        let mut alignment: Option<crate::syntax::ByteSize> = None;
         let mut scope: Option<crate::syntax::Scope> = None;
         let mut overcommit = false;
         let mut crossing = crate::syntax::Crossing::default();
@@ -519,6 +716,16 @@ impl<'a> Parser<'a> {
                 }
                 "capacity" => capacity = Some(self.parse_byte_size()?),
                 "granule" => granule = Some(self.parse_byte_size()?),
+                "alignment" => {
+                    let size = self.parse_byte_size()?;
+                    if !size.0.is_power_of_two() {
+                        return Err(self.error(&format!(
+                            "`alignment:` must be a power of two bytes, got {} bytes",
+                            size.0
+                        )));
+                    }
+                    alignment = Some(size);
+                }
                 "bandwidth" => bandwidth = Some(self.parse_bandwidth()?),
                 "clock" => clock_hz = Some(self.parse_clock()?),
                 "replicas" => replicas = Some(self.parse_count()?),
@@ -584,6 +791,7 @@ impl<'a> Parser<'a> {
             numa_node,
             managed,
             granule,
+            alignment,
             scope,
             overcommit,
             crossing,
@@ -809,6 +1017,24 @@ impl<'a> Parser<'a> {
         Ok(name)
     }
 
+    /// Refuse a second struct, enum or trait named `name`; `start` is where it was written. Two
+    /// of them used to be accepted, and `name` then meant whichever was found first.
+    fn declare_type(
+        &self,
+        defined_at: &mut std::collections::HashMap<crate::symbol::Symbol, (usize, usize)>,
+        name: &crate::symbol::Symbol,
+        start: &Token<'a>,
+    ) -> ParseResult<'a, ()> {
+        if let Some((line, column)) = defined_at.get(name) {
+            return Err(self.error_at(
+                start,
+                &format!("the type `{name}` is already defined at {line}:{column}"),
+            ));
+        }
+        defined_at.insert(name.clone(), (start.line, start.column));
+        Ok(())
+    }
+
     pub(crate) fn parse_struct_decl(&mut self) -> ParseResult<'a, StructDecl> {
         self.consume(&TokenType::Struct, "Expected 'struct'")?;
 
@@ -948,6 +1174,7 @@ impl<'a> Parser<'a> {
                     line: decl_line,
                     column: decl_column,
                     length: 0,
+                    expansion: self.expansion(),
                 },
                 doc_comment,
             });
@@ -998,6 +1225,9 @@ impl<'a> Parser<'a> {
             }
             if self.check(&TokenType::Unsafe) {
                 return Err(self.error("`unsafe fn` on a trait method is not supported yet"));
+            }
+            if self.check(&TokenType::Pub) {
+                return Err(self.error("`pub` on a method is not supported yet"));
             }
             self.consume(&TokenType::Fn, "Expected 'fn' in trait")?;
             let method_name = self.expect_identifier("Expected method name")?;
@@ -1108,6 +1338,7 @@ impl<'a> Parser<'a> {
         };
 
         self.consume(&TokenType::LeftBrace, "Expected '{' after impl target")?;
+        let outer_self = self.impl_self.replace(target_type.clone());
         let mut methods = Vec::new();
         let mut assoc_bindings: Vec<(crate::symbol::Symbol, Type)> = Vec::new();
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -1162,6 +1393,7 @@ impl<'a> Parser<'a> {
             methods.push(method);
         }
         self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        self.impl_self = outer_self;
 
         for _ in 0..generics.len() {
             self.generic_params.pop();
@@ -1175,6 +1407,7 @@ impl<'a> Parser<'a> {
             methods,
             assoc_bindings,
             copied_defaults: Vec::new(),
+            is_unsafe: false,
         })
     }
 
@@ -1245,6 +1478,7 @@ impl<'a> Parser<'a> {
                 line: span_start_line,
                 column: span_start_column,
                 length: 0,
+                expansion: self.expansion(),
             },
         })
     }
@@ -1317,6 +1551,7 @@ impl<'a> Parser<'a> {
                 line: keyword.line,
                 column: keyword.column,
                 length: keyword.length,
+                expansion: self.expansion(),
             },
             doc_comment: None,
         })
@@ -1334,6 +1569,9 @@ impl<'a> Parser<'a> {
         let mut functions = Vec::new();
         // Where each function was written, to report a second one with the same name.
         let mut defined_at: std::collections::HashMap<crate::symbol::Symbol, (usize, usize)> =
+            std::collections::HashMap::new();
+        // The same for each struct, enum and trait, which share one namespace.
+        let mut type_defined_at: std::collections::HashMap<crate::symbol::Symbol, (usize, usize)> =
             std::collections::HashMap::new();
         let mut consts = Vec::new();
         let mut macros = Vec::new();
@@ -1357,9 +1595,31 @@ impl<'a> Parser<'a> {
             } else if self.check(&TokenType::MacroRules) {
                 macros.push(self.parse_macro_def()?);
             } else if self.check(&TokenType::Extern) {
-                externs.extend(self.parse_extern_block()?);
+                let mut at = self.peek().clone();
+                let block = self.parse_extern_block()?;
+                // A C function keeps its name, so a Vx function cannot share it.
+                for e in &block {
+                    if let Some((line, column)) = defined_at.get(&e.name) {
+                        (at.line, at.column) = (e.span.line, e.span.column);
+                        return Err(self.error_at(
+                            &at,
+                            &format!("`{}` is already defined at {line}:{column}", e.name),
+                        ));
+                    }
+                }
+                externs.extend(block);
             } else if self.check(&TokenType::Trait) {
-                traits.push(self.parse_trait_decl()?);
+                let start = self.peek().clone();
+                let t = self.parse_trait_decl()?;
+                self.declare_type(&mut type_defined_at, &t.name, &start)?;
+                traits.push(t);
+            } else if self.check(&TokenType::Unsafe)
+                && matches!(self.peek_n(1).kind, TokenType::Impl)
+            {
+                self.advance();
+                let mut ib = self.parse_impl_block()?;
+                ib.is_unsafe = true;
+                impls.push(ib);
             } else if self.check(&TokenType::Impl) {
                 // `impl Transfer<Memory::A, Memory::B> for Topology::X { ... }` is a transfer
                 // lowering, not an ordinary trait impl. The trait name `Transfer` is reserved for
@@ -1380,23 +1640,41 @@ impl<'a> Parser<'a> {
                     impls.push(self.parse_impl_block()?);
                 }
             } else if self.check(&TokenType::Struct) {
+                let start = self.peek().clone();
                 let mut s = self.parse_struct_decl()?;
+                self.declare_type(&mut type_defined_at, &s.name, &start)?;
                 s.doc_comment = doc_comment;
                 structs.push(s);
             } else if self.check(&TokenType::Enum) {
+                let start = self.peek().clone();
                 let mut e = self.parse_enum_decl()?;
+                self.declare_type(&mut type_defined_at, &e.name, &start)?;
                 e.doc_comment = doc_comment;
                 enums.push(e);
             } else if self.at_const_item() {
                 let mut c = self.parse_const_item()?;
                 c.doc_comment = doc_comment;
                 consts.push(c);
-            } else if self.at_fn_start() {
+            } else if self.at_fn_start() || self.check(&TokenType::Pub) {
                 let start = self.peek().clone();
+                let is_pub = self.match_token(&TokenType::Pub);
+                if is_pub && !self.at_fn_start() {
+                    return Err(self.error("Expected 'fn' after 'pub'"));
+                }
                 let mut f = self.parse_function()?;
+                // A generic function becomes one copy per type, each with its own name, so
+                // there is no single name to export.
+                if is_pub && !f.generics.is_empty() {
+                    return Err(self.error_at(&start, "a generic function cannot be `pub` yet"));
+                }
+                f.is_pub = is_pub;
                 f.doc_comment = doc_comment;
                 // Vx has no overloading: a second `fn foo` replaced the first without a word.
-                if let Some((line, column)) = defined_at.get(&f.name) {
+                let earlier = defined_at.get(&f.name).copied().or_else(|| {
+                    let e = externs.iter().find(|e: &&ExternDecl| e.name == f.name)?;
+                    Some((e.span.line, e.span.column))
+                });
+                if let Some((line, column)) = earlier {
                     return Err(self.error_at(
                         &start,
                         &format!("`{}` is already defined at {line}:{column}", f.name),
@@ -1421,6 +1699,8 @@ impl<'a> Parser<'a> {
                 // `stamp_impl!(i32);` where an item goes. What it expands to is not known until
                 // macro expansion runs, so it is recorded and replaced there.
                 item_macros.push(self.parse_item_macro_call()?);
+            } else if self.peek().kind == TokenType::Unknown('"') {
+                return Err(self.error(super::UNCLOSED_STRING));
             } else {
                 return Err(self.error(&format!(
                     "Unexpected token at top level: {:?}",
@@ -1842,6 +2122,74 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
     }
 
     #[test]
+    fn test_transfer_rejected_as_let_and_for_name() {
+        // `transfer` used to parse as a binding and only fail later at a call site
+        // (`Expected '(' after transfer`). let/for must refuse it like other keywords.
+        let cases = [
+            "fn main() -> i32 { let transfer = 3; return 0; }",
+            "fn main() -> i32 { for transfer in 0..3 { } return 0; }",
+        ];
+        for input in cases {
+            let tokens = crate::lexer::Lexer::new(input).tokenize();
+            let mut parser = Parser::new(&tokens, input);
+            let err = parser
+                .parse_function()
+                .expect_err("transfer as a binding name should fail");
+            let msg = err.format(input);
+            assert!(
+                msg.contains("`transfer` is a keyword and cannot be used as a name"),
+                "message was: {msg}"
+            );
+            assert!(
+                !msg.contains("Expected '(' after transfer"),
+                "must not fall through to the call-site error: {msg}"
+            );
+        }
+        // Point at `transfer` itself for the let case (col 24), not at `=`.
+        let let_input = cases[0];
+        let tokens = crate::lexer::Lexer::new(let_input).tokenize();
+        let mut parser = Parser::new(&tokens, let_input);
+        let msg = parser.parse_function().unwrap_err().format(let_input);
+        assert!(
+            msg.contains("Error at 1:24:"),
+            "expected span on transfer, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_keyword_rejected_as_for_and_fn_name() {
+        // FileCheck on parser_keyword_as_name.vx stops at the first error (let);
+        // these keep for/fn coverage in the unit suite.
+        let for_input = "fn main() -> i32 { for across in 0..3 { } return 0; }";
+        let tokens = crate::lexer::Lexer::new(for_input).tokenize();
+        let mut parser = Parser::new(&tokens, for_input);
+        let msg = parser
+            .parse_function()
+            .expect_err("for across should fail")
+            .format(for_input);
+        assert!(
+            msg.contains("`across` is a keyword and cannot be used as a name"),
+            "message was: {msg}"
+        );
+
+        let fn_input = "fn across() -> i32 { return 0; }";
+        let tokens = crate::lexer::Lexer::new(fn_input).tokenize();
+        let mut parser = Parser::new(&tokens, fn_input);
+        let msg = parser
+            .parse_function()
+            .expect_err("fn across should fail")
+            .format(fn_input);
+        assert!(
+            msg.contains("`across` is a keyword and cannot be used as a name"),
+            "message was: {msg}"
+        );
+        assert!(
+            msg.contains("Error at 1:4:"),
+            "expected span on across, got: {msg}"
+        );
+    }
+
+    #[test]
     fn test_parse_for_loop() {
         let input = "fn main() -> Tensor<f32, [?, ?]> { for i in 0..10 { x = 5; } }";
         let tokens = Lexer::new(input).tokenize();
@@ -1854,6 +2202,8 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
             invariants: _,
             span: _,
             next_fn: _,
+            unroll: _,
+            across: None,
         }) = &program.functions[0].body[0]
         {
             assert_eq!(iter, "i");
@@ -2099,9 +2449,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         if let Statement::ExprStmt(ExprStmtStmt {
             expr:
                 Expr::UnsafeBlock(UnsafeBlockExpr {
-                    stmts,
-                    ret: None,
-                    span: _,
+                    stmts, ret: None, ..
                 }),
             has_semi: _,
             span: _,

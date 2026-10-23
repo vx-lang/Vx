@@ -1,0 +1,42 @@
+//===- gpu_region_that_reads_scalars_of_the_host.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s --host default --machine fleet/a100-40.vx 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A GPU region gets a scalar that nothing can write by value, as a launch parameter. So it may
+// use a scalar argument or a scalar `let` of the host. A `mut` scalar stays in host memory,
+// which the GPU of this machine cannot see.
+
+pub fn reads_scalars(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32, k : f32) -> void {
+  let twice = k * 2.0;
+  spawn on(Topology::Device) {
+    for i in 0..4 {
+      if i < n {
+        out[i] = twice;
+      }
+    }
+  }
+  return;
+}
+
+// CHECK: Error[E6003] at [[@LINE+6]]:16: 'count' lives in CPU_DRAM but Device sees only
+pub fn reads_a_mut_scalar(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  let mut count = n;
+  count += 1;
+  spawn on(Topology::Device) {
+    for i in 0..4 {
+      out[i] = count as f32;
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: {{^}}Semantic check failed on {{.*}}: 1 error(s) emitted

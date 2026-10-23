@@ -15,9 +15,9 @@
 // The checker recognizes the trait by name, so it has to be declared somewhere a program
 // can import rather than written out in each one. That is what this module is for.
 //
-// `Send` and `Sync` are declared and mean nothing: the language has no threads to enforce
-// them across. They are here so a signature that wants to name a bound can, and the parity
-// matrix records that they are not enforced.
+// `Send` and `Sync` say how a value may cross tasks. The compiler derives both from the fields
+// of a type, so a type does not implement them by hand. A raw pointer is neither, and a type that
+// holds one opts in with `unsafe impl`.
 //
 // `Sized` is a no-op: every type Vx has is sized, and the bound exists to be written.
 
@@ -53,12 +53,17 @@ stamp_copy!(f32);
 stamp_copy!(f64);
 stamp_copy!(bool);
 
-/// A type that may be moved to another thread. Declared, not enforced: there are no threads
-/// to send a value between yet.
+/// A type whose values may move into another task.
+///
+/// The compiler derives it: a struct or an enum is `Send` when each of its fields is. A raw
+/// pointer and a closure type are not. A type that holds a raw pointer and is safe to move writes
+/// `unsafe impl Send for T {}`, as `Vec` does.
 trait Send {}
 
-/// A type that may be referenced from several threads at once. Declared, not enforced, for
-/// the same reason as `Send`.
+/// A type that two tasks may use through `&T` at the same time.
+///
+/// The compiler derives it as it derives `Send`. `SharedCell` is never `Sync`, because code can
+/// write its value through `&`. An atomic holds a `SharedCell` and opts in with `unsafe impl`.
 trait Sync {}
 
 /// A type whose size is known at compile time, which every Vx type is. The bound exists to be

@@ -1,0 +1,29 @@
+//===- void_function_that_ends_in_if_else.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `void` function can end in an `if`/`else` with no value. The program prints 1 0.
+//
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// RUN: vxc %s 2>&1 | FileCheck %s
+// CHECK: 1 0
+
+fn set(flag : &mut bool, yes : bool) -> void {
+  if yes {
+    *flag = true;
+  } else {
+    *flag = false;
+  }
+}
+
+fn main() -> i32 {
+  let mut a = false;
+  let mut b = true;
+  set(&mut a, true);
+  set(&mut b, false);
+  println!("{} {}", a as i32, b as i32);
+  return 0;
+}

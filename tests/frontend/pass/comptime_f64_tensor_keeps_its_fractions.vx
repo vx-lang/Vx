@@ -1,0 +1,50 @@
+//===- comptime_f64_tensor_keeps_its_fractions.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `comptime` block that returns an `f64` tensor folds to an `f64` tensor. Its first element
+// is 0.0, a whole number. The compiler used to write that element as the integer `0`, so the
+// whole tensor became an `i32` tensor, and 0.5 and 1.5 printed as 0 and 1. Passing it to
+// `sum` by reference then failed MLIR verification. A call to the `comptime` function `pair`
+// folds the same way.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-LABEL: func.func @main
+// CHECK-DAG: arith.constant 5.000000e-01 : f64
+// CHECK-DAG: arith.constant 1.500000e+00 : f64
+// CHECK-DAG: memref.alloc() : memref<4xf64>
+// CHECK-DAG: arith.constant 7.500000e-01 : f64
+// CHECK-DAG: memref.alloc() : memref<2xf64>
+
+fn halves() -> Tensor<f64, [4]> {
+  let mut t : Tensor<f64, [4]> = [ 0.0f64, 0.0f64, 0.0f64, 0.0f64 ];
+  let mut x : f64 = 0.0;
+  for i in 0..4 {
+    t[i] = x;
+    x = x + 0.5f64;
+  }
+  return t;
+}
+
+fn sum(t : &Tensor<f64, [4]>) -> f64 {
+  return t[0] + t[1] + t[2] + t[3];
+}
+
+fn pair(second : f64) -> Tensor<f64, [2]> {
+  return comptime {
+    [ 0.0f64, second ]
+  };
+}
+
+fn main() -> i32 {
+  let t : Tensor<f64, [4]> = comptime {
+    halves()
+  };
+  print(sum(&t));
+  let p : Tensor<f64, [2]> = pair(0.75f64);
+  print(p[1]);
+  return 0;
+}

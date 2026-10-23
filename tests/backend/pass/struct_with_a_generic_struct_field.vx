@@ -1,0 +1,52 @@
+//===- struct_with_a_generic_struct_field.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Mixed` holds instances of the generic struct `Holder<T>` by value. The size of `Holder<T>`
+// depends on `T`, so each instance needs its own layout. The program builds a `Mixed` in a
+// function, returns it, and reads each field through a reference.
+//
+// EXPECT: 1 100 2 7
+// EXPECT: 110
+
+import core::convert;
+
+struct Holder<T> {
+  x : T,
+}
+
+struct Mixed {
+  a : i8,
+  h : Holder<i64>,
+  b : i8,
+  n : Holder<Holder<i32>>,
+}
+
+fn make(v : i64) -> Mixed {
+  return Mixed {
+    a : 1,
+    h : Holder<i64> {
+      x : v
+    },
+    b : 2,
+    n : Holder<Holder<i32>> {
+      x : Holder<i32> {
+        x : 7
+      }
+    }
+  };
+}
+
+fn total(m : &Mixed) -> i64 {
+  return i64::from(m.a) + m.h.x + i64::from(m.b) + i64::from(m.n.x.x);
+}
+
+fn main() -> i32 {
+  let m = make(100);
+  println!("{} {} {} {}", m.a, m.h.x, m.b, m.n.x.x);
+  println!("{}", total(&m));
+  return 0;
+}

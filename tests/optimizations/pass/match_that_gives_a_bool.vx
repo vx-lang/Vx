@@ -1,0 +1,48 @@
+//===- match_that_gives_a_bool.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` that gives a `bool`, stored in a `let` with no type. The AST code generator
+// did not know the type of `true`, so it used an `i32` 0 in place of the match, and the
+// `if` failed MLIR verification. Only the AST code generator runs here: the default one
+// does not yet compile a match used as a value.
+//
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// CHECK: three yes
+// CHECK-NEXT: four no
+
+fn main() -> i32 {
+  let n = 3;
+  let is_three = match n {
+    3 => {
+      true
+    }
+    _ => {
+      false
+    }
+  };
+  if is_three {
+    println!("three yes");
+  } else {
+    println!("three no");
+  }
+  let m = 4;
+  let is_three_too = match m {
+    3 => {
+      true
+    }
+    _ => {
+      false
+    }
+  };
+  if is_three_too {
+    println!("four yes");
+  } else {
+    println!("four no");
+  }
+  return 0;
+}

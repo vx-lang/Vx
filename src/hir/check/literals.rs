@@ -192,9 +192,15 @@ impl<'a> TypeChecker<'a> {
                         );
                     }
                 } else if !self.speculating {
+                    let poisoned = self.worker.global.registry.poisoned_reason(enum_name)
+                        == Some(crate::registry::PoisonKind::EnumVariant);
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E2003,
-                        format!("Unknown enum {}", enum_name),
+                        if poisoned {
+                            crate::registry::ambiguous_import_message("Enum", enum_name)
+                        } else {
+                            format!("Unknown enum {}", enum_name)
+                        },
                         Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                     );
                 }
@@ -228,6 +234,33 @@ impl<'a> TypeChecker<'a> {
         n.ty = Some(elem.clone());
         self.check_usize_literal(n, &elem);
         Type::Scalar(elem)
+    }
+
+    /// A note for a type error on a variable whose `let` has no type and starts from a bare
+    /// number literal, when `wanted` is a number of the same kind. The literal took its default
+    /// type, and the fix is to write the type on the `let`.
+    pub(crate) fn literal_default_note(
+        &self,
+        e: &Expr,
+        got: &Type,
+        wanted: &Type,
+    ) -> Option<String> {
+        let Expr::Identifier(id) = e else {
+            return None;
+        };
+        let (Type::Scalar(g), Type::Scalar(w)) = (got, wanted) else {
+            return None;
+        };
+        let is_int = |t: &ElementType| *t != ElementType::Bool && t.int_bits().is_some();
+        let same_kind = (g.is_float() && w.is_float()) || (is_int(g) && is_int(w));
+        let depth = self.literal_typed_lets.get(id.name.as_ref())?;
+        (same_kind && *depth == self.scope_depth_of(&id.name)).then(|| {
+            format!(
+                "`{0}` is {g} because its `let` has no type and starts from a literal; write \
+                 `let {0} : {w} = ...`",
+                id.name
+            )
+        })
     }
 
     /// A `usize` never has its top bit set, which is what lets its arithmetic be marked as
@@ -494,11 +527,23 @@ impl<'a> TypeChecker<'a> {
                         .unwrap_or(0)
                 };
                 let order = std::iter::once(lead).chain((0..elements.len()).filter(|&i| i != lead));
+                // An annotation such as `Tensor<f64, [2]>` gives the literals their element type.
+                let wanted = match &self.expected_type {
+                    Some(Type::Tensor(e, dims, _)) if nested && dims.len() > 1 => {
+                        Some(Type::Tensor(e.clone(), dims[1..].to_vec(), None))
+                    }
+                    Some(Type::Tensor(e, _, _)) if !nested => Some(Type::Scalar(e.clone())),
+                    _ => None,
+                };
                 let mut elem_ty = ElementType::F32;
+                let mut first_row = Type::Unknown;
                 for i in order {
                     let el = &mut elements[i];
                     if i == lead {
+                        let prev = std::mem::replace(&mut self.expected_type, wanted.clone());
                         let first = self.check_expr_type(el);
+                        self.expected_type = prev;
+                        first_row = first.clone();
                         match (first, nested) {
                             (Type::Scalar(e), false) => elem_ty = e,
                             // A nested row reports `Tensor<e, [?, ?]>`; the initializer's element type
@@ -533,7 +578,20 @@ impl<'a> TypeChecker<'a> {
                             );
                             return Type::Unknown;
                         }
-                        self.check_expr_type(el);
+                        // Later rows take the first row's type, so their literals adopt its
+                        // element type. A row of another length or type has no place in the shape.
+                        let row = self.check_expr_expecting(el, Some(first_row.clone()), true);
+                        if row != Type::Unknown && row != first_row {
+                            self.errors.error_with_code(
+                                crate::diagnostic::DiagnosticCode::E3018,
+                                format!(
+                                    "the rows of a nested array literal must all have the same \
+                                     type; the first row is {first_row}, but this one is {row}"
+                                ),
+                                Some(crate::diagnostic::SourceSpan::from_ast_span(&el.span())),
+                            );
+                            return Type::Unknown;
+                        }
                     } else {
                         let ty = self.check_expr_expecting(
                             el,
@@ -572,7 +630,8 @@ impl<'a> TypeChecker<'a> {
                             crate::syntax::expr::NumberExpr::new(
                                 n.to_string(),
                                 Some(ElementType::I32),
-                                span,
+                                // No span: spans take part in comparing types.
+                                crate::syntax::Span::default(),
                             ),
                         ))
                     })
@@ -731,7 +790,19 @@ impl<'a> TypeChecker<'a> {
                                     f_expr,
                                     &f_type,
                                 );
-                                if !self.is_assignable(expected_type, &f_type) && !self.speculating
+                                if let (Expr::Identifier(id), Some(holder)) =
+                                    (&*f_expr, self.current_assignment_target.clone())
+                                {
+                                    self.borrow.copy_borrows(
+                                        id.name.as_ref(),
+                                        &holder,
+                                        self.scopes.len(),
+                                    );
+                                    self.reborrow_mut_variable(id.name.as_ref(), &holder);
+                                }
+                                if f_type != Type::Unknown
+                                    && !self.is_assignable(expected_type, &f_type)
+                                    && !self.speculating
                                 {
                                     self.errors.push(format!(
                                             "Type mismatch in struct initialization for field '{}'. Expected {}, got {}",
@@ -845,8 +916,10 @@ impl<'a> TypeChecker<'a> {
                 let ret_expr =
                     Expr::Identifier(IdentifierExpr::new(var_name.clone().into(), *span));
 
-                let block =
-                    Expr::UnsafeBlock(UnsafeBlockExpr::new(stmts, Some(Box::new(ret_expr)), *span));
+                let block = Expr::UnsafeBlock(UnsafeBlockExpr {
+                    generated: true,
+                    ..UnsafeBlockExpr::new(stmts, Some(Box::new(ret_expr)), *span)
+                });
 
                 *expr = block;
                 self.check_expr_type(expr)

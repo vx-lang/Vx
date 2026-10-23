@@ -12,15 +12,13 @@
 // Read back rather than pinned only as IR: a `linalg.fill` that emits and does
 // not write is the failure this is for.
 //
-// This tier runs the AST backend, which allocates the buffer dynamically and
-// casts to the written shape, the way `::new()` and `::uninit()` already do.
-// The flat path allocates it static; both fill the same way.
+// The buffer has the static shape written in the type, and the fill writes into it.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-LABEL: func.func @main() -> i32
-// CHECK: %[[BUF:.*]] = memref.alloc(%{{.*}}, %{{.*}}) : memref<?x?xf32>
+// CHECK: %[[BUF:.*]] = memref.alloc() : memref<2x2xf32>
 // CHECK: %[[V:.*]] = arith.constant 7.000000e+00 : f32
-// CHECK: linalg.fill ins(%[[V]] : f32) outs(%[[BUF]] : memref<?x?xf32>)
+// CHECK: linalg.fill ins(%[[V]] : f32) outs(%[[BUF]] : memref<2x2xf32>)
 
 fn main() -> i32 {
   let a = Tensor<f32, [2, 2]>::fill(7.0);

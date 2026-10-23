@@ -31,7 +31,8 @@ extern_fn ::= "safe"? "fn" identifier "(" param_list? ")" "->" type ";"
 trait_decl ::= "trait" identifier generic_params? "{" trait_method* "}"
 trait_method  ::= "fn" identifier "(" param_list? ")" "->" type ( ";" | "{" statement* "}" )
 
-impl_block ::= "impl" generic_params? ( type "for" )? type "{" function_decl* "}"
+// `unsafe impl` is valid only for `Send` and `Sync` (E3053, E3054).
+impl_block ::= "unsafe"? "impl" generic_params? ( type "for" )? type "{" function_decl* "}"
 
 // A custom lowering for one machine's memory edge: the code that moves the bytes from A to B
 // on that machine. It is not an ordinary `impl_block` -- it is stored separately on the AST,
@@ -152,6 +153,8 @@ primary_expr ::=
     | "if" "comptime"? expr "{" statement* "}" ( "else" ( "if" primary_expr | "{" statement* "}" ) )?
     | "match" expr "{" ( pattern "=>" ( "{" statement* "}" | statement ) ","? )* "}"
     | "spawn" "on" "(" topology ")" "{" statement* "}"   // routes its body to a topology; yields Pinned<T, topology>
+    | "tasks" "{" statement* "}"                         // waits at its end for each task that it started
+    | "spawn" "{" statement* "}"                         // a task, only in a `tasks` block; yields Task<T>
     | "transfer" "(" expr "," memory_space ")"
     | "Reachable" "<" topology "," topology ">"           // comptime transferability predicate (a bool)
     | "[" ( expr ","? )* "]"

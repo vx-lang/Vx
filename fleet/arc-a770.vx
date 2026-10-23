@@ -1,0 +1,89 @@
+//===- arc-a770.vx - Intel Arc A770 (DG2-512, Xe-HPG) machine model -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// One SKU's memory hierarchy, for `vxc --machine fleet/arc-a770.vx prog.vx`.
+// See fleet/README.md for the shared space vocabulary and provenance policy.
+//
+// The first Intel GPU here, and the first SKU whose device has no f64: the
+// card's arithmetic is f32/f16 and integer, so `dtypes:` omits f64 and placing
+// an f64 tensor here is E6026. Device execution: none yet -- `arch: spirv64`
+// names the device-image target a backend would emit (docs/gpu_backends.md);
+// until one exists, a region spawned here takes the host fallback, or E6003
+// when its operands are in a space the host cannot read.
+//
+// Figures measured on the card 2026-10-04 unless a `spec:` or `Measured:` line
+// names another source or run.
+
+// spec: Intel, "Introduction to the Xe-HPG Architecture" white paper, document
+// 758302 -- 16 GB of GDDR6 at up to 17.5 GT/s per pin over a maximum of 256
+// bits, "up to 560 GB/s of low-latency bandwidth". The 512 GB/s some sources
+// quote for this part is the 8 GB card, whose memory runs at 16 Gbps.
+//
+// Measured: 448-449 GB/s device-to-device copy and 427-428 GB/s triad
+// (scripts/tools/xpu_bandwidth_spike.sh, two runs on 2026-10-11).
+//
+// Measured: the driver reports 16225243136 bytes (15.11 GiB) of device memory,
+// about 0.9 GiB below the part's 16 GiB. `capacity:` records what the hardware
+// has, not what a deployment may use (fleet/README.md).
+Memory HBM {
+  capacity: 16 GiB, bandwidth: 560 GB/s, managed: explicit, scope: device
+}
+
+// Measured: 16777216 bytes (16 MiB) reported as the device's global memory
+// cache. No bandwidth: none is published for this part, so a route that crosses
+// L2 is left unpriceable rather than priced by a guess.
+Memory L2 {
+  within: Memory::HBM, capacity: 16 MiB, managed: cached, scope: device
+}
+
+// Measured: 65536 bytes (64 KiB) of workgroup shared local memory, the ceiling
+// one workgroup may request; 1024 invocations per workgroup, preferred multiple
+// of 64. No `replicas:` and no `clock:`: which unit a workgroup's scratchpad
+// belongs to on Xe is not settled by anything measured here, and `replicas:`
+// divides a derived bandwidth.
+Memory SMEM {
+  within: Memory::L2, capacity: 64 KiB, managed: explicit, scope: sm
+}
+
+Topology Device {
+  // The device-image format, not the die: Vx cannot name Xe-HPG's ISA, and
+  // SPIR-V through Level Zero is the route docs/gpu_backends.md records for
+  // Intel XPU. A Vulkan backend would emit the same format.
+  arch: spirv64,
+  memory: Memory::HBM,
+  // Host memory is deliberately absent, as in fleet/h100-sxm.vx: the host
+  // cannot address this device's memory and a kernel here cannot address host
+  // memory, so either direction is an explicit transfer and E6003 says so.
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM],
+  // spec: Intel, "Introduction to the Xe-HPG Architecture" white paper,
+  // document 758302 -- the XMX units "support FP16, BF16, INT8, INT4 and INT2
+  // multiply, with either 16 or 32 bits accumulate". BF16 and INT4 are named in
+  // the same sentence by the same source, so both are declared; INT2 has no
+  // `ElementType` and is not listed. The scalar path is f32/f16 and integer.
+  dtypes: [f32, bf16, f16, i4, u4, i8, u8, i16, u16, i32, u32, i64, u64, bool],
+  // spec: Intel, the same white paper -- the A770 is a PCI Express 4.0 x16
+  // part, and the paper gives "a maximum of 32 GB/s in each direction for a x16
+  // PCIe 4.0 slot", 31.5 GB/s after the link's 128b/130b encoding. That is the
+  // card's own capability, as `capacity:` above is the part's.
+  //
+  // Measured: 10.8-11.7 GB/s outbound and 10.0-10.8 GB/s back over five runs,
+  // one on 2026-10-04 and four on 2026-10-11
+  // (scripts/tools/xpu_bandwidth_spike.sh measures both directions). The limit
+  // is this machine's link, not the card: the CPU's lanes are PCIe 3.0, so the
+  // card runs at Gen3 x16.
+  transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s,
+  // The way home, declared from the same spec and measured in the same runs.
+  transfer Memory::HBM -> Memory::CPU_DRAM : 31.5 GB/s,
+  // The on-die hops declare no cost: HBM and L2 nest via `within:`, so the
+  // roofline derives what their bandwidths support (E6013 forbids a second
+  // source on one edge).
+  transfer Memory::HBM -> Memory::L2,
+  // No `copy_engine` on the scratchpad hop: whether a global-to-SLM write is a
+  // copy-engine path on Xe is unmeasured, and unmarked means `sequenced`.
+  transfer Memory::L2 -> Memory::SMEM
+}

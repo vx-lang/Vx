@@ -1,14 +1,14 @@
 //===- npu_vector_add.vx ---------------------------------*- Vx -*-===//
-// RUN: vxc %s --emit-mlir -O0 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=STD
-// RUN: vxc %s --emit-llvm 2>&1 | FileCheck %s --check-prefix=LLVM
+// RUN: vxc %s --legacy-codegen --emit-mlir -O0 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --emit-mlir -X mlir=--pass-pipeline="builtin.module(convert-vx-to-standard)" 2>&1 | FileCheck %s --check-prefix=STD
+// RUN: vxc %s --legacy-codegen --emit-llvm 2>&1 | FileCheck %s --check-prefix=LLVM
 // REQUIRES: macos
 // FileCheck %s
 
 fn test_f32() -> i32 {
-  let mut a = Tensor<f32, [4]>::uninit();
-  let mut b = Tensor<f32, [4]>::uninit();
-  let mut c = Tensor<f32, [4], Memory::NPU_HBM>::uninit();
+  let mut a = unsafe { Tensor<f32, [4]>::uninit() };
+  let mut b = unsafe { Tensor<f32, [4]>::uninit() };
+  let mut c = unsafe { Tensor<f32, [4], Memory::NPU_HBM>::uninit() };
   let sum = 3.0;
 
   for i in 0..4 {
@@ -34,9 +34,9 @@ fn test_f32() -> i32 {
 }
 
 fn test_bf16() -> i32 {
-  let mut a = Tensor<bf16, [4]>::uninit();
-  let mut b = Tensor<bf16, [4]>::uninit();
-  let mut c = Tensor<bf16, [4], Memory::NPU_HBM>::uninit();
+  let mut a = unsafe { Tensor<bf16, [4]>::uninit() };
+  let mut b = unsafe { Tensor<bf16, [4]>::uninit() };
+  let mut c = unsafe { Tensor<bf16, [4], Memory::NPU_HBM>::uninit() };
   let sum : bf16 = 3.0;
 
   for i in 0..4 {
@@ -82,6 +82,6 @@ fn main() -> i32 {
 
 // --emit-llvm stops at the LLVM dialect, where the same function is an llvm.func and the
 // buffers are raw allocations rather than memrefs.
-// LLVM-LABEL: llvm.func @test_f32() -> i32
+// LLVM-LABEL: llvm.func {{(hidden )?}}@test_f32() -> i32
 // LLVM: llvm.call @malloc
-// LLVM: llvm.func @main() -> i32
+// LLVM: llvm.func {{(hidden )?}}@main() -> i32

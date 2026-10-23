@@ -14,18 +14,13 @@ fn main() -> i32 {
   return 0;
 }
 
-// The for loop lowers to unstructured control flow: index-cast bounds, a header that
-// compares the induction variable against the upper bound, and a latch that steps by one.
+// The for loop lowers to an affine loop. The loop variable is the loop's index, cast to
+// i64, and the sum lives in a stack slot.
 // CHECK-LABEL: func.func @test_for_loop() -> i64 {
-// CHECK: %[[LO:.*]] = arith.index_cast %{{.*}} : i64 to index
-// CHECK: %[[HI:.*]] = arith.index_cast %{{.*}} : i64 to index
-// CHECK: %[[STEP:.*]] = arith.constant 1 : index
-// CHECK: cf.br ^[[HEAD:bb[0-9]+]](%[[LO]] : index)
-// CHECK: ^[[HEAD]](%[[IV:.*]]: index):
-// CHECK: %[[CMP:.*]] = arith.cmpi slt, %[[IV]], %[[HI]] : index
-// CHECK: cf.cond_br %[[CMP]], ^[[BODY:bb[0-9]+]], ^[[EXIT:bb[0-9]+]]
-// CHECK: ^[[BODY]]:
-// CHECK: arith.addi %{{.*}}, %{{.*}} : i64
-// CHECK: ^[[EXIT]]:
+// CHECK: affine.for %[[I:.*]] = 0 to 10 {
+// CHECK-NEXT: %[[X:.*]] = arith.index_cast %[[I]] : index to i64
+// CHECK-NEXT: %[[S:.*]] = memref.load %[[SUM:[a-z0-9_]+]][] : memref<i64>
+// CHECK-NEXT: %[[NEWSUM:.*]] = arith.addi %[[S]], %[[X]] : i64
+// CHECK-NEXT: memref.store %[[NEWSUM]], %[[SUM]][] : memref<i64>
+// CHECK-NEXT: }
 // CHECK: return %{{.*}} : i64
-// CHECK: arith.addi %[[IV]], %[[STEP]] : index

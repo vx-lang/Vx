@@ -65,10 +65,13 @@ print(r.v);
 **A reference cannot give away what it points at (E4008).** `let b = *r;` would move the value out
 of `r`, which only borrows it. Copy or clone it instead; for a number, `*r` is a copy and is fine.
 
-**A field that has something to drop cannot be moved out of its struct (E4013).** After
-`let x = s.a;`, `s` would still own `a` and drop it, and so would `x`. Borrow the field (`&s.a`)
-or clone it (`s.a.clone()`). A `Copy` field is copied, a field with nothing to drop can be read,
-and `let (a, b) = t` takes a tuple apart.
+**Reading a field that has something to drop moves it out of its struct.** After `let x = s.a;`,
+`s.a` has no value and `s` cannot be used whole, but its other fields can, and `s` drops only the
+fields it still holds. Assigning `s.a` gives it a value again. A field cannot be moved out through
+a reference (E4008), out of a struct whose type implements `Drop`, since its `drop` needs every
+field, or out of a value with no name, such as `make().a`, which drops all its fields at the end
+of the statement (E4013). Borrow it (`&s.a`) or clone it (`s.a.clone()`) instead. A field with
+nothing to drop is copied.
 
 **A variable without `mut` is read-only (E4010).** As in Rust, `let x = ..` and a parameter `x : T`
 cannot be assigned, nor can a field or element of `x`; `x` cannot be borrowed `&mut`; and a method
@@ -260,18 +263,20 @@ the operations that can go wrong with them require `unsafe`:
 - reading a field through one
 - calling an `unsafe fn`
 
-A function that takes a caller's raw pointer and dereferences it is itself declared `unsafe fn`, so
-the obligation is visible in the signature rather than buried in the body.
+A function that takes a caller's raw pointer and dereferences it should be declared `unsafe fn`, so
+the obligation is visible in the signature rather than buried in the body. Marking a function
+`unsafe` does not allow raw pointer operations in its body. Each one still needs an `unsafe` block,
+as in [Unsafe and FFI](unsafe-and-ffi.md).
 
 ```rust
 unsafe fn read_first(p : *const i32) -> i32 {
-    return *p;
+    return unsafe { *p };
 }
 
 fn main() -> i32 {
     let x : i32 = 42;
     unsafe {
-        return read_first(&x);
+        return read_first(&x) - 42;
     }
 }
 ```

@@ -24,7 +24,8 @@
 // Both keep the allocate-and-publish form. The answer is the same either way, which is the
 // point: the choice of form is the compiler's and the numbers are not.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// The default code generator does not support a matmul whose result may be one of its operands yet, so this uses the AST one.
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-DAG: func.func @borrowed_self
 // CHECK-DAG: func.func @through_a_name
 // CHECK-DAG: func.func @through_a_view
@@ -32,7 +33,7 @@
 
 // Both operands are [[1, 2], [3, 4]], so the product is [[7, 10], [15, 22]].
 fn pair() -> Tensor<f32, [2, 2]> {
-  let mut t = Tensor<f32, [2, 2]>::uninit();
+  let mut t = unsafe { Tensor<f32, [2, 2]>::uninit() };
   for i in 0..2 {
     for j in 0..2 {
       t[i][j] = (i * 2 + j + 1) as f32;

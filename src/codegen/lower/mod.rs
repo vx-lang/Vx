@@ -206,6 +206,9 @@ pub(crate) fn extract_mlir_element_type(ty_str: &str) -> Result<&'static str, St
     inner = inner.trim();
 
     match inner {
+        "f4E2M1FN" => Ok("f4E2M1FN"),
+        "f8E4M3FN" => Ok("f8E4M3FN"),
+        "f8E5M2" => Ok("f8E5M2"),
         "bf16" => Ok("bf16"),
         "f16" => Ok("f16"),
         "f32" => Ok("f32"),
@@ -213,6 +216,12 @@ pub(crate) fn extract_mlir_element_type(ty_str: &str) -> Result<&'static str, St
         "i32" => Ok("i32"),
         "i64" => Ok("i64"),
         "i1" => Ok("i1"),
+        // The narrow integers. MLIR spells an unsigned value with its signed type, so a
+        // `u8`/`u16` tensor arrives here spelled `i8`/`i16`, the same way a `u32` tensor
+        // arrives as `i32`. Before these were listed, printing such a tensor stopped with
+        // `ParseType("Unsupported MLIR element type in: memref<?x?xi8>")`.
+        "i8" | "u8" => Ok("i8"),
+        "i16" | "u16" => Ok("i16"),
         _ => Err(format!("Unsupported MLIR element type in: {}", ty_str)),
     }
 }
@@ -578,6 +587,15 @@ pub fn generate_match_chain<'c>(
         gen.close_blocks_to(depth);
         return Ok(block);
     }
+    // A name arm (`other => ..`) matches every value, like `_`, and gives the value that name.
+    if let Pattern::Identifier(name) = &arm.pattern {
+        gen.note_shadow(name.as_ref());
+        gen.env
+            .insert(name.to_string().into(), (match_val, _match_ty));
+        lower_match_arm_body(gen, &arm.body, block, merge_block, value_ty)?;
+        gen.close_blocks_to(depth);
+        return Ok(block);
+    }
 
     let parent_region = block.parent_region().unwrap();
     let then_block = parent_region.append_block(melior::ir::Block::new(&[]));
@@ -645,7 +663,7 @@ pub fn generate_match_chain<'c>(
         // but against `match_val` directly (no tag extraction). Without this, an integer `match`
         // ICE'd here — `Unsupported pattern in codegen` (#263).
         Pattern::Literal(lit) => {
-            let lit_val = match lit {
+            let lit_val = match &**lit {
                 Expr::Number(n) => n.value.as_ref().parse::<i64>().unwrap_or(0),
                 other => panic!("Unsupported literal pattern in codegen: {:?}", other),
             };
@@ -1163,14 +1181,17 @@ pub(crate) fn lower_print_call<'c>(
     if let Expr::Borrow(borrow) = print_arg {
         print_arg = &borrow.expr;
     }
-    // The checker marks a tensor of `u32` or `u64` with a cast to its own type: MLIR integers
-    // carry no sign, and its runtime printer reads them signed.
+    // The checker marks a tensor of an unsigned type with a cast to its own type: MLIR
+    // integers carry no sign, and its runtime printer reads them signed.
     let mut unsigned_tensor = false;
     if let Expr::AsCast(cast) = print_arg {
         if let syntax::Type::Tensor(e, _, _) = &cast.target_ty {
             unsigned_tensor = matches!(
                 e,
-                syntax::types::ElementType::U32 | syntax::types::ElementType::U64
+                syntax::types::ElementType::U8
+                    | syntax::types::ElementType::U16
+                    | syntax::types::ElementType::U32
+                    | syntax::types::ElementType::U64
             );
             print_arg = &cast.expr;
         }
@@ -1203,6 +1224,10 @@ pub(crate) fn lower_print_call<'c>(
         ("i32", false) => "printMemrefI32",
         ("i64", false) => "printMemrefI64",
         ("bf16", _) => "printMemrefBF16",
+        ("i8", true) => "printMemrefU8",
+        ("i16", true) => "printMemrefU16",
+        ("i8", false) => "printMemrefI8",
+        ("i16", false) => "printMemrefI16",
         _ => return Err(LowerError::UnsupportedElementType(el_ty_str.to_string())),
     };
 
@@ -1309,7 +1334,11 @@ pub(crate) fn pick_scalar_print<'c>(
         ("i8" | "i16", false) => ("print_i32", Some(("arith.extsi", "i32"))),
         ("i32", false) => ("print_i32", None),
         ("i64", false) => ("print_i64", None),
-        ("f16" | "bf16", _) => ("print_f32", Some(("arith.extf", "f32"))),
+        // A `for` variable over a range is an `index` here.
+        ("index", _) => ("print_i64", Some(("arith.index_cast", "i64"))),
+        ("f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f16" | "bf16", _) => {
+            ("print_f32", Some(("arith.extf", "f32")))
+        }
         ("f32", _) => ("print_f32", None),
         ("f64", _) => ("print_f64", None),
         _ => return Ok(None),

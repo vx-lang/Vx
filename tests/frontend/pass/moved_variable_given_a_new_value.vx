@@ -1,0 +1,31 @@
+//===- moved_variable_given_a_new_value.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A moved variable or field can be used again after it gets a new value.
+
+import std::vec;
+
+struct P {
+  x : i32,
+  v : Vec<i32>,
+}
+
+fn take(v : Vec<i32>) -> void {}
+
+fn main() -> i32 {
+  let mut o = Vec<i32>::new();
+  take(o);
+  o = Vec<i32>::new();
+  o.push(1);
+  let mut p = P {
+    x : 1, v : Vec<i32>::new()
+  };
+  take(p.v);
+  p.v = o;
+  print(p.v.len());
+  return 0;
+}

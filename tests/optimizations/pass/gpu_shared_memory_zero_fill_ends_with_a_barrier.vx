@@ -1,0 +1,38 @@
+//===- gpu_shared_memory_zero_fill_ends_with_a_barrier.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Tensor<_, _, Memory::SMEM>::new()` sets shared memory to zero, and each thread of the block
+// does that. A barrier comes after the zero fill, so a slow thread cannot write its zeros over
+// the value that a fast thread already wrote. In the PTX, `bar.sync` comes after the stores of
+// zero and before the store of the program.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not='runs on the CPU' --implicit-check-not=Error
+// CHECK: image={{.*}}st.shared.v4.b32 {{.*}}0f00000000{{.*}}bar.sync {{.*}}st.shared.b32 {{.*}}bar.sync {{.*}}ld.shared.b32
+
+fn thread_id() on Topology::Device -> i32 {
+  return mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {
+    %t = gpu.thread_id x
+    %r = "arith.index_cast"(%t) : (index) -> i32
+    macro.yield %r : i32
+  };
+}
+
+pub fn reverse(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    let mut shared = Tensor<f32, [32], Memory::SMEM>::new();
+    let t = thread_id();
+    shared[t] = x[t];
+    barrier();
+    out[t] = shared[31 - t];
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

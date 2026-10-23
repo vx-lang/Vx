@@ -1,0 +1,31 @@
+//===- write_through_a_tensor_reference_under_its_view.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A reshape view of a tensor reached through a reference borrows that tensor, so writing it
+// through the reference while the view is still used is refused, with or without `*`.
+
+fn with_star(t : &mut Tensor<f32, [2, 4]>) -> f32 {
+  let v = (*t).reshape([8]);
+  (*t)[0][0] = 1.0;
+  return v[7];
+}
+
+fn without_star(t : &mut Tensor<f32, [2, 4]>) -> f32 {
+  let v = t.reshape([8]);
+  t[0][0] = 1.0;
+  return v[7];
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK-DAG: Error[E4009] at 15:10: `t[0][0]` is assigned while it is borrowed
+// CHECK-DAG: Error[E4009] at 21:7: `t[0][0]` is assigned while it is borrowed
+// CHECK: 2 error(s) emitted

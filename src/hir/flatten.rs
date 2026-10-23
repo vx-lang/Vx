@@ -22,6 +22,7 @@ use crate::bytecode::{
 use crate::bytecode::{TENSOR_DROP_FIELD, TENSOR_DROP_FLAG};
 use crate::decline::{Decline, Lowered};
 use crate::gid::TypeId;
+use crate::hir::check::parallel::{parallel_outer_for, parallel_two_level, TwoLevelPlan};
 use crate::layout::FieldTy;
 use crate::registry::ImmutableGlobalRegistry;
 use crate::session::LocalWorkerState;
@@ -113,12 +114,14 @@ fn extents_agree(x: &str, y: &str) -> bool {
 }
 
 /// An inline `mlir!` block as the emitter needs it: the named inputs with their declared MLIR
-/// types, the body text, and whether it yields nothing.
+/// types, the body text, whether it yields nothing, and where it is in the source.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InlineBlock {
     pub inputs: Vec<(String, String)>,
     pub body: String,
     pub void: bool,
+    pub line: usize,
+    pub column: usize,
 }
 
 /// The stable per-instance GID of a monomorphized generic struct whose layout depends on its
@@ -196,7 +199,7 @@ impl ExtentSite {
 /// Two spellings reach here: `Tensor<T>([d0, d1])`, which names the constructor and splits the
 /// element and shape between the generic argument and the call arguments, and `Tensor<T, [d0,
 /// d1]>::uninit()`, which writes the type. One predicate so the four sites that ask cannot drift.
-fn is_tensor_alloc_call(fc: &crate::syntax::FunctionCallExpr) -> bool {
+pub(crate) fn is_tensor_alloc_call(fc: &crate::syntax::FunctionCallExpr) -> bool {
     matches!(
         fc.name.as_ref(),
         "Tensor" | "Tensor::new" | "Tensor::uninit" | "Tensor::fill"
@@ -207,7 +210,7 @@ fn is_tensor_alloc_call(fc: &crate::syntax::FunctionCallExpr) -> bool {
 ///
 /// A placed region-local is BLOCK-SHARED storage rather than thread-private scratch, which is the
 /// one thing the two-level walk needs to know about a `let`'s initializer.
-fn tensor_alloc_placement(
+pub(crate) fn tensor_alloc_placement(
     fc: &crate::syntax::FunctionCallExpr,
 ) -> Option<&crate::syntax::Placement> {
     fc.type_args.as_ref()?.first()?.placement()
@@ -263,6 +266,7 @@ fn expr_kind(e: &Expr) -> &'static str {
         Expr::RelationalOp(_) => "RelationalOp",
         Expr::UnaryOp(_) => "UnaryOp",
         Expr::UnsafeBlock(_) => "UnsafeBlock",
+        Expr::TaskBlock(_) => "TaskBlock",
         Expr::StructInit(_) => "StructInit",
         Expr::AsCast(_) => "AsCast",
         Expr::Print(_) => "Print",
@@ -349,7 +353,14 @@ enum Binding {
     /// variable-length path in the AST it already lives in and lets `*r` reuse the existing field
     /// read/store lowering wholesale (§5.5: a non-escaping place is pure lowerer data). The projection
     /// path §5.4's disjointness needs is recovered from `place` on demand.
-    Place { place: Expr },
+    Place { place: Box<Expr> },
+}
+
+/// The launch shape of a `spawn` region: each size with its axis, from its `across` loops, and
+/// whether it has `across` loops.
+struct RegionLaunch<'a> {
+    shape: &'a [(u64, Val)],
+    across: bool,
 }
 
 /// A name a `let` in a block shadows, with the binding and type it had before the block.
@@ -448,11 +459,15 @@ struct Lowerer<'r> {
     /// How many `spawn` regions enclose the code being lowered. Inside one, `panic` does not print:
     /// the region may run on a device.
     spawn_depth: u32,
+    /// The `AffineFor` instructions of the open affine loops, outermost first.
+    affine_open: Vec<usize>,
     /// The two-level plan `parallel_two_level` proved for the region being lowered, when it proved
     /// one (Vx#379): which `ForLoopStmt` is the block loop and which are thread loops, addressed by
     /// AST node identity (the AST does not move during lowering). `lower_for` consults it to pick
     /// block/thread stride tags; any loop not in the plan lowers serially.
     stride_plan: Option<TwoLevelPlan>,
+    /// The region with `across` loops being lowered, when there is one (#252).
+    across: AcrossState,
     /// Place-write field stores collected during lowering, as `(stream position, borrowed root, field
     /// path)`. Post-lowering these reduce to a numeric group/sibling table (`reduce_place_alias`) so
     /// codegen can attach `alias_scopes`/`noalias_scopes` — carrying the borrow checker's disjointness
@@ -515,7 +530,9 @@ impl<'r> Lowerer<'r> {
             place_field_stores: Vec::new(),
             stride_next_for: false,
             spawn_depth: 0,
+            affine_open: Vec::new(),
             stride_plan: None,
+            across: AcrossState::default(),
             queued_drops: Vec::new(),
             value_drops: Vec::new(),
             temps: Vec::new(),
@@ -794,8 +811,12 @@ impl<'r> Lowerer<'r> {
     /// Lower a block's statements, with `scoped`'s rule for the names it declares.
     fn lower_block(&mut self, stmts: &[Statement]) -> Lowered<()> {
         self.scoped(|me| {
-            for s in stmts {
-                me.lower_stmt(s)?;
+            if let Some(level) = me.across.level {
+                me.lower_stretches(stmts, level)?;
+            } else {
+                for s in stmts {
+                    me.lower_stmt(s)?;
+                }
             }
             me.run_queued_drops()
         })
@@ -959,12 +980,16 @@ impl<'r> Lowerer<'r> {
         // path declines to the AST oracle rather than ever silently miscompiling.
         let needs_slot = match &v.ty {
             LoweredTy::Aggregate(_) => true,
+            // Code that lane 0 alone runs keeps each name in a slot, which later code can read.
             LoweredTy::Scalar(_) => {
-                materialized_scalar || (self.has_control_flow && self.mutated.contains(&name))
+                materialized_scalar
+                    || (self.has_control_flow && self.mutated.contains(&name))
+                    || self.across.on_lane0
             }
             LoweredTy::Ptr => {
                 self.materialized.contains(&name)
                     || (self.has_control_flow && self.mutated.contains(&name))
+                    || self.across.on_lane0
             }
             _ => self.memory,
         };
@@ -1417,13 +1442,29 @@ impl<'r> Lowerer<'r> {
             // `unsafe { .. }` in value position (e.g. a stdlib wrapper's `return unsafe { sqrtf(self) }`).
             // Safety was checked upstream, so `unsafe` is transparent to lowering: run the block's
             // statements, then yield its trailing value expression.
+            Expr::UnsafeBlock(u) if u.task.is_some() => {
+                match self.lower_task_region(u, u.task.unwrap(), u.ret.is_some())? {
+                    Some(v) => Ok(v),
+                    None => Ok(self.emit_value(
+                        Opcode::Const,
+                        Register(0),
+                        Register(0),
+                        ElementType::I32,
+                        0,
+                    )),
+                }
+            }
             Expr::UnsafeBlock(u) => self.scoped(|me| {
                 for s in &u.stmts {
                     me.lower_stmt(s)?;
                 }
                 match u.ret.as_deref() {
                     Some(e) => {
+                        // The drops waiting for the value. A statement inside the value, in an
+                        // `if` for example, must not run them.
+                        let waiting = std::mem::take(&mut me.queued_drops);
                         let v = me.lower_expr(e)?;
+                        me.queued_drops.extend(waiting);
                         me.run_queued_drops()?;
                         Ok(v)
                     }
@@ -1545,9 +1586,13 @@ impl<'r> Lowerer<'r> {
                     }
                 }
                 // `&*ptr` / `&mut *ptr`: a reborrow of a raw pointer is the pointer itself, the
-                // `Vec::as_mut_slice` shape.
+                // `Vec::as_mut_slice` shape. A reborrow of a tensor reference is the tensor, since
+                // borrowing a tensor is transparent.
                 if let Expr::Dereference(d) = &*b.expr {
                     let p = self.lower_expr(&d.expr)?;
+                    if matches!(p.ty, LoweredTy::Tensor { .. }) {
+                        return Ok(p);
+                    }
                     if matches!(p.ty, LoweredTy::Ptr) {
                         return Ok(Val {
                             reg: p.reg,
@@ -1771,6 +1816,20 @@ impl<'r> Lowerer<'r> {
             Expr::IndexAccess(ix) if matches!(&*ix.base, Expr::MemberAccess(ma) if ma.member.as_ref() == "$extent") => {
                 Some(LoweredTy::Scalar(ElementType::I32))
             }
+            // `t[i]`: as `lower_expr` gives it, one dimension fewer, or the element at rank 1.
+            Expr::IndexAccess(ix) => match self.infer_expr_ty(&ix.base)? {
+                LoweredTy::Tensor { elem, shape } if !shape.is_empty() => {
+                    Some(if shape.len() == 1 {
+                        LoweredTy::Scalar(elem)
+                    } else {
+                        LoweredTy::Tensor {
+                            elem,
+                            shape: shape[1..].to_vec(),
+                        }
+                    })
+                }
+                _ => None,
+            },
             // An inline `mlir!` block's value is its declared result.
             Expr::InlineMlir(im) => lowered_ty(im.returns.as_ref()?, self.registry),
             Expr::UnsafeBlock(ub) => self.infer_expr_ty(ub.ret.as_deref()?),
@@ -2567,6 +2626,15 @@ impl<'r> Lowerer<'r> {
     /// The loop variable is a binding of its own: an outer variable of the same name is out of
     /// sight in the body and means what it did before once the loop ends, as in Rust.
     fn lower_for(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
+        if self.across.lanes > 0 {
+            if let Some(kind) = f.across.as_ref().and_then(|a| a.kind) {
+                return self.lower_across_for(f, kind);
+            }
+        }
+        self.lower_plain_for(f)
+    }
+
+    fn lower_plain_for(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
         self.scoped(|me| {
             let name: Symbol = f.iter.as_str().into();
             me.note_shadow(&name);
@@ -2578,6 +2646,7 @@ impl<'r> Lowerer<'r> {
     fn lower_for_loop(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
         // Taken (not read) so the tag cannot leak into the nested loops this body lowers.
         let stride = std::mem::take(&mut self.stride_next_for);
+        let across = self.across.next_loop.take();
         // The two-level plan addresses loops by node identity, so membership is exact and
         // nesting-proof: the block loop and each thread loop pick up their own tag kind, and
         // every other loop -- including sequential loops BETWEEN the two levels -- gets none.
@@ -2593,6 +2662,14 @@ impl<'r> Lowerer<'r> {
             return self.lower_for_iterator(f);
         };
         let start = self.lower_expr(&range.start)?;
+        if let Some((lo, hi)) = f.unroll {
+            let LoweredTy::Scalar(elem) = start.ty else {
+                return Err(Decline::TypeNotModelled {
+                    what: "a range over a non-scalar",
+                });
+            };
+            return self.lower_unrolled_for(f, elem, lo, hi);
+        }
         let end = self.lower_expr(&range.end)?;
         let elem = match &start.ty {
             LoweredTy::Scalar(e) => e.clone(),
@@ -2606,8 +2683,28 @@ impl<'r> Lowerer<'r> {
                 })
             }
         };
+        if plan_kind.is_none()
+            && !stride
+            && across.is_none()
+            && self.affine_loop(f, &start, &end, &elem)
+        {
+            return self.lower_affine_for(f, start, end, elem);
+        }
         // Induction variable `i` and the loop bound both need to survive across blocks -> slots.
         let i_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
+        // An `across` loop starts at its own pass and steps over the passes of the others.
+        let (start, step) = match across {
+            Some((offset, step)) => {
+                if elem != ElementType::I32 {
+                    return Err(Decline::Unsupported {
+                        what: "an `across` loop over a range that is not `i32`",
+                    });
+                }
+                let first = self.emit_value(Opcode::Add, start.reg, offset.reg, elem.clone(), 0);
+                (first, Some(step))
+            }
+            None => (start, None),
+        };
         // The bound tag rides alongside the init/step pair, but only for the two loop kinds a
         // host worker can own whole: the single-level stridable loop, and the block loop of a
         // two-level region. A thread-mapped loop gets none -- see `IMM_BLOCK_BOUND`.
@@ -2666,11 +2763,69 @@ impl<'r> Lowerer<'r> {
         // latch: i = i + 1; back to header
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), latch as u64);
         let i2 = self.emit_value(Opcode::SlotLoad, i_slot.reg, Register(0), elem.clone(), 0);
-        let one = self.emit_value(Opcode::Const, Register(0), Register(0), elem.clone(), 1);
+        let one = match step {
+            Some(step) => step,
+            None => self.emit_value(Opcode::Const, Register(0), Register(0), elem.clone(), 1),
+        };
         let inc = self.emit_value(Opcode::Add, i2.reg, one.reg, elem, step_imm);
         self.emit_effect(Opcode::Store, i_slot.reg, inc.reg, 0);
+        if let Some(kind) = f
+            .across
+            .as_ref()
+            .filter(|a| a.auto_schedule)
+            .and_then(|a| a.kind)
+        {
+            let hint = match kind {
+                crate::arch::LevelKind::Blocks => crate::bytecode::LOOP_HINT_BLOCKS,
+                crate::arch::LevelKind::Subgroups => crate::bytecode::LOOP_HINT_SUBGROUPS,
+                crate::arch::LevelKind::Lanes => crate::bytecode::LOOP_HINT_LANES,
+            };
+            self.emit_effect(Opcode::LoopHint, Register(0), Register(0), hint);
+        }
         self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
 
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), exit as u64);
+        Ok(())
+    }
+
+    /// A loop whose variable indexes a register tensor: the body once for each pass, with the
+    /// variable a constant in each, so every index into the tensor is a constant. `continue`
+    /// goes to the next pass and `break` to the end.
+    fn lower_unrolled_for(
+        &mut self,
+        f: &crate::syntax::ForLoopStmt,
+        elem: ElementType,
+        lo: i64,
+        hi: i64,
+    ) -> Lowered<()> {
+        let i_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
+        self.scope.insert(
+            f.iter.as_str().into(),
+            Binding::Slot {
+                reg: i_slot.reg,
+                ty: LoweredTy::Scalar(elem.clone()),
+            },
+        );
+        let exit = self.new_block();
+        for pass in lo..hi {
+            let value = self.emit_value(
+                Opcode::Const,
+                Register(0),
+                Register(0),
+                elem.clone(),
+                pass as u64,
+            );
+            self.emit_effect(Opcode::Store, i_slot.reg, value.reg, 0);
+            let next = self.new_block();
+            self.loop_stack.push((next, exit));
+            self.lower_block(&f.body)?;
+            self.loop_stack.pop();
+            if !self.block_terminated() {
+                self.emit_effect(Opcode::Br, Register(0), Register(0), next as u64);
+            }
+            self.emit_effect(Opcode::BlockStart, Register(0), Register(0), next as u64);
+        }
+        self.emit_effect(Opcode::Br, Register(0), Register(0), exit as u64);
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), exit as u64);
         Ok(())
     }
@@ -2886,12 +3041,119 @@ impl<'r> Lowerer<'r> {
         let top_id = crate::arch::topology_dispatch_id(&s.top) as u32 as u64;
         let name = self.strings.len() as u64 + 1;
         self.strings.push(s.top.display_name());
-        self.emit_effect(
-            Opcode::Spawn,
-            Register(0),
-            Register(0),
-            top_id | (name << 32),
+        // The host computes the launch shape before the region starts, from the loops of blocks
+        // of a region with `across` loops (#252), whose block has a number of lanes.
+        let lanes = across_block_lanes(&s.stmts);
+        let mut shape = Vec::new();
+        if let Some(lanes) = lanes {
+            let mut axis = 0;
+            let mut level = Some(s.stmts.as_slice());
+            while let Some(f) = level.and_then(blocks_loop) {
+                let Expr::Range(range) = &*f.iterable else {
+                    return Err(crate::emitter_gap!());
+                };
+                let size = match f.across.as_ref().and_then(|a| a.share.as_deref()) {
+                    Some(n) => self.lower_expr(n)?,
+                    None if matches!(&*range.start, Expr::Number(n) if n.value.as_ref() == "0") => {
+                        self.lower_expr(&range.end)?
+                    }
+                    None => {
+                        let end = self.lower_expr(&range.end)?;
+                        let start = self.lower_expr(&range.start)?;
+                        self.emit_value(Opcode::Sub, end.reg, start.reg, ElementType::I32, 0)
+                    }
+                };
+                let size = self.read_rank0(size);
+                if !matches!(size.ty, LoweredTy::Scalar(ElementType::I32)) {
+                    return Err(Decline::Unsupported {
+                        what: "an `across` loop of blocks whose size is not `i32`",
+                    });
+                }
+                shape.push((axis, size));
+                axis += 1;
+                level = Some(f.body.as_slice());
+            }
+            let block = self.emit_value(
+                Opcode::Const,
+                Register(0),
+                Register(0),
+                ElementType::I32,
+                lanes,
+            );
+            shape.push((3, block));
+        }
+        let outer = std::mem::replace(
+            &mut self.across,
+            AcrossState {
+                lanes: lanes.unwrap_or(0),
+                ..AcrossState::default()
+            },
         );
+        let lowered = self.lower_region(
+            top_id | (name << 32),
+            RegionLaunch {
+                shape: &shape,
+                across: lanes.is_some(),
+            },
+            &s.stmts,
+            s.ret.as_deref(),
+            want_value,
+            true,
+        );
+        self.across = outer;
+        lowered
+    }
+
+    /// A `tasks` block or a task body: a `vx.spawn` region with the topology id of its kind.
+    /// `VxLowering` runs each task on a thread of its own.
+    fn lower_task_region(
+        &mut self,
+        u: &crate::syntax::UnsafeBlockExpr,
+        kind: crate::syntax::TaskBlockKind,
+        want_value: bool,
+    ) -> Lowered<Option<Val>> {
+        if want_value && u.ret.is_none() {
+            return Err(Decline::Unsupported {
+                what: "a task block whose region has no value",
+            });
+        }
+        let id = match kind {
+            crate::syntax::TaskBlockKind::Tasks => crate::arch::TASKS_BLOCK_DISPATCH_ID,
+            crate::syntax::TaskBlockKind::Spawn => crate::arch::TASK_DISPATCH_ID,
+        };
+        self.lower_region(
+            id as u32 as u64,
+            RegionLaunch {
+                shape: &[],
+                across: false,
+            },
+            &u.stmts,
+            u.ret.as_deref(),
+            want_value,
+            false,
+        )
+    }
+
+    /// The `Spawn`/`SpawnEnd` region of `lower_spawn` and `lower_task_region`. `imm` is the
+    /// `Spawn` immediate. `offer_parallel` offers the region's loops to the device pipeline.
+    fn lower_region(
+        &mut self,
+        imm: u64,
+        launch: RegionLaunch<'_>,
+        stmts: &[Statement],
+        ret: Option<&Expr>,
+        want_value: bool,
+        offer_parallel: bool,
+    ) -> Lowered<Option<Val>> {
+        self.emit_effect(Opcode::Spawn, Register(0), Register(0), imm);
+        if launch.across {
+            self.emit_effect(Opcode::AcrossRegion, Register(0), Register(0), 0);
+        }
+        for (axis, v) in launch.shape {
+            self.emit_effect(Opcode::LaunchDim, v.reg, Register(0), *axis);
+        }
+        // A region with `across` loops maps its work to lanes itself.
+        let offer_parallel = offer_parallel && !launch.across;
         // Two proofs are offered, FLAT FIRST. The flat grid-stride (#251) is the measured
         // record shape -- one thread per iteration, slice bodies vectorized -- so a region it
         // covers must keep it: since the block-row write rule (Vx#379 R3) landed, a plain
@@ -2902,32 +3164,45 @@ impl<'r> Lowerer<'r> {
         // The region is a block: its `let`s end with it.
         let depth = self.open_block();
         self.spawn_depth += 1;
-        let par = parallel_outer_for(&s.stmts);
+        let par = if offer_parallel {
+            parallel_outer_for(stmts)
+        } else {
+            None
+        };
+        let two_level = if offer_parallel && par.is_none() {
+            parallel_two_level(stmts)
+        } else {
+            None
+        };
         let end_imm = if par.is_some() {
-            for (i, stmt) in s.stmts.iter().enumerate() {
+            for (i, stmt) in stmts.iter().enumerate() {
                 self.stride_next_for = matches!(par, Some((idx, _)) if idx == i);
                 self.lower_stmt(stmt)?;
             }
             self.stride_next_for = false;
             par.map(|(_, t)| t).unwrap_or(0)
-        } else if let Some((btrip, plan)) = parallel_two_level(&s.stmts) {
+        } else if let Some((btrip, plan)) = two_level {
             self.stride_plan = Some(plan);
-            for stmt in &s.stmts {
+            for stmt in stmts {
                 self.lower_stmt(stmt)?;
             }
             self.stride_plan = None;
             btrip | SPAWN_TWO_LEVEL
         } else {
-            for stmt in &s.stmts {
+            for stmt in stmts {
                 self.lower_stmt(stmt)?;
             }
             0
         };
         if want_value {
-            let tail = s.ret.as_deref().ok_or(Decline::Unsupported {
+            let tail = ret.ok_or(Decline::Unsupported {
                 what: "a spawn expression whose region has no value",
             })?;
+            // The drops that wait for the value, as in a plain block.
+            let waiting = std::mem::take(&mut self.queued_drops);
             let v = self.lower_expr(tail)?;
+            self.queued_drops.extend(waiting);
+            self.run_queued_drops()?;
             self.close_blocks_to(depth);
             self.spawn_depth -= 1;
             let ty = v.ty.clone();
@@ -2939,7 +3214,7 @@ impl<'r> Lowerer<'r> {
                 end_imm,
             )));
         }
-        match s.ret.as_deref() {
+        match ret {
             Some(Expr::If(iff)) => self.lower_if(iff)?,
             Some(Expr::Match(m)) => self.lower_match(m)?,
             Some(Expr::SpawnOn(inner)) => {
@@ -2950,6 +3225,7 @@ impl<'r> Lowerer<'r> {
             }
             None => {}
         }
+        self.run_queued_drops()?;
         self.close_blocks_to(depth);
         self.spawn_depth -= 1;
         self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), end_imm);
@@ -3510,9 +3786,11 @@ impl<'r> Lowerer<'r> {
                 .map(|p| crate::arch::memory_space_dispatch_id(&p.space))
                 .filter(|id| *id > 0)
                 .unwrap_or(0);
+            // `aligned(N)` rides on the first operand, 0 for none.
+            let align = placement.as_ref().and_then(|p| p.alignment).unwrap_or(0);
             let buf = self.emit_typed(
                 Opcode::TensorAlloc,
-                Register(0),
+                Register(align as u32),
                 Register(space as u32),
                 ty,
                 bytes,
@@ -3545,15 +3823,18 @@ impl<'r> Lowerer<'r> {
             Some(Expr::Array(arr)) if fc.args.len() == 1 => &arr.elements,
             _ => &fc.args,
         };
-        // `Tensor<T>()` is the dims-less default construction: a rank-0 buffer, one element,
-        // uninitialized like every other constructed tensor (Vx#396's model).
+        // `Tensor<T>()` is the dims-less default construction: a rank-0 buffer, one element.
+        // This older spelling starts at zero, as `::new()` does; only `::uninit()`, which
+        // belongs inside `unsafe`, leaves storage as it was found.
         if dims.is_empty() {
             let bytes = crate::hir::memory::element_bits(&elem)?.div_ceil(8);
             let ty = LoweredTy::Tensor {
                 elem,
                 shape: vec![],
             };
-            return Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes));
+            let buf = self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes);
+            self.emit_effect(Opcode::TensorZero, buf.reg, Register(0), 0);
+            return Some(buf);
         }
         // A literal is a static extent; anything else is a run-time one, lowered to a value the
         // alloc reads. The checker typed the result the same way, per position.
@@ -3577,7 +3858,9 @@ impl<'r> Lowerer<'r> {
         for r in extents {
             self.emit_effect(Opcode::Arg, r, Register(0), 0);
         }
-        Some(self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes))
+        let buf = self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty, bytes);
+        self.emit_effect(Opcode::TensorZero, buf.reg, Register(0), 0);
+        Some(buf)
     }
 
     /// `tensor_view_2d(ptr, rows, cols)`: the pointer is the view's `operand1`, a run-time extent
@@ -3857,6 +4140,8 @@ impl<'r> Lowerer<'r> {
                 .collect(),
             body: im.block_str.clone(),
             void: im.returns.is_none(),
+            line: im.span.line,
+            column: im.span.column,
         });
         Ok(self.emit_typed(Opcode::InlineMlir, Register(0), Register(0), ty, imm))
     }
@@ -3955,6 +4240,23 @@ impl<'r> Lowerer<'r> {
             return Err(Decline::Unsupported {
                 what: "an empty array literal",
             }); // an empty array has no element type to size the buffer
+        }
+        // A nested literal `[[1, 2], [3, 4]]` is a tensor with one dimension per level.
+        if let Some(shape) = arr.initializer_shape() {
+            let first = arr
+                .initializer_values()
+                .first()
+                .and_then(|v| self.infer_ast_type(v));
+            let Some(Type::Scalar(elem)) = first else {
+                return Err(Decline::TypeNotModelled {
+                    what: "a nested array literal of non-scalar values",
+                });
+            };
+            return self
+                .lower_tensor_initializer(&elem, &shape, arr)
+                .ok_or(Decline::Unsupported {
+                    what: "a nested array literal",
+                });
         }
         let mut vals = Vec::with_capacity(arr.elements.len());
         for el in &arr.elements {
@@ -4592,11 +4894,36 @@ impl<'r> Lowerer<'r> {
             self.emit_effect(store, place.reg, value.reg, 0);
             return Ok(());
         }
+        // `*t = v` with `t : &mut Tensor<..>`: the new tensor's elements are written into the one
+        // `t` refers to, as a row store writes into its row.
+        if let Expr::Dereference(d) = lhs {
+            if matches!(
+                self.infer_ast_type(&d.expr),
+                Some(Type::Borrow { ref inner, .. }) if matches!(**inner, Type::Tensor(..))
+            ) {
+                let place = self.lower_expr(&d.expr)?;
+                let value = self.lower_expr(rhs)?;
+                self.emit_effect(Opcode::TensorStore, place.reg, value.reg, 0);
+                return Ok(());
+            }
+        }
         // A raw-pointer dereference store `*p = val` (`Box`'s `*p = val`): the place is `p[0]` (always a
         // pointer, so always a `PtrStore`). (#242)
         if let Expr::Dereference(_) = lhs {
             let place = self.lower_place(lhs)?;
-            let value = self.lower_expr(rhs)?;
+            let mut value = self.lower_expr(rhs)?;
+            // A struct or enum built in place yields its slot; the place holds the value.
+            if construction_tail(rhs) && matches!(value.ty, LoweredTy::Aggregate(_)) {
+                value = self.emit_typed(
+                    Opcode::SlotLoad,
+                    value.reg,
+                    Register(0),
+                    value.ty.clone(),
+                    0,
+                );
+            }
+            // The old value's drops run now that the new value is computed, before it is stored.
+            self.run_value_drops()?;
             self.emit_effect(Opcode::PtrStore, place.reg, value.reg, 0);
             return Ok(());
         }
@@ -4629,6 +4956,7 @@ impl<'r> Lowerer<'r> {
             if nested && matches!(v.ty, LoweredTy::Aggregate(_)) {
                 v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
             }
+            self.run_value_drops()?;
             let pos = self.code.len();
             self.emit_effect(Opcode::FieldStore, base_reg, v.reg, offset);
             // A place-write field store (`*r = v` through a `&mut o.field` place): record it for
@@ -4849,7 +5177,7 @@ impl<'r> Lowerer<'r> {
                         self.scope.insert(
                             l.name.clone(),
                             Binding::Place {
-                                place: (*b.expr).clone(),
+                                place: b.expr.clone(),
                             },
                         );
                         return Ok(());
@@ -5045,6 +5373,16 @@ impl<'r> Lowerer<'r> {
                     self.emit_effect(Opcode::Ret, Register(0), Register(0), 0);
                     return Ok(());
                 };
+                // A `void` function that ends in an `if` returns it, but its branches give no value.
+                if let (true, Expr::If(iff)) = (self.ret_void, ret_expr) {
+                    self.lower_if(iff)?;
+                    if !self.block_terminated() {
+                        self.run_value_drops()?;
+                        self.drop_temps_here(None);
+                        self.emit_effect(Opcode::Ret, Register(0), Register(0), 0);
+                    }
+                    return Ok(());
+                }
                 let v = self.lower_expr(ret_expr)?;
                 if self.ret_void {
                     if !self.block_terminated() {
@@ -5145,6 +5483,9 @@ impl<'r> Lowerer<'r> {
                 Expr::If(iff) => self.lower_if(iff),
                 Expr::Match(m) => self.lower_match(m),
                 Expr::SpawnOn(sp) => self.lower_spawn(sp, false).map(|_| ()),
+                Expr::UnsafeBlock(ub) if ub.task.is_some() => self
+                    .lower_task_region(ub, ub.task.unwrap(), false)
+                    .map(|_| ()),
                 // A statement-position `unsafe { … }` (an FFI program's `unsafe { … }` wrapper with no
                 // trailing value): safety was checked upstream, so `unsafe` is transparent — lower the
                 // inner statements, and its trailing value expression if any. (The value-position form,
@@ -5491,15 +5832,17 @@ fn expr_has_control_flow(e: &Expr) -> bool {
     match e {
         // The transparent blocks lower inline: their statements and their trailing expression
         // are this body's.
+        // A `tasks` block and a task body are regions, as a spawn body is.
+        Expr::UnsafeBlock(u) if u.task.is_some() => true,
         Expr::UnsafeBlock(u) => {
             body_has_control_flow(&u.stmts) || u.ret.as_deref().is_some_and(expr_has_control_flow)
         }
         Expr::ComptimeBlock(c) => {
             body_has_control_flow(&c.stmts) || c.ret.as_deref().is_some_and(expr_has_control_flow)
         }
-        Expr::SpawnOn(sp) => {
-            body_has_control_flow(&sp.stmts) || sp.ret.as_deref().is_some_and(expr_has_control_flow)
-        }
+        // A spawn body is a separate MLIR region. A value assigned in it is not visible after
+        // it, so an outer variable it assigns must live in a stack slot.
+        Expr::SpawnOn(_) => true,
         // Everything below only forwards the question to its operands: a value-`if` nested in a
         // call argument (`g(if c { y = 7; 1 } else { 0 })`) creates blocks exactly as a bare one
         // does, and not recursing here left the function looking straight-line -- the branch's
@@ -6435,105 +6778,6 @@ fn makes_a_fresh_tensor(opcode: Opcode) -> bool {
     )
 }
 
-/// Whether everything after a region's loop, at `idx`, may run per-thread after each thread's
-/// stripe: nothing, or drops of scratch declared before the loop, which each thread has a copy
-/// of.
-fn only_scratch_drops_after(stmts: &[Statement], idx: usize) -> bool {
-    stmts[idx + 1..].iter().all(|s| match s {
-        Statement::Drop(d) => stmts[..idx]
-            .iter()
-            .any(|p| matches!(p, Statement::LetDecl(l) if l.name == d.name)),
-        _ => false,
-    })
-}
-
-/// Is the outermost `for` of this spawn region safe to grid-stride — run its iterations on
-/// concurrent device threads instead of one (#251)?
-///
-/// Splitting a loop across threads is only sound when no iteration can observe another. The proof
-/// obligation is about **captured memory** — everything a thread declares itself is
-/// thread-private on a GPU by construction (an entry-block alloca is in the thread's own local
-/// depot, so even the region's pre-loop scratch declarations replicate harmlessly). So the rule
-/// this walker enforces, conservatively and syntactically, is:
-///
-/// - the region is `[zero or more local declarations] for iv in lo..hi { body }` and nothing else,
-///   with literal integer bounds (the trip count sizes the launch);
-/// - every write in the body lands either in a name declared inside the region, or in a captured
-///   tensor indexed **first by `iv`** — each iteration then owns row `iv` and no other;
-/// - a captured tensor the body writes is read only at the iteration's own row, since any other
-///   row may be another iteration's, written at the same time;
-/// - nothing in the body can write through a side door: no free calls, no prints, no transfers, no
-///   nested spawns, no method calls rooted at a captured name (a `&mut self` method on captured
-///   state is a write this walker cannot see);
-/// - no `break` of the outer loop (a serial `break` stops every later iteration; a strided one
-///   only stops the current thread's — different programs), and no shadowing that could make one
-///   name mean "captured" at one point and "local" at another (a name referenced before a later
-///   `let` of the same name rejects the region).
-///
-/// Returns the index of the `for` statement and the trip count, or `None` — and `None` costs
-/// nothing: the region lowers exactly as it always did and runs serially.
-///
-/// The declared/used-captured distinction is tracked in program order, so the walker is immune to
-/// shadowing tricks without needing scopes: a declaration is only accepted while its name has
-/// never been read as captured.
-fn parallel_outer_for(stmts: &[Statement]) -> Option<(usize, u64)> {
-    use crate::syntax::stmt::Statement as S;
-
-    let mut for_idx: Option<usize> = None;
-    for (i, s) in stmts.iter().enumerate() {
-        if matches!(s, S::ForLoop(_)) {
-            if for_idx.is_some() {
-                return None; // two top-level loops: neither owns the region
-            }
-            for_idx = Some(i);
-        }
-    }
-    let idx = for_idx?;
-    if !only_scratch_drops_after(stmts, idx) {
-        return None;
-    }
-    let S::ForLoop(f) = &stmts[idx] else {
-        return None;
-    };
-    let Expr::Range(r) = &*f.iterable else {
-        return None;
-    };
-    let lo = parallel_int_literal(&r.start)?;
-    let hi = parallel_int_literal(&r.end)?;
-    if hi <= lo {
-        return None;
-    }
-
-    let mut scan = ParallelScan::fresh(f.iter.clone());
-    for s in &stmts[..idx] {
-        let S::LetDecl(d) = s else {
-            return None;
-        };
-        // A pre-loop declaration replicates per thread, so its initializer may read anything but
-        // must not be able to write: `Tensor<..>(..)` scratch is the intended shape, and a plain
-        // expression passes through the same no-side-door walk as body reads.
-        let init_ok = match &d.expr {
-            Expr::FunctionCall(fc)
-                if is_tensor_alloc_call(fc) && fc.args.iter().all(|a| scan.expr(a)) =>
-            {
-                true
-            }
-            e => scan.expr(e),
-        };
-        if !init_ok || !scan.declare(&d.name) {
-            return None;
-        }
-    }
-    if !scan.declare(&f.iter) {
-        return None;
-    }
-    if scan.stmts(&f.body, 0) && !scan.reads_rows_others_write() {
-        Some((idx, (hi - lo) as u64))
-    } else {
-        None
-    }
-}
-
 /// The `SpawnEnd` imm bit that says "the trip count below is a BLOCK count and the region uses
 /// the two-level mapping" (Vx#379). The low 32 bits stay the trip.
 pub const SPAWN_TWO_LEVEL: u64 = 1 << 62;
@@ -6545,3003 +6789,9 @@ pub const SPAWN_TWO_LEVEL: u64 = 1 << 62;
 /// runtime must refuse to run it on the host rather than compute confidently wrong numbers.
 pub const SPAWN_COOP: u64 = 1 << 61;
 
-/// What `parallel_two_level` proved: which loop is block-mapped and which are thread-mapped,
-/// addressed by AST node identity (stable for the duration of lowering).
-pub(crate) struct TwoLevelPlan {
-    pub block: usize,
-    pub threads: Vec<usize>,
-}
-
-/// Is this spawn region a sound two-level (block/thread) kernel (Vx#379)?
-///
-/// The accepted shape is
-///
-/// ```text
-/// [local declarations]
-/// for bq in 0..NB {            // block-mapped: iterations -> blocks
-///     <items>
-/// }
-/// ```
-///
-/// where `<items>` is a sequence of: local declarations (each thread makes its own copy --
-/// block-scope statements execute redundantly per thread, which is only sound because nothing at
-/// block scope may write captured memory), `barrier()` calls, THREAD loops, sequential loops
-/// whose bodies are again `<items>` (a tile loop around cooperative phases), and -- stage C --
-/// COOPERATIVE thread loops: a thread loop with the barriers INSIDE it, so one thread's whole
-/// walk (private accumulator, own-row fill, barrier, consume, barrier) is a single body and the
-/// accumulator never leaves registers. A cooperative loop's trip must equal the launch width
-/// exactly (each thread runs it once) and its barriers must sit in uniform positions; see
-/// `coop_item`.
-///
-/// A THREAD loop is a literal-bound `for t in 0..K` whose body passes the single-level write
-/// walk with one extension: a captured write's first index may be the loop's own IV, or the
-/// affine form `bq * K + t` (either operand order) where `K` is EXACTLY this thread loop's trip
-/// -- each (block, thread-iteration) pair then owns one row and no other. The multiplier
-/// equaling the trip is what makes the partition exact; `bq * 8 + t` with `t in 0..4` would
-/// leave rows unowned and `t in 0..16` would double-book them.
-///
-/// The degeneracy that keeps every existing guarantee: at a 1x1x1 launch, block and thread
-/// strides are both 1 and offsets both 0, so the kernel IS the serial nest -- the host path and
-/// the launcher's EXPECT check hold by construction, not by re-verification.
-fn parallel_two_level(stmts: &[Statement]) -> Option<(u64, TwoLevelPlan)> {
-    use crate::syntax::stmt::Statement as S;
-
-    // Same region prologue rule as the single-level prover: declarations only, then the loop,
-    // nothing after it.
-    let mut for_idx: Option<usize> = None;
-    for (i, s) in stmts.iter().enumerate() {
-        if matches!(s, S::ForLoop(_)) {
-            if for_idx.is_some() {
-                return None;
-            }
-            for_idx = Some(i);
-        }
-    }
-    let idx = for_idx?;
-    if !only_scratch_drops_after(stmts, idx) {
-        return None;
-    }
-    let S::ForLoop(f) = &stmts[idx] else {
-        return None;
-    };
-    let Expr::Range(r) = &*f.iterable else {
-        return None;
-    };
-    let lo = parallel_int_literal(&r.start)?;
-    let hi = parallel_int_literal(&r.end)?;
-    if lo != 0 || hi <= lo {
-        return None; // the affine ownership argument below assumes lb 0
-    }
-
-    // A region with no thread loop or no barrier is not a cooperative kernel; let the flat
-    // grid-stride path have it (it maps the same work with less machinery).
-    let mut scan = ParallelScan::fresh(f.iter.clone());
-    for s in &stmts[..idx] {
-        let S::LetDecl(d) = s else {
-            return None;
-        };
-        if !scan.let_decl_two_level(d) {
-            return None;
-        }
-    }
-    if !scan.declare(&f.iter) {
-        return None;
-    }
-
-    let mut walker = TwoLevelWalk {
-        scan,
-        block_iv: f.iter.to_string(),
-        threads: Vec::new(),
-        saw_thread_loop: false,
-        max_thread_trip: 0,
-        coop_trips: Vec::new(),
-    };
-    // Twice: the block loop grid-strides, so this body's END wraps to its BEGINNING in the same
-    // block -- one thread's next-bq fill against another's lagging consume. The ledgers
-    // surviving pass one are exactly that seam, and only a second pass walks a write into them.
-    if !walker.items(&f.body) || !walker.items(&f.body) {
-        return None;
-    }
-    if !walker.saw_thread_loop || walker.scan.reads_rows_others_write() {
-        return None;
-    }
-    let threads = walker.max_thread_trip.clamp(1, 1024) as u64;
-    // A cooperative loop's barriers live INSIDE it, so every thread of the block must enter it:
-    // its trip must BE the block shape, exactly. A wider sibling loop would leave threads
-    // outside the bar, and the kernel hangs.
-    if walker.coop_trips.iter().any(|t| *t as u64 != threads) {
-        return None;
-    }
-    // The walks above ran twice (sequences twice per pass), so the plan vector carries
-    // duplicates; membership is all `lower_for` asks of it.
-    walker.threads.sort_unstable();
-    walker.threads.dedup();
-    let coop = if walker.coop_trips.is_empty() {
-        0
-    } else {
-        SPAWN_COOP
-    };
-    Some((
-        (hi - lo) as u64 | (threads << 32) | coop,
-        TwoLevelPlan {
-            // The address of the ForLoopStmt itself, because that is what `lower_for` is
-            // handed -- the enum wrapper's address would never match.
-            block: f as *const crate::syntax::ForLoopStmt as usize,
-            threads: walker.threads,
-        },
-    ))
-}
-
-/// The block-body grammar walk behind `parallel_two_level`. Wraps the single-level
-/// `ParallelScan` for expression legality and adds the item grammar around it.
-struct TwoLevelWalk {
-    scan: ParallelScan,
-    block_iv: String,
-    threads: Vec<usize>,
-    saw_thread_loop: bool,
-    /// The widest thread-loop trip: the block shape the launch should use, so a TQ=64 kernel
-    /// gets 64 threads instead of 64 working and 64 idling (Vx#379).
-    max_thread_trip: i64,
-    /// Trips of the COOPERATIVE thread loops accepted (Vx#379 stage C). Each must equal the
-    /// final launch width -- checked at plan end, because a wider sibling loop scanned later
-    /// could widen the block after this loop was accepted.
-    coop_trips: Vec<i64>,
-}
-
-impl TwoLevelWalk {
-    fn items(&mut self, stmts: &[Statement]) -> bool {
-        use crate::syntax::stmt::Statement as S;
-        let is_barrier = |s: &Statement| {
-            matches!(s, S::ExprStmt(e) if matches!(
-                &e.expr,
-                Expr::FunctionCall(fc) if &*fc.name == "barrier" && fc.args.is_empty()
-            ))
-        };
-        // A thread loop that wrote block-shared storage must be followed by a barrier --
-        // including at the END of a sequence, because both a sequential loop's next
-        // iteration and the block loop's next block-stride iteration reuse the same
-        // storage. "The next statement is the barrier" is the whole v1 discipline.
-        let mut need_barrier = false;
-        for s in stmts {
-            if need_barrier && !is_barrier(s) {
-                return false;
-            }
-            need_barrier = false;
-            let ok = match s {
-                // Block-scope declaration: every thread evaluates it into its own copy --
-                // unless its type names a space, which makes it one block-shared allocation
-                // (Vx#379 stage B) that joins the shared-write discipline.
-                S::LetDecl(d) => self.scan.let_decl_two_level(d),
-                // Block-scope scalar assignment to a thread-private LOCAL is
-                // redundant-per-thread and harmless; a captured or block-shared write at
-                // block scope is every thread racing.
-                S::Assign(a) => {
-                    matches!(&a.lhs, Expr::Identifier(id)
-                        if self.scan.declared.contains(&*id.name)
-                            && !self.scan.smem.contains(&*id.name))
-                        && self.scan.expr(&a.rhs)
-                }
-                S::ExprStmt(_) => {
-                    let b = is_barrier(s);
-                    if b {
-                        // The bar retires the dirt: everything written before it is visible
-                        // to everyone after it, and every read before it has completed.
-                        self.scan.smem_written.clear();
-                        self.scan.smem_nonown_read.clear();
-                    }
-                    b
-                }
-                S::ForLoop(inner) => {
-                    let ok = self.for_item(inner, s);
-                    if ok && !self.scan.smem_written.is_empty() {
-                        need_barrier = true;
-                    }
-                    ok
-                }
-                _ => false,
-            };
-            if !ok {
-                return false;
-            }
-        }
-        !need_barrier
-    }
-
-    fn for_item(&mut self, inner: &crate::syntax::ForLoopStmt, node: &Statement) -> bool {
-        let Expr::Range(r) = &*inner.iterable else {
-            return false;
-        };
-        let (Some(lo), Some(hi)) = (parallel_int_literal(&r.start), parallel_int_literal(&r.end))
-        else {
-            return false;
-        };
-        if lo != 0 || hi <= lo {
-            return false;
-        }
-        if *inner.iter == *self.block_iv || !self.scan.declare(&inner.iter) {
-            return false;
-        }
-        // Decide the loop's role by whether its subtree synchronizes: a barrier anywhere
-        // below makes this a sequence container or a COOPERATIVE thread loop, tried in that
-        // order of specificity reversed -- coop first, because it is the shape worth having
-        // (the accumulator stays in registers). No barrier anywhere makes it a plain
-        // THREAD-loop candidate. Merely containing a `for` must NOT make a loop sequential
-        // -- a thread loop legitimately nests serial walks (the key loop inside a consume
-        // phase), and classifying it sequential sent its inner serial loop to the thread
-        // rule, which rejected the whole region.
-        let is_sequence = contains_barrier(&inner.body);
-        if is_sequence {
-            if self.coop_item(inner, node, hi - lo) {
-                return true;
-            }
-            // Twice for the same reason the block body walks twice: a sequence's end wraps
-            // to its own beginning on the next iteration, and a dangling nonown read meeting
-            // the next pass's fill is visible only to a second walk.
-            return self.items(&inner.body) && self.items(&inner.body);
-        }
-        let saved_iv = std::mem::replace(&mut self.scan.iv, inner.iter.to_string());
-        let saved_affine = self.scan.affine.take();
-        self.scan.affine = Some((self.block_iv.clone(), hi - lo));
-        // The ledgers deliberately survive from the previous item -- no clear here: they are
-        // "dirt since the last barrier", and a thread loop's writes meeting a neighbour's
-        // un-barriered reads from the PREVIOUS loop are the same race as within one loop. The
-        // access-time seam checks in `target` and `expr` enforce both directions.
-        let ok = self.scan.stmts(&inner.body, 0);
-        self.scan.iv = saved_iv;
-        self.scan.affine = saved_affine;
-        if ok {
-            self.saw_thread_loop = true;
-            self.max_thread_trip = self.max_thread_trip.max(hi - lo);
-            let addr = match node {
-                Statement::ForLoop(fl) => fl as *const crate::syntax::ForLoopStmt as usize,
-                _ => return false,
-            };
-            self.threads.push(addr);
-        }
-        ok
-    }
-
-    /// A COOPERATIVE thread loop (Vx#379 stage C): `for qi in 0..K` with the barriers INSIDE
-    /// it. The loop itself is thread-mapped, so one thread's whole walk -- private
-    /// accumulator, own-row tile fill, barrier, consume, barrier -- is a single loop body,
-    /// and the accumulator lives in registers instead of a shared tensor with per-tile
-    /// spills. Soundness needs one fact the plain thread rule does not: every thread must
-    /// meet every barrier the same number of times. `parallel_two_level` pins the launch to
-    /// `threads == trip` (each thread runs the body exactly once), and the scan keeps
-    /// barriers out of divergent positions -- conditionals, variable-bound loops, loops a
-    /// `break` could leave early.
-    fn coop_item(
-        &mut self,
-        inner: &crate::syntax::ForLoopStmt,
-        node: &Statement,
-        trip: i64,
-    ) -> bool {
-        if trip > 1024 {
-            // The launcher clamps blocks at 1024 threads; a wider coop loop would stride,
-            // and a strided loop's barrier counts diverge.
-            return false;
-        }
-        // The sequence interpretation this falls back to must start from the state it would
-        // have seen had this attempt never run; the scan mutates in place, so snapshot.
-        let saved_declared = self.scan.declared.clone();
-        let saved_captured = self.scan.used_captured.clone();
-        let saved_written = self.scan.smem_written.clone();
-        let saved_read = self.scan.smem_nonown_read.clone();
-        let saved_iv = std::mem::replace(&mut self.scan.iv, inner.iter.to_string());
-        let saved_affine = self.scan.affine.take();
-        self.scan.affine = Some((self.block_iv.clone(), trip));
-        self.scan.coop = true;
-        self.scan.barrier_ok = true;
-        // Twice: the block loop grid-strides, so this body's end wraps to its own beginning
-        // (next bq, same block) -- pass two walks that seam.
-        let ok = self.scan.stmts(&inner.body, 0) && self.scan.stmts(&inner.body, 0);
-        self.scan.coop = false;
-        self.scan.barrier_ok = false;
-        self.scan.iv = saved_iv;
-        self.scan.affine = saved_affine;
-        if !ok {
-            self.scan.declared = saved_declared;
-            self.scan.used_captured = saved_captured;
-            self.scan.smem_written = saved_written;
-            self.scan.smem_nonown_read = saved_read;
-            return false;
-        }
-        self.saw_thread_loop = true;
-        self.max_thread_trip = self.max_thread_trip.max(trip);
-        self.coop_trips.push(trip);
-        let addr = match node {
-            Statement::ForLoop(fl) => fl as *const crate::syntax::ForLoopStmt as usize,
-            _ => return false,
-        };
-        self.threads.push(addr);
-        true
-    }
-}
-
-/// Does a barrier statement appear anywhere below? This decides a loop's role in the
-/// two-level walk (synchronizing loops are sequences or cooperative loops; barrier-free ones
-/// are thread candidates) and which loops the coop scan must hold to uniform trips.
-fn contains_barrier(stmts: &[Statement]) -> bool {
-    use crate::syntax::stmt::Statement as S;
-    stmts.iter().any(|s| match s {
-        S::ExprStmt(e) => {
-            matches!(&e.expr, Expr::FunctionCall(fc) if &*fc.name == "barrier")
-        }
-        S::ForLoop(f) => contains_barrier(&f.body),
-        S::Loop(l) => contains_barrier(&l.body),
-        _ => false,
-    })
-}
-
-/// A non-negative integer literal, for `parallel_outer_for`'s bounds.
-fn parallel_int_literal(e: &Expr) -> Option<i64> {
-    let Expr::Number(n) = e else {
-        return None;
-    };
-    n.value.parse::<i64>().ok()
-}
-
-/// Scalar math the walk may trust. By the time `parallel_outer_for` runs, the checker has
-/// rewritten every method call into a mangled free call — `(x).exp()` arrives as
-/// `f32$exp(x)` — so a syntactic walk meets no `MethodCall`, only calls whose names carry the
-/// receiver type. These are the stdlib's value-receiver scalar intrinsics: value in, value out,
-/// nothing written anywhere, which is exactly what the disjointness proof needs from a call.
-/// Anything not on this list rejects the region — a name here is a purity claim.
-fn parallel_pure_call(name: &str) -> bool {
-    let Some((ty, method)) = name.split_once('$') else {
-        return false;
-    };
-    matches!(ty, "f32" | "f64" | "i32" | "i64")
-        && matches!(
-            method,
-            "exp"
-                | "exp2"
-                | "sqrt"
-                | "abs"
-                | "ln"
-                | "log2"
-                | "log10"
-                | "sin"
-                | "cos"
-                | "tan"
-                | "tanh"
-                | "floor"
-                | "ceil"
-                | "round"
-                | "min"
-                | "max"
-                | "pow"
-                | "powi"
-                | "recip"
-        )
-}
-
-/// The disjointness walk behind `parallel_outer_for`: what each iteration writes, and what it reads
-/// of what is written. `declared` and `used_captured` grow in program order; every `false` means
-/// "reject the region", never an error.
-struct ParallelScan {
-    iv: String,
-    declared: HashSet<String>,
-    used_captured: HashSet<String>,
-    /// Set while scanning a THREAD loop of a two-level region (Vx#379): `(block_iv, K)` where `K`
-    /// is the thread loop's trip. Widens the captured-write rule to accept the affine first index
-    /// `block_iv * K + iv` -- the (block, thread-iteration) pair's own row.
-    affine: Option<(String, i64)>,
-    /// Region-locals that are BLOCK-SHARED rather than thread-private (Vx#379 stage B): declared
-    /// `Tensor<T, [..], Memory::X>::uninit()`. Any space is treated as shared -- stricter than
-    /// necessary for a non-sm space, never looser. Shared changes the write rule: only a thread
-    /// loop may write one, at its own IV's row.
-    smem: HashSet<String>,
-    /// Per-thread-loop race ledgers, reset by `TwoLevelWalk::for_item`: shared tensors this loop
-    /// wrote, and shared tensors it read at a row other than its own. A tensor in both sets is a
-    /// read-write race between two iterations of the same loop; a written tensor also demands a
-    /// barrier as the next statement.
-    smem_written: HashSet<String>,
-    smem_nonown_read: HashSet<String>,
-    /// Tensors from outside the region that it writes, and those it reads at a row the reading
-    /// iteration may not own. A tensor in both is a race: one iteration reads a row another may
-    /// be writing.
-    captured_written: HashSet<String>,
-    captured_nonown_read: HashSet<String>,
-    /// Set while scanning a COOPERATIVE thread loop (Vx#379 stage C): admits `barrier()` as a
-    /// statement (under the divergence guards below) and arms the seam checks.
-    coop: bool,
-    /// Whether a barrier statement is currently in a uniform position: false inside an
-    /// if-expression's blocks, where threads may disagree about arriving at all.
-    barrier_ok: bool,
-    /// One frame per loop the scan is inside: does that loop contain a barrier? A `break` or
-    /// `continue` whose innermost loop synchronizes would let one thread leave while the
-    /// others wait at the bar forever.
-    loop_barrier_stack: Vec<bool>,
-}
-
-impl ParallelScan {
-    fn fresh(iv: String) -> Self {
-        ParallelScan {
-            iv,
-            declared: HashSet::new(),
-            used_captured: HashSet::new(),
-            affine: None,
-            smem: HashSet::new(),
-            smem_written: HashSet::new(),
-            smem_nonown_read: HashSet::new(),
-            captured_written: HashSet::new(),
-            captured_nonown_read: HashSet::new(),
-            coop: false,
-            barrier_ok: false,
-            loop_barrier_stack: Vec::new(),
-        }
-    }
-
-    /// A `let` in a two-level region (prologue or block scope). Two shapes pass: a plain
-    /// expression that cannot write (the ordinary rule), and a fresh `Tensor` -- thread-private
-    /// scratch when unplaced, and BLOCK-SHARED storage when its type names a space, which joins
-    /// the shared-write discipline via `smem` (Vx#379 stage B).
-    fn let_decl_two_level(&mut self, d: &crate::syntax::stmt::LetDeclStmt) -> bool {
-        let mut is_smem = false;
-        let init_ok = match &d.expr {
-            Expr::FunctionCall(fc)
-                if is_tensor_alloc_call(fc) && fc.args.iter().all(|a| self.expr(a)) =>
-            {
-                is_smem = tensor_alloc_placement(fc).is_some();
-                true
-            }
-            e => self.expr(e),
-        };
-        if !init_ok || !self.declare(&d.name) {
-            return false;
-        }
-        if is_smem {
-            self.smem.insert(d.name.to_string());
-        }
-        true
-    }
-
-    /// Record a read of `name`. Reads of captured state are always fine — but they pin the name as
-    /// captured, so a later `let` of the same name rejects the region (see `declare`).
-    fn note(&mut self, name: &str) {
-        if !self.declared.contains(name) {
-            self.used_captured.insert(name.to_string());
-        }
-    }
-
-    /// A `let` (or loop IV) introduces a local — unless the name was already read as captured, or
-    /// shadows the outer IV, either of which would let one spelling mean two memories.
-    fn declare(&mut self, name: &str) -> bool {
-        if self.used_captured.contains(name) {
-            return false;
-        }
-        if !self.declared.is_empty() && name == self.iv && self.declared.contains(name) {
-            return false;
-        }
-        self.declared.insert(name.to_string());
-        true
-    }
-
-    /// A block's statements. A name its `let`s declare is region-local only until the block
-    /// ends; after it, the name is whatever it was before, often a captured variable.
-    fn stmts(&mut self, stmts: &[Statement], depth: u32) -> bool {
-        let outer = self.declared.clone();
-        let ok = stmts.iter().all(|s| self.stmt(s, depth));
-        self.declared = outer;
-        ok
-    }
-
-    fn stmt(&mut self, s: &Statement, depth: u32) -> bool {
-        use crate::syntax::stmt::Statement as S;
-        match s {
-            S::LetDecl(d) => self.expr(&d.expr) && self.declare(&d.name),
-            S::Assign(a) => self.target(&a.lhs) && self.expr(&a.rhs),
-            // `x op= e` both reads and writes x; `target` covers the write, `expr` the read.
-            S::CompoundAssign(a) => self.target(&a.lhs) && self.expr(&a.lhs) && self.expr(&a.rhs),
-            S::ForLoop(inner) => {
-                let Expr::Range(r) = &*inner.iterable else {
-                    return false;
-                };
-                if *inner.iter == *self.iv {
-                    return false; // shadowing the strided IV would defeat the first-index rule
-                }
-                // The loop variable, like a `let` in the body, ends with the loop.
-                let outer = self.declared.clone();
-                if !(self.expr(&r.start) && self.expr(&r.end) && self.declare(&inner.iter)) {
-                    return false;
-                }
-                let synchronizes = self.coop && contains_barrier(&inner.body);
-                // A barrier's arrival count must not depend on the thread: a loop holding one
-                // needs literal bounds, or its trip -- and with it how many times each thread
-                // meets the bar -- could vary per thread and hang the block.
-                if synchronizes
-                    && (parallel_int_literal(&r.start).is_none()
-                        || parallel_int_literal(&r.end).is_none())
-                {
-                    return false;
-                }
-                self.loop_barrier_stack.push(synchronizes);
-                // A synchronizing loop wraps: its end meets its own beginning on the next
-                // iteration, and the ledgers a mid-body barrier cleared hide that seam from a
-                // single pass -- so walk the body twice.
-                let ok = self.stmts(&inner.body, depth + 1)
-                    && (!synchronizes || self.stmts(&inner.body, depth + 1));
-                self.loop_barrier_stack.pop();
-                self.declared = outer;
-                ok
-            }
-            S::Loop(l) => {
-                // An infinite loop's trip is break-decided, i.e. potentially per-thread:
-                // there is no uniform position for a barrier in one.
-                if self.coop && contains_barrier(&l.body) {
-                    return false;
-                }
-                self.loop_barrier_stack.push(false);
-                let ok = self.stmts(&l.body, depth + 1);
-                self.loop_barrier_stack.pop();
-                ok
-            }
-            // Leaving or short-circuiting a synchronizing loop early desynchronizes its
-            // barriers: one thread stops arriving while the rest wait.
-            S::Break(_) | S::Continue(_) if *self.loop_barrier_stack.last().unwrap_or(&false) => {
-                false
-            }
-            // A `break` of the outer loop stops every later iteration when serial but only the
-            // current thread's stripe when strided — two different programs.
-            S::Break(_) => depth > 0,
-            S::Continue(_) => true,
-            S::ExprStmt(e) => {
-                if self.coop {
-                    if let Expr::FunctionCall(fc) = &e.expr {
-                        if &*fc.name == "barrier" && fc.args.is_empty() {
-                            // A statement-position barrier: legal only where every thread
-                            // arrives, and it retires the dirt on both ledgers.
-                            if !self.barrier_ok {
-                                return false;
-                            }
-                            self.smem_written.clear();
-                            self.smem_nonown_read.clear();
-                            return true;
-                        }
-                    }
-                }
-                self.expr(&e.expr)
-            }
-            // Return, assert, macro calls, parse errors: none of these have stridable semantics.
-            // Frees nothing yet; a drop in a parallel region is decided with phase 5.
-            S::Drop(_) => true,
-            S::Return(_) | S::Assert(_) | S::MacroCall(_) | S::Error(_) => false,
-        }
-    }
-
-    /// The left of an assignment: where does the write land?
-    fn target(&mut self, lhs: &Expr) -> bool {
-        match lhs {
-            // A bare name: fine only if it is region-local AND thread-private. A captured scalar
-            // written by every thread is the definition of a race; so is a whole-tensor write to
-            // block-shared storage.
-            Expr::Identifier(id) => {
-                self.declared.contains(&*id.name) && !self.smem.contains(&*id.name)
-            }
-            // An index chain `a[e0][e1]..`: peel to the base. A local base is thread-private
-            // regardless of indices; a captured base must be indexed first by the IV, giving each
-            // iteration its own row.
-            Expr::IndexAccess(_) => {
-                let mut indices = Vec::new();
-                let mut cur = lhs;
-                while let Expr::IndexAccess(ix) = cur {
-                    indices.push(&*ix.index);
-                    cur = &ix.base;
-                }
-                let Expr::Identifier(id) = cur else {
-                    return false;
-                };
-                // `indices` is outermost-last: `a[i][d]` pushed d then i.
-                let first = match indices.last() {
-                    Some(e) => *e,
-                    None => return false,
-                };
-                if !indices.iter().all(|e| self.expr(e)) {
-                    return false;
-                }
-                if self.declared.contains(&*id.name) {
-                    if !self.smem.contains(&*id.name) {
-                        return true; // thread-private: any indexing is this thread's own
-                    }
-                    // Block-shared (Vx#379 stage B): writable only from a thread loop
-                    // (`affine` is Some exactly there), one row per iteration, the row being
-                    // the loop's own IV. The ledger feeds the barrier-after-write rule at the
-                    // items level and the seam checks here.
-                    if self.affine.is_none() {
-                        return false;
-                    }
-                    // The write-after-read seam: rows a neighbour read since the last barrier
-                    // (the next tile's fill racing this tile's consume). Only a barrier
-                    // between the two orders them.
-                    if self.smem_nonown_read.contains(&*id.name) {
-                        return false;
-                    }
-                    self.smem_written.insert(id.name.to_string());
-                    return matches!(first, Expr::Identifier(fid) if *fid.name == *self.iv);
-                }
-                self.note(&id.name);
-                self.captured_written.insert(id.name.to_string());
-                self.owns_row(&indices)
-            }
-            _ => false,
-        }
-    }
-
-    /// Whether the index chain `indices` (outermost-last, as `target` collects it) names a row
-    /// the current iteration owns: first index the IV, or one of the two-level ownership forms.
-    fn owns_row(&self, indices: &[&Expr]) -> bool {
-        let Some(first) = indices.last() else {
-            return false;
-        };
-        matches!(first, Expr::Identifier(fid) if *fid.name == *self.iv)
-            || self.affine_first(first)
-            || self.block_row_write(indices)
-    }
-
-    /// Whether some tensor from outside the region is both written in it and read at a row the
-    /// reading iteration may not own.
-    fn reads_rows_others_write(&self) -> bool {
-        !self
-            .captured_written
-            .is_disjoint(&self.captured_nonown_read)
-    }
-
-    /// The third captured-write ownership form (Vx#379 R3): the BLOCK owns the row and the
-    /// THREADS partition its columns by residue -- `s[bq][t + x * K]` with `bq` the block IV,
-    /// `t` this thread loop's IV, and `K` exactly its trip. Distinct threads write distinct
-    /// residues mod K; distinct blocks write distinct rows; and `x` may be ANY declared local
-    /// (a serial loop IV, typically), because whatever it evaluates to, the residue -- the
-    /// ownership class -- is still `t`. This is the shape a block-per-row reduction sweep
-    /// writes: a coalesced softmax's exp pass, thread `t` touching columns t, t+K, t+2K...
-    fn block_row_write(&self, indices: &[&Expr]) -> bool {
-        let Some((bq, k)) = &self.affine else {
-            return false;
-        };
-        // Exactly [second, first]: rank-2, row then column, nothing deeper.
-        if indices.len() != 2 {
-            return false;
-        }
-        let first = indices[1];
-        let second = indices[0];
-        if !matches!(first, Expr::Identifier(fid) if *fid.name == **bq) {
-            return false;
-        }
-        let is_iv = |x: &Expr| matches!(x, Expr::Identifier(id) if *id.name == *self.iv);
-        if is_iv(second) {
-            return true; // bare `t`: one column per thread
-        }
-        let Expr::BinaryOp(b) = second else {
-            return false;
-        };
-        if !matches!(b.op, BinaryOp::Add) {
-            return false;
-        }
-        let is_scaled_local = |x: &Expr| -> bool {
-            let Expr::BinaryOp(m) = x else {
-                return false;
-            };
-            if !matches!(m.op, BinaryOp::Mul) {
-                return false;
-            }
-            let stride_of = |e: &Expr| parallel_int_literal(e) == Some(*k);
-            let local_of = |e: &Expr| {
-                matches!(e, Expr::Identifier(id)
-                    if *id.name != *self.iv && *id.name != **bq && self.declared.contains(&*id.name))
-            };
-            (local_of(&m.lhs) && stride_of(&m.rhs)) || (stride_of(&m.lhs) && local_of(&m.rhs))
-        };
-        (is_iv(&b.lhs) && is_scaled_local(&b.rhs)) || (is_scaled_local(&b.lhs) && is_iv(&b.rhs))
-    }
-
-    /// The two-level widening of the first-index rule (Vx#379): `block_iv * K + iv` in either
-    /// operand order, with `K` exactly the thread loop's trip -- see `parallel_two_level` for why
-    /// the multiplier must equal the trip.
-    fn affine_first(&self, e: &Expr) -> bool {
-        let Some((bq, k)) = &self.affine else {
-            return false;
-        };
-        let Expr::BinaryOp(b) = e else {
-            return false;
-        };
-        if !matches!(b.op, BinaryOp::Add) {
-            return false;
-        }
-        let is_scaled_block = |x: &Expr| -> bool {
-            let Expr::BinaryOp(m) = x else {
-                return false;
-            };
-            matches!(m.op, BinaryOp::Mul)
-                && ((matches!(&*m.lhs, Expr::Identifier(id) if *id.name == **bq)
-                    && parallel_int_literal(&m.rhs) == Some(*k))
-                    || (matches!(&*m.rhs, Expr::Identifier(id) if *id.name == **bq)
-                        && parallel_int_literal(&m.lhs) == Some(*k)))
-        };
-        let is_iv = |x: &Expr| matches!(x, Expr::Identifier(id) if *id.name == *self.iv);
-        (is_scaled_block(&b.lhs) && is_iv(&b.rhs)) || (is_iv(&b.lhs) && is_scaled_block(&b.rhs))
-    }
-
-    /// A read-position expression: allowed unless it could hide a write (a call, a print, a
-    /// transfer) or is a construct this walk has no sound story for.
-    fn expr(&mut self, e: &Expr) -> bool {
-        match e {
-            // A name read whole may read every row of it.
-            Expr::Identifier(id) => {
-                self.note(&id.name);
-                if !self.declared.contains(&*id.name) {
-                    self.captured_nonown_read.insert(id.name.to_string());
-                }
-                true
-            }
-            Expr::Number(_) | Expr::StringLiteral(_) | Expr::SizeOf(_) | Expr::EnumVariant(_) => {
-                true
-            }
-            Expr::BinaryOp(b) => self.expr(&b.lhs) && self.expr(&b.rhs),
-            Expr::RelationalOp(b) => self.expr(&b.lhs) && self.expr(&b.rhs),
-            Expr::LogicalOp(b) => self.expr(&b.lhs) && self.expr(&b.rhs),
-            Expr::UnaryOp(u) => self.expr(&u.expr),
-            Expr::AsCast(c) => self.expr(&c.expr),
-            Expr::IndexAccess(_) => {
-                let mut root = e;
-                let mut indices = Vec::new();
-                while let Expr::IndexAccess(step) = root {
-                    indices.push(&*step.index);
-                    root = &step.base;
-                }
-                let Expr::Identifier(id) = root else {
-                    return self.expr(root) && indices.iter().all(|i| self.expr(i));
-                };
-                // Ledger for the same-loop shared read/write race check (Vx#379 stage B): a
-                // read of a block-shared tensor at a row other than the thread loop's own IV.
-                // Reading a neighbour's row is exactly what a consume phase does to a tile the
-                // FILL phase wrote -- legal across a barrier, a race within one loop.
-                if self.affine.is_some() && self.smem.contains(&*id.name) {
-                    let own = matches!(
-                        indices.last(),
-                        Some(Expr::Identifier(fid)) if *fid.name == *self.iv
-                    );
-                    if !own {
-                        // The read-after-write seam: a neighbour's row of a tensor
-                        // written since the last barrier -- the fill may not be
-                        // visible yet. Legal only across a barrier.
-                        if self.smem_written.contains(&*id.name) {
-                            return false;
-                        }
-                        self.smem_nonown_read.insert(id.name.to_string());
-                    }
-                }
-                // A row of a tensor from outside the region that this iteration may not own.
-                if !self.declared.contains(&*id.name) && !self.owns_row(&indices) {
-                    self.captured_nonown_read.insert(id.name.to_string());
-                }
-                self.note(&id.name);
-                indices.iter().all(|i| self.expr(i))
-            }
-            Expr::MemberAccess(m) => self.expr(&m.base),
-            Expr::Array(a) => a.elements.iter().all(|el| self.expr(el)),
-            Expr::Range(r) => self.expr(&r.start) && self.expr(&r.end),
-            // The checker has already rewritten `.exp()` into `f32$exp(x)` by the time this walk
-            // runs, so calls are the shape scalar math arrives in. Only the known-pure intrinsics
-            // pass; any other call could write through an argument and rejects the region. A
-            // `Borrow` shows up when such an intrinsic takes `&self` — harmless only immutably.
-            Expr::FunctionCall(fc) => {
-                parallel_pure_call(&fc.name) && fc.args.iter().all(|a| self.expr(a))
-            }
-            Expr::Borrow(b) => !b.is_mut && self.expr(&b.expr),
-            // Belt for the pre-rewrite spelling, should this walk ever run on an unchecked AST: a
-            // method rooted at a captured name is refused (`&mut self` mutation is a write this
-            // walk cannot see); on a local or a computed scalar it is thread-private either way.
-            Expr::MethodCall(mc) => {
-                let mut root = &*mc.base;
-                while let Expr::IndexAccess(ix) = root {
-                    root = &ix.base;
-                }
-                if let Expr::Identifier(id) = root {
-                    if !self.declared.contains(&*id.name) {
-                        return false;
-                    }
-                }
-                self.expr(&mc.base) && mc.args.iter().all(|a| self.expr(a))
-            }
-            Expr::If(i) => {
-                // If-expression blocks execute at the enclosing loop depth; a `break` inside them
-                // still targets that loop, which `stmt` scores against depth 0 correctly because
-                // an if-block introduces no loop. Threads may disagree about entering a branch,
-                // so no barrier position inside one is uniform.
-                let saved = self.barrier_ok;
-                self.barrier_ok = false;
-                let ok = self.expr(&i.cond)
-                    && self.stmts(&i.then_block, 1)
-                    && i.else_block.as_ref().is_none_or(|b| self.stmts(b, 1));
-                self.barrier_ok = saved;
-                ok
-            }
-            // Everything else — calls, prints, transfers, spawns, closures, borrows, raw pointers,
-            // inline MLIR, autodiff, matches, struct construction — is either a possible write or
-            // a construct with no sound striding story. Reject; the loop stays serial.
-            _ => false,
-        }
-    }
-}
+mod across;
+mod affine;
+use across::{across_block_lanes, blocks_loop, AcrossState};
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::bytecode::{AUTODIFF_FORWARD, AUTODIFF_MODE_SHIFT, AUTODIFF_REVERSE};
-    use crate::session::GlobalSession;
-    use std::sync::Arc;
-
-    fn parse_fn(src: &str) -> Function {
-        let mut lexer = crate::lexer::Lexer::new(src);
-        let tokens = lexer.tokenize();
-        let mut parser = crate::parser::Parser::new(&tokens, src);
-        let prog = parser.parse().expect("parse failed");
-        prog.functions.into_iter().next().expect("expected one fn")
-    }
-
-    fn worker() -> LocalWorkerState {
-        LocalWorkerState::new(Arc::new(GlobalSession::new(1)))
-    }
-
-    fn opcodes(w: &LocalWorkerState) -> Vec<Opcode> {
-        w.local_hir_stream.iter().map(|i| i.opcode).collect()
-    }
-
-    fn count(w: &LocalWorkerState, op: Opcode) -> usize {
-        w.local_hir_stream.iter().filter(|i| i.opcode == op).count()
-    }
-
-    /// Parse a whole program, resolve names, build the *real* frozen registry (so aggregate layouts
-    /// exist), type-check (so `StructInit`s get their GID annotated), and attempt to lower `fn_name`.
-    /// Returns `(did_lower, worker)`.
-    fn lower_with_registry(src: &str, fn_name: &str) -> (bool, LocalWorkerState) {
-        let mut lexer = crate::lexer::Lexer::new(src);
-        let tokens = lexer.tokenize();
-        let mut parser = crate::parser::Parser::new(&tokens, src);
-        let mut prog = parser.parse().expect("parse failed");
-        prog.module_path = "crate::t".into();
-        let mut mods = vec![prog];
-        let symbol_map = crate::resolver::build_symbol_map(&mods);
-        mods[0].resolve_names(&symbol_map, &[]);
-        let registry = crate::pipeline::build_frozen_registry(&mods).expect("registry builds");
-        let mut worker = LocalWorkerState::new(Arc::new(GlobalSession::with_registry(1, registry)));
-
-        // Type-check so the type checker annotates each `StructInit` with its struct GID.
-        let env_mods: Vec<_> = mods.clone();
-        let env = crate::hir::GlobalAstEnv::build(&env_mods);
-        {
-            let mut checker = crate::hir::TypeChecker::new(&env, &mut worker);
-            for f in &mut mods[0].functions {
-                checker.check_function(f);
-            }
-        }
-
-        let func = mods
-            .into_iter()
-            .next()
-            .unwrap()
-            .functions
-            .into_iter()
-            .find(|f| f.name.as_ref() == fn_name)
-            .expect("fn present");
-        let did = lower_function_to_hir(&func, &mut worker).is_ok();
-        (did, worker)
-    }
-
-    #[test]
-    fn the_control_flow_scan_sees_nested_and_trailing_positions() {
-        // Each shape here hid a value-`if` from an earlier version of the scan; the register
-        // path then let a branch's rebind escape its block. The scan is pinned directly, since
-        // an end-to-end repro exists only for shapes the checker admits.
-        let has = |src: &str| body_has_control_flow(&parse_fn(src).body);
-        // A value-if nested in a call argument -- the shape that panicked as invalid MLIR.
-        assert!(has(
-            "fn f() -> i32 { let mut y = 5; let r = g(if y > 1 { y = 7; 1 } else { 0 }); return y + r; }"
-        ));
-        // A compound assignment whose right side branches.
-        assert!(has(
-            "fn f(c : bool) -> i32 { let mut x = 1; x += if c { 10 } else { 20 }; return x; }"
-        ));
-        // A binary operand.
-        assert!(has(
-            "fn f(c : bool) -> i32 { let v = (if c { 1 } else { 2 }) + 3; return v; }"
-        ));
-        // An array element.
-        assert!(has(
-            "fn f(c : bool) -> i32 { let a = [if c { 1 } else { 2 }, 3]; return a[0]; }"
-        ));
-        // A block's trailing expression, at any nesting.
-        assert!(has(
-            "fn f(c : bool) -> i32 { let mut x = 1; unsafe { if c { x = 0; } } return x; }"
-        ));
-        // And straight-line code still reads as straight-line.
-        assert!(!has(
-            "fn f() -> i32 { let a = 1; let b = a + 2; return b; }"
-        ));
-    }
-
-    #[test]
-    fn the_struct_scan_sees_branches_and_trailing_positions() {
-        let has = |src: &str| body_constructs_struct(&parse_fn(src).body);
-        assert!(has(
-            "struct P { x: i32 }\nfn f() -> i32 { let p = unsafe { P { x: 1 } }; return p.x; }"
-        ));
-        assert!(has(
-            "struct P { x: i32 }\nfn f(c : bool) -> i32 { let p = if c { P { x: 1 } } else { P { x: 2 } }; return p.x; }"
-        ));
-        assert!(!has("fn f() -> i32 { return 3; }"));
-    }
-
-    #[test]
-    fn matmul_result_is_the_product_shape_not_the_left_operand() {
-        // `[2, 3] @ [3, 4]` is `[2, 4]`. The generic binary rule gives the result the LEFT
-        // operand's type, which is right for an elementwise op and wrong for a matmul.
-        let f = parse_fn(
-            "fn f() -> i32 { let a = Tensor<f32>([2, 3]); \
-             let b = Tensor<f32>([3, 4]); let c = a @ b; return 0; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("a static matmul should lower");
-        let ins = w
-            .local_hir_stream
-            .iter()
-            .position(|i| i.opcode == Opcode::Matmul)
-            .expect("the Matmul instruction");
-        let gid = w.local_type_stream[w.local_hir_stream[ins].type_idx.0 as usize];
-        let shape = w
-            .local_tensor_types
-            .iter()
-            .find(|(g, _, _)| *g == gid)
-            .map(|(_, _, s)| s.clone())
-            .expect("the result's shape is recorded");
-        assert_eq!(shape, vec!["2".to_string(), "4".to_string()]);
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn half_matmul_keeps_its_element_type() {
-        // Elementwise arithmetic on half operands is done in f32, so the generic rule widens the
-        // result. A matmul accumulates in f32 but stores half, so it must not.
-        let f = parse_fn(
-            "fn f() -> i32 { let a = Tensor<f16>([2, 2]); \
-             let b = Tensor<f16>([2, 2]); let c = a @ b; return 0; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("a half matmul should lower");
-        let ins = w
-            .local_hir_stream
-            .iter()
-            .position(|i| i.opcode == Opcode::Matmul)
-            .expect("the Matmul instruction");
-        let gid = w.local_type_stream[w.local_hir_stream[ins].type_idx.0 as usize];
-        let elem = w
-            .local_tensor_types
-            .iter()
-            .find(|(g, _, _)| *g == gid)
-            .map(|(_, e, _)| e.clone())
-            .expect("the result's element type is recorded");
-        assert_eq!(elem, ElementType::F16);
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn autodiff_lowers_to_one_opcode_per_mode() {
-        // `grad` and `jvp` differ only by the mode packed into `imm`, and `jvp` carries its tangent
-        // as a trailing argument. `vjp` reuses reverse mode and multiplies by the cotangent, so it
-        // adds a `Mul` rather than a mode of its own.
-        for (call, mode, args, muls) in [
-            ("grad(cube, x)", AUTODIFF_REVERSE, 1, 0),
-            ("vjp(cube, x, x)", AUTODIFF_REVERSE, 1, 1),
-            ("jvp(cube, x, x)", AUTODIFF_FORWARD, 2, 0),
-        ] {
-            let src = format!(
-                "fn cube(v: f32) -> f32 {{ return v * v * v; }}\n\
-                 fn f(x: f32) -> f32 {{ return {call}; }}"
-            );
-            let (did, w) = lower_with_registry(&src, "f");
-            assert!(did, "{call} should lower");
-            assert_eq!(count(&w, Opcode::AutoDiff), 1, "{call}: one AutoDiff");
-            let ins = w
-                .local_hir_stream
-                .iter()
-                .find(|i| i.opcode == Opcode::AutoDiff)
-                .expect("the AutoDiff instruction");
-            assert_eq!(
-                ins.imm >> AUTODIFF_MODE_SHIFT,
-                mode,
-                "{call}: differentiation mode"
-            );
-            assert_eq!(ins.imm & 0xffff_ffff, args, "{call}: argument count");
-            assert_eq!(count(&w, Opcode::Arg), args as usize, "{call}: Arg count");
-            assert_eq!(count(&w, Opcode::Mul), muls, "{call}: seed multiply");
-            verify_hir_stream(&w);
-        }
-    }
-
-    #[test]
-    fn indirect_call_borrow_materializes_its_argument() {
-        let function =
-            parse_fn("fn f() -> i32 { let x = 10; let read = |p : &i32| *p; return (read)(&x); }");
-        let Statement::Return(return_stmt) = function.body.last().expect("return statement") else {
-            panic!("function ends with a return statement");
-        };
-        let Expr::IndirectCall(call) = return_stmt.expr.as_ref().expect("return value") else {
-            panic!("parenthesized callee parses as an indirect call");
-        };
-        assert!(
-            matches!(call.args.as_slice(), [Expr::Borrow(_)]),
-            "the indirect call has one borrowed argument"
-        );
-
-        let uses = analyze_local_uses(&function.body);
-
-        assert!(
-            uses.materialized.contains("x"),
-            "an indirect call passing &x must materialize x"
-        );
-    }
-
-    #[test]
-    fn indirect_call_reference_argument_escapes_its_place_binding() {
-        let function = parse_fn(
-            "fn f() -> i32 { let x = 10; let r = &x; let read = |p : &i32| *p; return (read)(r); }",
-        );
-
-        let uses = analyze_local_uses(&function.body);
-
-        assert!(
-            !uses.place_bindings.contains("r"),
-            "a reference passed to an indirect call escapes its place binding"
-        );
-    }
-
-    #[test]
-    fn struct_param_lowers_as_aggregate_slot() {
-        // A struct parameter forces the memory model: its `Alloca` is sized from the registry
-        // layout (Point = two i32s = 8 bytes) and its aggregate GID flows through the type stream.
-        let (did, w) = lower_with_registry(
-            "struct Point { x: i32, y: i32 }\nfn id(p: Point) -> Point { return p; }",
-            "id",
-        );
-        assert!(did, "struct-param identity fn should lower");
-        let alloca = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::Alloca)
-            .expect("an Alloca slot for the aggregate param");
-        assert_eq!(alloca.imm, 8, "Point Alloca sized from its 8-byte layout");
-        // A scalar's GID lives in module 0; an aggregate GID carries the (nonzero) module hash, so
-        // its presence proves the aggregate type reached the flat type stream.
-        assert!(
-            w.local_type_stream.iter().any(|t| t.module_id() != 0),
-            "the Point aggregate GID is in the type stream"
-        );
-        assert_eq!(count(&w, Opcode::Store), 1, "the incoming struct is stored");
-        assert!(count(&w, Opcode::SlotLoad) >= 1, "return reads the slot");
-        assert_eq!(count(&w, Opcode::Ret), 1);
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn generic_aggregate_param_resolves_via_base_layout() {
-        // A monomorphized generic struct instance (`Wrap<i32>`) resolves to its base nominal's layout
-        // when that layout is instance-independent — a pointer field is 8 bytes for any `T`, so
-        // `Wrap<T> { data: *mut T, n: i32 }` has a concrete layout regardless of `T`. So a function
-        // taking and returning `Wrap<i32>` HIR-lowers as an aggregate: the type-level foundation the
-        // `Vec<T>` surface builds on. (The flat *emitter* still declines an aggregate with a pointer
-        // field — a later layer — so this asserts the HIR lowering only.)
-        let (did, w) = lower_with_registry(
-            "struct Wrap<T> { data: *mut T, n: i32 }\n\
-             fn id(w: Wrap<i32>) -> Wrap<i32> { return w; }",
-            "id",
-        );
-        assert!(
-            did,
-            "generic-aggregate identity fn should HIR-lower via the base layout"
-        );
-        // The aggregate GID (nonzero module hash) reached the type stream — the generic instance
-        // resolved to a concrete layout rather than declining.
-        assert!(
-            w.local_type_stream.iter().any(|t| t.module_id() != 0),
-            "the Wrap<i32> aggregate GID is in the type stream"
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn pointer_field_and_raw_index_lower_through_self_pointer() {
-        // The `Vec` surface in miniature (#242): a `&mut Buf` self pointer whose fields are read/
-        // written through the pointer (`FieldLoad`/`FieldStore`) and whose raw-pointer field is
-        // indexed (`PtrIndex` place + `PtrStore`). `b.data[0] = v` is a raw-pointer element store;
-        // `b.len = b.len + 1` reads then writes the scalar field.
-        let (did, w) = lower_with_registry(
-            "struct Buf { data: *mut i32, len: i32 }\n\
-             fn bump(b: &mut Buf, v: i32) -> i32 { unsafe { b.data[0] = v; } \
-             b.len = b.len + 1; return 0; }",
-            "bump",
-        );
-        assert!(
-            did,
-            "field access + raw-pointer index through a self pointer should lower"
-        );
-        // `b.data` (a pointer field) -> a `FieldLoad`; `b.data[0] = v` -> a `PtrIndex` place + a
-        // `PtrStore`; `b.len` read -> a `FieldLoad`; `b.len = ...` -> a `FieldStore`.
-        assert_eq!(
-            count(&w, Opcode::PtrIndex),
-            1,
-            "one raw-pointer element place"
-        );
-        assert_eq!(
-            count(&w, Opcode::PtrStore),
-            1,
-            "one raw-pointer element store"
-        );
-        assert!(
-            count(&w, Opcode::FieldLoad) >= 2,
-            "b.data and b.len are read"
-        );
-        assert_eq!(count(&w, Opcode::FieldStore), 1, "b.len is written");
-        // The self pointer binds as an SSA register (no aggregate `Alloca` for it), so the only
-        // slots are the memory-mode scalar locals — never the `&mut Buf` itself.
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn struct_field_read_lowers_to_field_load() {
-        // `p.y` becomes a `FieldLoad` off the aggregate slot at y's layout offset (4).
-        let (did, w) = lower_with_registry(
-            "struct Point { x: i32, y: i32 }\nfn gety(p: Point) -> i32 { return p.y; }",
-            "gety",
-        );
-        assert!(did, "a scalar field read should lower");
-        let fl = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::FieldLoad)
-            .expect("a FieldLoad instruction");
-        assert_eq!(fl.imm, 4, "y is at byte offset 4 in {{x:i32, y:i32}}");
-        assert_eq!(count(&w, Opcode::FieldLoad), 1);
-        assert_eq!(count(&w, Opcode::Ret), 1);
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn field_read_offset_honours_alignment_padding() {
-        // Rec { a: i8, b: i32 } -> b sits at offset 4 (3 bytes of padding after `a`); the FieldLoad
-        // must use that padded offset, proving it comes from the real layout, not field order.
-        let (did, w) = lower_with_registry(
-            "struct Rec { a: i8, b: i32 }\nfn getb(r: Rec) -> i32 { return r.b; }",
-            "getb",
-        );
-        assert!(did);
-        let fl = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::FieldLoad)
-            .expect("a FieldLoad instruction");
-        assert_eq!(fl.imm, 4, "b is at offset 4 after i8 + 3 bytes padding");
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn struct_construction_lowers_to_alloca_and_field_stores() {
-        // `let p = Point { .. }` constructs in place: one sized Alloca + a FieldStore per field at
-        // its layout offset; the later `p.y` is a FieldLoad off the same slot.
-        let (did, w) = lower_with_registry(
-            "struct Point { x: i32, y: i32 }\n\
-             fn build() -> i32 { let p = Point { x: 7i32, y: 9i32 }; return p.y; }",
-            "build",
-        );
-        assert!(did, "struct construction + field read should lower");
-        assert_eq!(count(&w, Opcode::Alloca), 1, "one aggregate slot for p");
-        let alloca = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::Alloca)
-            .unwrap();
-        assert_eq!(alloca.imm, 8, "Point slot sized from its layout");
-        assert_eq!(count(&w, Opcode::FieldStore), 2, "x and y stored");
-        let store_offsets: Vec<u64> = w
-            .local_hir_stream
-            .iter()
-            .filter(|i| i.opcode == Opcode::FieldStore)
-            .map(|i| i.imm)
-            .collect();
-        assert!(
-            store_offsets.contains(&0) && store_offsets.contains(&4),
-            "fields stored at layout offsets 0 and 4, got {store_offsets:?}"
-        );
-        assert_eq!(count(&w, Opcode::FieldLoad), 1, "p.y read");
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn tensor_param_binds_as_ssa_reg_with_tensor_gid() {
-        // A tensor parameter is a reference value (memref): it binds as an SSA register (no Alloca),
-        // and its element+shape GID enters the flat type stream.
-        let f = parse_fn("fn f(q: Tensor<f32, [2, 4]>) -> i32 { return 0; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("tensor-param fn should lower");
-        assert_eq!(
-            count(&w, Opcode::Alloca),
-            0,
-            "a tensor param is a reference, not stack-allocated"
-        );
-        let expected = tensor_gid(&ElementType::F32, &["2".to_string(), "4".to_string()]);
-        assert!(
-            w.local_type_stream.contains(&expected),
-            "the tensor GID is in the type stream"
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn tensor_full_index_yields_scalar_element() {
-        // `q[0][1]` on a rank-2 tensor rank-reduces twice: [2,4] -> [4] -> scalar f32.
-        let f = parse_fn("fn f(q: Tensor<f32, [2, 4]>) -> f32 { return q[0][1]; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("tensor element read should lower");
-        assert_eq!(
-            count(&w, Opcode::TensorIndex),
-            2,
-            "two rank-reducing indexes"
-        );
-        assert_eq!(count(&w, Opcode::Alloca), 0);
-        // The intermediate row type and the final scalar element are both in the type stream.
-        let row = tensor_gid(&ElementType::F32, &["4".to_string()]);
-        assert!(
-            w.local_type_stream.contains(&row),
-            "row (rank-1) tensor GID present"
-        );
-        assert!(
-            w.local_type_stream.contains(&scalar_gid(&ElementType::F32)),
-            "scalar element GID present"
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn tensor_partial_index_yields_row_view() {
-        // `q[0]` on [2,4] yields a rank-1 row view [4] (one TensorIndex, tensor result).
-        let f = parse_fn("fn f(q: Tensor<f32, [2, 4]>) -> Tensor<f32, [4]> { return q[0]; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("row view should lower");
-        assert_eq!(count(&w, Opcode::TensorIndex), 1);
-        let row = tensor_gid(&ElementType::F32, &["4".to_string()]);
-        assert!(w.local_type_stream.contains(&row), "row tensor GID present");
-        verify_hir_stream(&w);
-    }
-
-    /// The result-type GID of the first instruction with `op`.
-    fn result_gid(w: &LocalWorkerState, op: Opcode) -> TypeId {
-        let ins = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == op)
-            .expect("op present");
-        w.local_type_stream[ins.type_idx.0 as usize]
-    }
-
-    #[test]
-    fn tensor_elementwise_mul_yields_a_tensor() {
-        // `a * b` on two tensors is elementwise: a `Mul` whose *result type* is the tensor.
-        let f = parse_fn(
-            "fn f(a: Tensor<f32, [4]>, b: Tensor<f32, [4]>) -> Tensor<f32, [4]> { return a * b; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("elementwise mul should lower");
-        assert_eq!(count(&w, Opcode::Mul), 1);
-        assert_eq!(
-            result_gid(&w, Opcode::Mul),
-            tensor_gid(&ElementType::F32, &["4".to_string()]),
-            "elementwise result is the tensor type"
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn scalar_times_tensor_broadcasts_to_a_tensor() {
-        // `s * a` (scalar on the left) still yields the tensor type -- the result-type pick must
-        // follow the tensor operand, not the lhs.
-        let f = parse_fn("fn f(a: Tensor<f32, [4]>, s: f32) -> Tensor<f32, [4]> { return s * a; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("scalar*tensor should lower");
-        assert_eq!(
-            result_gid(&w, Opcode::Mul),
-            tensor_gid(&ElementType::F32, &["4".to_string()]),
-            "scalar broadcasts: result is the tensor type"
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn broadcast_write_path_composes() {
-        // Allocate the output, weight v by a scaled score, and store the row back -- alloc +
-        // elementwise + index + store, the whole non-scalar surface in one flat stream.
-        let f = parse_fn(
-            "fn attn(score: f32, v: Tensor<f32, [4]>, scale: f32) -> Tensor<f32, [2, 4]> \
-             { let o = Tensor<f32>([2, 4]); o[0] = v * (score * scale); return o; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("the FA write path should lower");
-        assert_eq!(count(&w, Opcode::TensorAlloc), 1, "output buffer");
-        assert_eq!(count(&w, Opcode::TensorIndex), 1, "o[0]");
-        assert_eq!(count(&w, Opcode::Mul), 2, "scale the score, then weight v");
-        assert_eq!(count(&w, Opcode::TensorStore), 1, "o[0] = ...");
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn a_run_time_extent_rides_on_an_arg_before_the_alloc() {
-        // `Tensor<f32>([n])` with `n` a parameter: the extent is an `Arg` immediately before the
-        // `TensorAlloc`, the shape says `?` there, and the byte size is 0 -- there is none to
-        // state. The typed form `Tensor<f32, [?, 4]>::uninit([n, 4])` reads its `?` off the array.
-        let f = parse_fn(
-            "fn build(n: i32) -> Tensor<f32, [?]> { let a = Tensor<f32>([n]); return a; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("a run-time allocation lowers");
-        assert_eq!(count(&w, Opcode::Arg), 1, "one extent");
-        assert_eq!(count(&w, Opcode::TensorAlloc), 1);
-        assert_eq!(
-            op_imm(&w, Opcode::TensorAlloc),
-            Some(0),
-            "no static byte size"
-        );
-        let (i, _) = w
-            .local_hir_stream
-            .iter()
-            .enumerate()
-            .find(|(_, ins)| ins.opcode == Opcode::TensorAlloc)
-            .unwrap();
-        assert_eq!(
-            w.local_hir_stream[i - 1].opcode,
-            Opcode::Arg,
-            "the extent precedes the alloc"
-        );
-        verify_hir_stream(&w);
-
-        let f = parse_fn(
-            "fn build(n: i32) -> Tensor<f32, [?, 4]> { let a = Tensor<f32, [?, 4]>::uninit([n, 4]); return a; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("the typed form lowers");
-        assert_eq!(
-            count(&w, Opcode::Arg),
-            1,
-            "only the `?` position is an extent"
-        );
-        assert_eq!(op_imm(&w, Opcode::TensorAlloc), Some(0));
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn a_tensor_view_rides_its_pointer_and_its_run_time_extents() {
-        // `tensor_view_2d(p, 2, n)`: the pointer is the view's operand, the literal row count
-        // is in the type, and the run-time column count is an `Arg` before the view.
-        let f = parse_fn(
-            "fn view(p: *mut f32, n: i32) -> Tensor<f32, [2, ?]> { \
-               let v = unsafe { tensor_view_2d(p, 2, n) }; return v; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("a view lowers");
-        assert_eq!(count(&w, Opcode::TensorView), 1);
-        assert_eq!(count(&w, Opcode::Arg), 1, "one run-time extent");
-        assert_eq!(
-            count(&w, Opcode::TensorAlloc),
-            0,
-            "a view allocates nothing"
-        );
-        verify_hir_stream(&w);
-    }
-
-    fn op_imm(w: &LocalWorkerState, op: Opcode) -> Option<u64> {
-        w.local_hir_stream
-            .iter()
-            .find(|i| i.opcode == op)
-            .map(|i| i.imm)
-    }
-
-    #[test]
-    fn tensor_alloc_sizes_storage_for_the_receiver() {
-        // `Tensor<f32>([2, 4])` allocates a buffer sized for every element (2*4*4 = 32 bytes), so a
-        // later store has room.
-        let f =
-            parse_fn("fn f() -> Tensor<f32, [2, 4]> { let o = Tensor<f32>([2, 4]); return o; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("tensor alloc should lower");
-        assert_eq!(count(&w, Opcode::TensorAlloc), 1);
-        assert_eq!(
-            op_imm(&w, Opcode::TensorAlloc),
-            Some(32),
-            "byte size = 2*4*4"
-        );
-        assert_eq!(
-            result_gid(&w, Opcode::TensorAlloc),
-            tensor_gid(&ElementType::F32, &["2".to_string(), "4".to_string()]),
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn a_bool_tensor_takes_a_byte_per_element() {
-        let f = parse_fn(
-            "fn f() -> Tensor<bool, [3]> \
-             { let o : Tensor<bool, [3]> = [true, false, true]; return o; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("a bool literal should lower");
-        assert_eq!(
-            op_imm(&w, Opcode::TensorAlloc),
-            Some(3),
-            "3 bools are 3 bytes"
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn a_nested_bool_initializer_takes_a_byte_per_element() {
-        let f = parse_fn(
-            "fn f() -> Tensor<bool, [2, 3]> \
-             { let o = Tensor<bool>([[true, false, true], [false, true, false]]); return o; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("a nested bool literal should lower");
-        assert_eq!(
-            op_imm(&w, Opcode::TensorAlloc),
-            Some(6),
-            "6 bools are 6 bytes"
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn tensor_row_store_writes_through_the_slice() {
-        // `o[0] = v` stores the row slice `v` into the allocated buffer `o`: alloc + index + store.
-        let f = parse_fn(
-            "fn f(v: Tensor<f32, [4]>) -> Tensor<f32, [2, 4]> \
-             { let o = Tensor<f32>([2, 4]); o[0] = v; return o; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("row store should lower");
-        assert_eq!(count(&w, Opcode::TensorAlloc), 1, "the destination buffer");
-        assert_eq!(count(&w, Opcode::TensorIndex), 1, "the row place o[0]");
-        assert_eq!(count(&w, Opcode::TensorStore), 1, "the store into it");
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn scalar_element_store_into_rank1_marks_a_place() {
-        // `q[0] = 1.0` into a rank-1 tensor: the whole tensor is the base, the index is a scalar-
-        // element *place* (imm 1), and one `TensorStore` writes the scalar through it.
-        let f = parse_fn("fn f() -> f32 { let q = Tensor<f32>([4]); q[0] = 1.0; return q[1]; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("scalar-element store should lower");
-        assert_eq!(count(&w, Opcode::TensorStore), 1);
-        let places = w
-            .local_hir_stream
-            .iter()
-            .filter(|i| i.opcode == Opcode::TensorIndex && i.imm == 1)
-            .count();
-        assert_eq!(places, 1, "the element index is a place (imm = 1)");
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn scalar_element_store_rank2_indexes_row_then_element_place() {
-        // `q[0][0] = 1.0`: `q[0]` is a value sub-view index (imm 0), the final `[0]` an element
-        // place (imm 1); exactly one index carries the place flag.
-        let f = parse_fn("fn f(q: Tensor<f32, [2, 4]>) -> f32 { q[0][0] = 1.0; return q[1][1]; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("nested scalar-element store should lower");
-        assert_eq!(count(&w, Opcode::TensorStore), 1);
-        let places = w
-            .local_hir_stream
-            .iter()
-            .filter(|i| i.opcode == Opcode::TensorIndex && i.imm == 1)
-            .count();
-        assert_eq!(places, 1, "exactly one element place among the indices");
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn transfer_rehomes_a_tensor_to_a_memory_space() {
-        // `transfer(a, Memory::NPU_HBM)` -> a Transfer carrying the space's dispatch id (100);
-        // the result keeps the shape, so the receiving buffer is sized to hold it.
-        let f = parse_fn(
-            "fn f(a: Tensor<f32, [2, 4]>) -> Tensor<f32, [2, 4]> { return transfer(a, Memory::NPU_HBM); }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("transfer should lower");
-        assert_eq!(count(&w, Opcode::Transfer), 1);
-        assert_eq!(
-            op_imm(&w, Opcode::Transfer),
-            Some(100),
-            "NPU_HBM dispatch id"
-        );
-        assert_eq!(
-            result_gid(&w, Opcode::Transfer),
-            tensor_gid(&ElementType::F32, &["2".to_string(), "4".to_string()]),
-            "same shape -> the destination holds the source",
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn scalar_under_a_rank_0_tensor_annotation_materializes_rank_0() {
-        // `let t : Tensor<f32, []> = 1.0` allocates a rank-0 buffer and stores the scalar, so
-        // the transfer receives a tensor, not the initializer's scalar (Vx#396). The shape is
-        // written out now that the dims-less spelling is gone (Vx#399).
-        let f = parse_fn(
-            "fn f() -> i32 { let t : Tensor<f32, []> = 1.0; let d = transfer(t, Memory::NPU_HBM); return 0; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("rank-0 wrap should lower");
-        assert_eq!(count(&w, Opcode::TensorAlloc), 1);
-        assert_eq!(count(&w, Opcode::TensorStore), 1);
-        assert_eq!(count(&w, Opcode::Transfer), 1);
-        assert_eq!(
-            result_gid(&w, Opcode::Transfer),
-            tensor_gid(&ElementType::F32, &[]),
-            "the transferred value is the rank-0 tensor",
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn wrapper_types_peel_to_their_runtime_type() {
-        // `Verified<Ref<Tensor<f32,[2,2]>, Memory>>` is a memref at runtime; the checker
-        // wrappers peel exactly as the AST codegen's `lower_type` peels them.
-        let session = GlobalSession::new(1);
-        let registry = session.registry.as_ref();
-        let num = |v: &str| {
-            Expr::Number(crate::syntax::NumberExpr::new(
-                v.to_string(),
-                None,
-                crate::syntax::Span::default(),
-            ))
-        };
-        let dims = vec![Dim::Static(num("2")), Dim::Static(num("2"))];
-        let tensor = Type::Tensor(ElementType::F32, dims, None);
-        let wrapped = Type::Verified(Box::new(Type::Ref(
-            Box::new(tensor),
-            crate::syntax::MemorySpace::NPUHBM,
-        )));
-        assert!(
-            matches!(
-                lowered_ty(&wrapped, registry),
-                Some(LoweredTy::Tensor { .. })
-            ),
-            "wrappers peel to the tensor",
-        );
-    }
-
-    #[test]
-    fn tensor_gid_distinguishes_element_and_shape() {
-        let a = tensor_gid(&ElementType::F32, &["2".to_string(), "4".to_string()]);
-        let b = tensor_gid(&ElementType::F32, &["4".to_string(), "4".to_string()]);
-        let c = tensor_gid(&ElementType::F64, &["2".to_string(), "4".to_string()]);
-        assert_ne!(a, b, "different shape => different GID");
-        assert_ne!(a, c, "different element => different GID");
-        // Deterministic, and distinct from the scalar element GID.
-        assert_eq!(
-            a,
-            tensor_gid(&ElementType::F32, &["2".to_string(), "4".to_string()])
-        );
-        assert_ne!(a, scalar_gid(&ElementType::F32));
-    }
-
-    #[test]
-    fn compound_assign_desugars_to_op_and_store() {
-        // `s += a` == `s = s + a`: the current value is read, combined, and stored back. In memory
-        // mode (the loop forces it) that's a `SlotLoad` + `Add` + `Store`.
-        let f =
-            parse_fn("fn f(a: i32) -> i32 { let mut s = 0; for i in 0..a { s += a; } return s; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("compound assign should lower");
-        assert!(
-            count(&w, Opcode::Add) >= 1,
-            "the += combine (plus the loop step)"
-        );
-        assert!(count(&w, Opcode::Store) >= 1, "s is stored back");
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn fixed_arity_call_lowers_to_args_and_call() {
-        // `add(3, 4)` -> two `Arg`s then a `Call` whose type_idx is the callee's GID.
-        let (did, w) = lower_with_registry(
-            "fn add(a: i32, b: i32) -> i32 { return a + b; }\n\
-             fn main() -> i32 { return add(3i32, 4i32); }",
-            "main",
-        );
-        assert!(did, "a call to a known scalar-returning fn should lower");
-        assert_eq!(count(&w, Opcode::Arg), 2, "two arguments");
-        assert_eq!(count(&w, Opcode::Call), 1);
-        let call = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::Call)
-            .unwrap();
-        assert_eq!(call.imm, 2, "arg count in imm");
-        // The Call's type_idx is the callee GID (a real function identity: nonzero module hash),
-        // not a scalar type (whose GID lives in module 0).
-        let callee = w.local_type_stream[call.type_idx.0 as usize];
-        assert_ne!(callee.module_id(), 0, "type_idx is the callee's GID");
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn call_to_unknown_fn_declines() {
-        // `mystery` isn't a known function -> not in the registry's fn_sigs -> the call declines,
-        // so the whole function declines (atomic no-op).
-        let (did, w) = lower_with_registry("fn main() -> i32 { return mystery(1i32); }", "main");
-        assert!(!did);
-        assert!(w.local_hir_stream.is_empty());
-    }
-
-    #[test]
-    fn unmodelled_aggregate_param_is_declined() {
-        // `Buf` holds a by-value generic instance, whose size depends on the instantiation, so the
-        // base layout stays the 0/0 stub; a function taking `Buf` by value cannot be sized, and
-        // lowering is declined atomically (worker untouched). This used to use a `<4 x f32>` field,
-        // which stopped being unmodelled once a vector got a layout.
-        let (did, w) = lower_with_registry(
-            "struct Inner<T> { v: T }\nstruct Buf { data: Inner<i32> }\nfn f(b: Buf) -> i32 { return 0; }",
-            "f",
-        );
-        assert!(
-            !did,
-            "an unmodelled aggregate param should decline lowering"
-        );
-        assert!(
-            w.local_hir_stream.is_empty(),
-            "no partial lowering committed"
-        );
-    }
-
-    #[test]
-    fn if_else_slots_only_the_mutated_local() {
-        // Per-local rule (step 2): control flow no longer slots *every* local. `x` is reassigned in
-        // both branches (its value must cross the merge), so it gets a slot; the param `a` is only read
-        // (a dominating entry value), so it stays a register. One `Alloca`, not two — strictly less
-        // memory traffic than the old function-global memory mode. (#230)
-        let f = parse_fn(
-            "fn c(a: i32) -> i32 { let mut x = a; if a < 0 { x = 0; } else { x = 1; } return x; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("lowers");
-        assert_eq!(
-            count(&w, Opcode::Alloca),
-            1,
-            "only the mutated `x` gets a slot"
-        );
-        assert!(
-            count(&w, Opcode::SlotLoad) >= 1,
-            "`x` is read back after the merge"
-        );
-        assert_eq!(count(&w, Opcode::CondBr), 1);
-        assert_eq!(
-            count(&w, Opcode::Br),
-            2,
-            "then and else each branch to merge"
-        );
-        assert_eq!(count(&w, Opcode::BlockStart), 4, "entry, then, else, merge");
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn if_without_else_targets_merge_directly() {
-        let f = parse_fn("fn c(a: i32) -> i32 { let mut x = a; if a < 0 { x = 0; } return x; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("lowers");
-        assert_eq!(count(&w, Opcode::CondBr), 1);
-        assert_eq!(
-            count(&w, Opcode::Br),
-            1,
-            "then branches to merge; else edge is merge"
-        );
-        assert_eq!(count(&w, Opcode::BlockStart), 3, "entry, then, merge");
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn early_return_in_branch_emits_no_trailing_branch() {
-        let f = parse_fn("fn c(a: i32) -> i32 { if a < 0 { return 0; } return a; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("lowers");
-        // The then-block terminates with Ret, so no `Br` to the merge is appended.
-        assert_eq!(
-            count(&w, Opcode::Br),
-            0,
-            "returning branch emits no trailing Br"
-        );
-        assert_eq!(count(&w, Opcode::Ret), 2);
-        assert_eq!(count(&w, Opcode::CondBr), 1);
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn straight_line_reassignment_stays_pure_ssa() {
-        // No control flow -> SSA mode: reassignment is a rebind, no memory ops or blocks.
-        let f = parse_fn("fn c(a: i32) -> i32 { let mut x = a; x = a + a; return x; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("lowers");
-        assert_eq!(count(&w, Opcode::Alloca), 0);
-        assert_eq!(count(&w, Opcode::Store), 0);
-        assert_eq!(count(&w, Opcode::BlockStart), 0);
-        assert_eq!(
-            opcodes(&w),
-            vec![Opcode::Load, Opcode::Add, Opcode::Ret],
-            "a materialized once, x rebinds to a+a"
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn non_escaping_borrow_binds_a_place_with_no_alloca() {
-        // §5 Example A (#275): `let r = &x; return *r` where the borrow never escapes. `r` binds as a
-        // symbolic `Binding::Place` aliasing `x`, `*r` reads `x` directly, and `x` — no longer forced
-        // to materialize an address — stays a register. No `Alloca`, no `Store`, no `PtrIndex`: the
-        // whole reference round-trip compiles to `const 5; ret`. This is the alloca that should not
-        // exist, gone.
-        let f = parse_fn("fn f() -> i32 { let x : i32 = 5; let r : &i32 = &x; return *r; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("non-escaping scalar borrow+deref lowers");
-        assert_eq!(
-            count(&w, Opcode::Alloca),
-            0,
-            "the base stays a register — no materialized address"
-        );
-        assert_eq!(
-            count(&w, Opcode::Store),
-            0,
-            "no store: nothing spilled to memory"
-        );
-        assert_eq!(
-            count(&w, Opcode::PtrIndex),
-            0,
-            "`*r` reads the local directly, not via a pointer"
-        );
-        assert_eq!(count(&w, Opcode::Ret), 1);
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn escaping_borrow_materializes_a_flagged_slot() {
-        // The counterpart: when the reference *escapes* (here as a call argument), the base must
-        // materialize a real address — an `llvm.alloca` flagged `imm = 1`, and `&x` a `PtrIndex`-able
-        // pointer. `r` is used as `id(r)`, not `*r`, so the escape analysis keeps `x` materialized. (#275)
-        let (did, w) = lower_with_registry(
-            "fn id(p : &i32) -> i32 { return *p; }\n\
-             fn f() -> i32 { let x : i32 = 5; let r : &i32 = &x; return id(r); }",
-            "f",
-        );
-        assert!(did, "the escaping borrow lowers via materialization");
-        let alloca = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::Alloca)
-            .expect("the escaping base gets a materialized slot");
-        assert_eq!(alloca.imm, 1, "an addressable `llvm.alloca`, not a memref");
-    }
-
-    #[test]
-    fn borrow_inside_a_struct_literal_materializes_its_base() {
-        // #275: a `&x` inside an aggregate literal (`Holder { r : &x }`, a reference-typed field)
-        // escapes into the struct, so the escape scan must descend into the literal and materialize `x`
-        // — an addressable `llvm.alloca` (`imm = 1`). Without the StructInit arm in the scan, `x` stayed
-        // a register and the `&x` declined. The whole reference-field program then lowers.
-        let (did, w) = lower_with_registry(
-            "struct Holder { r : &i32 }\n\
-             fn main() -> i32 { let x = 5; let h = Holder { r : &x }; return *h.r; }",
-            "main",
-        );
-        assert!(did, "the reference-typed-field program lowers");
-        let addressable = w
-            .local_hir_stream
-            .iter()
-            .any(|i| i.opcode == Opcode::Alloca && i.imm == 1);
-        assert!(
-            addressable,
-            "`&x` inside the struct literal materializes `x` as an addressable slot"
-        );
-    }
-
-    #[test]
-    fn field_places_resolve_writes_to_field_stores() {
-        // §5 Example C (#275): `&mut p.x` / `&mut p.y` bind *field places*; each `*b = v` re-lowers as a
-        // `FieldStore` through `p` — no pointer materialized, no `PtrStore`. The disjoint borrows lower.
-        let (did, w) = lower_with_registry(
-            "struct Point { x : i32, y : i32 }\n\
-             fn update(p : &mut Point) -> void { let bx = &mut p.x; let by = &mut p.y; *bx = 1; *by = 2; }",
-            "update",
-        );
-        assert!(
-            did,
-            "the disjoint field-borrow mutator lowers on the flat path"
-        );
-        assert_eq!(
-            count(&w, Opcode::FieldStore),
-            2,
-            "each `*b = v` is a FieldStore through p"
-        );
-        assert_eq!(
-            count(&w, Opcode::PtrStore),
-            0,
-            "the field places materialize no pointer"
-        );
-    }
-
-    #[test]
-    fn disjoint_place_writes_reduce_to_mutual_noalias_siblings() {
-        // §5.4 (M2b-2): the two disjoint place-writes above reduce to a numeric alias table — each store
-        // gets its own group, and (same base `p`, disjoint fields `x`/`y`) each lists the other as a
-        // sibling. The two FieldStores sit at distinct stream positions; the table pairs them mutually.
-        let (did, w) = lower_with_registry(
-            "struct Point { x : i32, y : i32 }\n\
-             fn update(p : &mut Point) -> void { let bx = &mut p.x; let by = &mut p.y; *bx = 1; *by = 2; }",
-            "update",
-        );
-        assert!(did, "the mutator lowers");
-        let table = &w.local_place_alias_stores;
-        assert_eq!(table.len(), 2, "both place-writes are tagged: {table:?}");
-        // Two distinct groups (`p.x` and `p.y` are different fields).
-        let groups: std::collections::HashSet<usize> = table.iter().map(|(_, g, _)| *g).collect();
-        assert_eq!(
-            groups.len(),
-            2,
-            "distinct fields => distinct groups: {table:?}"
-        );
-        // Each store names the *other* store's group as its lone disjoint sibling.
-        for (_, own, sibs) in table {
-            assert_eq!(sibs.len(), 1, "one disjoint sibling per store: {table:?}");
-            assert_ne!(sibs[0], *own, "a store is not its own noalias sibling");
-        }
-        // The two positions are the two FieldStores in the stream.
-        let fs_positions: Vec<usize> = w
-            .local_hir_stream
-            .iter()
-            .enumerate()
-            .filter(|(_, i)| i.opcode == Opcode::FieldStore)
-            .map(|(p, _)| p)
-            .collect();
-        let tagged: std::collections::HashSet<usize> = table.iter().map(|(p, _, _)| *p).collect();
-        assert_eq!(
-            tagged,
-            fs_positions.into_iter().collect(),
-            "tagged positions are exactly the FieldStores"
-        );
-    }
-
-    #[test]
-    fn a_lone_place_write_has_no_noalias_sibling() {
-        // A single place-write has nothing proven disjoint from it: it still gets its own group, but an
-        // empty sibling set — the reduction only pairs stores the frontend actually proved disjoint.
-        let (did, w) = lower_with_registry(
-            "struct P { x : i32, y : i32 }\n\
-             fn main() -> i32 { let mut p = P { x : 1, y : 2 }; let r = &mut p.x; *r = 42; return *r; }",
-            "main",
-        );
-        assert!(did, "the single-field mutator lowers");
-        assert_eq!(w.local_place_alias_stores.len(), 1, "one tagged store");
-        assert!(
-            w.local_place_alias_stores[0].2.is_empty(),
-            "a lone place-write has no disjoint sibling"
-        );
-    }
-
-    #[test]
-    fn pointer_local_under_control_flow_stays_a_register() {
-        // M3b (§11's remainder): a `*mut` pointer local under control flow that is not reassigned binds
-        // as an SSA register, not a slot — the same per-local rule scalars got. `ptr` here is the
-        // `let ptr = self.data` shape from `Vec::push`'s grow branch: a raw-pointer field read inside an
-        // `if`, read once (`b.data = ptr`), never reassigned. It gets no `Alloca`.
-        let (did, w) = lower_with_registry(
-            "struct Buf { data : *mut i32, n : i32 }\n\
-             fn grow(b : &mut Buf, c : i32) -> i32 { if c > 0 { let ptr : *mut i32 = b.data; b.data = ptr; } return 0; }",
-            "grow",
-        );
-        assert!(did, "the raw-pointer mutator lowers");
-        assert_eq!(
-            count(&w, Opcode::Alloca),
-            0,
-            "the non-reassigned pointer local under control flow stays a register, no slot"
-        );
-    }
-
-    #[test]
-    fn direct_field_assignment_is_not_tagged() {
-        // A *direct* `p.x = v` (not through a `&mut` place) is a plain field store, not a disjoint
-        // place-write, so it carries no alias metadata — only reference-mediated writes are tagged.
-        let (did, w) = lower_with_registry(
-            "struct P { x : i32, y : i32 }\n\
-             fn main() -> i32 { let mut p = P { x : 0, y : 0 }; p.x = 1; p.y = 2; return p.x + p.y; }",
-            "main",
-        );
-        assert!(did, "the direct-assignment fn lowers");
-        assert!(
-            w.local_place_alias_stores.is_empty(),
-            "direct field assignments are untagged: {:?}",
-            w.local_place_alias_stores
-        );
-    }
-
-    #[test]
-    fn non_address_taken_scalar_stays_a_register() {
-        // The demotion is *scoped*: a scalar local whose address is never taken stays pure-SSA (no
-        // slot), so the pre-pass does not regress straight-line functions into memory traffic. (#230)
-        let f = parse_fn("fn g() -> i32 { let x : i32 = 5; return x; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("lowers");
-        assert_eq!(
-            count(&w, Opcode::Alloca),
-            0,
-            "no `&x`, so `x` stays a register"
-        );
-    }
-
-    #[test]
-    fn reference_param_derefs_without_a_slot() {
-        // A `&i32` parameter arrives already materialized (it crossed a call boundary), so it is a
-        // pointer register on entry — never demoted. `*a` is a `PtrIndex` straight off the param, with
-        // no `Alloca`. (design doc §3.2 NOTE: only *locals* are demoted.) (#230)
-        let f = parse_fn("fn load(a : &i32) -> i32 { return *a; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("reference param derefs");
-        assert_eq!(
-            count(&w, Opcode::Alloca),
-            0,
-            "the param is a pointer register, not a slot"
-        );
-        assert_eq!(
-            count(&w, Opcode::PtrIndex),
-            1,
-            "`*a` is a PtrIndex read off the param"
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn void_call_lowers_and_mutates_through_a_reference() {
-        // A `&mut` mutator returns `void`; calling it in statement position (`bump(&mut x);`) lowers
-        // rather than declining — the call is a pure effect whose result is discarded. `x` is
-        // address-taken, so it is an `llvm.alloca` slot (imm = 1) the pointer mutates; `return x`
-        // reads the mutated value back through the same slot. (#230)
-        let (did, w) = lower_with_registry(
-            "fn bump(p : &mut i32) -> void { *p = *p + 1; }\n\
-             fn main() -> i32 { let mut x = 41; bump(&mut x); return x; }",
-            "main",
-        );
-        assert!(did, "the void call + read-back lowers on the flat path");
-        assert_eq!(count(&w, Opcode::Call), 1, "one call to the void mutator");
-        let alloca = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::Alloca)
-            .expect("the address-taken `x` gets a slot");
-        assert_eq!(alloca.imm, 1, "x is an address-taken llvm.alloca slot");
-    }
-
-    #[test]
-    fn for_range_loop_lowers_header_body_latch_exit() {
-        let f = parse_fn(
-            "fn sum(n: i32) -> i32 { let mut s = 0; for i in 0..n { s = s + i; } return s; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("lowers");
-        assert_eq!(count(&w, Opcode::CondBr), 1, "loop condition test");
-        assert_eq!(
-            count(&w, Opcode::BlockStart),
-            5,
-            "entry, header, body, latch, exit"
-        );
-        // entry->header, body->latch, latch->header
-        assert_eq!(count(&w, Opcode::Br), 3);
-        // The induction var increments: an Add feeding a Store in the latch.
-        assert!(
-            count(&w, Opcode::Add) >= 2,
-            "body add + induction increment"
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn infinite_loop_with_break_verifies() {
-        let f = parse_fn(
-            "fn f(a: i32) -> i32 { let mut x = a; loop { x = x - 1; if x < 0 { break; } } return x; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("lowers");
-        assert!(count(&w, Opcode::CondBr) >= 1, "the if condition");
-        // loop header/exit + entry + the if's then/merge blocks.
-        assert!(count(&w, Opcode::BlockStart) >= 4);
-        verify_hir_stream(&w); // every branch (incl. the break) targets a declared block
-    }
-
-    #[test]
-    fn for_loop_with_continue_verifies() {
-        let f = parse_fn(
-            "fn f(n: i32) -> i32 { let mut s = 0; for i in 0..n { if i < 2 { continue; } s = s + i; } return s; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("lowers");
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn for_over_non_range_aborts() {
-        // A non-range iterable (here a call) is outside the supported subset -> atomic abort.
-        let f = parse_fn("fn f(a: i32) -> i32 { for i in gen() { } return a; }");
-        let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w).is_err());
-        assert!(w.local_hir_stream.is_empty());
-    }
-
-    #[test]
-    fn break_outside_loop_aborts() {
-        let f = parse_fn("fn f() -> i32 { break; return 0; }");
-        let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w).is_err());
-        assert!(w.local_hir_stream.is_empty());
-    }
-
-    #[test]
-    fn a_blocked_spawn_region_is_grid_stridable() {
-        // The bench template's shape in miniature: thread-private scratch before the loop, scalar
-        // accumulators inside it, an if-expression, and every captured write leading with the
-        // induction variable. (No `.exp()` here — the harness loads no stdlib, so a method call
-        // cannot resolve at all; the `f32$exp` whitelist is exercised by the real template, which
-        // fails to tag if it regresses.) `parallel_outer_for` must accept: the trip count rides
-        // the SpawnEnd, and exactly one Store and one Add carry the stride tags.
-        let (did, w) = lower_with_registry(
-            "fn main() -> i32 {\n\
-               let mut q = Tensor<f32>([4, 8]);\n\
-               let mut o = Tensor<f32>([4, 8]);\n\
-               let scale : f32 = 0.5;\n\
-               spawn on (Topology::GPU) {\n\
-                 let mut ts = Tensor<f32>([1, 8]);\n\
-                 for i in 0..4 {\n\
-                   let mut m : f32 = 0.0;\n\
-                   for d in 0..8 {\n\
-                     ts[0][d] = q[i][d] * scale;\n\
-                     let t : f32 = if ts[0][d] > m { ts[0][d] } else { m };\n\
-                     m = t;\n\
-                   }\n\
-                   for d in 0..8 {\n\
-                     o[i][d] = m;\n\
-                   }\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-            "main",
-        );
-        assert!(did, "the region lowers on the flat path");
-        let end = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd");
-        assert_eq!(end.imm, 4, "the proved trip count rides the SpawnEnd");
-        let inits = w
-            .local_hir_stream
-            .iter()
-            .filter(|i| i.opcode == Opcode::Store && i.imm == IMM_PARALLEL_INIT)
-            .count();
-        let steps = w
-            .local_hir_stream
-            .iter()
-            .filter(|i| i.opcode == Opcode::Add && i.imm == IMM_PARALLEL_STEP)
-            .count();
-        assert_eq!((inits, steps), (1, 1), "exactly the outer loop is tagged");
-    }
-
-    /// A placement in the type puts the space's dispatch id on the allocation, which is exactly
-    /// where `.with_memory(Memory::X)` used to put it (Vx#429).
-    ///
-    /// The two spellings have to agree, because one replaces the other: a `scope: sm` space is
-    /// what turns the allocation into a space-3 alloca, and that decision is made from this
-    /// operand alone. If the placement stopped reaching it, every shared tile would quietly
-    /// become an ordinary allocation and the region would still compile.
-    #[test]
-    fn a_placed_tensor_carries_its_space_on_the_allocation() {
-        let alloc_space = |src: &str| {
-            let (did, w) = lower_with_registry(src, "main");
-            assert!(did, "lowers: {src}");
-            w.local_hir_stream
-                .iter()
-                .find(|i| i.opcode == Opcode::TensorAlloc)
-                .expect("an allocation")
-                .operand2
-                .0
-        };
-        let by_type = alloc_space(
-            "fn main() -> i32 { let mut t = Tensor<f32, [2, 4], Memory::SMEM>::uninit(); \
-             t[0][0] = 1.0; return 0; }",
-        );
-        let by_method = alloc_space(
-            "fn main() -> i32 { let mut t = Tensor<f32, [2, 4], Memory::SMEM>::uninit(); \
-             t[0][0] = 1.0; return 0; }",
-        );
-        assert_eq!(by_type, by_method, "one spelling replaces the other");
-        assert_eq!(
-            by_type,
-            crate::arch::memory_space_dispatch_id(&crate::syntax::MemorySpace::from_name("SMEM"))
-                as u32
-        );
-        // A tensor with no placement leaves the operand alone, so a nonzero id above means the
-        // space was carried rather than defaulted into.
-        assert_eq!(
-            alloc_space(
-                "fn main() -> i32 { let mut t = Tensor<f32, [2, 4]>::uninit(); \
-                         t[0][0] = 1.0; return 0; }"
-            ),
-            0
-        );
-    }
-
-    #[test]
-    fn a_cooperative_tile_region_gets_the_two_level_plan() {
-        // The FA-2 grammar in miniature (Vx#379 stage B): a shared tile filled by one thread
-        // loop, rewritten in place by thread loops inside a sequential loop (each phase
-        // barrier-terminated), and an affine writeback. The regression this pins: a sequential
-        // loop's LAST inner thread loop leaked its shared-write ledger to the outer walk, which
-        // then demanded a barrier the sequence had already provided -- and the whole region
-        // silently fell back to a 1x1 serial launch.
-        let (did, w) = lower_with_registry(
-            "fn main() -> i32 {\n\
-               let mut q = Tensor<f32>([8, 4]);\n\
-               let mut o = Tensor<f32>([8, 4]);\n\
-               spawn on (Topology::GPU) {\n\
-                 let mut qs = Tensor<f32, [2, 4], Memory::SMEM>::uninit();\n\
-                 for bq in 0..4 {\n\
-                   for qi in 0..2 {\n\
-                     qs[qi] = q[bq * 2 + qi] * 1.0;\n\
-                   }\n\
-                   barrier();\n\
-                   for t in 0..3 {\n\
-                     for r in 0..2 {\n\
-                       qs[r] = qs[r] * 1.0;\n\
-                     }\n\
-                     barrier();\n\
-                   }\n\
-                   for qi in 0..2 {\n\
-                     o[bq * 2 + qi] = qs[qi] * 1.0;\n\
-                   }\n\
-                   barrier();\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-            "main",
-        );
-        assert!(did, "lowers");
-        let end = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd");
-        assert_ne!(
-            end.imm & SPAWN_TWO_LEVEL,
-            0,
-            "two-level fired: imm={:#x}",
-            end.imm
-        );
-    }
-
-    #[test]
-    fn a_block_thread_region_gets_the_two_level_plan() {
-        // The Vx#379 shape in miniature: a block loop of 2, a thread loop of 4 whose captured
-        // write leads with `bq * 4 + qi` (multiplier == the thread trip), and a barrier. The
-        // SpawnEnd must carry the block trip with the two-level bit; exactly one block pair and
-        // one thread pair of stride tags must exist.
-        let (did, w) = lower_with_registry(
-            "fn main() -> i32 {\n\
-               let mut o = Tensor<f32>([8, 4]);\n\
-               spawn on (Topology::GPU) {\n\
-                 for bq in 0..2 {\n\
-                   for qi in 0..4 {\n\
-                     o[bq * 4 + qi][0] = 1.0;\n\
-                   }\n\
-                   barrier();\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-            "main",
-        );
-        assert!(did, "the two-level region lowers");
-        let end = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd");
-        assert_eq!(end.imm & 0xffff_ffff, 2, "block trip rides the SpawnEnd");
-        assert_ne!(end.imm & SPAWN_TWO_LEVEL, 0, "with the two-level bit");
-        let count_imm = |op: Opcode, imm: u64| {
-            w.local_hir_stream
-                .iter()
-                .filter(|i| i.opcode == op && i.imm == imm)
-                .count()
-        };
-        assert_eq!(
-            count_imm(Opcode::Store, IMM_BLOCK_INIT),
-            1,
-            "one block init"
-        );
-        assert_eq!(count_imm(Opcode::Add, IMM_BLOCK_STEP), 1, "one block step");
-        assert_eq!(
-            count_imm(Opcode::Store, IMM_THREAD_INIT),
-            1,
-            "one thread init"
-        );
-        assert_eq!(
-            count_imm(Opcode::Add, IMM_THREAD_STEP),
-            1,
-            "one thread step"
-        );
-        assert_eq!(
-            w.local_hir_stream
-                .iter()
-                .filter(|i| i.opcode == Opcode::Barrier)
-                .count(),
-            1,
-            "the barrier lowered"
-        );
-    }
-
-    #[test]
-    fn a_register_accumulator_coop_region_gets_the_plan() {
-        // Vx#379 stage C in miniature: ONE thread loop with the barriers inside it, a serial
-        // tile loop between them, a thread-private accumulator, an own-row shared fill and a
-        // nonown consume on the far side of a barrier. The two-level bit must fire with the
-        // coop loop's trip as the launch width -- this is the FA-2 register-accumulator form,
-        // and its silent fallback is invisible except as a severalfold slowdown.
-        let (did, w) = lower_with_registry(
-            "fn main() -> i32 {\n\
-               let mut q = Tensor<f32>([8, 4]);\n\
-               let mut k = Tensor<f32>([6, 4]);\n\
-               let mut o = Tensor<f32>([8, 4]);\n\
-               spawn on (Topology::GPU) {\n\
-                 let mut kt = Tensor<f32, [2, 4], Memory::SMEM>::uninit();\n\
-                 let mut acc = Tensor<f32>([1, 4]);\n\
-                 for bq in 0..4 {\n\
-                   for qi in 0..2 {\n\
-                     acc[0] = q[bq * 2 + qi] * 0.0;\n\
-                     for t in 0..3 {\n\
-                       kt[qi] = k[t * 2 + qi] * 1.0;\n\
-                       barrier();\n\
-                       for jj in 0..2 {\n\
-                         acc[0] = acc[0] + kt[jj] * 1.0;\n\
-                       }\n\
-                       barrier();\n\
-                     }\n\
-                     o[bq * 2 + qi] = acc[0] * 1.0;\n\
-                   }\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-            "main",
-        );
-        assert!(did, "lowers");
-        let end = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd");
-        assert_ne!(
-            end.imm & SPAWN_TWO_LEVEL,
-            0,
-            "two-level fired: imm={:#x}",
-            end.imm
-        );
-        assert_eq!(end.imm & 0xffff_ffff, 4, "block trip rides the SpawnEnd");
-        assert_eq!(
-            (end.imm >> 32) & 0xffff,
-            2,
-            "the coop trip is the launch width"
-        );
-    }
-
-    #[test]
-    fn a_coop_region_missing_the_tail_barrier_stays_serial() {
-        // The same shape minus the barrier AFTER the consume. One pass sees nothing wrong --
-        // fill, barrier, consume is a legal order -- the wrap is the bug: the next tile's
-        // fill overwrites rows a lagging thread is still reading. The walk's second pass
-        // meets that fill with the consume's read ledger still dirty and refuses.
-        let (did, w) = lower_with_registry(
-            "fn main() -> i32 {\n\
-               let mut q = Tensor<f32>([8, 4]);\n\
-               let mut k = Tensor<f32>([6, 4]);\n\
-               let mut o = Tensor<f32>([8, 4]);\n\
-               spawn on (Topology::GPU) {\n\
-                 let mut kt = Tensor<f32, [2, 4], Memory::SMEM>::uninit();\n\
-                 let mut acc = Tensor<f32>([1, 4]);\n\
-                 for bq in 0..4 {\n\
-                   for qi in 0..2 {\n\
-                     acc[0] = q[bq * 2 + qi] * 0.0;\n\
-                     for t in 0..3 {\n\
-                       kt[qi] = k[t * 2 + qi] * 1.0;\n\
-                       barrier();\n\
-                       for jj in 0..2 {\n\
-                         acc[0] = acc[0] + kt[jj] * 1.0;\n\
-                       }\n\
-                     }\n\
-                     o[bq * 2 + qi] = acc[0] * 1.0;\n\
-                   }\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-            "main",
-        );
-        assert!(did, "still lowers -- serially");
-        let end = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd");
-        assert_eq!(
-            end.imm & SPAWN_TWO_LEVEL,
-            0,
-            "no two-level bit: imm={:#x}",
-            end.imm
-        );
-    }
-
-    #[test]
-    fn a_barrier_under_a_variable_bound_stays_serial() {
-        // The tile loop's bound is a local, not a literal. Nothing here varies per thread,
-        // but the walk cannot know that: a per-thread trip means per-thread barrier counts,
-        // which is a hang. Literal bounds are the price of a barrier inside a loop.
-        let (did, w) = lower_with_registry(
-            "fn main() -> i32 {\n\
-               let mut k = Tensor<f32>([6, 4]);\n\
-               let mut o = Tensor<f32>([8, 4]);\n\
-               spawn on (Topology::GPU) {\n\
-                 let mut kt = Tensor<f32, [2, 4], Memory::SMEM>::uninit();\n\
-                 for bq in 0..4 {\n\
-                   for qi in 0..2 {\n\
-                     let n : i64 = 3;\n\
-                     for t in 0..n {\n\
-                       kt[qi] = k[t * 2 + qi] * 1.0;\n\
-                       barrier();\n\
-                     }\n\
-                     o[bq * 2 + qi] = kt[qi] * 1.0;\n\
-                   }\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-            "main",
-        );
-        assert!(did, "still lowers -- serially");
-        let end = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd");
-        assert_eq!(
-            end.imm & SPAWN_TWO_LEVEL,
-            0,
-            "no two-level bit: imm={:#x}",
-            end.imm
-        );
-    }
-
-    #[test]
-    fn a_block_row_column_strided_write_gets_the_plan() {
-        // Vx#379 R3's last piece in miniature: the BLOCK owns row `i`, the threads partition
-        // its columns by residue (`t + jj*K`, K == the thread trip), with an SMEM partial and
-        // a barrier between sweep and consume -- the block-per-row reduction shape a coalesced
-        // softmax is made of. The 1-trip `z` loop is the reduce step: one thread, own-column
-        // write at `lrow[i][z]`.
-        let (did, w) = lower_with_registry(
-            "fn main() -> i32 {\n\
-               let mut s = Tensor<f32>([4, 4]);\n\
-               let mut lrow = Tensor<f32>([4, 1]);\n\
-               spawn on (Topology::GPU) {\n\
-                 let mut pm = Tensor<f32, [2, 1], Memory::SMEM>::uninit();\n\
-                 for i in 0..4 {\n\
-                   for t in 0..2 {\n\
-                     let mut m : f32 = -1000000.0;\n\
-                     for jj in 0..2 {\n\
-                       let x : f32 = s[i][t + jj * 2];\n\
-                       let m2 : f32 = if x > m {\n\
-                         x\n\
-                       } else {\n\
-                         m\n\
-                       };\n\
-                       m = m2;\n\
-                     }\n\
-                     pm[t][0] = m;\n\
-                   }\n\
-                   barrier();\n\
-                   for t in 0..2 {\n\
-                     let mx : f32 = pm[0][0];\n\
-                     for jj in 0..2 {\n\
-                       s[i][t + jj * 2] = s[i][t + jj * 2] - mx;\n\
-                     }\n\
-                   }\n\
-                   for z in 0..1 {\n\
-                     lrow[i][z] = 1.0;\n\
-                   }\n\
-                   barrier();\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-            "main",
-        );
-        assert!(did, "lowers");
-        let end = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd");
-        assert_ne!(
-            end.imm & SPAWN_TWO_LEVEL,
-            0,
-            "two-level fired: imm={:#x}",
-            end.imm
-        );
-        assert_eq!(end.imm & 0xffff_ffff, 4, "block trip rides the SpawnEnd");
-        assert_eq!((end.imm >> 32) & 0xffff, 2, "threads = the sweep width");
-        assert_eq!(
-            end.imm & SPAWN_COOP,
-            0,
-            "stage B shape: host-safe, no coop bit"
-        );
-    }
-
-    #[test]
-    fn a_column_stride_not_the_trip_stays_serial() {
-        // Same shape, but the column stride is 3 against a thread trip of 2: residues collide
-        // (t=0,jj=2 lands on column 6; t=... the partition is simply not mod-K) and the region
-        // must fall back to serial rather than race.
-        let (did, w) = lower_with_registry(
-            "fn main() -> i32 {\n\
-               let mut s = Tensor<f32>([4, 8]);\n\
-               spawn on (Topology::GPU) {\n\
-                 for i in 0..4 {\n\
-                   for t in 0..2 {\n\
-                     for jj in 0..2 {\n\
-                       s[i][t + jj * 3] = 1.0;\n\
-                     }\n\
-                   }\n\
-                   barrier();\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-            "main",
-        );
-        assert!(did, "still lowers -- serially");
-        let end = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd");
-        assert_eq!(
-            end.imm & SPAWN_TWO_LEVEL,
-            0,
-            "no two-level bit: imm={:#x}",
-            end.imm
-        );
-    }
-
-    #[test]
-    fn a_column_write_without_the_thread_iv_stays_serial() {
-        // `s[i][jj * 2]`: the residue class is constant, so every thread writes the same
-        // columns. No ownership, no plan.
-        let (did, w) = lower_with_registry(
-            "fn main() -> i32 {\n\
-               let mut s = Tensor<f32>([4, 4]);\n\
-               spawn on (Topology::GPU) {\n\
-                 for i in 0..4 {\n\
-                   for t in 0..2 {\n\
-                     for jj in 0..2 {\n\
-                       s[i][jj * 2] = 1.0;\n\
-                     }\n\
-                   }\n\
-                   barrier();\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-            "main",
-        );
-        assert!(did, "still lowers -- serially");
-        let end = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd");
-        assert_eq!(
-            end.imm & SPAWN_TWO_LEVEL,
-            0,
-            "no two-level bit: imm={:#x}",
-            end.imm
-        );
-    }
-
-    #[test]
-    fn a_matmul_region_lowers_flat_and_stays_serial() {
-        // `matmul_into` in a spawn must lower on the FLAT path (one MatmulInto op, dst in the
-        // imm) and must NOT be strided -- the region is classified and routed, not launched
-        // wide. The regression this pins: the call used to evict the whole program to the AST
-        // path, taking every OTHER region's parallel proof with it -- a program lost its
-        // softmax kernel's grid-stride to the mere presence of a GEMM.
-        let (did, w) = lower_with_registry(
-            "fn main() -> i32 {\n\
-               let mut a = Tensor<f32>([4, 3]);\n\
-               let mut b = Tensor<f32>([3, 5]);\n\
-               let mut c = Tensor<f32>([4, 5]);\n\
-               spawn on (Topology::GPU) {\n\
-                 matmul_into(&mut c, &a, &b);\n\
-               };\n\
-               return 0;\n\
-             }",
-            "main",
-        );
-        assert!(did, "the matmul region lowers on the flat path");
-        let mm = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::MatmulInto)
-            .expect("a MatmulInto op");
-        assert_ne!(mm.imm, 0, "the destination register rides the imm");
-        let end = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd");
-        assert_eq!(end.imm, 0, "routed, not strided: imm={:#x}", end.imm);
-    }
-
-    #[test]
-    fn a_break_inside_a_synchronizing_loop_stays_serial() {
-        // A `break` whose innermost loop contains a barrier lets one thread leave while the
-        // rest wait at the bar. The guard is the innermost frame, so a break in a nested
-        // barrier-free walk stays legal -- this one is directly in the tile loop.
-        let (did, w) = lower_with_registry(
-            "fn main() -> i32 {\n\
-               let mut k = Tensor<f32>([6, 4]);\n\
-               let mut o = Tensor<f32>([8, 4]);\n\
-               spawn on (Topology::GPU) {\n\
-                 let mut kt = Tensor<f32, [2, 4], Memory::SMEM>::uninit();\n\
-                 for bq in 0..4 {\n\
-                   for qi in 0..2 {\n\
-                     for t in 0..3 {\n\
-                       kt[qi] = k[t * 2 + qi] * 1.0;\n\
-                       barrier();\n\
-                       break;\n\
-                     }\n\
-                     o[bq * 2 + qi] = kt[qi] * 1.0;\n\
-                   }\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-            "main",
-        );
-        assert!(did, "still lowers -- serially");
-        let end = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd");
-        assert_eq!(
-            end.imm & SPAWN_TWO_LEVEL,
-            0,
-            "no two-level bit: imm={:#x}",
-            end.imm
-        );
-    }
-
-    #[test]
-    fn a_wrong_affine_multiplier_keeps_the_region_serial() {
-        // `bq * 8 + qi` with `qi in 0..4` leaves rows unowned: the partition is not exact, so
-        // the two-level prover must reject -- and the single-level prover cannot accept the
-        // outer loop either (its body writes are not led by `bq`), so the region stays serial.
-        let (did, w) = lower_with_registry(
-            "fn main() -> i32 {\n\
-               let mut o = Tensor<f32>([16, 4]);\n\
-               spawn on (Topology::GPU) {\n\
-                 for bq in 0..2 {\n\
-                   for qi in 0..4 {\n\
-                     o[bq * 8 + qi][0] = 1.0;\n\
-                   }\n\
-                   barrier();\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-            "main",
-        );
-        assert!(did, "the rejected region still lowers");
-        let end = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd");
-        assert_eq!(
-            end.imm, 0,
-            "no plan of either kind for an inexact partition"
-        );
-    }
-
-    #[test]
-    fn a_captured_scalar_write_keeps_the_region_serial() {
-        // `acc` lives outside the spawn, so every strided thread would race on it: the analysis
-        // must reject, and rejection must be invisible — the region lowers exactly as before, with
-        // a zero trip count and no tags.
-        let (did, w) = lower_with_registry(
-            "fn main() -> i32 {\n\
-               let mut o = Tensor<f32>([4, 8]);\n\
-               let mut acc : f32 = 0.0;\n\
-               spawn on (Topology::GPU) {\n\
-                 for i in 0..4 {\n\
-                   for d in 0..8 {\n\
-                     acc = acc + o[i][d];\n\
-                   }\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-            "main",
-        );
-        assert!(did, "the rejected region still lowers");
-        let end = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd");
-        assert_eq!(end.imm, 0, "no trip count for a racy region");
-        assert!(
-            !w.local_hir_stream
-                .iter()
-                .any(|i| i.opcode == Opcode::Store && i.imm == IMM_PARALLEL_INIT),
-            "no stride tags either"
-        );
-    }
-
-    #[test]
-    fn a_captured_scalar_written_after_an_inner_let_of_its_name_keeps_the_region_serial() {
-        // The `acc` declared inside the `if` ends with it, so the write after the `if` is to the
-        // captured `acc`, which every strided thread would race on: the analysis must reject.
-        let (did, w) = lower_with_registry(
-            "fn main() -> i32 {\n\
-               let mut o = Tensor<f32>([4, 8]);\n\
-               let mut acc : f32 = 0.0;\n\
-               spawn on (Topology::GPU) {\n\
-                 for i in 0..4 {\n\
-                   if i > 10 {\n\
-                     let acc : f32 = 1.0;\n\
-                   }\n\
-                   acc = o[i][0];\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-            "main",
-        );
-        assert!(did, "the rejected region still lowers");
-        let end = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd");
-        assert_eq!(end.imm, 0, "no trip count for a racy region");
-    }
-
-    #[test]
-    fn a_captured_write_not_led_by_the_iv_keeps_the_region_serial() {
-        // `o[0][d]` writes the same row from every iteration — the first-index rule is the whole
-        // proof, so this must reject.
-        let (did, w) = lower_with_registry(
-            "fn main() -> i32 {\n\
-               let mut o = Tensor<f32>([4, 8]);\n\
-               spawn on (Topology::GPU) {\n\
-                 for i in 0..4 {\n\
-                   for d in 0..8 {\n\
-                     o[0][d] = 1.0;\n\
-                   }\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-            "main",
-        );
-        assert!(did);
-        let end = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd");
-        assert_eq!(end.imm, 0, "a fixed-row write is not disjoint");
-    }
-
-    /// The `SpawnEnd` of the only spawn region in `main` of `src`: its trip count when the region
-    /// runs in parallel, 0 when it stays serial.
-    fn spawn_trip(src: &str) -> u64 {
-        let (did, w) = lower_with_registry(src, "main");
-        assert!(did, "the region lowers on the flat path");
-        w.local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd")
-            .imm
-    }
-
-    #[test]
-    fn a_read_of_another_iterations_row_keeps_the_region_serial() {
-        // Iteration `i` reads row `i + 1`, which iteration `i + 1` writes: split across
-        // workers, the read races with that write.
-        let trip = spawn_trip(
-            "fn main() -> i32 {\n\
-               let mut o = Tensor<f32>([5, 8]);\n\
-               spawn on (Topology::GPU) {\n\
-                 for i in 0..4 {\n\
-                   for d in 0..8 {\n\
-                     o[i][d] = o[i + 1][d];\n\
-                   }\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-        );
-        assert_eq!(
-            trip, 0,
-            "a read of a row another iteration writes is not disjoint"
-        );
-    }
-
-    #[test]
-    fn a_whole_read_of_a_written_tensor_keeps_the_region_serial() {
-        let trip = spawn_trip(
-            "fn main() -> i32 {\n\
-               let mut o = Tensor<f32>([4, 8]);\n\
-               spawn on (Topology::GPU) {\n\
-                 for i in 0..4 {\n\
-                   let all = o;\n\
-                   o[i][0] = 1.0;\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-        );
-        assert_eq!(
-            trip, 0,
-            "reading the whole tensor reads every iteration's row"
-        );
-    }
-
-    #[test]
-    fn reads_of_the_own_row_and_of_unwritten_tensors_still_stride() {
-        // `o` is read only at row `i`, and `w` at any row, since nothing in the loop writes `w`.
-        let trip = spawn_trip(
-            "fn main() -> i32 {\n\
-               let mut o = Tensor<f32>([4, 8]);\n\
-               let w = Tensor<f32>([5, 8]);\n\
-               spawn on (Topology::GPU) {\n\
-                 for i in 0..4 {\n\
-                   for d in 0..8 {\n\
-                     o[i][d] = o[i][d] + w[i + 1][d];\n\
-                   }\n\
-                 }\n\
-               };\n\
-               return 0;\n\
-             }",
-        );
-        assert_eq!(
-            trip, 4,
-            "own-row reads and reads of unwritten tensors are disjoint"
-        );
-    }
-
-    #[test]
-    fn spawn_wraps_body_in_region_markers() {
-        let f = parse_fn(
-            "fn k(a: i32) -> i32 { spawn on (Topology::GPU) { let x = a + 1; } return a; }",
-        );
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("lowers");
-        assert_eq!(count(&w, Opcode::Spawn), 1);
-        assert_eq!(count(&w, Opcode::SpawnEnd), 1);
-        // The Spawn carries the topology dispatch id, and the body (`a + 1`) lowered between the
-        // region markers.
-        let spawn = w
-            .local_hir_stream
-            .iter()
-            .find(|i| i.opcode == Opcode::Spawn)
-            .unwrap();
-        assert_eq!(
-            spawn.imm & 0xffff_ffff,
-            crate::arch::topology_dispatch_id(&crate::syntax::Topology::gpu(0)) as u64
-        );
-        assert!(
-            count(&w, Opcode::Add) >= 1,
-            "body arithmetic lowered inside the region"
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn value_producing_spawn_yields_through_its_end() {
-        // A spawn that yields a value (no trailing `;`): the region's tail is lowered inside
-        // it, the `SpawnEnd` carries the value as `operand1` and is typed with it, and that
-        // instruction's register is what the function returns.
-        let f = parse_fn("fn k(a: i32) -> i32 { spawn on (Topology::GPU) { a + 1 } }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("a value-producing spawn lowers");
-        let end = w
-            .local_hir_stream
-            .iter()
-            .position(|i| i.opcode == Opcode::SpawnEnd)
-            .expect("a SpawnEnd");
-        let ins = w.local_hir_stream[end];
-        assert_ne!(ins.type_idx.0, NO_TYPE, "the end is typed with the value");
-        assert_eq!(
-            w.local_hir_stream[ins.operand1.0 as usize].opcode,
-            Opcode::Add,
-            "the value is the region's tail"
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn lowers_params_arithmetic_and_return() {
-        let f = parse_fn("fn add(a: i32, b: i32) -> i32 { return a + b; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("lowers");
-
-        // Load a, Load b, Add(a,b), Ret(add).
-        assert_eq!(
-            opcodes(&w),
-            vec![Opcode::Load, Opcode::Load, Opcode::Add, Opcode::Ret]
-        );
-        let add = w.local_hir_stream[2];
-        assert_eq!(
-            (add.operand1.0, add.operand2.0),
-            (0, 1),
-            "Add reads the two params"
-        );
-        assert_eq!(
-            w.local_hir_stream[3].operand1.0, 2,
-            "Ret reads the Add result"
-        );
-        // One type per instruction, all in bounds.
-        assert_eq!(w.local_type_stream.len(), 4);
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn lowers_let_binding_and_reuse() {
-        // y = x * x; return y + x  ->  Load x, Mul(0,0), (let y=1), Add(1,0), Ret(2)
-        let f = parse_fn("fn sq(x: i32) -> i32 { let y = x * x; return y + x; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("lowers");
-        assert_eq!(
-            opcodes(&w),
-            vec![Opcode::Load, Opcode::Mul, Opcode::Add, Opcode::Ret]
-        );
-        let mul = w.local_hir_stream[1];
-        assert_eq!(
-            (mul.operand1.0, mul.operand2.0),
-            (0, 0),
-            "x * x reads param twice"
-        );
-        let add = w.local_hir_stream[2];
-        assert_eq!(
-            (add.operand1.0, add.operand2.0),
-            (1, 0),
-            "y + x reads Mul result and x"
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn lowers_integer_literal_immediate() {
-        // The literal lowers to a single `Const` (no coercion in the flat lowerer anymore, #240): in
-        // real compilation the checker would type `7` to the `i64` return, but this test lowers the
-        // raw parsed AST without the checker, so the `Const` keeps its spelling default and `Ret`
-        // carries it directly.
-        let f = parse_fn("fn seven() -> i64 { return 7; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("lowers");
-        assert_eq!(opcodes(&w), vec![Opcode::Const, Opcode::Ret]);
-        assert_eq!(
-            w.local_hir_stream[0].imm, 7,
-            "Const carries the literal value"
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn lowers_float_literal_as_bit_pattern() {
-        let f = parse_fn("fn half() -> f64 { return 0.5; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("lowers");
-        assert_eq!(w.local_hir_stream[0].imm, 0.5f64.to_bits());
-    }
-
-    #[test]
-    fn lowers_comparison_to_bool() {
-        let f = parse_fn("fn lt(a: i32, b: i32) -> bool { return a < b; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("lowers");
-        assert_eq!(
-            opcodes(&w),
-            vec![Opcode::Load, Opcode::Load, Opcode::Cmp, Opcode::Ret]
-        );
-        let cmp = w.local_hir_stream[2];
-        assert_eq!((cmp.operand1.0, cmp.operand2.0), (0, 1));
-        assert_eq!(cmp.imm, 2, "Lt relation code");
-        // The Cmp result type is bool.
-        assert_eq!(
-            w.local_type_stream[cmp.type_idx.0 as usize],
-            scalar_gid(&ElementType::Bool)
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn lowers_scalar_cast_with_target_type() {
-        let f = parse_fn("fn widen(a: i32) -> i64 { return a as i64; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("lowers");
-        assert_eq!(opcodes(&w), vec![Opcode::Load, Opcode::Cast, Opcode::Ret]);
-        let cast = w.local_hir_stream[1];
-        assert_eq!(cast.operand1.0, 0, "cast reads the source");
-        assert_eq!(
-            w.local_type_stream[cast.type_idx.0 as usize],
-            scalar_gid(&ElementType::I64),
-            "cast result carries the target type"
-        );
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn lowers_unary_negation() {
-        let f = parse_fn("fn neg(a: i32) -> i32 { return -a; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("lowers");
-        assert_eq!(opcodes(&w), vec![Opcode::Load, Opcode::Neg, Opcode::Ret]);
-        assert_eq!(w.local_hir_stream[1].operand1.0, 0);
-        verify_hir_stream(&w);
-    }
-
-    #[test]
-    fn aborts_atomically_on_unsupported_construct() {
-        // A call is outside the supported subset -> abort, worker untouched.
-        let f = parse_fn("fn f(a: i32) -> i32 { return g(a); }");
-        let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w).is_err());
-        assert!(w.local_hir_stream.is_empty(), "no partial stream on abort");
-        assert!(w.local_type_stream.is_empty(), "no partial types on abort");
-    }
-
-    #[test]
-    fn aborts_on_non_scalar_parameter() {
-        let f = parse_fn("fn f(s: Widget) -> i32 { return 0; }");
-        let mut w = worker();
-        assert!(lower_function_to_hir(&f, &mut w).is_err());
-        assert!(w.local_hir_stream.is_empty());
-    }
-
-    #[test]
-    fn unsafe_block_lowers_transparently() {
-        // `unsafe` is transparent to lowering (safety was checked upstream): `return unsafe { a * a }`
-        // lowers exactly as `return a * a`. This is what lets a stdlib wrapper body like
-        // `return unsafe { sqrtf(self) }` lower through the flat path (#217).
-        let f = parse_fn("fn sq(a: f32) -> f32 { return unsafe { a * a }; }");
-        let mut w = worker();
-        lower_function_to_hir(&f, &mut w).expect("unsafe-block body lowers");
-        assert!(w.local_hir_stream.iter().any(|i| i.opcode == Opcode::Mul));
-        assert_eq!(w.local_hir_stream.last().unwrap().opcode, Opcode::Ret);
-        verify_hir_stream(&w);
-    }
-}
+mod tests;

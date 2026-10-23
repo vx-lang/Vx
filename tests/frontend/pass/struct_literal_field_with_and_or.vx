@@ -1,0 +1,32 @@
+//===- struct_literal_field_with_and_or.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A field of a struct literal can be `a && b` or `a || b`, which evaluate `b` only when they
+// need it. The fields after it are still set. The program prints 1 0 1 7.
+//
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// RUN: vxc %s 2>&1 | FileCheck %s
+// CHECK: 1 0 1 7
+
+struct Flags {
+  both : bool,
+  neither : bool,
+  either : bool,
+  n : i32,
+}
+
+fn make(a : bool, b : bool, n : i32) -> Flags {
+  return Flags {
+    both: a && n > 0, neither: !a || b, either: b || n > 5, n: n
+  };
+}
+
+fn main() -> i32 {
+  let f = make(true, false, 7);
+  println!("{} {} {} {}", f.both as i32, f.neither as i32, f.either as i32, f.n);
+  return 0;
+}

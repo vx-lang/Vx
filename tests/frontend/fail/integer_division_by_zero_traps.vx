@@ -1,0 +1,29 @@
+//===- integer_division_by_zero_traps.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// RUN: not vxc %s -O2 2>&1 | FileCheck %s
+//
+// An `i32` division by zero stops the program, on both code generators and at -O2. The divisor
+// is worked out at run time, so the compiler cannot see that it is zero.
+
+// CHECK: attempt to divide by zero
+// CHECK-NOT: wrong answer
+fn count(n : i32) -> i32 {
+  let mut s = 0;
+  for i in 0..n {
+    s += i;
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  print(42 / count(1));
+  print!(" wrong answer");
+  return 0;
+}

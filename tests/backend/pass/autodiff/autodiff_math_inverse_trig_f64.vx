@@ -10,10 +10,10 @@
 // differentiate the core::libm functions themselves, which read the float's bits, so each is
 // marked to be differentiated as its C function.
 //
-// CHECK-DAG: llvm.func @libm_asin({{.*}}passthrough = {{\[\[}}"enzyme_math", "asin"{{\]\]}}
-// CHECK-DAG: llvm.func @libm_acos({{.*}}passthrough = {{\[\[}}"enzyme_math", "acos"{{\]\]}}
-// CHECK-DAG: llvm.func @libm_atan({{.*}}passthrough = {{\[\[}}"enzyme_math", "atan"{{\]\]}}
-// CHECK-DAG: llvm.func @libm_atan2({{.*}}passthrough = {{\[\[}}"enzyme_math", "atan2"{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_asin({{.*}}passthrough = {{\[\[}}"enzyme_math", "asin"{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_acos({{.*}}passthrough = {{\[\[}}"enzyme_math", "acos"{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_atan({{.*}}passthrough = {{\[\[}}"enzyme_math", "atan"{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_atan2({{.*}}passthrough = {{\[\[}}"enzyme_math", "atan2"{{\]\]}}
 // EXPECT: 1154700 -1154700 800000 400000
 import core::num;
 

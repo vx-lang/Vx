@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optimizing for the common case, in language design</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="Hardware designers make the common case fast. A language can make the common case need no extra words. How Vx decides what a task takes from its surroundings, compared with Go, C#, JavaScript and Rust.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Optimizing for the common case, in language design">
+<meta property="og:description" content="In Vx, a task takes each variable the way it uses it, with no move keyword, and a copy can never go stale. Why, and what Go, C#, JavaScript and Rust did with the same loop.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-10-20T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/optimizing-for-the-common-case.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog-optimizing-for-the-common-case.png">
+<meta property="og:image:alt" content="Optimizing for the common case, in language design.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog-optimizing-for-the-common-case.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Optimizing for the common case, in language design</h1>
+<p class="post-meta">Aditya Kumar &middot; 20 October 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — Hardware designers make the common case fast.
+A language can make the common case need no extra words. The most common parallel loop starts one
+task per index. Go, C# and JavaScript first made that loop a trap, and later changed the language.
+Rust makes it correct with one keyword, <code>move</code>. In Vx, a task takes each variable the
+way it uses it (borrow, copy or move) with no <code>move</code> keyword, and a copy can never go
+stale. The loop needs nothing extra, and a program that a silent copy would get wrong fails to
+compile.</blockquote>
+
+<p class="lede">&ldquo;Make the common case fast&rdquo; is one of the oldest rules of computer
+architecture. A designer measures what programs do most often, and spends the effort there. The
+rare case can be slow, as long as it stays correct. The same rule works for a programming
+language. There, the cost is what the programmer must write and read. So the common case should
+need no extra words, and the rare case should be visible in the code.</p>
+
+<h2 id="the-common-case-one-task-per-index">The common case: one task per index</h2>
+
+<p>Most parallel code starts a task for each item of a list, or for each index of a range. Each
+task needs its own index, and it reads data that all the tasks share. In Vx, the loop looks like
+this:</p>
+
+<!-- vx-doctest: skip (tasks and spawn come with #1925) -->
+<pre><code><span class="k">fn</span> <span class="f">work</span>(i : <span class="t">i32</span>) -&gt; <span class="t">void</span> {
+  <span class="f">println!</span>(<span class="n">"task {}"</span>, i);
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">tasks</span> {
+    <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">4</span> {
+      <span class="k">spawn</span> { <span class="f">work</span>(i) };   <span class="c">// the task copies i</span>
+    }
+  }
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>It prints <code>task 0</code> to <code>task 3</code>. A <code>tasks</code> block waits for every
+task that it starts, so no task can outlive the variables that it uses. Each task gets its own copy
+of <code>i</code>, so <code>i</code> may end with its iteration of the loop. A task ends at its
+<em>join</em>: a call to <code>join()</code> on the task's handle, or the end of its
+<code>tasks</code> block. Today each task runs to its
+end at its <code>spawn</code>, which the design allows. Threads come later
+(<a href="https://github.com/vx-lang/Vx/issues/1863">#1863</a>).</p>
+
+<h2 id="three-languages-made-this-loop-a-trap">Three languages made this loop a trap</h2>
+
+<p>The loop looks simple, but three popular languages first got it wrong. In each one, the task or
+the closure kept a reference to the loop variable, and the loop changed that variable. This is the
+example from the Go team's post
+<a href="https://go.dev/blog/loopvar-preview">&ldquo;Fixing For Loops in Go 1.22&rdquo;</a>:</p>
+
+<pre><code><span class="k">func</span> <span class="f">main</span>() {
+    done := <span class="f">make</span>(<span class="k">chan</span> <span class="t">bool</span>)
+
+    values := []<span class="t">string</span>{<span class="n">"a"</span>, <span class="n">"b"</span>, <span class="n">"c"</span>}
+    <span class="k">for</span> _, v := <span class="k">range</span> values {
+        <span class="k">go</span> <span class="k">func</span>() {
+            fmt.<span class="f">Println</span>(v)
+            done &lt;- <span class="k">true</span>
+        }()
+    }
+
+    <span class="c">// wait for all goroutines to complete before exiting</span>
+    <span class="k">for</span> _ = <span class="k">range</span> values {
+        &lt;-done
+    }
+}</code></pre>
+
+<p>Before Go 1.22, the three goroutines shared one variable <code>v</code>. The post says that they
+&ldquo;usually print &lsquo;c&rsquo;, &lsquo;c&rsquo;, &lsquo;c&rsquo;&rdquo;, and calls the
+mistake &ldquo;one of the most common Go mistakes&rdquo;. Go 1.22 changed <code>for</code> loops so
+that &ldquo;each iteration of the loop creates new variables, to avoid accidental sharing
+bugs&rdquo;.</p>
+
+<p>C# had the same problem with <code>foreach</code>. Eric Lippert, then on the C# compiler team,
+called it &ldquo;the single most common incorrect bug report we get&rdquo;. People reported a
+compiler bug, but their code was wrong. C# 5 made the <code>foreach</code> variable new for each
+iteration (<a href="https://ericlippert.com/2009/11/12/closing-over-the-loop-variable-considered-harmful-part-one/">his
+post</a>). JavaScript made the same choice with <code>let</code>. A closure made in a
+<code>for (var i ...)</code> loop sees one shared <code>i</code>, and three such closures return
+<code>3 3 3</code>. With <code>for (let i ...)</code>, they return <code>0 1 2</code>.</p>
+
+<p>In all three languages, the fix made the common case right with no new keyword. Each iteration
+of the loop got its own variable.</p>
+
+<h2 id="rust-correct-with-one-keyword">Rust: correct, with one keyword</h2>
+
+<p>Rust's scoped threads borrow the variables that they use. A borrow of <code>i</code> cannot
+outlive its iteration, and a scoped thread may run until the end of the scope. So Rust refuses the
+loop:</p>
+
+<!-- vx-doctest: skip (Rust) -->
+<pre><code><span class="k">use</span> std::thread;
+<span class="k">fn</span> <span class="f">work</span>(i: <span class="t">usize</span>) -&gt; <span class="t">usize</span> { i * <span class="n">2</span> }
+<span class="k">fn</span> <span class="f">main</span>() {
+    thread::<span class="f">scope</span>(|s| {
+        <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">4</span> {
+            s.<span class="f">spawn</span>(|| <span class="f">work</span>(i));
+        }
+    });
+}</code></pre>
+
+<pre class="diag">error[E0373]: closure may outlive the current function, but it borrows `i`, which is owned by the current function</pre>
+
+<p>The error suggests <code>move</code>, and <code>s.spawn(move || work(i))</code> compiles. This
+is correct, and the code says what it does. But <code>move</code> applies to every variable that
+the closure uses. To share one <code>Vec</code> among the threads of a loop, Rust code first
+writes <code>let v = &amp;v;</code>. Then each thread copies a reference, and the <code>Vec</code>
+stays where it is. Without that line, the first iteration moves <code>v</code>, and the second gets
+E0382, &ldquo;use of moved value&rdquo;. So the loop index forces <code>move</code>, and
+<code>move</code> then forces a workaround for the shared data, which should stay where it is.</p>
+
+<p>Rust programmers know this pattern well. Niko Matsakis's draft RFC
+<a href="https://hackmd.io/@nikomatsakis/SyI0eMFXO">&ldquo;Explicit annotation on
+captures&rdquo;</a> shows it, with <code>let y = &amp;y;</code> before a <code>move</code> closure.
+It says: &ldquo;Most people don't realize this is an option and instead simply get
+frustrated.&rdquo;</p>
+
+<p>With <code>move</code>, Rust also copies a <code>Copy</code> value, and nothing warns about a
+later write to it. This program compiles, and the thread never stops:</p>
+
+<!-- vx-doctest: skip (Rust) -->
+<pre><code><span class="k">use</span> std::thread;
+<span class="k">fn</span> <span class="f">main</span>() {
+    <span class="k">let</span> <span class="k">mut</span> stop = <span class="k">false</span>;
+    thread::<span class="f">scope</span>(|s| {
+        s.<span class="f">spawn</span>(<span class="k">move</span> || <span class="k">while</span> !stop {});
+        stop = <span class="k">true</span>;   <span class="c">// the thread has its own copy of stop</span>
+    });
+}</code></pre>
+
+<p>A reader can see the copy, because the code says <code>move</code>. Without
+<code>move</code>, Rust refuses the write: <code>error[E0506]: cannot assign to `stop` because it
+is borrowed</code>.</p>
+
+<h2 id="vx-the-use-decides">Vx: the use decides</h2>
+
+<p>A Vx task takes each variable the way its body uses it
+(<a href="https://github.com/vx-lang/Vx/issues/1938">#1938</a>):</p>
+
+<ul>
+<li>It moves a variable that its body moves.</li>
+<li>It moves a variable that is not <code>Copy</code> and that ends before the task's join. An
+example is a value made in one iteration of a loop. A borrow of that variable can never be
+valid.</li>
+<li>It copies a <code>Copy</code> value that it only reads, at its <code>spawn</code>. As in Rust,
+<code>Copy</code> values copy bit by bit. They include numbers, <code>bool</code> values, shared
+references, and structs that implement <code>Copy</code>.</li>
+<li>It borrows every other variable, until its join.</li>
+</ul>
+
+<p>Here one <code>tasks</code> block does all three. It borrows <code>v</code>, copies
+<code>half</code> and moves <code>w</code>, with no annotation:</p>
+
+<!-- vx-doctest: skip (tasks and spawn come with #1925) -->
+<pre><code><span class="k">import</span> std::vec;
+
+<span class="k">fn</span> <span class="f">numbers</span>(n : <span class="t">i32</span>) -&gt; <span class="t">Vec</span>&lt;<span class="t">i32</span>&gt; {
+  <span class="k">let</span> <span class="k">mut</span> v = <span class="t">Vec</span>&lt;<span class="t">i32</span>&gt;::<span class="f">new</span>();
+  <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..n {
+    v.<span class="f">push</span>(i);
+  }
+  <span class="k">return</span> v;
+}
+
+<span class="k">fn</span> <span class="f">sum</span>(v : &amp;<span class="t">Vec</span>&lt;<span class="t">i32</span>&gt;, start : <span class="t">i32</span>, end : <span class="t">i32</span>) -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> total = <span class="n">0</span>;
+  <span class="k">for</span> i <span class="k">in</span> start..end {
+    total += v[i];
+  }
+  <span class="k">return</span> total;
+}
+
+<span class="k">fn</span> <span class="f">last</span>(v : <span class="t">Vec</span>&lt;<span class="t">i32</span>&gt;) -&gt; <span class="t">i32</span> {
+  <span class="k">return</span> v[v.<span class="f">len</span>() - <span class="n">1</span>];
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> v = <span class="f">numbers</span>(<span class="n">10</span>);
+  <span class="k">let</span> w = <span class="f">numbers</span>(<span class="n">3</span>);
+  <span class="k">let</span> half = <span class="n">5</span>;
+  <span class="k">let</span> total = <span class="k">tasks</span> {
+    <span class="k">let</span> left = <span class="k">spawn</span> { <span class="f">sum</span>(&amp;v, <span class="n">0</span>, half) };    <span class="c">// borrows v, copies half</span>
+    <span class="k">let</span> right = <span class="k">spawn</span> { <span class="f">sum</span>(&amp;v, half, <span class="n">10</span>) };  <span class="c">// borrows v, copies half</span>
+    <span class="k">let</span> tail = <span class="k">spawn</span> { <span class="f">last</span>(w) };             <span class="c">// moves w</span>
+    left.<span class="f">join</span>() + right.<span class="f">join</span>() + tail.<span class="f">join</span>()
+  };
+  <span class="f">println!</span>(<span class="n">"{}"</span>, total);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>It prints 47. Two tasks share <code>v</code> without <code>let v = &amp;v;</code>, because both
+tasks only read it. So each variable gets its own treatment, from how the task uses it. The
+task borrows a big <code>Vec</code> that it reads. It copies a loop index. It moves a value that
+ends with its iteration of the loop. To move a variable that the body only borrows, the body writes
+<code>let t = x;</code>. That is the only extra line in the design, and few programs need it.</p>
+
+<blockquote><p>In Vx, a task takes each variable the way it uses it (borrow, copy or move) with no
+<code>move</code> keyword, and a copy can never go stale.</p></blockquote>
+
+<h2 id="the-trap-in-a-silent-copy">The trap in a silent copy</h2>
+
+<p>A silent copy goes wrong when the code around the task writes the variable later. The task
+never sees the new value. The first version of the change that adds tasks
+(<a href="https://github.com/vx-lang/Vx/pull/1925">#1925</a>) copied <code>stop</code> here, so
+this program compiled and the task never stopped:</p>
+
+<!-- vx-doctest: skip (tasks and spawn come with #1925) -->
+<pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> stop = <span class="k">false</span>;
+  <span class="k">let</span> <span class="k">mut</span> spins = <span class="n">0</span>;
+  <span class="k">tasks</span> {
+    <span class="k">spawn</span> {
+      <span class="k">while</span> !stop {
+        spins += <span class="n">1</span>;
+      }
+    };
+    stop = <span class="k">true</span>;   <span class="c">// the task copied stop, so it would never see this</span>
+  }
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>Rust's <code>move</code> has the same result, but the keyword shows the copy. In Vx nothing
+showed it. A warning, W1034, reported a write to a variable that a running task copied. It also
+reported code that was correct, such as <code>spawn { work(x) }; x += 1;</code>. A warning that
+fires on correct code teaches people to ignore it.</p>
+
+<h2 id="a-copy-that-can-never-go-stale">A copy that can never go stale</h2>
+
+<p>The fix keeps the copy and forbids the write that would show it. Until the task's join, or the
+end of its <code>tasks</code> block, the code around the task may not write a variable that the
+task copied. The variable may still end before the task does, as a loop index does. That is the
+reason the task copies it instead of borrowing it.</p>
+
+<p>So the task sees the same value whether it copied the variable or borrowed it: the variable's
+current value. The checker treats the copy as a borrow that only a write conflicts with, so the
+error speaks of a borrow. The stop flag is now an error, with a hint:</p>
+
+<pre class="diag">Error[E4009] at 10:5: `stop` is assigned while it is borrowed, and the borrow is used after the assignment. A task that is not joined yet copied it, so it must not change until the task ends. To give the task the value that it has now, copy it into a new variable before the `spawn`. To share a value that changes, use an atomic.</pre>
+
+<p>Each rare case needs one line, and that line shows the intent. To give the task the value as it
+is now, the program copies it first:</p>
+
+<!-- vx-doctest: skip (tasks and spawn come with #1925) -->
+<pre><code><span class="k">fn</span> <span class="f">work</span>(x : <span class="t">i32</span>) -&gt; <span class="t">void</span> {
+  <span class="f">println!</span>(<span class="n">"work {}"</span>, x);
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> x = <span class="n">1</span>;
+  <span class="k">tasks</span> {
+    <span class="k">let</span> x0 = x;
+    <span class="k">spawn</span> { <span class="f">work</span>(x0) };   <span class="c">// the task copies x0, which nothing writes</span>
+    x += <span class="n">1</span>;
+  }
+  <span class="f">println!</span>(<span class="n">"x {}"</span>, x);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>It prints <code>work 1</code>, then <code>x 2</code>. To share a value that changes, such as the
+stop flag, the program uses an atomic or a channel. W1034 is gone, and so are its false alarms.
+The rule made the formal model of tasks simpler too. With no write until the join, a copy at the
+<code>spawn</code> gives the task the same value as a read in place.</p>
+
+<p>This is stricter than Rust in one place. A Rust <code>move</code> closure may change
+<code>x</code> after the spawn, because the closure has its own copy. Vx refuses that write until
+the join. A programmer who comes from Rust may meet this error. The hint fixes it in one line, and
+a write there is often a mistake, as the stop flag was.</p>
+
+<p>One Rust complaint is a different problem: the <code>Arc::clone</code> before each
+<code>thread::spawn</code>. A thread from <code>thread::spawn</code> may outlive the function that
+starts it, so it cannot borrow, and shared data needs a reference count. A Vx task cannot outlive
+its <code>tasks</code> block, so it borrows instead. That complaint would return only if Vx added
+tasks that outlive their block.</p>
+
+<p>Here are the five options that #1938 compared, on the two programs above:</p>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Option</th><th>The loop</th><th>The stop flag</th><th>New syntax</th></tr></thead>
+<tbody>
+<tr><td>Copy, with a warning</td><td>Compiles</td><td>Compiles, with a warning that also fires on correct code</td><td>None</td></tr>
+<tr><td>Borrow only</td><td>Needs <code>let j = i;</code></td><td>Error</td><td>None</td></tr>
+<tr><td>Rust's <code>move</code></td><td>Needs <code>move</code></td><td>Compiles, and <code>move</code> shows the copy</td><td><code>spawn move</code></td></tr>
+<tr><td>A list, like C++'s <code>[i, &amp;v]</code></td><td>Needs <code>move(i)</code></td><td>Compiles, and the list shows the copy</td><td><code>move(..)</code></td></tr>
+<tr><td>A copy never goes stale</td><td>Compiles</td><td>Error, with a hint</td><td>None</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="closures-are-next">Closures are next</h2>
+
+<p>A Vx closure has the same problem today:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> x = <span class="n">10</span>;
+  <span class="k">let</span> add = |y : <span class="t">i32</span>| x + y;
+  x = <span class="n">20</span>;
+  <span class="f">println!</span>(<span class="n">"{}"</span>, <span class="f">add</span>(<span class="n">1</span>));
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>It prints 11, because the closure copied <code>x</code> when the program made the closure. Rust refuses the same
+program: <code>error[E0506]: cannot assign to `x` because it is borrowed</code>. The plan in #1938
+is to give closures the same rule until their last use. That change can break programs that
+compile today, and each one needs a one-line fix, so a warning comes first, for one release.</p>
+
+<h2 id="the-pattern">The pattern</h2>
+
+<p>The design follows three rules:</p>
+
+<ul>
+<li>The common case needs no extra words.</li>
+<li>The case that a silent default gets wrong is a compile error, with a hint.</li>
+<li>Each rare case needs one line, and the line shows the intent.</li>
+</ul>
+
+<p>Go and C# changed the meaning of their loops years after release. Vx can make the choice before
+its tasks ship. The change that adds <code>tasks</code> and <code>spawn</code>,
+<a href="https://github.com/vx-lang/Vx/pull/1925">#1925</a>, is in review. Every Vx program in
+this post ran on its branch.</p>
+
+<p class="post-foot">Vx is Apache 2.0 with the LLVM exception &mdash;
+<a href="/docs/getting-started.html">install it</a> and try the examples.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+</body>
+</html>

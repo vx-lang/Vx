@@ -1,0 +1,21 @@
+//===- f32_from_i16_and_i8.vx - Vx Compiler ----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `f32::from` converts an `i16` and an `i8` to a float. The program prints -3 -6.
+//
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// RUN: vxc %s 2>&1 | FileCheck %s
+// CHECK: -3 -6
+
+import core::convert;
+
+fn main() -> i32 {
+  let a : i16 = -3;
+  let b : i8 = -6;
+  println!("{} {}", f32::from(a) as i32, f32::from(b) as i32);
+  return 0;
+}

@@ -157,7 +157,7 @@ impl<T : Float> Tensor<T, [?, ?]> {
     let mut t = Tensor<T>([ d1, d2 ]);
     for i in 0..d1 {
       for j in 0..d2 {
-        unsafe { t[i][j] = self[row][i * d2 + j]; }
+        t[i][j] = self[row][i * d2 + j];
       }
     }
     return t;
@@ -288,9 +288,9 @@ impl<T : Float> Tensor<T, [?, ?]> {
         memref.store %true, %res[] : memref<i1>
         linalg.generic {
           indexing_maps = [
-          affine_map<(d0, d1) -> (d0, d1)>,
-          affine_map<(d0, d1) -> (d0, d1)>,
-          affine_map<(d0, d1) -> ()>
+            affine_map<(d0, d1) -> (d0, d1)>,
+            affine_map<(d0, d1) -> (d0, d1)>,
+            affine_map<(d0, d1) -> ()>
           ],
           iterator_types = ["reduction", "reduction"]
         } ins(%lhs, %rhs : memref<?x?xf32>, memref<?x?xf32>) outs(%res : memref<i1>) {
@@ -315,9 +315,9 @@ impl<T : Float> Tensor<T, [?, ?]> {
         memref.store %true, %res[] : memref<i1>
         linalg.generic {
           indexing_maps = [
-          affine_map<(d0, d1) -> (d0, d1)>,
-          affine_map<(d0, d1) -> (d0, d1)>,
-          affine_map<(d0, d1) -> ()>
+            affine_map<(d0, d1) -> (d0, d1)>,
+            affine_map<(d0, d1) -> (d0, d1)>,
+            affine_map<(d0, d1) -> ()>
           ],
           iterator_types = ["reduction", "reduction"]
         } ins(%lhs, %rhs : memref<?x?xf32>, memref<?x?xf32>) outs(%res : memref<i1>) {
@@ -341,9 +341,9 @@ impl<T : Float> Tensor<T, [?, ?]> {
         memref.store %true, %res[] : memref<i1>
         linalg.generic {
           indexing_maps = [
-          affine_map<(d0, d1) -> (d0, d1)>,
-          affine_map<(d0, d1) -> (d0, d1)>,
-          affine_map<(d0, d1) -> ()>
+            affine_map<(d0, d1) -> (d0, d1)>,
+            affine_map<(d0, d1) -> (d0, d1)>,
+            affine_map<(d0, d1) -> ()>
           ],
           iterator_types = ["reduction", "reduction"]
         } ins(%lhs, %rhs : memref<?x?xf32>, memref<?x?xf32>) outs(%res : memref<i1>) {

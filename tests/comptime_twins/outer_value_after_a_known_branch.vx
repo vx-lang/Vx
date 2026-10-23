@@ -1,0 +1,27 @@
+//===- outer_value_after_a_known_branch.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `comptime` block reads `n` after an `if` whose condition the compiler knows. Only the
+// branch that runs changes `n`, so the block folds to 70.
+
+fn main() -> i32 {
+  let mut n : i64 = 5i64;
+  if n > 3i64 {
+    n = 7i64;
+  };
+  let mut m : i64 = 5i64;
+  if m > 30i64 {
+    m = 7i64;
+  } else {
+    m = 2i64;
+  };
+  let x = comptime {
+    n * 10i64 + m
+  };
+  println!("{}", x);
+  return 0;
+}

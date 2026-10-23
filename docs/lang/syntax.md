@@ -195,7 +195,9 @@ fn dispatch<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
     generics at once, as in `Pair<Pair<i32>>`.
   - Both operands have the same type, as for every other binary operator, so the shift
     count is not a separate width. Shifting by at least the operand's width is undefined
-    and nothing checks it, as with division by zero.
+    and nothing checks it.
+  - An integer `/` or `%` stops the program when it divides by zero, or when it divides the
+    minimum value of its type by -1.
 - Relational Operators: `==`, `!=`, `<`, `>`, `<=`, `>=` (Returns a Boolean evaluation)
 - Logical Operators: `&&`, `||`, `!` (Requires Boolean operands)
 - Range: `..` (e.g. `0..4`, and inside a topology index such as `NPU[0..4]`)
@@ -411,7 +413,7 @@ inferred from the nesting. This replaces an explicit fill loop:
 let q = Tensor<f32>([[1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.0]]);
 
 // Storage of the same shape and nothing in it -- the shape is written in the type:
-let z = Tensor<f32, [2, 4]>::uninit();
+let z = unsafe { Tensor<f32, [2, 4]>::uninit() };
 ```
 
 The initializer list is the one construction still written the older way, because it supplies

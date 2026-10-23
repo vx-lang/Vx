@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // `2;` is a statement, so a branch ending in it has no value to give the `if`.
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error[E3007]{{.*}}incompatible types: Scalar(I32) and Struct("void", None)
+// CHECK: Error[E3007]{{.*}}incompatible types: i32 and void
 // CHECK: 1 error(s) emitted
 
 fn main() -> i32 {

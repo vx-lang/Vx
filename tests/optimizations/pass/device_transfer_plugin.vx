@@ -69,12 +69,15 @@
 //
 // RUN: vxc %s --host default --machine fleet/xeon-e5-2666v3.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=HOST
 // HOST: capacity = 32212254720
-// HOST: cost = 236
 // HOST: scope = "device"
+//
+// Only the AST code generator writes the cost on the transfer.
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/xeon-e5-2666v3.vx --emit-mlir 2>&1 | FileCheck %s --check-prefix=HOST-AST
+// HOST-AST: capacity = 32212254720 : i64, cost = 236
 
 fn main() -> i32 {
-  let mut a = Tensor<f32, [2, 2]>::uninit();
-  let mut e = Tensor<f32, [2, 2]>::uninit();
+  let mut a = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  let mut e = unsafe { Tensor<f32, [2, 2]>::uninit() };
   for i in 0..2 {
     for j in 0..2 {
       a[i][j] = (i * 2 + j + 1) as f32;
@@ -87,7 +90,7 @@ fn main() -> i32 {
 
   let a_d = transfer(a, Memory::HBM);
   let e_d = transfer(e, Memory::HBM);
-  let mut r = Tensor<f32, [2, 2]>::uninit();
+  let mut r = unsafe { Tensor<f32, [2, 2]>::uninit() };
   let mut r_d = transfer(r, Memory::HBM);
 
   spawn on(Topology::Device) {

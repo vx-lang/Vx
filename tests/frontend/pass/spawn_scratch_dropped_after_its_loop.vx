@@ -15,9 +15,9 @@
 // CHECK: {vx.parallel_step}
 
 fn kernel_prep() -> f32 {
-  let mut o = Tensor<f32, [4, 4]>::uninit();
+  let mut o = unsafe { Tensor<f32, [4, 4], Memory::GPU_HBM>::uninit() };
   spawn on(Topology::GPU) {
-    let mut scratch = Tensor<f32, [1, 4]>::uninit();
+    let mut scratch = unsafe { Tensor<f32, [1, 4]>::uninit() };
     for i in 0..4 {
       scratch[0][i] = i as f32;
       for j in 0..4 {
@@ -25,7 +25,8 @@ fn kernel_prep() -> f32 {
       }
     }
   }
-  return o[0][0];
+  let back = transfer(o, Memory::CPU_DRAM);
+  return back[0][0];
 }
 
 fn main() -> i32 {

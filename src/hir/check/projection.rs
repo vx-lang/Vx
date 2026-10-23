@@ -262,6 +262,10 @@ impl<'a> TypeChecker<'a> {
     /// to `ty`, and when the bound gives the trait type arguments or associated-type bindings,
     /// that impl's have to be the same.
     pub(crate) fn bound_holds(&mut self, bound: &decl::TraitBound, ty: &Type) -> bool {
+        // `Send` and `Sync` come from the fields, not only from impls.
+        if let Some(which) = super::thread_safety::ThreadTrait::from_name(&bound.trait_name) {
+            return self.has_thread_trait(ty, which);
+        }
         let wanted_args = &bound.args;
         let wanted_bindings = &bound.bindings;
         let blocks = self

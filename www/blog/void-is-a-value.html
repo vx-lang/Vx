@@ -52,7 +52,7 @@ an error. That is fixed. Writing this post turned up four more gaps.</blockquote
 <p class="lede">"Returns nothing" can be a hole in the type system, or it can be a type like any
 other. Vx picks the second, because generic code then works without special cases.</p>
 
-<h2>Where a void value pays off</h2>
+<h2 id="where-a-void-value-pays-off">Where a void value pays off</h2>
 
 <p>Anywhere code is generic over a type <code>T</code>, someone will eventually pick
 <code>T = void</code>. If <code>void</code> is a real type with one value, everything written for
@@ -83,7 +83,7 @@ has a type, <code>void</code>, so the checker never needs a "this expression has
 case.</li>
 </ul>
 
-<h2>C and Rust</h2>
+<h2 id="c-and-rust">C and Rust</h2>
 
 <p>In C, <code>void</code> is not a value type: you cannot declare a <code>void</code> variable.
 C++ inherited that, and had to add special versions of its generic library types for it, such as
@@ -97,7 +97,7 @@ side.</p>
 one value: the function returns, and the value tells you nothing. <code>!</code> has no values
 at all: the function never returns.</p>
 
-<h2>The bug</h2>
+<h2 id="the-bug">The bug</h2>
 
 <p>A value of a type with only one possible value carries no information, so "moving" it means
 nothing. Reading it twice cannot be a use after a move. Vx got this wrong
@@ -121,7 +121,7 @@ again. <code>void</code> picked that rule up by accident. The fix
 <code>void</code>. The test <code>tests/backend/pass/void_value_used_twice.vx</code> reads a
 <code>void</code> value twice and runs on both code generators.</p>
 
-<h2>What is still wrong</h2>
+<h2 id="what-is-still-wrong">What is still wrong</h2>
 
 <p>The fix is an exception added to a general rule, and it finds <code>void</code> by its name.
 So a struct you declare yourself and name <code>void</code> gets the exception too:</p>

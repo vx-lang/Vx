@@ -1,0 +1,35 @@
+//===- tensor_chosen_by_a_return_is_not_freed_from_the_stack.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// At -O3, `g` picks which tensor to return with a select. The tensor that the
+// select can return must stay on the heap. On the stack, the program called
+// `free` on a stack address and aborted.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s -O3 --run 2>&1 | FileCheck %s
+// CHECK: Executing native binary
+// CHECK-NEXT: 0
+// CHECK-NOT: killed
+
+fn g(n : i32, k : i32) -> Tensor<i32, [?]> {
+  let v1 = Tensor<i32>([n]);
+  if k == 1 {
+    let v2 = Tensor<i32>([n]);
+    if k == 2 {
+      return v2;
+    }
+  }
+  return v1;
+}
+
+fn main() -> i32 {
+  for k in 1..2 {
+    let r = g(1, k);
+    print(r[0]);
+  }
+  return 0;
+}

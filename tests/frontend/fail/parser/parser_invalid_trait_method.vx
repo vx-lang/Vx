@@ -6,10 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
-
+//
+// A trait method with no name: the error points at the bad token `(`, not at
+// the next one.
+//
 // CHECK: Expected method name
 // CHECK:   fn (self: Tensor<f32, [?, ?]>) -> Tensor<i32, [?, ?]>;
-// CHECK:       ^^^^~~~~
+// CHECK: ~~~~^~~~~
 trait MissingMethodName {
   fn (self: Tensor<f32, [?, ?]>) -> Tensor<i32, [?, ?]>;
 }

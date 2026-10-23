@@ -41,6 +41,10 @@ struct Vec<T> {
   capacity : i32,
 }
 
+// A `Vec<T>` owns its `T`s, so it crosses tasks as a `T` does.
+unsafe impl<T : Send> Send for Vec<T> {}
+unsafe impl<T : Sync> Sync for Vec<T> {}
+
 impl<T>
 Vec<T> {
   /// An empty vector with room for two elements.

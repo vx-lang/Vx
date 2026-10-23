@@ -197,8 +197,10 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     }
 
     // Run unified pipeline. Custom Vx lowering passes run first, followed by standard lowering.
+    // `vx-expand-narrow-floats` and `arith-expand` turn conversions to and from fp8, fp4 and bf16
+    // into integer operations; see the note on the copy of this pipeline in src/driver.rs.
     let mut pipeline =
-        "builtin.module(convert-vx-to-standard,vx-reorderable-reductions,vx-to-llvm,".to_string();
+        "builtin.module(convert-vx-to-standard,vx-check-integer-division,vx-reorderable-reductions,vx-expand-narrow-floats,arith-expand{include-bf16=true include-f8e8m0=true},vx-to-llvm,".to_string();
     if has_enzyme {
         pipeline.push_str("enzyme,");
     }
@@ -214,7 +216,7 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     // the promoted allocation a frame slot instead of per-iteration stack growth (#641). What
     // stays on the heap is freed at its drop, by convert-vx-to-standard.
     // See the fuller note on the copy of this pipeline in src/driver.rs.
-    pipeline.push_str("symbol-dce,func.func(convert-linalg-to-loops,lower-affine),convert-scf-to-cf,expand-strided-metadata,func.func(vx-promote-buffers-to-stack),func.func(vx-normalize-stack-buffers),func.func(lower-affine),convert-vector-to-llvm,finalize-memref-to-llvm,convert-func-to-llvm,convert-index-to-llvm,convert-math-to-llvm,convert-math-to-libm,convert-func-to-llvm,convert-cf-to-llvm,convert-arith-to-llvm,convert-ub-to-llvm,reconcile-unrealized-casts)");
+    pipeline.push_str("symbol-dce,func.func(convert-linalg-to-loops,lower-affine),convert-scf-to-cf,expand-strided-metadata,func.func(vx-promote-buffers-to-stack),func.func(vx-normalize-stack-buffers),func.func(lower-affine),convert-vector-to-llvm,finalize-memref-to-llvm,convert-func-to-llvm,convert-index-to-llvm,convert-math-to-llvm,convert-math-to-libm,convert-func-to-llvm,convert-cf-to-llvm,convert-arith-to-llvm,convert-ub-to-llvm,reconcile-unrealized-casts,vx-hide-program-symbols)");
 
     melior::utility::parse_pass_pipeline(pass_manager.as_operation_pass_manager(), &pipeline)
         .map_err(|e| format!("Failed to parse pass pipeline: {}", e))?;

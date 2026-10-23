@@ -1,0 +1,27 @@
+//===- gpu_kernel_in_main_writes_a_placed_tensor.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn` written in `main` writes a tensor that `main` moved into GPU memory.
+// The compiler makes a PTX kernel for it, which stores 1.0 (bits 1065353216)
+// into global memory. HBM is `managed: explicit`, so the host cannot run it.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// CHECK: toponame=Device{{.*}}image={{.*}}.entry vx_npu_kernel_0({{.*}}st.global.b32 {{.*}}1065353216;
+
+fn main() -> i32 {
+  let h = Tensor<f32, [1024]>::fill(2.0);
+  let mut d = transfer(h, Memory::HBM);
+  spawn on(Topology::Device) {
+    for i in 0..1024 {
+      d[i] = 1.0;
+    }
+  }
+  let back = transfer(d, Memory::CPU_DRAM);
+  print(back[0]);
+  return 0;
+}

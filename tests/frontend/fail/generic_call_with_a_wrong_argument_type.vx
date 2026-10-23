@@ -1,0 +1,22 @@
+//===- generic_call_with_a_wrong_argument_type.vx - Vx ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
+//
+// A generic function's parameter of a fixed type refuses a value of another type, as a plain
+// function's does: an i32 variable is not passed for an i64. The error points at the call.
+
+fn take<T>(_x : T, n : i64) -> i64 {
+  return n;
+}
+
+fn main() -> i32 {
+  let small : i32 = 3;
+  // CHECK: Error[E3003] at 20:{{[0-9]+}}: Failed to deduce types for generic function 'take': Expected i64, got i32
+  print!(take(true, small));
+  return 0;
+}

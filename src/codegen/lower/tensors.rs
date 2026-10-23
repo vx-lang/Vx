@@ -137,6 +137,12 @@ fn lower_spawn_region<'c>(
                 spawn_builder = spawn_builder
                     .add_attributes(&[(Identifier::new(gen.context, "arch"), arch_attr)]);
             }
+            if let Some(chip) = &desc.chip {
+                let chip_attr =
+                    melior::ir::attribute::StringAttribute::new(gen.context, chip.as_ref()).into();
+                spawn_builder = spawn_builder
+                    .add_attributes(&[(Identifier::new(gen.context, "chip"), chip_attr)]);
+            }
         }
     }
 
@@ -501,6 +507,35 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
     }
 }
 
+/// Lowers the arguments of `grad`, `vjp` or `jvp`. Each scalar argument takes the type of its
+/// parameter, as in an ordinary call, because Enzyme does not convert them.
+fn lower_autodiff_args<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    args: &[Expr],
+    param_tys: &[Type<'c>],
+    block: melior::ir::BlockRef<'c, 'c>,
+    arg_vals: &mut Vec<Value<'c, 'c>>,
+    enzyme_arg_types: &mut Vec<Type<'c>>,
+) -> Result<melior::ir::BlockRef<'c, 'c>, LowerError> {
+    assert_eq!(args.len(), param_tys.len());
+    let mut current_b = block;
+    for (arg, &param_ty) in args.iter().zip(param_tys) {
+        let prev_expected = gen.expected_type;
+        gen.expected_type = Some(param_ty);
+        let (mut v, ty, new_b) = gen.generate_expr(arg, current_b)?;
+        gen.expected_type = prev_expected;
+        current_b = new_b;
+        if ty != param_ty && !gen.is_memref(&ty) && !gen.is_memref(&param_ty) {
+            v = gen.coerce_type(&current_b, v, ty, param_ty)?;
+            enzyme_arg_types.push(param_ty);
+        } else {
+            enzyme_arg_types.push(ty);
+        }
+        arg_vals.push(v);
+    }
+    Ok(current_b)
+}
+
 impl<'c> LowerToMelior<'c> for GradExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
@@ -533,13 +568,14 @@ impl<'c> LowerToMelior<'c> for GradExpr {
         let mut arg_vals = vec![target_fn_val];
         let mut enzyme_arg_types = vec![fn_ty.into()];
 
-        let mut current_b = block;
-        for arg in args {
-            let (v, ty, new_b) = gen.generate_expr(arg, current_b)?;
-            arg_vals.push(v);
-            enzyme_arg_types.push(ty);
-            current_b = new_b;
-        }
+        let current_b = lower_autodiff_args(
+            gen,
+            args,
+            &orig_arg_types,
+            block,
+            &mut arg_vals,
+            &mut enzyme_arg_types,
+        )?;
 
         let enzyme_name = emit_enzyme_decl(gen, "grad", target_fn, &enzyme_arg_types, ret_ty);
 
@@ -588,13 +624,14 @@ impl<'c> LowerToMelior<'c> for VjpExpr {
         let mut arg_vals = vec![target_fn_val];
         let mut enzyme_arg_types = vec![fn_ty.into()];
 
-        let mut current_b = block;
-        for arg in args {
-            let (v, ty, new_b) = gen.generate_expr(arg, current_b)?;
-            arg_vals.push(v);
-            enzyme_arg_types.push(ty);
-            current_b = new_b;
-        }
+        let current_b = lower_autodiff_args(
+            gen,
+            args,
+            &orig_arg_types,
+            block,
+            &mut arg_vals,
+            &mut enzyme_arg_types,
+        )?;
 
         // For a scalar VJP in Enzyme, we just compute the gradient (implicitly seed=1.0)
         // and then multiply by the cotangent seed.
@@ -661,13 +698,14 @@ impl<'c> LowerToMelior<'c> for JvpExpr {
         let mut arg_vals = vec![target_fn_val];
         let mut enzyme_arg_types = vec![fn_ty.into()];
 
-        let mut current_b = block;
-        for arg in args {
-            let (v, ty, new_b) = gen.generate_expr(arg, current_b)?;
-            arg_vals.push(v);
-            enzyme_arg_types.push(ty);
-            current_b = new_b;
-        }
+        let current_b = lower_autodiff_args(
+            gen,
+            args,
+            &orig_arg_types,
+            block,
+            &mut arg_vals,
+            &mut enzyme_arg_types,
+        )?;
 
         let (t_val, t_ty, current_b) = gen.generate_expr(tangent, current_b)?;
         arg_vals.push(t_val);

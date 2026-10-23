@@ -1,0 +1,39 @@
+//===- function_ending_in_an_unsafe_block_that_returns.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function whose last statement is an `unsafe` block that returns. The AST code generator
+// (`--legacy-codegen`) used to leave a block with no terminator, and MLIR verification failed.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: {{^}}7 8 2{{$}}
+
+fn read(p : *mut i32) -> i32 {
+  unsafe { return *p; }
+}
+
+fn read_plus_one_or_two(c : bool, p : *mut i32) -> i32 {
+  if c {
+    unsafe { return *p + 1; }
+  } else {
+    return 2;
+  }
+}
+
+fn write_seven(p : *mut i32) -> void {
+  unsafe { *p = 7; return; }
+}
+
+fn main() -> i32 {
+  let mut x = 5;
+  write_seven((&mut x) as *mut i32);
+  let a = read((&mut x) as *mut i32);
+  let b = read_plus_one_or_two(true, (&mut x) as *mut i32);
+  let c = read_plus_one_or_two(false, (&mut x) as *mut i32);
+  println!("{} {} {}", a, b, c);
+  return 0;
+}

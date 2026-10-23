@@ -17,6 +17,10 @@ struct Box<T> {
   ptr : *mut T,
 }
 
+// A `Box<T>` owns its `T`s, so it crosses tasks as a `T` does.
+unsafe impl<T : Send> Send for Box<T> {}
+unsafe impl<T : Sync> Sync for Box<T> {}
+
 impl<T>
 Box<T> {
   /// Move a value to the heap.

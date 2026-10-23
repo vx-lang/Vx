@@ -282,6 +282,12 @@ impl<'a> ProvWalk<'a> {
                 // `unsafe` block where a structural walk cannot follow it. Refuse to narrow.
                 self.saw_unsafe = true;
             }
+            Expr::TaskBlock(t) => {
+                self.walk_block(&t.stmts);
+                if let Some(r) = &t.ret {
+                    self.walk_expr(r);
+                }
+            }
             Expr::ComptimeBlock(c) => {
                 self.walk_block(&c.stmts);
                 if let Some(r) = &c.ret {

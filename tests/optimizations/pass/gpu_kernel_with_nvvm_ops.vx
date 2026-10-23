@@ -1,0 +1,48 @@
+//===- gpu_kernel_with_nvvm_ops.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each region below gets a PTX kernel. `lane_ids` calls a function with an `nvvm` op in an
+// `mlir!` block. `fast_exp` calls an `nvvm` intrinsic through `llvm.call_intrinsic`.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not='runs on the CPU' --implicit-check-not=Error
+// CHECK-DAG: image={{.*}}mov.u32 {{.*}}%laneid
+// CHECK-DAG: image={{.*}}ex2.approx.ftz.f32
+
+fn lane_id() on Topology::Device -> i32 {
+  return mlir!( inputs : (), returns : i32, dialects : ["nvvm"]) {
+    %r = nvvm.read.ptx.sreg.laneid : i32
+    macro.yield %r : i32
+  };
+}
+
+fn exp2_ftz(v : f32) on Topology::Device -> f32 {
+  return mlir!( inputs : (%v = v : f32), returns : f32, dialects : ["llvm"]) {
+    %r = llvm.call_intrinsic "llvm.nvvm.ex2.approx.ftz.f"(%v) : (f32) -> f32
+    macro.yield %r : f32
+  };
+}
+
+pub fn lane_ids(o : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    o[0] = lane_id();
+  }
+  return;
+}
+
+pub fn fast_exp(o : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for i in 0..4 {
+      o[i] = exp2_ftz(a[i]);
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

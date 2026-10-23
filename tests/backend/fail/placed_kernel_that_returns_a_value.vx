@@ -1,0 +1,28 @@
+//===- placed_kernel_that_returns_a_value.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn` that gives back a value gets no PTX kernel: the value goes through a
+// slot on the host stack, which a GPU cannot write. So the region runs on the
+// host, and it reads `d`, which is in HBM, declared `managed: explicit`. The
+// host cannot read that memory, so the compiler refuses the program.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// CHECK: cannot emit a device kernel for it and its operands are in 'HBM'
+
+fn main() -> i32 {
+  let h = Tensor<f32, [4]>::fill(2.0);
+  let d = transfer(h, Memory::HBM);
+  let s = spawn on(Topology::Device) {
+    let mut acc = 0.0;
+    for i in 0..4 {
+      acc = acc + d[i];
+    }
+    acc
+  };
+  print(s);
+  return 0;
+}

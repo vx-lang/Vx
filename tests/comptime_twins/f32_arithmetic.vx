@@ -1,0 +1,21 @@
+//===- f32_arithmetic.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `f32` arithmetic in a `comptime` block rounds to `f32` after each step, as the program does.
+// In `f64`, 16777216 + 1 + 1 is 16777218, and 0.1 + 0.2 is not 0.3.
+
+fn main() -> i32 {
+  let a : f32 = comptime {
+    16777216.0f32 + 1.0f32 + 1.0f32
+  };
+  println!("{}", a);
+  let same : bool = comptime {
+    0.1f32 + 0.2f32 == 0.3f32
+  };
+  println!("{}", same);
+  return 0;
+}

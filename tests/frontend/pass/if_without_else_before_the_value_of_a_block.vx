@@ -1,0 +1,44 @@
+//===- if_without_else_before_the_value_of_a_block.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `if` with no `else`, followed by the value of a `comptime`, `unsafe` or `spawn` block, is
+// a statement: the block's value is the expression after it. The compiler used to check such
+// an `if` as the block's value and give E3048, "this `if` has no `else`".
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK-LABEL: func.func @main
+// CHECK: arith.constant 3 : i32
+
+fn in_unsafe(argc : i32) -> i32 {
+  let x = unsafe { if argc > 100i32 { let _t : i32 = 1i32; } 4i32 };
+  return x;
+}
+
+// Two `if`s at the end of a `spawn` region: the second is the region's value.
+fn in_spawn(argc : i32) -> i32 {
+  let t : i32 = argc * 32i32;
+  spawn on(Topology::CPU) {
+    let mut i = 0;
+    if t == 32 {
+      i = 5;
+    }
+    if t > 0 {
+      println!("region {}", i);
+    }
+  }
+  return 0;
+}
+
+fn main(argc : i32) -> i32 {
+  let x = comptime {
+    if argc > 100i32 {
+      let _t : i32 = 1i32;
+    }
+    3i32
+  };
+  return x + in_unsafe(argc) + in_spawn(argc);
+}

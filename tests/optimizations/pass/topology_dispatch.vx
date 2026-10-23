@@ -23,7 +23,7 @@
 // spawn lowers without a plugin attribute, so the check cannot hold and its
 // failure would say nothing about dispatch.
 // REQUIRES: macos
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
 
 struct topology_test {
   workload : i32,

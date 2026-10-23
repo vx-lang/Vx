@@ -18,7 +18,8 @@
 // whether or not the emitter does the right thing; only a program with enough
 // around it -- spawns, tensors, a three-deep nest -- kept its slots in the
 // loops. Asserting the invariant on that program catches a regression that a
-// smaller runtime test would sleep through.
+// smaller runtime test would sleep through. Its loops became affine loops, which
+// need no slots, so a second program checks the slots of loops in affine loops.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -51,33 +52,45 @@ fn stack_slots_are_allocated_once_not_per_iteration() {
     // cargo points this at the profile the suite is running in; a hardcoded
     // `target/debug/vxc` is absent under `cargo test --release` and this skipped.
     let vxc = PathBuf::from(env!("CARGO_BIN_EXE_vxc"));
-    let src = root.join("tests/backend/pass/ane_matmul_f16.vx");
-    assert!(src.is_file(), "missing {}", src.display());
-
-    let out = Command::new(&vxc)
-        .current_dir(&root)
-        .args([src.to_str().unwrap(), "--action", "emit-mlir"])
-        .output()
-        .expect("failed to run vxc");
-    let mlir = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        mlir.contains("func.func"),
-        "vxc emitted no MLIR:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let mut block = "entry".to_string();
     let mut offenders = Vec::new();
     let mut sites = 0usize;
-    for line in mlir.lines() {
-        if let Some(b) = block_label(line) {
-            block = b.to_string();
-            continue;
-        }
-        if allocation_site(line) {
-            sites += 1;
-            if block != "entry" {
-                offenders.push(format!("{block}: {}", line.trim()));
+    for file in [
+        "tests/backend/pass/ane_matmul_f16.vx",
+        "tests/optimizations/pass/counted_loops_become_affine_loops.vx",
+    ] {
+        let src = root.join(file);
+        assert!(src.is_file(), "missing {}", src.display());
+
+        let out = Command::new(&vxc)
+            .current_dir(&root)
+            .args([src.to_str().unwrap(), "--action", "emit-mlir"])
+            .output()
+            .expect("failed to run vxc");
+        let mlir = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            mlir.contains("func.func"),
+            "vxc emitted no MLIR:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let mut block = "entry".to_string();
+        for line in mlir.lines() {
+            if line.trim_start().starts_with("func.func") {
+                block = "entry".to_string();
+                continue;
+            }
+            if let Some(b) = block_label(line) {
+                block = b.to_string();
+                continue;
+            }
+            if allocation_site(line) {
+                sites += 1;
+                // A function's own operations are indented by four spaces. More is the inside
+                // of a region, such as the body of an affine loop.
+                let in_region = line.len() - line.trim_start().len() > 4;
+                if block != "entry" || in_region {
+                    offenders.push(format!("{file} {block}: {}", line.trim()));
+                }
             }
         }
     }

@@ -1,0 +1,104 @@
+//===- tasks_that_move_locals_and_drop_joined_values.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=dropped
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=dropped
+//
+// A task moves a local that is not `Copy` and that ends before the task's join. The task then
+// drops it. A joined value that nothing keeps is dropped once, at the end of its scope.
+
+import std::vec;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("dropped {}", self.id);
+  }
+}
+
+fn make_noisy(id : i32) -> Noisy {
+  return Noisy {
+    id: id
+  };
+}
+
+// `v` and `n` end with their pass, and nothing joins the task. So the task moves them, and it
+// drops `n` when it ends. The three tasks run at the same time, so their lines come in any
+// order.
+// CHECK-DAG: {{^}}task 0 2 10{{$}}
+// CHECK-DAG: {{^}}dropped 0{{$}}
+// CHECK-DAG: {{^}}task 1 2 10{{$}}
+// CHECK-DAG: {{^}}dropped 1{{$}}
+// CHECK-DAG: {{^}}task 2 2 10{{$}}
+// CHECK-DAG: {{^}}dropped 2{{$}}
+fn tasks_that_move_locals() -> void {
+  tasks {
+    for i in 0..3 {
+      let mut v = Vec<i32>::new();
+      v.push(i);
+      let n = make_noisy(i);
+      spawn {
+        v.push(10);
+        println!("task {} {} {}", n.id, v.len(), v[1]);
+      };
+    }
+  }
+}
+
+// The value of `a.join();` and the values that `.id` reads are dropped at the end of the
+// `tasks` block, last one first.
+// CHECK: {{^}}6{{$}}
+// CHECK-NEXT: {{^}}dropped 6{{$}}
+// CHECK-NEXT: {{^}}dropped 5{{$}}
+// CHECK-NEXT: {{^}}dropped 4{{$}}
+// CHECK-NEXT: {{^}}5{{$}}
+fn joined_values_that_nothing_keeps() -> i32 {
+  let mut total = 0;
+  tasks {
+    let a = spawn {
+      make_noisy(4)
+    };
+    a.join();
+    let b = spawn {
+      make_noisy(5)
+    };
+    total = b.join().id;
+    let c = spawn {
+      make_noisy(6)
+    };
+    println!("{}", c.join().id);
+  }
+  return total;
+}
+
+// The task declares its own `w`, so it does not move the `w` of the pass.
+// CHECK-NEXT: {{^}}3{{$}}
+fn task_with_a_variable_of_the_same_name() -> i32 {
+  let mut count = 0;
+  tasks {
+    for i in 0..3 {
+      let mut w = Vec<i32>::new();
+      w.push(i);
+      spawn {
+        let w = 1;
+        w + 1;
+      };
+      count += w.len();
+    }
+  }
+  return count;
+}
+
+fn main() -> i32 {
+  tasks_that_move_locals();
+  println!("{}", joined_values_that_nothing_keeps());
+  println!("{}", task_with_a_variable_of_the_same_name());
+  return 0;
+}

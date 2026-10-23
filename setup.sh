@@ -69,6 +69,30 @@ fi
 
 echo "LLVM found at: $LLVM_PATH"
 
+# z3 discharges seam and proof obligations (src/hir/seam.rs, src/hir/prover.rs). A version
+# change does not say "z3 disagreed"; it shows up as a missing W1027 or an expected-failure
+# that passes. Record what we found, and warn below the floor that has been seen to work
+# with the suite (Ubuntu 24.04's apt z3). Not a hard fail: the build itself does not need
+# z3, only seam-verification tests do.
+Z3_MIN_VERSION="${Z3_MIN_VERSION:-4.8.12}"
+if ! command -v z3 >/dev/null 2>&1; then
+    echo "WARNING: z3 not on PATH. Seam-verification tests will fail in ways that look like" >&2
+    echo "         compiler regressions. Install it (apt: z3; brew: z3) and re-run." >&2
+else
+    Z3_VERSION_LINE="$(z3 --version 2>/dev/null || true)"
+    echo "z3: $Z3_VERSION_LINE"
+    Z3_FOUND="$(printf '%s\n' "$Z3_VERSION_LINE" | sed -n 's/^Z3 version \([0-9][0-9.]*\).*/\1/p')"
+    if [ -n "$Z3_FOUND" ]; then
+        # Compare dotted triples numerically (4.8.12 vs 4.15.4).
+        oldest="$(printf '%s\n%s\n' "$Z3_MIN_VERSION" "$Z3_FOUND" | sort -V | head -n1)"
+        if [ "$oldest" != "$Z3_MIN_VERSION" ]; then
+            echo "WARNING: z3 $Z3_FOUND is older than the recorded floor $Z3_MIN_VERSION." >&2
+            echo "         Solver differences can look like compiler regressions. Upgrade z3," >&2
+            echo "         or set Z3_MIN_VERSION=$Z3_FOUND only if you accept that floor." >&2
+        fi
+    fi
+fi
+
 # Homebrew's LLVM reports the extra system libraries it needs -- ask it with
 # `llvm-config --system-libs` and it names things like -lzstd and -lxml2. Those libraries live in
 # Homebrew's own lib directory, and macOS does not look there by default. Any crate that hands

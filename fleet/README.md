@@ -24,6 +24,7 @@ Every SKU declares the **same space names**, so one program text can reference t
 | `HBM` | device-global memory (HBM2e/HBM3/HBM3e) | `device` |
 | `L2` | last-level on-die cache / Infinity Cache | `device` |
 | `SMEM` | per-SM/CU shared memory (scratchpad) | `sm` |
+| `REG` | per-thread registers (NVIDIA files only) | `thread` |
 
 A program that places a tile in `Memory::HBM` therefore means "this SKU's device memory", and the
 capacity check resolves that to whichever number the selected machine file declares. Adding a SKU
@@ -66,6 +67,52 @@ file rather than replacing it — but note that the `--machine` flag currently t
 (#281), so the node file re-declares the SKU spaces it needs. Declaration import (#224) would let
 these compose properly; see the note in that file.
 
+## GPU chip
+
+`chip:` on an `nvptx64` topology names the GPU generation that its kernels are compiled for:
+`sm_80` for A100, `sm_90a` for H100 and H200, `sm_100a` for B200. The compiler picks the PTX
+version that the chip needs. `sm_90a` gets PTX 8.3, for the tensor-map fence, so it needs a CUDA 12.3
+or later driver. Code for one chip may not load on an older one, and an `a` chip's code
+loads only on that generation. A topology with no `chip:` compiles for `sm_80`. The environment
+variable `VX_GPU_CHIP` overrides the field. All the kernels of one program go into one device
+image, so two topologies with different chips in one program are an error.
+
+## Alignment
+
+`alignment:` on a memory space is the least alignment, in bytes, of every tensor in it. The NVIDIA
+files give `SMEM` 16 bytes, which LLVM's 16-byte vector accesses need. A tensor asks for more with
+`aligned(N)` in its type (`docs/lang/types.md`).
+
+## Registers
+
+A tensor in a `scope: thread` space, such as `Tensor<f32, [32], Memory::REG>`, stays in registers.
+This is how a tensor-core kernel keeps its accumulators across a loop. A register has no address,
+so each index must be known when compiling: a constant, or made of constants and the variables of
+`for` loops with constant bounds. The compiler unrolls those loops, at most 1024 passes each. Any
+other index is E6033, which names the tensor and the reason. An `mlir!` block takes the tensor as
+`memref<32xf32>`. The NVIDIA files give `REG` a capacity of 1020 bytes, which is 255 registers.
+
+## Levels
+
+`levels:` on a topology names the levels of a GPU launch that `across` loops use (#252), outside
+in. The first entry is the block level and needs `max_lanes:`. The last is the lane level. A middle
+one is the subgroup level and needs `lanes:`. `memory:` names the scope whose memory has one copy
+for each pass of the level.
+
+```text
+levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(memory: thread)]
+```
+
+The compiler has no default levels. Each NVIDIA file here gives the line above, and a topology with
+no `levels:` refuses `across` loops (E6032). On `nvptx64`, a block has at most 1024 lanes and a
+subgroup has 32.
+
+Only the `nvptx64` code generator can launch the levels. On another arch, an `across` loop is
+E6032, unless `-fauto-schedule-levels` is given. With that flag, the loop runs as a plain `for`. Its
+branch back to the loop header carries `vx.across` with the kind of its level, for MLIR passes. A
+loop over lanes or subgroups also gets LLVM loop metadata that asks for vectorization. The default
+is `-fno-auto-schedule-levels`.
+
 ## Element type vocabularies
 
 `dtypes:` on a topology states which element types the hardware can natively represent and compute
@@ -86,6 +133,7 @@ error rather than a silently ignored word.
 | mi300x | AMD ROCm documentation, "AMD Instinct MI300 series microarchitecture" — per-datatype table |
 | m4-uma | Apple, Metal Shading Language Specification — "Scalar Data Types", Table 2.1 |
 | cortex-m7 | STMicroelectronics, STM32H742xI/G STM32H743xI/G datasheet (DS12110) |
+| arc-a770 | Intel, "Introduction to the Xe-HPG Architecture" white paper (document 758302) — the XMX units "support FP16, BF16, INT8, INT4 and INT2 multiply, with either 16 or 32 bits accumulate", and the paper's throughput table lists XMX BF16, INT8 and INT4/INT2 rates. `f64` is omitted by measurement: the card exposes no `cl_khr_fp64` and Vulkan reports `shaderFloat64 = false` |
 
 What the declarations then say, which is the point of writing them down:
 
@@ -144,10 +192,14 @@ matrix, but enough to flip a marginal cell.
 | Figure class | Status |
 |---|---|
 | `HBM` capacity and bandwidth (A100 40/80, H100, H200, MI300X) | **verified 2026-08-03** — quoted from per-GPU vendor spec tables |
-| `HBM` capacity (**B200**) | **measured on hardware** — 192 GB reported by the device. Vendor materials say 180 GB, most likely a usable-after-reservation figure |
+| `HBM` capacity (**B200**) | **measured on hardware** — `nvidia-smi` reports 183,359 MiB (192.3 GB, 179.06 GiB), #1204. Vendor materials say 180 GB, most likely a usable-after-reservation figure |
 | `HBM` bandwidth (**B200**) | **contested** — 7.7 TB/s (Lenovo per-GPU table) vs 8.0 TB/s (NVIDIA DGX aggregate ÷ 8). 7.7 used; see `b200.vx` |
 | `L2` capacity and bandwidth | **unverified** — transcribed from architecture whitepapers from memory |
 | `SMEM` capacity | **unverified** — per-SM/CU configurable maximum |
+| **arc-a770** capacities (`HBM`, `L2`, `SMEM`) | **measured 2026-10-04** — device-reported figures from Level Zero, OpenCL and Vulkan queries on the card (16 GiB part; 15.11 GiB reported usable, recorded in the file) |
+| **arc-a770** `HBM` bandwidth (560 GB/s) | **verified 2026-10-11** — Intel, "Introduction to the Xe-HPG Architecture" white paper (document 758302): 17.5 GT/s per pin over a maximum of 256 bits, "up to 560 GB/s of low-latency bandwidth"; the 512 GB/s some sources quote is the 8 GB card |
+| **arc-a770** transfer edges (31.5 GB/s) | **spec** — the card's PCIe 4.0 x16 capability, from the same white paper ("a maximum of 32 GB/s in each direction for a x16 PCIe 4.0 slot", 31.5 GB/s after the link's encoding); the 10.8-11.7 / 10.0-10.8 GB/s measured on this machine is its own Gen3 x16 link, not the card |
+| **arc-a770** `SMEM` and `L2` bandwidths | **absent on purpose** — not published for this part, so the on-die hops are left unpriceable rather than priced by a guess |
 | **cortex-m7** capacities (AXI SRAM, DTCM, L1 D-cache) | **verified 2026-09-17** — quoted from the ST datasheet (DS12110) |
 | **cortex-m7** bandwidths | **unverified** — derived from bus width x clock (64-bit AXI at 240 MHz; 64-bit TCM at the 480 MHz core clock), not quoted |
 | Interconnect figures in `node-8gpu.vx` | **unverified** |

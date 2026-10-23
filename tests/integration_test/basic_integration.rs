@@ -175,7 +175,7 @@ fn test_integration_arrays_and_indexing() -> Result<(), String> {
 fn a_placed_tensor_round_trips_through_the_pipeline() -> Result<(), String> {
     let input = r#"
     fn memory_test() -> Tensor<f32, [10], Memory::NPU_HBM> {
-        let mut mem = Tensor<f32, [10], Memory::NPU_HBM>::uninit();
+        let mut mem = unsafe { Tensor<f32, [10], Memory::NPU_HBM>::uninit() };
         return mem;
     }
     "#;

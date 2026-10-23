@@ -1,0 +1,83 @@
+//===- mlir_blocks_that_are_not_valid_mlir.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `mlir!` block that is not valid MLIR is an error at the block, with the message of the MLIR
+// parser. Before, the compiler crashed. `op` uses an op that does not exist, and `types` adds an
+// `i64` as an `i32`. `gpu` is an unknown op in a function that a GPU kernel calls. `input` takes
+// a tensor of 8 values as a memref of 4. `op` is also compiled with `-j`.
+//
+// REQUIRES: flat-codegen
+// RUN: split-file %s %t
+// RUN: not vxc %t/op.vx 2>&1 | FileCheck %s --check-prefix=OP --implicit-check-not='Internal Error'
+// RUN: not vxc %t/op.vx -j 2 2>&1 | FileCheck %s --check-prefix=OP --implicit-check-not='Internal Error'
+// RUN: not vxc %t/types.vx 2>&1 | FileCheck %s --check-prefix=TYPES --implicit-check-not='Internal Error'
+// RUN: not vxc %t/input.vx 2>&1 | FileCheck %s --check-prefix=INPUT --implicit-check-not='Internal Error'
+// RUN: not vxc %t/gpu.vx --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=GPU --implicit-check-not='Internal Error'
+// OP: The `mlir!` block at line 2, column 17 is not valid MLIR: custom op 'arith.no_such_op' is unknown
+// TYPES: The `mlir!` block at line 3, column 17 is not valid MLIR: use of value '%a' expects different type than prior uses: 'i32' vs 'i64'
+// INPUT: The `mlir!` block at line 2, column 17 takes its input `%t` as `memref<4xf32>`, but the value is a `memref<8xf32>`: 'memref.cast' op operand type 'memref<8xf32>' and result type 'memref<4xf32>' are cast incompatible
+// GPU: The `mlir!` block at line 2, column 17 is not valid MLIR: custom op 'nvvm.no.such.op' is unknown
+
+//--- op.vx
+fn f() -> i32 {
+  return mlir!( inputs : (), returns : i32, dialects : ["arith"]) {
+    %b = arith.constant 0 : i32
+    arith.no_such_op %b : i32
+    macro.yield %b : i32
+  };
+}
+
+fn main() -> i32 {
+  return f();
+}
+
+//--- types.vx
+fn twice(a : i64) -> i64 {
+  let b = a;
+  return mlir!( inputs : (%a = b : i64), returns : i64, dialects : ["arith"]) {
+    %r = arith.addi %a, %a : i32
+    macro.yield %r : i64
+  };
+}
+
+fn main() -> i32 {
+  return twice(1) as i32;
+}
+
+//--- input.vx
+fn first(a : &Tensor<f32, [8]>) -> f32 {
+  return mlir!( inputs : (%t = a : memref<4xf32>), returns : f32, dialects : ["memref", "arith"]) {
+    %i = arith.constant 0 : index
+    %v = memref.load %t[%i] : memref<4xf32>
+    macro.yield %v : f32
+  };
+}
+
+fn main() -> i32 {
+  let a = Tensor<f32, [8]>::new();
+  return first(&a) as i32;
+}
+
+//--- gpu.vx
+fn f() on Topology::Device -> i32 {
+  return mlir!( inputs : (), returns : i32, dialects : ["nvvm", "arith"]) {
+    %b = arith.constant 0 : i32
+    nvvm.no.such.op %b : i32
+    macro.yield %b : i32
+  };
+}
+
+pub fn run(o : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    o[0] = f();
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

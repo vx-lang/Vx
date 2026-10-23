@@ -1,0 +1,11 @@
+LISA message_passing_relaxed_flag
+(* A relaxed flag does not publish data: relaxed atomics do not synchronize (C7). A reader that
+   waits for the flag still races on the data.
+   Expect: sometimes, a data race. *)
+{ data = 0; flag = 0; }
+ P0                  | P1                   ;
+ w[plain] data 1     | r[rlx] r0 flag       ;
+ w[rlx] flag 1       | r[plain] r1 data     ;
+scopes: (system P0 P1)
+filter (1:r0 = 1)
+exists (1:r1 = 0)

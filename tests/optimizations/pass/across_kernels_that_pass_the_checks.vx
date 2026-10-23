@@ -1,0 +1,108 @@
+//===- across_kernels_that_pass_the_checks.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Kernels from the `across` design on #252 that the checker accepts with no error:
+//
+// - `rmsnorm`: each lane writes `y[row][k * 256 + t]`, which fixes `t` because `k` is below 16
+//   and `t` below 256. Lane 0 sums the partial sums and writes `part[0]`, and a later lane loop
+//   reads `part[0]` from shared memory.
+// - `warps`: a subgroup takes the row `b * 4 + w`, and `if row < rows` reads only `b`, `w` and the
+//   host's `rows`, so every lane of the subgroup takes the same branch.
+// - `tiles`: a 16x16 tile for each block, in a plain loop whose bound comes from the host.
+// - `zeroed`: lane 0 fills a tensor in shared memory with zeros, and then every lane reads it.
+//   The tensor is memory of the block, not a value that only lane 0 has.
+// - `one_lane`: `b + t` fixes `b`, because the lane loop has one pass.
+//
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --allow-empty --implicit-check-not=Error
+
+import core::num;
+
+pub fn rmsnorm(y : &mut Tensor<f32, [?, 4096], Memory::HBM>, x : &Tensor<f32, [?, 4096], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for row in 0..rows across blocks {
+      let mut part = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for t in 0..256 across lanes {
+        let mut s : f32 = 0.0;
+        for k in 0..16 {
+          let v = x[row][k * 256 + t];
+          s = s + v * v;
+        }
+        part[t] = s;
+      }
+      let mut total : f32 = 0.0;
+      for t in 0..256 {
+        total = total + part[t];
+      }
+      part[0] = total;
+      for t in 0..256 across lanes {
+        let inv = 1.0 / (part[0] / 4096.0 + 0.00001).sqrt();
+        for k in 0..16 {
+          y[row][k * 256 + t] = x[row][k * 256 + t] * inv;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn warps(y : &mut Tensor<f32, [?, ?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, rows : i32, cols : i32, scale : f32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(rows + 3) / 4 across blocks {
+      for w in 0..4 across subgroups {
+        let row = b * 4 + w;
+        if row < rows {
+          for c in 0..cols across lanes(32) {
+            y[row][c] = x[row][c] * scale;
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn tiles(y : &mut Tensor<f32, [?, ?, 256], Memory::HBM>, n : i32, steps : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for s in 0..steps {
+        for i in 0..16 across lanes {
+          for j in 0..16 across lanes {
+            y[b][s][i * 16 + j] = 1.0;
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn zeroed(y : &mut Tensor<f32, [?, 64], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut part = Tensor<f32, [64], Memory::SMEM>::fill(0.0);
+      for t in 0..64 across lanes {
+        y[b][t] = part[t];
+      }
+    }
+  }
+  return;
+}
+
+pub fn one_lane(y : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..1 across lanes {
+        y[b + t] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

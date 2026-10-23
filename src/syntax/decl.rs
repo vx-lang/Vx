@@ -93,6 +93,9 @@ pub struct Function {
     /// unsafe context. The body is not itself one (Rust 2024): an unsafe operation inside still
     /// needs its own `unsafe` block.
     pub is_unsafe: bool,
+    /// `pub fn`: the object file exports the function under its own name. Any other function
+    /// the program defines is hidden (docs/lang/abi.md, section 4).
+    pub is_pub: bool,
     pub body: Vec<Statement>,
     pub doc_comment: Option<String>,
 }
@@ -110,6 +113,7 @@ impl Function {
             ensures: self.ensures.clone(),
             where_transfers: self.where_transfers.clone(),
             is_unsafe: self.is_unsafe,
+            is_pub: self.is_pub,
             body: if preserve_body || !self.generics.is_empty() {
                 self.body.clone()
             } else {
@@ -193,6 +197,9 @@ pub struct ImplBlock {
     /// default's bounds only at the call: `Iterator::sum` needs `Sum` on the item type, and an
     /// iterator over structs must still compile when it never calls `sum`.
     pub copied_defaults: Vec<Symbol>,
+    /// `unsafe impl`: the programmer states a fact that the compiler cannot check. Only
+    /// `Send` and `Sync` take it.
+    pub is_unsafe: bool,
 }
 
 impl ImplBlock {
@@ -204,6 +211,7 @@ impl ImplBlock {
             target_type: self.target_type.clone(),
             assoc_bindings: self.assoc_bindings.clone(),
             copied_defaults: self.copied_defaults.clone(),
+            is_unsafe: self.is_unsafe,
             // Always preserve method bodies: methods only exist in impl blocks, so
             // method-call monomorphization clones the body from the type-check env
             // (env.impls). Dropping it (as the signature clone does for free
@@ -334,6 +342,9 @@ pub struct MemoryDecl {
     pub clock_hz: Option<u64>,
     pub managed: Management,
     pub granule: Option<ByteSize>,
+    /// `alignment: 128 B` -- the least alignment of a tensor in this space. A tensor can ask
+    /// for more with `.aligned(N)`.
+    pub alignment: Option<ByteSize>,
     /// The execution level this space is private to (`scope: sm` etc.); `None` = unscoped.
     pub scope: Option<Scope>,
     /// `replicas: 132` — how many instances of this space the device contains.

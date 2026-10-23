@@ -1,0 +1,40 @@
+//===- comptime_called_function_overflows_its_type.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// The `i32` arithmetic below overflows, in a function that a `comptime` block calls or in a
+// unary minus. At run time the program wraps the result, and `neg_div` stops the program with
+// "attempt to divide with overflow". So no block has a value (E3033). The compiler used to
+// compute the arithmetic in 64 bits: two blocks folded to 1073741824 where the program computes
+// -1073741824, and the third to -2147483648.
+
+fn half_of_next(a : i32) -> i32 {
+  return (a + 1i32) / 2i32;
+}
+
+fn neg_div(a : i32, b : i32) -> i32 {
+  // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: this division stops the program: it divides by zero, or it divides the minimum value by -1
+  return a / b;
+}
+
+fn main() -> i32 {
+  let x = comptime {
+    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
+    half_of_next(2147483647i32)
+  };
+  let y = comptime {
+    let m : i32 = -2147483647i32 - 1i32;
+    // CHECK-DAG: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: its value cannot be worked out
+    (-m) / 2i32
+  };
+  let z = comptime {
+    neg_div(-2147483647i32 - 1i32, -1i32)
+  };
+  print(x + y + z);
+  return 0;
+}

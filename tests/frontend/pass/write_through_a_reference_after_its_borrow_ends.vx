@@ -1,0 +1,18 @@
+//===- write_through_a_reference_after_its_borrow_ends.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `x` borrows what `m` points at, but `*m = 1` comes after the last use of `x`.
+
+fn main() -> i32 {
+  let mut v = 0;
+  let m = &mut v;
+  let x = &*m;
+  print(*x);
+  *m = 1;
+  print(*m);
+  return 0;
+}

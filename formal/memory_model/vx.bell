@@ -1,0 +1,31 @@
+"Vx memory model: the tags that a litmus test can put on an event"
+
+(* The memory order of an access or a fence. A plain access is not atomic. *)
+enum orders = 'plain || 'rlx || 'acq || 'rel || 'acq_rel || 'sc
+
+(* The scopes of a scope tree, narrowest first. An atomic without a scope tag has
+   system scope. 'barrier marks a fence that is a barrier of the scope it names. *)
+enum scopes = 'subgroup || 'block || 'device || 'system
+let narrower(t) = match t with
+  || 'system -> 'device
+  || 'device -> 'block
+  || 'block -> 'subgroup
+  end
+let wider(t) = match t with
+  || 'subgroup -> 'block
+  || 'block -> 'device
+  || 'device -> 'system
+  end
+
+enum kinds = 'barrier
+
+(* An access has an order, and an atomic may also have a scope: r[acq,block]. A fence has an
+   order, or it is a barrier of a scope: f[barrier,block]. *)
+instructions R[orders]
+instructions R[orders,scopes]
+instructions W[orders]
+instructions W[orders,scopes]
+instructions RMW[orders]
+instructions RMW[orders,scopes]
+instructions F[orders]
+instructions F[kinds,scopes]

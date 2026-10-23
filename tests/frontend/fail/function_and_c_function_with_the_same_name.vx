@@ -1,0 +1,28 @@
+//===- function_and_c_function_with_the_same_name.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// One file cannot have a function and a C function in an `extern` block with the same name, in
+// either order. A C function keeps its name, so the two would be one symbol.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --check-prefix=EXTERN-FIRST
+// RUN: mkdir -p %t.d
+// RUN: printf 'fn abs(x : i32) -> i32 {\n  return x;\n}\nextern "C" {\n  fn abs(x : i32) -> i32;\n}\nfn main() -> i32 {\n  return abs(1);\n}\n' > %t.d/fn_first.vx
+// RUN: not vxc %t.d/fn_first.vx 2>&1 | FileCheck %s --check-prefix=FN-FIRST
+// FN-FIRST: Error at 5:3: `abs` is already defined at 1:1
+
+extern "C" {
+  fn abs(x : i32) -> i32;
+}
+
+// EXTERN-FIRST: Error at [[@LINE+1]]:1: `abs` is already defined at [[#@LINE-3]]:3
+fn abs(x : i32) -> i32 {
+  return x + 100;
+}
+
+fn main() -> i32 {
+  return abs(-3);
+}

@@ -119,6 +119,15 @@ fn host_target_triple() -> Result<String, String> {
     Ok(triple)
 }
 
+/// The `-mattr` that leaves off the x86 features with which LLVM converts to bf16 through
+/// `vcvtneps2bf16`. That instruction reads a subnormal input as zero and flushes a subnormal
+/// result to zero, and LLVM uses it even where a bf16 is only passed to a function. Without
+/// them it rounds exactly, with integer operations. Nothing for another target.
+pub(crate) fn no_bf16_convert(triple: &str) -> Option<String> {
+    (triple.starts_with("x86_64") || triple.starts_with("i686"))
+        .then(|| "-mattr=-avx512bf16,-avxneconvert".to_string())
+}
+
 /// The Enzyme plugin `opt` should load for this LLVM IR, given `ENZYME_LIB`. Only a program that
 /// uses `grad`, `vjp` or `jvp` calls an `__enzyme_` function, so no other program loads the plugin.
 fn enzyme_plugin_for(llvm_ir: &[u8], enzyme_lib: Option<String>) -> Result<Option<String>, String> {
@@ -347,24 +356,17 @@ pub fn execute_mlir(
     Ok(format!("{}{}", out.stdout, out.stderr))
 }
 
-pub fn execute_mlir_streams(
+/// Compile MLIR text to a native object file in `temp_dir`, the way `run-jit` builds a program:
+/// `mlir-translate`, then `opt` (with the Enzyme plugin when the program calls `grad`, `vjp`
+/// or `jvp`), then `llc`. Answers the object's path.
+pub fn compile_mlir_to_object(
     mlir_src: &str,
-    program_args: Vec<String>,
+    temp_dir: &std::path::Path,
     opt_level: u8,
     disable_llvm_optimizations: bool,
-) -> Result<ProgramOutput, String> {
-    let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
-
-    let temp_mlir = temp_dir
-        .path()
-        .join("input.mlir")
-        .to_string_lossy()
-        .into_owned();
-    let temp_ll = temp_dir
-        .path()
-        .join("input.ll")
-        .to_string_lossy()
-        .into_owned();
+) -> Result<String, String> {
+    let temp_mlir = temp_dir.join("input.mlir").to_string_lossy().into_owned();
+    let temp_ll = temp_dir.join("input.ll").to_string_lossy().into_owned();
 
     // 1. Write MLIR to temp file
     let mut mlir_file = File::create(&temp_mlir).map_err(|e| e.to_string())?;
@@ -373,14 +375,6 @@ pub fn execute_mlir_streams(
         .map_err(|e| e.to_string())?;
 
     // Runtime functions are now loaded via libvx_std_core.dylib
-
-    // The dispatch backend built alongside this compiler, overridable at run
-    // time. The compile-time path names a file in the build machine's OUT_DIR,
-    // which is the right answer when the compiler runs where it was built and
-    // no answer at all when it does not: a vxc copied onto a rented GPU box has
-    // to be pointed at a backend built there, against that box's CUDA.
-    let lib_npu = std::env::var("VX_DISPATCH_LIB")
-        .unwrap_or_else(|_| std::env!("NPU_SHARED_LIB_PATH").to_string());
 
     let mlir_translate_path =
         std::env::var("MLIR_TRANSLATE_PATH").unwrap_or_else(|_| "mlir-translate".to_string());
@@ -394,11 +388,7 @@ pub fn execute_mlir_streams(
         .write_all(&mlir_translate_out.stdout)
         .map_err(|e| e.to_string())?;
 
-    let temp_opt_ll = temp_dir
-        .path()
-        .join("opt.ll")
-        .to_string_lossy()
-        .into_owned();
+    let temp_opt_ll = temp_dir.join("opt.ll").to_string_lossy().into_owned();
     let mut opt_args = vec![];
     let actual_opt_level = if disable_llvm_optimizations {
         0
@@ -411,6 +401,8 @@ pub fn execute_mlir_streams(
     let triple = host_target_triple()?;
     opt_args.push(format!("-mtriple={triple}"));
     opt_args.push("-mcpu=native".to_string());
+    let mattr = no_bf16_convert(&triple);
+    opt_args.extend(mattr.clone());
 
     let mut passes = format!("default<O{}>", actual_opt_level);
 
@@ -438,7 +430,7 @@ pub fn execute_mlir_streams(
         "[JIT] Compiling to native object (-O{})...",
         actual_opt_level
     );
-    let temp_obj = temp_dir.path().join("opt.o").to_string_lossy().into_owned();
+    let temp_obj = temp_dir.join("opt.o").to_string_lossy().into_owned();
     let mut llc_cmd = Command::new(&llc_path);
     llc_cmd.args([
         &format!("-O={}", actual_opt_level),
@@ -450,7 +442,33 @@ pub fn execute_mlir_streams(
         "-o",
         &temp_obj,
     ]);
+    llc_cmd.args(&mattr);
     run_cmd(llc_cmd, "llc")?;
+    Ok(temp_obj)
+}
+
+pub fn execute_mlir_streams(
+    mlir_src: &str,
+    program_args: Vec<String>,
+    opt_level: u8,
+    disable_llvm_optimizations: bool,
+) -> Result<ProgramOutput, String> {
+    let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+
+    let temp_obj = compile_mlir_to_object(
+        mlir_src,
+        temp_dir.path(),
+        opt_level,
+        disable_llvm_optimizations,
+    )?;
+
+    // The dispatch backend built alongside this compiler, overridable at run
+    // time. The compile-time path names a file in the build machine's OUT_DIR,
+    // which is the right answer when the compiler runs where it was built and
+    // no answer at all when it does not: a vxc copied onto a rented GPU box has
+    // to be pointed at a backend built there, against that box's CUDA.
+    let lib_npu = std::env::var("VX_DISPATCH_LIB")
+        .unwrap_or_else(|_| std::env!("NPU_SHARED_LIB_PATH").to_string());
 
     println!("[JIT] Linking native executable...");
     let temp_exe = temp_dir
@@ -559,7 +577,7 @@ pub fn execute_mlir_streams(
         clang_cmd.arg("-lffi");
 
         // The dispatcher resolves the outlined kernel with
-        // dlsym(RTLD_DEFAULT, "_mlir_ciface_..."), which searches the running
+        // dlsym(RTLD_DEFAULT, "_vx_ciface_..."), which searches the running
         // executable's dynamic symbol table. Mach-O exports those symbols
         // anyway; ELF does not unless asked, so without this the lookup fails
         // at run time on Linux.

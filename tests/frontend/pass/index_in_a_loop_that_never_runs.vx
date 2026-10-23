@@ -1,0 +1,23 @@
+//===- index_in_a_loop_that_never_runs.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `for i in 0..0` never runs its body, so `t[i]` in it is not an index out of range, even
+// though `i < 0` would make its largest value -1. The same holds for `9..5`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s
+// CHECK-NOT: E8003
+
+fn main() -> i32 {
+  let mut t = Tensor<i32, [3, 4]>::new();
+  for i in 0..0 {
+    t[i][0] = 1;
+  }
+  for j in 9..5 {
+    t[0][j] = 1;
+  }
+  return t[0][0];
+}

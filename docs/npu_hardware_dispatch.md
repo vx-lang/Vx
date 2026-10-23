@@ -82,7 +82,7 @@ Consider this snippet from `tests/backend/pass/ane_matmul.vx`:
 
 ```rust
 // 1. Allocated in standard RAM, then given a home in NPU_HBM
-let mut result_host = Tensor<f32, [4, 4]>::uninit();
+let mut result_host = unsafe { Tensor<f32, [4, 4]>::uninit() };
 let mut result = transfer(result_host, Memory::NPU_HBM);
 
 // 2. Execution dynamically offloaded to AMX
@@ -100,7 +100,7 @@ spawn on(Topology::NPU[0]) {
 print(result);
 ```
 
-A tensor can also be born in a space, written `Tensor<f32, [4, 4], Memory::NPU_HBM>::uninit()`. The
+A tensor can also be born in a space, written `Tensor<f32, [4, 4], Memory::NPU_HBM>::new()`. The
 file uses `transfer` because it fills the buffer on the host first, and a transfer is what carries
 an existing value across.
 

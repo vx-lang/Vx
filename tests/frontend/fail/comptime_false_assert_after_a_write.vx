@@ -1,0 +1,86 @@
+//===- comptime_false_assert_after_a_write.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A false assert in a `comptime` block stops the build (E8002). Each assert below is false.
+// The compiler used to skip them and then remove the block, so the program compiled.
+
+struct P {
+  x : i64,
+}
+
+fn bump(x : &mut i64) -> void {
+  *x = *x + 1i64;
+}
+
+fn first(a : &Tensor<i64, [2]>) -> i64 {
+  return a[0];
+}
+
+fn positive(v : i64) -> i64 {
+  // CHECK-DAG: Error[E8002] at [[@LINE+1]]:3: Comptime assert failed: v must be positive
+  assert(v > 0i64, "v must be positive");
+  return v;
+}
+
+// A call changes `v` through a mutable reference.
+fn after_a_call_through_mut() -> void {
+  comptime {
+    let mut v : i64 = 1i64;
+    bump(&mut v);
+    // CHECK-DAG: Error[E8002] at [[@LINE+1]]:5: Comptime assert failed: v is 2
+    assert(v == 1i64, "v is 2");
+  }
+}
+
+// The block writes to a field of a struct.
+fn after_a_field_write() -> void {
+  comptime {
+    let mut p = P {
+      x : 1i64
+    };
+    p.x = 5i64;
+    // CHECK-DAG: Error[E8002] at [[@LINE+1]]:5: Comptime assert failed: p.x is 5
+    assert(p.x == 1i64, "p.x is 5");
+  }
+}
+
+// A call reads a borrowed tensor.
+fn after_a_call_with_a_borrowed_tensor() -> void {
+  comptime {
+    let input : Tensor<i64, [2]> = [ 5i64, 6i64 ];
+    let c : i64 = first(&input);
+    // CHECK-DAG: Error[E8002] at [[@LINE+1]]:5: Comptime assert failed: c is 5
+    assert(c == 999i64, "c is 5");
+  }
+}
+
+// A `comptime` function with a parameter runs at each call, here with -2.
+fn checked(v : i64) -> i64 {
+  return comptime {
+    // CHECK-DAG: Error[E8002] at [[@LINE+1]]:5: Comptime assert failed: v must be above zero
+    assert(v > 0i64, "v must be above zero");
+    v
+  };
+}
+
+// The false assert is in a function that the block calls, at the top of this file.
+fn in_a_called_function() -> i64 {
+  return comptime {
+    positive(0i64 - 4i64)
+  };
+}
+
+fn main() -> i32 {
+  after_a_call_through_mut();
+  after_a_field_write();
+  after_a_call_with_a_borrowed_tensor();
+  print(in_a_called_function());
+  print(checked(0i64 - 2i64));
+  return 0;
+}

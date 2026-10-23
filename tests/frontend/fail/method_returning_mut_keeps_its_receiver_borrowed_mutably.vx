@@ -1,0 +1,32 @@
+//===- method_returning_mut_keeps_its_receiver_borrowed_mutably.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `c.get_mut()` returns a `&mut` into `c`, so `c` stays mutably borrowed while `r` is used, and
+// no other borrow of `c` is allowed then.
+
+struct C {
+  v : i32,
+}
+
+impl C {
+  fn get_mut(self : &mut C) -> &mut i32 {
+    return &mut self.v;
+  }
+}
+
+fn main() -> i32 {
+  let mut c = C {
+    v : 1
+  };
+  let r = c.get_mut();
+  // CHECK: Error[E4004] at [[@LINE+1]]:11: Cannot borrow 'c' because it is already borrowed as mutable.
+  let s = &c;
+  *r = 5;
+  return s.v;
+}

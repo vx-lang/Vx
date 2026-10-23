@@ -19,9 +19,12 @@ runs:
         fail-on-cache-miss: true
 
     # z3 is the prover's solver, and lld links the compiler (see RUSTFLAGS). Neither comes from LLVM.
+    # Print the version: a solver change surfaces as a missing warning, not as "z3 disagreed".
     - name: Install z3 and lld
       shell: bash
-      run: sudo apt-get install -y z3 lld
+      run: |
+        sudo apt-get install -y z3 lld
+        z3 --version
 
     # The same settings setup.sh writes into config.local for this LLVM. The tools are found on
     # PATH by their plain names (llvm-config, opt, clang, FileCheck, ...).

@@ -42,6 +42,10 @@ struct TcpStream {
   ptr : *mut i8,
 }
 
+// The handle may move to another task. It is not `Sync`, because each method takes
+// `*mut TcpStream`, so a shared `&TcpStream` has no use yet.
+unsafe impl Send for TcpStream {}
+
 impl TcpStream {
   /// Connect to `addr`, written as `host:port`.  ///
   /// **A failure cannot be detected.** The value handed back holds a null pointer, and Vx
@@ -89,6 +93,10 @@ struct UdpSocket {
   ptr : *mut i8,
 }
 
+// The handle may move to another task. It is not `Sync`, because each method takes
+// `*mut UdpSocket`, so a shared `&UdpSocket` has no use yet.
+unsafe impl Send for UdpSocket {}
+
 impl UdpSocket {
   /// Bind to `addr`, written as `host:port`.  ///
   /// **A failure cannot be detected.** The value handed back holds a null pointer, and Vx
@@ -132,6 +140,10 @@ impl Drop for UdpSocket {
 struct TcpListener {
   ptr : *mut i8,
 }
+
+// The handle may move to another task. It is not `Sync`, because each method takes
+// `*mut TcpListener`, so a shared `&TcpListener` has no use yet.
+unsafe impl Send for TcpListener {}
 
 impl TcpListener {
   /// Listen on `addr`, written as `host:port`.

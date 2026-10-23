@@ -1,0 +1,25 @@
+//===- comptime_return_in_a_block_inside_a_function.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A `return` in this `comptime` block would leave `f`, which a block that runs while compiling
+// cannot do (E3033). The compiler used to take the `return` as the block's value, so `f` went
+// on and returned 9, where the program returns 5.
+
+fn f() -> i64 {
+  // CHECK: Error[E3033] at [[@LINE+1]]:{{[0-9]+}}: this `comptime` block cannot be evaluated: a `return` in it leaves the function, which a block that runs while compiling cannot do
+  let _x = comptime {
+    return 5i64;
+  };
+  return 9i64;
+}
+
+fn main() -> i32 {
+  print(f());
+  return 0;
+}

@@ -194,6 +194,12 @@ impl<'a> TypeChecker<'a> {
                     Self::scan_expr_for_asserts(r, out);
                 }
             }
+            Expr::TaskBlock(b) => {
+                Self::collect_assert_contracts(&b.stmts, out);
+                if let Some(r) = &b.ret {
+                    Self::scan_expr_for_asserts(r, out);
+                }
+            }
             Expr::ComptimeBlock(b) => {
                 Self::collect_assert_contracts(&b.stmts, out);
                 if let Some(r) = &b.ret {
@@ -441,6 +447,47 @@ impl<'a> TypeChecker<'a> {
         self.check_capacity_of(elem, dims, space, context, span, true)
     }
 
+    /// E6031: a static shape that folds to a negative extent, or to more bytes than 64 bits hold.
+    /// The size is known and wrong, so it is an error rather than an unverified size (W1029).
+    /// Returns whether the shape was refused.
+    pub(crate) fn refuse_unrepresentable_shape(
+        &mut self,
+        elem: &ElementType,
+        dims: &[Dim],
+        span: &Span,
+    ) -> bool {
+        use crate::hir::memory::StaticSize;
+        let why = match crate::hir::memory::static_tensor_size(elem, dims) {
+            StaticSize::NegativeExtent => "one of its extents is negative",
+            StaticSize::Overflows => {
+                "its size is more than 2^63 - 1 bytes, the most an allocation can ask for"
+            }
+            StaticSize::Bytes(_) | StaticSize::NotConstant => return false,
+        };
+        // The extents as they fold, so `[N - 2 * N]` shows the number it comes to.
+        let extents = dims
+            .iter()
+            .map(|d| match crate::hir::memory::static_extent(d) {
+                Some(v) => v.to_string(),
+                None => "?".to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let message = format!("`Tensor<{elem}, [{extents}]>` cannot be allocated: {why}");
+        // One tensor is checked where it is made and again at each transfer; say it once.
+        let said = self.errors.inner.iter().any(|d| {
+            d.code == Some(crate::diagnostic::DiagnosticCode::E6031) && d.message == message
+        });
+        if !self.speculating && !said {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E6031,
+                message,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        }
+        true
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn check_capacity_of(
         &mut self,
@@ -451,6 +498,9 @@ impl<'a> TypeChecker<'a> {
         span: &Span,
         record: bool,
     ) {
+        if self.refuse_unrepresentable_shape(elem, dims, span) {
+            return;
+        }
         let sized = {
             let h = crate::hir::memory::MemoryHierarchy::build(self.env.memories.values().copied());
             let Some(decl) = h.descriptor(space) else {
@@ -539,7 +589,10 @@ impl<'a> TypeChecker<'a> {
         // `check_capacity` has no guard against that, unlike `record_staging_route` beside it. A
         // counter mints a fresh key per visit and turns one 3 MiB tile into two.
         let key = if span.line != 0 || span.column != 0 {
-            format!("@{}:{}:{}", span.line, span.column, span.length)
+            format!(
+                "@{}:{}:{}:{}",
+                span.line, span.column, span.length, span.expansion
+            )
         } else if let Some(name) = &self.current_assignment_target {
             // A synthesized placement carrying no position: fall back to the binding, which is
             // what this keyed on before and is stable across the second visit. Two shadowed
@@ -592,7 +645,10 @@ impl<'a> TypeChecker<'a> {
     /// exactly -- no `speculating` guard, span-keyed so a node checked twice lands on the same
     /// record, first visit's program order kept.
     pub(crate) fn record_call_edge(&mut self, callee: &str, span: &crate::syntax::Span) {
-        let key = format!("@{}:{}:{}:{}", span.line, span.column, span.length, callee);
+        let key = format!(
+            "@{}:{}:{}:{}:{}",
+            span.line, span.column, span.length, span.expansion, callee
+        );
         if self.traffic.call_sites.contains_key(&key) {
             return;
         }
@@ -604,6 +660,7 @@ impl<'a> TypeChecker<'a> {
                 scope: self.traffic.scope_chain.clone(),
                 order: self.traffic.placement_order,
                 span: *span,
+                in_closure: self.traffic.closure_depth > 0,
             },
         );
     }
@@ -704,6 +761,14 @@ impl<'a> TypeChecker<'a> {
             // earlier in program order whose block is still open -- the same prefix test the
             // peak walk uses, evaluated at the call instead of at a placement.
             for (k, c) in calls.iter().enumerate() {
+                // A call from a closure body happens wherever the closure is called. What is
+                // resident at any point is at most the function's peak.
+                if c.in_closure {
+                    if total > 0 {
+                        summary.calls[k].live.insert(space.name(), total);
+                    }
+                    continue;
+                }
                 let held: u64 = placed
                     .iter()
                     .filter(|(_, sc, ord)| {
@@ -890,6 +955,82 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The declaration of the memory space that `p` places a tensor in, if the program has one.
+    fn space_decl(&self, p: &crate::syntax::Placement) -> Option<&crate::syntax::MemoryDecl> {
+        let space = self.placement_space(p);
+        self.env
+            .memories
+            .values()
+            .find(|m| m.name.as_ref() == space.name())
+            .copied()
+    }
+
+    /// The alignment that a tensor placed by `p` has: its `aligned(N)`, or the `alignment:` of its
+    /// space, whichever is larger. 0 when neither says.
+    pub(crate) fn alignment_of(&self, p: &crate::syntax::Placement) -> u64 {
+        let least = self
+            .space_decl(p)
+            .and_then(|m| m.alignment.as_ref())
+            .map_or(0, |a| a.0);
+        p.alignment.unwrap_or(0).max(least)
+    }
+
+    /// Each `aligned(N)` in `ty` is in a space whose storage the compiler lays out, and is at
+    /// least the `alignment:` of that space (E6034).
+    fn check_alignments_in(&mut self, ty: &Type, context: &str, span: &Span) {
+        match ty {
+            Type::Borrow { inner, .. }
+            | Type::Pointer(inner, ..)
+            | Type::Ref(inner, _)
+            | Type::Pinned(inner, _) => self.check_alignments_in(inner, context, span),
+            Type::GenericInstance(base, args) => {
+                self.check_alignments_in(base, context, span);
+                for a in args {
+                    self.check_alignments_in(a, context, span);
+                }
+            }
+            Type::Tensor(_, _, Some(p)) => {
+                let Some(n) = p.alignment else {
+                    return;
+                };
+                let space = self.placement_space(p).name();
+                let decl = self.space_decl(p);
+                let laid_out = decl.is_some_and(|m| {
+                    matches!(
+                        m.scope,
+                        Some(
+                            crate::syntax::Scope::Sm
+                                | crate::syntax::Scope::Cta
+                                | crate::syntax::Scope::Thread
+                        )
+                    )
+                });
+                let least = decl.and_then(|m| m.alignment.as_ref()).map_or(0, |a| a.0);
+                let message = if !laid_out {
+                    Some(format!(
+                        "{context}: `aligned({n})` needs a space whose storage the compiler lays \
+                         out, one declared with `scope: sm`, `cta` or `thread`, and '{space}' is not"
+                    ))
+                } else if n < least {
+                    Some(format!(
+                        "{context}: `aligned({n})` is less than the `alignment: {least} B` of \
+                         '{space}', which every tensor there has"
+                    ))
+                } else {
+                    None
+                };
+                if let Some(message) = message {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6034,
+                        message,
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn check_type_placement(&mut self, ty: &Type, context: &str, span: &Span) {
         self.check_placement_of_type(ty, context, span, true)
     }
@@ -905,6 +1046,7 @@ impl<'a> TypeChecker<'a> {
 
     fn check_placement_of_type(&mut self, ty: &Type, context: &str, span: &Span, record: bool) {
         self.report_unheld_placements(ty, context);
+        self.check_alignments_in(ty, context, span);
         for (e, d, space) in self.placed_tensors(ty) {
             self.check_capacity_of(&e, &d, &space, context, span, record);
             self.check_element_type(&e, &space, context);
@@ -1950,12 +2092,14 @@ impl<'a> TypeChecker<'a> {
         let Statement::LetDecl(made) = &spawn.stmts[at] else {
             return None;
         };
-        let is_constructor = matches!(&made.expr, Expr::FunctionCall(c)
+        // `unsafe { Tensor<..>::uninit() }` is the same allocation; the `unsafe` stays on it.
+        let init = crate::syntax::bare_unsafe_value(&made.expr);
+        let is_constructor = matches!(init, Expr::FunctionCall(c)
             if c.name.as_ref() == "Tensor" || c.name.as_ref().starts_with("Tensor::"));
         // The size must not use anything the region computes before it.
         let uses_region_value = spawn.stmts[..at].iter().any(|s| {
             matches!(s, Statement::LetDecl(d)
-                if crate::hir::check::raw::expr_mentions(&made.expr, d.name.as_ref()))
+                if crate::hir::check::raw::expr_mentions(init, d.name.as_ref()))
         });
         if !is_constructor || made.ty_ann.is_some() || uses_region_value {
             return None;
@@ -2147,7 +2291,7 @@ impl<'a> TypeChecker<'a> {
                         "this `spawn` region makes a tensor on the device and hands it out, but \
                          the compiler cannot make it before the region; hand out a variable, \
                          create it with \
-                         `Tensor<..>(..)`, `::new()` or `::uninit()`, without a type \
+                         `Tensor<..>(..)`, `::new()` or `unsafe { ..::uninit() }`, without a type \
                          annotation, with a size known before the region and a name not already \
                          in use, or make it before the region yourself"
                             .to_string(),

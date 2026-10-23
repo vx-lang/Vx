@@ -95,7 +95,7 @@ impl<'a> VxMetadata<'a> {
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v15";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v16";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -455,6 +455,7 @@ fn write_opt_placement(w: &mut Writer, o: &Option<Placement>) -> Result<(), Stri
             w.u8(1);
             write_topology(w, &p.topology)?;
             write_memory_space(w, &p.space);
+            w.u64(p.alignment.unwrap_or(0));
         }
     }
     Ok(())
@@ -468,7 +469,9 @@ fn read_opt_placement(r: &mut Reader) -> Result<Option<Placement>, String> {
             // round trip rather than being re-derived from the device.
             let topology = read_topology(r)?;
             let space = read_memory_space(r)?;
-            Some(Placement::in_space(space, topology))
+            let mut p = Placement::in_space(space, topology);
+            p.alignment = Some(r.u64()?).filter(|n| *n != 0);
+            Some(p)
         }
         t => return Err(format!("vxlib: bad Option<Placement> tag {t}")),
     })

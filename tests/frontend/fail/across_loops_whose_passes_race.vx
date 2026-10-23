@@ -1,0 +1,175 @@
+//===- across_loops_whose_passes_race.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The passes of an `across` loop run at the same time, so no pass may touch a place that another
+// pass writes (#252, L4). In each function below, two passes may touch one place, or the
+// checker cannot see what a pass writes, so the loop gets E6032.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
+// CHECK: Error[E6032] at 29:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at 39:{{.*}}a pass of this lane loop may read an element of `a` that another pass writes
+// CHECK: Error[E6032] at 51:{{.*}}each pass writes `total`, which is declared outside the loop
+// CHECK: Error[E6032] at 65:{{.*}}two passes of this lane loop may write the same element of `y`: an index of the write must fix `l`
+// CHECK: Error[E6032] at 78:{{.*}}two passes of this lane loop may write the same element of `o`: the writes must use the same index
+// CHECK: Error[E6032] at 94:{{.*}}the call to `scale` may write through an argument
+// CHECK: Error[E6032] at 104:{{.*}}printing in an `across` loop
+// CHECK: Error[E6032] at 116:{{.*}}a `&mut` borrow in an `across` loop may write any element
+// CHECK: Error[E6032] at 128:{{.*}}a pass uses all of `o`, which the passes of this {{block|lane}} loop write
+// CHECK: Error[E6032] at 140:{{.*}}`barrier()` may not be in an `across` loop
+// CHECK: Error[E6032] at 151:{{.*}}an `mlir!` block in an `across` loop may write memory that the checker cannot see
+// CHECK: Error[E6032] at 166:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+
+pub fn every_block_adds_to_one_element(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      out[0] = out[0] + 1.0;
+    }
+  }
+  return;
+}
+
+pub fn reads_the_next_element(a : &mut Tensor<f32, [?, 64], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for i in 0..32 across lanes {
+        a[b][i] = a[b][i + 1];
+      }
+    }
+  }
+  return;
+}
+
+pub fn every_lane_adds_to_one_value(y : &mut Tensor<f32, [?, 1], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut total : f32 = 0.0;
+      for t in 0..64 across lanes {
+        total = total + 1.0;
+      }
+      y[b][0] = total;
+    }
+  }
+  return;
+}
+
+// `k * 32 + l` gives two lanes one element when there are 64 lanes.
+pub fn columns_overlap(y : &mut Tensor<f32, [?, 1024], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..64 across lanes {
+        for k in 0..16 {
+          y[b][k * 32 + l] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn two_indices(o : &mut Tensor<f32, [?, 64], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        o[b][t] = 1.0;
+        o[b][t + 1] = 2.0;
+      }
+    }
+  }
+  return;
+}
+
+fn scale(o : &mut Tensor<f32, [?, 32], Memory::HBM>, b : i32, t : i32) on Topology::Device -> void {
+  o[b][t] = o[b][t] * 2.0;
+  return;
+}
+
+pub fn calls_a_helper(o : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        scale(o, b, t);
+      }
+    }
+  }
+  return;
+}
+
+pub fn prints(o : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        println!("{}", t);
+      }
+    }
+  }
+  return;
+}
+
+pub fn borrows(o : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        let r = &mut o[b];
+      }
+    }
+  }
+  return;
+}
+
+pub fn uses_all_of_it(o : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        o[b][t] = 1.0;
+        let r = &o;
+      }
+    }
+  }
+  return;
+}
+
+pub fn has_a_barrier(o : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        o[b][t] = 1.0;
+        barrier();
+      }
+    }
+  }
+  return;
+}
+
+pub fn has_mlir(o : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..32 across lanes {
+        let v = mlir!( inputs : (), returns : i32, dialects : ["arith"]) {
+          %v = arith.constant 1 : i32
+          macro.yield %v : i32
+        };
+      }
+    }
+  }
+  return;
+}
+
+// `b + t` gives blocks 0 and 1 one element when there are 2 lanes.
+pub fn blocks_overlap_by_one(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..2 across lanes {
+        out[b + t] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

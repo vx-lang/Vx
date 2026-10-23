@@ -1,0 +1,319 @@
+//===- across.rs - Vx Compiler --------------------------------------*- Rust -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// The lowering of `across` loops. A loop of blocks starts at the index of its block and
+// steps over the blocks of the grid. A lane loop or a subgroup loop starts at the pass of its
+// lane and steps over the lanes of its loop. So every launch shape covers each pass once, and the
+// CPU copy of the kernel, with one block of one lane, runs the loops in order.
+//
+// The end of a lane loop is a barrier. Code between lane loops that writes memory runs on lane 0
+// alone, and a barrier follows it (L5).
+//
+//===----------------------------------------------------------------------===//
+
+use super::*;
+use crate::arch::LevelKind;
+use crate::bytecode::{ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP};
+use crate::hir::check::across_lanes;
+
+/// The code of a blocks body or a subgroups body outside its lane loops.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum AcrossLevel {
+    Block,
+    Subgroup,
+}
+
+#[derive(Default)]
+pub(super) struct AcrossState {
+    /// The lanes of a block of the region being lowered, or 0 outside a region with `across`.
+    pub lanes: u64,
+    /// The level whose code is being lowered, outside its lane loops. `None` in a lane loop.
+    pub level: Option<AcrossLevel>,
+    /// The names that only lane 0 has, as the checker found them.
+    pub lane0: HashSet<String>,
+    /// In code that lane 0 alone runs.
+    pub on_lane0: bool,
+    /// The loops of blocks around the code.
+    pub blocks: u64,
+    /// The start and the step of the next loop, for `lower_for_loop`.
+    pub next_loop: Option<(Val, Val)>,
+    /// The lane loop that is the whole body of the lane loop being lowered.
+    pub inner: Option<usize>,
+    /// The lanes of a subgroup of the region's topology.
+    pub subgroup: Option<u64>,
+}
+
+/// The lanes of a block of a region with `across` loops: the most that a lane loop or a subgroup
+/// loop asks for, and 1 with none. `None` for a region with no loop of blocks.
+pub(super) fn across_block_lanes(stmts: &[Statement]) -> Option<u64> {
+    blocks_loop(stmts)?;
+    let mut lanes = 1;
+    across_lanes::visit_stmts(stmts, &mut |s| {
+        if let Statement::ForLoop(f) = s {
+            let width = across_width(f).unwrap_or(1);
+            match f.across.as_ref().and_then(|a| a.kind) {
+                Some(LevelKind::Lanes) => lanes = lanes.max(width * inner_lanes(f)),
+                Some(LevelKind::Subgroups) => {
+                    let sub = f.across.as_ref().and_then(|a| a.subgroup_lanes);
+                    lanes = lanes.max(width * sub.unwrap_or(1));
+                }
+                _ => {}
+            }
+        }
+    });
+    Some(lanes)
+}
+
+/// The loop of blocks in `stmts`, when the checker found one that the GPU launches. A loop that
+/// `-fauto-schedule-levels` made a plain loop is not one.
+pub(super) fn blocks_loop(stmts: &[Statement]) -> Option<&crate::syntax::ForLoopStmt> {
+    stmts.iter().find_map(|s| match s {
+        Statement::ForLoop(f)
+            if f.across
+                .as_ref()
+                .is_some_and(|a| a.kind == Some(LevelKind::Blocks) && !a.auto_schedule) =>
+        {
+            Some(f)
+        }
+        _ => None,
+    })
+}
+
+/// The lanes that a lane loop or a subgroup loop shares its passes among: `n` of
+/// `across lanes(n)`, or else its trip. The checker made sure that it is a number.
+fn across_width(f: &crate::syntax::ForLoopStmt) -> Option<u64> {
+    let number = |e: &Expr| match e {
+        Expr::Number(n) => n.value.parse::<u64>().ok(),
+        _ => None,
+    };
+    if let Some(n) = f.across.as_ref()?.share.as_deref() {
+        return number(n);
+    }
+    let Expr::Range(r) = &*f.iterable else {
+        return None;
+    };
+    number(&r.end)?.checked_sub(number(&r.start)?)
+}
+
+/// The lane loop that is the whole body of the lane loop `f`, if there is one.
+fn inner_lane_loop(f: &crate::syntax::ForLoopStmt) -> Option<&crate::syntax::ForLoopStmt> {
+    let mut body = f.body.iter().filter(|s| !matches!(s, Statement::Drop(_)));
+    match (body.next(), body.next()) {
+        (Some(Statement::ForLoop(g)), None)
+            if g.across.as_ref().and_then(|a| a.kind) == Some(LevelKind::Lanes) =>
+        {
+            Some(g)
+        }
+        _ => None,
+    }
+}
+
+/// The lanes of the lane loops inside the lane loop `f`, each the whole body of the one around it.
+fn inner_lanes(f: &crate::syntax::ForLoopStmt) -> u64 {
+    match inner_lane_loop(f) {
+        Some(g) => across_width(g).unwrap_or(1) * inner_lanes(g),
+        None => 1,
+    }
+}
+
+impl Lowerer<'_> {
+    fn across_id(&mut self, kind: u64, arg: u64) -> Val {
+        self.emit_value(
+            Opcode::AcrossId,
+            Register(0),
+            Register(0),
+            ElementType::I32,
+            kind | (arg << 2),
+        )
+    }
+
+    fn const_i32(&mut self, v: u64) -> Val {
+        self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, v)
+    }
+
+    /// Opens a block that runs when `cond` holds, and returns the block after it.
+    fn open_guard(&mut self, cond: Val) -> u32 {
+        let then_b = self.new_block();
+        let join = self.new_block();
+        self.emit_effect(
+            Opcode::CondBr,
+            cond.reg,
+            Register(0),
+            pack_targets(then_b, join),
+        );
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), then_b as u64);
+        join
+    }
+
+    fn close_guard(&mut self, join: u32) {
+        if !self.block_terminated() {
+            self.emit_effect(Opcode::Br, Register(0), Register(0), join as u64);
+        }
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), join as u64);
+    }
+
+    fn barrier(&mut self, level: AcrossLevel) {
+        let imm = match level {
+            AcrossLevel::Block => 0,
+            AcrossLevel::Subgroup => BARRIER_SUBGROUP,
+        };
+        self.emit_effect(Opcode::Barrier, Register(0), Register(0), imm);
+    }
+
+    /// The statements of a blocks body or a subgroups body (L5). A statement that holds an
+    /// `across` loop lowers as it is, and its bodies have stretches of their own. A stretch that
+    /// lane 0 alone runs is in a block that only lane 0 enters, and a barrier follows it.
+    pub(super) fn lower_stretches(
+        &mut self,
+        stmts: &[Statement],
+        level: AcrossLevel,
+    ) -> Lowered<()> {
+        let mut i = 0;
+        while i < stmts.len() {
+            if across_lanes::holds_across(&stmts[i]) {
+                let lane0 = self.across.lane0.clone();
+                self.lower_stmt(&stmts[i])?;
+                self.across.lane0 = lane0;
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < stmts.len() && !across_lanes::holds_across(&stmts[i]) {
+                i += 1;
+            }
+            let part = &stmts[start..i];
+            let on_lane0 = across_lanes::runs_on_lane0(part, &mut self.across.lane0);
+            let outer = self.across.level.take();
+            let join = if on_lane0 {
+                // The first lane of the block, or of the subgroup.
+                let lane = self.across_id(ACROSS_LANE, 0);
+                let first = match level {
+                    AcrossLevel::Block => lane,
+                    AcrossLevel::Subgroup => {
+                        let sub = self.subgroup_lanes()?;
+                        let width = self.const_i32(sub);
+                        self.emit_value(Opcode::Rem, lane.reg, width.reg, ElementType::I32, 0)
+                    }
+                };
+                let zero = self.const_i32(0);
+                let cond = self.emit_value(
+                    Opcode::Cmp,
+                    first.reg,
+                    zero.reg,
+                    ElementType::Bool,
+                    rel_code(&RelationalOp::Eq),
+                );
+                self.across.on_lane0 = true;
+                Some(self.open_guard(cond))
+            } else {
+                None
+            };
+            let lowered = part.iter().try_for_each(|s| self.lower_stmt(s));
+            self.across.on_lane0 = false;
+            self.across.level = outer;
+            lowered?;
+            if let Some(join) = join {
+                self.close_guard(join);
+                self.barrier(level);
+            }
+        }
+        Ok(())
+    }
+
+    /// The lanes of a subgroup of the region's topology.
+    fn subgroup_lanes(&self) -> Lowered<u64> {
+        self.across.subgroup.ok_or(Decline::Unsupported {
+            what: "a subgroup loop on a topology whose subgroups have no size",
+        })
+    }
+
+    /// An `across` loop of the kind `kind`.
+    pub(super) fn lower_across_for(
+        &mut self,
+        f: &crate::syntax::ForLoopStmt,
+        kind: LevelKind,
+    ) -> Lowered<()> {
+        if kind == LevelKind::Blocks {
+            let axis = self.across.blocks;
+            let first = self.across_id(ACROSS_BLOCK, axis);
+            let step = self.across_id(ACROSS_BLOCKS, axis);
+            self.across.next_loop = Some((first, step));
+            self.across.blocks += 1;
+            let outer = self.across.level.replace(AcrossLevel::Block);
+            let lowered = self.lower_plain_for(f);
+            self.across.level = outer;
+            self.across.blocks -= 1;
+            return lowered;
+        }
+        let addr = f as *const crate::syntax::ForLoopStmt as usize;
+        // A loop directly in code of a level is the outside of a nest of lane loops. Another is
+        // the whole body of a lane loop.
+        let root = self.across.level;
+        // The checker refuses a lane loop in a lane loop that is not its whole body.
+        if root.is_none() && self.across.inner != Some(addr) {
+            return Err(crate::emitter_gap!());
+        }
+        if let Some(sub) = f.across.as_ref().and_then(|a| a.subgroup_lanes) {
+            self.across.subgroup = Some(sub);
+        }
+        let width = across_width(f).ok_or(crate::emitter_gap!())?;
+        let inner = match kind {
+            LevelKind::Subgroups => self.subgroup_lanes()?,
+            _ => inner_lanes(f),
+        };
+        // A nest with fewer lanes than the block leaves the other lanes out.
+        let nest = width * inner;
+        let mask = root == Some(AcrossLevel::Block) && nest < self.across.lanes;
+        let join = if mask {
+            let lane = self.across_id(ACROSS_LANE, 0);
+            let lanes = self.const_i32(nest);
+            let cond = self.emit_value(
+                Opcode::Cmp,
+                lane.reg,
+                lanes.reg,
+                ElementType::Bool,
+                rel_code(&RelationalOp::Lt),
+            );
+            Some(self.open_guard(cond))
+        } else {
+            None
+        };
+        // This lane's pass: its index among the `width` lanes of this loop.
+        let mut pass = self.across_id(ACROSS_LANE, 0);
+        if inner > 1 {
+            let by = self.const_i32(inner);
+            pass = self.emit_value(Opcode::Div, pass.reg, by.reg, ElementType::I32, 0);
+        }
+        if root != Some(AcrossLevel::Block) {
+            let by = self.const_i32(width);
+            pass = self.emit_value(Opcode::Rem, pass.reg, by.reg, ElementType::I32, 0);
+        }
+        let step = self.across_id(ACROSS_STRIDE, width);
+        self.across.next_loop = Some((pass, step));
+        let body_level = match kind {
+            LevelKind::Subgroups => Some(AcrossLevel::Subgroup),
+            _ => None,
+        };
+        let outer_level = std::mem::replace(&mut self.across.level, body_level);
+        let outer_inner = std::mem::replace(
+            &mut self.across.inner,
+            inner_lane_loop(f).map(|g| g as *const crate::syntax::ForLoopStmt as usize),
+        );
+        let lowered = self.lower_plain_for(f);
+        self.across.level = outer_level;
+        self.across.inner = outer_inner;
+        lowered?;
+        if let Some(join) = join {
+            self.close_guard(join);
+        }
+        if let Some(level) = root {
+            self.barrier(level);
+        }
+        Ok(())
+    }
+}

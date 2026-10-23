@@ -15,7 +15,8 @@ let mut count = 0;     // mutable
 Bindings are immutable unless you write `mut`.
 
 The primitive types are the ones you would expect: `i8` `i16` `i32` `i64`, `u8` `u16` `u32` `u64`,
-`f16` `f32` `f64`, and `bool`.
+`f16` `f32` `f64`, and `bool`. For machine learning there are also `bf16`, the 4-bit integers `i4` and
+`u4`, and the fp8 and fp4 types in [Low-precision numbers](low-precision-numbers.md).
 
 **There are no implicit numeric conversions.** An `i32` does not become an `i64` because the context
 wants one; you write the conversion. Integer literals infer to the type the context requires, so
@@ -239,7 +240,7 @@ A `?` marks a dimension that is only known at runtime:
 ```rust
 fn matmul(a : Tensor<f32, [?, ?]>, b : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
     let mut result : Tensor<f32, [?, ?]> =
-        Tensor<f32, [?, ?]>::uninit([a.extent(0), b.extent(1)]);
+        unsafe { Tensor<f32, [?, ?]>::uninit([a.extent(0), b.extent(1)]) };
 
     for i in 0..a.extent(0) {
         for j in 0..b.extent(1) {
@@ -255,6 +256,11 @@ fn matmul(a : Tensor<f32, [?, ?]>, b : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?
 
 `.extent(n)` reads the size of dimension `n`. Shapes that *are* known statically get checked
 statically — a matmul whose inner dimensions disagree is a compile error rather than a runtime one.
+
+`m[i]` is row `i`, and a row has the size of the last dimension: for a `[2, 3]` tensor, `m[0][j]`
+needs `j < 3` and does not reach into the next row. An index the compiler can see is too large,
+such as `m[0][5]` or `m[0][j]` inside `for j in 0..6`, is a compile error. To walk all the
+elements in one loop, `.reshape` the tensor to one dimension.
 
 `.reshape(shape)` gives the same elements in a new shape, without copying them. `.pad(shape)` makes
 a larger tensor with zeros after each axis, which is how a matrix is rounded up to a tile size:
@@ -324,8 +330,9 @@ fn main() -> i32 {
 
 Dereferencing a raw pointer, indexing through one, reading a field through one, and calling an
 `unsafe fn` all require an `unsafe` block. A function that takes a caller's raw pointer and
-dereferences it is itself `unsafe fn`, so the obligation is visible in its signature rather than
-buried in its body.
+dereferences it should be declared `unsafe fn`, so the obligation is visible in its signature
+rather than buried in its body. Marking a function `unsafe` does not allow raw pointer operations
+in its body. Each one still needs an `unsafe` block, as in [Unsafe and FFI](unsafe-and-ffi.md).
 
 `extern "C"` blocks declare foreign functions. Vx's C ABI interop is zero-overhead: there is no
 marshalling layer.

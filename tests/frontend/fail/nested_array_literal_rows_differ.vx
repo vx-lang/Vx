@@ -1,0 +1,22 @@
+//===- nested_array_literal_rows_differ.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Every row of a nested array literal must have the same length and element type, so the
+// literal has one shape. A short row and a row of integers among floats are refused (E3018).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn main() -> i32 {
+  // CHECK-DAG: Error[E3018] at [[@LINE+1]]:28: the rows of a nested array literal must all have the same type; the first row is Tensor<f32, [2]>, but this one is Tensor<f32, [1]>
+  let short = [[1.0, 2.0], [3.0]];
+  // CHECK-DAG: Error[E3018] at [[@LINE+1]]:28: the rows of a nested array literal must all have the same type; the first row is Tensor<f32, [2]>, but this one is Tensor<i32, [2]>
+  let mixed = [[1.0, 2.0], [3, 4]];
+  print(short[0][0] + mixed[0][0]);
+  return 0;
+}
+
+// CHECK: 2 error(s) emitted
