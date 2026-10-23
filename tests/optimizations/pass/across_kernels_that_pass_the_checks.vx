@@ -137,7 +137,11 @@ pub fn clamped(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], M
           }
           let total = lanes::sum(&a[w], 32);
           let scaled : f32 = total * 2.0;
-          let r : f32 = if scaled < 0.0 { 0.0 } else { scaled };
+          let r : f32 = if scaled < 0.0 {
+            0.0
+          } else {
+            scaled
+          };
           acc = acc + r;
           if acc > 100.0 {
             acc = 100.0;
