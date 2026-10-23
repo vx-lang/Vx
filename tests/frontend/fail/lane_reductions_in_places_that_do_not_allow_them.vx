@@ -7,20 +7,22 @@
 //===----------------------------------------------------------------------===//
 // Every lane of the block or the subgroup must get to a lane reduction, so a call is the whole
 // value of a `let` in the code of a loop of blocks or subgroups. Each function below breaks one
-// rule of the place, the size or the arguments of a call.
+// rule of the place, the size or the arguments of a call, also of an argmax.
 //
 // RUN: not vxc %s --host default --machine fleet/a100-80.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: Error[E6032] at 30:{{.*}}`lanes::sum` must be the whole value of a `let` in the code of a loop of blocks or subgroups, outside its lane loops
-// CHECK: Error[E6032] at 42:{{.*}}`lanes::sum` must be the whole value of a `let`
-// CHECK: Error[E6032] at 52:{{.*}}`lanes::sum` must be the whole value of a `let`
-// CHECK: Error[E6032] at 63:{{.*}}this condition decides whether the lanes reach the end of a lane loop or a lane reduction{{.*}} but it reads memory
-// CHECK: Error[E6032] at 76:{{.*}}`lanes::sum` in the code of a block combines at most 1024 elements, but its tensor has 2048
-// CHECK: Error[E6032] at 89:{{.*}}`lanes::max` in the code of a block needs a block whose lanes are a multiple of 32 and at least the 100 elements of its tensor, but the lane loops of this region give 100 lanes
-// CHECK: Error[E6032] at 102:{{.*}}`lanes::sum` in the code of a block needs a block whose lanes are a multiple of 32 and at least the 256 elements of its tensor, but the lane loops of this region give 64 lanes
-// CHECK: Error[E6032] at 116:{{.*}}`lanes::sum` in the code of a subgroup combines at most 32 elements, but its tensor has 64
-// CHECK: Error[E6032] at 130:{{.*}}`lanes::min` is not a lane reduction. The lane reductions are `lanes::sum`, `lanes::max`, `lanes::sum_unordered`, `lanes::max_unordered`
-// CHECK: Error[E3003] at 143:{{.*}}the first argument of `lanes::sum` must borrow a rank-1 tensor of `f32`{{.*}} but it is `&Tensor<i32, [64], Memory::SMEM>`
-// CHECK: Error[E3003] at 156:{{.*}}the second argument of `lanes::sum` is the number of elements to combine, an `i32`, but it is `f32`
+// CHECK: Error[E6032] at 32:{{.*}}`lanes::sum` must be the whole value of a `let` in the code of a loop of blocks or subgroups, outside its lane loops
+// CHECK: Error[E6032] at 44:{{.*}}`lanes::sum` must be the whole value of a `let`
+// CHECK: Error[E6032] at 54:{{.*}}`lanes::sum` must be the whole value of a `let`
+// CHECK: Error[E6032] at 65:{{.*}}this condition decides whether the lanes reach the end of a lane loop or a lane reduction{{.*}} but it reads memory
+// CHECK: Error[E6032] at 78:{{.*}}`lanes::sum` in the code of a block combines at most 1024 elements, but its tensor has 2048
+// CHECK: Error[E6032] at 91:{{.*}}`lanes::max` in the code of a block needs a block whose lanes are a multiple of 32 and at least the 100 elements of its tensor, but the lane loops of this region give 100 lanes
+// CHECK: Error[E6032] at 104:{{.*}}`lanes::sum` in the code of a block needs a block whose lanes are a multiple of 32 and at least the 256 elements of its tensor, but the lane loops of this region give 64 lanes
+// CHECK: Error[E6032] at 118:{{.*}}`lanes::sum` in the code of a subgroup combines at most 32 elements, but its tensor has 64
+// CHECK: Error[E6032] at 132:{{.*}}`lanes::min` is not a lane reduction. The lane reductions are `lanes::sum`, `lanes::max`, `lanes::sum_unordered`, `lanes::max_unordered`
+// CHECK: Error[E3003] at 145:{{.*}}the first argument of `lanes::sum` must borrow a rank-1 tensor of `f32`{{.*}} but it is `&Tensor<i32, [64], Memory::SMEM>`
+// CHECK: Error[E3003] at 158:{{.*}}the second argument of `lanes::sum` is the number of elements to combine, an `i32`, but it is `f32`
+// CHECK: Error[E3003] at 172:{{.*}}the second argument of `lanes::argmax` must borrow a rank-1 tensor of `i32` indices of the same size as the values, but it is `&Tensor<i32, [32], Memory::SMEM>`
+// CHECK: Error[E3003] at 185:{{.*}}`lanes::argmax` takes 3 arguments, a borrowed tensor of values, a borrowed tensor of their indices and the number of elements to combine, but it got 2
 
 pub fn in_a_lane_loop(out : &mut Tensor<f32, [?], Memory::HBM>, rows : i32) -> void {
   spawn on(Topology::Device) {
@@ -156,6 +158,33 @@ pub fn a_count_that_is_not_an_i32(out : &mut Tensor<f32, [?], Memory::HBM>, rows
       let s = lanes::sum(&part, 1.5);
       for t in 0..64 across lanes {
         out[b * 64 + t] = s;
+      }
+    }
+  }
+  return;
+}
+
+pub fn indices_of_another_size(out : &mut Tensor<i32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let vs = unsafe { Tensor<f32, [64], Memory::SMEM>::uninit() };
+      let ix = unsafe { Tensor<i32, [32], Memory::SMEM>::uninit() };
+      let best = lanes::argmax(&vs, &ix, 64);
+      for t in 0..64 across lanes {
+        out[b * 64 + t] = best;
+      }
+    }
+  }
+  return;
+}
+
+pub fn an_argmax_with_no_indices(out : &mut Tensor<i32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let vs = unsafe { Tensor<f32, [64], Memory::SMEM>::uninit() };
+      let best = lanes::argmax(&vs, 64);
+      for t in 0..64 across lanes {
+        out[b * 64 + t] = best;
       }
     }
   }

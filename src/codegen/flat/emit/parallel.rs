@@ -275,9 +275,16 @@ impl FnEmit<'_> {
             .ok_or(crate::emitter_gap!())?
             .clone()
             .ok_or(crate::emitter_gap!())?;
+        let argmax = ins.imm & crate::bytecode::LANE_REDUCE_ARGMAX != 0;
+        // The count: `operand2` for a sum or a larger value, the `Arg` before for the argmax.
+        let count = if argmax {
+            self.pending_args.pop().ok_or(crate::emitter_gap!())?
+        } else {
+            ins.operand2.0
+        };
         let n = self
             .names
-            .get(ins.operand2.0 as usize)
+            .get(count as usize)
             .ok_or(crate::emitter_gap!())?
             .clone();
         let kind = if ins.imm & crate::bytecode::LANE_REDUCE_MAX != 0 {
@@ -285,14 +292,44 @@ impl FnEmit<'_> {
         } else {
             "sum"
         };
-        let mut attrs = format!("kind = \"{kind}\"");
+        let mut attrs = if argmax {
+            String::new()
+        } else {
+            format!("kind = \"{kind}\"")
+        };
+        let mut add = |a: &str| {
+            if !attrs.is_empty() {
+                attrs += ", ";
+            }
+            attrs += a;
+        };
         if ins.imm & crate::bytecode::LANE_REDUCE_ORDERED != 0 {
-            attrs += ", ordered";
+            add("ordered");
         }
         if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
-            attrs += ", subgroup";
+            add("subgroup");
         }
         let v = format!("%v{idx}");
+        if argmax {
+            let i = self
+                .names
+                .get(ins.operand2.0 as usize)
+                .ok_or(crate::emitter_gap!())?
+                .clone();
+            let imemty = self
+                .mem_of
+                .get(ins.operand2.0 as usize)
+                .ok_or(crate::emitter_gap!())?
+                .clone()
+                .ok_or(crate::emitter_gap!())?;
+            self.body += &format!(
+                "  {v} = \"vx.lane_argmax\"({t}, {i}, {n}) {{{attrs}}} : ({memty}, {imemty}, i32) \
+                 -> i32\n"
+            );
+            self.names[idx] = v;
+            self.etypes[idx] = Some(ElementType::I32);
+            return Ok(());
+        }
         self.body +=
             &format!("  {v} = \"vx.lane_reduce\"({t}, {n}) {{{attrs}}} : ({memty}, i32) -> f32\n");
         self.names[idx] = v;

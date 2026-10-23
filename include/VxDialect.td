@@ -169,6 +169,17 @@ def Vx_LaneReduceOp : Vx_Op<"lane_reduce", [MemoryEffects<[MemRead, MemWrite]>]>
     let results = (outs F32:$result);
 }
 
+// `lanes::argmax`: every lane gets the index of the larger value of the first
+// `count` pairs of `values` and `indices`. A pair with an index below 0 is
+// empty, and of two equal values the lower index wins. The attributes mean what
+// they mean for `vx.lane_reduce`.
+def Vx_LaneArgmaxOp : Vx_Op<"lane_argmax", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "The index of the larger value over the lanes.";
+    let arguments = (ins AnyMemRef:$values, AnyMemRef:$indices, I32:$count,
+                     UnitAttr:$ordered, UnitAttr:$subgroup, UnitAttr:$serial);
+    let results = (outs I32:$result);
+}
+
 // The launch shape of a `vx.spawn` region with `across` loops (#252): the
 // blocks on grid axis 0 to 2, or the threads of a block (axis 3). The outlining passes the value after the kernel's arguments,
 // and the runtime reads it there.
