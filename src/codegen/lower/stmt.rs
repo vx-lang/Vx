@@ -710,10 +710,10 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             }
         }
 
+        // With no type from the target, the value has no expected type. It must not keep the
+        // `none` of a statement around the assignment, such as a `spawn on` region.
         let prev_expected = gen.expected_type;
-        if expected_ty.is_some() {
-            gen.expected_type = expected_ty;
-        }
+        gen.expected_type = expected_ty;
         let (rhs_val, rhs_ty, block) = gen.generate_expr(rhs, block)?;
         gen.expected_type = prev_expected;
 

@@ -1816,6 +1816,20 @@ impl<'r> Lowerer<'r> {
             Expr::IndexAccess(ix) if matches!(&*ix.base, Expr::MemberAccess(ma) if ma.member.as_ref() == "$extent") => {
                 Some(LoweredTy::Scalar(ElementType::I32))
             }
+            // `t[i]`: as `lower_expr` gives it, one dimension fewer, or the element at rank 1.
+            Expr::IndexAccess(ix) => match self.infer_expr_ty(&ix.base)? {
+                LoweredTy::Tensor { elem, shape } if !shape.is_empty() => {
+                    Some(if shape.len() == 1 {
+                        LoweredTy::Scalar(elem)
+                    } else {
+                        LoweredTy::Tensor {
+                            elem,
+                            shape: shape[1..].to_vec(),
+                        }
+                    })
+                }
+                _ => None,
+            },
             // An inline `mlir!` block's value is its declared result.
             Expr::InlineMlir(im) => lowered_ty(im.returns.as_ref()?, self.registry),
             Expr::UnsafeBlock(ub) => self.infer_expr_ty(ub.ret.as_deref()?),
