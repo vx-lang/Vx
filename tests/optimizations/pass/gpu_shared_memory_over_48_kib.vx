@@ -23,7 +23,7 @@
 // JSON: "dynamic_shared_bytes": 163840,
 // JSON-NEXT: "name": "stage"
 // JSON-NOT: dynamic_shared_bytes
-// PAYLOAD: shared=163840\00image=
+// PAYLOAD: shared=163840\00format=ptx\00image=
 
 pub fn stage(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
