@@ -1,0 +1,56 @@
+//===- across_regions_with_a_whole_matmul.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The code generator sends a matmul of whole tensors to cuBLAS, which a GPU kernel cannot call.
+// A region with `across` loops asks for a launch of its own, so it may not have one: it would
+// get no GPU kernel and run on the CPU with no message. Each `@` gets E6032, on tiles that the
+// block made and on operands from outside the region.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
+// CHECK: Error[E6032] at 29:18:{{.*}}may not have a matmul of whole tensors
+// CHECK: Error[E6032] at 43:17:{{.*}}may not have a matmul of whole tensors
+
+pub fn tile_matmul(c : &mut Tensor<f32, [?, 16], Memory::HBM>, a : &Tensor<f32, [16, 16], Memory::HBM>, b : &Tensor<f32, [16, 16], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..n across blocks {
+      let mut sa = unsafe { Tensor<f32, [16, 16], Memory::SMEM>::uninit() };
+      let mut sb = unsafe { Tensor<f32, [16, 16], Memory::SMEM>::uninit() };
+      for i in 0..16 across lanes {
+        for j in 0..16 across lanes {
+          sa[i][j] = a[i][j];
+          sb[i][j] = b[i][j];
+        }
+      }
+      // Under `across` this is one matmul for each block: it has no GPU code yet.
+      let p = sa @ sb;
+      for i in 0..16 across lanes {
+        for j in 0..16 across lanes {
+          c[blk * 16 + i][j] = p[i][j];
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn whole_operands(c : &mut Tensor<f32, [?, 16], Memory::HBM>, a : &Tensor<f32, [16, 16], Memory::HBM>, b : &Tensor<f32, [16, 16], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for blk in 0..n across blocks {
+      let p = a @ b;
+      for i in 0..16 across lanes {
+        for j in 0..16 across lanes {
+          c[blk * 16 + i][j] = p[i][j];
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -9,7 +9,8 @@
 // `-fauto-schedule-levels`, the region has no launch shape. Each `across` loop runs as a plain
 // `for`, and the branch back to its header carries `vx.across` with its level. A loop over lanes
 // or subgroups also asks LLVM to vectorize it, and each loop has loop metadata of its own. The
-// program gives the same sum with both code generators and with `-j`.
+// program gives the same sum with both code generators and with `-j`. A region with no launch
+// may have a matmul of whole tensors, which a launched region may not.
 //
 // RUN: vxc %s -fauto-schedule-levels --host default --emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR --implicit-check-not=vx.launch_dim --implicit-check-not=vx.across_id
 // RUN: vxc %s -fauto-schedule-levels --host default --emit-llvm 2>&1 | mlir-translate --mlir-to-llvmir | FileCheck %s --check-prefix=IR
@@ -28,6 +29,7 @@
 // IR: ![[VEC]] = !{!"llvm.loop.vectorize.enable", i1 true}
 // IR: ![[L2]] = distinct !{![[L2]], ![[VEC]], !{{[0-9]+}}}
 // OUT: sum 4560
+// OUT-NEXT: matmul 8
 
 Topology Cores {
   arch: x86_64,
@@ -53,5 +55,20 @@ fn main() -> i32 {
     s = s + y[i];
   }
   println!("sum {}", s);
+
+  let a = Tensor<f32, [4, 4]>::fill(1.0);
+  let b = Tensor<f32, [4, 4]>::fill(2.0);
+  let mut c = Tensor<f32, [8, 4]>::fill(0.0);
+  spawn on(Topology::Cores) {
+    for blk in 0..2 across blocks {
+      let p = &a @ &b;
+      for i in 0..4 across lanes {
+        for j in 0..4 across lanes {
+          c[blk * 4 + i][j] = p[i][j];
+        }
+      }
+    }
+  }
+  println!("matmul {}", c[7][3]);
   return 0;
 }

@@ -2868,7 +2868,9 @@ struct ConvertVxToStandardPass
       for (linalg::FillOp f : fills)
         fillToDeviceLoops(f);
       Operation *blocker = nullptr;
-      k.getBody().walk([&](Operation *op) {
+      // Outer ops first, so that a blocker is the op the program wrote, such
+      // as a `linalg.matmul`, and not the `linalg.yield` inside it.
+      k.getBody().walk<WalkOrder::PreOrder>([&](Operation *op) {
         if (runsOnDevice(op, module, callees[k]))
           return WalkResult::advance();
         blocker = op;
@@ -2880,7 +2882,11 @@ struct ConvertVxToStandardPass
       }
       // Say so, or a program meant for the GPU runs on the CPU in silence. A
       // `linalg` op is the matmul that the plugin sends to cuBLAS, on purpose.
-      if (blocker->getDialect() &&
+      // A kernel with `across` loops asked for a launch of its own, so it gets
+      // no such route: the checker refuses a whole matmul there (E6032), and
+      // this stops what the checker does not see.
+      bool across = k->hasAttr("vx.across");
+      if (!across && blocker->getDialect() &&
           blocker->getDialect()->getNamespace() == "linalg")
         return;
       std::string what =
@@ -2888,6 +2894,15 @@ struct ConvertVxToStandardPass
       if (auto call = dyn_cast<func::CallOp>(blocker))
         what = "the call to '" + call.getCallee().str() +
                "' or something that it calls";
+      if (across) {
+        k.emitError() << "a GPU region with `across` loops cannot run on the "
+                         "GPU, because the GPU code generator cannot take "
+                      << what
+                      << ". Its loops give its launch, so it may not run on "
+                         "the CPU instead";
+        signalPassFailure();
+        return;
+      }
       // The driver prints the message as it is, with no source position.
       k.emitWarning() << "Warning: a GPU region runs on the CPU, because the "
                          "GPU code generator cannot take "

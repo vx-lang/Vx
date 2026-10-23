@@ -211,6 +211,30 @@ impl Walk<'_> {
         after
     }
 
+    /// A matmul of whole tensors in a region with `across` loops. The code generator sends a
+    /// whole matmul to cuBLAS, which a kernel cannot call, so the region would get no GPU kernel.
+    /// Its loops ask for a launch, so that is an error here, with a position, and not a region
+    /// that runs on the CPU in silence.
+    fn whole_matmuls(&mut self, stmts: &[Statement]) {
+        let mut found = Vec::new();
+        crate::syntax::visit_exprs(stmts, &mut |e| {
+            if let Expr::BinaryOp(b) = e {
+                if matches!(b.op, crate::syntax::BinaryOp::MatMul) {
+                    found.push(b.span);
+                }
+            }
+        });
+        for at in found {
+            self.error(
+                "a region with `across` loops may not have a matmul of whole tensors: the code \
+                 generator sends it to cuBLAS, which a GPU kernel cannot call. Write its loops in \
+                 the region, or do the matmul before the region"
+                    .to_string(),
+                at,
+            );
+        }
+    }
+
     /// A tensor that the code of a block makes outside its lane loops is one for the block, which
     /// its lanes share. So it is in a memory of the block. A subgroup has no memory of its own.
     fn block_tensor(&mut self, l: &crate::syntax::stmt::LetDeclStmt, ctx: &Ctx) {
@@ -368,6 +392,17 @@ impl Walk<'_> {
                     ..Ctx::default()
                 };
                 self.region_nests(&sp.stmts, &region);
+                // A region that `-fauto-schedule-levels` runs as plain loops has no launch, so its
+                // matmul goes to cuBLAS as in any other region.
+                let launches = region.region.as_ref().is_some_and(|r| r.launches);
+                if launches
+                    && sp
+                        .stmts
+                        .iter()
+                        .any(|s| matches!(s, Statement::ForLoop(f) if f.across.is_some()))
+                {
+                    self.whole_matmuls(&sp.stmts);
+                }
                 self.stmts(&sp.stmts, &region);
                 if let Some(r) = &sp.ret {
                     self.expr(r, &Self::inner(&region));
