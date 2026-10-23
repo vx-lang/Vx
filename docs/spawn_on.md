@@ -152,6 +152,7 @@ decision.
 | Wait insertion in the compiler | none | at first host use (§3) |
 | Value of a device spawn | the kernel stores it in a host slot and the host loads it after the launch; such a kernel gets no GPU device image and runs on the host | the slot staged to device memory, so the GPU twin can run |
 | Runtime device index `NPU[i]` | W1030, device 0 | separate issue |
+| `for i in a..b across <level>` (#252) | E6032 checks its place and its size; it runs as a plain `for` | the loops give the launch shape, and L4 proves the passes independent |
 
 Order of work: the value stub first, since any model needs it; then non-blocking dispatch plus
 a real `await_future` in the runtimes, with the wait emitted at region exit so nothing

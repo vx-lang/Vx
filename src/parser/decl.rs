@@ -302,6 +302,7 @@ impl<'a> Parser<'a> {
         let mut transfers: Vec<crate::arch::TransferEdge> = Vec::new();
         let mut dtypes: Option<Vec<crate::syntax::ElementType>> = None;
         let mut chip: Option<crate::symbol::Symbol> = None;
+        let mut levels: Option<Vec<crate::arch::Level>> = None;
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
             // `transfer Memory::<From> -> Memory::<To> : <cost> [relaxed|sync]` -- a declared
@@ -445,6 +446,7 @@ impl<'a> Parser<'a> {
                         }
                     });
                 }
+                "levels" => levels = Some(self.parse_levels()?),
                 other => return Err(self.error(&format!("Unknown topology field '{}'", other))),
             }
             self.match_token(&TokenType::Comma);
@@ -460,6 +462,9 @@ impl<'a> Parser<'a> {
         };
         if chip.is_some() && arch.as_ref().map(|a| a.as_ref()) != Some("nvptx64") {
             return Err(self.error("`chip:` names an NVIDIA GPU, so it needs `arch: nvptx64`"));
+        }
+        if let Some(levels) = &levels {
+            self.check_levels_for_arch(levels, arch.as_ref().map(|a| a.as_ref()))?;
         }
         // With no explicit `visible`, a topology sees exactly its own default space. An
         // explicit `visible` list is respected verbatim, so an inconsistent one (default
@@ -479,8 +484,168 @@ impl<'a> Parser<'a> {
                 transfers,
                 dtypes,
                 chip,
+                levels,
             },
         })
+    }
+
+    /// `levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(..)]`. The
+    /// place of an entry gives its kind: the first is a block, the last a lane, and a middle one
+    /// a subgroup.
+    fn parse_levels(&mut self) -> ParseResult<'a, Vec<crate::arch::Level>> {
+        use crate::arch::LevelKind;
+        self.consume(&TokenType::LeftBracket, "Expected '[' after 'levels'")?;
+        let mut entries = Vec::new();
+        while !self.check(&TokenType::RightBracket) && !self.check(&TokenType::Eof) {
+            let name = match &self.advance().kind {
+                TokenType::Identifier(s) => crate::symbol::Symbol::from(*s),
+                other => {
+                    return Err(self.error(&format!(
+                        "`levels:` expects a level name such as `blocks`, got {:?}",
+                        other
+                    )))
+                }
+            };
+            let (mut max_lanes, mut lanes, mut memory) = (None, None, None);
+            if self.match_token(&TokenType::LeftParen) {
+                while !self.check(&TokenType::RightParen) && !self.check(&TokenType::Eof) {
+                    let fact = match &self.advance().kind {
+                        TokenType::Identifier(s) => s.to_string(),
+                        other => {
+                            return Err(self.error(&format!(
+                                "Expected `max_lanes`, `lanes` or `memory` in a level, got {:?}",
+                                other
+                            )))
+                        }
+                    };
+                    self.consume(&TokenType::Colon, "Expected ':' after a fact of a level")?;
+                    match fact.as_str() {
+                        "max_lanes" => max_lanes = Some(self.parse_level_count(&fact)?),
+                        "lanes" => lanes = Some(self.parse_level_count(&fact)?),
+                        "memory" => {
+                            memory = Some(match &self.advance().kind {
+                                TokenType::Identifier("cta") => crate::syntax::Scope::Cta,
+                                TokenType::Identifier("thread") => crate::syntax::Scope::Thread,
+                                other => {
+                                    return Err(self.error(&format!(
+                                        "`memory:` of a level expects `cta` or `thread`, got {:?}",
+                                        other
+                                    )))
+                                }
+                            })
+                        }
+                        other => {
+                            return Err(self.error(&format!(
+                                "A level has `max_lanes`, `lanes` and `memory`, not `{other}`"
+                            )))
+                        }
+                    }
+                    if !self.match_token(&TokenType::Comma) {
+                        break;
+                    }
+                }
+                self.consume(
+                    &TokenType::RightParen,
+                    "Expected ')' after the facts of a level",
+                )?;
+            }
+            entries.push((name, max_lanes, lanes, memory));
+            if !self.match_token(&TokenType::Comma) {
+                break;
+            }
+        }
+        self.consume(&TokenType::RightBracket, "Expected ']' after the levels")?;
+        if !(2..=3).contains(&entries.len()) {
+            return Err(self.error(&format!(
+                "`levels:` has {} entries. It needs two (blocks and lanes) or three (blocks, \
+                 subgroups and lanes)",
+                entries.len()
+            )));
+        }
+        let last = entries.len() - 1;
+        let mut levels: Vec<crate::arch::Level> = Vec::new();
+        for (i, (name, max_lanes, lanes, memory)) in entries.into_iter().enumerate() {
+            let kind = match i {
+                0 => LevelKind::Blocks,
+                i if i == last => LevelKind::Lanes,
+                _ => LevelKind::Subgroups,
+            };
+            if levels.iter().any(|l| l.name == name) {
+                return Err(self.error(&format!("`levels:` names `{name}` twice")));
+            }
+            match kind {
+                LevelKind::Blocks if max_lanes.is_none() => {
+                    return Err(self.error(&format!(
+                        "`{name}` is the block level, so it needs `max_lanes:`"
+                    )))
+                }
+                LevelKind::Subgroups if lanes.is_none() => {
+                    return Err(self.error(&format!(
+                        "`{name}` is the subgroup level, so it needs `lanes:`"
+                    )))
+                }
+                _ => {}
+            }
+            if max_lanes.is_some() && kind != LevelKind::Blocks {
+                return Err(self.error(&format!(
+                    "Only the first level, the block level, has `max_lanes:`, not `{name}`"
+                )));
+            }
+            if lanes.is_some() && kind != LevelKind::Subgroups {
+                return Err(self.error(&format!(
+                    "Only a middle level, the subgroup level, has `lanes:`, not `{name}`"
+                )));
+            }
+            levels.push(crate::arch::Level {
+                name,
+                kind,
+                max_lanes,
+                lanes,
+                memory,
+            });
+        }
+        Ok(levels)
+    }
+
+    fn parse_level_count(&mut self, fact: &str) -> ParseResult<'a, u64> {
+        match &self.advance().kind {
+            TokenType::Number(n) => match n.parse::<u64>() {
+                Ok(v) if v > 0 => Ok(v),
+                _ => Err(self.error(&format!("`{fact}:` expects a count above 0, got {n}"))),
+            },
+            other => Err(self.error(&format!("`{fact}:` expects a count, got {:?}", other))),
+        }
+    }
+
+    /// A `levels:` stays within what its arch can give, when the arch has default levels.
+    fn check_levels_for_arch(
+        &self,
+        levels: &[crate::arch::Level],
+        arch: Option<&str>,
+    ) -> ParseResult<'a, ()> {
+        let Some(defaults) = crate::arch::default_levels(arch) else {
+            return Ok(());
+        };
+        let arch = arch.unwrap_or_default();
+        let max = defaults.iter().find_map(|l| l.max_lanes);
+        let size = defaults.iter().find_map(|l| l.lanes);
+        for l in levels {
+            if let (Some(n), Some(max)) = (l.max_lanes, max) {
+                if n > max {
+                    return Err(self.error(&format!(
+                        "`max_lanes: {n}` is more than a block of `{arch}` can have, which is {max}"
+                    )));
+                }
+            }
+            if let (Some(n), Some(size)) = (l.lanes, size) {
+                if n != size {
+                    return Err(self.error(&format!(
+                        "`lanes: {n}`: a subgroup of `{arch}` has {size} lanes"
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// `Memory <Name> { within:, capacity:, bandwidth:, managed:, granule: }` -- a first-class
@@ -2037,6 +2202,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
             span: _,
             next_fn: _,
             unroll: _,
+            across: None,
         }) = &program.functions[0].body[0]
         {
             assert_eq!(iter, "i");

@@ -92,6 +92,20 @@ so each index must be known when compiling: a constant, or made of constants and
 other index is E6033, which names the tensor and the reason. An `mlir!` block takes the tensor as
 `memref<32xf32>`. The NVIDIA files give `REG` a capacity of 1020 bytes, which is 255 registers.
 
+## Levels
+
+`levels:` on a topology names the levels of a GPU launch that `across` loops use (#252), outside
+in. The first entry is the block level and needs `max_lanes:`. The last is the lane level. A middle
+one is the subgroup level and needs `lanes:`. `memory:` names the scope whose memory has one copy
+for each pass of the level.
+
+```text
+levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(memory: thread)]
+```
+
+These are the default levels of `nvptx64`, so the GPU topologies here need no `levels:`. A
+`levels:` on `nvptx64` may give fewer lanes, but not more than 1024, and its subgroup has 32 lanes.
+
 ## Element type vocabularies
 
 `dtypes:` on a topology states which element types the hardware can natively represent and compute
