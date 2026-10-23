@@ -7,21 +7,27 @@
 //===----------------------------------------------------------------------===//
 // The passes of an `across` loop run at the same time, so no pass may touch a place that another
 // pass writes (#252, L4). In each function below, two passes may touch one place, or the
-// checker cannot see what a pass writes, so the loop gets E6032.
+// checker cannot see what a pass writes, so the loop gets E6032. An index changed by a narrowing
+// cast, or by a product that wraps, does not keep two passes apart.
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
-// CHECK: Error[E6032] at 29:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
-// CHECK: Error[E6032] at 39:{{.*}}a pass of this lane loop may read an element of `a` that another pass writes
-// CHECK: Error[E6032] at 51:{{.*}}each pass writes `total`, which is declared outside the loop
-// CHECK: Error[E6032] at 65:{{.*}}two passes of this lane loop may write the same element of `y`: an index of the write must fix `l`
-// CHECK: Error[E6032] at 78:{{.*}}two passes of this lane loop may write the same element of `o`: the writes must use the same index
-// CHECK: Error[E6032] at 94:{{.*}}the call to `scale` may write through an argument
-// CHECK: Error[E6032] at 104:{{.*}}printing in an `across` loop
-// CHECK: Error[E6032] at 116:{{.*}}a `&mut` borrow in an `across` loop may write any element
-// CHECK: Error[E6032] at 128:{{.*}}a pass uses all of `o`, which the passes of this {{block|lane}} loop write
-// CHECK: Error[E6032] at 140:{{.*}}`barrier()` may not be in an `across` loop
-// CHECK: Error[E6032] at 151:{{.*}}an `mlir!` block in an `across` loop may write memory that the checker cannot see
-// CHECK: Error[E6032] at 166:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at 35:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at 45:{{.*}}a pass of this lane loop may read an element of `a` that another pass writes
+// CHECK: Error[E6032] at 57:{{.*}}each pass writes `total`, which is declared outside the loop
+// CHECK: Error[E6032] at 71:{{.*}}two passes of this lane loop may write the same element of `y`: an index of the write must fix `l`
+// CHECK: Error[E6032] at 84:{{.*}}two passes of this lane loop may write the same element of `o`: the writes must use the same index
+// CHECK: Error[E6032] at 100:{{.*}}the call to `scale` may write through an argument
+// CHECK: Error[E6032] at 110:{{.*}}printing in an `across` loop
+// CHECK: Error[E6032] at 122:{{.*}}a `&mut` borrow in an `across` loop may write any element
+// CHECK: Error[E6032] at 134:{{.*}}a pass uses all of `o`, which the passes of this {{block|lane}} loop write
+// CHECK: Error[E6032] at 146:{{.*}}`barrier()` may not be in an `across` loop
+// CHECK: Error[E6032] at 157:{{.*}}an `mlir!` block in an `across` loop may write memory that the checker cannot see
+// CHECK: Error[E6032] at 172:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at 183:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at 193:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at 203:{{.*}}two passes of this lane loop may write the same element of `out`: an index of the write must fix `l`
+// CHECK: Error[E6032] at 214:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
+// CHECK: Error[E6032] at 224:{{.*}}two passes of this block loop may write the same element of `out`: an index of the write must fix `b`
 
 pub fn every_block_adds_to_one_element(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
   spawn on(Topology::Device) {
@@ -165,6 +171,57 @@ pub fn blocks_overlap_by_one(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) 
       for t in 0..2 across lanes {
         out[b + t] = 1.0;
       }
+    }
+  }
+  return;
+}
+
+// `b as u8` drops the high bits, so blocks 0 and 256 write one element.
+pub fn narrowing_cast(out : &mut Tensor<f32, [512], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..512 across blocks {
+      out[(b as u8) as i32] = 1.0;
+    }
+  }
+  return;
+}
+
+pub fn narrowing_cast_in_a_let(out : &mut Tensor<f32, [512], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..512 across blocks {
+      let k = (b as u8) as i32;
+      out[k] = 1.0;
+    }
+  }
+  return;
+}
+
+pub fn narrowing_cast_in_lanes(out : &mut Tensor<f32, [512], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..512 across lanes {
+        out[(l as u8) as i32] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+// `4 * 1073741824` is 0 in `i32`, so blocks 0 and 4 write one element.
+pub fn product_that_wraps(out : &mut Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..8 across blocks {
+      out[b * 1073741824] = 1.0;
+    }
+  }
+  return;
+}
+
+// `65536 * 65536` is 0 in `i32`, so every block writes `out[0]`, whatever `n` is.
+pub fn coefficient_that_wraps(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      out[b * 65536 * 65536] = 1.0;
     }
   }
   return;
