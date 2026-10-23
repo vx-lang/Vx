@@ -955,6 +955,82 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The declaration of the memory space that `p` places a tensor in, if the program has one.
+    fn space_decl(&self, p: &crate::syntax::Placement) -> Option<&crate::syntax::MemoryDecl> {
+        let space = self.placement_space(p);
+        self.env
+            .memories
+            .values()
+            .find(|m| m.name.as_ref() == space.name())
+            .copied()
+    }
+
+    /// The alignment that a tensor placed by `p` has: its `aligned(N)`, or the `alignment:` of its
+    /// space, whichever is larger. 0 when neither says.
+    pub(crate) fn alignment_of(&self, p: &crate::syntax::Placement) -> u64 {
+        let least = self
+            .space_decl(p)
+            .and_then(|m| m.alignment.as_ref())
+            .map_or(0, |a| a.0);
+        p.alignment.unwrap_or(0).max(least)
+    }
+
+    /// Each `aligned(N)` in `ty` is in a space whose storage the compiler lays out, and is at
+    /// least the `alignment:` of that space (E6034).
+    fn check_alignments_in(&mut self, ty: &Type, context: &str, span: &Span) {
+        match ty {
+            Type::Borrow { inner, .. }
+            | Type::Pointer(inner, ..)
+            | Type::Ref(inner, _)
+            | Type::Pinned(inner, _) => self.check_alignments_in(inner, context, span),
+            Type::GenericInstance(base, args) => {
+                self.check_alignments_in(base, context, span);
+                for a in args {
+                    self.check_alignments_in(a, context, span);
+                }
+            }
+            Type::Tensor(_, _, Some(p)) => {
+                let Some(n) = p.alignment else {
+                    return;
+                };
+                let space = self.placement_space(p).name();
+                let decl = self.space_decl(p);
+                let laid_out = decl.is_some_and(|m| {
+                    matches!(
+                        m.scope,
+                        Some(
+                            crate::syntax::Scope::Sm
+                                | crate::syntax::Scope::Cta
+                                | crate::syntax::Scope::Thread
+                        )
+                    )
+                });
+                let least = decl.and_then(|m| m.alignment.as_ref()).map_or(0, |a| a.0);
+                let message = if !laid_out {
+                    Some(format!(
+                        "{context}: `aligned({n})` needs a space whose storage the compiler lays \
+                         out, one declared with `scope: sm`, `cta` or `thread`, and '{space}' is not"
+                    ))
+                } else if n < least {
+                    Some(format!(
+                        "{context}: `aligned({n})` is less than the `alignment: {least} B` of \
+                         '{space}', which every tensor there has"
+                    ))
+                } else {
+                    None
+                };
+                if let Some(message) = message {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6034,
+                        message,
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn check_type_placement(&mut self, ty: &Type, context: &str, span: &Span) {
         self.check_placement_of_type(ty, context, span, true)
     }
@@ -970,6 +1046,7 @@ impl<'a> TypeChecker<'a> {
 
     fn check_placement_of_type(&mut self, ty: &Type, context: &str, span: &Span, record: bool) {
         self.report_unheld_placements(ty, context);
+        self.check_alignments_in(ty, context, span);
         for (e, d, space) in self.placed_tensors(ty) {
             self.check_capacity_of(&e, &d, &space, context, span, record);
             self.check_element_type(&e, &space, context);

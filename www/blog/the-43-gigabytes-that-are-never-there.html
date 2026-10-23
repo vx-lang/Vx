@@ -56,7 +56,7 @@ whether you need one GPU or two, resident weights or streamed weights, and your 
 Engineers usually make this decision by summing all allocations. That sum measures the wrong
 quantity.</p>
 
-<h2>Why the sum is wrong</h2>
+<h2 id="why-the-sum-is-wrong">Why the sum is wrong</h2>
 
 <p>Memory capacity depends on peak residency during execution. A tensor occupies GPU memory only
 between its allocation and its release. Two tensors need space simultaneously only when their lifetimes
@@ -77,7 +77,7 @@ moment.</li>
 <p>The 42.99 GiB difference comes entirely from temporary activations. Counting released activations
 leads to unnecessary layer offloading, which severely degrades performance.</p>
 
-<h2>A sum, a peak, and twenty lines</h2>
+<h2 id="a-sum-a-peak-and-twenty-lines">A sum, a peak, and twenty lines</h2>
 
 <p>The Vx compiler tracks memory lifetimes across lexical blocks to distinguish peak usage from total
 allocations. Here is a minimal program demonstrating this behavior. It places one persistent weights
@@ -130,7 +130,7 @@ structure changes. Because function-scoped variables stay allocated until <code>
 compiler verdicts are correct. The unrolled code holds 33 buffers at once because no block boundary
 releases them earlier.</p>
 
-<h2>How the compiler knows</h2>
+<h2 id="how-the-compiler-knows">How the compiler knows</h2>
 
 <p>Vx calculates peak memory usage by tracking scope nesting and allocation order at compile time. The
 compiler assigns a unique identifier to each lexical scope (code block enclosed in braces) as it enters
@@ -169,7 +169,7 @@ compile-time accounting assumed last-use reclamation, the compiler would approve
 memory limits and crash at runtime. The static check accurately models the runtime release
 discipline.</p>
 
-<h2>Llama-2-7B, for real</h2>
+<h2 id="llama-2-7b-for-real">Llama-2-7B, for real</h2>
 
 <p>Applying this peak analysis to production workloads shows that Llama-2-7B fits comfortably on a
 single 40 GiB GPU. Consider standard Llama-2-7B dimensions: 32 layers, hidden dimension 4096,
@@ -220,7 +220,7 @@ embeddings, 2 GiB of key-value (KV) cache, and 1.39 GiB for a single layer's act
 concurrently, so they are fully counted at 12.06 GiB. Memory savings come entirely from temporary
 activation buffers whose lifetimes do not overlap.</p>
 
-<h2>What the wrong answer costs</h2>
+<h2 id="what-the-wrong-answer-costs">What the wrong answer costs</h2>
 
 <p>Assuming that total allocations determine fit causes an unnecessary 47&times; throughput penalty. If
 an engineer believes the model requires 58.93 GiB, they will conclude it cannot fit on a 40 GiB GPU. To
@@ -240,7 +240,7 @@ ms</strong>, providing a roofline throughput of 115 tokens per second.</p>
 accounting determines whether the GPU serves the model at full memory bandwidth or stalls waiting for
 bus transfers.</p>
 
-<h2>Where the line actually is</h2>
+<h2 id="where-the-line-actually-is">Where the line actually is</h2>
 
 <p>The compile-time check enforces physical memory limits by rejecting configurations that exceed
 capacity. Keeping the prefill length at 4096 tokens and raising the batch size on the same A100-40
@@ -260,7 +260,7 @@ card capacity, so the compiler rejects it with error <code>E6010</code>. The com
 (<code>vxc</code>) runs on a laptop and answers deployment capacity questions before hardware is
 provisioned or jobs are scheduled.</p>
 
-<h2>What it does not do</h2>
+<h2 id="what-it-does-not-do">What it does not do</h2>
 
 <p>The peak analysis is intentionally conservative. The compiler guarantees that it will never approve
 a program that exceeds capacity. In edge cases, it may reject a program that would have fit at
@@ -283,7 +283,7 @@ enclosing function returns.</li>
 compiler issues a warning and omits that allocation from the compile-time budget check.</li>
 </ul>
 
-<h2>Why this is not the usual state of affairs</h2>
+<h2 id="why-this-is-not-the-usual-state-of-affairs">Why this is not the usual state of affairs</h2>
 
 <p>Mainstream toolchains cannot compute peak working sets at compile time because their type systems lack
 hardware memory bounds.</p>

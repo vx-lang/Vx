@@ -114,12 +114,14 @@ fn extents_agree(x: &str, y: &str) -> bool {
 }
 
 /// An inline `mlir!` block as the emitter needs it: the named inputs with their declared MLIR
-/// types, the body text, and whether it yields nothing.
+/// types, the body text, whether it yields nothing, and where it is in the source.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InlineBlock {
     pub inputs: Vec<(String, String)>,
     pub body: String,
     pub void: bool,
+    pub line: usize,
+    pub column: usize,
 }
 
 /// The stable per-instance GID of a monomorphized generic struct whose layout depends on its
@@ -2615,6 +2617,14 @@ impl<'r> Lowerer<'r> {
             return self.lower_for_iterator(f);
         };
         let start = self.lower_expr(&range.start)?;
+        if let Some((lo, hi)) = f.unroll {
+            let LoweredTy::Scalar(elem) = start.ty else {
+                return Err(Decline::TypeNotModelled {
+                    what: "a range over a non-scalar",
+                });
+            };
+            return self.lower_unrolled_for(f, elem, lo, hi);
+        }
         let end = self.lower_expr(&range.end)?;
         let elem = match &start.ty {
             LoweredTy::Scalar(e) => e.clone(),
@@ -2693,6 +2703,48 @@ impl<'r> Lowerer<'r> {
         self.emit_effect(Opcode::Store, i_slot.reg, inc.reg, 0);
         self.emit_effect(Opcode::Br, Register(0), Register(0), header as u64);
 
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), exit as u64);
+        Ok(())
+    }
+
+    /// A loop whose variable indexes a register tensor: the body once for each pass, with the
+    /// variable a constant in each, so every index into the tensor is a constant. `continue`
+    /// goes to the next pass and `break` to the end.
+    fn lower_unrolled_for(
+        &mut self,
+        f: &crate::syntax::ForLoopStmt,
+        elem: ElementType,
+        lo: i64,
+        hi: i64,
+    ) -> Lowered<()> {
+        let i_slot = self.emit_alloca(LoweredTy::Scalar(elem.clone()));
+        self.scope.insert(
+            f.iter.as_str().into(),
+            Binding::Slot {
+                reg: i_slot.reg,
+                ty: LoweredTy::Scalar(elem.clone()),
+            },
+        );
+        let exit = self.new_block();
+        for pass in lo..hi {
+            let value = self.emit_value(
+                Opcode::Const,
+                Register(0),
+                Register(0),
+                elem.clone(),
+                pass as u64,
+            );
+            self.emit_effect(Opcode::Store, i_slot.reg, value.reg, 0);
+            let next = self.new_block();
+            self.loop_stack.push((next, exit));
+            self.lower_block(&f.body)?;
+            self.loop_stack.pop();
+            if !self.block_terminated() {
+                self.emit_effect(Opcode::Br, Register(0), Register(0), next as u64);
+            }
+            self.emit_effect(Opcode::BlockStart, Register(0), Register(0), next as u64);
+        }
+        self.emit_effect(Opcode::Br, Register(0), Register(0), exit as u64);
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), exit as u64);
         Ok(())
     }
@@ -3586,9 +3638,11 @@ impl<'r> Lowerer<'r> {
                 .map(|p| crate::arch::memory_space_dispatch_id(&p.space))
                 .filter(|id| *id > 0)
                 .unwrap_or(0);
+            // `aligned(N)` rides on the first operand, 0 for none.
+            let align = placement.as_ref().and_then(|p| p.alignment).unwrap_or(0);
             let buf = self.emit_typed(
                 Opcode::TensorAlloc,
-                Register(0),
+                Register(align as u32),
                 Register(space as u32),
                 ty,
                 bytes,
@@ -3938,6 +3992,8 @@ impl<'r> Lowerer<'r> {
                 .collect(),
             body: im.block_str.clone(),
             void: im.returns.is_none(),
+            line: im.span.line,
+            column: im.span.column,
         });
         Ok(self.emit_typed(Opcode::InlineMlir, Register(0), Register(0), ty, imm))
     }

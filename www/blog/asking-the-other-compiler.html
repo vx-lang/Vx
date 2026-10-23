@@ -47,7 +47,7 @@
 
 <p class="lede">The most productive hour of this fix was writing forty lines of Rust and inspecting what <code>rustc</code> emitted.</p>
 
-<h2>Two implementations, one mangled name</h2>
+<h2 id="two-implementations-one-mangled-name">Two implementations, one mangled name</h2>
 
 <p>In Vx, implementing the same trait multiple times for one type caused a symbol name collision. Compilers assign internal identifiers called symbol names (or mangled names) to functions so the linker can tell them apart. Vx generated method symbols by joining the receiver type (the type implementing the method) and the method name: <code>&lt;receiver&gt;$&lt;method&gt;</code>.</p>
 
@@ -61,7 +61,7 @@
 
 <p>This collision blocked work on <code>core::convert</code>. That module defines widening conversions for primitive integers by generating <code>From</code> implementations across integer types.</p>
 
-<h2>Why this looked like a language design problem</h2>
+<h2 id="why-this-looked-like-a-language-design-problem">Why this looked like a language design problem</h2>
 
 <p>Fixing the symbol names was straightforward, but deciding which method to call at a call site looked difficult. Consider this call:</p>
 
@@ -73,7 +73,7 @@
 
 <p>Before designing a complex resolution system for Vx, I checked how Rust handles this exact pattern.</p>
 
-<h2>Testing the pattern in Rust</h2>
+<h2 id="testing-the-pattern-in-rust">Testing the pattern in Rust</h2>
 
 <p>To see how another language handles this, I wrote a test program in Rust. Rust uses an orphan rule, which prevents user code from implementing an external trait for external types. Because both <code>From</code> and <code>i64</code> belong to the standard library, the test uses a local trait named <code>MyFrom</code>. Each implementation returns a distinct integer:</p>
 
@@ -114,7 +114,7 @@ help: the following other types implement trait `MyFrom&lt;T&gt;`
 
 <p>Rust reports an unsatisfied trait bound (a requirement that a type implement a trait). The compiler assigns <code>i32</code> to the literal, checks whether <code>i64: MyFrom&lt;i32&gt;</code> exists, fails, and lists the available implementations.</p>
 
-<h2>How type inference avoids overload resolution</h2>
+<h2 id="how-type-inference-avoids-overload-resolution">How type inference avoids overload resolution</h2>
 
 <p>Rust avoids overload resolution by combining type inference with fallback rules. When the compiler checks <code>i64::my_from(7)</code>, it creates a trait obligation: <code>i64: MyFrom&lt;?T&gt;</code>. A trait obligation is a requirement that a type implement a trait. The placeholder <code>?T</code> is an inference variable, an unknown type that the compiler still needs to solve. Once the compiler determines the argument type, it replaces <code>?T</code> with a concrete type. That concrete type matches exactly one implementation, so the compiler never has to rank candidate methods.</p>
 
@@ -122,7 +122,7 @@ help: the following other types implement trait `MyFrom&lt;T&gt;`
 
 <p>This pattern simplified the fix in Vx because <strong>Vx already defaults uncontexted integer literals to <code>i32</code></strong>. An uncontexted literal is a literal without an explicit type hint, such as <code>let x = 7;</code>. Because Vx already had this fallback rule, method resolution only needed to infer argument types before looking up implementations.</p>
 
-<h2>The working program in Vx</h2>
+<h2 id="the-working-program-in-vx">The working program in Vx</h2>
 
 <p>With this fix, Vx resolves calls to multi-implementation traits by argument type. The pull request adds a test fixture to verify this behavior. Each implementation returns an identifier number, and <code>print</code> writes numbers without separators:</p>
 
@@ -164,7 +164,7 @@ help: the following other types implement trait `MyFrom&lt;T&gt;`
 
 <pre><code>Error[E3036]: No impl of 'make' on 'i64' takes (i32); 'i64' implements Build&lt;u16&gt;, Build&lt;u8&gt;</code></pre>
 
-<h2>What went wrong: breaking scalar math</h2>
+<h2 id="what-went-wrong-breaking-scalar-math">What went wrong: breaking scalar math</h2>
 
 <p>My first implementation broke the standard library's scalar math by mangling trait names onto every trait method. In Vx, <code>abs</code> on <code>f32</code> comes from <code>impl Math for f32</code>. Mangling the trait name renamed every math method in the standard library, breaking roughly forty test fixtures.</p>
 
@@ -172,7 +172,7 @@ help: the following other types implement trait `MyFrom&lt;T&gt;`
 
 <p>Under this revised rule, <code>impl Math for f32</code> keeps the simple symbol <code>f32$abs</code>, while <code>impl Build&lt;i32&gt; for i64</code> becomes <code>i64$Build$i32$make</code>. If two different traits provide the same method name for a type, the compiler still flags that collision at the call site.</p>
 
-<h2>What the test suite caught and grep missed</h2>
+<h2 id="what-the-test-suite-caught-and-grep-missed">What the test suite caught and grep missed</h2>
 
 <p>Automated test fixtures caught regressions that manual searches completely missed. Six fixtures pinned the old symbol names for methods on argument-bearing traits. Running the test suite caught all six fixtures, whereas three separate manual searches across the repository missed every one.</p>
 
@@ -187,7 +187,7 @@ help: the following other types implement trait `MyFrom&lt;T&gt;`
 
 <p>Each check returned a successful result without performing a valid test. A check that cannot fail provides no useful signal. Silent pass states are the most dangerous testing trap to eliminate.</p>
 
-<h2>Measuring existing compilers</h2>
+<h2 id="measuring-existing-compilers">Measuring existing compilers</h2>
 
 <p>Studying Rust saved significant language design effort. Deciding how a language resolves calls is costly to implement and difficult to change later. Rust solved this problem a decade ago. Writing forty lines of code and running <code>nm</code> replaced open-ended language debate with an empirical measurement.</p>
 

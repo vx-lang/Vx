@@ -62,7 +62,7 @@ shape a vector unit likes. This post takes that one step of Vx's borrow checker 
 vectorizes it on its own, once the code is written in a form it can vectorize. No hand-written
 SIMD intrinsics are involved.</p>
 
-<h2>Lifetimes as numbers</h2>
+<h2 id="lifetimes-as-numbers">Lifetimes as numbers</h2>
 
 <p>Vx gives every lexical block a <em>region</em>: its nesting depth. Region 0 is
 <code>'static</code>, region 1 is a function's body, and each block inside adds one. A smaller
@@ -132,7 +132,7 @@ and <code>continue</code> inside the loop is a branch whose direction depends on
 that can leave in the middle is also a loop LLVM's vectorizer will not touch: to work on four slots
 at once, it has to know all four will be looked at.</p>
 
-<h2>The same check, with no way out of the loop</h2>
+<h2 id="the-same-check-with-no-way-out-of-the-loop">The same check, with no way out of the loop</h2>
 
 <p>The fix is to stop asking questions one at a time. Work out every condition for every
 slot, combine them with <code>&amp;</code> and <code>|</code>, and decide at the end:</p>
@@ -166,7 +166,7 @@ slot, combine them with <code>&amp;</code> and <code>|</code>, and decide at the
 table instead of an <code>if</code>. The &ldquo;not decided yet&rdquo; value is the mask itself,
 so one comparison against the mask covers both slot kinds.</p>
 
-<h2>What LLVM makes of it</h2>
+<h2 id="what-llvm-makes-of-it">What LLVM makes of it</h2>
 
 <p>Compiled by rustc 1.95.0 with <code>--release</code> for an Apple M4, a single call to
 <code>check_branchless</code> becomes this. It is the complete function, with nothing left
@@ -257,7 +257,7 @@ walked all the slots of all the pairs in one flat loop, looking up each slot's m
 answers but took about 4.5 ns per check whatever the input. That beats the old loop only where
 the old loop is slowest, and loses to it on random and identical words. The version above, with the four slots written out per pair, is the fast one.</p>
 
-<h2>Same answers</h2>
+<h2 id="same-answers">Same answers</h2>
 
 <p>A faster check that gives a different answer is a broken borrow checker, so we compared
 the two versions three ways:</p>
@@ -279,7 +279,7 @@ catch mistakes.</li>
 them. It does cover every input a single slot can see, and the result for a word is the results of
 its slots ANDed together, plus the whole-word equality, which the second test exercises.</p>
 
-<h2>Is it faster?</h2>
+<h2 id="is-it-faster">Is it faster?</h2>
 
 <p>Sometimes. Each version checked the same 1,048,576 pairs, best of 30 runs, on one core
 of an Apple M4. The made-up lifetime words have variances 0 to 2 and small regions, and almost all of
@@ -330,7 +330,7 @@ fast case for identical words, and the result is the fastest or close to it for 
 random words. This is the version Vx now uses. We have not measured how often each kind of pair
 turns up in real Vx programs, so how much it saves in practice is still open.</p>
 
-<h2>What this does not show</h2>
+<h2 id="what-this-does-not-show">What this does not show</h2>
 
 <ul>
 <li><strong>It is one step of the borrow checker.</strong> The other half, which tracks the live

@@ -28,7 +28,6 @@
  * pair.
  */
 
-#include <assert.h>
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -77,12 +76,23 @@ static void vx_print_spaces(int64_t count) {
     putchar(' ');
 }
 
+/* The compiler sends only the element kinds that vx_print_element prints, so
+ * any other kind is a compiler bug. The program stops in every build: an
+ * `assert` is compiled out when NDEBUG is set, and the tensor would then print
+ * wrong values or none. */
+_Noreturn static void vx_no_element_printer(int bytes, int is_signed) {
+  fprintf(stderr, "[Vx] FATAL: no printer for a %d-byte %s tensor element\n",
+          bytes, is_signed ? "signed" : "unsigned");
+  abort();
+}
+
 /* `bytes` is the element size. The signed branch is only for `i8`: MLIR prints
  * `i16` itself, and the wide signed types keep MLIR's own printers. */
 static void vx_print_element(const void *base, int64_t at, int bytes,
                              int is_signed) {
   if (is_signed) {
-    assert(bytes == 1 && "only a byte prints signed here");
+    if (bytes != 1)
+      vx_no_element_printer(bytes, is_signed);
     printf("%d", (int)((const int8_t *)base)[at]);
     return;
   }
@@ -100,10 +110,7 @@ static void vx_print_element(const void *base, int64_t at, int bytes,
     printf("%" PRIu64, ((const uint64_t *)base)[at]);
     return;
   }
-  /* An element size the switch does not know must stop the program here. An
-   * `assert` is compiled out when NDEBUG is set, and the tensor would then
-   * print its brackets with no values inside. */
-  abort();
+  vx_no_element_printer(bytes, is_signed);
 }
 
 static void vx_print_data(const void *base, int bytes, int is_signed,

@@ -23,6 +23,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -1469,6 +1470,21 @@ static void fillToDeviceLoops(linalg::FillOp fill) {
   OpBuilder b(fill);
   Location loc = fill.getLoc();
   Value value = fill.getInputs()[0];
+  // A register tensor takes only constant indexes, so its fill is one store
+  // for each element.
+  auto alloca = buffer.getDefiningOp<memref::AllocaOp>();
+  if (alloca && alloca->hasAttr("vx.registers") && type.hasStaticShape()) {
+    SmallVector<int64_t> strides = computeSuffixProduct(type.getShape());
+    for (int64_t flat = 0; flat < type.getNumElements(); ++flat) {
+      SmallVector<Value> at;
+      for (int64_t d = 0; d < type.getRank(); ++d)
+        at.push_back(b.create<arith::ConstantIndexOp>(
+            loc, (flat / strides[d]) % type.getDimSize(d)));
+      b.create<memref::StoreOp>(loc, value, buffer, at);
+    }
+    fill.erase();
+    return;
+  }
   SmallVector<Value> lower, upper, step;
   for (int64_t d = 0; d < type.getRank(); ++d) {
     lower.push_back(b.create<arith::ConstantIndexOp>(loc, 0));
@@ -1606,6 +1622,9 @@ static bool hasDevicePipeline(Operation *placed, int32_t topology) {
   return topology >= 500 && topology < 600;
 }
 
+/// The most static `.shared` storage a CUDA kernel can declare.
+static constexpr int64_t kMaxStaticSharedBytes = 48 * 1024;
+
 /// Whether `op`, in the body of a placed region, can run on the device.
 /// A call or a constant table is added to `callees` when it can come along.
 static bool runsOnDevice(Operation *op, ModuleOp module,
@@ -1648,10 +1667,12 @@ static bool spawnRunsOnDevice(vx::SpawnOp spawn) {
     // A fill becomes loops before the device clone is made.
     if (isa<linalg::FillOp>(op))
       return WalkResult::skip();
-    // A drop of a tensor the region made becomes a `memref.dealloc`.
+    // A drop of a tensor the region made becomes a `memref.dealloc`. A drop of
+    // a stack slot, such as a register or shared tensor, is erased.
     if (auto drop = dyn_cast<vx::DropOp>(op)) {
       Operation *def = drop.getBuffer().getDefiningOp();
-      return def && isa<memref::AllocOp>(def) && spawn->isProperAncestor(def)
+      return def && isa<memref::AllocOp, memref::AllocaOp>(def) &&
+                     spawn->isProperAncestor(def)
                  ? WalkResult::advance()
                  : WalkResult::interrupt();
     }
@@ -2863,6 +2884,28 @@ struct ConvertVxToStandardPass
       // NVPTX renders exactly that as a `.shared` declaration -- and the
       // types line up with the alloca's uses with no casts. Dynamic ones were
       // refused above.
+      // Every stack slot of a fixed size goes to the entry block. LLVM keeps
+      // only entry-block slots in registers, and a variable declared inside an
+      // `if` or a loop of the region has its slot there.
+      {
+        Block &entry = gpuFunc.getBody().front();
+        SmallVector<memref::AllocaOp> late;
+        gpuFunc.walk([&](memref::AllocaOp a) {
+          if (a->getBlock() != &entry && a->getNumOperands() == 0)
+            late.push_back(a);
+        });
+        // In declaration order, so that the shared tensors among them are
+        // laid out in that order.
+        Operation *previous = nullptr;
+        for (memref::AllocaOp a : late) {
+          if (previous)
+            a->moveAfter(previous);
+          else
+            a->moveBefore(&entry, entry.begin());
+          previous = a;
+        }
+      }
+
       {
         SmallVector<memref::AllocaOp> smemAllocas;
         gpuFunc.walk([&](memref::AllocaOp a) {
@@ -2872,6 +2915,59 @@ struct ConvertVxToStandardPass
           if (space && space.getInt() == 3 && t.hasStaticShape())
             smemAllocas.push_back(a);
         });
+        // Static `.shared` storage is limited to 48 KiB a block. Past that the
+        // tensors are views at offsets into dynamic shared memory, and the
+        // kernel says how much it needs (`vx.dynamic_shared`), which the
+        // launch passes.
+        auto alignOf = [](memref::AllocaOp a) -> int64_t {
+          return a.getAlignment() ? (int64_t)a.getAlignment().value() : 16;
+        };
+        auto bytesOf = [](memref::AllocaOp a) -> int64_t {
+          auto t = cast<MemRefType>(a.getType());
+          return t.getNumElements() *
+                 (((int64_t)t.getElementTypeBitWidth() + 7) / 8);
+        };
+        int64_t total = 0;
+        for (memref::AllocaOp a : smemAllocas)
+          total = llvm::alignTo(total, alignOf(a)) + bytesOf(a);
+        if (total > kMaxStaticSharedBytes) {
+          OpBuilder atEntry(&gpuFunc.getBody().front(),
+                            gpuFunc.getBody().front().begin());
+          Location loc = gpuFunc.getLoc();
+          auto workgroup = gpu::AddressSpaceAttr::get(
+              atEntry.getContext(), gpu::AddressSpace::Workgroup);
+          auto bytesType = MemRefType::get(
+              {ShapedType::kDynamic}, atEntry.getI8Type(), nullptr, workgroup);
+          int64_t most = 16;
+          for (memref::AllocaOp a : smemAllocas)
+            most = std::max(most, alignOf(a));
+          Value base =
+              atEntry.create<gpu::DynamicSharedMemoryOp>(loc, bytesType);
+          int64_t offset = 0;
+          for (memref::AllocaOp a : smemAllocas) {
+            offset = llvm::alignTo(offset, alignOf(a));
+            auto t = cast<MemRefType>(a.getType());
+            Value at = atEntry.create<arith::ConstantIndexOp>(loc, offset);
+            auto view = atEntry.create<memref::ViewOp>(
+                a.getLoc(),
+                MemRefType::get(t.getShape(), t.getElementType(), nullptr,
+                                workgroup),
+                base, at, ValueRange{});
+            auto shared = atEntry.create<memref::MemorySpaceCastOp>(
+                a.getLoc(), t, view.getResult());
+            offset += bytesOf(a);
+            a.replaceAllUsesWith(shared.getResult());
+          }
+          // Not in the loop above: the first alloca can be where `atEntry`
+          // inserts.
+          for (memref::AllocaOp a : smemAllocas)
+            a.erase();
+          gpuFunc->setAttr("vx.dynamic_shared",
+                           atEntry.getI64IntegerAttr(total));
+          gpuFunc->setAttr("vx.dynamic_shared_align",
+                           atEntry.getI64IntegerAttr(most));
+          smemAllocas.clear();
+        }
         int smemIdx = 0;
         for (memref::AllocaOp a : smemAllocas) {
           std::string gname =
@@ -3540,11 +3636,13 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
   /// Kernel name -> device image, for the kernels that have one. Owned by the
   /// pass; empty for a host launch, and empty everywhere until #251.
   const llvm::StringMap<std::string> *deviceImages;
+  const llvm::StringMap<int64_t> *dynamicShared;
 
   LaunchOpLowering(const LLVMTypeConverter &typeConverter, MLIRContext *context,
-                   const llvm::StringMap<std::string> *deviceImages)
+                   const llvm::StringMap<std::string> *deviceImages,
+                   const llvm::StringMap<int64_t> *dynamicShared)
       : OpRewritePattern<vx::LaunchOp>(context), typeConverter(typeConverter),
-        deviceImages(deviceImages) {}
+        deviceImages(deviceImages), dynamicShared(dynamicShared) {}
 
   LogicalResult matchAndRewrite(vx::LaunchOp op,
                                 PatternRewriter &rewriter) const override {
@@ -3659,6 +3757,14 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     // It costs a dispatch nothing: the blob is a constant global, one per
     // kernel, so a launch passes a pointer and a length however large the image
     // is. It costs the object file one copy of the PTX in .rodata.
+    // The bytes of dynamic shared memory that the launch passes.
+    if (dynamicShared) {
+      auto bytes = dynamicShared->find(callee);
+      if (bytes != dynamicShared->end()) {
+        payload += "shared=" + std::to_string(bytes->second);
+        payload.push_back('\0');
+      }
+    }
     if (deviceImages) {
       auto image = deviceImages->find(callee);
       if (image != deviceImages->end()) {
@@ -4003,8 +4109,9 @@ static std::string deviceChip(gpu::GPUModuleOp gpuModule) {
 
 /// The PTX ISA version for `chip`, as an NVPTX feature. 7.6 is what CUDA 11.6
 /// and later accept. A newer chip needs a newer version: 7.8 for `sm_89` and
-/// `sm_90`, 8.0 for `sm_90a` (which has `wgmma`), 8.8 for every `sm_10x` and
-/// `sm_12x` chip, and 9.0 for `sm_110`.
+/// `sm_90`, 8.3 for `sm_90a` (which has `wgmma` and the tensor-map fence
+/// `fence.proxy.tensormap`), 8.8 for every `sm_10x` and `sm_12x` chip, and 9.0
+/// for `sm_110`.
 static std::string ptxFeatureFor(StringRef chip) {
   unsigned number = 0;
   chip.drop_front(3).take_while(llvm::isDigit).getAsInteger(10, number);
@@ -4014,7 +4121,7 @@ static std::string ptxFeatureFor(StringRef chip) {
   if (number >= 100)
     return "+ptx88";
   if (number >= 90)
-    return archSpecific ? "+ptx80" : "+ptx78";
+    return archSpecific ? "+ptx83" : "+ptx78";
   if (number >= 89)
     return "+ptx78";
   return "+ptx76";
@@ -4090,6 +4197,11 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
   NVVM::registerNVVMTargetInterfaceExternalModels(registry);
   context->appendDialectRegistry(registry);
 
+  uint64_t dynamicAlign = 16;
+  gpuModule.walk([&](gpu::GPUFuncOp f) {
+    if (auto a = f->getAttrOfType<IntegerAttr>("vx.dynamic_shared_align"))
+      dynamicAlign = std::max<uint64_t>(dynamicAlign, a.getInt());
+  });
   OwningOpRef<ModuleOp> device = ModuleOp::create(gpuModule.getLoc());
   device->getBody()->push_back(gpuModule->clone());
 
@@ -4148,11 +4260,12 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
   pm.addPass(createGpuToLLVMConversionPass());
   pm.addPass(createReconcileUnrealizedCastsPass());
 
+  PassManager toBinary(context, ModuleOp::getOperationName());
   GpuModuleToBinaryPassOptions binary;
   // "isa" stops at PTX text. "fatbin" and "cubin" would both invoke `ptxas`,
   // which is a toolkit the compile host is not required to have.
   binary.compilationTarget = "isa";
-  pm.addPass(createGpuModuleToBinaryPass(binary));
+  toBinary.addPass(createGpuModuleToBinaryPass(binary));
 
   // A square root must give the same bits as on the CPU. The NVVM conversion
   // turns `math.sqrt` into libdevice's `__nv_sqrtf`, which picks
@@ -4187,6 +4300,22 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
   }
 
   if (failed(pm.run(*device))) {
+    error = "the NVPTX pipeline failed";
+    return {};
+  }
+  // Dynamic shared memory must be `.extern .shared .b8 name[]` in the PTX. The
+  // NVVM conversion makes its global internal, and LLVM then turns it into a
+  // one-byte `.shared` variable of the kernel.
+  // Its alignment is the largest of the tensors in it, so that each one's
+  // offset keeps its own.
+  device->walk([&](LLVM::GlobalOp g) {
+    if (!g.getSymName().starts_with("__dynamic_shmem__"))
+      return;
+    g.setLinkage(LLVM::Linkage::External);
+    if (dynamicAlign > 16)
+      g.setAlignment(dynamicAlign);
+  });
+  if (failed(toBinary.run(*device))) {
     error = "the NVPTX pipeline failed";
     return {};
   }
@@ -4378,8 +4507,11 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
       params.push_back(std::move(p));
     }
     SymbolTable::setSymbolName(f, name);
-    kernels.push_back(
-        llvm::json::Object{{"name", name}, {"params", std::move(params)}});
+    llvm::json::Object entry{{"name", name}, {"params", std::move(params)}};
+    // A launch of this kernel passes this many bytes of dynamic shared memory.
+    if (auto bytes = f->getAttrOfType<IntegerAttr>("vx.dynamic_shared"))
+      entry["dynamic_shared_bytes"] = bytes.getInt();
+    kernels.push_back(std::move(entry));
   }
   return kernels;
 }
@@ -4427,6 +4559,7 @@ struct ConvertVxToLLVMPass
            "the GPU kernels of a module are in one gpu.module");
 
     llvm::StringMap<std::string> deviceImages;
+    llvm::StringMap<int64_t> dynamicShared;
     for (gpu::GPUModuleOp m : deviceModules) {
       llvm::json::Array exported;
       if (exporting) {
@@ -4453,7 +4586,11 @@ struct ConvertVxToLLVMPass
       // loader takes the module and then asks for a function by name. So each
       // `gpu.func` maps to the same image, and the kernel name -- already the
       // payload blob's first field -- is what selects the entry.
-      m.walk([&](gpu::GPUFuncOp f) { deviceImages[f.getName()] = image; });
+      m.walk([&](gpu::GPUFuncOp f) {
+        deviceImages[f.getName()] = image;
+        if (auto bytes = f->getAttrOfType<IntegerAttr>("vx.dynamic_shared"))
+          dynamicShared[f.getName()] = bytes.getInt();
+      });
       if (exporting) {
         llvm::json::Object manifest{{"target", deviceChip(m)},
                                     {"kernels", std::move(exported)}};
@@ -4636,7 +4773,8 @@ struct ConvertVxToLLVMPass
 
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
-    patterns.add<LaunchOpLowering>(typeConverter, &getContext(), &deviceImages);
+    patterns.add<LaunchOpLowering>(typeConverter, &getContext(), &deviceImages,
+                                   &dynamicShared);
     patterns.add<TransferToPluginLowering>(typeConverter, &getContext());
     patterns.add<FreeOpLowering>(typeConverter, &getContext());
     patterns.add<AllocOpLowering>(typeConverter, &getContext());

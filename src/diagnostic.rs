@@ -132,6 +132,10 @@ pub enum DiagnosticCode {
     /// out of a loop that holds a `barrier()`, a write to block-shared memory with no `barrier()`
     /// after it, and the like.
     W1033,
+    /// The program writes a variable that a closure copied, and uses the closure after the
+    /// write. The closure keeps the value that it copied, so it does not see the write. A later
+    /// release makes this an error (K4).
+    W1034,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
@@ -617,6 +621,15 @@ pub enum DiagnosticCode {
     /// the most an allocation can ask for. The size is known, and it is not one the generated
     /// code can allocate: it would wrap.
     E6031,
+    /// An index into a tensor in a `scope: thread` space that is not known when compiling. Such
+    /// a tensor stays in registers, and a register has no address. So each index must be a
+    /// constant, or made of constants and the variables of `for` loops with constant bounds, at
+    /// most 1024 passes each. The code generator unrolls those loops.
+    E6033,
+    /// An `aligned(N)` in a tensor type that the compiler cannot give: the space is not one whose
+    /// storage the compiler lays out (`scope: sm`, `cta` or `thread`), or N is less than the
+    /// `alignment:` of the space, which every tensor there has.
+    E6034,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

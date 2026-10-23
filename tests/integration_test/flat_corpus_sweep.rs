@@ -340,6 +340,9 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             // needs --host and --machine
             "optimizations/pass/dtcm_tiles_in_sibling_blocks_fit_a_cortex_m7.vx",
             "optimizations/pass/gpu_kernel_in_main_on_the_ast_code_generator.vx", // needs --machine
+            "optimizations/pass/gpu_register_tensor_stays_in_registers.vx",       // needs --machine
+            "optimizations/pass/register_tensor_loops_are_unrolled.vx",           // needs --machine
+            "optimizations/pass/gpu_kernel_stack_slots_keep_their_order.vx",      // needs --machine
             "frontend/pass/packages/import_from_a_package.vx",                    // needs --package
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {

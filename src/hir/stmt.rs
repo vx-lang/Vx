@@ -449,7 +449,9 @@ impl<'a> TypeChecker<'a> {
         let from_literal = ty_ann.is_none() && matches!(bare, Expr::Number(n) if n.ty.is_none());
         let prev_expected = self.expected_type.take();
         self.expected_type = ty_ann.clone();
+        self.let_closure = matches!(&*expr, Expr::Closure(_)).then_some(*span);
         let ty = self.check_expr_type_flag(expr, consume);
+        self.let_closure = None;
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, ty_ann.as_ref());
         self.expected_type = prev_expected;
         self.current_assignment_target = None;
@@ -674,6 +676,7 @@ impl<'a> TypeChecker<'a> {
             body,
             span: loop_span,
             next_fn,
+            unroll,
         } = floop;
         let loop_span = *loop_span;
         // `for x in t` over a tensor reads it by index: `for $i in 0..t.len() { let x = t[$i]; .. }`.
@@ -963,7 +966,28 @@ impl<'a> TypeChecker<'a> {
             binds: Some(iter.as_str()),
             evaluates: Some(&**iterable),
         };
+        let bounds = match &**iterable {
+            Expr::Range(r) if !crate::hir::check::raw::body_reassigns(body, iter) => {
+                match (
+                    self.eval_expr(&r.start, &before),
+                    self.eval_expr(&r.end, &before),
+                ) {
+                    (Some(Value::Int(lo)), Some(Value::Int(hi))) => Some((lo, hi)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        self.unroll_candidates
+            .push(crate::hir::env::UnrollCandidate {
+                var: iter.as_str().into(),
+                bounds,
+                used: false,
+            });
         self.check_loop_body(body, return_type, header);
+        if let Some(c) = self.unroll_candidates.pop().filter(|c| c.used) {
+            *unroll = c.bounds;
+        }
         self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
@@ -2688,6 +2712,7 @@ impl<'a> TypeChecker<'a> {
                 body,
                 span: _,
                 next_fn: _,
+                unroll: _,
             }) => self.eval_for_loop(iter, iterable, body, env),
             Statement::Loop(LoopStmt {
                 body,

@@ -259,8 +259,9 @@ The kernel reads elements through the aligned pointer. For a tensor that the
 host allocated, give the same pointer twice, offset 0, its sizes, and strides
 for row-major order.
 
-The `.json` file gives `target` (the chip, `VX_GPU_CHIP`, `sm_80` by default)
-and, for each kernel, its `name` and its `params` in launch order. A parameter
+The `.json` file gives `target` (the `chip:` of the machine file, or
+`VX_GPU_CHIP`, `sm_80` by default) and, for each kernel, its `name` and its
+`params` in launch order. A parameter
 has `name` and `type` as the Vx source writes them, `mutable` (the type is
 `&mut`), `kind` (`scalar` or `tensor`), `element` (the MLIR element type),
 `rank` for a tensor, and `words`:
@@ -271,6 +272,11 @@ has `name` and `type` as the Vx source writes them, `mutable` (the type is
 
 An MLIR integer type has no sign, so `element` is `i16` for both `u16` and `i16`. Take the sign
 from `type`.
+
+A kernel whose shared tensors need more than 48 KiB keeps them in dynamic
+shared memory, and its entry also gives `dynamic_shared_bytes`. A program that
+launches it calls `cuFuncSetAttribute(f, CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, n)` once, and passes `n` as
+the `sharedMemBytes` of `cuLaunchKernel`. Vx's own launch does both.
 
 The program that launches the kernel chooses the grid and the block.
 

@@ -14,13 +14,13 @@ the test suite has one, a program that triggers it.
 
 ## Contents
 
-- [Warnings](#warnings) — `W1001`–`W1033` (24 codes)
+- [Warnings](#warnings) — `W1001`–`W1034` (25 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3058` (57 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4014` (14 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
-- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6031` (31 codes)
+- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6034` (33 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
 - [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8006` (6 codes)
 
@@ -54,6 +54,7 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1030`](/errors/W1030/) | A topology's device index is not a compile-time constant (`GPU[i]` for a runtime `i`), so it cannot be resolved to a device instance and falls back to index 0. Every such spawn therefore targets the same device. Vx models one representative device per declared kind (#284), so a fleet program should index with constants or const generics. |
 | [`W1031`](/errors/W1031/) | A proof obligation could not be discharged because no SMT solver was available, so the property is **unverified** rather than proved. Distinct from W1027, which means the solver ran and found a violation. Emitted only under `VX_ALLOW_UNVERIFIED`; without it a missing solver is an error, because silence used to be indistinguishable from success (Vx#374). |
 | [`W1033`](/errors/W1033/) | The loop of a `spawn` region runs on one thread although each pass writes only memory of its own, so its passes could run at the same time. The warning points at what stops it: a call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass writes, bounds not known when compiling, and the like. A region that calls `barrier()` asks for blocks and threads, so it is warned about whenever it runs on one thread, with the first thing that stopped the split: two threads that may write the same element, a `break` out of a loop that holds a `barrier()`, a write to block-shared memory with no `barrier()` after it, and the like. |
+| [`W1034`](/errors/W1034/) | The program writes a variable that a closure copied, and uses the closure after the write. The closure keeps the value that it copied, so it does not see the write. A later release makes this an error (K4). |
 
 ## Parser Errors
 
@@ -220,6 +221,8 @@ Raised by the placement and capacity rules — the checks that make Vx different
 | [`E6029`](/errors/E6029/) | A pointer argument into one memory passed to a parameter that wants a pointer into another: a host `*mut f32` where `*mut f32 in Memory::GPU_HBM` is declared, or the reverse. The two are different types, and the C library or kernel behind the parameter reads the memory the declaration names, so the spaces must match exactly. |
 | [`E6030`](/errors/E6030/) | A `spawn` region on a device hands out a tensor it makes, which the host could not free. The compiler makes such a tensor before the region instead, in the device's memory, when the region hands it out as a variable created with `Tensor<..>(..)`, `::new()` or `unsafe { ..::uninit() }`, with no type annotation, a size that uses nothing the region computes, and a name nothing outside the region already uses. |
 | [`E6031`](/errors/E6031/) | A tensor shape that folds to a negative extent, or whose size is more than 2^63 - 1 bytes, the most an allocation can ask for. The size is known, and it is not one the generated code can allocate: it would wrap. |
+| [`E6033`](/errors/E6033/) | An index into a tensor in a `scope: thread` space that is not known when compiling. Such a tensor stays in registers, and a register has no address. So each index must be a constant, or made of constants and the variables of `for` loops with constant bounds, at most 1024 passes each. The code generator unrolls those loops. |
+| [`E6034`](/errors/E6034/) | An `aligned(N)` in a tensor type that the compiler cannot give: the space is not one whose storage the compiler lays out (`scope: sm`, `cta` or `thread`), or N is less than the `alignment:` of the space, which every tensor there has. |
 
 ## Tensor/Math Errors
 
@@ -247,4 +250,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-158 diagnostics.
+161 diagnostics.

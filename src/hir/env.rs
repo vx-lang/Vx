@@ -445,6 +445,17 @@ impl RefProvenance {
     }
 }
 
+/// A `for` loop around the expression being checked.
+#[derive(Debug, Clone)]
+pub(crate) struct UnrollCandidate {
+    pub(crate) var: crate::symbol::Symbol,
+    /// The loop's bounds, when both are constants.
+    pub(crate) bounds: Option<(i64, i64)>,
+    /// Whether a register tensor is indexed with the variable, which makes the code generator
+    /// unroll the loop.
+    pub(crate) used: bool,
+}
+
 pub struct TypeChecker<'a> {
     pub worker: &'a mut crate::session::LocalWorkerState,
     pub env: &'a GlobalAstEnv<'a>,
@@ -473,6 +484,8 @@ pub struct TypeChecker<'a> {
     /// "fresh check" entry points (`check_expr_type`, `check_block`) force it back off, so the
     /// field's dynamic scope reproduces the old parameter's exactly.
     pub(crate) speculating: bool,
+    /// The `for` loops around the expression being checked, innermost last.
+    pub(crate) unroll_candidates: Vec<UnrollCandidate>,
     /// Identifiers already reported as unreadable from the active topology, so the indexing of
     /// the same read (`c[0][0]`) does not report it again.
     pub(crate) unreadable_reported: std::collections::HashSet<crate::syntax::Span>,
@@ -485,6 +498,10 @@ pub struct TypeChecker<'a> {
     /// statement `match` whose arms yield nothing has no value rather than the function's
     /// return type. Every expression check takes it back to `false` on entry.
     pub(crate) value_unused: bool,
+    /// The variables that closures in `let`s copied, for W1034.
+    pub(crate) closure_copies: Vec<crate::hir::check::closure_copies::ClosureCopy>,
+    /// The `let` being checked, when its value is a closure.
+    pub(crate) let_closure: Option<crate::syntax::Span>,
     /// Set while checking the left-hand side of an assignment (plain or compound): a container
     /// index there is a *store* place, so the `v[i]` -> `v.get(i)` read rewrite must not fire.
     pub(crate) checking_assign_lhs: bool,
@@ -554,9 +571,12 @@ impl<'a> TypeChecker<'a> {
             transfer_cost_graph,
             borrow: crate::hir::borrow_cx::BorrowCx::default(),
             speculating: false,
+            unroll_candidates: Vec::new(),
             unreadable_reported: Default::default(),
             indexed_name: None,
             value_unused: false,
+            closure_copies: Vec::new(),
+            let_closure: None,
             checking_assign_lhs: false,
             borrowed_name: None,
             checking_field_base: false,
@@ -1739,6 +1759,7 @@ impl<'a> TypeChecker<'a> {
         // callee's source.
         let prev_borrows = self.borrow.take();
         let prev_shadowed = self.borrow.take_shadowed();
+        let prev_closure_copies = std::mem::take(&mut self.closure_copies);
         let prev_borrowers = self.borrow.take_borrowers();
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
@@ -1889,6 +1910,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.view_owners_by_let = prev_view_owners;
         self.borrow.restore(prev_borrows);
         self.borrow.restore_shadowed(prev_shadowed);
+        self.closure_copies = prev_closure_copies;
         self.borrow.restore_borrowers(prev_borrowers);
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;

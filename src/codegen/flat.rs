@@ -934,6 +934,8 @@ pub struct SubspaceInfo {
     pub name: String,
     pub within: Option<String>,
     pub granule: Option<u64>,
+    /// `alignment:`, the least alignment of a tensor in the space, in bytes.
+    pub alignment: Option<u64>,
     pub capacity: Option<u64>,
     pub scope: Option<String>,
     /// "explicit" or "cached". Decides whether the host may read this space, and
@@ -1058,6 +1060,7 @@ pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
                 name: space.name(),
                 within: decl.parent.as_ref().map(|p| p.name()),
                 granule: decl.granule.as_ref().map(|g| g.0),
+                alignment: decl.alignment.as_ref().map(|a| a.0),
                 capacity: decl.capacity.as_ref().map(|c| c.0),
                 scope: decl.scope.as_ref().map(|s| {
                     match s {
@@ -1225,6 +1228,72 @@ pub(crate) fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
             what: "a type with no MLIR spelling",
         })
     }
+}
+
+/// The comment before the wrapper of an `mlir!` block, followed by the block's line and column.
+pub(crate) const MLIR_BLOCK_START: &str = "// mlir! block at ";
+/// The comment after the wrapper of an `mlir!` block.
+pub(crate) const MLIR_BLOCK_END: &str = "// end of the mlir! block";
+
+/// Parses the text that `emit_module_mlir` returned. `Ok(None)` when it does not parse because
+/// of an emitter bug: the MLIR errors are printed. `Err` when it does not parse because an
+/// `mlir!` block of the program is not valid MLIR: the error names the block.
+pub fn parse_emitted_module<'c>(
+    context: &'c melior::Context,
+    text: &str,
+) -> Result<Option<melior::ir::Module<'c>>, String> {
+    let errors = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = errors.clone();
+    let id = context.attach_diagnostic_handler(move |d| {
+        seen.borrow_mut()
+            .push((d.location().to_string(), d.to_string()));
+        true
+    });
+    let parsed = melior::ir::Module::parse(context, text);
+    context.detach_diagnostic_handler(id);
+    if parsed.is_some() {
+        return Ok(parsed);
+    }
+    let errors = errors.borrow();
+    if let Some((location, message)) = errors.first() {
+        if let Some(why) = mlir_block_error(text, location, message) {
+            return Err(why);
+        }
+    }
+    for (_, message) in errors.iter() {
+        eprintln!("{message}");
+    }
+    Ok(None)
+}
+
+/// The error for an MLIR error at `location`, such as `loc("-":4:5)` in `text`, when it is in
+/// the code of an `mlir!` block: its wrapper, or the cast of one of its inputs.
+fn mlir_block_error(text: &str, location: &str, message: &str) -> Option<String> {
+    let mut parts = location.trim_end_matches(')').rsplit(':');
+    let _column = parts.next()?;
+    let line: usize = parts.next()?.parse().ok()?;
+    let before: Vec<&str> = text.lines().take(line.checked_sub(1)?).collect();
+    for l in before.into_iter().rev() {
+        if l.starts_with(MLIR_BLOCK_END) {
+            return None;
+        }
+        let Some(at) = l.strip_prefix(MLIR_BLOCK_START) else {
+            continue;
+        };
+        let (line, rest) = at.split_once(' ')?;
+        let (column, input) = rest.split_once(' ').unwrap_or((rest, ""));
+        let block = format!("The `mlir!` block at line {line}, column {column}");
+        let Some(input) = input.strip_prefix("input ") else {
+            return Some(format!("{block} is not valid MLIR: {message}"));
+        };
+        let mut fields = input.split(" | ");
+        let (name, actual, declared) = (fields.next()?, fields.next()?, fields.next()?);
+        return Some(format!(
+            "{block} takes its input `{name}` as `{declared}`, but the value is a `{actual}`: \
+             {message}"
+        ));
+    }
+    None
 }
 
 /// Emit a whole module — every function as a concatenated bare `func.func` — or `None` if *any*

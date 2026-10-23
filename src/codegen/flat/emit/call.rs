@@ -204,8 +204,17 @@ impl FnEmit<'_> {
             };
             let same = actual.replace(' ', "") == declared.replace(' ', "");
             if !same && actual.starts_with("memref<") {
+                // The comments let `parse_emitted_module` name this input when the cast fails.
+                let input = &blk.inputs[k].0;
+                self.body += &format!(
+                    "{}{} {} input {input} | {actual} | {declared}\n",
+                    crate::codegen::flat::MLIR_BLOCK_START,
+                    blk.line,
+                    blk.column
+                );
                 let c =
                     self.cast_memref_value(&format!("imc{idx}_{k}"), &name, &actual, declared)?;
+                self.body += &format!("{}\n", crate::codegen::flat::MLIR_BLOCK_END);
                 operands.push(c);
             } else {
                 operands.push(name);
@@ -262,10 +271,15 @@ impl FnEmit<'_> {
             }
         }
         let ret_sig = ret.map(|rt| format!(" -> {rt}")).unwrap_or_default();
+        // The comments let `parse_emitted_module` find the block that an MLIR error is in.
         self.wrappers += &format!(
-            "func.func private @{fname}({}){ret_sig} {{\n{}\n}}\n",
+            "{}{} {}\nfunc.func private @{fname}({}){ret_sig} {{\n{}\n}}\n{}\n",
+            crate::codegen::flat::MLIR_BLOCK_START,
+            blk.line,
+            blk.column,
             params.join(", "),
-            blk.body.replace("macro.yield", "return")
+            blk.body.replace("macro.yield", "return"),
+            crate::codegen::flat::MLIR_BLOCK_END,
         );
         Ok(())
     }

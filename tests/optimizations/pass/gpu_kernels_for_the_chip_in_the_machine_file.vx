@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 // The `chip:` in the machine file sets the GPU that the kernel is compiled for. The H100 file gives
-// `sm_90a`, which needs PTX 8.0. The A100 file gives `sm_80` and PTX 7.6. The `--emit-ptx`
+// `sm_90a`, which needs PTX 8.3. The A100 file gives `sm_80` and PTX 7.6. The `--emit-ptx`
 // manifest names the chip.
 //
 // REQUIRES: flat-codegen
@@ -15,7 +15,7 @@
 // RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=A100
 // RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
 // RUN: FileCheck %s --check-prefix=JSON < %t.json
-// H100: image={{.*}}.version 8.0{{.*}}.target sm_90a{{.*}}.entry vx_npu_kernel_0
+// H100: image={{.*}}.version 8.3{{.*}}.target sm_90a{{.*}}.entry vx_npu_kernel_0
 // A100: image={{.*}}.version 7.6{{.*}}.target sm_80{{.*}}.entry vx_npu_kernel_0
 // JSON: "target": "sm_90a"
 

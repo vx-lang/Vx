@@ -54,7 +54,7 @@ That is the part Vx puts in the compiler.</blockquote>
 distinguish host DRAM from GPU HBM</a>, argued that the memory space belongs in the type. This
 one asks whether that type has to come from the language.</p>
 
-<h2>The question</h2>
+<h2 id="the-question">The question</h2>
 
 <p>The usual example is a Rust tensor library such as Burn. Its <code>Tensor&lt;B, 2&gt;</code>
 carries the backend and the rank in its type. The shape and the device are values, checked when
@@ -64,7 +64,7 @@ round, or mix tensors from two devices, and you find out at run time.</p>
 <p>That is a choice Burn made, not a limit of Rust. A library can move both checks to compile
 time.</p>
 
-<h2>The Rust version</h2>
+<h2 id="the-rust-version">The Rust version</h2>
 
 <p>One empty type per memory space, a trait for "the CPU can read this", and const generics for
 the shape:</p>
@@ -101,7 +101,7 @@ either, because <code>S</code> must be the same type for both.</p>
 <p>So for "this tensor lives in GPU memory and the CPU cannot read it", the critic is right: a
 library does it. Vx does not need to be a language for that part alone.</p>
 
-<h2>Where the library stops</h2>
+<h2 id="where-the-library-stops">Where the library stops</h2>
 
 <p><strong>Shapes computed from other shapes.</strong> <code>matmul</code> works because its
 result only reuses its inputs' sizes. A <code>concat</code> whose result has <code>A + B</code>
@@ -191,7 +191,7 @@ it, and the compiler checks it as code for the device it runs on:</p>
 <p>Transfer to <code>NPU_HBM</code> instead, as the error says, and the program compiles and
 runs.</p>
 
-<h2>So which is it?</h2>
+<h2 id="so-which-is-it">So which is it?</h2>
 
 <p>Putting a memory space in a type is a library feature, and Rust does it well. A memory
 hierarchy is more than that: sizes that add up across calls, shape arithmetic, costs

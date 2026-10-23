@@ -20,8 +20,10 @@ it reaches `senders c`, the channel `c` is closed. So a `recv` waits in a loop: 
 of drops, then `full k`. It stops when `full k` is set, or when the counter of drops showed that
 the channel is closed. In the second case it gets no value. It sets `taken (k + n)` in both cases.
 
-A `Mutex` is a ticket lock with two counters. A `lock` takes its ticket `k` from the first
-counter, then reads the second counter until it is `k`. An `unlock` adds 1 to the second counter.
+A `Mutex` is a ticket lock with two counters. The code holds it in a block, `locked m s`. The
+block takes its ticket `k` from the first counter, reads the second counter until it is `k`, runs
+`s`, and adds 1 to the second counter. `Lock.lean` shows that two blocks never hold a lock at the
+same time.
 
 `Counter.tickets` shows that no two `send`s get the same number, and no two `recv`s. So each flag
 has one writer. Then `send_hb_recv`, `recv_hb_send_capacity`, `drop_hb_closed` and
@@ -45,10 +47,8 @@ inductive CStmt where
   | recv (r s c : Nat)
   /-- Drop a sender of the channel `c`. -/
   | drop (c : Nat)
-  /-- Wait until no other code holds the lock `m`, then hold it. -/
-  | lock (m : Nat)
-  /-- Let the next `lock` of the lock `m` go. -/
-  | unlock (m : Nat)
+  /-- Wait until no other code holds the lock `m`, then run `s` and let the lock go. -/
+  | locked (m : Nat) (s : CStmt)
   | seq (s t : CStmt)
   | ite (c : Expr) (s t : CStmt)
   | loop (c : Expr) (s : CStmt)
@@ -58,9 +58,16 @@ inductive CStmt where
 /-- `s` holds the code `b` of `Tasks.lean`. -/
 def CStmt.Bases : CStmt → Stmt → Prop
   | .base s, b => s = b
-  | .send .., _ | .recv .., _ | .drop _, _ | .lock _, _ | .unlock _, _ => False
+  | .send .., _ | .recv .., _ | .drop _, _ => False
   | .seq s t, b | .ite _ s t, b => s.Bases b ∨ t.Bases b
-  | .loop _ s, b | .tasksBlock s, b => s.Bases b
+  | .loop _ s, b | .tasksBlock s, b | .locked _ s, b => s.Bases b
+
+/-- `s` holds a `locked` block of the lock `m`. -/
+def CStmt.Locks (m : Nat) : CStmt → Prop
+  | .locked m' s => m' = m ∨ s.Locks m
+  | .base _ | .send .. | .recv .. | .drop _ => False
+  | .seq s t | .ite _ s t => s.Locks m ∨ t.Locks m
+  | .loop _ s | .tasksBlock s => s.Locks m
 
 /-- The two operations of a channel. -/
 inductive Op where
@@ -72,6 +79,12 @@ inductive Op where
 def Op.other : Op → Op
   | .send => .recv
   | .recv => .send
+
+/-- How an operation accesses its element of the values: a `send` writes it, and a `recv` reads
+it. -/
+def Op.moveKind : Op → Kind
+  | .send => .write
+  | .recv => .read
 
 /-- The counters. A channel has three: one for each operation, and one for the drops of senders.
 A lock has two: `next` gives the tickets, and `serving` names the ticket that may hold the lock. -/
@@ -235,10 +248,12 @@ abbrev bump (q : Ctr) (c : Nat) : Stmt := .fetchAdd P.tmp (P.cnt q c) (.const 1)
 /-- One read of `serving` by a `lock`. -/
 abbrev peek (m : Nat) : Stmt := .load P.ctrReg (P.cnt .serving m) .sc
 
+/-- A `lock` waits again while `serving` is not its ticket. -/
+abbrev waitCond : Expr := .eq (.eq (.reg P.ctrReg) (.reg P.tmp)) (.const 0)
+
 /-- Take a ticket, then read `serving` until it names the ticket. -/
 abbrev lockCode (m : Nat) : Stmt :=
-  .seq (P.bump .next m)
-    (.seq (P.peek m) (.loop (.eq (.eq (.reg P.ctrReg) (.reg P.tmp)) (.const 0)) (P.peek m)))
+  .seq (P.bump .next m) (.seq (P.peek m) (.loop P.waitCond (P.peek m)))
 
 /-- Replace `send`, `recv` and `drop` with their code. -/
 def lowerC : CStmt → Stmt
@@ -246,8 +261,7 @@ def lowerC : CStmt → Stmt
   | .send c e => P.opCode .send c (.storeAt (P.data c) P.msgs (.reg P.tmp) e .plain)
   | .recv r s c => P.recvCode c r s
   | .drop c => P.bump .drop c
-  | .lock m => P.lockCode m
-  | .unlock m => P.bump .serving m
+  | .locked m s => .seq (P.lockCode m) (.seq (lowerC s) (P.bump .serving m))
   | .seq s t => .seq (lowerC s) (lowerC t)
   | .ite e s t => .ite e (lowerC s) (lowerC t)
   | .loop e s => .loop e (lowerC s)
@@ -277,12 +291,13 @@ def toTaskProg : TaskProg where
   flags := P.top
   marks := P.tmp + 3
 
-/-- The rules for the code of the program: it uses the places below `places`, its channels exist,
-and a `recv` does not write the register `tmp`. -/
+/-- The rules for the code of the program: it uses the places below `places`, its channels and
+locks exist, and a `recv` does not write the register `tmp`. A `locked` block of a lock does not
+hold another one of the same lock. -/
 def StmtOk : CStmt → Prop
   | .base s => s.Below P.places P.count
   | .send c _ | .drop c => c < P.chans
-  | .lock m | .unlock m => m < P.locks
+  | .locked m s => m < P.locks ∧ ¬ s.Locks m ∧ StmtOk s
   | .recv r s c => c < P.chans ∧ r ≠ P.tmp ∧ s ≠ P.tmp
   | .seq s t | .ite _ s t => StmtOk s ∧ StmtOk t
   | .loop _ s | .tasksBlock s => StmtOk s
@@ -465,8 +480,8 @@ inductive Trans : Phase → Option Label → Phase → Prop
   | wait {o c k v ph} {j : Nat} : ph = .counted o c k ∨ ph = .waited o c k → (j : Int) = k →
     j < P.sigLen o.other →
     Trans ph (some ⟨.read, .sc, P.sig o.other c + j, v, false⟩) (.waited o c k)
-  | move {o c k kd v} {j : Nat} : (j : Int) = k → j < P.msgs →
-    Trans (.waited o c k) (some ⟨kd, .plain, P.data c + j, v, false⟩) (.waited o c k)
+  | move {o c k v} {j : Nat} : (j : Int) = k → j < P.msgs →
+    Trans (.waited o c k) (some ⟨o.moveKind, .plain, P.data c + j, v, false⟩) (.waited o c k)
   | set {o c k} {j : Nat} : (j : Int) = k + P.off o c → j < P.sigLen o →
     Trans (.waited o c k) (some ⟨.write, .sc, P.sig o c + j, 1, false⟩) .idle
 
@@ -1112,8 +1127,10 @@ theorem clean_lower {s : CStmt} (h : P.StmtOk s) : P.Clean (P.toTaskProg.lower (
   | base s => exact .other (lower_avoid h)
   | send c e => exact .op h .send
   | recv r s c => exact .recv h.1 h.2.1 h.2.2
-  | drop c | unlock c => exact .bump trivial h
-  | lock m => exact .seq (.bump trivial h) (.seq (.peek h) (.loop (.peek h)))
+  | drop c => exact .bump trivial h
+  | locked m _ ih =>
+    exact .seq (.seq (.bump trivial h.1) (.seq (.peek h.1) (.loop (.peek h.1))))
+      (.seq (ih h.2.2) (.bump trivial h.1))
   | seq _ _ ih1 ih2 => exact .seq (ih1 h.1) (ih2 h.2)
   | ite _ _ _ ih1 ih2 => exact .ite (ih1 h.1) (ih2 h.2)
   | loop _ _ ih => exact .loop (ih h)
@@ -1143,16 +1160,20 @@ theorem getElem?_range_map {n i : Nat} {f : Nat → Label} (hi : i < n) :
     ((List.range n).map f)[i]? = some (f i) := by
   simp [List.getElem?_map, List.getElem?_range hi]
 
-/-- The accesses of a thread: first the writes at the start, then a list that `Trans` allows. -/
-theorem trace_split (hP : P.Ok) {t n : Nat} {f : Nat → Label}
-    (h : Trace (P.toTaskProg.toProg.code t) n f) :
+variable (P) in
+/-- The code of the thread `t` after the writes at the start. -/
+def body (t : Nat) : Stmt :=
+  if t = 0 then P.toTaskProg.lower (P.lowerC P.main) else P.toTaskProg.toProg.code t
+
+/-- The accesses of a thread: first the writes at the start, then a run of `body`. -/
+theorem trace_rest {t n : Nat} {f : Nat → Label} (h : Trace (P.toTaskProg.toProg.code t) n f) :
     (∀ i < n, i < P.pre t → P.initList[i]?.map initLabel = some (f i)) ∧
-      P.Accepts .idle ((List.range (n - P.pre t)).map fun m => f (P.pre t + m)) := by
+      Runs (P.body t) (fun _ => 0) ((List.range (n - P.pre t)).map fun m => f (P.pre t + m)) := by
   unfold Trace at h
   cases t with
   | succ t =>
-    simp only [pre, Nat.add_one_ne_zero, ↓reduceIte, Nat.sub_zero, Nat.zero_add]
-    exact ⟨fun _ _ h => absurd h (Nat.not_lt_zero _), Runs.accepts h (.clean (clean_task hP t))⟩
+    simp only [pre, body, Nat.add_one_ne_zero, ↓reduceIte, Nat.sub_zero, Nat.zero_add]
+    exact ⟨fun _ _ h => absurd h (Nat.not_lt_zero _), h⟩
   | zero =>
     simp only [pre, ↓reduceIte]
     rw [code_zero] at h
@@ -1162,7 +1183,7 @@ theorem trace_split (hP : P.Ok) {t n : Nat} {f : Nat → Label}
         simp only [List.length_map, List.length_range, List.length_take] at this
         omega
       subst hn
-      refine ⟨fun i hi _ => ?_, by rw [Nat.sub_eq_zero_of_le hk]; exact .nil⟩
+      refine ⟨fun i hi _ => ?_, by rw [Nat.sub_eq_zero_of_le hk]; exact .stop⟩
       have := congrArg (·[i]?) hM
       simp only [getElem?_range_map hi, List.getElem?_take, hi, ↓reduceIte, List.getElem?_map]
         at this
@@ -1185,7 +1206,20 @@ theorem trace_split (hP : P.Ok) {t n : Nat} {f : Nat → Label}
           · rw [List.getElem?_eq_none (show M'.length ≤ m by omega),
               List.getElem?_eq_none (by simp; omega)]
         rw [← this]
-        exact Runs.accepts hr (.clean (clean_lower hP.main))
+        simpa [body] using hr
+
+/-- The code of each thread after the writes at the start is clean. -/
+theorem clean_body (hP : P.Ok) (t : Nat) : P.Clean (P.body t) := by
+  cases t with
+  | zero => exact clean_lower hP.main
+  | succ t => exact clean_task hP t
+
+/-- The accesses of a thread: first the writes at the start, then a list that `Trans` allows. -/
+theorem trace_split (hP : P.Ok) {t n : Nat} {f : Nat → Label}
+    (h : Trace (P.toTaskProg.toProg.code t) n f) :
+    (∀ i < n, i < P.pre t → P.initList[i]?.map initLabel = some (f i)) ∧
+      P.Accepts .idle ((List.range (n - P.pre t)).map fun m => f (P.pre t + m)) :=
+  ⟨(trace_rest h).1, Runs.accepts (trace_rest h).2 (.clean (clean_body hP t))⟩
 
 /-! ## The writes at the start -/
 
@@ -1268,10 +1302,11 @@ theorem seqCstOnly_lowerC {s : CStmt}
   induction s with
   | base s => exact h s rfl
   | send => exact ⟨Or.inr rfl, trivial, Or.inl rfl, Or.inr rfl⟩
-  | recv | drop | lock | unlock => simp [lowerC, Stmt.SeqCstOnly]
+  | recv | drop => simp [lowerC, Stmt.SeqCstOnly]
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 =>
     exact ⟨ih1 fun b hb => h b (Or.inl hb), ih2 fun b hb => h b (Or.inr hb)⟩
   | loop _ _ ih | tasksBlock _ ih => exact ih h
+  | locked _ _ ih => exact ⟨by simp [Stmt.SeqCstOnly], ih h, by simp [Stmt.SeqCstOnly]⟩
 
 /-- DRF-SC for programs with tasks and channels. -/
 theorem drf_sc (P : ChanProg) (hm : ∀ b, P.main.Bases b → b.SeqCstOnly)

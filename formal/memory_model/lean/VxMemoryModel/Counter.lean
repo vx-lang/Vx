@@ -145,6 +145,67 @@ theorem Counter.mono (wf : X.WellFormed) (hc : X.Consistent) (ho : X.CoOrder) (h
       · exact (hC.init_first wf hc ho hfin' hb hbx (fun r h => hbi ⟨r, h⟩) a hab).elim
   exact fun a b => key _ b (Nat.le_refl _) a
 
+/-- No write of a counter has a value below the value at the start. -/
+theorem Counter.ge_init (wf : X.WellFormed) (hc : X.Consistent) (ho : X.CoOrder) (hfin : X.Finite)
+    {val : X.E → Int} {x : Nat} (hC : X.Counter val x) {v : Int}
+    (hinit : ∀ a, X.IsWrite a → X.loc a = x → (∀ r, ¬ X.rmw r a) → v ≤ val a) :
+    ∀ a, X.IsWrite a → X.loc a = x → v ≤ val a := by
+  obtain ⟨l, hl⟩ := hfin
+  have key : ∀ n a, count l (X.co · a) ≤ n → X.IsWrite a → X.loc a = x → v ≤ val a := by
+    intro n
+    induction n with
+    | zero =>
+      intro a hn ha hax
+      by_cases hbi : ∃ r, X.rmw r a
+      · obtain ⟨r, hra⟩ := hbi
+        obtain ⟨hrx, -⟩ := hC.add r a hra hax
+        obtain ⟨s, hs⟩ := hC.rf_source r (wf.rmw_atomic r a hra).1
+        have := count_pos (p := (X.co · a)) (hl s) (rmw_source_co wf hc ho hs hra (hrx.trans hax.symm))
+        omega
+      · exact hinit a ha hax (fun r h => hbi ⟨r, h⟩)
+    | succ n ih =>
+      intro a hn ha hax
+      by_cases hbi : ∃ r, X.rmw r a
+      · obtain ⟨r, hra⟩ := hbi
+        obtain ⟨hrx, hva⟩ := hC.add r a hra hax
+        obtain ⟨s, hs⟩ := hC.rf_source r (wf.rmw_atomic r a hra).1
+        have hsa := rmw_source_co wf hc ho hs hra (hrx.trans hax.symm)
+        obtain ⟨hsw, -, hsx⟩ := wf.co_writes s a hsa
+        have hlt : count l (X.co · s) < count l (X.co · a) :=
+          count_lt (fun c h => ho.trans c s a h hsa) (hl s) hsa (wf.co_irrefl s)
+        have := ih s (by omega) hsw (hsx.trans hax)
+        have := hC.rf_val s r hs
+        omega
+      · exact hinit a ha hax (fun r h => hbi ⟨r, h⟩)
+  exact fun a => key _ a (Nat.le_refl _)
+
+/-- If a read of a counter sees a value above `v`, and the value at the start is at most `v`,
+then a read-modify-write of the counter read `v`. -/
+theorem Counter.exists_of_lt (wf : X.WellFormed) {val : X.E → Int} {x : Nat}
+    (hC : X.Counter val x) {v : Int}
+    (hinit : ∀ a, X.IsWrite a → X.loc a = x → (∀ r, ¬ X.rmw r a) → val a ≤ v) :
+    ∀ e, X.IsRead e → X.loc e = x → v < val e → ∃ r w, X.rmw r w ∧ X.loc w = x ∧ val r = v := by
+  have key : ∀ n e, (val e - v).toNat ≤ n → X.IsRead e → X.loc e = x → v < val e →
+      ∃ r w, X.rmw r w ∧ X.loc w = x ∧ val r = v := by
+    intro n
+    induction n with
+    | zero => intro e hn _ _ hlt; omega
+    | succ n ih =>
+      intro e hn he hex hlt
+      obtain ⟨s, hs⟩ := hC.rf_source e he
+      obtain ⟨hsw, -, hsl⟩ := wf.rf_write_read s e hs
+      have hsx : X.loc s = x := hsl.trans hex
+      have hvs := hC.rf_val s e hs
+      by_cases hbi : ∃ r, X.rmw r s
+      · obtain ⟨r, hrs⟩ := hbi
+        obtain ⟨hrx, hvr⟩ := hC.add r s hrs hsx
+        by_cases hrv : val r = v
+        · exact ⟨r, s, hrs, hsx, hrv⟩
+        · exact ih r (by omega) (wf.rmw_atomic r s hrs).1 hrx (by omega)
+      · have := hinit s hsw hsx (fun r h => hbi ⟨r, h⟩)
+        omega
+  exact fun e => key _ e (Nat.le_refl _)
+
 /-- Two read-modify-writes of a counter never read the same value. -/
 theorem Counter.tickets (wf : X.WellFormed) (hc : X.Consistent) (ho : X.CoOrder)
     (hfin : X.Finite) {val : X.E → Int} {x : Nat} (hC : X.Counter val x)

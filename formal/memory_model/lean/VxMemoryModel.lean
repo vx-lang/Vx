@@ -19,3 +19,5 @@ import VxMemoryModel.CounterExample
 import VxMemoryModel.Channel
 import VxMemoryModel.ChannelExample
 import VxMemoryModel.MutexExample
+import VxMemoryModel.Lock
+import VxMemoryModel.Fifo

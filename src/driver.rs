@@ -780,6 +780,7 @@ impl CompilerDriver {
                 replicas: None,
                 managed: crate::syntax::Management::Explicit,
                 granule: None,
+                alignment: None,
                 scope: None,
                 overcommit: false,
                 crossing: crate::syntax::Crossing::default(),
@@ -1350,8 +1351,9 @@ impl CompilerDriver {
         mlir_args: &[String],
     ) -> Result<Option<()>, String> {
         let context = self.backend_context();
-        let parsed =
-            crate::intern_mode::timed("mlir_parse", || melior::ir::Module::parse(&context, text));
+        let parsed = crate::intern_mode::timed("mlir_parse", || {
+            crate::codegen::flat::parse_emitted_module(&context, text)
+        })?;
         let Some(module) = parsed else {
             // Loud in a debug build, where the corpus and the fallback both exist, so the gap is
             // found here rather than by whoever consumes a `.vxlib` built from this module.
@@ -1405,6 +1407,7 @@ impl CompilerDriver {
                 interfaces,
                 self.options.action == Action::EmitPtx,
             )
+            .transpose()?
         };
 
         let module = match flat_module {
@@ -1672,7 +1675,7 @@ impl CompilerDriver {
         module_syntaxes: &std::collections::HashMap<crate::symbol::Symbol, crate::syntax::Program>,
         interfaces: &[Vec<u8>],
         describe_params: bool,
-    ) -> Option<melior::ir::Module<'c>> {
+    ) -> Option<Result<melior::ir::Module<'c>, String>> {
         // The main module first (its monomorphs win any name collision), then the imports; resolve
         // names so the registry freeze sees settled struct/enum GIDs.
         let mut mods: Vec<crate::syntax::Program> = vec![main_ast.clone()];
@@ -1923,7 +1926,10 @@ impl CompilerDriver {
 
         // `emit_module_mlir` returns a complete `module { … }`; wrapping it here would copy the
         // whole body again (#311).
-        let parsed = melior::ir::Module::parse(context, &text);
+        let parsed = match crate::codegen::flat::parse_emitted_module(context, &text) {
+            Ok(parsed) => parsed,
+            Err(why) => return Some(Err(why)),
+        };
         if parsed.is_none() {
             // `emit_module_mlir` returned `Some(text)` — it *claimed* to handle this module — yet the
             // text does not parse. That is an emitter **bug** (a construct emitted invalid MLIR, e.g.
@@ -1943,7 +1949,7 @@ impl CompilerDriver {
                  emitted unparseable text instead of declining in emit_module_mlir.\n{text}"
             );
         }
-        parsed
+        parsed.map(Ok)
     }
 }
 
@@ -2205,14 +2211,20 @@ mod flat_codegen_tests {
             "fn add(a: i32, b: i32) -> i32 { return a + b; }\n\
              fn main() -> i32 { return add(3, 4) * 5; }",
         );
-        assert!(CompilerDriver::build_flat_module(&context, &prog, &empty, &[], false).is_some());
+        assert!(matches!(
+            CompilerDriver::build_flat_module(&context, &prog, &empty, &[], false),
+            Some(Ok(_))
+        ));
 
         // In subset: a libm extern call (declared `func.func private`, linked by the JIT).
         let ext = parse(
             "extern { safe fn sqrtf(x: f32) -> f32; }\n\
              fn main() -> i32 { print(sqrtf(16.0)); return 0; }",
         );
-        assert!(CompilerDriver::build_flat_module(&context, &ext, &empty, &[], false).is_some());
+        assert!(matches!(
+            CompilerDriver::build_flat_module(&context, &ext, &empty, &[], false),
+            Some(Ok(_))
+        ));
 
         // In subset: structs (including a struct return) now build through the flat path -- the flat
         // build runs a registry-backed type-check to annotate `StructInit` GIDs (#215).
@@ -2221,7 +2233,10 @@ mod flat_codegen_tests {
              fn mk() -> P { return P { x: 1, y: 2 }; }\n\
              fn main() -> i32 { let p = mk(); return p.x + p.y; }",
         );
-        assert!(CompilerDriver::build_flat_module(&context, &strukt, &empty, &[], false).is_some());
+        assert!(matches!(
+            CompilerDriver::build_flat_module(&context, &strukt, &empty, &[], false),
+            Some(Ok(_))
+        ));
 
         // Outside the subset: a bare call to an *undefined* Vx function has no body to lower -> the
         // whole program declines -> AST fallback (never a wrong result).

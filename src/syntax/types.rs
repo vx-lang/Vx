@@ -231,6 +231,9 @@ pub struct Placement {
     /// topology whose memory is not its like-named space are indistinguishable from the pair
     /// alone.
     stated: Stated,
+    /// `aligned(N)` in the tensor type: the tensor starts at a multiple of N bytes. `None` is the
+    /// least alignment of the space.
+    pub alignment: Option<u64>,
 }
 
 /// Which half of a [`Placement`] the source wrote.
@@ -248,10 +251,12 @@ pub enum Written {
 }
 
 /// Two spellings of one location are one type, so which projection the source happened to write
-/// is not part of equality -- that is the whole point of carrying both.
+/// is not part of equality -- that is the whole point of carrying both. The alignment is.
 impl PartialEq for Placement {
     fn eq(&self, other: &Self) -> bool {
-        self.topology == other.topology && self.space == other.space
+        self.topology == other.topology
+            && self.space == other.space
+            && self.alignment == other.alignment
     }
 }
 
@@ -263,6 +268,7 @@ impl Placement {
             topology,
             space,
             stated: Stated::Device,
+            alignment: None,
         }
     }
 
@@ -279,6 +285,7 @@ impl Placement {
             topology,
             space,
             stated: Stated::Space,
+            alignment: None,
         }
     }
 
@@ -293,6 +300,7 @@ impl Placement {
             topology,
             space,
             stated: Stated::Space,
+            alignment: None,
         }
     }
 
@@ -1417,6 +1425,9 @@ impl std::fmt::Display for Type {
                 // The placement as the program writes it in a tensor type, `Memory::GPU_HBM`.
                 if let Some(p) = top {
                     write!(f, ", {}", p.as_written())?;
+                    if let Some(n) = p.alignment {
+                        write!(f, ", aligned({n})")?;
+                    }
                 }
                 write!(f, ">")
             }

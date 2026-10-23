@@ -263,18 +263,20 @@ the operations that can go wrong with them require `unsafe`:
 - reading a field through one
 - calling an `unsafe fn`
 
-A function that takes a caller's raw pointer and dereferences it is itself declared `unsafe fn`, so
-the obligation is visible in the signature rather than buried in the body.
+A function that takes a caller's raw pointer and dereferences it should be declared `unsafe fn`, so
+the obligation is visible in the signature rather than buried in the body. Marking a function
+`unsafe` does not allow raw pointer operations in its body. Each one still needs an `unsafe` block,
+as in [Unsafe and FFI](unsafe-and-ffi.md).
 
 ```rust
 unsafe fn read_first(p : *const i32) -> i32 {
-    return *p;
+    return unsafe { *p };
 }
 
 fn main() -> i32 {
     let x : i32 = 42;
     unsafe {
-        return read_first(&x);
+        return read_first(&x) - 42;
     }
 }
 ```

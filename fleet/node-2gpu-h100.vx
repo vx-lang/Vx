@@ -45,7 +45,15 @@ Memory L2 {
 // spec: NVIDIA Hopper Architecture Whitepaper / CUDA C Programming Guide --
 // 228 KB configurable shared memory per SM (up from 164 KB on A100).
 Memory SMEM {
-  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, scope: sm
+  // alignment: the 16-byte vector accesses (ld.shared.v4) that LLVM makes need it.
+  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, granule: 1 KiB, managed: explicit, alignment: 16 B, scope: sm
+}
+
+// spec: CUDA C Programming Guide, technical specifications per compute capability -- at most
+// 255 32-bit registers per thread. A tensor here stays in registers, so each index must be
+// known when compiling (E6033).
+Memory REG {
+  within: Memory::SMEM, capacity: 1020 B, managed: explicit, scope: thread
 }
 
 // --- The decode device ------------------------------------------------------
@@ -69,7 +77,7 @@ Topology Node {
   // The `a` chip adds wgmma. Its code loads only on Hopper.
   chip: sm_90a,
   memory: Memory::HBM,
-  visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::PEER_HBM],
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::REG, Memory::PEER_HBM],
 
   // spec: PCIe Gen5 x16 = 63 GB/s per direction (32 GT/s x 16 lanes,
   // 128b/130b). UNVERIFIED on the rented part, as in fleet/h100-sxm.vx: an SXM

@@ -1,0 +1,47 @@
+//===- register_tensor_indexes_not_known_when_compiling.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A tensor in `Memory::REG` (`scope: thread`) stays in registers, so each index must be known
+// when compiling. Each function below indexes one with something else.
+//
+// RUN: not vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// CHECK: Error[E6033] at 22:6: the register tensor 'acc' needs an index that is known when compiling: 'n' is not a constant or the variable of a `for` loop. A tensor in a `scope: thread` space stays in registers, which have no address
+// CHECK: Error[E6033] at 28:8: the register tensor 'acc' needs an index that is known when compiling: the bounds of the loop of 'i' are not constants, so the compiler cannot unroll it
+// CHECK: Error[E6033] at 35:8: the register tensor 'acc' needs an index that is known when compiling: the loop of 'i' has 2000 passes, and the compiler unrolls at most 1024
+// CHECK: Error[E6033] at 41:6: the register tensor 'acc' needs an index that is known when compiling: the index uses a value that is not a constant or a loop variable
+
+fn three() on Topology::Device -> i32 {
+  return 3;
+}
+
+fn with_a_parameter(acc : &mut Tensor<f32, [32], Memory::REG>, n : i32) on Topology::Device -> void {
+  acc[n] = 1.0;
+  return;
+}
+
+fn with_loop_bounds_not_known(acc : &mut Tensor<f32, [32], Memory::REG>, n : i32) on Topology::Device -> void {
+  for i in 0..n {
+    acc[i] = 1.0;
+  }
+  return;
+}
+
+fn with_a_long_loop(acc : &mut Tensor<f32, [32], Memory::REG>) on Topology::Device -> void {
+  for i in 0..2000 {
+    acc[i % 32] = 1.0;
+  }
+  return;
+}
+
+fn with_a_call(acc : &mut Tensor<f32, [32], Memory::REG>) on Topology::Device -> void {
+  acc[three()] = 1.0;
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

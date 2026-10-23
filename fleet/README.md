@@ -24,6 +24,7 @@ Every SKU declares the **same space names**, so one program text can reference t
 | `HBM` | device-global memory (HBM2e/HBM3/HBM3e) | `device` |
 | `L2` | last-level on-die cache / Infinity Cache | `device` |
 | `SMEM` | per-SM/CU shared memory (scratchpad) | `sm` |
+| `REG` | per-thread registers (NVIDIA files only) | `thread` |
 
 A program that places a tile in `Memory::HBM` therefore means "this SKU's device memory", and the
 capacity check resolves that to whichever number the selected machine file declares. Adding a SKU
@@ -70,10 +71,26 @@ these compose properly; see the note in that file.
 
 `chip:` on an `nvptx64` topology names the GPU generation that its kernels are compiled for:
 `sm_80` for A100, `sm_90a` for H100 and H200, `sm_100a` for B200. The compiler picks the PTX
-version that the chip needs. Code for one chip may not load on an older one, and an `a` chip's code
+version that the chip needs. `sm_90a` gets PTX 8.3, for the tensor-map fence, so it needs a CUDA 12.3
+or later driver. Code for one chip may not load on an older one, and an `a` chip's code
 loads only on that generation. A topology with no `chip:` compiles for `sm_80`. The environment
 variable `VX_GPU_CHIP` overrides the field. All the kernels of one program go into one device
 image, so two topologies with different chips in one program are an error.
+
+## Alignment
+
+`alignment:` on a memory space is the least alignment, in bytes, of every tensor in it. The NVIDIA
+files give `SMEM` 16 bytes, which LLVM's 16-byte vector accesses need. A tensor asks for more with
+`aligned(N)` in its type (`docs/lang/types.md`).
+
+## Registers
+
+A tensor in a `scope: thread` space, such as `Tensor<f32, [32], Memory::REG>`, stays in registers.
+This is how a tensor-core kernel keeps its accumulators across a loop. A register has no address,
+so each index must be known when compiling: a constant, or made of constants and the variables of
+`for` loops with constant bounds. The compiler unrolls those loops, at most 1024 passes each. Any
+other index is E6033, which names the tensor and the reason. An `mlir!` block takes the tensor as
+`memref<32xf32>`. The NVIDIA files give `REG` a capacity of 1020 bytes, which is 255 registers.
 
 ## Element type vocabularies
 

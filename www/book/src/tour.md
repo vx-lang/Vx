@@ -330,8 +330,9 @@ fn main() -> i32 {
 
 Dereferencing a raw pointer, indexing through one, reading a field through one, and calling an
 `unsafe fn` all require an `unsafe` block. A function that takes a caller's raw pointer and
-dereferences it is itself `unsafe fn`, so the obligation is visible in its signature rather than
-buried in its body.
+dereferences it should be declared `unsafe fn`, so the obligation is visible in its signature
+rather than buried in its body. Marking a function `unsafe` does not allow raw pointer operations
+in its body. Each one still needs an `unsafe` block, as in [Unsafe and FFI](unsafe-and-ffi.md).
 
 `extern "C"` blocks declare foreign functions. Vx's C ABI interop is zero-overhead: there is no
 marshalling layer.
