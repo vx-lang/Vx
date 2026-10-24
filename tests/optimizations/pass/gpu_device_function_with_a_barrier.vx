@@ -6,11 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 // A GPU region calls `sync`, a device function with `barrier()` in it. The region gets a PTX
-// kernel, and in the copy of `sync` on the GPU, the barrier is `bar.sync`.
+// kernel. The GPU code inlines `sync` into it, so the kernel has the barrier as `bar.sync`.
 //
 // REQUIRES: flat-codegen
 // RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: image={{.*}}.visible .func sync(){{.*}}bar.sync {{.*}}.visible .entry vx_npu_kernel_0(
+// CHECK: image={{.*}}.visible .entry vx_npu_kernel_0({{.*}}bar.sync
 
 fn thread_id() on Topology::Device -> i32 {
   return mlir!( inputs : (), returns : i32, dialects : ["gpu", "arith"]) {

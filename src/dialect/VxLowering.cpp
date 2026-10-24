@@ -2990,6 +2990,12 @@ struct ConvertVxToStandardPass
             // same one, which LLVM's verifier rejects.
             Operation *copy = atEnd.clone(*f.getOperation());
             copy->removeAttr("llvm.emit_c_interface");
+            // Only the kernels call it, so LLVM may drop it once it is
+            // inlined into each of them.
+            cast<func::FuncOp>(copy).setPrivate();
+            copy->setAttr("llvm.linkage",
+                          LLVM::LinkageAttr::get(copy->getContext(),
+                                                 LLVM::Linkage::Internal));
             Location unknown = UnknownLoc::get(copy->getContext());
             copy->walk([&](Operation *op) { op->setLoc(unknown); });
             SmallVector<vx::BarrierOp> barriers;
@@ -4519,6 +4525,18 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
   if (failed(pm.run(*device))) {
     error = "the NVPTX pipeline failed";
     return {};
+  }
+  // The conversion gives each function a C wrapper, `_mlir_ciface_<name>`. The
+  // host cannot call a device function, and a wrapper is public, so it would
+  // keep its callee in the PTX after the kernels inline that callee.
+  {
+    SmallVector<LLVM::LLVMFuncOp> wrappers;
+    device->walk([&](LLVM::LLVMFuncOp f) {
+      if (f.getSymName().starts_with("_mlir_ciface_"))
+        wrappers.push_back(f);
+    });
+    for (LLVM::LLVMFuncOp f : wrappers)
+      f.erase();
   }
   // Dynamic shared memory must be `.extern .shared .b8 name[]` in the PTX. The
   // NVVM conversion makes its global internal, and LLVM then turns it into a
