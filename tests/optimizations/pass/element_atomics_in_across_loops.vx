@@ -36,7 +36,7 @@
 // PTX-DAG: atom.global.min.u32
 // PTX-DAG: atom.global.inc.u32
 // PTX-DAG: atom.global.exch.b64
-// PTX-DAG: atom.{{[a-z.]*}}cas.b32
+// PTX-DAG: atom.{{[a-z_.]*}}cas.b32
 // PTX-DAG: atom.shared.add.u32
 import core::sync::atomic;
 
