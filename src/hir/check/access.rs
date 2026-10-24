@@ -1441,9 +1441,26 @@ impl<'a> TypeChecker<'a> {
 
                 self.check_expr_type(idx);
 
+                // Look through a Pinned/Ref device wrapper to the underlying tensor so that
+                // indexing a transferred tensor follows the same rule as a local one.
+                let base = match obj_ty {
+                    Type::Pinned(inner, _) | Type::Ref(inner, _) => *inner,
+                    // A borrow indexes like what it borrows: `t[i]` on `&Tensor<f32, [N, D]>` is
+                    // the row. Answering with the inner type applied the index to nothing, so
+                    // `t[0][0]` was the row rather than the element (Vx#417).
+                    Type::Borrow { inner, .. } => *inner,
+                    other => other,
+                };
+
                 // When the array and the index are both known at compile time, the range
                 // can be checked now instead of being left to a read at run time.
-                if !self.speculating {
+                // Skip when the type-based check below already covers the index: otherwise a
+                // Tensor with a static shape fires both and reports E8003 twice.
+                let type_covers_index = matches!(
+                    &base,
+                    Type::Tensor(_, dims, _) if dims.first().and_then(|d| d.as_static()).is_some()
+                );
+                if !self.speculating && !type_covers_index {
                     let tmp_env = self.consteval_snapshot();
                     if let (Some(Value::Array(items)), Some(index_val)) =
                         (self.eval_expr(obj, &tmp_env), self.eval_expr(idx, &tmp_env))
@@ -1467,16 +1484,6 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                // Look through a Pinned/Ref device wrapper to the underlying tensor so that
-                // indexing a transferred tensor follows the same rule as a local one.
-                let base = match obj_ty {
-                    Type::Pinned(inner, _) | Type::Ref(inner, _) => *inner,
-                    // A borrow indexes like what it borrows: `t[i]` on `&Tensor<f32, [N, D]>` is
-                    // the row. Answering with the inner type applied the index to nothing, so
-                    // `t[0][0]` was the row rather than the element (Vx#417).
-                    Type::Borrow { inner, .. } => *inner,
-                    other => other,
-                };
                 if let Type::Tensor(_, dims, placement) = &base {
                     self.check_tensor_index_in_range(dims, idx, &ix_span);
                     if self.is_register_space(placement.as_ref()) {
