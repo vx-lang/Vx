@@ -97,12 +97,16 @@ the block joins each task that has its mark set, so it waits only for the tasks 
 `BlocksExample.lean` applies `block_hb` to a run, and shows a block that starts no task and does
 not wait.
 
-`Footprint.lean` proves race freedom from a rule on the code. The main code is a list of phases:
-code that starts no task, or a `tasks` block. In a block, two tasks make no accesses that can
-race, and the code of the block makes no access that can race with a task of the block. Code
-outside the blocks can access any place. `raceFree` shows that each execution of such a program
-has no data race, so `drf_sc_of_footprints` needs no hypothesis on its executions.
-`FootprintExample.lean` shows that the tasks of `forkJoin` in a block follow the rule.
+`Footprint.lean` proves race freedom from a rule on the code. The code of each thread is a list
+of phases: code that starts no task, or a `tasks` block. In a block, two tasks make no accesses
+that can race, and the code of the block makes no access that can race with a task of the block.
+The accesses of a task include the accesses of the tasks that it starts, at each depth (`Desc`).
+Code outside the blocks can access any place. `raceFree` shows that each execution of such a
+program has no data race, so `drf_sc_of_footprints` needs no hypothesis on its executions. The
+proof finds where two threads are in the tree of tasks. One thread starts the other at some depth
+(`anc`), or two tasks of one block start them (`sib`). `FootprintExample.lean` shows that the
+tasks of `forkJoin` in a block follow the rule. It also has a task that starts two tasks in its
+own block (`nestFoot`).
 
 `ChanFootprint.lean` gives the same rule to programs with channels and locks. The rule speaks only
 of the places of the code of the program, below `places`. `Recv.lean` shows that the places of the
@@ -116,8 +120,8 @@ The code can also fail. Each access to the failure slot and the cancel flag is a
 (`fail_atomic`), so these places never race. `drf_sc_of_footprints` still needs code with no
 failures: `cancel_flag_read_before_the_failure.litmus` has a result that no interleaving gives.
 `ChanFootprintExample.lean` has a block where one task sends a value to the other, a block
-where two tasks add 1 to one place under a lock, and a block where a task fails. The edges of channels need a finite execution whose `co` orders the
-writes to each place. So these theorems use `drf_sc_co`, which gives the race-freedom hypothesis
+where two tasks add 1 to one place under a lock, and a block where a task fails. The edges of
+channels need a finite execution whose `co` orders the writes to each place. So these theorems use `drf_sc_co`, which gives the race-freedom hypothesis
 only such executions.
 
 ```bash
@@ -248,9 +252,10 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - `each_error_once` follows an error by the CAS of its failure, not by a value with an owner. A
   CAS that loses still reads the error that won, but only to see that the slot is set.
 - The code accesses a place that a lock guards only under that lock, even outside the blocks of
-  tasks. A task cannot start a task, and a block cannot be in a loop. The rule is stricter than
-  needed: two blocks that run one after the other can share places, but two tasks of one block
-  cannot.
+  tasks. In `ChanFootprint.lean`, a task cannot start a task yet. In both rules, a block cannot
+  be in a loop. The rule is stricter than needed: two blocks that run one after the other can
+  share places, but two tasks of one block cannot.
+- In `Footprint.lean`, one thread starts each task, and a task starts only tasks with larger ids.
 - `ring_fifo` speaks of each read of the values. A `recv` reads its element once, and a `send`
   writes its element once. This follows from their code, but no theorem states it yet.
   `recv_full` shows that a `recv` reads its element only after it reads `full k` as set.

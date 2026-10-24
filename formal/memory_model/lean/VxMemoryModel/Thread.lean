@@ -308,7 +308,8 @@ def seqCstRule : Rule where
       by_cases hv : v = 0 <;> simp [hv, Stmt.SeqCstOnly]
 
 /-- Each access of `s` of the kind `k` to the place `x` with the order `o` has `p k o x`. An
-array access can touch each place of its array. -/
+array access can touch each place of its array. The body of a `tasks` block runs in the same
+thread, so its accesses count. -/
 def Stmt.Accesses (p : Kind → Order → Nat → Prop) : Stmt → Prop
   | load _ x o => p .read o x
   | store x _ o | rmwStore x _ o => p .write o x
@@ -320,7 +321,8 @@ def Stmt.Accesses (p : Kind → Order → Nat → Prop) : Stmt → Prop
   | waitAt base len _ => ∀ j < len, p .read .sc (base + j)
   | seq s t | ite _ s t => s.Accesses p ∧ t.Accesses p
   | loop _ s => s.Accesses p
-  | skip | assign .. | spawnAt .. | joinAt .. | assignAt .. | tasksBlock _ => True
+  | tasksBlock s => s.Accesses p
+  | skip | assign .. | spawnAt .. | joinAt .. | assignAt .. => True
 
 def accessRule (p : Kind → Order → Nat → Prop) : Rule where
   onStmt := Stmt.Accesses p
@@ -355,7 +357,7 @@ theorem Stmt.Accesses.mono {p q : Kind → Order → Nat → Prop} (hpq : ∀ k 
   | fetchAdd | cas => exact ⟨hpq _ _ _ h.1, hpq _ _ _ h.2⟩
   | loadAt | storeAt | waitAt => exact fun j hj => hpq _ _ _ (h j hj)
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 h.1, ih2 h.2⟩
-  | loop _ _ ih => exact ih h
+  | loop _ _ ih | tasksBlock _ ih => exact ih h
   | _ => trivial
 
 end Vx

@@ -25,7 +25,7 @@ theorem Stmt.Accesses.and {p q : Kind → Order → Nat → Prop} {s : Stmt} (hp
   | fetchAdd | cas => exact ⟨⟨hp.1, hq.1⟩, hp.2, hq.2⟩
   | loadAt | storeAt | waitAt => exact fun j hj => ⟨hp j hj, hq j hj⟩
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 hp.1 hq.1, ih2 hp.2 hq.2⟩
-  | loop _ _ ih => exact ih hp hq
+  | loop _ _ ih | tasksBlock _ ih => exact ih hp hq
   | _ => trivial
 
 /-- `lower` keeps the accesses of code with no `tasks` block, and adds accesses to the flags. -/

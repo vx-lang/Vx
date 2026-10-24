@@ -375,20 +375,20 @@ theorem joinMarked_reads {ids : List Nat} {regs L regs'}
     · obtain ⟨l, hl, hl'⟩ := ih h2 t ht hm
       exact ⟨l, List.mem_append_right _ hl, hl'⟩
 
-/-- A task that a block started happens before the code after the block.
+/-- The end of a block joins each task that the block started.
 
 The labels of thread `p` from the position `n` on are a run `L` of the block to its end. The
-event `w` is a `spawn` of task `t` in that run, and `b` comes after the run. Then each access `a`
-of task `t` happens before `b`. -/
-theorem block_hb (hP : P.Ok) {X : Execution} (r : P.toProg.Run X) {s : Stmt}
+event `w` is a `spawn` of task `t` in that run, and `b` comes after the run. Then thread `p` reads
+`done t` before `b`, and `t` is a task that the body can start. -/
+theorem block_join {X : Execution} (r : P.toProg.Run X) {s : Stmt}
     (hb : s.Below P.flags P.count) (hr : s.RegsBelow P.marks) (hn : s.NoBlocks)
     {p n : Nat} {regs regs' : Nat → Int} {L : List Label}
     (hrun : Steps (P.lower (.tasksBlock s)) regs L .skip regs')
     (hlab : ∀ m (hm : m < L.length), r.lab p (n + m) = L[m])
-    {t : Nat} {w a b : X.E} (hw : X.thread w = p) (hww : X.IsWrite w)
+    {t : Nat} {w b : X.E} (hw : X.thread w = p) (hww : X.IsWrite w)
     (hwl : X.loc w = P.start t) (hwn : n ≤ r.idx w) (hwL : r.idx w < n + L.length)
-    (ha : X.thread a = t + 1) (hbp : X.thread b = p) (hbL : n + L.length ≤ r.idx b) :
-    X.hb a b := by
+    (hbp : X.thread b = p) (hbL : n + L.length ≤ r.idx b) :
+    ∃ j, X.thread j = p ∧ X.IsRead j ∧ X.loc j = P.done t ∧ X.po j b ∧ t ∈ s.spawnIds := by
   obtain ⟨L0, Lrest, ra, h0, hrest, rfl⟩ := Steps.seq_done hrun
   obtain rfl := clearMarks_silent h0
   obtain ⟨Lb, Le, rb, hbody, hend, rfl⟩ := Steps.seq_done hrest
@@ -433,7 +433,21 @@ theorem block_hb (hP : P.Ok) {X : Execution} (r : P.toProg.Run X) {s : Stmt}
   have hjk : X.kind j = .read := by rw [← hlk, hjlab]
   have hjl : X.loc j = P.done t := by rw [← hll, hjlab]
   have hjb : X.po j b := (r.po_iff j b).2 ⟨hjt, by simp only [List.length_append] at hbL; omega⟩
-  exact join_hb hP r ha hjk hjl (Or.inr hjb)
+  exact ⟨j, hjt.trans hbp, hjk, hjl, hjb, hu⟩
+
+/-- A task that a block started happens before the code after the block: each access `a` of
+task `t` happens before `b`. -/
+theorem block_hb (hP : P.Ok) {X : Execution} (r : P.toProg.Run X) {s : Stmt}
+    (hb : s.Below P.flags P.count) (hr : s.RegsBelow P.marks) (hn : s.NoBlocks)
+    {p n : Nat} {regs regs' : Nat → Int} {L : List Label}
+    (hrun : Steps (P.lower (.tasksBlock s)) regs L .skip regs')
+    (hlab : ∀ m (hm : m < L.length), r.lab p (n + m) = L[m])
+    {t : Nat} {w a b : X.E} (hw : X.thread w = p) (hww : X.IsWrite w)
+    (hwl : X.loc w = P.start t) (hwn : n ≤ r.idx w) (hwL : r.idx w < n + L.length)
+    (ha : X.thread a = t + 1) (hbp : X.thread b = p) (hbL : n + L.length ≤ r.idx b) :
+    X.hb a b := by
+  obtain ⟨j, -, hjr, hjl, hjb, -⟩ := block_join r hb hr hn hrun hlab hw hww hwl hwn hwL hbp hbL
+  exact join_hb hP r ha hjr hjl (Or.inr hjb)
 
 end TaskProg
 

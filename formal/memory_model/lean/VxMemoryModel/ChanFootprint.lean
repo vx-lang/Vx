@@ -276,7 +276,7 @@ theorem lowerC_accesses {q : Kind → Order → Nat → Prop} {s : CStmt}
     exact ⟨⟨⟨out h1, out h1⟩, out h2, out h2⟩, ih hs.2.2 h, out h2, out h2⟩
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 hs.1 h.1, ih2 hs.2 h.2⟩
   | loop _ _ ih => exact ih hs h
-  | tasksBlock => trivial
+  | tasksBlock _ ih => exact ih hs h
   | fail | checkCancel | result =>
     have hs : P.places ≤ P.slot := by unfold slot top; omega
     have hf : P.places ≤ P.flag := by unfold flag; omega
@@ -299,18 +299,22 @@ theorem apart_lower {s t : CStmt} (hs : P.StmtOk s) (ht : P.StmtOk t)
       · exact Or.inr (Or.inr (Or.inl (by have := hx.1; omega)))
 
 theorem cphase_ok (htask : ∀ t, P.StmtOk (P.task t)) {p : CPhase}
-    (hp : p.Ok P g) (hs : P.StmtOk p.stmt) : (p.lower P).Ok P.toTaskProg (P.Own g) := by
+    (hp : p.Ok P g) (hs : P.StmtOk p.stmt) : (p.lower P).Ok P.toTaskProg (P.Own g) (fun _ => []) := by
   cases p with
   | code s => exact lowerC_noTasks hp
   | block s =>
     obtain ⟨hn, hr, hap, hpair⟩ := hp
     exact ⟨lowerC_noBlocks hn, lowerC_regsBelow hr,
-      fun u hu => apart_lower hs (htask u) (hap u hu),
-      fun u hu v hv huv => apart_lower (htask u) (htask v) (hpair u hu v hv huv)⟩
+      fun u hu w hw => by
+        rw [TaskProg.desc_nil.1 hw]
+        exact apart_lower hs (htask u) (hap u hu),
+      fun u hu v hv huv w w' hw hw' => by
+        rw [TaskProg.desc_nil.1 hw, TaskProg.desc_nil.1 hw']
+        exact apart_lower (htask u) (htask v) (hpair u hu v hv huv)⟩
 
 theorem cphasesOk_lower (htask : ∀ t, P.StmtOk (P.task t)) :
     ∀ {ps : List CPhase}, P.CPhasesOk g ps → P.StmtOk (cseqAll ps) →
-      P.toTaskProg.PhasesOk (P.Own g) (ps.map (CPhase.lower P))
+      P.toTaskProg.PhasesOk (P.Own g) (fun _ => []) (ps.map (CPhase.lower P))
   | [], _, _ => trivial
   | _ :: _, ⟨hp, hids, hrest⟩, ⟨hs, hss⟩ => by
     refine ⟨cphase_ok htask hp hs, fun u hu q hq => ?_, cphasesOk_lower htask hrest hss⟩
@@ -319,7 +323,8 @@ theorem cphasesOk_lower (htask : ∀ t, P.StmtOk (P.task t)) :
 
 /-- The lowered program follows the rule of `Footprint.lean` for the places of `Own`. -/
 theorem toFootprints {ps : List CPhase} (hF : P.CFootprints g ps) :
-    P.toTaskProg.Footprints (P.Own g) (.code (stores P.initList) :: ps.map (CPhase.lower P)) where
+    P.toTaskProg.Footprints (P.Own g) (fun _ => [])
+      (.code (stores P.initList) :: ps.map (CPhase.lower P)) where
   ok := toTaskProg_ok hF.ok
   le_flags x hx := by
     show x < P.flag + 1
@@ -332,7 +337,10 @@ theorem toFootprints {ps : List CPhase} (hF : P.CFootprints g ps) :
     rfl
   phases := ⟨stores_noTasks, fun _ hu => by simp [TaskProg.Phase.ids] at hu,
     cphasesOk_lower hF.ok.task hF.phases (hF.main ▸ hF.ok.main)⟩
-  tasks t := lowerC_noTasks (hF.tasks t)
+  tasks t := Or.inr ⟨lowerC_noTasks (hF.tasks t), rfl⟩
+  task_phases _ := trivial
+  one_parent := TaskProg.one_parent_nil _
+  order _ _ := nofun
 
 /-! ## The executions of a program that follows the rule -/
 

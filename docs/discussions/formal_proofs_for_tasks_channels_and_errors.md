@@ -206,7 +206,12 @@ covers failures. Each access to the failure slot and the cancel flag is atomic (
 `Cancel.lean`), so a program with failures that follows the rule has no data race. But DRF-SC
 does not hold for it. The cancel flag uses release and acquire, so a task can miss a failure that
 an interleaving would show it (`cancel_flag_read_before_the_failure.litmus`). So
-`drf_sc_of_footprints` still asks for code with no failures. Tasks that start tasks come next.
+`drf_sc_of_footprints` still asks for code with no failures. The fifth part lets a task start
+tasks. The code of each task is a list of phases too, and the rule counts the accesses of the
+descendants of a task as its own (`Desc`). One thread starts each task, and a task starts only
+tasks with larger ids. The proof finds where two threads are in the tree of tasks: one starts the
+other at some depth (`anc`), or two tasks of one block start them (`sib`). `ChanFootprint.lean`
+does not let a task start tasks yet.
 
 ## Later
 
