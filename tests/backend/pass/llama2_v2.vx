@@ -26,10 +26,7 @@ import std::io;
 import std::vec;
 import core::num;
 import std::time;
-
-extern {
-  fn vx_advance_ptr(ptr : &mut f32, offset : i32) -> &mut f32;
-}
+import core::ptr;
 
 struct RunState {
   x : &mut f32,
@@ -126,7 +123,9 @@ fn rmsnorm_1d(o : *mut f32, x : *mut f32, weight : &Tensor<f32, [?, ?]>, size : 
 }
 
 fn advance_f32_ptr(ptr: &mut f32, offset: i32) -> &mut f32 {
-  return unsafe { vx_advance_ptr(ptr, offset) };
+  let p : *mut f32 = ptr;
+  let q = add_mut(p, offset as usize);
+  return unsafe { &mut *q };
 }
 
 fn transformer(token : i32, pos : i32, p : &LlamaConfig, s : &mut RunState,

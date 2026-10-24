@@ -129,22 +129,22 @@ seq_len : i32, vocab_size : i32, topology_id : i32) -> TransformerWeights {
 
   let w = unsafe {
     let p0 : *mut f32 = ptr;
-    let p1 : *mut f32 = vx_advance_ptr(p0, vocab_size * dim);
-    let p2 : *mut f32 = vx_advance_ptr(p1, n_layers * dim);
+    let p1 : *mut f32 = add_mut(p0, (vocab_size * dim) as usize);
+    let p2 : *mut f32 = add_mut(p1, (n_layers * dim) as usize);
     let p3_offset : i32 = n_layers * dim * n_heads * head_size;
-    let p3 : *mut f32 = vx_advance_ptr(p2, p3_offset);
+    let p3 : *mut f32 = add_mut(p2, p3_offset as usize);
     let p4_offset : i32 = n_layers * dim * n_kv_heads * head_size;
-    let p4 : *mut f32 = vx_advance_ptr(p3, p4_offset);
+    let p4 : *mut f32 = add_mut(p3, p4_offset as usize);
     let p5_offset : i32 = n_layers * dim * n_kv_heads * head_size;
-    let p5 : *mut f32 = vx_advance_ptr(p4, p5_offset);
+    let p5 : *mut f32 = add_mut(p4, p5_offset as usize);
     let p6_offset : i32 = n_layers * n_heads * head_size * dim;
-    let p6 : *mut f32 = vx_advance_ptr(p5, p6_offset);
-    let p7 : *mut f32 = vx_advance_ptr(p6, n_layers * dim);
-    let p8 : *mut f32 = vx_advance_ptr(p7, n_layers * dim * hidden_dim);
-    let p9 : *mut f32 = vx_advance_ptr(p8, n_layers * hidden_dim * dim);
-    let p10 : *mut f32 = vx_advance_ptr(p9, n_layers * dim * hidden_dim);
-    let p11 : *mut f32 = vx_advance_ptr(p10, dim);
-    let p12 : *mut f32 = vx_advance_ptr(p11, seq_len * head_size);
+    let p6 : *mut f32 = add_mut(p5, p6_offset as usize);
+    let p7 : *mut f32 = add_mut(p6, (n_layers * dim) as usize);
+    let p8 : *mut f32 = add_mut(p7, (n_layers * dim * hidden_dim) as usize);
+    let p9 : *mut f32 = add_mut(p8, (n_layers * hidden_dim * dim) as usize);
+    let p10 : *mut f32 = add_mut(p9, (n_layers * dim * hidden_dim) as usize);
+    let p11 : *mut f32 = add_mut(p10, dim as usize);
+    let p12 : *mut f32 = add_mut(p11, (seq_len * head_size) as usize);
     let wcls_ptr : *mut f32 = p0; // assuming shared weights
 
     // Stage the projection weights into the memory of the topology that reads
@@ -227,7 +227,7 @@ w : &TransformerWeights) -> *mut f32 {
     let head_size : i32 = dim / p.n_heads;
 
     let content_row : *mut f32 =
-    vx_advance_ptr(w.token_embedding_table, token * dim);
+    add_mut(w.token_embedding_table, (token * dim) as usize);
     for i in 0..dim {
       x[i] = content_row[i];
     }
@@ -237,7 +237,7 @@ w : &TransformerWeights) -> *mut f32 {
 
     for l in 0..n_layers {
       let rms_w_off : i32 = l * dim;
-      let rms_w : *mut f32 = vx_advance_ptr(w.rms_att_weight, rms_w_off);
+      let rms_w : *mut f32 = add_mut(w.rms_att_weight, rms_w_off as usize);
 
       let dim_f : f32 = dim as f32;
       let hidden_dim_f : f32 = hidden_dim as f32;
@@ -246,8 +246,8 @@ w : &TransformerWeights) -> *mut f32 {
 
       let loff : i32 = l * seq_len * kv_dim;
       let cache_off : i32 = loff + pos * kv_dim;
-      let s_k : *mut f32 = vx_advance_ptr(s.key_cache, cache_off);
-      let s_v : *mut f32 = vx_advance_ptr(s.value_cache, cache_off);
+      let s_k : *mut f32 = add_mut(s.key_cache, cache_off as usize);
+      let s_v : *mut f32 = add_mut(s.value_cache, cache_off as usize);
 
       let wq_off : i32 = l * dim * dim;
       let wq_l : *mut f32 in Memory::GPU_HBM = vx_advance_ptr_f32(w.wq, wq_off);
@@ -297,13 +297,13 @@ w : &TransformerWeights) -> *mut f32 {
       for h in 0..p.n_heads {
         let q_off : i32 = h * head_size;
         let att_off : i32 = h * seq_len;
-        let att_h : *mut f32 = vx_advance_ptr(s.att, att_off);
+        let att_h : *mut f32 = add_mut(s.att, att_off as usize);
 
         for t in 0..pos_1 {
           let h_kv_mul : i32 = h / kv_mul;
           let k_cache_off : i32 = l * seq_len * kv_dim + t * kv_dim +
           h_kv_mul * head_size;
-          let k_t : *mut f32 = vx_advance_ptr(s.key_cache, k_cache_off);
+          let k_t : *mut f32 = add_mut(s.key_cache, k_cache_off as usize);
           let mut score : f32 = 0.0;
           for i in 0..head_size {
             let qv : f32 = s.q[q_off + i];
@@ -349,7 +349,7 @@ w : &TransformerWeights) -> *mut f32 {
             let h_kv_mul : i32 = h / kv_mul;
             let v_cache_off : i32 = l * seq_len * kv_dim + t * kv_dim +
             h_kv_mul * head_size;
-            let v_t : *mut f32 = vx_advance_ptr(s.value_cache, v_cache_off);
+            let v_t : *mut f32 = add_mut(s.value_cache, v_cache_off as usize);
             let a : f32 = att_h[t];
             let v : f32 = v_t[i];
             val += a * v;
@@ -370,7 +370,7 @@ w : &TransformerWeights) -> *mut f32 {
       }
 
       let rms_ffn_off : i32 = l * dim;
-      let rms_ffn_w : *mut f32 = vx_advance_ptr(w.rms_ffn_weight, rms_ffn_off);
+      let rms_ffn_w : *mut f32 = add_mut(w.rms_ffn_weight, rms_ffn_off as usize);
       let status6 : i32 = rmsnorm(s.xb, x, rms_ffn_w, dim, dim_f);
 
       let w1_off : i32 = l * dim * hidden_dim;

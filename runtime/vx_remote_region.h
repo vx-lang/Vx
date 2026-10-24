@@ -12,7 +12,7 @@
 // Why it is shaped this way, because it is not obvious:
 //
 //   * It cannot be an opaque token. `llama2.vx` stages each projection as one
-//     blob spanning every layer and slices it with `vx_advance_ptr(w.wq, off)`,
+//     blob spanning every layer and slices it with `vx_advance_ptr_f32(w.wq, off)`,
 //     seven times per layer. A token has no meaningful `+ offset`.
 //   * It cannot be the worker's own pointer. `is_device_ptr` would answer "no"
 //     for a remote address, and the plugin would then *stage* it -- reading
@@ -175,7 +175,7 @@ static inline void vx_remote_table_init(vx_remote_table *t,
 /// bounds check cannot see by itself: an overrun that reaches the *next*
 /// region's base passes the check against that region and is indistinguishable
 /// from a correct handle. That is not a contrived case, it is the off-by-one
-/// this program is shaped to produce, `vx_advance_ptr(w.wq, l * dim * dim)`
+/// this program is shaped to produce, `vx_advance_ptr_f32(w.wq, l * dim * dim)`
 /// with `l` one too large, which overshoots by exactly one region.
 ///
 /// Returns the region's base address, or 0 on failure (bad worker, no room).

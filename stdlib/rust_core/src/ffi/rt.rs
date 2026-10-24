@@ -187,16 +187,6 @@ pub extern "C" fn vx_free_f32(p: *mut f32, n: i32) {
 }
 
 #[no_mangle]
-pub extern "C" fn vx_advance_ptr(p: *mut f32, offset: i32) -> *mut f32 {
-    unsafe { p.add(offset as usize) }
-}
-
-#[no_mangle]
-pub extern "C" fn vx_advance_ptr_const(p: *const f32, offset: i32) -> *const f32 {
-    unsafe { p.add(offset as usize) }
-}
-
-#[no_mangle]
 pub extern "C" fn vx_advance_ptr_f32(p: *mut f32, offset: i32) -> *mut f32 {
     unsafe { p.add(offset as usize) }
 }

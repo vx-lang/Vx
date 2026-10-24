@@ -7,9 +7,7 @@
 //===----------------------------------------------------------------------===//
 import std::time;
 import std::vec;
-extern "C" {
-  fn vx_advance_ptr_f32(base : *mut f32, offset : i32) -> *mut f32;
-}
+import core::ptr;
 
 fn main() -> i32 {
   unsafe {
@@ -22,9 +20,9 @@ fn main() -> i32 {
 
     let mut i : i32 = 0;
     for j in 0..N {
-      let ptr1 : *mut f32 = vx_advance_ptr_f32(p1, j);
-      let ptr2 : *mut f32 = vx_advance_ptr_f32(p2, j);
-      let ptr3 : *mut f32 = vx_advance_ptr_f32(p3, j);
+      let ptr1 : *mut f32 = add_mut(p1, j as usize);
+      let ptr2 : *mut f32 = add_mut(p2, j as usize);
+      let ptr3 : *mut f32 = add_mut(p3, j as usize);
 
       let v1 : f32 = *ptr1;
       let v2 : f32 = *ptr2;

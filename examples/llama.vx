@@ -84,21 +84,21 @@ vocab_size : i32) -> TransformerWeights {
 
   let w = unsafe {
     let p0 : *mut f32 = ptr;
-    let p1 : *mut f32 = vx_advance_ptr(p0, vocab_size * dim);
-    let p2 : *mut f32 = vx_advance_ptr(p1, n_layers * dim);
+    let p1 : *mut f32 = add_mut(p0, (vocab_size * dim) as usize);
+    let p2 : *mut f32 = add_mut(p1, (n_layers * dim) as usize);
     let p3 : *mut f32 =
-    vx_advance_ptr(p2, n_layers * dim * n_heads * head_size);
+    add_mut(p2, (n_layers * dim * n_heads * head_size) as usize);
     let p4 : *mut f32 =
-    vx_advance_ptr(p3, n_layers * dim * n_kv_heads * head_size);
+    add_mut(p3, (n_layers * dim * n_kv_heads * head_size) as usize);
     let p5 : *mut f32 =
-    vx_advance_ptr(p4, n_layers * dim * n_kv_heads * head_size);
+    add_mut(p4, (n_layers * dim * n_kv_heads * head_size) as usize);
     let p6 : *mut f32 =
-    vx_advance_ptr(p5, n_layers * n_heads * head_size * dim);
-    let p7 : *mut f32 = vx_advance_ptr(p6, n_layers * dim);
-    let p8 : *mut f32 = vx_advance_ptr(p7, n_layers * dim * hidden_dim);
-    let p9 : *mut f32 = vx_advance_ptr(p8, n_layers * hidden_dim * dim);
-    let p10 : *mut f32 = vx_advance_ptr(p9, n_layers * dim * hidden_dim);
-    let p11 : *mut f32 = vx_advance_ptr(p10, dim);
+    add_mut(p5, (n_layers * n_heads * head_size * dim) as usize);
+    let p7 : *mut f32 = add_mut(p6, (n_layers * dim) as usize);
+    let p8 : *mut f32 = add_mut(p7, (n_layers * dim * hidden_dim) as usize);
+    let p9 : *mut f32 = add_mut(p8, (n_layers * hidden_dim * dim) as usize);
+    let p10 : *mut f32 = add_mut(p9, (n_layers * dim * hidden_dim) as usize);
+    let p11 : *mut f32 = add_mut(p10, dim as usize);
 
     TransformerWeights {
       token_embedding_table:
@@ -186,7 +186,7 @@ w : &TransformerWeights) -> i32 {
     // 2. Forward pass over all layers
     for l in 0..p.n_layers {
       // 2.1 Attention RMSNorm
-      rmsnorm(s.xb, s.x, vx_advance_ptr(w.rms_att_weight, l * dim), dim);
+      rmsnorm(s.xb, s.x, add_mut(w.rms_att_weight, (l * dim) as usize), dim);
 
       // 2.2 QKV Projections (using native Tensor matmul `@`)
       // The checkpoint stores each matrix as [output][input], but `x @ W`
@@ -344,7 +344,7 @@ w : &TransformerWeights) -> i32 {
       }
 
       // 2.7 FFN RMSNorm
-      rmsnorm(s.xb, s.x, vx_advance_ptr(w.rms_ffn_weight, l * dim), dim);
+      rmsnorm(s.xb, s.x, add_mut(w.rms_ffn_weight, (l * dim) as usize), dim);
 
       // 2.8 FFN Projections
       let mut w1_l = Tensor<f32, [?, ?]>::uninit([dim, hidden_dim]);
@@ -454,7 +454,7 @@ fn main() -> i32 {
 
   // 2. Map weights and allocate native Tensors
   // Weights immediately follow the 7-integer config header (28 bytes)
-  let weights_ptr : *mut f32 = unsafe { vx_advance_ptr(mapped_ptr, 7) };
+  let weights_ptr : *mut f32 = add_mut(mapped_ptr, 7);
   let weights = load_weights(weights_ptr, config.dim, config.hidden_dim,
   config.n_layers, config.n_heads, config.n_kv_heads,
   config.seq_len, config.vocab_size);

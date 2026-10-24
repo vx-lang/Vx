@@ -109,7 +109,7 @@ void test_out_of_bounds_is_refused() {
 
 // The case the gap exists for, and the reason it is not merely tidiness.
 //
-// `vx_advance_ptr(w.wq, l * dim * dim)` with `l` one too large overshoots by
+// `vx_advance_ptr_f32(w.wq, l * dim * dim)` with `l` one too large overshoots by
 // exactly one region. Were regions adjacent, that address would land on the
 // next region's base, pass the bounds check against *that* region, and be
 // indistinguishable from a correct handle -- a dispatch against the wrong
