@@ -9,7 +9,7 @@ impl FnEmit<'_> {
     /// Whether register `r` is passed as a bare `!llvm.ptr`: a pointer value, a pointer local's
     /// slot handed out by `&mut p` (the slot's address is the pointer the callee wants), or an
     /// aggregate slot passed by reference.
-    fn is_pointer_value(&self, r: usize) -> Lowered<bool> {
+    pub(super) fn is_pointer_value(&self, r: usize) -> Lowered<bool> {
         Ok(*self.ptr_of.get(r).ok_or(crate::emitter_gap!())?
             || self.pslot_of.get(r).copied().unwrap_or(false)
             || self.agg_of.get(r).copied().flatten().is_some())

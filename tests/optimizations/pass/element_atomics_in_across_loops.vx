@@ -1,0 +1,116 @@
+//===- element_atomics_in_across_loops.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The element atomics of `core::sync::atomic` in a kernel of 4 blocks of 32 lanes, and on the
+// host. Each of the 128 passes changes the same elements.
+//
+// - `adds`: each pass adds 1, so the old values are 0 to 127, and they add up to 8128.
+// - `left` starts at 1000, and each pass takes 2 away.
+// - `top` and `bottom` keep the largest and the smallest pass number plus 5. `bottom` is a `u32`
+//   and starts at 4000000000, so a compare with a sign would keep that value.
+// - `ring` counts from 0 to 9 and starts again: 128 is 12 rounds of 10 and 8 more.
+// - `slot`: each pass swaps in its number plus 1. Each of 0 to 128 is then an old value or the
+//   final one, in any order of the passes, so the old values and the final one add up to 8256.
+// - `owner`: each pass tries to change 0 to its number plus 1. Only one finds 0.
+// - `flag`: each pass stores 1. Each pass also loads 42 from `fixed`, which the loop does not
+//   change, so the loads add up to 128 * 42 = 5376.
+// - `hits` is in shared memory, one for each block. The 32 lanes of a block add 1 to it, and a
+//   second lane loop copies it to `per_block`.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// CHECK: adds 128 olds 8128 left 744
+// CHECK-NEXT: top 132 bottom 5 ring 8
+// CHECK-NEXT: slot 8256 wins 1
+// CHECK-NEXT: flag 1 loads 5376 shared 32 32 32 32
+// CHECK-NEXT: host 7 9 11 11 20 20
+// PTX-DAG: atom.global.add.u32
+// PTX-DAG: atom.global.add.u64
+// PTX-DAG: atom.global.max.s32
+// PTX-DAG: atom.global.min.u32
+// PTX-DAG: atom.global.inc.u32
+// PTX-DAG: atom.global.exch.b64
+// PTX-DAG: atom.{{[a-z.]*}}cas.b32
+// PTX-DAG: atom.shared.add.u32
+import core::sync::atomic;
+
+fn main() -> i32 {
+  let adds = transfer(Tensor<u32, [1]>::fill(0u32), Memory::HBM);
+  let mut olds = transfer(Tensor<i32, [128]>::fill(0), Memory::HBM);
+  let left = transfer(Tensor<i64, [1]>::fill(1000i64), Memory::HBM);
+  let top = transfer(Tensor<i32, [1]>::fill(0), Memory::HBM);
+  let bottom = transfer(Tensor<u32, [1]>::fill(4000000000u32), Memory::HBM);
+  let ring = transfer(Tensor<u32, [1]>::fill(0u32), Memory::HBM);
+  let slot = transfer(Tensor<u64, [1]>::fill(0u64), Memory::HBM);
+  let mut swapped = transfer(Tensor<u64, [128]>::fill(0u64), Memory::HBM);
+  let owner = transfer(Tensor<i32, [1]>::fill(0), Memory::HBM);
+  let wins = transfer(Tensor<i32, [1]>::fill(0), Memory::HBM);
+  let flag = transfer(Tensor<i32, [1]>::fill(0), Memory::HBM);
+  let fixed = transfer(Tensor<i32, [1]>::fill(42), Memory::HBM);
+  let mut loads = transfer(Tensor<i32, [128]>::fill(0), Memory::HBM);
+  let mut per_block = transfer(Tensor<u32, [4]>::fill(0u32), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      let hits = Tensor<u32, [1], Memory::SMEM>::fill(0u32);
+      for l in 0..32 across lanes {
+        let n = b * 32 + l;
+        olds[n] = atomic_fetch_add_u32(&adds, 0, 1u32, AtomicOrdering::Relaxed) as i32;
+        let _s = atomic_fetch_sub_i64(&left, 0, 2i64, AtomicOrdering::AcqRel);
+        let _t = atomic_fetch_max_i32(&top, 0, n + 5, AtomicOrdering::Relaxed);
+        let _m = atomic_fetch_min_u32(&bottom, 0, (n + 5) as u32, AtomicOrdering::SeqCst);
+        let _r = atomic_fetch_inc_wrap_u32(&ring, 0, 9u32, AtomicOrdering::Relaxed);
+        swapped[n] = atomic_swap_u64(&slot, 0, (n + 1) as u64, AtomicOrdering::AcqRel);
+        if atomic_compare_and_swap_i32(&owner, 0, 0, n + 1, AtomicOrdering::AcqRel) == 0 {
+          let _w = atomic_fetch_add_i32(&wins, 0, 1, AtomicOrdering::Relaxed);
+        }
+        atomic_store_i32(&flag, 0, 1, AtomicOrdering::Release);
+        loads[n] = atomic_load_i32(&fixed, 0, AtomicOrdering::Acquire);
+        let _h = atomic_fetch_add_u32(&hits, 0, 1u32, AtomicOrdering::Relaxed);
+      }
+      for l in 0..1 across lanes {
+        per_block[b + l] = hits[0];
+      }
+    }
+  }
+  let a = transfer(adds, Memory::CPU_DRAM);
+  let o = transfer(olds, Memory::CPU_DRAM);
+  let le = transfer(left, Memory::CPU_DRAM);
+  let tp = transfer(top, Memory::CPU_DRAM);
+  let bt = transfer(bottom, Memory::CPU_DRAM);
+  let rg = transfer(ring, Memory::CPU_DRAM);
+  let sl = transfer(slot, Memory::CPU_DRAM);
+  let sw = transfer(swapped, Memory::CPU_DRAM);
+  let w = transfer(wins, Memory::CPU_DRAM);
+  let fl = transfer(flag, Memory::CPU_DRAM);
+  let ld = transfer(loads, Memory::CPU_DRAM);
+  let pb = transfer(per_block, Memory::CPU_DRAM);
+  let mut sum = 0;
+  let mut swaps = sl[0];
+  let mut loaded_sum = 0;
+  for i in 0..128 {
+    sum = sum + o[i];
+    swaps = swaps + sw[i];
+    loaded_sum = loaded_sum + ld[i];
+  }
+  println!("adds {} olds {} left {}", a[0], sum, le[0]);
+  println!("top {} bottom {} ring {}", tp[0], bt[0], rg[0]);
+  println!("slot {} wins {}", swaps, w[0]);
+  println!("flag {} loads {} shared {} {} {} {}", fl[0], loaded_sum, pb[0], pb[1], pb[2], pb[3]);
+
+  // On the host: a store and a load, a compare-and-swap that writes and one that does not, and
+  // the same `fetch_add` on a `u64`.
+  let h = Tensor<u64, [2]>::fill(7u64);
+  let loaded = atomic_load_u64(&h, 0, AtomicOrdering::Acquire);
+  atomic_store_u64(&h, 1, 9u64, AtomicOrdering::Release);
+  let found = atomic_compare_and_swap_u64(&h, 1, 9u64, 11u64, AtomicOrdering::SeqCst);
+  let kept = atomic_compare_and_swap_u64(&h, 1, 9u64, 15u64, AtomicOrdering::Relaxed);
+  let _p = atomic_fetch_add_u64(&h, 0, 13u64, AtomicOrdering::SeqCst);
+  println!("host {} {} {} {} {} {}", loaded, found, kept, h[1], h[0], atomic_load_u64(&h, 0, AtomicOrdering::SeqCst));
+  return 0;
+}

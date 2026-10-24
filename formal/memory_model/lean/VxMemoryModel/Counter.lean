@@ -23,11 +23,6 @@ open Relation Classical
 
 variable {X : Execution}
 
-/-- `co` is transitive, and it orders each two writes to one place. -/
-structure CoOrder (X : Execution) : Prop where
-  trans : ∀ a b c, X.co a b → X.co b c → X.co a c
-  total : ∀ a b, X.IsWrite a → X.IsWrite b → X.loc a = X.loc b → a ≠ b → X.co a b ∨ X.co b a
-
 /-- A read-modify-write comes after the write that it reads from, in `co`. -/
 theorem rmw_source_co (wf : X.WellFormed) (hc : X.Consistent) (ho : X.CoOrder) {s r w : X.E}
     (hs : X.rf s r) (hrw : X.rmw r w) (hloc : X.loc r = X.loc w) : X.co s w := by

@@ -59,7 +59,7 @@ This post is about the GPU work tracked in
 <a href="https://github.com/vx-lang/glm-vx/issues/1">glm-vx#1</a>: what runs on the GPU, how we
 know it computes the right thing, and what the two A100 runs, on 15 and 20 October, found.</p>
 
-<h2 id="the-model">The model</h2>
+<h2 id="the-model"><a href="#the-model">The model</a></h2>
 
 <p>GLM-5 (Hugging Face class <code>GlmMoeDsaForCausalLM</code>) has 78 decoder layers. Each layer
 has two parts that make it more than a plain transformer:</p>
@@ -77,7 +77,7 @@ of which a router picks 8 per token, plus one shared expert.</li>
 The official weights are FP8, about 756 GB. Community INT4 versions exist, in the
 compressed-tensors format.</p>
 
-<h2 id="what-runs-on-the-gpu">What runs on the GPU</h2>
+<h2 id="what-runs-on-the-gpu"><a href="#what-runs-on-the-gpu">What runs on the GPU</a></h2>
 
 <p>The GPU kernels are 1,406 lines of Vx in seven files: matrix-vector and matrix products in
 float32, TF32 on tensor cores, INT4, FP8 and BF16; RMSNorm, RoPE, SwiGLU and softmax; the
@@ -133,7 +133,7 @@ rented.</p>
 byte-identical PTX. Rebuilding with a compiler
 44 commits newer, on 20 October, changed no byte of it either.</p>
 
-<h2 id="how-do-we-know-it-is-right">How do we know it is right?</h2>
+<h2 id="how-do-we-know-it-is-right"><a href="#how-do-we-know-it-is-right">How do we know it is right?</a></h2>
 
 <p>The usual check for an inference engine is to load the trained model, give it a prompt, and
 compare the output with a reference implementation. That needs the trained model to fit, and no
@@ -172,7 +172,7 @@ a logit jumped by 4.0. With 16 heads the ties go away. A trained checkpoint can 
 rule now matches the model's exact <code>argsort(-scores, kind='stable')</code>, on the GPU as
 well.</p>
 
-<h2 id="keeping-the-weights-on-the-gpu">Keeping the weights on the GPU</h2>
+<h2 id="keeping-the-weights-on-the-gpu"><a href="#keeping-the-weights-on-the-gpu">Keeping the weights on the GPU</a></h2>
 
 <p>The first GPU path kept the model in host memory and sent each layer's weights to the GPU when
 it was needed. That is simple, and at full width it is slow: 29 seconds per token, nearly all of it
@@ -185,7 +185,7 @@ RoPE angles, and reads back the ids of the experts the router picked and the log
 bit, and they are. A bitwise test is stricter than a tolerance: a difference of one bit points at
 a mistake in how the launches are ordered, which a tolerance would hide.</p>
 
-<h2 id="int4-fp8-and-bf16">INT4, FP8 and BF16</h2>
+<h2 id="int4-fp8-and-bf16"><a href="#int4-fp8-and-bf16">INT4, FP8 and BF16</a></h2>
 
 <p>The trained model will not fit on a GPU in float32, so the resident path keeps each weight
 matrix in the format it is stored in and decodes it inside the matrix-vector kernel:</p>
@@ -209,7 +209,7 @@ encodings. The PTX build has no bit cast from an integer to a float, so the kern
 from the exponent and mantissa with products of powers of two, keeping subnormals, infinities and
 NaN. A test runs all 65,536 encodings.</p>
 
-<h2 id="what-the-gpu-found">What the GPU found</h2>
+<h2 id="what-the-gpu-found"><a href="#what-the-gpu-found">What the GPU found</a></h2>
 
 <p>A 2,300-token comparison failed once, at position 1,428, and passed when rerun. Three identical
 runs started at the same time gave three different answers. Running 16 processes on one A100,
@@ -228,7 +228,7 @@ because this bug only shows under contention.</p>
 import, and the saved toolchain archive for new machines held links into system libraries rather
 than the libraries themselves. Both are fixed.</p>
 
-<h2 id="what-is-left">What is left</h2>
+<h2 id="what-is-left"><a href="#what-is-left">What is left</a></h2>
 
 <ul>
 <li><strong>The trained model.</strong> Even in INT4, GLM-5 is larger than one GPU. The plan is a
@@ -258,5 +258,6 @@ progress is logged in <a href="https://github.com/vx-lang/glm-vx/issues/1">glm-v
   <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
 </footer>
 
+<script src="/blog/copy-code.js" defer></script>
 </body>
 </html>

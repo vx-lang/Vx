@@ -203,8 +203,17 @@ spawn on(Topology::Gpu) {
 - E6032 checks the place and the size of each `across` loop. It also checks that no pass
   touches what another pass writes (L4), and that every lane reaches the end of each lane loop
   (L5, L8, L10).
+- An atomic operation races with no other one. It is a call to a function that says
+  `ensures atomic(t)`, or an `mlir!` block with `ensures : [atomic(t)]`. Every access to `t` in
+  the loop must then be atomic (#2139, `discussions/mlir_declared_writes_in_across.md`).
+  `core::sync::atomic` has these functions for an integer or float element of a tensor in any
+  memory, such as `atomic_fetch_add_u32(&counts, i, 1u32, AtomicOrdering::Relaxed)`.
+- A call to a function that says `ensures writes_only()` accesses no memory, so it races with
+  nothing. `scoped_fence(order, FenceScope::Device)` is one.
 - Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
   memory.
+- `lanes::sum`, `lanes::max` and their `_unordered` versions combine a tensor over the lanes of
+  a block or a subgroup, and every lane gets the result (`docs/lane_reductions.md`).
 - Delete each `across` and the program means the same. The CPU copy of the region runs one
   block of one lane, and a loop steps over the passes of the others.
 - A size is not a kernel argument. The launch passes each size that is not a number after the

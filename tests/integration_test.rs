@@ -34,6 +34,7 @@ mod integration_test {
     mod missing_solver_test;
     mod mlir_diagnostic_test;
     mod module_api_test;
+    mod payload_test;
     mod pipeline_scale_test;
     mod registry_test;
     mod remote_client_test;
@@ -43,6 +44,9 @@ mod integration_test {
     mod solver_policy_test;
     mod traffic_test;
     mod transport_test;
+    // It links with `cc -shared` and loads `.so` files.
+    #[cfg(target_os = "linux")]
+    mod two_kernel_libraries_in_one_process;
     mod wire_test;
     mod working_set_peak_test;
 }

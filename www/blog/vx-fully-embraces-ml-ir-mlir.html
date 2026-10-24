@@ -65,7 +65,7 @@ higher dialects into lower ones until only machine code is left.</p>
 <p>This post follows small Vx programs down that path and shows the output of each stage.
 Every program here was compiled and run with <code>vxc</code> built from commit 4dbc0f35.</p>
 
-<h2 id="ml-tensors-the-compiler-understands">ML: tensors the compiler understands</h2>
+<h2 id="ml-tensors-the-compiler-understands"><a href="#ml-tensors-the-compiler-understands">ML: tensors the compiler understands</a></h2>
 
 <p>A tensor's element type and shape are part of its type, so the compiler knows both
 before the program runs. Matrix multiplication is the <code>@</code> operator:</p>
@@ -164,7 +164,7 @@ the LLVM IR:</p>
 continuous-integration machines build Enzyme and run these programs; the machine this post was
 written on does not have Enzyme, so the call above is as far as it was checked here.</p>
 
-<h2 id="ir-vxs-own-and-a-library-can-ship-as-it">IR: Vx's own, and a library can ship as it</h2>
+<h2 id="ir-vxs-own-and-a-library-can-ship-as-it"><a href="#ir-vxs-own-and-a-library-can-ship-as-it">IR: Vx's own, and a library can ship as it</a></h2>
 
 <p>Between the source and MLIR, Vx keeps the program in its own IR: the <em>flat HIR</em>,
 a list of simple instructions in which each value is named by its position. In a normal
@@ -199,7 +199,7 @@ $ rm activations.vx</code></pre>
 signatures in the <code>.vxlib</code>, links the body of <code>relu</code> from it, and prints
 <code>4</code>.</p>
 
-<h2 id="mlir-a-dialect-of-its-own">MLIR: a dialect of its own</h2>
+<h2 id="mlir-a-dialect-of-its-own"><a href="#mlir-a-dialect-of-its-own">MLIR: a dialect of its own</a></h2>
 
 <p>The upstream dialects describe computation well, but none of them says &ldquo;this
 buffer lives in the GPU's memory&rdquo; or &ldquo;run this region on that device&rdquo;. Vx adds
@@ -256,7 +256,7 @@ Leave out the copy back and print <code>y</code> directly, and the type checker 
 <pre class="diag"><code>Error[E6003] at 18:9: 'y' lives in GPU_HBM but CPU sees only [CPU_DRAM, NPU_HBM]; insert an explicit transfer to CPU_DRAM (cost 50 on the declared path)
 Error[E6003] at 18:3: `print` reads its argument on CPU, which sees only [CPU_DRAM, NPU_HBM], but the value lives in GPU_HBM; bring it home first with `transfer(.., Memory::CPU_DRAM)`</code></pre>
 
-<h3 id="stage-1-the-vx-dialect">Stage 1: the <code>vx</code> dialect</h3>
+<h3 id="stage-1-the-vx-dialect"><a href="#stage-1-the-vx-dialect">Stage 1: the <code>vx</code> dialect</a></h3>
 
 <p>In the MLIR that <code>vxc --action emit-mlir</code> prints, the placement is still
 there, as operations rather than as a guess. Topology 500 is the GPU and 0 is the CPU.
@@ -275,7 +275,7 @@ vx.drop %11 : memref&lt;8xf32&gt;
 %13 = "vx.transfer"(%12) &lt;{target_topology = 0 : i32}&gt; : (memref&lt;8xf32&gt;) -&gt; memref&lt;8xf32&gt;
 vx.drop %12 : memref&lt;8xf32&gt;</code></pre>
 
-<h3 id="stage-2-vxs-passes-into-upstream-dialects">Stage 2: Vx's passes, into upstream dialects</h3>
+<h3 id="stage-2-vxs-passes-into-upstream-dialects"><a href="#stage-2-vxs-passes-into-upstream-dialects">Stage 2: Vx's passes, into upstream dialects</a></h3>
 
 <p>Vx's own pass, <code>convert-vx-to-standard</code>, takes the region out into a kernel and
 launches it. Each <code>vx.drop</code> becomes a free: <code>memref.dealloc</code> for a buffer on
@@ -311,7 +311,7 @@ vx.free %12 {topology = 500 : i32} : memref&lt;8xf32&gt;</code></pre>
 runs <code>convert-gpu-to-nvvm</code> and <code>gpu-module-to-binary</code> on the GPU module; the host code goes
 through the usual conversions to the <code>llvm</code> dialect, and then to LLVM IR.</p>
 
-<h3 id="stage-3-ptx">Stage 3: PTX</h3>
+<h3 id="stage-3-ptx"><a href="#stage-3-ptx">Stage 3: PTX</a></h3>
 
 <p>PTX is NVIDIA's assembly language for GPUs. In the <code>llvm</code> dialect that
 <code>vxc --action emit-llvm</code> prints, one step before LLVM IR, the dispatch call carries the kernel as PTX text.
@@ -348,7 +348,7 @@ $L__BB0_2:
 It has no GPU to run it on. Neither had the machine this post was written on, so the runtime ran
 the same region on the CPU, which is how the program printed its result above.</p>
 
-<h3 id="mlir-inside-vx-source">MLIR inside Vx source</h3>
+<h3 id="mlir-inside-vx-source"><a href="#mlir-inside-vx-source">MLIR inside Vx source</a></h3>
 
 <p>The traffic goes both ways. A Vx function can contain MLIR, through
 <code>mlir!</code>. This is <code>fill</code> from <code>std::tensor</code>:</p>
@@ -369,7 +369,7 @@ the same region on the CPU, which is how the program printed its result above.</
 <code>clobbers</code>, the compile-time interpreter knows that <code>fill</code> changes
 <code>self</code>, even though it cannot read the MLIR inside.</p>
 
-<h2 id="what-fully-does-not-cover-yet">What &ldquo;fully&rdquo; does not cover yet</h2>
+<h2 id="what-fully-does-not-cover-yet"><a href="#what-fully-does-not-cover-yet">What &ldquo;fully&rdquo; does not cover yet</a></h2>
 
 <ul>
 <li><strong>Automatic differentiation runs on LLVM IR, not MLIR, and is tested only on
@@ -423,5 +423,6 @@ evil</a>. For GPU tiles in shared memory, see
   <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
 </footer>
 
+<script src="/blog/copy-code.js" defer></script>
 </body>
 </html>

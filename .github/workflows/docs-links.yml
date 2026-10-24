@@ -1,0 +1,62 @@
+name: Docs links
+
+# Markdown outside www/ can keep pointing at design notes that were never committed, or that
+# left the tree when a discussion directory was removed. www/ is checked by pages.yml; this
+# job covers the rest with lychee so a stale reference fails the PR that introduces it.
+#
+# Pull requests check local links only (--offline): a remote site going down must not fail
+# an unrelated PR. Push to main and the weekly schedule still hit remotes.
+
+on:
+  pull_request:
+    paths:
+      - '**/*.md'
+      - 'lychee.toml'
+      - '.github/workflows/docs-links.yml'
+  push:
+    branches: [ main ]
+    paths:
+      - '**/*.md'
+      - 'lychee.toml'
+      - '.github/workflows/docs-links.yml'
+  schedule:
+    # Monday 06:00 UTC — catch remotes that went stale without a markdown push.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lychee:
+    name: Check markdown links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to the commit behind v2.9.0 rather than the tag. A tag can be moved; this job
+      # only needs a network client, but the pin keeps the checker itself fixed.
+      - name: Link check (local only on PR)
+        if: github.event_name == 'pull_request'
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          # www/ is excluded in lychee.toml (pages.yml already validates that tree).
+          args: >-
+            --config lychee.toml
+            --offline
+            --verbose
+            --no-progress
+            './**/*.md'
+          fail: true
+
+      - name: Link check (including remotes)
+        if: github.event_name != 'pull_request'
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: >-
+            --config lychee.toml
+            --verbose
+            --no-progress
+            './**/*.md'
+          fail: true
+          token: ${{ secrets.GITHUB_TOKEN }}

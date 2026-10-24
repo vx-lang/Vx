@@ -1,0 +1,87 @@
+//===- atomic_adds_in_across_loops.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Every lane of 4 blocks of 32 lanes adds into the same elements with atomic operations. `add_i32`
+// and `add_f32` say `ensures atomic(t)`, so the race proof accepts their calls in an `across`
+// loop. `hist` counts the values of `x` modulo 8. `counter` gives each lane a different old value,
+// so the old values add up to 0 + 1 + .. + 127 = 8128. `total` adds 0.5 for each lane. The last
+// loop calls an `mlir!` block with `ensures : [atomic(t)]` directly. On the GPU, each add is one
+// atomic instruction.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// CHECK: hist 16 16 16 16 16 16 16 16
+// CHECK-NEXT: olds 8128 counter 128
+// CHECK-NEXT: total 64
+// CHECK-NEXT: direct 128
+// PTX: atom.global.add.u32
+// PTX: atom.global.add.f32
+
+fn add_i32(t : &Tensor<i32, [?], Memory::HBM>, i : i32, v : i32) on Topology::Device -> i32
+ensures atomic(t)
+{
+  return mlir!( inputs : (%t = t : memref<?xi32>, %i = i : i32, %v = v : i32), returns : i32, dialects : ["memref", "arith"], ensures : [atomic(t)]) {
+    %k = arith.index_cast %i : i32 to index
+    %old = memref.atomic_rmw addi %v, %t[%k] : (i32, memref<?xi32>) -> i32
+    macro.yield %old : i32
+  };
+}
+
+fn add_f32(t : &Tensor<f32, [?], Memory::HBM>, i : i32, v : f32) on Topology::Device -> f32
+ensures atomic(t)
+{
+  return mlir!( inputs : (%t = t : memref<?xf32>, %i = i : i32, %v = v : f32), returns : f32, dialects : ["memref", "arith"], ensures : [atomic(t)]) {
+    %k = arith.index_cast %i : i32 to index
+    %old = memref.atomic_rmw addf %v, %t[%k] : (f32, memref<?xf32>) -> f32
+    macro.yield %old : f32
+  };
+}
+
+fn main() -> i32 {
+  let mut values = Tensor<i32, [128]>::fill(0);
+  for i in 0..128 {
+    values[i] = (i * 5) % 8;
+  }
+  let x = transfer(values, Memory::HBM);
+  let hist = transfer(Tensor<i32, [8]>::fill(0), Memory::HBM);
+  let counter = transfer(Tensor<i32, [1]>::fill(0), Memory::HBM);
+  let total = transfer(Tensor<f32, [1]>::fill(0.0), Memory::HBM);
+  let direct = transfer(Tensor<i32, [1]>::fill(0), Memory::HBM);
+  let mut olds = transfer(Tensor<i32, [128]>::fill(0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes {
+        let _h = add_i32(&hist, x[b * 32 + l], 1);
+        olds[b * 32 + l] = add_i32(&counter, 0, 1);
+        let _t = add_f32(&total, 0, 0.5);
+      }
+      for l in 0..32 across lanes {
+        let _d = mlir!( inputs : (%t = &direct : memref<?xi32>), returns : i32, dialects : ["memref", "arith"], ensures : [atomic(direct)]) {
+          %k = arith.constant 0 : index
+          %one = arith.constant 1 : i32
+          %old = memref.atomic_rmw addi %one, %t[%k] : (i32, memref<?xi32>) -> i32
+          macro.yield %old : i32
+        };
+      }
+    }
+  }
+  let h = transfer(hist, Memory::CPU_DRAM);
+  let o = transfer(olds, Memory::CPU_DRAM);
+  let c = transfer(counter, Memory::CPU_DRAM);
+  let s = transfer(total, Memory::CPU_DRAM);
+  let d = transfer(direct, Memory::CPU_DRAM);
+  println!("hist {} {} {} {} {} {} {} {}", h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+  let mut sum = 0;
+  for i in 0..128 {
+    sum = sum + o[i];
+  }
+  println!("olds {} counter {}", sum, c[0]);
+  println!("total {}", s[0]);
+  println!("direct {}", d[0]);
+  return 0;
+}

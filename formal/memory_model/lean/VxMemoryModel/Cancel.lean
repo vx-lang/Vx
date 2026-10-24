@@ -270,26 +270,29 @@ theorem notFail_of_lt {k o x} (h : x < P.slot) : P.NotFail k o x :=
 theorem notFail_of_top {k o x} (h : x < P.top) : P.NotFail k o x :=
   notFail_of_lt (Nat.lt_of_lt_of_le h top_le_slot)
 
+theorem notFail_of_flags {k o x} (h : P.flag < x) : P.NotFail k o x :=
+  Or.inr ⟨by unfold flag at h; omega, by omega⟩
+
 /-- The code of the program and the code of `spawn` and `join` stay below the failure slot. -/
 theorem lower_notFail {s : Stmt} (h : s.Below P.places P.count) :
     (P.toTaskProg.lower s).Accesses P.NotFail := by
   have hps : P.places ≤ P.slot := by unfold slot top; omega
   induction s with
   | spawnAt base =>
-    refine ⟨trivial, fun j hj => notFail_of_lt ?_⟩
+    refine ⟨trivial, fun j hj => notFail_of_flags ?_⟩
     simp only [Stmt.Below] at h
-    simp only [TaskProg.start, toTaskProg, slot]
+    simp only [TaskProg.start, toTaskProg, flag, slot]
     omega
   | tasksBlock s ih =>
     refine ⟨P.toTaskProg.clearMarks_accesses _ _, ih h,
-      P.toTaskProg.joinMarked_accesses fun u hu => notFail_of_lt ?_⟩
+      P.toTaskProg.joinMarked_accesses fun u hu => notFail_of_flags ?_⟩
     have := TaskProg.spawnIds_lt (s := s) h u hu
-    simp only [TaskProg.done, toTaskProg, slot]
+    simp only [TaskProg.done, toTaskProg, flag, slot]
     omega
   | joinAt base =>
-    refine fun j hj => notFail_of_lt ?_
+    refine fun j hj => notFail_of_flags ?_
     simp only [Stmt.Below] at h
-    simp only [TaskProg.done, toTaskProg, slot]
+    simp only [TaskProg.done, toTaskProg, flag, slot]
     omega
   | load | store | rmwStore | wait => exact notFail_of_lt (by simp only [Stmt.Below] at h; omega)
   | fetchAdd | cas =>
@@ -353,9 +356,9 @@ theorem fclean_lower {R : Prop} {s : CStmt} (hs : P.StmtOk s) (hr : s.Results �
   | loop _ _ ih => exact .loop (ih hs hr)
   | tasksBlock s ih =>
     refine .seq (.other (P.toTaskProg.clearMarks_accesses _ _))
-      (.seq (ih hs hr) (.other (P.toTaskProg.joinMarked_accesses fun u hu => notFail_of_lt ?_)))
+      (.seq (ih hs hr) (.other (P.toTaskProg.joinMarked_accesses fun u hu => notFail_of_flags ?_)))
     have := spawnIds_lowerC (s := s) hs u hu
-    simp only [TaskProg.done, toTaskProg, slot]
+    simp only [TaskProg.done, toTaskProg, flag, slot]
     omega
   | fail v => exact .fail (by have := hs.2; omega) (by have := hs.2; simp only [cancelled]; omega)
   | checkCancel => exact .check
@@ -366,11 +369,11 @@ theorem fclean_task {R : Prop} (hP : P.Ok) (t : Nat) (hr : (P.task t).Results �
   show P.FClean R (P.toTaskProg.taskCode t)
   unfold TaskProg.taskCode
   split
-  · refine .seq (.other (notFail_of_lt ?_)) (.seq (fclean_lower (hP.task t) hr)
-      (.other (notFail_of_lt ?_)))
-    · simp only [TaskProg.start, toTaskProg, slot] at *
+  · refine .seq (.other (notFail_of_flags ?_)) (.seq (fclean_lower (hP.task t) hr)
+      (.other (notFail_of_flags ?_)))
+    · simp only [TaskProg.start, toTaskProg, flag, slot] at *
       omega
-    · simp only [TaskProg.done, toTaskProg, slot] at *
+    · simp only [TaskProg.done, toTaskProg, flag, slot] at *
       omega
   · exact .other trivial
 
@@ -508,6 +511,26 @@ theorem FAccepts.flag_hist {f L} (h : P.FAccepts f L) :
       · cases htr with
         | @win c v _ _ => exact Or.inr ⟨0, v, rfl, by simp⟩
       · exact Or.inr ⟨i' + 1, v, rfl, by simpa using h'⟩
+
+/-- Each access to the slot or the flag is atomic. -/
+theorem FAccepts.atomic {f L} (h : P.FAccepts f L) :
+    ∀ {i : Nat} {l : Label}, L[i]? = some l → l.kind ≠ .fence → (l.loc = P.slot ∨ l.loc = P.flag) →
+      l.order ≠ .plain := by
+  induction h with
+  | nil => intro i l h; simp at h
+  | cons htr _ ih =>
+    intro i l hl hk hx
+    cases i with
+    | succ i => exact ih (by simpa using hl) hk hx
+    | zero =>
+      simp only [List.getElem?_cons_zero, Option.some.injEq] at hl
+      subst hl
+      cases htr with
+      | other hnf =>
+        rcases hnf with h | ⟨h1, h2⟩
+        · exact (hk h).elim
+        · exact (hx.elim h1 h2).elim
+      | _ => nofun
 
 /-! ## The writes at the start -/
 
@@ -673,6 +696,16 @@ theorem flag_acq (hP : P.Ok) {f : X.E} (hf : X.IsRead f) (hfl : X.loc f = P.flag
     cases hk
   have ho := (lab_facts run hP hp).2.2 hf hfl
   exact ⟨Or.inl ho, by unfold Execution.IsAtomic; rw [ho]; nofun⟩
+
+/-- Each access to the slot or the flag is atomic, so these places never race. -/
+theorem fail_atomic (hP : P.Ok) {e : X.E} (hk : X.kind e ≠ .fence)
+    (hl : X.loc e = P.slot ∨ X.loc e = P.flag) : X.IsAtomic e := by
+  by_cases hp : run.idx e < P.pre (X.thread e)
+  · obtain ⟨-, -, -, -, ho, -⟩ := init_of run hP hp
+    unfold Execution.IsAtomic
+    rw [ho]
+    nofun
+  · exact (fview run hP e).atomic (view_get run rfl (Nat.le_refl _) (by omega)) hk hl
 
 /-- The write at the start to the slot comes before each CAS that wrote it, in `co`. -/
 theorem init_co (hP : P.Ok) (wf : X.WellFormed) (hcons : X.Consistent) (ho : X.CoOrder) {w : X.E}

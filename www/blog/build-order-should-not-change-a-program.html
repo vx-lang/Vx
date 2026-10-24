@@ -54,7 +54,7 @@ it does not yet.</blockquote>
 ordered, split or run in parallel. The code a C++ compiler generates only on use is where that
 promise breaks.</p>
 
-<h2 id="code-made-where-it-is-used">Code made where it is used</h2>
+<h2 id="code-made-where-it-is-used"><a href="#code-made-where-it-is-used">Code made where it is used</a></h2>
 
 <p>C++ does not generate code nobody calls. A class's implicit <code>operator=</code> is defined
 only when something assigns one of its objects. A template's body is instantiated only for the
@@ -108,7 +108,7 @@ neither the compiler nor the linker has to report it. The same holds for templat
 template means depends on where it is instantiated, the program is ill-formed, with no diagnostic
 required.</p>
 
-<h2 id="modules-help-but-not-completely">Modules help, but not completely</h2>
+<h2 id="modules-help-but-not-completely"><a href="#modules-help-but-not-completely">Modules help, but not completely</a></h2>
 
 <p>C++20 modules remove the example above: a module is compiled once, so a macro can no longer
 give two files two versions of it. They do not remove the rule. A template is still instantiated
@@ -118,7 +118,7 @@ and which one it sees first depends on the order the modules are loaded. Clang r
 mismatches as "different definitions in different modules". The standard still does not require
 it to.</p>
 
-<h2 id="other-languages-with-the-same-problem">Other languages with the same problem</h2>
+<h2 id="other-languages-with-the-same-problem"><a href="#other-languages-with-the-same-problem">Other languages with the same problem</a></h2>
 
 <p>The pattern is not specific to C++. It appears wherever something is chosen at the place it is
 used, and nothing makes every place choose the same way.</p>
@@ -143,7 +143,7 @@ initialization order fiasco"). This is order at run time rather than at build ti
 is the same: work happens on first use, and the first use is not fixed.</li>
 </ul>
 
-<h2 id="languages-that-rule-it-out">Languages that rule it out</h2>
+<h2 id="languages-that-rule-it-out"><a href="#languages-that-rule-it-out">Languages that rule it out</a></h2>
 
 <p><strong>Rust</strong> generates generic code on use too, but the result cannot depend on where.
 Three rules make sure of that:</p>
@@ -168,7 +168,7 @@ order anything is built, so it is still deterministic.</p>
 <p>With these rules, generating code only on use is purely an optimization: it saves work, and it
 cannot change what the program does.</p>
 
-<h2 id="where-vx-stands">Where Vx stands</h2>
+<h2 id="where-vx-stands"><a href="#where-vx-stands">Where Vx stands</a></h2>
 
 <p>Vx compiles modules and functions in parallel with <code>vxc -j</code>, so this question is not
 academic. We checked each rule against the compiler as it is today.</p>
@@ -241,5 +241,6 @@ cross-module case impossible to write, is a larger decision.</p>
   <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
 </footer>
 
+<script src="/blog/copy-code.js" defer></script>
 </body>
 </html>

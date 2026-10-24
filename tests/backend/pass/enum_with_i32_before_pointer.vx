@@ -1,0 +1,42 @@
+//===- enum_with_i32_before_pointer.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Store and read an i32 and a pointer when the integer variant comes first.
+// REQUIRES: flat-codegen
+// EXPECT: 5 7
+
+struct Node {
+  value: i32
+}
+
+enum Value {
+  Int(i32),
+  Ptr(*const Node)
+}
+
+fn read(x: Value) -> i32 {
+  match x {
+    Value::Int(i) => {
+      return i;
+    },
+    Value::Ptr(p) => {
+      return unsafe { (*p).value };
+    }
+  }
+}
+
+fn main() -> i32 {
+  let node = Node {
+    value: 7
+  };
+  let integer = Value::Int(5);
+  let pointer = Value::Ptr((&node) as *const Node);
+  print(read(integer));
+  print(" ");
+  print(read(pointer));
+  return 0;
+}

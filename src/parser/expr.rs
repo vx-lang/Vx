@@ -482,9 +482,15 @@ impl<'a> Parser<'a> {
     ) -> ParseResult<'a, Expr> {
         // In an impl, `Self { .. }`, `Self::new()` and `Self::Variant` name the impl's type,
         // spelled as the type prints: `Pair<T>`. `Self::Item::default()` keeps its `Self`.
+        let mut self_type_args = None;
         if call_name == "Self" && !self.is_associated_type_path() {
             if let Some(target) = &self.impl_self {
-                call_name = target.to_string();
+                if let Type::GenericInstance(base, args) = target {
+                    call_name = base.to_string();
+                    self_type_args = Some(args.clone());
+                } else {
+                    call_name = target.to_string();
+                }
             }
         }
         if call_name == "sizeof" {
@@ -549,7 +555,7 @@ impl<'a> Parser<'a> {
             }));
         }
 
-        let mut parsed_type_args = None;
+        let mut parsed_type_args = self_type_args;
         if self.check(&TokenType::LeftAngle) {
             let saved_pos = self.pos;
             self.advance(); // consume '<'
@@ -583,6 +589,7 @@ impl<'a> Parser<'a> {
             let assoc = self.expect_identifier("Expected an associated type name")?;
             call_name = format!("{call_name}::{assoc}");
         }
+        let mut owner_type_args = None;
         if self.check(&TokenType::DoubleColon) {
             let t1 = self.tokens.get(self.pos + 1).map(|t| &t.kind);
             let t2 = self.tokens.get(self.pos + 2).map(|t| &t.kind);
@@ -593,7 +600,8 @@ impl<'a> Parser<'a> {
             );
 
             if has_paren {
-                Self::apply_type_args(&mut call_name, parsed_type_args.take());
+                owner_type_args = parsed_type_args.take();
+                Self::apply_type_args(&mut call_name, owner_type_args.clone());
 
                 self.advance(); // consume '::'
                 if let TokenType::Identifier(method_name) = self.peek().kind.clone() {
@@ -626,6 +634,7 @@ impl<'a> Parser<'a> {
             }
             self.consume(&TokenType::RightParen, "Expected ')'")?;
             Ok(Expr::FunctionCall(FunctionCallExpr {
+                owner_type_args,
                 name: call_name.into(),
                 type_args: parsed_type_args,
                 args,
@@ -726,6 +735,7 @@ impl<'a> Parser<'a> {
         }
         self.consume(&TokenType::RightParen, "Expected ')' after the constructor")?;
         Ok(Expr::FunctionCall(FunctionCallExpr {
+            owner_type_args: None,
             name: format!("{head}::{ctor}").into(),
             type_args: Some(vec![ty]),
             args,
@@ -772,9 +782,10 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::RightParen, "Expected ')' after enum payload")?;
             payload = Some(args);
         }
-        Self::apply_type_args(call_name, parsed_type_args);
+        Self::apply_type_args(call_name, parsed_type_args.clone());
         Ok(Expr::EnumVariant(EnumVariantExpr {
             enum_name: call_name.clone().into(),
+            type_args: parsed_type_args,
             variant_name: variant.to_string().into(),
             payload,
             span: Span {
@@ -1059,6 +1070,7 @@ impl<'a> Parser<'a> {
                 let inner = self.parse_expr()?;
                 self.consume(&TokenType::RightParen, "Expected ')'")?;
                 Expr::FunctionCall(FunctionCallExpr {
+                    owner_type_args: None,
                     name: "Verified".to_string().into(),
                     type_args: None,
                     args: vec![inner],
@@ -1552,6 +1564,7 @@ mod tests {
             variant_name,
             payload,
             span: _,
+            type_args: _,
         }) = expr
         {
             assert_eq!(enum_name.as_ref(), "Option");
@@ -1569,6 +1582,7 @@ mod tests {
         // Enum variants with payloads are parsed as FunctionCall in the parser phase.
         // They are later rewritten to EnumVariant by Sema.
         if let Expr::FunctionCall(FunctionCallExpr {
+            owner_type_args: _,
             name,
             args,
             span: _,
@@ -1588,11 +1602,39 @@ mod tests {
     }
 
     #[test]
+    fn self_enum_constructions_keep_the_impl_type_arguments() {
+        let argument =
+            crate::parser::types::parse_type_text("*const Tensor<f32, [4], Memory::GPU_HBM>")
+                .unwrap();
+        for input in ["Self::None", "Self::Some(p)"] {
+            let mut lexer = Lexer::new(input);
+            let tokens = lexer.tokenize();
+            let mut parser = Parser::new(&tokens, input);
+            parser.impl_self = Some(Type::GenericInstance(
+                Box::new(Type::Enum("Opt".into(), None)),
+                vec![argument.clone()],
+            ));
+            let expr = parser.parse_expr().expect("enum construction");
+            let arguments = match &expr {
+                Expr::EnumVariant(expr) => &expr.type_args,
+                Expr::FunctionCall(expr) => &expr.owner_type_args,
+                _ => panic!("expected enum construction"),
+            };
+            assert_eq!(
+                arguments.as_deref(),
+                Some(std::slice::from_ref(&argument)),
+                "{input} retains its structural type arguments"
+            );
+        }
+    }
+
+    #[test]
     fn test_parse_generic_enum_variant() {
         let input = "Option<i32>::Some(x)";
         let expr = parse_expr(input);
         // Similarly, generic enum variants with payloads are FunctionCalls initially.
         if let Expr::FunctionCall(FunctionCallExpr {
+            owner_type_args: _,
             name,
             args,
             span: _,
@@ -1611,6 +1653,7 @@ mod tests {
         let input = "Vec<i32>::new()";
         let expr = parse_expr(input);
         if let Expr::FunctionCall(FunctionCallExpr {
+            owner_type_args: _,
             name,
             args,
             span: _,

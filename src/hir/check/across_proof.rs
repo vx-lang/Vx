@@ -12,6 +12,9 @@
 // variable. A form fixes it when its terms are the digits of a mixed-radix number: each
 // coefficient is larger than the most that the smaller terms can add up to.
 //
+// An atomic access, through a call or an `mlir!` block with an `atomic(t)` clause, races with no
+// other atomic access. A tensor that the loop changes atomically has only atomic accesses.
+//
 //===----------------------------------------------------------------------===//
 
 use crate::hir::comptime_interpreter::ComptimeInterpreter;
@@ -85,11 +88,15 @@ enum Binding {
 /// One access to a tensor from outside the loop.
 struct Access {
     write: bool,
+    /// An atomic operation, which races with no other one.
+    atomic: bool,
     indices: Vec<Option<Affine>>,
     span: Span,
 }
 
-struct Proof {
+struct Proof<'c> {
+    /// The parameters with an `atomic` clause, for each function that has one.
+    contracts: &'c HashMap<String, Vec<usize>>,
     /// The key of the loop's own variable.
     own: String,
     scopes: Vec<HashMap<String, Binding>>,
@@ -106,7 +113,11 @@ struct Proof {
 
 /// Why the passes of `f` may touch a place that another pass writes, or `None` when the proof
 /// holds. `level` names the loop's level in the message.
-pub(crate) fn across_loop_race(f: &ForLoopStmt, level: &str) -> Option<(String, Span)> {
+pub(crate) fn across_loop_race(
+    f: &ForLoopStmt,
+    level: &str,
+    contracts: &HashMap<String, Vec<usize>>,
+) -> Option<(String, Span)> {
     let range = match &*f.iterable {
         Expr::Range(r) => int(&r.start).zip(int(&r.end)),
         _ => None,
@@ -116,6 +127,7 @@ pub(crate) fn across_loop_race(f: &ForLoopStmt, level: &str) -> Option<(String, 
         return None;
     }
     let mut p = Proof {
+        contracts,
         own: String::new(),
         scopes: vec![HashMap::new()],
         ranges: HashMap::new(),
@@ -151,7 +163,7 @@ fn range_type(iterable: &Expr) -> Option<ElementType> {
     }
 }
 
-impl Proof {
+impl Proof<'_> {
     fn fail(&mut self, why: String, at: Span) {
         let at = if at == Span::default() { self.at } else { at };
         if self.error.is_none() {
@@ -281,9 +293,35 @@ impl Proof {
             .or_default()
             .push(Access {
                 write,
+                atomic: false,
                 indices,
                 span: at,
             });
+    }
+
+    /// An atomic access to the tensor that `arg` passes. A tensor that the pass makes needs
+    /// nothing.
+    fn atomic_arg(&mut self, arg: &Expr) {
+        match crate::hir::check::atomic_contracts::passed_tensor(arg) {
+            Some(name) if self.outside(name) => {
+                self.accesses
+                    .entry(name.to_string())
+                    .or_default()
+                    .push(Access {
+                        write: true,
+                        atomic: true,
+                        indices: Vec::new(),
+                        span: arg.span(),
+                    });
+            }
+            Some(_) => {}
+            None => self.fail(
+                "the checker cannot see which tensor this atomic operation changes. Pass the \
+                 tensor by name"
+                    .to_string(),
+                arg.span(),
+            ),
+        }
     }
 
     fn target(&mut self, lhs: &Expr, at: Span) {
@@ -337,8 +375,26 @@ impl Proof {
             }
             Expr::FunctionCall(fc) => {
                 // Making a tensor writes only the new tensor.
+                // A lane reduction reads its tensor and writes nothing. The type checker
+                // refuses a name after `lanes::` that is not one.
                 let pure = crate::hir::check::parallel::parallel_pure_call(&fc.name)
-                    || is_tensor_alloc_call(fc);
+                    || is_tensor_alloc_call(fc)
+                    || fc.name.as_ref().starts_with("lanes::");
+                // A call with an atomic contract changes only the tensors that it names.
+                if let Some(params) = (!pure)
+                    .then(|| self.contracts.get(fc.name.as_ref()))
+                    .flatten()
+                {
+                    let params = params.clone();
+                    for (i, a) in fc.args.iter().enumerate() {
+                        if params.contains(&i) {
+                            self.atomic_arg(a);
+                        } else {
+                            self.expr(a);
+                        }
+                    }
+                    return;
+                }
                 if !pure {
                     let why = if fc.name.as_ref() == "barrier" {
                         "`barrier()` may not be in an `across` loop: the end of a lane loop is \
@@ -386,6 +442,16 @@ impl Proof {
                     self.expr(r);
                 }
                 self.scopes.pop();
+            }
+            // A block with clauses changes only the tensors that they name.
+            Expr::InlineMlir(m) if !m.ensures.is_empty() => {
+                let named = crate::hir::check::atomic_contracts::atomic_inputs(m);
+                for (_, input, _) in &m.inputs {
+                    match crate::hir::check::atomic_contracts::passed_tensor(input) {
+                        Some(n) if named.contains(n) => self.atomic_arg(input),
+                        _ => self.expr(input),
+                    }
+                }
             }
             Expr::Print(_) | Expr::Println(_) => self.fail(
                 "printing in an `across` loop: the passes run at the same time, so the order of \
@@ -569,6 +635,23 @@ impl Proof {
 
     fn check(&self, own: &str, level: &str) -> Option<(String, Span)> {
         for (name, accesses) in &self.accesses {
+            if accesses.iter().any(|a| a.atomic) {
+                let plain = accesses
+                    .iter()
+                    .find(|a| !a.atomic)
+                    .map(|a| a.span)
+                    .or_else(|| self.whole.get(name).copied());
+                if let Some(at) = plain {
+                    return Some((
+                        format!(
+                            "the passes of this {level} loop change `{name}` with atomic \
+                             operations, so every access to it in the loop must be one"
+                        ),
+                        at,
+                    ));
+                }
+                continue;
+            }
             if let Some(&at) = self.whole.get(name) {
                 if accesses.iter().any(|a| a.write) {
                     return Some((

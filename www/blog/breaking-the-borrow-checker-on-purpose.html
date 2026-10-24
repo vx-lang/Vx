@@ -59,7 +59,7 @@ with a test, and every test passed. That shows a test and its fix agree. It does
 tests miss. This post is about how we went looking for that, and what the whole effort added up
 to.</p>
 
-<h2 id="five-days-of-fixes">Five days of fixes</h2>
+<h2 id="five-days-of-fixes"><a href="#five-days-of-fixes">Five days of fixes</a></h2>
 
 <p>The work started on 10 October with a review of the checker, tracked in
 <a href="https://github.com/vx-lang/Vx/issues/1501">#1501</a>. A borrow checker can be wrong in
@@ -105,7 +105,7 @@ programs in all (<a href="https://github.com/vx-lang/Vx/pull/1577">#1577</a>). T
 previous post whose answer changed with the optimization level was a rule that worked in a function
 body and failed inside an <code>if</code> arm, so the tests try every rule in every place.</p>
 
-<h2 id="do-the-tests-check-the-checker">Do the tests check the checker?</h2>
+<h2 id="do-the-tests-check-the-checker"><a href="#do-the-tests-check-the-checker">Do the tests check the checker?</a></h2>
 
 <p>Here is a question those tests cannot answer by passing: if one part of the checker stopped
 working, would any test notice? The direct way to find out is to stop it on purpose and run the
@@ -145,7 +145,7 @@ switch:</p>
 took about three and a half hours on one machine. The switches were a local change only, and never
 went into the repository.</p>
 
-<h2 id="what-got-through">What got through</h2>
+<h2 id="what-got-through"><a href="#what-got-through">What got through</a></h2>
 
 <p>The first round broke the checker 79 ways, and the tests caught 78. The second round broke it
 29 ways, and the tests caught 15. For each of the 15 that got through, we wrote a short program
@@ -160,7 +160,7 @@ was the case for 3.</li>
 <li>If both accepted it, the real checker was wrong too. That was the case for 1.</li>
 </ul>
 
-<h3 id="eleven-rules-no-test-checked">Eleven rules no test checked</h3>
+<h3 id="eleven-rules-no-test-checked"><a href="#eleven-rules-no-test-checked">Eleven rules no test checked</a></h3>
 
 <p>Here is one. A value moved in the <code>else</code> arm of an <code>if</code> may have been moved
 when the code after the <code>if</code> runs, so using it there is refused:</p>
@@ -196,7 +196,7 @@ same kind:</p>
 was checked the same way: with its break on, the error it expects goes away, and the other tests'
 errors stay.</p>
 
-<h3 id="three-breaks-that-changed-nothing">Three breaks that changed nothing</h3>
+<h3 id="three-breaks-that-changed-nothing"><a href="#three-breaks-that-changed-nothing">Three breaks that changed nothing</a></h3>
 
 <p>One break made reading an element, <code>a[i]</code>, forget where the element points. No Vx
 program can show this today: arrays and tensors hold only numbers, so no element holds a reference.
@@ -205,7 +205,7 @@ has already turned <code>a.f(b)</code> into a function call <code>f(a, b)</code>
 runs. These will matter once arrays can hold references, or once a method call reaches those
 checks unchanged.</p>
 
-<h3 id="one-real-bug">One real bug</h3>
+<h3 id="one-real-bug"><a href="#one-real-bug">One real bug</a></h3>
 
 <p>One break made a copied borrow keep the block it was made in, instead of the block of the
 variable it was copied to. To show what that changes, the program needs a borrow made inside a
@@ -278,7 +278,7 @@ lives. Built from that change, each of these forms is refused at the first <code
 The checker already handled moves this way: each branch starts from the moves made before the
 <code>if</code>, and the branches are joined after it. Borrows now get the same treatment.</p>
 
-<h2 id="what-breaking-the-checker-cannot-find">What breaking the checker cannot find</h2>
+<h2 id="what-breaking-the-checker-cannot-find"><a href="#what-breaking-the-checker-cannot-find">What breaking the checker cannot find</a></h2>
 
 <p>A break shows whether some test depends on a rule. A rule that was never written cannot be
 broken. So this method could not have found two of the bugs in the previous post. A reference into
@@ -294,7 +294,7 @@ against Rust.</p>
 them describe rules Vx has, written in a language Vx follows closely. Translating the ones Vx can
 express into Vx gives tests that nobody here had to think of, so we did that next.</p>
 
-<h2 id="rusts-bug-reports-run-in-vx">Rust's bug reports, run in Vx</h2>
+<h2 id="rusts-bug-reports-run-in-vx"><a href="#rusts-bug-reports-run-in-vx">Rust's bug reports, run in Vx</a></h2>
 
 <p>We took 78 reports from Rust's issue tracker, each with a short program, from the labels Rust
 uses for soundness bugs and for the borrow checker (I-unsound, A-borrow-checker, A-NLL, NLL-sound
@@ -356,7 +356,7 @@ argument, and then borrows the argument again. Vx ends the call's borrow with th
 <code>match</code>, because only the arm that returns holds it. Keeping the call's result and using
 it after a write to the argument is still refused, as it should be.</p>
 
-<h2 id="what-is-left">What is left</h2>
+<h2 id="what-is-left"><a href="#what-is-left">What is left</a></h2>
 
 <ul>
 <li>The 14 holes found from Rust's bug reports,
@@ -392,5 +392,6 @@ please open an <a href="https://github.com/vx-lang/Vx/issues">issue</a> with the
   <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
 </footer>
 
+<script src="/blog/copy-code.js" defer></script>
 </body>
 </html>

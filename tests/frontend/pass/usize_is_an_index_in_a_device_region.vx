@@ -1,0 +1,95 @@
+//===- usize_is_an_index_in_a_device_region.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `usize` is the type of a count and an index, not a data element type, so a
+// device region may use one even though no machine lists `usize` in its
+// `dtypes:`. The region check that refuses f64 (see
+// fail/f64_built_inside_a_device_region.vx) has to leave it alone.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+Memory CPU_DRAM {}
+Memory HBM {
+  within: Memory::CPU_DRAM, managed: explicit, scope: device
+}
+Memory HBM2 {
+  within: Memory::CPU_DRAM, managed: explicit, scope: device
+}
+
+// The list from fleet/h100-sxm.vx: every data element type the card has, and
+// `usize` is not one of them.
+Topology Hopper {
+  arch: spirv64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  dtypes: [f64, f32, bf16, f16, f8e4m3, f8e5m2, i8, u8, i16, u16, i32, u32, i64, u64, bool],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s
+}
+
+// Declares no integer type at all, and still counts: an index is not data the
+// list has to name, so a device with this list is no different here.
+Topology Narrow {
+  arch: spirv64,
+  memory: Memory::HBM2,
+  visible: [Memory::HBM2],
+  dtypes: [f32, bool],
+  transfer Memory::CPU_DRAM -> Memory::HBM2 : 31.5 GB/s
+}
+
+pub fn k(out : &mut Tensor<f32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Hopper) {
+    let n : usize = 4;
+    let flag = n > 2;
+    for i in 0..8 {
+      if flag {
+        out[i] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn narrow(out : &mut Tensor<f32, [?], Memory::HBM2>) -> void {
+  spawn on(Topology::Narrow) {
+    let n : usize = 4;
+    if n > 2 {
+      out[0] = 2.0;
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut t = unsafe { Tensor<f32, [16], Memory::HBM>::uninit() };
+  k(&mut t);
+  let mut u = unsafe { Tensor<f32, [16], Memory::HBM2>::uninit() };
+  narrow(&mut u);
+  return 0;
+}
+
+// The check must report nothing: `usize` is an index, not a data element.
+// CHECK-NOT: Error
+// CHECK:      func.func @main() -> i32 {
+// CHECK:        %{{.*}} = vx.alloc() {target_topology = {{[0-9]+}} : i32} : memref<16xf32>
+// CHECK:        call @k(%{{.*}}) : (memref<?xf32>) -> ()
+// CHECK:        call @narrow(%{{.*}}) : (memref<?xf32>) -> ()
+// CHECK-LABEL: func.func @narrow(%arg0: memref<?xf32> {llvm.noalias}) attributes {vx.pub} {
+// CHECK:        vx.spawn topology({{[0-9]+}}) {
+// The count is a 64-bit integer on the device: the target's pointer width.
+// CHECK:        %c4_i64 = arith.constant 4 : i64
+// CHECK:        arith.cmpi ugt, %{{.*}} : i64
+// CHECK:        memref.store %cst, %arg0[%{{.*}}] : memref<?xf32>
+// CHECK:        } {arch = "spirv64", topology_name = "Narrow"}
+// CHECK-LABEL: func.func @k(%arg0: memref<?xf32> {llvm.noalias}) attributes {vx.pub} {
+// CHECK:        vx.spawn topology({{[0-9]+}}) {
+// CHECK:        %c4_i64 = arith.constant 4 : i64
+// CHECK:        arith.cmpi ugt, %{{.*}} : i64
+// CHECK:        memref.store %cst, %arg0[%{{.*}}] : memref<?xf32>
+// CHECK:        vx.yield
+// CHECK:        } {arch = "spirv64", topology_name = "Hopper"
+// CHECK-NOT: Error

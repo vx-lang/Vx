@@ -56,7 +56,7 @@ Whether any of it survives the return is a property of the language.</p>
 <em>is</em> the location. Add a second memory that the first cannot address, and the answer stops
 being in the value — and was never in the type.</p>
 
-<h2 id="the-program-in-c">The program, in C++</h2>
+<h2 id="the-program-in-c"><a href="#the-program-in-c">The program, in C++</a></h2>
 
 <p>Here it is the way it is usually written — allocate on the device, copy the host data over,
 return the pointer:</p>
@@ -78,7 +78,7 @@ return the pointer:</p>
 and faults when you run it. The question this post is about is whether anything could have stopped
 it.</p>
 
-<h2 id="the-fact-dies-at-the-return">The fact dies at the <code>return</code></h2>
+<h2 id="the-fact-dies-at-the-return"><a href="#the-fact-dies-at-the-return">The fact dies at the <code>return</code></a></h2>
 
 <p>Inside <code>stage_to_device</code> the compiler has everything you would want it to have:
 <code>d</code> came from <code>cudaMalloc</code>, it is device memory, it is not addressable from
@@ -88,7 +88,7 @@ the host. At the <code>return</code> statement all of it is discarded, because t
 <p>A host buffer and a device buffer are the same type. They are mutually assignable, and the read
 in <code>main</code> is a well-formed C++ expression.</p>
 
-<h2 id="why-a-better-analysis-does-not-fix-this">Why a better analysis does not fix this</h2>
+<h2 id="why-a-better-analysis-does-not-fix-this"><a href="#why-a-better-analysis-does-not-fix-this">Why a better analysis does not fix this</a></h2>
 
 <p>It is tempting to say an interprocedural pass should catch it. Here the fact is out of reach for
 a reason that survives any amount of analysis effort.</p>
@@ -110,7 +110,7 @@ gives up in three places:</p>
 <p>So the fact is not <em>underdetermined</em> at the boundary. It is <strong>absent</strong>.
 Recovering it is not the job. Carrying it is.</p>
 
-<h2 id="in-vx-the-return-type-carries-it">In Vx, the return type carries it</h2>
+<h2 id="in-vx-the-return-type-carries-it"><a href="#in-vx-the-return-type-carries-it">In Vx, the return type carries it</a></h2>
 
 <p>The same program, nine lines, with the whole point in the first one:</p>
 
@@ -139,7 +139,7 @@ insert an explicit transfer to CPU_DRAM (cost 50 on the declared path)</code></p
 repair. It arrives on a laptop with no GPU attached, because the machine Vx checks against is a
 declared file rather than the box the compiler happens to be running on.</p>
 
-<h2 id="the-repair-is-one-line">The repair is one line</h2>
+<h2 id="the-repair-is-one-line"><a href="#the-repair-is-one-line">The repair is one line</a></h2>
 
 <pre><code>  <span class="k">let</span> kv = <span class="f">stage_to_device</span>();
   <span class="k">let</span> home = <span class="f">transfer</span>(kv, <span class="t">Memory</span>::<span class="t">CPU_DRAM</span>);
@@ -162,7 +162,7 @@ GPU while you work out why the numbers are wrong.</p>
 <p>The same machine file that lets the compiler <em>refuse</em> the read is the file that
 <em>prices</em> the repair.</p>
 
-<h2 id="six-boundaries-five-refusals">Six boundaries, five refusals</h2>
+<h2 id="six-boundaries-five-refusals"><a href="#six-boundaries-five-refusals">Six boundaries, five refusals</a></h2>
 
 <p>Residency across a function return is one case. The repository ships six, each about a different
 relation and a different place programs normally lose it:</p>
@@ -199,5 +199,6 @@ checked.</p>
   <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
 </footer>
 
+<script src="/blog/copy-code.js" defer></script>
 </body>
 </html>

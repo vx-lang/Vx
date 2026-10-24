@@ -18,9 +18,8 @@ use crate::hir::expr::expected_numeric_elem;
 use std::collections::HashMap;
 
 impl<'a> TypeChecker<'a> {
-    /// An enum expression's name read back as a type. The parser re-serializes the turbofish
-    /// arguments into the name (`Option<*mut i8>`), so recovering them needs the type parser
-    /// (Vx#415). `None` when the name carries no arguments.
+    /// Recover arguments for compiler-generated enum expressions that carry only a name.
+    /// Parsed enum expressions retain structural arguments instead.
     fn enum_name_as_type(&self, enum_name: &str) -> Option<Type> {
         match crate::parser::types::parse_type_text(enum_name)? {
             Type::GenericInstance(base, args) => Some(Type::GenericInstance(
@@ -30,14 +29,6 @@ impl<'a> TypeChecker<'a> {
                     .collect(),
             )),
             _ => None,
-        }
-    }
-
-    /// The type arguments that name carries, empty when it carries none.
-    fn enum_name_type_args(&self, enum_name: &str) -> Vec<Type> {
-        match self.enum_name_as_type(enum_name) {
-            Some(Type::GenericInstance(_, args)) => args,
-            _ => Vec::new(),
         }
     }
 
@@ -61,10 +52,19 @@ impl<'a> TypeChecker<'a> {
         match expr {
             Expr::EnumVariant(EnumVariantExpr {
                 enum_name,
+                type_args,
                 variant_name: variant,
                 payload,
                 span,
             }) => {
+                let args =
+                    type_args.get_or_insert_with(|| match self.enum_name_as_type(enum_name) {
+                        Some(Type::GenericInstance(_, args)) => args,
+                        _ => Vec::new(),
+                    });
+                for arg in args.iter_mut() {
+                    *arg = self.as_scoped_generic(arg.clone());
+                }
                 let actual_enum_name = if let Some(idx) = enum_name.find('<') {
                     &enum_name[..idx]
                 } else {
@@ -79,7 +79,7 @@ impl<'a> TypeChecker<'a> {
                         // argument, as Rust's `Ok(())` holds nothing.
                         let void_payload = expected_payload.as_ref().is_some_and(|exp_types| {
                             let mut mapping = HashMap::new();
-                            let ty_args = self.enum_name_type_args(enum_name);
+                            let ty_args = args.as_slice();
                             for (param, ty_arg) in enum_decl.generics.iter().zip(ty_args.iter()) {
                                 mapping.insert(param.name().into(), ty_arg.clone());
                             }
@@ -100,7 +100,7 @@ impl<'a> TypeChecker<'a> {
                                     }
                                 } else {
                                     let mut mapping = HashMap::new();
-                                    let ty_args = self.enum_name_type_args(enum_name);
+                                    let ty_args = args.as_slice();
                                     for (param, ty_arg) in
                                         enum_decl.generics.iter().zip(ty_args.iter())
                                     {
@@ -205,10 +205,15 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
 
-                if let Some(ty) = self.enum_name_as_type(enum_name) {
-                    return ty;
+                if args.is_empty() {
+                    Type::Enum(actual_enum_name.into(), None)
+                } else {
+                    // Generic annotations use `Struct` for a nominal base, including enum declarations.
+                    Type::GenericInstance(
+                        Box::new(Type::Struct(actual_enum_name.into(), None)),
+                        args.clone(),
+                    )
                 }
-                Type::Enum(enum_name.clone(), None)
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         }

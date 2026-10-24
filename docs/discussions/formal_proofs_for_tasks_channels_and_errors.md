@@ -198,7 +198,15 @@ because tasks then share places only through the channel and the lock.
 `fork_hb`, `join_hb` and `block_hb`. `Footprint.lean` has the first part, for `TaskProg`. The main
 code is a list of phases, and each phase is code that starts no task or a block. `raceFree` shows
 that each execution of a program that follows the rule has no data race. Tasks do not start
-tasks yet. Channels, the lock and failures come next.
+tasks yet. `ChanFootprint.lean` has the second part, for programs with channels. The places of the
+channels and the locks never race (`chan_no_race` in `Recv.lean`), so the rule speaks only of the
+places of the code. `LockFootprint.lean` has the third part: a place that the rule gives a lock
+is accessed only under that lock, and `lock_excl` orders two such accesses. The fourth part
+covers failures. Each access to the failure slot and the cancel flag is atomic (`fail_atomic` in
+`Cancel.lean`), so a program with failures that follows the rule has no data race. But DRF-SC
+does not hold for it. The cancel flag uses release and acquire, so a task can miss a failure that
+an interleaving would show it (`cancel_flag_read_before_the_failure.litmus`). So
+`drf_sc_of_footprints` still asks for code with no failures. Tasks that start tasks come next.
 
 ## Later
 

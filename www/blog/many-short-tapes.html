@@ -52,7 +52,7 @@ Vx takes a description of those memories as input and checks programs against it
 <p class="lede">Turing tape was designed to model a simple computing machine. Vx models what can
 be computed on a specific machine; the answer depends on sizes and topology.</p>
 
-<h2 id="the-tape">The tape</h2>
+<h2 id="the-tape"><a href="#the-tape">The tape</a></h2>
 
 <p>The C standard describes a program's meaning in terms of &ldquo;an abstract machine&rdquo;, and
 C++ and Rust follow it. The details differ. The memory is the same in all three: one flat space of
@@ -78,7 +78,7 @@ at most 2<sup>64</sup> bytes, and people have argued on those grounds that C is 
 complete. But 16 EiB is a limit no program meets. The limit a GPU program does meet is 80 GiB, and
 the type system has no way to mention it.</p>
 
-<h2 id="the-machine">The machine</h2>
+<h2 id="the-machine"><a href="#the-machine">The machine</a></h2>
 
 <p>Here is one node with an H100 in it, from the outside in:</p>
 
@@ -152,7 +152,7 @@ three hops at three different speeds.</p>
 the same number and name different bytes. Shared-memory address 0 exists 132 times at once, once in
 each SM. A processor can address some of these memories and has no way to address others.</p>
 
-<h2 id="how-languages-keep-the-tape">How languages keep the tape</h2>
+<h2 id="how-languages-keep-the-tape"><a href="#how-languages-keep-the-tape">How languages keep the tape</a></h2>
 
 <p>On the host, the operating system maintains the illusion. Virtual memory, paging, overcommit and
 the OOM killer let a program behave as if memory were one large array, and when the illusion fails
@@ -164,7 +164,7 @@ migrating pages on demand, which is correct and shows up later as time in a prof
 like PyTorch keeps a caching allocator in front of all of it, and the usual way to learn a model
 does not fit is <code>CUDA out of memory</code>, some time after the job started.</p>
 
-<h2 id="describing-the-machine-instead">Describing the machine instead</h2>
+<h2 id="describing-the-machine-instead"><a href="#describing-the-machine-instead">Describing the machine instead</a></h2>
 
 <p>Vx drops the single memory. A <em>machine file</em> declares the memories a part has, their
 sizes, how they nest, who can see them, and which links join them. This is the H100 description
@@ -220,7 +220,7 @@ is live <em>at the same time</em>. For a Llama-2-7B prefill that is
 <a href="/blog/the-43-gigabytes-that-are-never-there.html">15.94 GiB, against 58.93 GiB
 allocated</a>.</p>
 
-<h2 id="where-vx-still-uses-a-tape">Where Vx still uses a tape</h2>
+<h2 id="where-vx-still-uses-a-tape"><a href="#where-vx-still-uses-a-tape">Where Vx still uses a tape</a></h2>
 
 <p>The host. A host description declares no capacity on purpose: host memory is virtual, and a
 tensor larger than physical RAM pages rather than failing. A hard limit there would reject programs
@@ -246,5 +246,6 @@ page. For NUMA domains described with the same vocabulary, see
   <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
 </footer>
 
+<script src="/blog/copy-code.js" defer></script>
 </body>
 </html>

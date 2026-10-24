@@ -39,6 +39,51 @@ use std::collections::HashMap;
 
 mod emit;
 
+/// An unsupported construct permits AST fallback. Conflicting layouts stop compilation.
+#[derive(Debug)]
+pub enum ModuleEmitError {
+    Declined(Decline),
+    ConflictingLayouts {
+        first: Box<crate::layout::GeneratedAggregateLayout>,
+        second: Box<crate::layout::GeneratedAggregateLayout>,
+    },
+    RegistryLayoutConflict {
+        registry: Box<crate::registry::TypeDefinition>,
+        generated: Box<crate::layout::GeneratedAggregateLayout>,
+    },
+}
+
+impl From<Decline> for ModuleEmitError {
+    fn from(why: Decline) -> Self {
+        Self::Declined(why)
+    }
+}
+
+impl std::fmt::Display for ModuleEmitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Declined(why) => write!(f, "{why}"),
+            Self::ConflictingLayouts { first, second } => write!(
+                f,
+                "Internal compiler error: generated layouts disagree for type {:?}.\n\
+                 First layout:\n{first:#?}\nSecond layout:\n{second:#?}",
+                first.type_id
+            ),
+            Self::RegistryLayoutConflict {
+                registry,
+                generated,
+            } => write!(
+                f,
+                "Internal compiler error: registry and generated layouts disagree for type {:?}.\n\
+                 Registry layout:\n{registry:#?}\nGenerated layout:\n{generated:#?}",
+                generated.type_id
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ModuleEmitError {}
+
 /// The MLIR type string for a scalar element type. Integers are signless (signedness lives in the
 /// op, e.g. `divsi`/`divui`); `bool` is `i1`.
 /// Format a float so MLIR can parse it back: Rust's `{:?}` prints `0.00001` as `1e-5`,
@@ -524,19 +569,20 @@ fn resolve_agg_gid(
     ty: &Type,
     aggs: &AggMap,
     agg_names: &HashMap<String, TypeId>,
+    identities: &crate::layout::identity::AggregateIdentities,
 ) -> Option<TypeId> {
     // A data-carrying enum instance (`Option<i32>`) has a *synthesized* per-instance layout keyed by
     // `enum_instance_gid` (the lowerer recorded it in the side table now folded into `aggs`); try that
     // first. Its `gid` is distinct from any registry layout, so a struct instance (`Vec<i32>`) misses
     // here and falls through to the nominal resolution below. (#242)
     if let Type::GenericInstance(base, args) = ty {
-        if let Type::Enum(name, _) | Type::Struct(name, _) = base.as_ref() {
-            let gid = crate::hir::flatten::enum_instance_gid(name.as_ref(), args);
+        if matches!(base.as_ref(), Type::Enum(..) | Type::Struct(..)) {
+            let gid = crate::hir::flatten::enum_instance_gid(base.as_ref(), args, identities)?;
             if aggs.contains_key(&gid) {
                 return Some(gid);
             }
             // A generic struct instance whose layout the lowerer synthesized (`Array<f32, 10>`).
-            let gid = crate::hir::flatten::struct_instance_gid(name.as_ref(), args);
+            let gid = crate::hir::flatten::struct_instance_gid(base.as_ref(), args, identities)?;
             if aggs.contains_key(&gid) {
                 return Some(gid);
             }
@@ -549,7 +595,7 @@ fn resolve_agg_gid(
     match nominal {
         Type::Struct(name, id) | Type::Enum(name, id) => {
             // A data-carrying enum with no generics is the instance with no arguments.
-            let bare = crate::hir::flatten::enum_instance_gid(name.as_ref(), &[]);
+            let bare = crate::hir::flatten::enum_instance_gid(nominal, &[], identities)?;
             if aggs.contains_key(&bare) {
                 return Some(bare);
             }
@@ -618,11 +664,16 @@ pub fn build_callee_map(
                         _ => None,
                     }
                 }),
-                ret_agg: resolve_agg_gid(&sig.ret_ty, aggs, agg_names),
+                ret_agg: resolve_agg_gid(
+                    &sig.ret_ty,
+                    aggs,
+                    agg_names,
+                    registry.aggregate_identities(),
+                ),
                 ret_ptr: is_ptr_ty(&sig.ret_ty),
                 ret_pointee: match peel_wrappers(&sig.ret_ty) {
                     Type::Borrow { inner, .. } | Type::Pointer(inner, ..) => {
-                        resolve_agg_gid(inner, aggs, agg_names)
+                        resolve_agg_gid(inner, aggs, agg_names, registry.aggregate_identities())
                     }
                     _ => None,
                 },
@@ -669,6 +720,32 @@ pub struct AggLayout {
     /// a field loads the whole `!llvm.struct` value (tracked in `agg_val_of`), a `FieldStore` stores it,
     /// and taking its address (`&self.iter` for a method receiver) GEPs to it as an aggregate slot. (#242)
     pub field_agg: Vec<Option<TypeId>>,
+    /// Actual payload metadata for each variant, separate from shared storage fields.
+    pub variant_payloads: Vec<Vec<crate::layout::GeneratedPayloadLayout>>,
+}
+
+/// Build an LLVM struct type from the generated fields in declaration order.
+pub(crate) fn generated_storage_type(layout: &crate::layout::GeneratedAggregateLayout) -> String {
+    let types: Vec<&str> = layout.fields.iter().map(|f| f.mlir_type.as_str()).collect();
+    format!("!llvm.struct<({})>", types.join(", "))
+}
+
+impl AggLayout {
+    /// Derive the emitter's storage view from the shared generated layout.
+    fn from_generated(layout: &crate::layout::GeneratedAggregateLayout) -> Self {
+        Self {
+            struct_ty: generated_storage_type(layout),
+            offsets: layout
+                .fields
+                .iter()
+                .map(|f| f.layout.offset as u64)
+                .collect(),
+            field_tys: layout.fields.iter().map(|f| f.mlir_type.clone()).collect(),
+            field_pointee: layout.fields.iter().map(|f| f.pointer_target_id).collect(),
+            field_agg: layout.fields.iter().map(|f| f.aggregate_id).collect(),
+            variant_payloads: layout.variant_payloads.clone(),
+        }
+    }
 }
 
 /// GID → aggregate layout, for the structs a stream constructs/reads. Structs whose fields are all
@@ -714,6 +791,7 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                     field_tys: Vec::new(),
                     field_pointee: Vec::new(),
                     field_agg: Vec::new(),
+                    variant_payloads: Vec::new(),
                 },
             ));
         }
@@ -804,6 +882,7 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                 field_tys,
                 field_pointee,
                 field_agg,
+                variant_payloads: Vec::new(),
             },
         ))
     };
@@ -823,7 +902,6 @@ pub(crate) fn agg_struct_ty_of(
     registry: &ImmutableGlobalRegistry,
     visiting: &mut Vec<TypeId>,
 ) -> Lowered<String> {
-    use crate::layout::FieldTy;
     if visiting.contains(&gid) {
         return Err(Decline::TypeNotModelled {
             what: "an aggregate whose layout is cyclic",
@@ -843,18 +921,28 @@ pub(crate) fn agg_struct_ty_of(
     visiting.push(gid);
     let mut field_tys = Vec::with_capacity(def.fields.len());
     for f in &def.fields {
-        let ft = match &f.ty {
-            FieldTy::Scalar(e) => mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string(),
-            FieldTy::Opaque => "!llvm.ptr".to_string(),
-            FieldTy::Tensor(_, rank) => memref_descriptor_ty(*rank),
-            FieldTy::Nominal(n) if registry.is_payload_free_enum(*n) => "i32".to_string(),
-            FieldTy::Nominal(n) => agg_struct_ty_of(*n, registry, visiting)?,
-            FieldTy::Vector(e, lanes) => mlir_vector(e, *lanes).ok_or(crate::emitter_gap!())?,
-        };
+        let ft = registry_field_storage_type(&f.ty, registry, visiting)?;
         field_tys.push(ft);
     }
     visiting.pop();
     Ok(format!("!llvm.struct<({})>", field_tys.join(", ")))
+}
+
+/// Recover a registry field's storage type without reinterpreting its declared source type.
+pub(crate) fn registry_field_storage_type(
+    field: &crate::layout::FieldTy,
+    registry: &ImmutableGlobalRegistry,
+    visiting: &mut Vec<TypeId>,
+) -> Lowered<String> {
+    use crate::layout::FieldTy;
+    Ok(match field {
+        FieldTy::Scalar(e) => mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string(),
+        FieldTy::Opaque => "!llvm.ptr".to_string(),
+        FieldTy::Tensor(_, rank) => memref_descriptor_ty(*rank),
+        FieldTy::Nominal(n) if registry.is_payload_free_enum(*n) => "i32".to_string(),
+        FieldTy::Nominal(n) => agg_struct_ty_of(*n, registry, visiting)?,
+        FieldTy::Vector(e, lanes) => mlir_vector(e, *lanes).ok_or(crate::emitter_gap!())?,
+    })
 }
 
 /// The base nominal name a pointer/borrow points *to* (`*const Vec<T>` -> `"Vec"`), for resolving a
@@ -887,6 +975,7 @@ pub type TensorMap = HashMap<TypeId, (ElementType, Vec<String>)>;
 /// reference none (scalar/control-flow-only functions).
 #[derive(Default)]
 pub struct EmitCtx {
+    identities: std::sync::Arc<crate::layout::identity::AggregateIdentities>,
     /// Record the Vx name and type of each parameter of a function that holds a `spawn`, for
     /// `--emit-ptx` to describe the parameters of a GPU kernel.
     pub describe_params: bool,
@@ -1091,6 +1180,106 @@ pub fn subspaces_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<SubspaceInfo> {
 }
 
 impl EmitCtx {
+    fn registry_layout_agrees(
+        registry: &ImmutableGlobalRegistry,
+        definition: &crate::registry::TypeDefinition,
+        generated: &crate::layout::GeneratedAggregateLayout,
+    ) -> bool {
+        use crate::layout::FieldTy;
+        definition.id == generated.type_id
+            && definition.size_bytes as u64 == generated.size_bytes
+            && definition.align_bytes as u64 == generated.align_bytes
+            && definition.fields.len() == generated.fields.len()
+            && generated.variant_payloads.is_empty()
+            && definition
+                .fields
+                .iter()
+                .zip(&generated.fields)
+                .enumerate()
+                .all(|(index, (expected, actual))| {
+                    let aggregate = match &expected.ty {
+                        FieldTy::Nominal(id) if !registry.is_payload_free_enum(*id) => Some(*id),
+                        _ => None,
+                    };
+                    // Enum instances use generated IDs, so their declaration IDs cannot identify pointer targets here.
+                    let known_pointee = registry
+                        .structs
+                        .get(&definition.id)
+                        .and_then(|declaration| declaration.fields.get(index))
+                        .and_then(|(_, ty)| match ty {
+                            Type::Pointer(inner, ..)
+                            | Type::Borrow { inner, .. }
+                            | Type::Ref(inner, ..) => match inner.as_ref() {
+                                Type::Struct(name, id) | Type::Enum(name, id) => registry
+                                    .aggregate_identities()
+                                    .resolve(name, *id)
+                                    .map(|(_, id)| id)
+                                    .filter(|id| registry.structs.contains_key(id)),
+                                _ => None,
+                            },
+                            _ => None,
+                        });
+                    expected == &actual.layout
+                        && registry_field_storage_type(&expected.ty, registry, &mut Vec::new())
+                            .is_ok_and(|ty| ty == actual.mlir_type)
+                        && actual.aggregate_id == aggregate
+                        && if matches!(expected.ty, FieldTy::Opaque) {
+                            known_pointee.is_none() || actual.pointer_target_id == known_pointee
+                        } else {
+                            actual.pointer_target_id.is_none()
+                        }
+                })
+    }
+
+    fn install_generated_layouts(
+        &mut self,
+        registry: &ImmutableGlobalRegistry,
+        layouts: &[crate::layout::GeneratedAggregateLayout],
+        sched: crate::config::Schedule,
+    ) -> Result<(), ModuleEmitError> {
+        let mut generated: HashMap<TypeId, &crate::layout::GeneratedAggregateLayout> =
+            HashMap::new();
+        // Validate every record before changing storage or metadata in the emitter context.
+        for layout in layouts {
+            if let Some(definition) = registry
+                .layouts
+                .get(&layout.type_id)
+                .filter(|def| def.align_bytes != 0)
+            {
+                if !Self::registry_layout_agrees(registry, definition, layout) {
+                    return Err(ModuleEmitError::RegistryLayoutConflict {
+                        registry: Box::new(definition.clone()),
+                        generated: Box::new(layout.clone()),
+                    });
+                }
+            }
+            if let Some(previous) = generated.get(&layout.type_id) {
+                if !previous.semantically_eq(layout, registry.aggregate_identities()) {
+                    return Err(ModuleEmitError::ConflictingLayouts {
+                        first: Box::new((**previous).clone()),
+                        second: Box::new(layout.clone()),
+                    });
+                }
+            } else {
+                generated.insert(layout.type_id, layout);
+            }
+        }
+        let mut registry_storage_added = false;
+        for (id, layout) in generated {
+            registry_storage_added |=
+                !self.aggs.contains_key(&id) && registry.layouts.contains_key(&id);
+            self.aggs.insert(id, AggLayout::from_generated(layout));
+        }
+        // Names change only when a registry ID gains usable storage.
+        if registry_storage_added {
+            self.agg_names = build_agg_names(registry, &self.aggs);
+        }
+        if !layouts.is_empty() {
+            self.callees = build_callee_map(registry, &self.aggs, &self.agg_names, sched);
+        }
+        Ok(())
+    }
+
     /// Build the callee + struct-layout maps from the registry. The tensor map is *not* in the
     /// registry (tensor types are structural); populate it separately from the lowerer's side table.
     pub fn from_registry(
@@ -1101,6 +1290,7 @@ impl EmitCtx {
         let agg_names = build_agg_names(registry, &aggs);
         let callees = build_callee_map(registry, &aggs, &agg_names, sched);
         Self {
+            identities: registry.aggregate_identities().clone(),
             callees,
             aggs,
             agg_names,
@@ -1127,7 +1317,7 @@ impl EmitCtx {
     /// monomorphized cross-module signature left it unresolved, the base name's GID (`agg_names`).
     /// (#242)
     fn agg_gid(&self, ty: &Type) -> Option<TypeId> {
-        resolve_agg_gid(ty, &self.aggs, &self.agg_names)
+        resolve_agg_gid(ty, &self.aggs, &self.agg_names, &self.identities)
     }
 }
 
@@ -1296,11 +1486,10 @@ fn mlir_block_error(text: &str, location: &str, message: &str) -> Option<String>
     None
 }
 
-/// Emit a whole module — every function as a concatenated bare `func.func` — or `None` if *any*
-/// function is outside the current subset (module-level keep-green atomicity: a partially lowered
-/// module is never emitted, so the AST path stays the oracle for the whole program). Callees + struct
-/// layouts resolve through the frozen registry; `tensor_types` is the concatenation of each function's
-/// lowerer side table (`LocalWorkerState::local_tensor_types`). Wrap the result in `module { … }`.
+/// Generate MLIR for all functions, wrapped in `module { … }`.
+/// Unsupported constructs permit AST fallback. Conflicting layouts stop compilation and report both records.
+/// Callees and declared layouts resolve through the frozen registry.
+/// `tensor_types` combines each function's `LocalWorkerState::local_tensor_types` table.
 #[allow(clippy::too_many_arguments)]
 pub fn emit_module_mlir(
     funcs: &[(&Function, &[HirInstruction], &[TypeId])],
@@ -1308,14 +1497,14 @@ pub fn emit_module_mlir(
     tensor_types: &[(TypeId, ElementType, Vec<String>)],
     string_tables: &[&[String]],
     inline_tables: &[&[crate::hir::flatten::InlineBlock]],
-    agg_layouts: &[(TypeId, Vec<u64>, Vec<String>)],
+    agg_layouts: &[crate::layout::GeneratedAggregateLayout],
     alias_tables: &[&[(usize, usize, Vec<usize>)]],
     subspaces: &[SubspaceInfo],
     topo_archs: &[(i64, DeclaredArch)],
     local_devices: &[(i32, i32)],
     sched: crate::config::Schedule,
     describe_params: bool,
-) -> Lowered<String> {
+) -> Result<String, ModuleEmitError> {
     let setup = std::time::Instant::now();
     let mut ctx = EmitCtx::from_registry(registry, sched);
     ctx.describe_params = describe_params;
@@ -1340,26 +1529,9 @@ pub fn emit_module_mlir(
             .entry(*gid)
             .or_insert_with(|| (elem.clone(), shape.clone()));
     }
-    // Synthesized data-carrying enum-instance layouts (`Option<i32>` -> `{ i32, i32 }`): fold each into
-    // the aggregate map so a `FieldStore`/`FieldLoad`/`Alloca` on its GID resolves like any struct.
-    // Instance-dependent, so they aren't in the frozen registry (the lowerer synthesized them). (#242)
-    for (gid, offsets, field_tys) in agg_layouts {
-        ctx.aggs.entry(*gid).or_insert_with(|| AggLayout {
-            struct_ty: format!("!llvm.struct<({})>", field_tys.join(", ")),
-            offsets: offsets.clone(),
-            field_tys: field_tys.clone(),
-            // A synthesized enum instance carries no pointer-to-aggregate fields (its payload is a
-            // scalar/pointer-to-scalar), so no chained field access resolves through it.
-            field_pointee: vec![None; field_tys.len()],
-            field_agg: vec![None; field_tys.len()],
-        });
-    }
-    // Rebuild the callee map now that the synthesized enum-instance layouts are in `aggs`: a callee
-    // returning `Option<i32>` (a data enum) resolves its `ret_agg` only once its layout is present,
-    // which happens above — `EmitCtx::from_registry` built the callees before it (#242).
-    if !agg_layouts.is_empty() {
-        ctx.callees = build_callee_map(registry, &ctx.aggs, &ctx.agg_names, sched);
-    }
+    // Generated struct and enum instance layouts are local to the lowerer, outside the frozen registry.
+    // Install their storage shapes so aggregate allocation and field access can find them.
+    ctx.install_generated_layouts(registry, agg_layouts, sched)?;
     // Function GID → (param MLIR types, ret MLIR type), for a `FuncConst`'s `func.constant @name : sig`.
     // Built from the module's own functions (each `Function` carries its params); the target must be a
     // function whose whole signature is modelled (else the FuncConst declines at emit). (#242)
@@ -1527,7 +1699,7 @@ pub fn emit_module_mlir(
                         funcs[fi].0.name.as_ref()
                     );
                 }
-                return Err(why.clone());
+                return Err(why.clone().into());
             }
         };
         calls.append(fn_calls);
@@ -2179,10 +2351,8 @@ impl<'a> FnEmit<'a> {
             // the field index comes from matching the offset against the layout, the value type from
             // the stored register's tracked type.
             Opcode::FieldStore => self.op_field_store(idx, ins),
-            // Load a scalar struct field. `operand1` is the struct slot, `imm` the field's byte offset,
-            // and this instruction's own `type_idx` the field's scalar type. GEP to the field, then
-            // `llvm.load`.
-            Opcode::FieldLoad => self.op_field_load(idx, ins),
+            // Load a field by byte offset, or an enum payload by its variant and field indices.
+            Opcode::FieldLoad | Opcode::EnumPayloadLoad => self.op_field_load(idx, ins),
             // The address of a by-value nested-aggregate field (`&outer.inner`): GEP to the field and
             // yield the pointer, tracked as an aggregate slot (its layout GID from `type_idx`), so a
             // chained field access or a method receiver addresses through it. (#242)
@@ -2263,6 +2433,7 @@ impl<'a> FnEmit<'a> {
             Opcode::Barrier => self.op_barrier(idx, ins),
             Opcode::LaunchDim => self.op_launch_dim(idx, ins),
             Opcode::LoopHint => self.op_loop_hint(idx, ins),
+            Opcode::LaneReduce => self.op_lane_reduce(idx, ins),
             Opcode::AcrossId => self.op_across_id(idx, ins),
             Opcode::AcrossRegion => self.op_across_region(idx, ins),
             Opcode::TensorDrop => self.op_tensor_drop(idx, ins),
@@ -2542,6 +2713,134 @@ mod tests {
     use crate::session::{GlobalSession, LocalWorkerState};
     use std::sync::Arc;
 
+    // These LLVM target-layout functions are not included in mlir-sys's generated bindings.
+    unsafe extern "C" {
+        fn LLVMCreateTargetData(layout: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+        fn LLVMDisposeTargetData(data: *mut std::ffi::c_void);
+        fn LLVMABISizeOfType(data: *mut std::ffi::c_void, ty: mlir_sys::LLVMTypeRef) -> u64;
+        fn LLVMABIAlignmentOfType(data: *mut std::ffi::c_void, ty: mlir_sys::LLVMTypeRef) -> u32;
+        fn LLVMOffsetOfElement(
+            data: *mut std::ffi::c_void,
+            ty: mlir_sys::LLVMTypeRef,
+            field: u32,
+        ) -> u64;
+    }
+
+    fn llvm_storage_layout(storage: &str, data_layout: &str) -> (u64, u64, Vec<u64>) {
+        let registry = melior::dialect::DialectRegistry::new();
+        melior::utility::register_all_dialects(&registry);
+        let context = melior::Context::new();
+        context.append_dialect_registry(&registry);
+        context.load_all_available_dialects();
+        melior::utility::register_all_llvm_translations(&context);
+        let text = format!("module {{ llvm.func @inspect({storage}) }}");
+        let module = melior::ir::Module::parse(&context, &text).expect("storage type parses");
+        let data_layout = std::ffi::CString::new(data_layout).unwrap();
+        // SAFETY: the parsed module owns valid types. LLVM objects remain live until all queries finish.
+        unsafe {
+            let llvm_context = mlir_sys::LLVMContextCreate();
+            let llvm_module =
+                mlir_sys::mlirTranslateModuleToLLVMIR(module.as_operation().to_raw(), llvm_context);
+            assert!(!llvm_module.is_null(), "storage translates to LLVM");
+            let function = mlir_sys::LLVMGetNamedFunction(llvm_module, c"inspect".as_ptr());
+            let ty = mlir_sys::LLVMTypeOf(mlir_sys::LLVMGetParam(function, 0));
+            let data = LLVMCreateTargetData(data_layout.as_ptr());
+            let offsets = (0..mlir_sys::LLVMCountStructElementTypes(ty))
+                .map(|i| LLVMOffsetOfElement(data, ty, i))
+                .collect();
+            let result = (
+                LLVMABISizeOfType(data, ty),
+                u64::from(LLVMABIAlignmentOfType(data, ty)),
+                offsets,
+            );
+            LLVMDisposeTargetData(data);
+            mlir_sys::LLVMDisposeModule(llvm_module);
+            mlir_sys::LLVMContextDispose(llvm_context);
+            result
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::byte(1, 1)]
+    #[case::two_byte_alignment(4, 2)]
+    #[case::four_byte_alignment(8, 4)]
+    #[case::eight_byte_alignment(16, 8)]
+    #[case::sixteen_byte_alignment(32, 16)]
+    fn enum_layout_storage_agrees_with_llvm(
+        #[case] size: u64,
+        #[case] align: u64,
+        #[values(
+            "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128",
+            "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128"
+        )]
+        target: &str,
+    ) {
+        let slot = crate::layout::EnumPayloadSlot {
+            offset: 0,
+            size,
+            align,
+        };
+        let field = crate::layout::enum_slot_storage(&slot).expect("supported slot");
+        let outer = format!("!llvm.struct<(i32, {field}, i8)>");
+        let expected = crate::layout::enum_storage_layout(&[vec![(size, align), (1, 1)]]).unwrap();
+        assert_eq!(
+            llvm_storage_layout(&outer, target),
+            (
+                expected.size,
+                expected.align,
+                vec![0, expected.slots[0].offset, expected.slots[1].offset]
+            ),
+            "LLVM must provide the slot's size, alignment, and offsets for {size}/{align}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::larger_first("Big(Wide), Small(Aligned)")]
+    #[case::aligned_first("Small(Aligned), Big(Wide)")]
+    fn enum_layout_generated_storage_has_both_size_and_alignment(#[case] variants: &str) {
+        let source = format!("struct Wide {{ a: i32, b: i32, c: i32 }}
+            struct Aligned {{ value: i64 }}
+            enum Choice {{ {variants} }}
+            fn read(value: Choice) -> i64 {{ match value {{ Choice::Big(v) => {{ return (v.a + v.b + v.c) as i64; }}, Choice::Small(v) => {{ return v.value; }} }} }}
+            fn main() -> i32 {{ return read(Choice::Big(Wide {{ a: 1, b: 2, c: 3 }})) as i32; }}");
+        emit_module_with_layouts_and_verify(&source, |layouts| {
+            let layout = layouts
+                .iter()
+                .find(|l| l.name == "Choice")
+                .expect("Choice layout");
+            assert_eq!(
+                (
+                    layout.size_bytes,
+                    layout.align_bytes,
+                    layout.field_offsets(),
+                    layout.fields[1].layout.size
+                ),
+                (24, 8, vec![0, 8], 16),
+                "generated enum metadata must retain maximum size and maximum alignment"
+            );
+            assert_eq!(
+                llvm_storage_layout(&generated_storage_type(layout), "e-i64:64"),
+                (24, 8, vec![0, 8]),
+                "generated LLVM storage must supply the promised capacity and alignment"
+            );
+        });
+    }
+
+    #[rstest::rstest]
+    fn enum_layout_zero_sized_storage_agrees_with_llvm(#[values(1, 2, 4, 8, 16)] align: u64) {
+        let slot = crate::layout::EnumPayloadSlot {
+            offset: 0,
+            size: 0,
+            align,
+        };
+        let field = crate::layout::enum_slot_storage(&slot).unwrap();
+        assert_eq!(
+            llvm_storage_layout(&format!("!llvm.struct<({field}, i8)>"), "e-i64:64"),
+            (align, align, vec![0, 0]),
+            "zero-sized integer carriers must retain alignment and field identity"
+        );
+    }
+
     #[test]
     fn memref_lead_dim_answers_only_for_rank_one() {
         // The reduction loads a slice with a single-index `vector.load`, so anything but rank 1
@@ -2607,6 +2906,35 @@ mod tests {
     /// real MLIR context — proving the module emitter (calls included) produces valid MLIR end to
     /// end. Mirrors the pipeline's registry build so callees resolve through `fn_sigs`.
     fn emit_module_and_verify(src: &str) -> String {
+        emit_module_with_layouts_and_verify(src, |_| {})
+    }
+
+    fn emit_module_with_layouts_and_verify(
+        src: &str,
+        change_layouts: impl FnOnce(&mut Vec<crate::layout::GeneratedAggregateLayout>),
+    ) -> String {
+        let mlir = emit_module_with_layouts(src, change_layouts).expect("emits flat module");
+
+        use melior::ir::operation::OperationLike;
+        let dialects = melior::dialect::DialectRegistry::new();
+        melior::utility::register_all_dialects(&dialects);
+        let context = melior::Context::new();
+        context.append_dialect_registry(&dialects);
+        context.load_all_available_dialects();
+        crate::codegen::register_vx_dialect(&context); // for `vx.transfer`
+        let module = melior::ir::Module::parse(&context, &mlir)
+            .unwrap_or_else(|| panic!("emitted MLIR failed to parse:\n{mlir}"));
+        assert!(
+            module.as_operation().verify(),
+            "emitted MLIR failed to verify:\n{mlir}"
+        );
+        mlir
+    }
+
+    fn emit_module_with_layouts(
+        src: &str,
+        change_layouts: impl FnOnce(&mut Vec<crate::layout::GeneratedAggregateLayout>),
+    ) -> Result<String, ModuleEmitError> {
         let mut lexer = crate::lexer::Lexer::new(src);
         let tokens = lexer.tokenize();
         let mut parser = crate::parser::Parser::new(&tokens, src);
@@ -2628,12 +2956,14 @@ mod tests {
             for f in &mut mods[0].functions {
                 checker.check_function(f);
             }
+            assert_eq!(checker.errors.error_count(), 0, "program type-checks");
         }
 
         let mut lowered = Vec::new();
         for f in &mods[0].functions {
             let mut w = LocalWorkerState::new(session.clone());
-            assert!(lower_function_to_hir(f, &mut w).is_ok(), "function lowers");
+            let result = lower_function_to_hir(f, &mut w);
+            assert!(result.is_ok(), "function {} lowers: {result:?}", f.name);
             lowered.push(w);
         }
         let funcs: Vec<(&Function, &[HirInstruction], &[TypeId])> = mods[0]
@@ -2660,15 +2990,16 @@ mod tests {
             .iter()
             .map(|w| w.local_inline_blocks.as_slice())
             .collect();
-        let agg_layouts: Vec<_> = lowered
+        let mut agg_layouts: Vec<crate::layout::GeneratedAggregateLayout> = lowered
             .iter()
             .flat_map(|w| w.local_agg_layouts.iter().cloned())
             .collect();
+        change_layouts(&mut agg_layouts);
         let alias_tables: Vec<&[(usize, usize, Vec<usize>)]> = lowered
             .iter()
             .map(|w| w.local_place_alias_stores.as_slice())
             .collect();
-        let mlir = emit_module_mlir(
+        emit_module_mlir(
             &funcs,
             &session.registry,
             &tensor_types,
@@ -2682,22 +3013,713 @@ mod tests {
             crate::config::Schedule::Parallel,
             false,
         )
-        .expect("emits flat module");
+    }
 
-        use melior::ir::operation::OperationLike;
-        let dialects = melior::dialect::DialectRegistry::new();
-        melior::utility::register_all_dialects(&dialects);
-        let context = melior::Context::new();
-        context.append_dialect_registry(&dialects);
-        context.load_all_available_dialects();
-        crate::codegen::register_vx_dialect(&context); // for `vx.transfer`
-        let module = melior::ir::Module::parse(&context, &mlir)
-            .unwrap_or_else(|| panic!("emitted MLIR failed to parse:\n{mlir}"));
-        assert!(
-            module.as_operation().verify(),
-            "emitted MLIR failed to verify:\n{mlir}"
+    #[test]
+    fn repeated_enum_layouts_compile() {
+        emit_module_with_layouts_and_verify(
+            "enum Value { Number(i64), Empty }\n\
+             fn main() -> i32 { let value = Value::Number(5); return 0; }",
+            |layouts| layouts.push(layouts[0].clone()),
         );
-        mlir
+    }
+
+    #[test]
+    fn equivalent_enum_layout_metadata_is_accepted() {
+        let result = emit_module_with_layouts(
+            "struct Node { value: i32 } enum Choice<T> { Some(T), None } \
+             fn read(x: Choice<&Node>) -> i32 { match x { \
+               Choice::Some(node) => { return node.value; }, Choice::None => { return 0; } } }",
+            |layouts| {
+                let original = layouts
+                    .iter()
+                    .find(|l| l.name == "Choice")
+                    .expect("Choice layout");
+                let mut equivalent = original.clone();
+                equivalent.name = "module::Choice".into();
+                let Type::Borrow {
+                    inner, region_id, ..
+                } = &mut equivalent.variant_payloads[0][0].ty
+                else {
+                    panic!("Choice retains its borrowed payload");
+                };
+                *region_id = 99;
+                let Type::Struct(_, Some(id)) = inner.as_ref() else {
+                    panic!("Node has an attached declaration ID");
+                };
+                **inner = Type::Enum("module::Node".into(), Some(*id));
+                layouts.push(equivalent);
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "semantically equivalent records must emit a module: {result:?}"
+        );
+    }
+
+    #[test]
+    fn conflicting_enum_layouts_return_both_records_without_panicking() {
+        let result = std::panic::catch_unwind(|| {
+            emit_module_with_layouts(
+                "struct Node { value: i64 }\n\
+                 enum Value { Number(i64), Pointer(*const Node) }\n\
+                 fn main() -> i32 { let value = Value::Number(5); return 0; }",
+                |layouts| {
+                    let mut conflicting = layouts
+                        .iter()
+                        .find(|layout| layout.name == "Value")
+                        .expect("the enum has a generated layout")
+                        .clone();
+                    // Keep the same storage and ID, but describe a different pointer target.
+                    conflicting.variant_payloads[1][0].ty = Type::Pointer(
+                        Box::new(Type::Struct("OtherNode".into(), None)),
+                        None,
+                        false,
+                    );
+                    layouts.push(conflicting);
+                },
+            )
+        });
+        assert!(
+            result.is_ok(),
+            "conflicting layouts must return an error without panicking"
+        );
+        let error = result
+            .unwrap()
+            .expect_err("conflicting layouts stop code generation");
+        let ModuleEmitError::ConflictingLayouts { first, second } = &error else {
+            panic!("expected a layout conflict, got {error:?}");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains("Internal compiler error: generated layouts disagree"),
+            "the message must identify a compiler error: {message}"
+        );
+        assert!(
+            message.contains(&format!("First layout:\n{first:#?}")),
+            "the message must include the first complete layout: {message}"
+        );
+        assert!(
+            message.contains(&format!("Second layout:\n{second:#?}")),
+            "the message must include the second complete layout: {message}"
+        );
+    }
+
+    fn registry_overlap_fixture() -> (
+        ImmutableGlobalRegistry,
+        crate::layout::GeneratedAggregateLayout,
+    ) {
+        let source = "struct Node { value: i32 } struct Holder { number: i32, pointer: *const Node, nested: Node } fn make() -> Holder { return Holder { number: 5, pointer: 0 as *const Node, nested: Node { value: 3 } }; }";
+        let mut lexer = crate::lexer::Lexer::new(source);
+        let tokens = lexer.tokenize();
+        let mut parser = crate::parser::Parser::new(&tokens, source);
+        let mut modules = vec![parser.parse().expect("program parses")];
+        modules[0].module_path = "crate::overlap".into();
+        let symbols = crate::resolver::build_symbol_map(&modules);
+        modules[0].resolve_names(&symbols, &[]);
+        let registry = crate::pipeline::build_frozen_registry(&modules).expect("registry builds");
+        let definition = registry
+            .layouts
+            .values()
+            .find(|d| d.name == "Holder")
+            .unwrap();
+        let ctx = EmitCtx::from_registry(&registry, crate::config::Schedule::Sequential);
+        let storage = &ctx.aggs[&definition.id];
+        let layout = crate::layout::GeneratedAggregateLayout {
+            type_id: definition.id,
+            name: definition.name.clone(),
+            size_bytes: definition.size_bytes as u64,
+            align_bytes: definition.align_bytes as u64,
+            fields: definition
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| crate::layout::GeneratedFieldLayout {
+                    layout: field.clone(),
+                    mlir_type: storage.field_tys[index].clone(),
+                    aggregate_id: storage.field_agg[index],
+                    pointer_target_id: storage.field_pointee[index],
+                })
+                .collect(),
+            variant_payloads: vec![],
+        };
+        (registry, layout)
+    }
+
+    #[rstest::rstest]
+    #[case("size")]
+    #[case("alignment")]
+    #[case("field_count")]
+    #[case("field_name")]
+    #[case("field_offset")]
+    #[case("field_size")]
+    #[case("field_kind")]
+    #[case("llvm_type")]
+    #[case("missing_aggregate")]
+    #[case("different_aggregate")]
+    #[case("unexpected_aggregate")]
+    #[case("missing_pointer_target")]
+    #[case("different_pointer_target")]
+    #[case("unexpected_pointer_target")]
+    #[case("variants")]
+    #[case("definition_id")]
+    #[case("unsupported_storage")]
+    #[case("attached_pointer_id")]
+    fn registry_overlap_conflicts_stop_installation(#[case] difference: &str) {
+        let (mut registry, mut layout) = registry_overlap_fixture();
+        match difference {
+            "size" => layout.size_bytes += 8,
+            "alignment" => layout.align_bytes *= 2,
+            "field_count" => {
+                layout.fields.pop();
+            }
+            "field_name" => layout.fields[0].layout.name = "other".into(),
+            "field_offset" => layout.fields[1].layout.offset += 8,
+            "field_size" => layout.fields[1].layout.size += 8,
+            "field_kind" => layout.fields[0].layout.ty = crate::layout::FieldTy::Opaque,
+            "llvm_type" => layout.fields[1].mlir_type = "i64".into(),
+            "missing_aggregate" => layout.fields[2].aggregate_id = None,
+            "different_aggregate" => layout.fields[2].aggregate_id = Some(layout.type_id),
+            "unexpected_aggregate" => layout.fields[0].aggregate_id = Some(layout.type_id),
+            "missing_pointer_target" => layout.fields[1].pointer_target_id = None,
+            "different_pointer_target" => layout.fields[1].pointer_target_id = Some(layout.type_id),
+            "unexpected_pointer_target" => {
+                layout.fields[0].pointer_target_id = Some(layout.type_id)
+            }
+            "variants" => layout.variant_payloads.push(vec![]),
+            "definition_id" => {
+                registry.layouts.get_mut(&layout.type_id).unwrap().id = TypeId::new(99, 1, 0, 0)
+            }
+            "attached_pointer_id" => {
+                let node = layout.fields[1].pointer_target_id.unwrap();
+                registry.structs.get_mut(&layout.type_id).unwrap().fields[1].1 = Type::Pointer(
+                    Box::new(Type::Struct("module::Node".into(), Some(node))),
+                    None,
+                    false,
+                );
+                layout.fields[1].pointer_target_id = Some(layout.type_id);
+            }
+            "unsupported_storage" => {
+                let field = &mut registry.layouts.get_mut(&layout.type_id).unwrap().fields[0];
+                field.ty = crate::layout::FieldTy::Scalar(ElementType::Generic("T".into()));
+                layout.fields[0].layout = field.clone();
+            }
+            _ => unreachable!(),
+        }
+        let mut ctx = EmitCtx::from_registry(&registry, crate::config::Schedule::Sequential);
+        let result = ctx.install_generated_layouts(
+            &registry,
+            &[layout],
+            crate::config::Schedule::Sequential,
+        );
+        assert!(
+            matches!(result, Err(ModuleEmitError::RegistryLayoutConflict { .. })),
+            "registry overlap must report a storage or metadata conflict: {difference}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case("display_name")]
+    #[case("registry_stub")]
+    #[case("missing_registry_record")]
+    #[case("unknown_pointer_target")]
+    fn compatible_registry_overlap_allows_installation(#[case] condition: &str) {
+        let (mut registry, mut layout) = registry_overlap_fixture();
+        match condition {
+            "display_name" => layout.name = "module::Holder".into(),
+            "registry_stub" => {
+                let def = registry.layouts.get_mut(&layout.type_id).unwrap();
+                def.align_bytes = 0;
+                def.fields.clear();
+            }
+            "missing_registry_record" => layout.type_id = TypeId::new(99, 1, 0, 0),
+            "unknown_pointer_target" => {
+                registry.structs.remove(&layout.type_id);
+            }
+            _ => unreachable!(),
+        }
+        let mut ctx = EmitCtx::from_registry(&registry, crate::config::Schedule::Sequential);
+        let result = ctx.install_generated_layouts(
+            &registry,
+            std::slice::from_ref(&layout),
+            crate::config::Schedule::Sequential,
+        );
+        assert!(
+            result.is_ok(),
+            "compatible storage must permit generated metadata: {condition}: {result:?}"
+        );
+        assert_eq!(
+            ctx.aggs[&layout.type_id].field_pointee,
+            layout
+                .fields
+                .iter()
+                .map(|field| field.pointer_target_id)
+                .collect::<Vec<_>>(),
+            "accepted records install their pointer metadata: {condition}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn layout_conflicts_leave_the_emitter_context_unchanged(#[case] registry_conflict: bool) {
+        let (registry, layout) = registry_overlap_fixture();
+        let mut ctx = EmitCtx::from_registry(&registry, crate::config::Schedule::Sequential);
+        let snapshot = |ctx: &EmitCtx| {
+            (
+                ctx.aggs
+                    .iter()
+                    .map(|(id, record)| {
+                        (
+                            *id,
+                            (
+                                record.struct_ty.clone(),
+                                record.offsets.clone(),
+                                record.field_tys.clone(),
+                                record.field_agg.clone(),
+                                record.field_pointee.clone(),
+                                record.variant_payloads.clone(),
+                            ),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>(),
+                ctx.agg_names.clone(),
+                ctx.callees
+                    .iter()
+                    .map(|(id, callee)| {
+                        (
+                            *id,
+                            (callee.name.clone(), callee.ret_agg, callee.ret_pointee),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>(),
+            )
+        };
+        let before = snapshot(&ctx);
+        let mut first = layout.clone();
+        first.type_id = TypeId::new(99, 1, 0, 0);
+        let mut bad = if registry_conflict {
+            layout
+        } else {
+            first.clone()
+        };
+        bad.size_bytes += 8;
+        let result = ctx.install_generated_layouts(
+            &registry,
+            &[first, bad],
+            crate::config::Schedule::Sequential,
+        );
+        assert!(result.is_err(), "the batch contains a conflict");
+        assert_eq!(
+            snapshot(&ctx),
+            before,
+            "a failed batch must preserve all existing emitter storage and metadata"
+        );
+    }
+
+    #[test]
+    fn registry_overlap_error_retains_both_complete_records() {
+        let (registry, mut layout) = registry_overlap_fixture();
+        layout.size_bytes += 8;
+        let mut ctx = EmitCtx::from_registry(&registry, crate::config::Schedule::Sequential);
+        let result = ctx.install_generated_layouts(
+            &registry,
+            std::slice::from_ref(&layout),
+            crate::config::Schedule::Sequential,
+        );
+        let error = result.expect_err("a registry disagreement stops code generation");
+        let ModuleEmitError::RegistryLayoutConflict {
+            registry: original,
+            generated,
+        } = &error
+        else {
+            panic!("expected a registry overlap error");
+        };
+        assert_eq!(
+            format!("{original:#?}"),
+            format!("{:#?}", registry.layouts[&layout.type_id]),
+            "the diagnostic preserves the complete registry record"
+        );
+        assert_eq!(
+            **generated, layout,
+            "the diagnostic preserves the complete generated record"
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("Internal compiler error: registry and generated layouts disagree"),
+            "the diagnostic identifies the registry overlap error"
+        );
+        assert!(
+            message.contains(&format!("Registry layout:\n{original:#?}")),
+            "the diagnostic prints the complete registry record"
+        );
+        assert!(
+            message.contains(&format!("Generated layout:\n{generated:#?}")),
+            "the diagnostic prints the complete generated record"
+        );
+    }
+
+    #[test]
+    fn registry_overlap_rejects_pointer_sized_tensor_descriptors() {
+        let result = emit_module_with_layouts(
+            "struct Holder<T> { value: T, tensor: &Tensor<f32,[4]>, tail: i64 } \
+             struct Outer { inner: Holder<i32> } \
+             fn make(tensor: &Tensor<f32,[4]>) -> i32 { \
+               let holder = Holder<i32> { value: 5, tensor: tensor, tail: 41 }; return holder.value; }",
+            |layouts| {
+                let layout = layouts.iter_mut().find(|layout| layout.name == "Holder").expect("Holder layout");
+                // Reproduce the former descriptor-as-pointer record while keeping its registry ID.
+                layout.size_bytes = 24;
+                layout.fields[1].layout.size = 8;
+                layout.fields[1].layout.ty = crate::layout::FieldTy::Opaque;
+                layout.fields[1].mlir_type = "!llvm.ptr".into();
+                layout.fields[2].layout.offset = 16;
+            },
+        );
+        assert!(
+            matches!(result, Err(ModuleEmitError::RegistryLayoutConflict { .. })),
+            "a pointer-sized tensor descriptor must conflict with registry storage"
+        );
+    }
+
+    #[test]
+    fn generated_layout_metadata_survives_emission() {
+        emit_module_with_layouts_and_verify(
+            "struct Item { value: i32 }\n\
+             struct Holder<T> { value: T, pointer: *const Item }\n\
+             fn main() -> i32 { let item = Item { value: 7 }; let target = Item { value: 9 }; \
+               let h: Holder<Item> = Holder<Item> { value: item, pointer: &target }; return h.value.value + unsafe { (*h.pointer).value }; }",
+            |layouts| {
+                let layout = layouts
+                    .iter()
+                    .find(|l| l.name == "Holder")
+                    .expect("Holder layout");
+                let emitter = AggLayout::from_generated(layout);
+                let item = layout.fields[0]
+                    .aggregate_id
+                    .expect("Item aggregate ID");
+                assert_eq!(
+                    emitter.field_agg[0],
+                    Some(item),
+                    "nested aggregate metadata survives"
+                );
+                assert_eq!(
+                    emitter.field_pointee[1],
+                    Some(item),
+                    "pointer target metadata survives"
+                );
+            },
+        );
+    }
+
+    #[rstest::rstest]
+    fn existing_registry_storage_keeps_the_name_map(
+        #[values(crate::config::Schedule::Sequential, crate::config::Schedule::Parallel)]
+        schedule: crate::config::Schedule,
+    ) {
+        let (registry, layout) = registry_overlap_fixture();
+        let mut ctx = EmitCtx::from_registry(&registry, schedule);
+        let names = ctx.agg_names.clone();
+        let name_buffer = ctx.agg_names.get_key_value("Holder").unwrap().0.as_ptr();
+        ctx.install_generated_layouts(&registry, &[layout], schedule)
+            .unwrap();
+        assert_eq!(
+            ctx.agg_names, names,
+            "existing registry storage keeps name resolution"
+        );
+        assert_eq!(
+            ctx.agg_names.get_key_value("Holder").unwrap().0.as_ptr(),
+            name_buffer,
+            "existing registry storage must not rebuild names"
+        );
+    }
+
+    #[rstest::rstest]
+    fn new_enum_storage_refreshes_callees_without_rebuilding_names(
+        #[values(crate::config::Schedule::Sequential, crate::config::Schedule::Parallel)]
+        schedule: crate::config::Schedule,
+    ) {
+        let source = "struct Item { value: i32 } enum Choice<T> { Some(T), None } \
+            fn make() -> Choice<i32> { return Choice<i32>::Some(7); } \
+            fn address(p: *const Choice<i32>) -> *const Choice<i32> { return p; }";
+        let mut lexer = crate::lexer::Lexer::new(source);
+        let tokens = lexer.tokenize();
+        let mut parser = crate::parser::Parser::new(&tokens, source);
+        let mut modules = vec![parser.parse().unwrap()];
+        modules[0].module_path = "crate::names".into();
+        let symbols = crate::resolver::build_symbol_map(&modules);
+        modules[0].resolve_names(&symbols, &[]);
+        let registry = crate::pipeline::build_frozen_registry(&modules).unwrap();
+        let session = Arc::new(GlobalSession::with_registry(1, registry));
+        let registry = &session.registry;
+        let env_modules = modules.clone();
+        let env = crate::hir::GlobalAstEnv::build(&env_modules);
+        {
+            let mut scratch = LocalWorkerState::new(session.clone());
+            let mut checker = crate::hir::TypeChecker::new(&env, &mut scratch);
+            for function in &mut modules[0].functions {
+                checker.check_function(function);
+            }
+            assert_eq!(checker.errors.error_count(), 0, "enum program type-checks");
+        }
+        let make = modules[0]
+            .functions
+            .iter()
+            .find(|function| function.name.as_ref() == "make")
+            .unwrap();
+        let mut worker = LocalWorkerState::new(session.clone());
+        lower_function_to_hir(make, &mut worker).expect("enum construction lowers");
+        let enum_id = worker
+            .local_agg_layouts
+            .iter()
+            .find(|layout| layout.name == "Choice")
+            .unwrap()
+            .type_id;
+        let mut ctx = EmitCtx::from_registry(registry, schedule);
+        let names = ctx.agg_names.clone();
+        let name_buffer = ctx.agg_names.get_key_value("Item").unwrap().0.as_ptr();
+        let return_metadata = |ctx: &EmitCtx| {
+            let make = ctx
+                .callees
+                .values()
+                .find(|callee| callee.name == "make")
+                .unwrap();
+            let address = ctx
+                .callees
+                .values()
+                .find(|callee| callee.name == "address")
+                .unwrap();
+            (make.ret_agg, address.ret_pointee)
+        };
+        assert_eq!(
+            return_metadata(&ctx),
+            (None, None),
+            "callee metadata starts without enum storage"
+        );
+        ctx.install_generated_layouts(registry, &worker.local_agg_layouts, schedule)
+            .unwrap();
+        assert_eq!(
+            ctx.agg_names, names,
+            "new enum storage keeps nominal names unchanged"
+        );
+        assert_eq!(
+            ctx.agg_names.get_key_value("Item").unwrap().0.as_ptr(),
+            name_buffer,
+            "new enum storage must not rebuild names"
+        );
+        assert_eq!(
+            return_metadata(&ctx),
+            (Some(enum_id), Some(enum_id)),
+            "callee results and pointer targets must use new enum storage"
+        );
+    }
+
+    #[rstest::rstest]
+    fn newly_completed_registry_storage_can_make_a_name_ambiguous(
+        #[values(crate::config::Schedule::Sequential, crate::config::Schedule::Parallel)]
+        schedule: crate::config::Schedule,
+    ) {
+        let (mut registry, layout) = registry_overlap_fixture();
+        let definitions = registry
+            .layouts
+            .values()
+            .cloned()
+            .map(|mut definition| {
+                if definition.id == layout.type_id {
+                    definition.name = "Node".into();
+                    definition.align_bytes = 0;
+                    definition.fields.clear();
+                }
+                definition
+            })
+            .collect();
+        let mut rebuilt = ImmutableGlobalRegistry::build_and_validate(definitions).unwrap();
+        rebuilt.structs = std::mem::take(&mut registry.structs);
+        rebuilt.fn_sigs = std::mem::take(&mut registry.fn_sigs);
+        let registry = rebuilt;
+        let mut ctx = EmitCtx::from_registry(&registry, schedule);
+        assert!(
+            ctx.agg_names.contains_key("Node"),
+            "one usable Node layout starts with a name"
+        );
+        ctx.install_generated_layouts(&registry, &[layout], schedule)
+            .unwrap();
+        assert!(
+            !ctx.agg_names.contains_key("Node"),
+            "two usable Node layouts must remove the ambiguous name"
+        );
+    }
+
+    #[test]
+    fn generated_layout_rebuilds_names_before_callee_signatures() {
+        let src = "struct Item { value: i32 } fn make() -> Item { return Item { value: 7 }; }";
+        let mut lexer = crate::lexer::Lexer::new(src);
+        let tokens = lexer.tokenize();
+        let mut parser = crate::parser::Parser::new(&tokens, src);
+        let mut modules = vec![parser.parse().expect("program parses")];
+        modules[0].module_path = "crate::t".into();
+        let symbols = crate::resolver::build_symbol_map(&modules);
+        modules[0].resolve_names(&symbols, &[]);
+        let mut registry =
+            crate::pipeline::build_frozen_registry(&modules).expect("registry builds");
+        // An imported signature can name a nominal type without an attached declaration ID.
+        for signature in registry.fn_sigs.values_mut() {
+            signature.ret_ty = Type::Struct("Item".into(), None);
+        }
+        let def = registry
+            .layouts
+            .values()
+            .find(|d| d.name == "Item")
+            .expect("Item layout");
+        let layout = crate::layout::GeneratedAggregateLayout {
+            type_id: def.id,
+            name: def.name.clone(),
+            size_bytes: 4,
+            align_bytes: 4,
+            fields: vec![crate::layout::GeneratedFieldLayout {
+                layout: def.fields[0].clone(),
+                mlir_type: "i32".into(),
+                aggregate_id: None,
+                pointer_target_id: None,
+            }],
+            variant_payloads: vec![],
+        };
+        let mut ctx = EmitCtx::from_registry(&registry, crate::config::Schedule::Sequential);
+        // Model a nominal layout that becomes complete only during function lowering.
+        ctx.aggs.remove(&def.id);
+        ctx.agg_names = build_agg_names(&registry, &ctx.aggs);
+        ctx.callees = build_callee_map(
+            &registry,
+            &ctx.aggs,
+            &ctx.agg_names,
+            crate::config::Schedule::Sequential,
+        );
+        assert!(!ctx.agg_names.contains_key("Item"));
+        assert!(
+            ctx.callees.values().all(|c| c.ret_agg.is_none()),
+            "callee starts without a layout"
+        );
+        ctx.install_generated_layouts(&registry, &[layout], crate::config::Schedule::Sequential)
+            .expect("the generated layout is consistent");
+        assert_eq!(
+            ctx.agg_names.get("Item"),
+            Some(&def.id),
+            "completed nominal name is available"
+        );
+        assert!(
+            ctx.callees.values().any(|c| c.ret_agg == Some(def.id)),
+            "callee signatures use the completed layout"
+        );
+    }
+
+    #[test]
+    fn generated_layout_variant_aggregate_ids_survive_emission() {
+        emit_module_with_layouts_and_verify(
+            "struct First { value: i32 }\n\
+             struct Second { prefix: i32, value: i32 }\n\
+             enum Choice { First(First), Second(Second) }\n\
+             fn read(c: Choice) -> i32 { match c { \
+               Choice::First(v) => { return v.value; } \
+               Choice::Second(v) => { return v.value; } } return 0; }\n\
+             fn main() -> i32 { return read(Choice::First(First { value: 17 })) \
+               + read(Choice::Second(Second { prefix: 99, value: 25 })); }",
+            |layouts| {
+                let layout = layouts
+                    .iter()
+                    .find(|l| l.name == "Choice")
+                    .expect("Choice layout");
+                let emitter = AggLayout::from_generated(layout);
+                for variant in 0..2 {
+                    let expected = layout.variant_payloads[variant][0].aggregate_id;
+                    assert!(expected.is_some(), "variant has an aggregate ID");
+                    assert_eq!(
+                        emitter.variant_payloads[variant][0].aggregate_id, expected,
+                        "each variant retains its own aggregate ID"
+                    );
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn generated_layout_equal_duplicates_are_accepted() {
+        emit_module_with_layouts_and_verify(
+            "struct Holder<T> { value: T }\n\
+             fn main() -> i32 { let h = Holder<i32> { value: 7 }; return h.value; }",
+            |layouts| {
+                layouts.push(layouts[0].clone());
+            },
+        );
+    }
+
+    #[test]
+    fn conflicting_struct_alignment_returns_an_error() {
+        let result = emit_module_with_layouts(
+            "struct Holder<T> { value: T }\n\
+             fn main() -> i32 { let h = Holder<i32> { value: 7 }; return h.value; }",
+            |layouts| {
+                let mut conflict = layouts[0].clone();
+                conflict.align_bytes *= 2;
+                layouts.push(conflict);
+            },
+        );
+        assert!(
+            matches!(&result, Err(ModuleEmitError::ConflictingLayouts { .. })),
+            "different alignments must return a layout conflict: {result:?}"
+        );
+    }
+
+    #[test]
+    fn conflicting_struct_pointer_targets_return_an_error() {
+        let result = emit_module_with_layouts(
+            "struct Item { value: i32 }\n\
+             struct Holder<T> { value: T, pointer: *const Item }\n\
+             fn main() -> i32 { let target = Item { value: 9 }; \
+               let h = Holder<i32> { value: 7, pointer: &target }; return h.value; }",
+            |layouts| {
+                let mut conflict = layouts
+                    .iter()
+                    .find(|l| l.name == "Holder")
+                    .expect("Holder layout")
+                    .clone();
+                assert!(conflict.fields[1].pointer_target_id.take().is_some());
+                layouts.push(conflict);
+            },
+        );
+        assert!(
+            matches!(&result, Err(ModuleEmitError::ConflictingLayouts { .. })),
+            "different pointer targets must return a layout conflict: {result:?}"
+        );
+    }
+
+    #[test]
+    fn generated_layout_variant_pointer_targets_survive_emission() {
+        emit_module_with_layouts_and_verify(
+            "struct First { value: i32 }\n\
+             struct Second { prefix: i32, value: i32 }\n\
+             enum Choice { First(*const First), Second(*const Second) }\n\
+             fn read(c: Choice) -> i32 { match c { \
+               Choice::First(p) => { return unsafe { (*p).value }; } \
+               Choice::Second(p) => { return unsafe { (*p).value }; } } return 0; }\n\
+             fn main() -> i32 { let a = First { value: 17 }; \
+               let b = Second { prefix: 99, value: 25 }; \
+               return read(Choice::First(&a)) + read(Choice::Second(&b)); }",
+            |layouts| {
+                let layout = layouts
+                    .iter()
+                    .find(|l| l.name == "Choice")
+                    .expect("Choice layout");
+                let emitter = AggLayout::from_generated(layout);
+                for variant in 0..2 {
+                    let expected = layout.variant_payloads[variant][0].pointer_target_id;
+                    assert!(expected.is_some(), "variant has a pointer target");
+                    assert_eq!(
+                        emitter.variant_payloads[variant][0].pointer_target_id, expected,
+                        "each variant retains its own pointer target"
+                    );
+                }
+            },
+        );
     }
 
     #[test]

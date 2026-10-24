@@ -938,6 +938,7 @@ impl<'a> MacroExpander<'a> {
         let mut clobbers = Vec::new();
         let mut returns = None;
         let mut dialects = Vec::new();
+        let mut ensures = Vec::new();
 
         let tokens = match tt {
             TokenTree::Delimited(_, inner) => {
@@ -963,9 +964,11 @@ impl<'a> MacroExpander<'a> {
         while !parser.check(&crate::lexer::TokenType::Eof) {
             let field_name = match &parser.advance().kind {
                 crate::lexer::TokenType::Identifier(ident) => ident.to_string(),
+                crate::lexer::TokenType::Ensures => "ensures".to_string(),
                 _ => {
                     return Err(
-                        "Expected 'inputs', 'clobbers', 'returns', or 'dialects'".to_string()
+                        "Expected 'inputs', 'clobbers', 'returns', 'dialects' or 'ensures'"
+                            .to_string(),
                     )
                 }
             };
@@ -1051,6 +1054,24 @@ impl<'a> MacroExpander<'a> {
                     if !parser.check(&crate::lexer::TokenType::RightBracket) {
                         loop {
                             clobbers.push(parser.parse_expr().map_err(|e| e.format(""))?);
+                            if !parser.match_token(&crate::lexer::TokenType::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    parser
+                        .consume(&crate::lexer::TokenType::RightBracket, "Expected ']'")
+                        .map_err(|e| e.format(""))?;
+                }
+                // What the block writes, as `atomic(t)` clauses. The race proof of an `across`
+                // loop reads them in place of the MLIR.
+                "ensures" => {
+                    parser
+                        .consume(&crate::lexer::TokenType::LeftBracket, "Expected '['")
+                        .map_err(|e| e.format(""))?;
+                    if !parser.check(&crate::lexer::TokenType::RightBracket) {
+                        loop {
+                            ensures.push(parser.parse_expr().map_err(|e| e.format(""))?);
                             if !parser.match_token(&crate::lexer::TokenType::Comma) {
                                 break;
                             }
@@ -1159,6 +1180,7 @@ impl<'a> MacroExpander<'a> {
             clobbers,
             returns,
             dialects,
+            ensures,
             block_str,
             span,
         }))

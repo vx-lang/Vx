@@ -70,7 +70,7 @@ error: the installed compiler could not run a hello-world program</code></pre>
         when the release job finished, making the library unavailable on any user's machine.
       </p>
 
-      <h2 id="what-a-dylib-remembers">What a dylib remembers</h2>
+      <h2 id="what-a-dylib-remembers"><a href="#what-a-dylib-remembers">What a dylib remembers</a></h2>
 
       <p>
         On macOS, dynamic shared libraries (dylib files in Mach-O format) record their expected install location in a
@@ -98,7 +98,7 @@ $ otool -D ~/.vx/toolchains/v0.0.1/lib/libvx_mlir_shims.dylib
         packaging mistake if install paths are omitted.
       </p>
 
-      <h2 id="why-every-check-was-green">Why every check was green</h2>
+      <h2 id="why-every-check-was-green"><a href="#why-every-check-was-green">Why every check was green</a></h2>
 
       <p>
         The release smoke test passed because it ran on the same virtual machine that compiled the binaries. In CI, a
@@ -119,7 +119,7 @@ $ otool -D ~/.vx/toolchains/v0.0.1/lib/libvx_mlir_shims.dylib
         when copied to a new system.
       </p>
 
-      <h2 id="the-first-fix-broke-a-test-about-parallel-loops">The first fix broke a test about parallel loops</h2>
+      <h2 id="the-first-fix-broke-a-test-about-parallel-loops"><a href="#the-first-fix-broke-a-test-about-parallel-loops">The first fix broke a test about parallel loops</a></h2>
 
       <p>
         To fix library paths on macOS, each library must set an <code>@rpath</code> install name, and the compiler must
@@ -141,7 +141,7 @@ $ otool -D ~/.vx/toolchains/v0.0.1/lib/libvx_mlir_shims.dylib
         program, it exercised dynamic library loading and caught the missing linker flag before release.
       </p>
 
-      <h2 id="bug-2-early-testing-skipped-the-very-action-that-makes-vxc-so-powerful">Bug 2: early testing skipped the very `action` that makes vxc so powerful</h2>
+      <h2 id="bug-2-early-testing-skipped-the-very-action-that-makes-vxc-so-powerful"><a href="#bug-2-early-testing-skipped-the-very-action-that-makes-vxc-so-powerful">Bug 2: early testing skipped the very `action` that makes vxc so powerful</a></h2>
 
       <p>
         Our smoke test tested only the <code>--run</code> flag, leaving the <code>--action emit-obj</code> compiler flag
@@ -164,7 +164,7 @@ $ otool -D ~/.vx/toolchains/v0.0.1/lib/libvx_mlir_shims.dylib
         operating systems failed to detect the issue because every environment exercised the same code path.
       </p>
 
-      <h2 id="bug-3-the-first-draft-of-release-missed-core">Bug 3: the first draft of release missed <code>core</code></h2>
+      <h2 id="bug-3-the-first-draft-of-release-missed-core"><a href="#bug-3-the-first-draft-of-release-missed-core">Bug 3: the first draft of release missed <code>core</code></a></h2>
 
       <p>
         The release packaging script used an outdated, manual list of standard library directories. After merging the
@@ -181,7 +181,7 @@ $ otool -D ~/.vx/toolchains/v0.0.1/lib/libvx_mlir_shims.dylib
         release archive, <code>core</code> was missing, causing imports to fail.
       </p>
 
-      <h2 id="bug-4-the-fix-for-bug-3-caught-by-its-own-assertion">Bug 4: the fix for bug 3, caught by its own assertion</h2>
+      <h2 id="bug-4-the-fix-for-bug-3-caught-by-its-own-assertion"><a href="#bug-4-the-fix-for-bug-3-caught-by-its-own-assertion">Bug 4: the fix for bug 3, caught by its own assertion</a></h2>
 
       <p>
         We updated the packaging script to copy every directory under <code>stdlib/</code> dynamically, and added an
@@ -202,7 +202,7 @@ $ otool -D ~/.vx/toolchains/v0.0.1/lib/libvx_mlir_shims.dylib
         build.
       </p>
 
-      <h2 id="what-guards-the-release-now">What guards the release now</h2>
+      <h2 id="what-guards-the-release-now"><a href="#what-guards-the-release-now">What guards the release now</a></h2>
 
       <p>Our release pipeline now includes four automated guards, each verified by reproducing the failure and
         confirming the test caught it:</p>
@@ -218,7 +218,7 @@ $ otool -D ~/.vx/toolchains/v0.0.1/lib/libvx_mlir_shims.dylib
           an assertion that verifies <code>std</code> and <code>core</code> are present before archiving.</li>
       </ul>
 
-      <h2 id="check-your-own-release">Check your own release</h2>
+      <h2 id="check-your-own-release"><a href="#check-your-own-release">Check your own release</a></h2>
 
       <p>
         Any software project compiling shared libraries in CI can accidentally package build-machine paths. You can
@@ -264,6 +264,7 @@ $ readelf -d lib/*.so | grep -E 'RPATH|RUNPATH|SONAME'</code></pre>
       discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
   </footer>
 
+<script src="/blog/copy-code.js" defer></script>
 </body>
 
 </html>

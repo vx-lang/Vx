@@ -49,7 +49,7 @@
 
 <p>Building Vx's <code>core</code> library in one week revealed bugs across our parser, type checker, and code generators. Here is what we learned from that process.</p>
 
-<h2 id="the-architectural-split-why-core-matters">The architectural split: Why <code>core</code> matters</h2>
+<h2 id="the-architectural-split-why-core-matters"><a href="#the-architectural-split-why-core-matters">The architectural split: Why <code>core</code> matters</a></h2>
 
 <p>We split the Vx standard library into three distinct layers: <code>core</code>, <code>alloc</code>, and <code>std</code>. This tiered design follows the model used by Rust.</p>
 
@@ -63,7 +63,7 @@
   <li><strong><code>std</code></strong>: Features that interact with the operating system, including the filesystem, networking, processes, and wall-clock time.</li>
 </ul>
 
-<h2 id="the-golden-rule-zero-extern-calls">The golden rule: Zero <code>extern</code> calls</h2>
+<h2 id="the-golden-rule-zero-extern-calls"><a href="#the-golden-rule-zero-extern-calls">The golden rule: Zero <code>extern</code> calls</a></h2>
 
 <p>Every module in <code>core</code> forbids <code>extern</code> blocks. An <code>extern</code> block declares foreign functions, such as functions provided by an external C runtime library.</p>
 
@@ -82,7 +82,7 @@
 
 <p>Every backend in <code>vxc</code> supports the MLIR <code>math</code> dialect. This single implementation compiles portably to native LLVM IR on the CPU, NVVM/PTX on NVIDIA GPUs, and hardware-specific instructions across all targets. It adds zero foreign runtime overhead.</p>
 
-<h2 id="what-landed-in-stdlibcore">What landed in <code>stdlib/core/</code></h2>
+<h2 id="what-landed-in-stdlibcore"><a href="#what-landed-in-stdlibcore">What landed in <code>stdlib/core/</code></a></h2>
 
 <p>The new <code>stdlib/core/</code> library ships with eight fundamental modules, accompanied by a reproducible random-number library in <code>std::rand</code>:</p>
 
@@ -128,7 +128,7 @@
   <span class="k">return</span> <span class="n">0</span>;
 }</code></pre>
 
-<h2 id="random-numbers-that-can-replay-anywhere">Random numbers that can replay anywhere</h2>
+<h2 id="random-numbers-that-can-replay-anywhere"><a href="#random-numbers-that-can-replay-anywhere">Random numbers that can replay anywhere</a></h2>
 
 <p>The new <code>std::rand</code> library provides reproducible, deterministic random numbers across all execution targets.</p>
 
@@ -152,7 +152,7 @@
 
 <p>Native support for normal (Gaussian) distributions also supports deep learning workloads. Real neural network weights and activations cluster around zero. Testing half-precision (<code>f16</code>/<code>bf16</code>) numeric kernels with uniform noise misses tail underflow and overflow bugs that cause silent training divergence.</p>
 
-<h2 id="what-the-compiler-learned-the-bugs-that-dogfooding-found">What the compiler learned (The bugs that dogfooding found)</h2>
+<h2 id="what-the-compiler-learned-the-bugs-that-dogfooding-found"><a href="#what-the-compiler-learned-the-bugs-that-dogfooding-found">What the compiler learned (The bugs that dogfooding found)</a></h2>
 
 <p>Writing standard library code served as an end-to-end stress test for the Vx compiler. Developing each module required fixing compiler bugs as language features interacted in practice.</p>
 
@@ -166,7 +166,7 @@
 
 <p>Other issues exposed deeper architectural bugs in the compiler pipeline. Four notable bugs are detailed below.</p>
 
-<h3 id="1-the-linter-with-amnesia-the-nested-call-bug">1. The linter with amnesia (The nested call bug)</h3>
+<h3 id="1-the-linter-with-amnesia-the-nested-call-bug"><a href="#1-the-linter-with-amnesia-the-nested-call-bug">1. The linter with amnesia (The nested call bug)</a></h3>
 
 <p>A bug in the semantic analyzer caused the compiler to issue false warnings about unused function parameters during nested calls. Importing <code>std::rand</code> flooded the console with fourteen false warnings for parameters that were clearly used:</p>
 
@@ -190,7 +190,7 @@
 
 <p>This bug appeared intermittent because only the first caller to invoke a function triggered the nested check. Subsequent callers found the function already checked. Scoping used-name tracking to individual function frames instead of a shared global set resolved the issue.</p>
 
-<h3 id="2-the-non-deterministic-dice-roll-hash-map-dispatch">2. The non-deterministic dice roll (Hash map dispatch)</h3>
+<h3 id="2-the-non-deterministic-dice-roll-hash-map-dispatch"><a href="#2-the-non-deterministic-dice-roll-hash-map-dispatch">2. The non-deterministic dice roll (Hash map dispatch)</a></h3>
 
 <p>The compiler could produce non-deterministic builds when resolving method calls between traits with overlapping method names.</p>
 
@@ -228,7 +228,7 @@
 <pre><code>Error[E3035]: Method 'describe' on 'i64' is defined by more than one impl (Loud, Quiet);
 a call cannot choose between them</code></pre>
 
-<h3 id="3-the-invisible-static-methods">3. The invisible static methods</h3>
+<h3 id="3-the-invisible-static-methods"><a href="#3-the-invisible-static-methods">3. The invisible static methods</a></h3>
 
 <p>Static method calls (such as <code>Type::method()</code>) previously failed when invoked on traits or primitive scalar types.</p>
 
@@ -236,7 +236,7 @@ a call cannot choose between them</code></pre>
 
 <p>Updating static method resolution to search both inherent and trait tables across all types resolved the problem. This change enabled standard patterns like <code>Default::default()</code> and primitive helper methods.</p>
 
-<h3 id="4-the-64-bit-sign-flip">4. The 64-bit sign flip</h3>
+<h3 id="4-the-64-bit-sign-flip"><a href="#4-the-64-bit-sign-flip">4. The 64-bit sign flip</a></h3>
 
 <p>Large integer literals and negated numeric expressions exposed type inference bugs across our code generation pipelines.</p>
 
@@ -246,7 +246,7 @@ a call cannot choose between them</code></pre>
 
 <p>Implementing context-sensitive numeric typing resolved both problems across both compiler backends.</p>
 
-<h2 id="testing-by-sabotage-mutation-testing-in-action">Testing by sabotage: Mutation testing in action</h2>
+<h2 id="testing-by-sabotage-mutation-testing-in-action"><a href="#testing-by-sabotage-mutation-testing-in-action">Testing by sabotage: Mutation testing in action</a></h2>
 
 <p>We used mutation testing to verify that our test suite catches real bugs. Mutation testing introduces small intentional bugs (mutations) into source code to verify that the test suite fails as expected.</p>
 
@@ -258,7 +258,7 @@ a call cannot choose between them</code></pre>
 
 <p>Mutation testing also uncovered a compiler bug while testing <code>Option::clone</code>. When we deleted the <code>None</code> branch from a <code>match</code> expression, the compiler compiled the code without reporting an exhaustiveness error. At runtime, the compiled function reached the end without a value and returned invalid memory. Mutation testing caught this missing exhaustiveness check before release.</p>
 
-<h2 id="what-comes-next">What comes next</h2>
+<h2 id="what-comes-next"><a href="#what-comes-next">What comes next</a></h2>
 
 <p>With <code>stdlib/core/</code> in place, our roadmap focuses on three next steps:</p>
 
@@ -283,5 +283,6 @@ or <a href="/docs/getting-started.html">install Vx today</a> to try it yourself.
   <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
 </footer>
 
+<script src="/blog/copy-code.js" defer></script>
 </body>
 </html>

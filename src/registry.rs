@@ -102,6 +102,7 @@ pub struct FnBody {
 /// The globally frozen type registry for parallel compilation phases.
 #[derive(Debug, Clone)]
 pub struct ImmutableGlobalRegistry {
+    pub(crate) aggregate_identities: std::sync::Arc<crate::layout::identity::AggregateIdentities>,
     pub layouts: FxHashMap<TypeId, TypeDefinition>,
     pub module_indices: FxHashMap<u64, FxHashMap<crate::symbol::Symbol, TypeId>>,
     /// Function signatures by name, for call resolution in the flat HIR. A name defined in more than
@@ -155,10 +156,9 @@ pub struct ImmutableGlobalRegistry {
     pub(crate) layout_by_base_name: LayoutNameIndex,
 }
 
-/// The base-name index over a registry's layouts: `Some(gid)` for a name exactly one non-stub
-/// layout has, `None` (present) for a name two distinct ones share, absent when no non-stub
-/// layout has it. Carries the length of the table it was built from, so a lookup can refuse an
-/// index the table has outgrown.
+/// The base-name index over declarations: `Some(gid)` for a unique, complete layout.
+/// Incomplete declarations also count when deciding whether a name is ambiguous.
+/// The table length detects an index that needs rebuilding.
 #[derive(Debug, Clone, Default)]
 pub struct LayoutNameIndex {
     built_from: usize,
@@ -167,21 +167,17 @@ pub struct LayoutNameIndex {
 
 impl LayoutNameIndex {
     pub fn build(layouts: &FxHashMap<TypeId, TypeDefinition>) -> Self {
-        let mut by_base_name: FxHashMap<String, Option<TypeId>> = FxHashMap::default();
-        for def in layouts.values() {
-            if def.align_bytes == 0 {
-                continue;
-            }
-            match by_base_name.get(&def.name) {
-                Some(Some(existing)) if *existing != def.id => {
-                    by_base_name.insert(def.name.clone(), None);
-                }
-                Some(_) => {}
-                None => {
-                    by_base_name.insert(def.name.clone(), Some(def.id));
-                }
-            }
-        }
+        let identities = crate::layout::identity::AggregateIdentities::from_layouts(layouts);
+        let by_base_name = layouts
+            .values()
+            .map(|def| {
+                let id = identities
+                    .resolve_base(def.name.as_str().into())
+                    .map(|(_, id)| id)
+                    .filter(|id| layouts[id].align_bytes != 0);
+                (def.name.clone(), id)
+            })
+            .collect();
         Self {
             built_from: layouts.len(),
             by_base_name,
@@ -479,7 +475,11 @@ impl ImmutableGlobalRegistry {
         }
 
         let layout_by_base_name = LayoutNameIndex::build(&layouts);
+        let aggregate_identities = std::sync::Arc::new(
+            crate::layout::identity::AggregateIdentities::from_layouts(&layouts),
+        );
         Ok(Self {
+            aggregate_identities,
             layouts,
             module_indices,
             fn_sigs: FxHashMap::default(),
@@ -492,6 +492,17 @@ impl ImmutableGlobalRegistry {
             const_tables: Vec::new(),
             layout_by_base_name,
         })
+    }
+
+    pub fn aggregate_identities(
+        &self,
+    ) -> &std::sync::Arc<crate::layout::identity::AggregateIdentities> {
+        assert_eq!(
+            self.aggregate_identities.len(),
+            self.layouts.len(),
+            "layouts changed after the aggregate identity index was built"
+        );
+        &self.aggregate_identities
     }
 
     /// An enum whose variants carry no data: its layout has no fields, and its value is an
@@ -513,8 +524,8 @@ impl ImmutableGlobalRegistry {
 
     /// The unique modelled layout of a struct or enum, by base name (`Vec<i32>` asks for `Vec`): the
     /// fallback for a monomorphized cross-module instance whose base GID name resolution left
-    /// unattached. Only a non-stub layout counts, and a name two distinct layouts share answers
-    /// `None`, so a wrong layout is never chosen.
+    /// unattached. Resolve the unique declaration first, then require a complete layout.
+    /// Incomplete declarations also count when checking name ambiguity.
     ///
     /// One hash probe. This used to walk every layout comparing names, once per nominal-typed
     /// parameter the lowerer met, and on a 1,000-module corpus that scan was 80% of the compile.
@@ -532,6 +543,15 @@ impl ImmutableGlobalRegistry {
             .get(base)
             .copied()
             .flatten()
+    }
+
+    /// Resolve a declaration before checking storage. An attached ID never falls back to a name.
+    pub fn nominal_layout_id(&self, ty: &crate::syntax::Type) -> Option<TypeId> {
+        let (_, id) = self.aggregate_identities().resolve_base(ty.into())?;
+        self.layouts
+            .get(&id)
+            .filter(|def| def.align_bytes != 0)
+            .map(|_| id)
     }
 
     /// Resolve a method `recv.method(..)` to its signature by `(receiver GID, method name)` -- the
@@ -585,6 +605,9 @@ impl ImmutableGlobalRegistry {
         }
         // The merge is the one path that grows `layouts` after the freeze, so the index follows it.
         self.layout_by_base_name = LayoutNameIndex::build(&self.layouts);
+        self.aggregate_identities = std::sync::Arc::new(
+            crate::layout::identity::AggregateIdentities::from_layouts(&self.layouts),
+        );
         for (module_hash, by_name) in other.module_indices {
             let dst = self.module_indices.entry(module_hash).or_default();
             for (name, gid) in by_name {
@@ -787,11 +810,21 @@ mod tests {
         }
     }
 
-    /// The base-name index answers what the old scan of every layout answered, in one probe: the
-    /// unique modelled layout, or nothing for an ambiguous or unknown name, with a stub (alignment
-    /// 0) never counted and a generic instance asking for its base.
     #[test]
-    fn layout_gid_by_base_name_answers_as_the_scan_did() {
+    #[should_panic(expected = "aggregate identity index")]
+    fn aggregate_identity_index_refuses_a_table_that_grew_under_it() {
+        let mut registry =
+            ImmutableGlobalRegistry::build_and_validate(vec![make_def("First", 1, 1, vec![])])
+                .unwrap();
+        let second = make_def("Second", 1, 2, vec![]);
+        registry.layouts.insert(second.id, second);
+        registry.aggregate_identities();
+    }
+
+    /// An incomplete declaration still makes a shared name ambiguous.
+    /// A generic instance asks for its base declaration.
+    #[test]
+    fn layout_gid_by_base_name_requires_a_unique_declaration() {
         let mut stub = make_def("Vec", 1, 100, vec![]);
         stub.align_bytes = 0; // a generic base whose layout could not be computed
         let vec_b = make_def("Vec", 2, 100, vec![]);
@@ -800,11 +833,7 @@ mod tests {
         let reg = ImmutableGlobalRegistry::build_and_validate(vec![stub, vec_b, point_a, point_b])
             .unwrap();
 
-        // Unique among the non-stub layouts, asked for through an instance's spelling.
-        assert_eq!(
-            reg.layout_gid_by_base_name("Vec<i32>"),
-            Some(TypeId::new(2, 100, 0, 0))
-        );
+        assert_eq!(reg.layout_gid_by_base_name("Vec<i32>"), None);
         // Two distinct non-stub layouts share the name: ambiguous, so no answer.
         assert_eq!(reg.layout_gid_by_base_name("Point"), None);
         // No such layout at all.

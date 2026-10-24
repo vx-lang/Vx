@@ -7,15 +7,15 @@
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // The command line binding, and the iterator that hands the arguments out one at a time. The
-// turbofish payload type reaches the emitted enum: `Option<*mut i8>` is a tag and a pointer,
-// not a tag and an opaque struct named after the spelling (Vx#415).
+// enum `Option<*mut i8>` uses an integer field to preserve the payload bits.
+// Its `Some` arm still stores the argument as a pointer.
 // CHECK: func.func private @vx_env_arg(i32) -> !llvm.ptr
-// CHECK-LABEL: func.func @Args$Iterator$Args$ptr$mut$i8$next(%arg0: !llvm.struct<(i32, i32)>) -> !llvm.struct<(i32, ptr)>
+// CHECK-LABEL: func.func @Args$Iterator$Args$ptr$mut$i8$next(%arg0: !llvm.struct<(i32, i32)>) -> !llvm.struct<(i32, i64)>
 // CHECK: %[[P:.*]] = call @arg(%{{.*}}) : (i32) -> !llvm.ptr
 // The `Some` arm tags 0 and carries the pointer; the `None` arm tags 1 and carries nothing.
-// CHECK: %[[TAG:.*]] = llvm.getelementptr %{{.*}}[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, ptr)>
+// CHECK: %[[TAG:.*]] = llvm.getelementptr %{{.*}}[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i64)>
 // CHECK: llvm.store %c0_i32, %[[TAG]] : i32, !llvm.ptr
-// CHECK: %[[PAY:.*]] = llvm.getelementptr %{{.*}}[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, ptr)>
+// CHECK: %[[PAY:.*]] = llvm.getelementptr %{{.*}}[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, i64)>
 // CHECK: llvm.store %[[P]], %[[PAY]] : !llvm.ptr, !llvm.ptr
 // CHECK: llvm.store %c1_i32{{.*}}, %{{.*}} : i32, !llvm.ptr
 

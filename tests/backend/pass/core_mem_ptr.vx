@@ -17,11 +17,8 @@
 // `read` and `write` are asked of a value that is not the one already there, so a `read`
 // that answered zero or a `write` that did nothing would show.
 //
-// `null` and `null_mut` are the two items here with no assertion. There is no way to ask
-// whether a pointer is null: comparing two raw pointers fails MLIR verification on both
-// code generators, and casting one to an integer is refused by the checker (Vx#714). They
-// are called so that a broken body is a compile failure, and that is all this file can
-// claim about them.
+// `null` and `null_mut` are checked with `is_null`, next to a pointer that is not null, so
+// an `is_null` that always answered the same would show.
 //
 // `drop` and `forget` consume their argument and do nothing else, so the assertion is that
 // the program still runs afterwards.
@@ -77,10 +74,12 @@ fn main() -> i32 {
   unsafe { write<i32>(pm, 5); }
   print(y);
   print!(" ");
-  let n = null<i32>();
-  let nm = null_mut<i32>();
-  print(2);
+  show(is_null(null<i32>()));
+  print!(" ");
+  show(is_null_mut(null_mut<i32>()));
+  print!(" ");
+  show(is_null(pc));
   return 0;
 }
 
-// EXPECT: 8 4 1 | 2 1 7 9 | 0 1 | 42 5 2
+// EXPECT: 8 4 1 | 2 1 7 9 | 0 1 | 42 5 1 1 0

@@ -1,0 +1,24 @@
+//===- expect_eq_stops_on_different_i32_values.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `expect_eq` on two equal `i32` values lets the program go on. On two different values, it
+// prints both and stops the program.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: the equal values passed
+// CHECK: expect_eq failed: expected 2, actual 1
+// CHECK: panic: expect_eq failed
+// CHECK-NOT: after the failure
+import std::googletest;
+
+fn main() -> i32 {
+  expect_eq(3, 3);
+  println!("the equal values passed");
+  expect_eq(1, 2);
+  println!("after the failure");
+  return 0;
+}

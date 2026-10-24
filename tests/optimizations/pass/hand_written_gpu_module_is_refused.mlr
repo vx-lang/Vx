@@ -1,0 +1,21 @@
+//===- hand_written_gpu_module_is_refused.mlr - Vx Compiler ------*- MLIR -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `gpu.module` that Vx did not make is refused with a message, not crashed on.
+//
+// The device-image step compiles a `gpu.module` with the pipeline of the kernels
+// beside it (their `gpu.func` twins). This module holds no kernel of Vx's, so
+// there is no pipeline to compile it with; hand-written IR given to
+// `vx-opt --vx-to-llvm` reaches the step in exactly that state.
+//
+// RUN: not vx-opt %s --vx-to-llvm 2>&1 | FileCheck %s
+// CHECK: this device module holds no kernel that Vx compiled for a device
+
+module {
+  gpu.module @hand_written {
+  }
+}

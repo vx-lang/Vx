@@ -5,27 +5,25 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //====---------------------------------------------------------------------===//
-// Raw pointers: making one, and reading or writing through it.
+// Raw pointers: making one, moving it, comparing it, and reading or writing through it.
 //
 // `read` and `write` are `unsafe fn` because nothing here checks that the pointer is
-// valid. `null` and `null_mut` are safe: making a
-// null pointer is fine, and using one is what these two cannot promise.
+// valid. The others are safe: making, moving or comparing a pointer is fine, and using
+// one is what they cannot promise.
 //
-// Still missing, and all of it for one reason:
+// Vx has no pointer arithmetic, and `==` on two pointers is not in the flat code
+// generator. So `offset` and `eq` are each one LLVM operation in an `mlir!` block.
 //
-//   `eq`, `is_null`          two raw pointers cannot be compared. `==` between them
-//                            lowers to `arith.cmpi` on an `!llvm.ptr` and fails
-//                            verification on both code generators, and casting a pointer
-//                            to an integer to compare addresses instead is refused by the
-//                            checker (Vx#714). So there is no way to ask whether a pointer
-//                            is null, and `null` below is a value a program can make and
-//                            hand back but not test.
-//   `offset`, `add`, `sub`   want pointer arithmetic, which is the same gap.
+// A pointer that `offset`, `add` or `sub` returns keeps its argument borrowed `&mut`
+// while it is in use, as any result made from a parameter does.
+//
+// Still missing:
+//
 //   `copy`, `copy_nonoverlapping`, `write_bytes`
 //                            want `llvm.intr.memcpy` and friends through `mlir!`.
 //   `read_volatile`,         want the volatile forms of the load and store.
 //   `write_volatile`
-//   `NonNull<T>`             wants the null test above.
+//   `NonNull<T>`             not written yet.
 
 /// A pointer to nothing.
 fn null<T>() -> *const T {
@@ -45,4 +43,61 @@ unsafe fn read<T>(p : *const T) -> T {
 /// Puts a value where the pointer addresses. The caller promises it may.
 unsafe fn write<T>(p : *mut T, v : T) -> void {
   unsafe { *p = v; }
+}
+
+/// The pointer `count` elements further on, or back for a negative `count`. Like Rust's
+/// `wrapping_offset`, it only computes the address.
+fn offset<T>(p : *const T, count : i64) -> *const T {
+  let bytes = count * sizeof<T>();
+  return mlir!( inputs : (%p = p : !llvm.ptr, %b = bytes : i64), returns : *const T, dialects : ["llvm"]) {
+    %r = llvm.getelementptr %p[%b] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    macro.yield %r : !llvm.ptr
+  };
+}
+
+/// `offset` for a mutable pointer.
+fn offset_mut<T>(p : *mut T, count : i64) -> *mut T {
+  let bytes = count * sizeof<T>();
+  return mlir!( inputs : (%p = p : !llvm.ptr, %b = bytes : i64), returns : *mut T, dialects : ["llvm"]) {
+    %r = llvm.getelementptr %p[%b] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    macro.yield %r : !llvm.ptr
+  };
+}
+
+/// The pointer `count` elements further on.
+fn add<T>(p : *const T, count : usize) -> *const T {
+  return offset(p, count as i64);
+}
+
+/// `add` for a mutable pointer.
+fn add_mut<T>(p : *mut T, count : usize) -> *mut T {
+  return offset_mut(p, count as i64);
+}
+
+/// The pointer `count` elements back.
+fn sub<T>(p : *const T, count : usize) -> *const T {
+  return offset(p, -(count as i64));
+}
+
+/// `sub` for a mutable pointer.
+fn sub_mut<T>(p : *mut T, count : usize) -> *mut T {
+  return offset_mut(p, -(count as i64));
+}
+
+/// Whether the two pointers hold the same address.
+fn eq<T>(a : *const T, b : *const T) -> bool {
+  return mlir!( inputs : (%a = a : !llvm.ptr, %b = b : !llvm.ptr), returns : bool, dialects : ["llvm"]) {
+    %r = llvm.icmp "eq" %a, %b : !llvm.ptr
+    macro.yield %r : i1
+  };
+}
+
+/// Whether the pointer is null.
+fn is_null<T>(p : *const T) -> bool {
+  return eq(p, null<T>());
+}
+
+/// `is_null` for a mutable pointer.
+fn is_null_mut<T>(p : *mut T) -> bool {
+  return is_null(p as *const T);
 }

@@ -1,0 +1,82 @@
+//===- f64_built_inside_a_device_region.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// f64 values built inside a `spawn` region on a device that does not declare
+// f64: E6026 at each one. f32 on the same device and f64 on the host are fine.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+Memory CPU_DRAM {}
+Memory HBM {
+  within: Memory::CPU_DRAM, capacity: 16 GiB, managed: explicit, scope: device
+}
+Memory HBM2 {
+  within: Memory::CPU_DRAM, capacity: 16 GiB, managed: explicit, scope: device
+}
+
+Topology A770 {
+  arch: spirv64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  // No f64: the card has no double-precision path at all.
+  dtypes: [f32, f16, i4, u4, i8, u8, i16, u16, i32, u32, i64, u64, bool],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s
+}
+
+// Takes no f32 at all, so an untyped decimal result has nowhere to live.
+Topology Narrow {
+  arch: spirv64,
+  memory: Memory::HBM2,
+  visible: [Memory::HBM2],
+  dtypes: [f16, bool],
+  transfer Memory::CPU_DRAM -> Memory::HBM2 : 31.5 GB/s
+}
+
+struct P {
+  v : f64
+}
+
+fn main() -> i32 {
+  let mut d : f64 = 1.0;
+  spawn on(Topology::A770) {
+    // CHECK: Error[E6026] at [[@LINE+1]]:5: variable 'scale' has element type f64
+    let scale : f64 = 1.0;
+    // CHECK: Error[E6026] at [[@LINE+1]]:17: this expression has element type f64
+    let _step = scale * 2.0;
+    let a : f32 = 1.0;
+    // The cast back to f32 does not hide the f64 inside it. The column and the wording
+    // depend on whether the parser gives a cast its own span, so pin the line and the type.
+    // CHECK: Error[E6026] at [[@LINE+1]]:{{[0-9]+}}: {{(this expression|a value in this statement)}} has element type f64
+    let _y = ((a as f64) * 3.0) as f32;
+    // CHECK: Error[E6026] at [[@LINE+1]]:5: this expression has element type f64
+    d = d * 2.0;
+    // CHECK: Error[E6026] at [[@LINE+1]]:5: a value in this statement has element type f64
+    let _p = P {
+      v: 1.0
+    };
+  }
+
+  // A value that appears only as the region's result is checked too: the
+  // untyped decimal defaults to f32, which Narrow does not declare.
+  // CHECK: Error[E6026] at [[@LINE+1]]:3: this region's result has element type f32
+  let _result = spawn on(Topology::Narrow) {
+    1.0
+  };
+
+  // f32 on the same device is representable, so it reports nothing.
+  spawn on(Topology::A770) {
+    let x : f32 = 1.0;
+    let _double = x * 2.0;
+  }
+
+  // f64 on the host is untouched.
+  let host : f64 = 1.0;
+  let _host_double = host * 2.0;
+  // CHECK-NOT: Error
+  return 0;
+}

@@ -1,0 +1,81 @@
+//===- enum_payloads_have_different_size_and_alignment.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Preserve larger and more strongly aligned payloads through calls and returns.
+// Check both variant orders and a later payload field.
+// REQUIRES: flat-codegen
+// EXPECT: 119 120 139 140 -1 -2
+
+struct Wide {
+  a: i32, b: i32, c: i32
+}
+struct Aligned {
+  value: i64
+}
+
+enum Value {
+  Big(Wide, i32), Small(Aligned, i32), Empty
+}
+enum Reversed {
+  Small(Aligned, i32), Big(Wide, i32), Empty
+}
+
+fn big() -> Value {
+  return Value::Big(Wide {
+    a: 5, b: 6, c: 7
+  }, 101);
+}
+fn small() -> Value {
+  return Value::Small(Aligned {
+    value: 17
+  }, 103);
+}
+fn reversed_big() -> Reversed {
+  return Reversed::Big(Wide {
+    a: 11, b: 12, c: 13
+  }, 103);
+}
+fn reversed_small() -> Reversed {
+  return Reversed::Small(Aligned {
+    value: 31
+  }, 109);
+}
+fn read(value: Value) -> i64 {
+  match value {
+    Value::Big(v, tail) => {
+      return (v.a + v.b + v.c + tail) as i64;
+    },
+    Value::Small(v, tail) => {
+      return v.value + (tail as i64);
+    },
+    Value::Empty => {
+      return -1;
+    }
+  }
+}
+fn read_reversed(value: Reversed) -> i64 {
+  match value {
+    Reversed::Small(v, tail) => {
+      return v.value + (tail as i64);
+    },
+    Reversed::Big(v, tail) => {
+      return (v.a + v.b + v.c + tail) as i64;
+    },
+    Reversed::Empty => {
+      return -2;
+    }
+  }
+}
+fn main() -> i32 {
+  print(read(big())); print(" ");
+  print(read(small())); print(" ");
+  print(read_reversed(reversed_big())); print(" ");
+  print(read_reversed(reversed_small())); print(" ");
+  print(read(Value::Empty)); print(" ");
+  print(read_reversed(Reversed::Empty));
+  return 0;
+}

@@ -102,6 +102,8 @@ impl<'a> Parser<'a> {
             TokenType::Identifier(s) => s.to_string(),
             // `<D: Topology>` -- `Topology` is a keyword, not an identifier.
             TokenType::Topology => "Topology".to_string(),
+            // `<M: Memory>` -- so is `Memory`.
+            TokenType::Memory => "Memory".to_string(),
             _ => return Err(self.error("Expected trait bound identifier")),
         };
         let mut bound = crate::syntax::TraitBound::named(&trait_name);
@@ -2100,6 +2102,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
                 ))
             );
             if let Expr::FunctionCall(FunctionCallExpr {
+                owner_type_args: _,
                 name: func_name,
                 args,
                 span: _,
@@ -2506,6 +2509,7 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
         let func1 = &program.functions[0];
         if let Statement::Return(ReturnStmt { expr, span: _ }) = &func1.body[0] {
             if let Some(Expr::FunctionCall(FunctionCallExpr {
+                owner_type_args: _,
                 name,
                 args,
                 span: _,
@@ -2531,6 +2535,7 @@ fn stderr_write(buffer: *const u8, len: i64) -> i64 {
         {
             assert!(*has_semicolon);
             if let Expr::FunctionCall(FunctionCallExpr {
+                owner_type_args: _,
                 name,
                 args,
                 span: _,

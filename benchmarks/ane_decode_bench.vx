@@ -7,9 +7,10 @@
 import core::num;
 import std::time;
 
-extern {
-
-  fn vx_get_rope_freq(pos: i32, i: i32, d: i32) -> f32;
+/// The RoPE angle for position `pos` and the dimension pair that starts at `i`.
+fn rope_freq(pos : i32, i : i32, head_size : i32) -> f32 {
+  let base : f32 = 10000.0;
+  return (pos as f32) * base.powf(-(i as f32) / (head_size as f32));
 }
 
 fn benchmark_matmul(m: i32, k: i32, n: i32, iters: i32) -> i32 {
@@ -196,7 +197,7 @@ fn benchmark_rope(head_dim: i32, iters: i32) -> i32 {
       let mul = div * 2;
       let rem = i - mul;
       if rem == 0 {
-        let fcr: f32 = unsafe { vx_get_rope_freq(pos, i, head_dim) };
+        let fcr: f32 = rope_freq(pos, i, head_dim);
         let fci = fcr.cos();
         let fsi = fcr.sin();
 

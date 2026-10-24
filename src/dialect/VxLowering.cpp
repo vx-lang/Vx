@@ -45,6 +45,7 @@
 #include "mlir/Transforms/Mem2Reg.h"
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
+#include "vx_hardware_runtime.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
@@ -1618,6 +1619,337 @@ static void fillToDeviceLoops(linalg::FillOp fill) {
   fill.erase();
 }
 
+//===----------------------------------------------------------------------===//
+// Lane reductions (`vx.lane_reduce`, `vx.lane_argmax`)
+//===----------------------------------------------------------------------===//
+//
+// docs/lane_reductions.md gives the order. A group of 32 combines `a[i]` and
+// `a[i + offset]` for each offset in 16, 8, 4, 2, 1, and keeps `a[0]`. A block
+// combines its groups of 32, and then a group of the results. An element is
+// one value, or a value and its index for the argmax.
+
+namespace {
+/// One lane reduction, read off either op.
+struct LaneReduction {
+  enum Kind { Sum, Max, ArgMax } kind;
+  Location loc;
+  SmallVector<Value, 2> inputs;
+  Value count;
+  bool ordered;
+  bool subgroup;
+};
+using LaneElem = SmallVector<Value, 2>;
+} // namespace
+
+static LaneReduction laneReduction(vx::LaneReduceOp op) {
+  return {op.getKind() == "max" ? LaneReduction::Max : LaneReduction::Sum,
+          op.getLoc(),
+          {op.getInput()},
+          op.getCount(),
+          op.getOrdered(),
+          op.getSubgroup()};
+}
+
+static LaneReduction laneReduction(vx::LaneArgmaxOp op) {
+  return {
+      LaneReduction::ArgMax, op.getLoc(),     {op.getValues(), op.getIndices()},
+      op.getCount(),         op.getOrdered(), op.getSubgroup()};
+}
+
+static Value f32Constant(OpBuilder &b, Location loc, float v) {
+  return b.create<arith::ConstantOp>(loc, b.getF32FloatAttr(v));
+}
+
+/// The sum, the larger value, or the pair that the argmax keeps. The larger
+/// value stays `a` when `other` is not larger, so a NaN in `other` is dropped.
+/// The argmax takes `other` when it is not empty (an index of 0 or more) and
+/// `a` is empty, or `other` has the larger value, or the same value and a lower
+/// index. These are the CUDA kernels' rules.
+static LaneElem laneCombine(OpBuilder &b, Location loc,
+                            LaneReduction::Kind kind, ValueRange a,
+                            ValueRange other) {
+  if (kind == LaneReduction::Sum)
+    return {b.create<arith::AddFOp>(loc, a[0], other[0])};
+  Value larger =
+      b.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OGT, other[0], a[0]);
+  if (kind == LaneReduction::Max)
+    return {b.create<arith::SelectOp>(loc, larger, other[0], a[0])};
+  Value zero = b.create<arith::ConstantIntOp>(loc, b.getI32Type(), 0);
+  Value otherFull =
+      b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge, other[1], zero);
+  Value ownEmpty =
+      b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt, a[1], zero);
+  Value same =
+      b.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OEQ, other[0], a[0]);
+  Value lower =
+      b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt, other[1], a[1]);
+  Value better = b.create<arith::OrIOp>(
+      loc, ownEmpty,
+      b.create<arith::OrIOp>(loc, larger,
+                             b.create<arith::AndIOp>(loc, same, lower)));
+  Value take = b.create<arith::AndIOp>(loc, otherFull, better);
+  return {b.create<arith::SelectOp>(loc, take, other[0], a[0]),
+          b.create<arith::SelectOp>(loc, take, other[1], a[1])};
+}
+
+/// The element that combines with any other to give the other: the start of
+/// a loop of the unordered reduction.
+static LaneElem laneIdentity(OpBuilder &b, Location loc,
+                             LaneReduction::Kind kind) {
+  switch (kind) {
+  case LaneReduction::Sum:
+    return {f32Constant(b, loc, 0.0f)};
+  case LaneReduction::Max:
+    return {f32Constant(b, loc, -std::numeric_limits<float>::infinity())};
+  case LaneReduction::ArgMax:
+    return {f32Constant(b, loc, 0.0f),
+            b.create<arith::ConstantIntOp>(loc, b.getI32Type(), -1)};
+  }
+  llvm_unreachable("a kind of lane reduction");
+}
+
+/// The count, at least 0 and at most the size of the input, as an index.
+static Value laneCount(OpBuilder &b, const LaneReduction &r) {
+  Value zero = b.create<arith::ConstantIndexOp>(r.loc, 0);
+  Value size = b.create<memref::DimOp>(r.loc, r.inputs[0], zero);
+  Value n = b.create<arith::IndexCastOp>(r.loc, b.getIndexType(), r.count);
+  n = b.create<arith::MaxSIOp>(r.loc, n, zero);
+  return b.create<arith::MinSIOp>(r.loc, n, size);
+}
+
+/// The element past the count: 0 for a sum, and an empty pair for the argmax.
+/// For the larger value, the first element, or negative infinity when the
+/// count is 0.
+static LaneElem lanePad(OpBuilder &b, const LaneReduction &r, Value n) {
+  if (r.kind != LaneReduction::Max)
+    return laneIdentity(b, r.loc, r.kind);
+  Value zero = b.create<arith::ConstantIndexOp>(r.loc, 0);
+  Value first = b.create<memref::LoadOp>(r.loc, r.inputs[0], ValueRange{zero});
+  Value any =
+      b.create<arith::CmpIOp>(r.loc, arith::CmpIPredicate::sgt, n, zero);
+  return {b.create<arith::SelectOp>(
+      r.loc, any, first,
+      f32Constant(b, r.loc, -std::numeric_limits<float>::infinity()))};
+}
+
+static LaneElem laneLoad(OpBuilder &b, Location loc, ValueRange from, Value i) {
+  LaneElem e;
+  for (Value m : from)
+    e.push_back(b.create<memref::LoadOp>(loc, m, ValueRange{i}));
+  return e;
+}
+
+static void laneStore(OpBuilder &b, Location loc, ValueRange e, ValueRange to,
+                      Value i) {
+  for (auto [v, m] : llvm::zip(e, to))
+    b.create<memref::StoreOp>(loc, v, m, ValueRange{i});
+}
+
+/// Element `i` of `from` when `i` is below `n`, and `pad` otherwise. The load
+/// is in a branch, so that it never reads past the input.
+static LaneElem laneElement(OpBuilder &b, Location loc, ValueRange from,
+                            Value i, Value n, ValueRange pad) {
+  Value inRange = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt, i, n);
+  auto pick = b.create<scf::IfOp>(loc, TypeRange(pad), inRange,
+                                  /*withElseRegion=*/true);
+  {
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPointToStart(&pick.getThenRegion().front());
+    b.create<scf::YieldOp>(loc, laneLoad(b, loc, from, i));
+    b.setInsertionPointToStart(&pick.getElseRegion().front());
+    b.create<scf::YieldOp>(loc, pad);
+  }
+  return LaneElem(pick.getResults());
+}
+
+/// Scratch for 32 elements: one memref of 32 for each part of an element.
+static SmallVector<Value, 2> laneScratch(OpBuilder &b, Location loc,
+                                         ValueRange like, bool shared) {
+  SmallVector<Value, 2> scratch;
+  for (Value v : like) {
+    if (shared) {
+      auto t = MemRefType::get({32}, v.getType(), MemRefLayoutAttrInterface{},
+                               b.getI64IntegerAttr(3));
+      scratch.push_back(
+          b.create<memref::AllocaOp>(loc, t, b.getI64IntegerAttr(16)));
+    } else {
+      scratch.push_back(
+          b.create<memref::AllocaOp>(loc, MemRefType::get({32}, v.getType())));
+    }
+  }
+  return scratch;
+}
+
+/// On the CPU: the group of 32 in `a`, in place. The result is `a[0]`.
+static LaneElem hostTree(OpBuilder &b, Location loc, ValueRange a,
+                         LaneReduction::Kind kind) {
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  for (int64_t offset : {16, 8, 4, 2, 1}) {
+    Value off = b.create<arith::ConstantIndexOp>(loc, offset);
+    b.create<scf::ForOp>(
+        loc, zero, off, one, ValueRange{},
+        [&](OpBuilder &nb, Location l, Value i, ValueRange) {
+          Value j = nb.create<arith::AddIOp>(l, i, off);
+          LaneElem x = laneLoad(nb, l, a, i);
+          LaneElem y = laneLoad(nb, l, a, j);
+          laneStore(nb, l, laneCombine(nb, l, kind, x, y), a, i);
+          nb.create<scf::YieldOp>(l);
+        });
+  }
+  return laneLoad(b, loc, a, zero);
+}
+
+/// On the CPU: the group of 32 elements from `base`, with `scratch` to work in.
+static LaneElem hostGroup(OpBuilder &b, const LaneReduction &r, Value base,
+                          Value n, ValueRange pad, ValueRange scratch) {
+  Location loc = r.loc;
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  Value c32 = b.create<arith::ConstantIndexOp>(loc, 32);
+  b.create<scf::ForOp>(
+      loc, zero, c32, one, ValueRange{},
+      [&](OpBuilder &nb, Location l, Value i, ValueRange) {
+        Value at = nb.create<arith::AddIOp>(l, base, i);
+        laneStore(nb, l, laneElement(nb, l, r.inputs, at, n, pad), scratch, i);
+        nb.create<scf::YieldOp>(l);
+      });
+  return hostTree(b, loc, scratch, r.kind);
+}
+
+/// The CPU half of a lane reduction: loops that give the same bits as the
+/// shuffles of the device half.
+static LaneElem expandLaneReductionOnHost(OpBuilder &b,
+                                          const LaneReduction &r) {
+  Location loc = r.loc;
+  Value n = laneCount(b, r);
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  if (!r.ordered) {
+    auto loop = b.create<scf::ForOp>(
+        loc, zero, n, one, laneIdentity(b, loc, r.kind),
+        [&](OpBuilder &nb, Location l, Value i, ValueRange acc) {
+          nb.create<scf::YieldOp>(
+              l, laneCombine(nb, l, r.kind, acc, laneLoad(nb, l, r.inputs, i)));
+        });
+    return LaneElem(loop.getResults());
+  }
+  LaneElem pad = lanePad(b, r, n);
+  SmallVector<Value, 2> scratch = laneScratch(b, loc, pad, /*shared=*/false);
+  if (r.subgroup)
+    return hostGroup(b, r, zero, n, pad, scratch);
+  // The result of each group of 32, then the group of those results.
+  Value c31 = b.create<arith::ConstantIndexOp>(loc, 31);
+  Value c32 = b.create<arith::ConstantIndexOp>(loc, 32);
+  Value groups =
+      b.create<arith::DivUIOp>(loc, b.create<arith::AddIOp>(loc, n, c31), c32);
+  SmallVector<Value, 2> results = laneScratch(b, loc, pad, /*shared=*/false);
+  LaneElem first = hostGroup(b, r, zero, n, pad, scratch);
+  laneStore(b, loc, first, results, zero);
+  LaneElem pad2 =
+      r.kind == LaneReduction::Max ? first : laneIdentity(b, loc, r.kind);
+  b.create<scf::ForOp>(
+      loc, one, c32, one, ValueRange{},
+      [&](OpBuilder &nb, Location l, Value g, ValueRange) {
+        Value has =
+            nb.create<arith::CmpIOp>(l, arith::CmpIPredicate::ult, g, groups);
+        auto pick = nb.create<scf::IfOp>(l, TypeRange(ValueRange(pad2)), has,
+                                         /*withElseRegion=*/true);
+        {
+          OpBuilder::InsertionGuard guard(nb);
+          nb.setInsertionPointToStart(&pick.getThenRegion().front());
+          Value base = nb.create<arith::MulIOp>(l, g, c32);
+          nb.create<scf::YieldOp>(l, hostGroup(nb, r, base, n, pad, scratch));
+          nb.setInsertionPointToStart(&pick.getElseRegion().front());
+          nb.create<scf::YieldOp>(l, pad2);
+        }
+        laneStore(nb, l, pick.getResults(), results, g);
+        nb.create<scf::YieldOp>(l);
+      });
+  return hostTree(b, loc, results, r.kind);
+}
+
+/// On the GPU: the group of 32 lanes of a warp, with `shfl.sync.down`. Lane 0
+/// of the warp has the result. With `broadcast`, every lane gets it.
+static LaneElem deviceTree(OpBuilder &b, Location loc, LaneElem v,
+                           LaneReduction::Kind kind, bool broadcast) {
+  for (int32_t offset : {16, 8, 4, 2, 1}) {
+    LaneElem other;
+    for (Value part : v)
+      other.push_back(b.create<gpu::ShuffleOp>(loc, part, offset, 32,
+                                               gpu::ShuffleMode::DOWN)
+                          .getShuffleResult());
+    v = laneCombine(b, loc, kind, v, other);
+  }
+  if (!broadcast)
+    return v;
+  LaneElem all;
+  for (Value part : v)
+    all.push_back(
+        b.create<gpu::ShuffleOp>(loc, part, 0, 32, gpu::ShuffleMode::IDX)
+            .getShuffleResult());
+  return all;
+}
+
+/// The GPU half of a lane reduction. The checker made sure that every lane of
+/// the block or the subgroup gets here, and that the lanes of a block are a
+/// multiple of 32 and at least the elements of the input.
+static LaneElem expandLaneReductionOnDevice(OpBuilder &b,
+                                            const LaneReduction &r) {
+  Location loc = r.loc;
+  Value n = laneCount(b, r);
+  LaneElem pad = lanePad(b, r, n);
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value c32 = b.create<arith::ConstantIndexOp>(loc, 32);
+  Value inWarp = b.create<arith::RemUIOp>(loc, tid, c32);
+  Value lane = r.subgroup ? inWarp : tid;
+  LaneElem v = laneElement(b, loc, r.inputs, lane, n, pad);
+  v = deviceTree(b, loc, v, r.kind, /*broadcast=*/r.subgroup);
+  if (r.subgroup)
+    return v;
+  // The result of each warp goes to shared memory. Then each warp combines
+  // the results, so that every lane has the total.
+  SmallVector<Value, 2> shared = laneScratch(b, loc, v, /*shared=*/true);
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value warp = b.create<arith::DivUIOp>(loc, tid, c32);
+  Value leader =
+      b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, inWarp, zero);
+  auto store = b.create<scf::IfOp>(loc, leader, /*withElseRegion=*/false);
+  {
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPointToStart(&store.getThenRegion().front());
+    laneStore(b, loc, v, shared, warp);
+  }
+  b.create<gpu::BarrierOp>(loc);
+  Value c31 = b.create<arith::ConstantIndexOp>(loc, 31);
+  Value groups =
+      b.create<arith::DivUIOp>(loc, b.create<arith::AddIOp>(loc, n, c31), c32);
+  LaneElem pad2 = r.kind == LaneReduction::Max ? laneLoad(b, loc, shared, zero)
+                                               : laneIdentity(b, loc, r.kind);
+  LaneElem q = laneElement(b, loc, shared, inWarp, groups, pad2);
+  LaneElem total = deviceTree(b, loc, q, r.kind, /*broadcast=*/true);
+  // A later reduction in a loop writes the shared memory again.
+  b.create<gpu::BarrierOp>(loc);
+  return total;
+}
+
+/// The value of the op: the value, or the index for the argmax.
+static Value laneResult(const LaneReduction &r, const LaneElem &e) {
+  return r.kind == LaneReduction::ArgMax ? e[1] : e[0];
+}
+
+/// Replaces a lane reduction with its expansion: the host's loops with
+/// `serial`, and otherwise the expansion that `device` picks.
+template <typename OpTy>
+static void expandLaneReduction(OpBuilder &b, OpTy op, bool device) {
+  LaneReduction r = laneReduction(op);
+  LaneElem e = device && !op.getSerial() ? expandLaneReductionOnDevice(b, r)
+                                         : expandLaneReductionOnHost(b, r);
+  op.getResult().replaceAllUsesWith(laneResult(r, e));
+  op.erase();
+}
+
 static bool isDeviceLowerableDialect(StringRef ns) {
   // `vector` entered the list with Vx#378 R1: the flat path's slice ops
   // (`o[i] = o[i] + v[j] * p`) emit vector.load / elementwise vector arith,
@@ -1698,6 +2030,61 @@ static bool collectDeviceCallees(Operation *op, ModuleOp module, bool inCallee,
   return deviceAcceptsOp(op);
 }
 
+/// The device-image pipelines a kernel's declared `arch:` can select.
+///
+/// `None` is not an error: a topology Vx cannot compile for still type-checks.
+/// A row and its pipeline land together: a row without one would clone a body
+/// into a `gpu.module` that nothing compiles (docs/gpu_backends.md, item 1).
+enum class DevicePipeline { None, Nvptx };
+
+/// The pipeline a declared architecture names, `None` for one Vx has no
+/// pipeline for.
+static DevicePipeline pipelineForArch(StringRef arch) {
+  if (arch == "nvptx64")
+    return DevicePipeline::Nvptx;
+  return DevicePipeline::None;
+}
+
+/// The pipeline that compiles the kernel placed on `topology`: the declared
+/// architecture when it carries one, and the dispatch-id band when it does not.
+///
+/// The band is the fallback for a kernel with no arch attribute: a built-in
+/// topology, whose descriptor declares no arch. The AST code generator stamps
+/// the attribute too, for a topology that declares one
+/// (src/codegen/lower/tensors.rs), so both code generators agree on which
+/// kernels ride the band. A declared arch with no row in the table --
+/// `applegpu` reaches its device through the plugin ABI, not through a device
+/// image -- answers `None`.
+///
+/// `materializeGpuKernels` asks this to decide whether a kernel gets a device
+/// twin, `spawnRunsOnDevice` asks it the same question about the `vx.spawn` the
+/// kernel is outlined from, and the device-image step asks it again to decide
+/// which pipeline compiles the twin. One answer, so a kernel cannot be admitted
+/// for one architecture and compiled for another.
+static DevicePipeline pipelineOfKernel(Operation *placed, int32_t topology) {
+  if (auto arch = placed->getAttrOfType<StringAttr>("arch"))
+    return pipelineForArch(arch.getValue());
+  // The GPU band from `topology_dispatch_id` in src/arch.rs, where `GPU[i]` is
+  // 500 + i. NPU and AccCore are below the band and outline the same way, but
+  // they reach their devices through a different backend.
+  if (topology >= 500 && topology < 600)
+    return DevicePipeline::Nvptx;
+  return DevicePipeline::None;
+}
+
+/// The architecture a pipeline compiles for, as a machine file's `arch:` line
+/// spells it: the words a refusal has to name when two kernels disagree.
+static StringRef archNameOfPipeline(DevicePipeline pipeline) {
+  switch (pipeline) {
+  case DevicePipeline::Nvptx:
+    return "nvptx64";
+  case DevicePipeline::None:
+    // A kernel with no pipeline gets no device twin, so no refusal names it as
+    // one of the architectures a program compiled for.
+    llvm_unreachable("a kernel with no device pipeline has no architecture");
+  }
+}
+
 // Read a buffer cell once before a `vx.spawn` when the region only reads it.
 // A kernel that captured the cell would read the buffer through a host stack
 // slot, which a GPU cannot read. After this, the cell has no uses in the
@@ -1731,16 +2118,6 @@ static void readCellsBeforeSpawns(ModuleOp module) {
   });
 }
 
-/// Whether a kernel placed on `topology` gets a device twin: the declared
-/// `arch` when `placed` carries one, the GPU band of `topology_dispatch_id`
-/// when it does not. NPU, AccCore and a declared arch such as `applegpu` reach
-/// their devices through a different backend, so they get no NVVM twin.
-static bool hasDevicePipeline(Operation *placed, int32_t topology) {
-  if (auto arch = placed->getAttrOfType<StringAttr>("arch"))
-    return arch.getValue() == "nvptx64";
-  return topology >= 500 && topology < 600;
-}
-
 /// The most static `.shared` storage a CUDA kernel can declare.
 static constexpr int64_t kMaxStaticSharedBytes = 48 * 1024;
 
@@ -1750,7 +2127,8 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
                          DeviceCallees &callees) {
   // Rewritten to `gpu.return` and `gpu.barrier` in the device clone (Vx#379).
   // A `vx.launch_dim` leaves the region when it is outlined.
-  if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp>(op))
+  if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp,
+          vx::LaneReduceOp, vx::LaneArgmaxOp>(op))
     return true;
   // A DYNAMIC shared-memory tile cannot become a `.shared` global (those
   // need a static shape), and leaving the alloca as-is ships a kernel that
@@ -1776,7 +2154,8 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
 /// Whether the kernel outlined from `spawn` will get a device twin, by the
 /// rules `materializeGpuKernels` applies to it later.
 static bool spawnRunsOnDevice(vx::SpawnOp spawn) {
-  if (!hasDevicePipeline(spawn, spawn.getTopology()))
+  // No pipeline compiles the region, so it gets no device twin.
+  if (pipelineOfKernel(spawn, spawn.getTopology()) == DevicePipeline::None)
     return false;
   auto module = spawn->getParentOfType<ModuleOp>();
   DeviceCallees callees;
@@ -2815,20 +3194,9 @@ struct ConvertVxToStandardPass
     llvm::DenseMap<Operation *, DeviceCallees> callees;
     module.walk([&](vx::KernelOp k) {
       const int32_t topo = static_cast<int32_t>(k.getTopology());
-      // Eligibility: the DECLARED arch when the kernel carries one, the
-      // dispatch-id band when it does not. A machine file that says `arch:
-      // nvptx64` has answered "what code do we emit for this topology" -- that
-      // is the field's documented meaning -- and this is the place that needed
-      // the answer; before the attribute existed the gate was the band alone,
-      // which a custom topology can never enter (declared ids start at 3000 by
-      // construction), so no declaration could produce a device image (Vx#352).
-      //
-      // The band stays as the fallback for kernels with no arch attribute:
-      // built-in topologies (whose descriptors declare no arch) and the
-      // AST-codegen path (which does not stamp). A declared arch we have no
-      // device pipeline for -- `applegpu` reaches its device through the plugin
-      // ABI, not NVVM -- is excluded here exactly like NPU/AccCore below.
-      if (!hasDevicePipeline(k, topo))
+      // A kernel no pipeline claims gets no device twin: it stops here rather
+      // than being cloned into a `gpu.module` that nothing will compile.
+      if (pipelineOfKernel(k, topo) == DevicePipeline::None)
         return;
       // A kernel that hands back a value writes it into a host stack slot,
       // which a GPU cannot address; the runtime runs it on the host instead.
@@ -3003,6 +3371,24 @@ struct ConvertVxToStandardPass
       gpuEntry.getOperations().splice(gpuEntry.end(),
                                       clonedEntry->getOperations());
       clonedEntry->erase();
+
+      // The device half of the lane reductions: shuffles and shared memory.
+      // Before the steps below, which make their shared scratch `.shared`
+      // storage.
+      {
+        SmallVector<Operation *> reductions;
+        gpuFunc.walk([&](Operation *op) {
+          if (isa<vx::LaneReduceOp, vx::LaneArgmaxOp>(op))
+            reductions.push_back(op);
+        });
+        for (Operation *op : reductions) {
+          OpBuilder b(op);
+          if (auto r = dyn_cast<vx::LaneReduceOp>(op))
+            expandLaneReduction(b, r, /*device=*/true);
+          else
+            expandLaneReduction(b, cast<vx::LaneArgmaxOp>(op), /*device=*/true);
+        }
+      }
 
       // Shared-memory STORAGE. A space-3 `memref.alloca` is correct on the
       // host path (it lowers to a stack slot and the host runs the region
@@ -3807,6 +4193,14 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     //    a header. See vx_payload_field() in include/vx_hardware_runtime.h.
     std::string payload = callee.str();
     payload.push_back('\0');
+    // The format version, first among the entries so a dispatch library reads
+    // it before anything it might misread. `VX_PAYLOAD_ABI` lives in the header
+    // the dispatch libraries include, so the number has one source; a library
+    // that meets a version it does not know refuses rather than guessing, and
+    // an older payload with no `abi=` at all stays readable.
+    payload += "abi=";
+    payload += std::to_string(VX_PAYLOAD_ABI);
+    payload.push_back('\0');
     if (auto kindAttr = op->getAttrOfType<StringAttr>("vx.kernel_kind")) {
       payload += "kind=";
       payload += kindAttr.getValue().str();
@@ -3929,6 +4323,11 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     if (deviceImages) {
       auto image = deviceImages->find(callee);
       if (image != deviceImages->end()) {
+        // What the image is, before the image itself: a dispatch library that
+        // meets a format it does not know refuses instead of guessing, and the
+        // section below is unreadable without knowing which it is.
+        payload += "format=ptx";
+        payload.push_back('\0');
         payload += "image=";
         payload += image->second;
         payload.push_back('\0');
@@ -4253,6 +4652,20 @@ struct BarrierOpLowering : public OpRewritePattern<vx::BarrierOp> {
   LogicalResult matchAndRewrite(vx::BarrierOp op,
                                 PatternRewriter &rewriter) const override {
     rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// The host half of the lane reductions: the loops of the same order.
+template <typename OpTy>
+struct LaneReductionLowering : public OpRewritePattern<OpTy> {
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpTy op,
+                                PatternRewriter &rewriter) const override {
+    LaneReduction r = laneReduction(op);
+    rewriter.replaceOp(op,
+                       laneResult(r, expandLaneReductionOnHost(rewriter, r)));
     return success();
   }
 };
@@ -4773,9 +5186,79 @@ struct ConvertVxToLLVMPass
     assert((!exporting || deviceModules.size() <= 1) &&
            "the GPU kernels of a module are in one gpu.module");
 
+    // Which kernel each `gpu.func` is the twin of, so the image step asks the
+    // same `pipelineOfKernel` the gate did. Only when there is a device module:
+    // this walks the whole program, and most have nothing placed on a device.
+    llvm::StringMap<vx::KernelOp> kernelsByName;
+    if (!deviceModules.empty())
+      getOperation().walk(
+          [&](vx::KernelOp k) { kernelsByName[k.getSymName()] = k; });
+
     llvm::StringMap<std::string> deviceImages;
     llvm::StringMap<int64_t> dynamicShared;
     for (gpu::GPUModuleOp m : deviceModules) {
+      // One image per module, and every kernel in it is an entry point: a
+      // loader takes the module and then asks for a function by name. So the
+      // kernels have to agree on the pipeline that produces that image.
+      //
+      // Before `nameKernelsForExport`, which renames each `gpu.func` to the PTX
+      // name of the function that holds it: the twin is found by its
+      // `vx.kernel` name, and after that rename the two no longer match.
+      std::optional<DevicePipeline> pipeline;
+      vx::KernelOp disagrees; // the first kernel that asks for another pipeline
+      WalkResult walk = m.walk([&](gpu::GPUFuncOp f) -> WalkResult {
+        auto it = kernelsByName.find(f.getName());
+        // A `gpu.func` here is the twin of a `vx.kernel` of the same name: the
+        // outliner leaves the kernel behind when it makes one. Hand-written IR
+        // reaches this pass with a `gpu.func` of its own, so a name that is not
+        // here is refused rather than asserted on.
+        if (it == kernelsByName.end()) {
+          f.emitError("this gpu.func has no vx.kernel of the same name, so "
+                      "there is no pipeline to compile it with");
+          return WalkResult::interrupt();
+        }
+        const DevicePipeline p = pipelineOfKernel(
+            it->second, static_cast<int32_t>(it->second.getTopology()));
+        // The gate gives a kernel with no pipeline no device twin, so a twin
+        // whose kernel answers `None` means the two answers have disagreed.
+        assert(p != DevicePipeline::None &&
+               "a kernel with no device pipeline got a device twin");
+        if (!pipeline)
+          pipeline = p;
+        else if (*pipeline != p && !disagrees)
+          disagrees = it->second;
+        return WalkResult::advance();
+      });
+      if (walk.wasInterrupted()) {
+        signalPassFailure();
+        return;
+      }
+      if (disagrees) {
+        const DevicePipeline other = pipelineOfKernel(
+            disagrees, static_cast<int32_t>(disagrees.getTopology()));
+        // On the `vx.kernel` rather than on the module: the module's location
+        // is the whole program, the kernel's is the `spawn` that asked for the
+        // other architecture.
+        disagrees.emitError()
+            << "this kernel is compiled for " << archNameOfPipeline(other)
+            << ", and another kernel is compiled for "
+            << archNameOfPipeline(*pipeline)
+            << ". Kernels for two GPU architectures in one program are not "
+               "supported yet.";
+        signalPassFailure();
+        return;
+      }
+      if (!pipeline) {
+        // No `gpu.func` in this module is the twin of a kernel Vx compiled for
+        // a device. Hand-written IR reaches this pass with a device module of
+        // its own (`vx-opt --vx-to-llvm`), so this is refused rather than
+        // asserted on.
+        m.emitError("this device module holds no kernel that Vx compiled for a "
+                    "device, so there is no pipeline to compile it with");
+        signalPassFailure();
+        return;
+      }
+
       llvm::json::Array exported;
       if (exporting) {
         FailureOr<llvm::json::Array> kernels = nameKernelsForExport(module, m);
@@ -4786,7 +5269,14 @@ struct ConvertVxToLLVMPass
         exported = std::move(*kernels);
       }
       std::string error;
-      std::string image = deviceImageOf(m, error);
+      std::string image;
+      switch (*pipeline) {
+      case DevicePipeline::Nvptx:
+        image = deviceImageOf(m, error);
+        break;
+      case DevicePipeline::None:
+        llvm_unreachable("the pipeline was checked to be present above");
+      }
       // Fatal rather than "emit nothing and carry on". Carrying on produces a
       // program that compiles, dispatches, and is then refused at the far end
       // for a reason that has nothing to do with the refusal -- the kernel is
@@ -4797,10 +5287,8 @@ struct ConvertVxToLLVMPass
         signalPassFailure();
         return;
       }
-      // One image per module, and every kernel in it is an entry point: a
-      // loader takes the module and then asks for a function by name. So each
-      // `gpu.func` maps to the same image, and the kernel name -- already the
-      // payload blob's first field -- is what selects the entry.
+      // Each `gpu.func` maps to the same image, and the kernel name -- already
+      // the payload blob's first field -- is what selects the entry.
       m.walk([&](gpu::GPUFuncOp f) {
         deviceImages[f.getName()] = image;
         if (auto bytes = f->getAttrOfType<IntegerAttr>("vx.dynamic_shared"))
@@ -4999,6 +5487,7 @@ struct ConvertVxToLLVMPass
     // pattern rather than letting the op leak to mlir-translate, which does
     // not know the vx dialect (Vx#379).
     target.addIllegalOp<vx::BarrierOp>();
+    target.addIllegalOp<vx::LaneReduceOp, vx::LaneArgmaxOp>();
 
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
@@ -5010,6 +5499,8 @@ struct ConvertVxToLLVMPass
     patterns.add<KernelOpLowering>(&getContext());
     patterns.add<ReturnOpLowering>(&getContext());
     patterns.add<BarrierOpLowering>(&getContext());
+    patterns.add<LaneReductionLowering<vx::LaneReduceOp>,
+                 LaneReductionLowering<vx::LaneArgmaxOp>>(&getContext());
 
     adoptDeclaredRuntimeFns(getOperation());
     if (failed(applyPartialConversion(getOperation(), target,

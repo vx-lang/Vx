@@ -678,6 +678,9 @@ pub struct MonoState {
     /// Topology bindings (`D -> concrete topology`) deduced during that unify, consumed by
     /// `instantiate_function` to specialize `on D` and `Pinned<_, D>`.
     pub pending_topo_bindings: HashMap<Symbol, Topology>,
+    /// Memory generic parameters (`<M : Memory>`) of the function being instantiated. Set around
+    /// the same unify, so that a `Tensor<_, _, Memory::M>` param binds `M` to the argument's memory.
+    pub pending_memory_vars: HashSet<Symbol>,
     /// Signature of each closure literal, keyed by its generated `Closure_N` struct name:
     /// `(param types, return type)`. A closure expression checks to `Struct("Closure_N")`, which
     /// erases the call signature, so unifying it against a `ClosureK<Args.., Ret>` parameter needs

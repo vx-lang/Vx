@@ -21,11 +21,108 @@
 // sizes mirror `SizeOfExpr` lowering in `codegen/lower/expr.rs`.
 //
 //===----------------------------------------------------------------------===//
+pub mod identity;
+
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::gid::TypeId;
 use crate::symbol::Symbol;
 use crate::syntax::{ElementType, EnumDecl, StructDecl, Type};
+
+/// A generated aggregate layout passed from a function's lowerer to code generation.
+/// Storage fields can differ from the values each enum variant puts in them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeneratedAggregateLayout {
+    pub type_id: TypeId,
+    pub name: String,
+    pub size_bytes: u64,
+    pub align_bytes: u64,
+    pub fields: Vec<GeneratedFieldLayout>,
+    /// Actual payload types and metadata in declaration order for each enum variant.
+    /// Struct layouts have no variants.
+    pub variant_payloads: Vec<Vec<GeneratedPayloadLayout>>,
+}
+
+/// One generated field, in LLVM struct field order.
+/// Enum fields describe shared storage slots. Actual values belong to `variant_payloads`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeneratedFieldLayout {
+    pub layout: FieldLayout,
+    pub mlir_type: String,
+    pub aggregate_id: Option<TypeId>,
+    pub pointer_target_id: Option<TypeId>,
+}
+
+impl GeneratedAggregateLayout {
+    /// Compare storage and payload meaning. The aggregate ID supersedes its display name.
+    /// Unsupported or unresolved payload types do not establish agreement.
+    pub fn semantically_eq(
+        &self,
+        other: &Self,
+        identities: &identity::AggregateIdentities,
+    ) -> bool {
+        self.type_id == other.type_id
+            && self.size_bytes == other.size_bytes
+            && self.align_bytes == other.align_bytes
+            && self.fields == other.fields
+            && self.variant_payloads.len() == other.variant_payloads.len()
+            && self
+                .variant_payloads
+                .iter()
+                .zip(&other.variant_payloads)
+                .all(|(left, right)| {
+                    left.len() == right.len()
+                        && left.iter().zip(right).all(|(left, right)| {
+                            left.aggregate_id == right.aggregate_id
+                                && left.pointer_target_id == right.pointer_target_id
+                                && matches!(
+                                    (identities.type_key(&left.ty), identities.type_key(&right.ty)),
+                                    (Some(left), Some(right)) if left == right
+                                )
+                        })
+                })
+    }
+
+    pub fn field_offsets(&self) -> Vec<u64> {
+        self.fields.iter().map(|f| f.layout.offset as u64).collect()
+    }
+
+    pub fn type_layout(&self) -> TypeLayout {
+        TypeLayout {
+            size: self.size_bytes as usize,
+            align: self.align_bytes as usize,
+            fields: self.fields.iter().map(|f| f.layout.clone()).collect(),
+        }
+    }
+
+    /// Derive the lowerer's nominal layout view from the shared record.
+    pub fn type_definition(&self) -> crate::registry::TypeDefinition {
+        let layout = self.type_layout();
+        crate::registry::TypeDefinition {
+            id: self.type_id,
+            name: self.name.clone(),
+            size_bytes: layout.size,
+            align_bytes: layout.align,
+            fields: layout.fields,
+            by_value_dependencies: self
+                .fields
+                .iter()
+                .filter_map(|f| match f.layout.ty {
+                    FieldTy::Nominal(id) => Some(id),
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// An enum payload's actual type, independent of its shared storage field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeneratedPayloadLayout {
+    pub ty: Type,
+    pub aggregate_id: Option<TypeId>,
+    pub pointer_target_id: Option<TypeId>,
+}
 
 /// The type of a struct field, enough to recover its value type at a field access. A pointer/ref
 /// field is `Opaque`: modelled for size/offset but not decomposed into a loadable scalar.
@@ -51,6 +148,51 @@ pub struct FieldLayout {
     pub ty: FieldTy,
 }
 
+/// Field storage shared by the registry and generated struct layouts.
+/// Nominal types require a declaration resolver and return no structural storage here.
+pub(crate) fn structural_field_info(ty: &Type) -> Option<(usize, usize, FieldTy)> {
+    match ty {
+        Type::Scalar(et) => {
+            let (size, align) = scalar_size_align(et)?;
+            Some((size, align, FieldTy::Scalar(et.clone())))
+        }
+        // A borrowed tensor is passed as the tensor's own descriptor, which shares its memory,
+        // so a `&Tensor` field holds the descriptor too. A closure that uses a tensor
+        // reference keeps it in such a field.
+        Type::Borrow { inner, .. } if matches!(**inner, Type::Tensor(..)) => {
+            structural_field_info(inner)
+        }
+        // Pointer-like fields, all a pointer-sized opaque word: raw pointers, borrows, and a
+        // function/closure type (a function pointer, e.g. `Closure1`'s `func` field). (#242)
+        Type::Pointer(..)
+        | Type::Ref(..)
+        | Type::Borrow { .. }
+        | Type::Function(..)
+        | Type::Closure(..) => Some((8, 8, FieldTy::Opaque)),
+        // A tensor field is its memref descriptor by value, 8-aligned: two pointers, an
+        // offset, and a size and a stride per rank. A generic element has no descriptor yet.
+        Type::Tensor(elem, dims, _) => {
+            if matches!(elem, ElementType::Generic(_)) {
+                return None;
+            }
+            Some((
+                24 + 16 * dims.len(),
+                8,
+                FieldTy::Tensor(elem.clone(), dims.len()),
+            ))
+        }
+        // `<N x T>`: N lanes packed densely, then rounded to a whole byte, with the alignment
+        // the datalayout gives `vector<NxT>` -- the size rounded up to a power of two. The unit
+        // test below pins this against what LLVM reports, so the two cannot drift.
+        Type::Simd(el, n) => {
+            let (size, align) = vector_size_align(el, *n)?;
+            Some((size, align, FieldTy::Vector(el.clone(), *n)))
+        }
+        Type::Pinned(inner, _) | Type::Verified(inner) => structural_field_info(inner),
+        _ => None,
+    }
+}
+
 /// The computed layout of a nominal type: total size, alignment, and (for
 /// structs) the offset/size of each field in declaration order. `fields` is
 /// empty for enums.
@@ -59,6 +201,86 @@ pub struct TypeLayout {
     pub size: usize,
     pub align: usize,
     pub fields: Vec<FieldLayout>,
+}
+
+/// Storage requirements for one shared enum payload position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumPayloadSlot {
+    pub offset: u64,
+    pub size: u64,
+    pub align: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumStorageLayout {
+    pub size: u64,
+    pub align: u64,
+    pub slots: Vec<EnumPayloadSlot>,
+}
+
+/// Each position must fit every variant's value and satisfy every variant's alignment.
+pub fn enum_storage_layout(variants: &[Vec<(u64, u64)>]) -> Option<EnumStorageLayout> {
+    fn round(size: u64, align: u64) -> Option<u64> {
+        if !align.is_power_of_two() {
+            return None;
+        }
+        Some(size.checked_add(align - 1)? & !(align - 1))
+    }
+    let mut result = EnumStorageLayout {
+        size: 4,
+        align: 4,
+        slots: Vec::new(),
+    };
+    for field in 0..variants.iter().map(Vec::len).max().unwrap_or(0) {
+        let (mut size, mut align) = (0, 1);
+        for variant in variants {
+            if let Some(&(s, a)) = variant.get(field) {
+                if !a.is_power_of_two() {
+                    return None;
+                }
+                size = size.max(s);
+                align = align.max(a);
+            }
+        }
+        let size = round(size, align)?;
+        let offset = round(result.size, align)?;
+        result.size = offset.checked_add(size)?;
+        result.align = result.align.max(align);
+        result.slots.push(EnumPayloadSlot {
+            offset,
+            size,
+            align,
+        });
+    }
+    result.size = round(result.size, result.align)?;
+    usize::try_from(result.size).ok()?;
+    Some(result)
+}
+
+/// One physical field supplies both the slot's alignment and its padded capacity.
+/// Integer storage preserves bits during whole-enum copies.
+pub fn enum_slot_storage(slot: &EnumPayloadSlot) -> Option<String> {
+    let anchor = match slot.align {
+        1 => "i8",
+        2 => "i16",
+        4 => "i32",
+        8 => "i64",
+        16 => "vector<2xi64>",
+        _ => return None,
+    };
+    if slot.size == 0 {
+        return Some(format!("!llvm.array<0 x {anchor}>"));
+    }
+    if !slot.size.is_multiple_of(slot.align) {
+        return None;
+    }
+    if slot.size == slot.align {
+        return Some(anchor.into());
+    }
+    let tail = slot.size.checked_sub(slot.align)?;
+    Some(format!(
+        "!llvm.struct<({anchor}, !llvm.array<{tail} x i8>)>"
+    ))
 }
 
 /// Round `n` up to the next multiple of `align` (a power of two, `>= 1`).
@@ -98,6 +320,7 @@ pub fn vector_size_align(el: &ElementType, lanes: usize) -> Option<(usize, usize
 /// (an infinite-sized type) resolves to `None` here and is reported separately
 /// by the registry's cycle detection.
 pub struct LayoutComputer<'a> {
+    identities: identity::AggregateIdentities,
     structs: FxHashMap<TypeId, &'a StructDecl>,
     enums: FxHashMap<TypeId, &'a EnumDecl>,
     memo: FxHashMap<TypeId, Option<TypeLayout>>,
@@ -114,7 +337,14 @@ impl<'a> LayoutComputer<'a> {
         structs: FxHashMap<TypeId, &'a StructDecl>,
         enums: FxHashMap<TypeId, &'a EnumDecl>,
     ) -> Self {
+        let identities = identity::AggregateIdentities::new(
+            structs
+                .iter()
+                .map(|(id, decl)| (*id, decl.name.clone()))
+                .chain(enums.iter().map(|(id, decl)| (*id, decl.name.clone()))),
+        );
         Self {
+            identities,
             structs,
             enums,
             memo: FxHashMap::default(),
@@ -212,43 +442,11 @@ impl<'a> LayoutComputer<'a> {
     /// in its arguments, an unresolved nominal, …) returns `None`, making the enclosing
     /// layout incomputable for now.
     fn field_info(&mut self, ty: &Type) -> Option<(usize, usize, FieldTy)> {
+        if let Some(info) = structural_field_info(ty) {
+            return Some(info);
+        }
+
         match ty {
-            Type::Scalar(et) => {
-                let (size, align) = scalar_size_align(et)?;
-                Some((size, align, FieldTy::Scalar(et.clone())))
-            }
-            // A borrowed tensor is passed as the tensor's own descriptor, which shares its memory,
-            // so a `&Tensor` field holds the descriptor too. A closure that uses a tensor
-            // reference keeps it in such a field.
-            Type::Borrow { inner, .. } if matches!(**inner, Type::Tensor(..)) => {
-                self.field_info(inner)
-            }
-            // Pointer-like fields, all a pointer-sized opaque word: raw pointers, borrows, and a
-            // function/closure type (a function pointer, e.g. `Closure1`'s `func` field). (#242)
-            Type::Pointer(..)
-            | Type::Ref(..)
-            | Type::Borrow { .. }
-            | Type::Function(..)
-            | Type::Closure(..) => Some((8, 8, FieldTy::Opaque)),
-            // A tensor field is its memref descriptor by value, 8-aligned: two pointers, an
-            // offset, and a size and a stride per rank. A generic element has no descriptor yet.
-            Type::Tensor(elem, dims, _) => {
-                if matches!(elem, ElementType::Generic(_)) {
-                    return None;
-                }
-                Some((
-                    24 + 16 * dims.len(),
-                    8,
-                    FieldTy::Tensor(elem.clone(), dims.len()),
-                ))
-            }
-            // `<N x T>`: N lanes packed densely, then rounded to a whole byte, with the alignment
-            // the datalayout gives `vector<NxT>` -- the size rounded up to a power of two. The unit
-            // test below pins this against what LLVM reports, so the two cannot drift.
-            Type::Simd(el, n) => {
-                let (size, align) = vector_size_align(el, *n)?;
-                Some((size, align, FieldTy::Vector(el.clone(), *n)))
-            }
             Type::Pinned(inner, _) | Type::Verified(inner) => self.field_info(inner),
             Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => {
                 let layout = self.layout_of(*id)?;
@@ -262,15 +460,7 @@ impl<'a> LayoutComputer<'a> {
             // "Closure1", None)`). An instance-dependent base (`Box<T> { value: T }`) has no layout
             // of its own, so the instance with these arguments gets one (`instance_of`). (#242)
             Type::GenericInstance(base, args) => {
-                let id = match base.as_ref() {
-                    Type::Struct(_, Some(id)) | Type::Enum(_, Some(id)) => *id,
-                    Type::Struct(name, None) | Type::Enum(name, None) => *self
-                        .structs
-                        .iter()
-                        .find(|(_, d)| d.name == *name)
-                        .map(|(g, _)| g)?,
-                    _ => return None,
-                };
+                let (_, id) = self.identities.resolve_base(base.as_ref().into())?;
                 if let Some(layout) = self.layout_of(id) {
                     return Some((layout.size, layout.align, FieldTy::Nominal(id)));
                 }
@@ -292,7 +482,7 @@ impl<'a> LayoutComputer<'a> {
         if decl.generics.is_empty() || args.iter().any(Type::has_generic_params) {
             return None;
         }
-        let id = crate::hir::flatten::struct_instance_gid(decl.name.as_ref(), args);
+        let id = crate::hir::flatten::struct_instance_gid(base, args, &self.identities)?;
         if self.instances.contains_key(&id) {
             return Some(id);
         }
@@ -326,6 +516,348 @@ impl<'a> LayoutComputer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[rstest::rstest]
+    #[case::size_and_alignment(vec![vec![(12, 4)], vec![(8, 8)]], (24, 8, vec![(8, 16, 8)]))]
+    #[case::reversed(vec![vec![(8, 8)], vec![(12, 4)]], (24, 8, vec![(8, 16, 8)]))]
+    #[case::later_position(vec![vec![(1, 1), (12, 4)], vec![(2, 2), (8, 8)]], (24, 8, vec![(4, 2, 2), (8, 16, 8)]))]
+    #[case::missing_position(vec![vec![(1, 1), (4, 4)], vec![]], (12, 4, vec![(4, 1, 1), (8, 4, 4)]))]
+    #[case::empty(vec![vec![], vec![]], (4, 4, vec![]))]
+    #[case::zero_sized(vec![vec![(0, 1), (1, 1)]], (8, 4, vec![(4, 0, 1), (4, 1, 1)]))]
+    #[case::sixteen_byte_alignment(vec![vec![(17, 1)], vec![(16, 16)]], (48, 16, vec![(16, 32, 16)]))]
+    fn enum_layout_slot_requirements(
+        #[case] variants: Vec<Vec<(u64, u64)>>,
+        #[case] expected: (u64, u64, Vec<(u64, u64, u64)>),
+    ) {
+        let layout = enum_storage_layout(&variants).expect("valid enum requirements");
+        assert_eq!(
+            (
+                layout.size,
+                layout.align,
+                layout
+                    .slots
+                    .iter()
+                    .map(|s| (s.offset, s.size, s.align))
+                    .collect::<Vec<_>>()
+            ),
+            expected,
+            "enum storage must satisfy every payload's size and alignment"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::zero_alignment(vec![vec![(1, 0)]])]
+    #[case::invalid_alignment(vec![vec![(1, 3)]])]
+    #[case::slot_rounding_overflow(vec![vec![(u64::MAX, 8)]])]
+    #[case::end_overflow(vec![vec![(u64::MAX - 3, 4)]])]
+    #[case::tail_rounding_overflow(vec![vec![(u64::MAX - 4, 1)]])]
+    fn enum_layout_invalid_requirements_decline(#[case] variants: Vec<Vec<(u64, u64)>>) {
+        assert!(
+            enum_storage_layout(&variants).is_none(),
+            "invalid or overflowing enum requirements must decline"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::zero_alignment(8, 0)]
+    #[case::invalid_alignment(9, 3)]
+    #[case::unverified_alignment(64, 32)]
+    #[case::partial_alignment(12, 8)]
+    #[case::too_small(4, 8)]
+    fn enum_layout_invalid_storage_declines(#[case] size: u64, #[case] align: u64) {
+        assert!(
+            enum_slot_storage(&EnumPayloadSlot {
+                offset: 0,
+                size,
+                align
+            })
+            .is_none(),
+            "an invalid or unverified physical slot must decline"
+        );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn enum_layout_matches_an_independent_byte_oracle(variants in proptest::collection::vec(proptest::collection::vec((0u64..64, 0u32..5), 0..5), 0..5)) {
+            let variants: Vec<Vec<_>> = variants.into_iter().map(|v| v.into_iter().map(|(s, power)| (s, 1u64 << power)).collect()).collect();
+            let mut end = 4;
+            let mut alignment = 4;
+            let mut slots = Vec::new();
+            for i in 0..variants.iter().map(Vec::len).max().unwrap_or(0) {
+                let present: Vec<_> = variants.iter().filter_map(|v| v.get(i)).collect();
+                let align = present.iter().map(|p| p.1).max().unwrap();
+                let mut size = present.iter().map(|p| p.0).max().unwrap();
+                while size % align != 0 { size += 1; }
+                while end % align != 0 { end += 1; }
+                slots.push(EnumPayloadSlot { offset: end, size, align });
+                end += size;
+                alignment = alignment.max(align);
+            }
+            while end % alignment != 0 { end += 1; }
+            proptest::prop_assert_eq!(enum_storage_layout(&variants), Some(EnumStorageLayout { size: end, align: alignment, slots }));
+        }
+    }
+
+    fn comparison_record() -> (GeneratedAggregateLayout, identity::AggregateIdentities) {
+        let node = TypeId::new(10, 1, 0, 0);
+        let other = TypeId::new(20, 1, 0, 0);
+        let identities = identity::AggregateIdentities::new([
+            (node, "Node".into()),
+            (other, "Other".into()),
+            (TypeId::new(30, 1, 0, 0), "Ambiguous".into()),
+            (TypeId::new(40, 1, 0, 0), "Ambiguous".into()),
+        ]);
+        let record = GeneratedAggregateLayout {
+            type_id: TypeId::new(0, 100, 0, 0),
+            name: "Choice".into(),
+            size_bytes: 8,
+            align_bytes: 8,
+            fields: vec![GeneratedFieldLayout {
+                layout: FieldLayout {
+                    name: "value".into(),
+                    offset: 0,
+                    size: 8,
+                    ty: FieldTy::Opaque,
+                },
+                mlir_type: "!llvm.ptr".into(),
+                aggregate_id: None,
+                pointer_target_id: Some(node),
+            }],
+            variant_payloads: vec![vec![GeneratedPayloadLayout {
+                ty: Type::Borrow {
+                    inner: Box::new(Type::Struct("Node".into(), Some(node))),
+                    mem_space: None,
+                    is_mut: false,
+                    region_id: 17,
+                },
+                aggregate_id: None,
+                pointer_target_id: Some(node),
+            }]],
+        };
+        (record, identities)
+    }
+
+    fn source_number(column: usize) -> crate::syntax::Expr {
+        crate::syntax::Expr::Number(crate::syntax::NumberExpr::new(
+            "4".into(),
+            None,
+            crate::syntax::Span {
+                column,
+                ..Default::default()
+            },
+        ))
+    }
+
+    #[rstest::rstest]
+    #[case("nominal_spelling")]
+    #[case("missing_id")]
+    #[case("nominal_kind")]
+    #[case("borrow_region")]
+    #[case("constant_source")]
+    #[case("tensor_source")]
+    #[case("device_source")]
+    #[case("display_name")]
+    fn layout_records_compare_types_semantically(#[case] difference: &str) {
+        use crate::syntax::{Dim, Placement, Topology};
+        let (mut first, identities) = comparison_record();
+        let mut second = first.clone();
+        match difference {
+            "nominal_spelling" | "missing_id" | "nominal_kind" => {
+                let Type::Borrow { inner, .. } = &mut second.variant_payloads[0][0].ty else {
+                    unreachable!()
+                };
+                **inner = match difference {
+                    "missing_id" => Type::Struct("Node".into(), None),
+                    "nominal_kind" => Type::Enum("Node".into(), Some(TypeId::new(10, 1, 0, 0))),
+                    _ => Type::Struct("module::Node".into(), Some(TypeId::new(10, 1, 0, 0))),
+                };
+            }
+            "borrow_region" => {
+                let Type::Borrow { region_id, .. } = &mut second.variant_payloads[0][0].ty else {
+                    unreachable!()
+                };
+                *region_id = 41;
+            }
+            "constant_source" | "tensor_source" | "device_source" => {
+                let ty = |column| match difference {
+                    "constant_source" => Type::Const(Box::new(source_number(column))),
+                    "tensor_source" => Type::Tensor(
+                        ElementType::F32,
+                        vec![Dim::Static(source_number(column))],
+                        None,
+                    ),
+                    _ => Type::Pointer(
+                        Box::new(Type::Scalar(ElementType::I32)),
+                        Some(Placement::on(Topology::GPU(Box::new(source_number(
+                            column,
+                        ))))),
+                        false,
+                    ),
+                };
+                first.variant_payloads[0][0].ty = ty(2);
+                second.variant_payloads[0][0].ty = ty(20);
+            }
+            "display_name" => second.name = "module::Choice".into(),
+            _ => unreachable!(),
+        }
+        assert!(
+            first.semantically_eq(&second, &identities),
+            "equivalent records must agree: {difference}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case("type_id")]
+    #[case("size")]
+    #[case("alignment")]
+    #[case("field_count")]
+    #[case("field_name")]
+    #[case("field_offset")]
+    #[case("field_size")]
+    #[case("field_type")]
+    #[case("mlir_type")]
+    #[case("field_aggregate")]
+    #[case("field_pointer_target")]
+    #[case("variant_count")]
+    #[case("payload_count")]
+    #[case("payload_aggregate")]
+    #[case("payload_pointer_target")]
+    #[case("nominal_declaration")]
+    #[case("borrow_permission")]
+    #[case("borrow_memory")]
+    #[case("reference_kind")]
+    #[case("pointer_permission")]
+    #[case("tensor_element")]
+    #[case("tensor_dimension")]
+    #[case("tensor_memory")]
+    #[case("tensor_device")]
+    #[case("explicit_cpu")]
+    #[case("unknown_id")]
+    #[case("ambiguous_name")]
+    #[case("unsupported_expression")]
+    #[case("unknown_type")]
+    fn layout_records_require_known_semantic_agreement(#[case] difference: &str) {
+        use crate::syntax::{Dim, MemorySpace, Placement, Topology};
+        let (mut first, identities) = comparison_record();
+        let mut second = first.clone();
+        let other = TypeId::new(20, 1, 0, 0);
+        match difference {
+            "type_id" => second.type_id = other,
+            "size" => second.size_bytes += 8,
+            "alignment" => second.align_bytes *= 2,
+            "field_count" => second.fields.clear(),
+            "field_name" => second.fields[0].layout.name = "other".into(),
+            "field_offset" => second.fields[0].layout.offset += 8,
+            "field_size" => second.fields[0].layout.size += 8,
+            "field_type" => second.fields[0].layout.ty = FieldTy::Scalar(ElementType::I64),
+            "mlir_type" => second.fields[0].mlir_type = "i64".into(),
+            "field_aggregate" => second.fields[0].aggregate_id = Some(other),
+            "field_pointer_target" => second.fields[0].pointer_target_id = Some(other),
+            "variant_count" => second.variant_payloads.push(vec![]),
+            "payload_count" => second.variant_payloads[0].clear(),
+            "payload_aggregate" => second.variant_payloads[0][0].aggregate_id = Some(other),
+            "payload_pointer_target" => {
+                second.variant_payloads[0][0].pointer_target_id = Some(other)
+            }
+            "nominal_declaration" | "unknown_id" | "ambiguous_name" => {
+                let Type::Borrow { inner, .. } = &mut second.variant_payloads[0][0].ty else {
+                    unreachable!()
+                };
+                **inner = match difference {
+                    "unknown_id" => Type::Struct("Node".into(), Some(TypeId::new(99, 1, 0, 0))),
+                    "ambiguous_name" => Type::Struct("Ambiguous".into(), None),
+                    _ => Type::Struct("Node".into(), Some(other)),
+                };
+            }
+            "borrow_permission" => {
+                let Type::Borrow { is_mut, .. } = &mut second.variant_payloads[0][0].ty else {
+                    unreachable!()
+                };
+                *is_mut = true;
+            }
+            "borrow_memory" => {
+                let Type::Borrow { mem_space, .. } = &mut second.variant_payloads[0][0].ty else {
+                    unreachable!()
+                };
+                *mem_space = Some(MemorySpace::GpuHbm);
+            }
+            "reference_kind" => {
+                second.variant_payloads[0][0].ty = Type::Ref(
+                    Box::new(Type::Struct("Node".into(), Some(TypeId::new(10, 1, 0, 0)))),
+                    MemorySpace::CPUDRAM,
+                )
+            }
+            "pointer_permission" => {
+                first.variant_payloads[0][0].ty =
+                    Type::Pointer(Box::new(Type::Scalar(ElementType::I32)), None, false);
+                second.variant_payloads[0][0].ty =
+                    Type::Pointer(Box::new(Type::Scalar(ElementType::I32)), None, true);
+            }
+            "tensor_element" | "tensor_dimension" | "tensor_memory" | "tensor_device"
+            | "explicit_cpu" => {
+                let tensor = |elem, dim, placement| {
+                    Type::Tensor(
+                        elem,
+                        vec![Dim::Static(crate::syntax::Expr::Number(
+                            crate::syntax::NumberExpr::new(dim, None, Default::default()),
+                        ))],
+                        placement,
+                    )
+                };
+                first.variant_payloads[0][0].ty = tensor(ElementType::F32, "4".into(), None);
+                second.variant_payloads[0][0].ty = match difference {
+                    "tensor_element" => tensor(ElementType::I32, "4".into(), None),
+                    "tensor_dimension" => tensor(ElementType::F32, "8".into(), None),
+                    "tensor_memory" => tensor(
+                        ElementType::F32,
+                        "4".into(),
+                        Some(Placement::at(MemorySpace::GpuHbm)),
+                    ),
+                    "explicit_cpu" => tensor(
+                        ElementType::F32,
+                        "4".into(),
+                        Some(Placement::at(MemorySpace::CPUDRAM)),
+                    ),
+                    _ => {
+                        first.variant_payloads[0][0].ty = tensor(
+                            ElementType::F32,
+                            "4".into(),
+                            Some(Placement::on(Topology::gpu(0))),
+                        );
+                        tensor(
+                            ElementType::F32,
+                            "4".into(),
+                            Some(Placement::on(Topology::gpu(1))),
+                        )
+                    }
+                };
+            }
+            "unknown_type" | "unsupported_expression" => {
+                let ty = if difference == "unknown_type" {
+                    Type::Unknown
+                } else {
+                    Type::Const(Box::new(crate::syntax::Expr::FunctionCall(
+                        crate::syntax::FunctionCallExpr::new(
+                            "calculate".into(),
+                            None,
+                            vec![],
+                            Default::default(),
+                        ),
+                    )))
+                };
+                first.variant_payloads[0][0].ty = ty.clone();
+                second.variant_payloads[0][0].ty = ty;
+            }
+            _ => unreachable!(),
+        }
+        if matches!(difference, "unknown_id" | "ambiguous_name") {
+            first.variant_payloads[0][0].ty = second.variant_payloads[0][0].ty.clone();
+        }
+        assert!(
+            !first.semantically_eq(&second, &identities),
+            "records must not agree: {difference}"
+        );
+    }
 
     fn sym(s: &str) -> Symbol {
         s.into()
@@ -447,6 +979,52 @@ mod tests {
         assert_eq!(l.fields[1].offset, 4);
         assert_eq!(l.fields[2].offset, 8);
         assert_eq!(l.fields[2].size, 1);
+    }
+
+    #[rstest::rstest]
+    fn generic_fields_resolve_attached_ids_before_names(#[values(false, true)] reverse: bool) {
+        let mut first = strukt("Shared", vec![("value", Type::Generic("T".into(), None))]);
+        first.generics.push(crate::syntax::GenericParam::Type {
+            name: "T".into(),
+            bounds: vec![],
+        });
+        let mut second = first.clone();
+        second
+            .fields
+            .push(("tail".into(), scalar(ElementType::I64)));
+        let entries = if reverse {
+            vec![(gid(2), &second), (gid(1), &first)]
+        } else {
+            vec![(gid(1), &first), (gid(2), &second)]
+        };
+        let mut computer = LayoutComputer::new(entries.into_iter().collect(), FxHashMap::default());
+        let instance = |name: &str, id| {
+            Type::GenericInstance(
+                Box::new(Type::Struct(name.into(), id)),
+                vec![scalar(ElementType::I32)],
+            )
+        };
+        assert!(
+            computer.field_info(&instance("Shared", None)).is_none(),
+            "ambiguous generic bases must decline"
+        );
+        assert!(
+            computer
+                .field_info(&instance("Shared", Some(gid(99))))
+                .is_none(),
+            "unknown attached generic bases must decline"
+        );
+        let first = computer
+            .field_info(&instance("Alias", Some(gid(1))))
+            .unwrap();
+        let second = computer
+            .field_info(&instance("Shared", Some(gid(2))))
+            .unwrap();
+        assert_eq!(
+            (first.0, first.1, second.0, second.1),
+            (4, 4, 16, 8),
+            "attached generic declarations must supply their own fields"
+        );
     }
 
     #[test]

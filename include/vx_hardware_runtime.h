@@ -228,6 +228,45 @@ static inline void vx_memref_write_desc(void *desc, void *data, int32_t rank,
   }
 }
 
+/// Where the text part of a payload ends: the offset of the first byte that is
+/// not part of a NUL-terminated entry.
+///
+/// The payload is the kernel name, then `key=value` entries, and -- when a
+/// device image is too large or too binary to ride in one entry -- a section
+/// after them. An entry of zero length ends the walk, so a reader that stops
+/// here never reads an image byte as the start of a key. A payload with no
+/// section ends at `payload_size`.
+static inline size_t vx_payload_text_end(const void *payload,
+                                         size_t payload_size) {
+  if (!payload || payload_size == 0) {
+    return 0;
+  }
+  const char *base = (const char *)payload;
+
+  /* memchr rather than a byte loop, for the reason vx_payload_field uses it: an
+     `image=` entry holds a whole module's PTX, and a text-only payload has to
+     walk past all of it to find out there is no section. */
+  const char *name_end = (const char *)memchr(base, '\0', payload_size);
+  if (!name_end) {
+    return payload_size; /* unterminated: there is no section to find */
+  }
+  size_t pos = (size_t)(name_end - base) + 1;
+
+  while (pos < payload_size) {
+    const char *entry = base + pos;
+    const char *end = (const char *)memchr(entry, '\0', payload_size - pos);
+    if (!end) {
+      return payload_size; /* unterminated: there is no section to find */
+    }
+    if (end == entry) {
+      return pos + 1; /* the empty entry: the section starts after it */
+    }
+    pos = (size_t)(end - base) + 1;
+  }
+
+  return payload_size;
+}
+
 /// Look up a `key=` entry in a dispatch payload.
 ///
 /// The payload is a NUL-separated blob, bounded by the `payload_size` argument
@@ -237,15 +276,33 @@ static inline void vx_memref_write_desc(void *desc, void *data, int32_t rank,
 /// function behaves as it always did.
 ///
 /// `key` includes the `=` (e.g. "kind="). Returns a pointer to the value, still
-/// within the blob and NUL-terminated, or NULL when absent. A zero size means a
-/// producer that predates the extension: report absence rather than reading a
-/// length that was never written.
+/// within the blob and NUL-terminated, or NULL when absent. An entry whose
+/// value is empty (the entry is exactly the key, like `abi=`) returns a pointer
+/// to its terminating NUL rather than NULL, so a caller can tell present from
+/// absent. A zero size means a producer that predates the extension: report
+/// absence rather than reading a length that was never written.
 ///
-/// The one entry defined today is `kind=`, naming the operation the kernel
-/// computes ("matmul") so a plugin can route it to a vendor library instead of
+/// The entries the compiler writes today, in the order it writes them: `abi=`
+/// (the payload format version, see `VX_PAYLOAD_ABI`), `kind=` (what the kernel
+/// computes, "matmul", so a plugin can route it to a vendor library instead of
 /// guessing from buffer shapes -- which cannot be done for square operands,
-/// where every operand assignment conforms. Absent means unclassified, which is
-/// not an error: the kernel takes the ordinary path.
+/// where every operand assignment conforms), `roles=`, `outkind=`, `topo=` (the
+/// dispatch id, decoded by vx_payload_topology), `toponame=`, `launch=`,
+/// `coop=`, `format=` (`ptx`, what the image is), and `image=` (a device image
+/// that is text, which today means PTX).
+///
+/// Every entry is optional to a reader, and that is what let each of them land
+/// without breaking a consumer that predates it. `kind=` absent means
+/// unclassified, which is not an error: the kernel takes the ordinary path.
+///
+/// A payload may also carry a binary device image in a section after the
+/// entries, which vx_payload_section reads. Nothing writes one yet: the
+/// compiler writes the text `image=` entry only, and the section is there for
+/// the image a text entry cannot carry. The empty entry just before the section
+/// ends this walk, so a lookup never reads an image byte as the start of a key.
+///
+/// One more key is read but not written yet: `chip=`, the PTX target, which
+/// cuda_dispatch.cpp takes `sm_80` for when it is absent.
 static inline const char *
 vx_payload_field(const void *payload, size_t payload_size, const char *key) {
   if (!payload || payload_size == 0 || !key) {
@@ -273,13 +330,111 @@ vx_payload_field(const void *payload, size_t payload_size, const char *key) {
       return NULL;
     }
     size_t len = (size_t)(end - entry);
-    if (len > key_len && memcmp(entry, key, key_len) == 0) {
+    if (len == 0) {
+      /* The empty entry that ends the text part. Stop here rather than walk on:
+         what follows is the section's bytes, not entries, so reading them as
+         keys would make an answer depend on the image. */
+      return NULL;
+    }
+    /* `len >= key_len`, not `>`: an entry that is exactly the key (an empty
+       value, like `abi=`) still matches, so a consumer can tell "present but
+       empty" from "absent" -- the promise vx_payload_abi makes. */
+    if (len >= key_len && memcmp(entry, key, key_len) == 0) {
       return entry + key_len;
     }
     pos += len + 1;
   }
 
   return NULL;
+}
+
+/// The payload format version the compiler stamps as `abi=`.
+///
+/// A dispatch library that meets a version it does not know refuses rather than
+/// guessing: a key it ignores is harmless, a value it misreads is not. The
+/// `vx_plugin_*` interface below is not frozen, and this key is what makes
+/// changing it safe (docs/gpu_backends.md, "Shared work before a second
+/// backend", item 2).
+#define VX_PAYLOAD_ABI 1
+
+/// The `abi=` entry as a number, or -1 when the payload carries none.
+///
+/// -1 is a producer that predates the key, which a consumer must read as the
+/// oldest format rather than as a violation: nothing stamped a version before
+/// `VX_PAYLOAD_ABI` existed. A version that is present but not a decimal number
+/// is malformed and also answers -1, so a consumer that wants to tell the two
+/// apart asks vx_payload_field for "abi=" itself.
+static inline int32_t vx_payload_abi(const void *payload, size_t payload_size) {
+  const char *value = vx_payload_field(payload, payload_size, "abi=");
+  if (!value || value[0] == '\0') {
+    return -1;
+  }
+  int32_t version = 0;
+  for (const char *p = value; *p != '\0'; ++p) {
+    if (*p < '0' || *p > '9') {
+      return -1;
+    }
+    if (version > (INT32_MAX - (*p - '0')) / 10) {
+      return -1; /* Refuse rather than wrap. */
+    }
+    version = version * 10 + (*p - '0');
+  }
+  return version;
+}
+
+/// The device image the payload carries in its section, or a negative code.
+///
+/// The section is a little-endian 64-bit length followed by that many bytes,
+/// placed after the text part. It exists because a SPIR-V module's header
+/// contains NUL bytes and so cannot ride in a NUL-terminated entry, and because
+/// base64 inside a text format was the wrong answer to that
+/// (docs/gpu_backends.md, "Shared work before a second backend", item 2).
+///
+/// Returns the image's length in bytes and points `out` at it. -1 means the
+/// payload carries no section, which is what a producer that emits only text
+/// entries (PTX today, in `image=`) answers. -2 means a section is present but
+/// its length does not account for the rest of the payload: a truncated or
+/// overlapping blob, which a consumer must refuse rather than read past. -3
+/// means `out` was NULL, which is a caller bug and not a payload shape: it gets
+/// its own answer so a NULL that was never passed anywhere cannot read as a
+/// text-only payload.
+///
+/// The image's format is the `format=` entry, not a property of the section: a
+/// consumer that meets a format it does not know refuses instead of guessing.
+///
+/// The section starts wherever the text part ended, so it need not be aligned.
+/// A consumer that reads the image as `uint32_t` words -- SPIR-V's header -- has
+/// to copy it to an aligned buffer rather than cast `out`.
+static inline int64_t vx_payload_section(const void *payload,
+                                         size_t payload_size,
+                                         const void **out) {
+  if (!out) {
+    return -3;
+  }
+  if (!payload) {
+    return -1;
+  }
+
+  size_t start = vx_payload_text_end(payload, payload_size);
+  if (start == payload_size) {
+    return -1;
+  }
+
+  const unsigned char *section = (const unsigned char *)payload + start;
+  if (payload_size - start < 8) {
+    return -2;
+  }
+
+  uint64_t length = 0;
+  for (int i = 7; i >= 0; --i) {
+    length = (length << 8) | section[i];
+  }
+  if (length != payload_size - start - 8) {
+    return -2;
+  }
+
+  *out = section + 8;
+  return (int64_t)length;
 }
 
 /// Topology id bands, mirroring `topology_dispatch_id` in src/arch.rs. An id is

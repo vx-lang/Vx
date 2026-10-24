@@ -25,8 +25,9 @@ impl TypeChecker<'_> {
             for param in generics {
                 if let decl::GenericParam::Type { name, bounds } = param {
                     for bound in bounds {
-                        // `D : Topology` marks a topology parameter; it is a keyword, not a trait.
-                        if bound.trait_name.as_ref() == "Topology" {
+                        // `D : Topology` and `M : Memory` mark a topology and a memory
+                        // parameter. They are keywords, not traits.
+                        if matches!(bound.trait_name.as_ref(), "Topology" | "Memory") {
                             continue;
                         }
                         if !traits.contains_key(&bound.trait_name) {

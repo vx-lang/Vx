@@ -55,7 +55,7 @@ a profile.</blockquote>
 joined by links whose speeds differ by a factor of fifty, and the cost of a program is mostly the
 cost of moving data between them. The language you write it in usually knows none of that.</p>
 
-<h2 id="what-other-languages-know-about-the-machine">What other languages know about the machine</h2>
+<h2 id="what-other-languages-know-about-the-machine"><a href="#what-other-languages-know-about-the-machine">What other languages know about the machine</a></h2>
 
 <p>In PyTorch, a tensor's device is a run-time property. Whether a model fits a GPU is found out
 by loading it: the answer is a <code>CUDA out of memory</code> error, after the weights have been
@@ -73,7 +73,7 @@ function was compiled for, and it does not know what is on the other end of the 
 <p>None of this is a criticism of those tools. They describe the computation; the machine is
 whatever the computation happens to run on. Vx makes the opposite choice.</p>
 
-<h2 id="the-machine-is-a-declaration">The machine is a declaration</h2>
+<h2 id="the-machine-is-a-declaration"><a href="#the-machine-is-a-declaration">The machine is a declaration</a></h2>
 
 <p>This is part of <code>fleet/node-8gpu.vx</code>, the model of an 8-GPU H100 node that ships
 in the repository. Each figure comes from a vendor datasheet, cited in the file:</p>
@@ -101,7 +101,7 @@ which links connect them. That is the whole vocabulary, and it is enough to desc
 node, or a datacenter. The program does not include this file; it is passed when compiling:
 <code>vxc --machine fleet/node-8gpu.vx serve.vx</code>.</p>
 
-<h2 id="placement-is-in-the-type">Placement is in the type</h2>
+<h2 id="placement-is-in-the-type"><a href="#placement-is-in-the-type">Placement is in the type</a></h2>
 
 <p>In the program, where a tensor lives is part of its type. <code>transfer</code> moves a
 tensor and gives back one whose type names its new memory:</p>
@@ -118,7 +118,7 @@ than by the host's <code>free</code>, because the type says which one that is.</
 <p>The sizes are arithmetic on the model's shape. The compiler works that arithmetic out, so the
 check that follows is against real numbers rather than "unknown".</p>
 
-<h2 id="one-plan-two-shardings-one-verdict-each">One plan, two shardings, one verdict each</h2>
+<h2 id="one-plan-two-shardings-one-verdict-each"><a href="#one-plan-two-shardings-one-verdict-each">One plan, two shardings, one verdict each</a></h2>
 
 <p>Here is a serving plan for a 70B-class model (80 layers, 64 query heads, 8 KV heads of 128) at
 32k context and batch 8, in f16. Each GPU holds its share of the weights, its share of the KV
@@ -162,7 +162,7 @@ program that is never edited to change machines. For a 70B model with no shardin
 it is accepted. Same text; only the flag differs. A table of model configurations against
 machine types is a loop over compiles, each well under a second, with no GPU rented.</p>
 
-<h2 id="every-move-has-a-price">Every move has a price</h2>
+<h2 id="every-move-has-a-price"><a href="#every-move-has-a-price">Every move has a price</a></h2>
 
 <p>With <code>--diagnostics-json</code>, the compiler also reports every route it chose and what
 it costs, worked out from the declared link rates. For the 8-way plan:</p>
@@ -181,7 +181,7 @@ another machine or recompute it there, and here they exist before the request do
 predictions from datasheet rates, not measurements, and the files say which rates have not been
 checked on real hardware yet.</p>
 
-<h2 id="the-fleet-as-data">The fleet as data</h2>
+<h2 id="the-fleet-as-data"><a href="#the-fleet-as-data">The fleet as data</a></h2>
 
 <p>Above one node, a fleet is a graph, and Vx ships a graph library. The repository's test
 <code>cloud_fleet_routing.vx</code> builds a fleet of four datacenters, each with a spine switch
@@ -205,7 +205,7 @@ not ordinary is that it is the same language, and the same compiler, as the serv
 the scheduler's view of the fleet and the per-GPU view of memory are one program, not a Python
 script feeding a C++ kernel through a YAML file.</p>
 
-<h2 id="what-it-does-not-do-yet">What it does not do yet</h2>
+<h2 id="what-it-does-not-do-yet"><a href="#what-it-does-not-do-yet">What it does not do yet</a></h2>
 
 <p>The fleet models have gaps, and writing this post found them:</p>
 
@@ -230,7 +230,7 @@ treating it like a C++ <code>friend</code>: the memory names who may write into 
 <p>The checks are also static. A tensor whose size is only known at run time is not counted, and
 the costs are what the declared rates predict, not what a busy fabric delivers.</p>
 
-<h2 id="try-it">Try it</h2>
+<h2 id="try-it"><a href="#try-it">Try it</a></h2>
 
 <pre><code>vxc --host default --machine fleet/h100-sxm.vx fleet/admit.vx --action emit-mlir -o /dev/null
 vxc --host default --machine fleet/b200.vx fleet/admit.vx --action emit-mlir -o /dev/null
@@ -251,5 +251,6 @@ the verdict and every priced route for the serving plan; the last runs the fleet
   <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
 </footer>
 
+<script src="/blog/copy-code.js" defer></script>
 </body>
 </html>

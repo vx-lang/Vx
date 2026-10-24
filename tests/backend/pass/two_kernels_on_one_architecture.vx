@@ -1,0 +1,82 @@
+//===- two_kernels_on_one_architecture.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two kernels that ask for the same device architecture by different routes
+// share one device image, and both are entry points of it.
+//
+// Every admitted kernel goes into one `gpu.module`, and that module becomes one
+// image, so the kernels in it have to agree on the pipeline that compiles the
+// image. These two agree: one is placed on the built-in GPU topology, which
+// declares no arch and rides the dispatch-id band, and one is placed on a
+// topology whose machine file says `arch: nvptx64`. Comparing the declared
+// `arch:` text instead of the pipelines those architectures name would refuse
+// this program, which has one answer.
+//
+// device_image_test.rs reads the image out of the payload and checks both
+// kernels are in it.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// NO_EXEC
+// CHECK: vx.spawn topology(500) {
+// CHECK: vx.spawn topology({{[0-9]+}}) {
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory Local_HBM {
+  within: Memory::CPU_DRAM, capacity: 16 GiB, bandwidth: 450 GB/s,
+  managed: cached
+}
+Topology Local {
+  arch: nvptx64,
+  memory: Memory::Local_HBM,
+  visible: [Memory::Local_HBM],
+  transfer Memory::CPU_DRAM -> Memory::Local_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  // Every element is written below before anything reads it.
+  let mut a = unsafe { Tensor<f32, [4, 4]>::uninit() };
+  let mut b = unsafe { Tensor<f32, [4, 4]>::uninit() };
+  let mut o = unsafe { Tensor<f32, [4, 4]>::uninit() };
+  for i in 0..4 {
+    for j in 0..4 {
+      a[i][j] = ((i + j) as f32);
+      b[i][j] = 1.0;
+      o[i][j] = 0.0;
+    }
+  }
+
+  // The built-in GPU topology: no `arch:` declared, so this kernel rides the
+  // dispatch-id band.
+  let ag = transfer(a, Memory::GPU_HBM);
+  let mut bg = transfer(b, Memory::GPU_HBM);
+  spawn on(Topology::GPU) {
+    for i in 0..4 {
+      for j in 0..4 {
+        bg[i][j] = ag[i][j] * 2.0;
+      }
+    }
+  }
+
+  // A declared topology: this kernel's architecture comes from the machine
+  // file. Same architecture, so the same image.
+  let al = transfer(a, Memory::Local_HBM);
+  let mut bl = transfer(b, Memory::Local_HBM);
+  spawn on(Topology::Local) {
+    for i in 0..4 {
+      for j in 0..4 {
+        bl[i][j] = al[i][j] * 2.0;
+      }
+    }
+  }
+
+  print(transfer(bg, Memory::CPU_DRAM));
+  print(transfer(bl, Memory::CPU_DRAM));
+  return 0;
+}

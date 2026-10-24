@@ -18,7 +18,10 @@
 
 use super::*;
 use crate::arch::LevelKind;
-use crate::bytecode::{ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP};
+use crate::bytecode::{
+    ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP, LANE_REDUCE_ARGMAX,
+    LANE_REDUCE_MAX, LANE_REDUCE_ORDERED, LANE_REDUCE_SUBGROUP,
+};
 use crate::hir::check::across_lanes;
 
 /// The code of a blocks body or a subgroups body outside its lane loops.
@@ -46,11 +49,13 @@ pub(super) struct AcrossState {
     pub inner: Option<usize>,
     /// The lanes of a subgroup of the region's topology.
     pub subgroup: Option<u64>,
+    /// The levels of the `across` loops around the code, also of those that run as plain loops.
+    pub kinds: Vec<LevelKind>,
 }
 
 /// The lanes of a block of a region with `across` loops: the most that a lane loop or a subgroup
 /// loop asks for, and 1 with none. `None` for a region with no loop of blocks.
-pub(super) fn across_block_lanes(stmts: &[Statement]) -> Option<u64> {
+pub(crate) fn across_block_lanes(stmts: &[Statement]) -> Option<u64> {
     blocks_loop(stmts)?;
     let mut lanes = 1;
     across_lanes::visit_stmts(stmts, &mut |s| {
@@ -223,6 +228,55 @@ impl Lowerer<'_> {
             }
         }
         Ok(())
+    }
+
+    /// `lanes::sum(&t, n)` and the other lane reductions. The checker allows a call only in the
+    /// code of a block or a subgroup, so the innermost level says which.
+    pub(super) fn lower_lane_reduce(
+        &mut self,
+        fc: &crate::syntax::expr::FunctionCallExpr,
+        op: crate::hir::check::lanes::LaneOp,
+        ordered: bool,
+    ) -> Lowered<Val> {
+        let argmax = op == crate::hir::check::lanes::LaneOp::ArgMax;
+        let (n, tensors) = fc.args.split_last().ok_or(crate::emitter_gap!())?;
+        if tensors.len() != if argmax { 2 } else { 1 } {
+            return Err(crate::emitter_gap!());
+        }
+        let mut regs = Vec::new();
+        for t in tensors {
+            let t = self.lower_expr(t)?;
+            if !matches!(&t.ty, LoweredTy::Tensor { shape, .. } if shape.len() == 1) {
+                return Err(Decline::TypeNotModelled {
+                    what: "a lane reduction of something that is not a rank-1 tensor",
+                });
+            }
+            regs.push(t.reg);
+        }
+        let n = self.lower_expr(n)?;
+        let mut imm = 0;
+        match op {
+            crate::hir::check::lanes::LaneOp::Max => imm |= LANE_REDUCE_MAX,
+            crate::hir::check::lanes::LaneOp::ArgMax => imm |= LANE_REDUCE_ARGMAX,
+            crate::hir::check::lanes::LaneOp::Sum => {}
+        }
+        if ordered {
+            imm |= LANE_REDUCE_ORDERED;
+        }
+        if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
+            imm |= LANE_REDUCE_SUBGROUP;
+        }
+        if argmax {
+            self.emit_effect(Opcode::Arg, n.reg, Register(0), 0);
+            return Ok(self.emit_value(
+                Opcode::LaneReduce,
+                regs[0],
+                regs[1],
+                ElementType::I32,
+                imm,
+            ));
+        }
+        Ok(self.emit_value(Opcode::LaneReduce, regs[0], n.reg, ElementType::F32, imm))
     }
 
     /// The lanes of a subgroup of the region's topology.

@@ -65,7 +65,7 @@ hand the proof to the z3 theorem prover.</blockquote>
 <li><strong>A block the compiler cannot finish is an error.</strong> It never quietly turns into run-time code, so a block that compiled really did run.</li>
 </ol>
 
-<h2 id="a-whole-program-that-becomes-one-number">A whole program that becomes one number</h2>
+<h2 id="a-whole-program-that-becomes-one-number"><a href="#a-whole-program-that-becomes-one-number">A whole program that becomes one number</a></h2>
 
 <pre><code><span class="k">fn</span> <span class="f">is_prime</span>(n : <span class="t">i64</span>) -&gt; <span class="t">bool</span> {
   <span class="k">if</span> n &lt; <span class="n">2i64</span> {
@@ -111,7 +111,7 @@ hand the proof to the z3 theorem prover.</blockquote>
 
 <p>The compiler tested ten thousand numbers for primality. The program tests none.</p>
 
-<h2 id="lookup-tables-built-while-compiling">Lookup tables, built while compiling</h2>
+<h2 id="lookup-tables-built-while-compiling"><a href="#lookup-tables-built-while-compiling">Lookup tables, built while compiling</a></h2>
 
 <p>A block can produce a whole tensor, which makes lookup tables easy. This one holds the first 16 primes, found by the same <code>is_prime</code> as above:</p>
 
@@ -136,7 +136,7 @@ hand the proof to the z3 theorem prover.</blockquote>
 
 <p>It prints <code>53</code>. In the generated code the table is sixteen constants, <code>2</code> through <code>53</code>, stored into an array. No search runs at run time.</p>
 
-<h2 id="a-small-computer-inside-the-compiler">A small computer, inside the compiler</h2>
+<h2 id="a-small-computer-inside-the-compiler"><a href="#a-small-computer-inside-the-compiler">A small computer, inside the compiler</a></h2>
 
 <p>The code a comptime block calls is not limited to simple arithmetic. Here is a tiny register machine: a <code>loop</code> that fetches instructions from an array, decodes them, and jumps.</p>
 
@@ -187,7 +187,7 @@ hand the proof to the z3 theorem prover.</blockquote>
 
 <p>The compiler runs one interpreter inside another and generates a program that prints <code>3628800</code>, which is 10!. <code>main</code> contains that single constant.</p>
 
-<h2 id="structs-and-mut-helpers">Structs and <code>&amp;mut</code> helpers</h2>
+<h2 id="structs-and-mut-helpers"><a href="#structs-and-mut-helpers">Structs and <code>&amp;mut</code> helpers</a></h2>
 
 <p>Compile-time code can be written the same way as run-time code. Helpers take <code>&amp;mut</code>, change struct fields, and loop:</p>
 
@@ -224,7 +224,7 @@ hand the proof to the z3 theorem prover.</blockquote>
 
 <p>It prints <code>2438</code>: 1500 at 5% for ten years, rounded down each year. Before <a href="https://github.com/vx-lang/Vx/pull/858">#858</a> the compiler refused this block. The new interpreter follows each write through each <code>&amp;mut</code>, so it can run it.</p>
 
-<h2 id="tests-that-run-in-the-compiler">Tests that run in the compiler</h2>
+<h2 id="tests-that-run-in-the-compiler"><a href="#tests-that-run-in-the-compiler">Tests that run in the compiler</a></h2>
 
 <p>A <code>comptime</code> block of asserts is a unit test that runs on every build:</p>
 
@@ -317,7 +317,7 @@ hand the proof to the z3 theorem prover.</blockquote>
 
 <p>Flip <code>w[j] &gt; key</code> to <code>w[j] &lt; key</code>, or overwrite an element by mistake, and the build fails with <code>Comptime assert failed: insertion_sort sorts and keeps every number</code>. The sort is generic over its length <code>N</code>, and the compiler made the <code>N = 10</code> copy and ran it.</p>
 
-<h2 id="proofs-for-every-input-with-z3">Proofs for every input, with z3</h2>
+<h2 id="proofs-for-every-input-with-z3"><a href="#proofs-for-every-input-with-z3">Proofs for every input, with z3</a></h2>
 
 <p>A <code>comptime</code> test checks the inputs you write down. A contract checks every input. Vx functions can state what they need (<code>requires</code>) and what they promise (<code>ensures</code>), and the compiler hands both to the z3 theorem prover while it compiles.</p>
 
@@ -360,7 +360,7 @@ ensures <span class="k">return</span> &gt;= <span class="n">0</span> &amp;&amp; 
 <li>The compiler does not yet check that callers meet <code>requires</code>. The proof says "if the inputs are in range, the result is in range", and making sure they are in range is still the caller's job.</li>
 </ul>
 
-<h2 id="generic-code-that-recurses-on-its-own-parameter">Generic code that recurses on its own parameter</h2>
+<h2 id="generic-code-that-recurses-on-its-own-parameter"><a href="#generic-code-that-recurses-on-its-own-parameter">Generic code that recurses on its own parameter</a></h2>
 
 <p>A constant generic parameter can drive recursion, with <code>if comptime</code> choosing the base case:</p>
 
@@ -381,7 +381,7 @@ ensures <span class="k">return</span> &gt;= <span class="n">0</span> &amp;&amp; 
 
 <p><code>fib&lt;20&gt;</code> makes the compiler create <code>fib&lt;19&gt;</code>, <code>fib&lt;18&gt;</code>, and so on down to <code>fib&lt;0&gt;</code>, then run them. Change <code>10946</code> to <code>10945</code> and the build fails with <code>Comptime assert failed: fib 20</code>.</p>
 
-<h2 id="functions-that-only-run-while-compiling">Functions that only run while compiling</h2>
+<h2 id="functions-that-only-run-while-compiling"><a href="#functions-that-only-run-while-compiling">Functions that only run while compiling</a></h2>
 
 <p>A closure whose body is a <code>comptime</code> block is a function that only exists at compile time, like C++'s <code>consteval</code>:</p>
 
@@ -406,7 +406,7 @@ ensures <span class="k">return</span> &gt;= <span class="n">0</span> &amp;&amp; 
 
 <p>C++'s <code>constexpr</code> would quietly make this an ordinary run-time call. Vx stops instead.</p>
 
-<h2 id="facts-about-the-hardware">Facts about the hardware</h2>
+<h2 id="facts-about-the-hardware"><a href="#facts-about-the-hardware">Facts about the hardware</a></h2>
 
 <p>Vx knows which device a function runs on and which memory a tensor lives in, and both are known while compiling. So you can assert them:</p>
 
@@ -428,7 +428,7 @@ ensures <span class="k">return</span> &gt;= <span class="n">0</span> &amp;&amp; 
 
 <p>If a later change moves that tensor somewhere else, this file stops compiling, and the message says which assumption broke. The check costs nothing at run time.</p>
 
-<h2 id="it-refuses-rather-than-guess">It refuses rather than guess</h2>
+<h2 id="it-refuses-rather-than-guess"><a href="#it-refuses-rather-than-guess">It refuses rather than guess</a></h2>
 
 <p>A <code>comptime</code> block is removed from the program once it has run. So a block that writes to a variable declared outside it would lose that write. Vx makes this an error:</p>
 
@@ -466,7 +466,7 @@ ensures <span class="k">return</span> &gt;= <span class="n">0</span> &amp;&amp; 
 
 <p>A wrapped-around number would be put into the program as if it were the answer. Vx does not produce one.</p>
 
-<h2 id="fast-enough-to-use">Fast enough to use</h2>
+<h2 id="fast-enough-to-use"><a href="#fast-enough-to-use">Fast enough to use</a></h2>
 
 <p>This block finds the start below 10,000 with the longest Collatz sequence. That is 849,637 loop steps in total:</p>
 
@@ -503,7 +503,7 @@ ensures <span class="k">return</span> &gt;= <span class="n">0</span> &amp;&amp; 
 
 <p>It prints <code>6171</code>, and the whole compile takes about 1.5 seconds on an Apple M4. The compiler from just before <a href="https://github.com/vx-lang/Vx/pull/858">#858</a> printed <code>1161</code> for this program, which is wrong. The new interpreter gets it right.</p>
 
-<h2 id="what-it-cannot-do-yet">What it cannot do yet</h2>
+<h2 id="what-it-cannot-do-yet"><a href="#what-it-cannot-do-yet">What it cannot do yet</a></h2>
 
 <ul>
 <li>An <code>assert</code> that comes after a <code>&amp;mut</code> call or a struct field write, in the same block, is not checked yet, and neither is one that calls a function with a borrowed tensor. Until that is fixed, compute the result as the block's value and assert on that value, as the sort example above does.</li>
@@ -527,5 +527,6 @@ docs covers the rules in full. The design is discussed in
   <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
 </footer>
 
+<script src="/blog/copy-code.js" defer></script>
 </body>
 </html>

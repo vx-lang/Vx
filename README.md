@@ -14,7 +14,7 @@
 
 <p>
     <a href="#why-vx">Why Vx</a> •
-    <a href="#the-30-second-demo">30-Second Demo</a> •
+    <a href="#demo-program">30-Second Demo</a> •
     <a href="#quickstart">Quickstart</a> •
     <a href="#four-core-pillars">Core Pillars</a> •
     <a href="#how-it-compiles">Architecture</a> •

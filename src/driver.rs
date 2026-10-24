@@ -1434,8 +1434,7 @@ impl CompilerDriver {
                 interfaces,
                 self.options.action == Action::EmitPtx,
                 self.options.auto_schedule_levels(),
-            )
-            .transpose()?
+            )?
         };
 
         let module = match flat_module {
@@ -1691,8 +1690,9 @@ impl CompilerDriver {
         Ok(())
     }
 
-    /// Build the MLIR module via the flat-array codegen path, or `None` if any function is outside the
-    /// flat subset (the caller then falls back to the AST path). Resolves names, freezes the registry,
+    /// Build the MLIR module, or return `Ok(None)` if a function needs AST fallback.
+    /// Conflicting generated layouts return an error and stop compilation.
+    /// Resolves names, freezes the registry,
     /// lowers every non-generic function across all modules to flat HIR, and emits one module via
     /// `flat::emit_module_mlir` — mirroring the differential harness (#201). Programs whose structs need
     /// a registry-backed `StructInit` GID annotation (the driver type-checks against an empty registry)
@@ -1704,7 +1704,7 @@ impl CompilerDriver {
         interfaces: &[Vec<u8>],
         describe_params: bool,
         auto_schedule_levels: bool,
-    ) -> Option<Result<melior::ir::Module<'c>, String>> {
+    ) -> Result<Option<melior::ir::Module<'c>>, String> {
         // The main module first (its monomorphs win any name collision), then the imports; resolve
         // names so the registry freeze sees settled struct/enum GIDs.
         let mut mods: Vec<crate::syntax::Program> = vec![main_ast.clone()];
@@ -1714,13 +1714,17 @@ impl CompilerDriver {
         for m in &mut mods {
             m.resolve_names(&symbol_map, &topologies);
         }
-        let mut registry = crate::pipeline::build_frozen_registry(&mods).ok()?;
+        let Ok(mut registry) = crate::pipeline::build_frozen_registry(&mods) else {
+            return Ok(None);
+        };
         // Fold each precompiled interface's signatures + portable flat-HIR bodies into this compile's
         // registry (a `.vxlib` import auto-loaded from `import`, or an explicit `--link-interface`), so
         // an imported call resolves (`fn_sigs`) and its body links (`body_of`) with no parse of the
         // library (#219 / #265 step 7 / #220). Own entries win on collision.
         for bytes in interfaces {
-            let imported = crate::metadata::deserialize_registry_interface(bytes).ok()?;
+            let Ok(imported) = crate::metadata::deserialize_registry_interface(bytes) else {
+                return Ok(None);
+            };
             registry.merge_from(imported);
         }
         let session = std::sync::Arc::new(
@@ -1803,7 +1807,7 @@ impl CompilerDriver {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg] HIR lowering declined: {}", f.name);
                 }
-                return None;
+                return Ok(None);
             }
             let mut uses = std::collections::HashSet::new();
             for s in &f.body {
@@ -1914,7 +1918,7 @@ impl CompilerDriver {
             .iter()
             .map(|(_, w)| w.local_inline_blocks.as_slice())
             .collect();
-        let agg_layouts: Vec<_> = entries
+        let agg_layouts: Vec<crate::layout::GeneratedAggregateLayout> = entries
             .iter()
             .flat_map(|(_, w)| w.local_agg_layouts.iter().cloned())
             .collect();
@@ -1939,7 +1943,7 @@ impl CompilerDriver {
             describe_params,
         ) {
             Ok(t) => t,
-            Err(why) => {
+            Err(crate::codegen::flat::ModuleEmitError::Declined(why)) => {
                 // Same reasoning as the flattener's decline: printed unconditionally, because the
                 // emitter's gaps are a different backlog from the flattener's and a histogram that
                 // shows only one of them under-reports.
@@ -1951,16 +1955,14 @@ impl CompilerDriver {
                 if std::env::var("VX_FLAT_DBG").is_ok() {
                     eprintln!("[flat-dbg] emit declined (a function outside the emitter subset)");
                 }
-                return None;
+                return Ok(None);
             }
+            Err(error) => return Err(error.to_string()),
         };
 
         // `emit_module_mlir` returns a complete `module { … }`; wrapping it here would copy the
         // whole body again (#311).
-        let parsed = match crate::codegen::flat::parse_emitted_module(context, &text) {
-            Ok(parsed) => parsed,
-            Err(why) => return Some(Err(why)),
-        };
+        let parsed = crate::codegen::flat::parse_emitted_module(context, &text)?;
         if parsed.is_none() {
             // `emit_module_mlir` returned `Some(text)` — it *claimed* to handle this module — yet the
             // text does not parse. That is an emitter **bug** (a construct emitted invalid MLIR, e.g.
@@ -1980,7 +1982,7 @@ impl CompilerDriver {
                  emitted unparseable text instead of declining in emit_module_mlir.\n{text}"
             );
         }
-        parsed.map(Ok)
+        Ok(parsed)
     }
 }
 
@@ -2244,20 +2246,22 @@ mod flat_codegen_tests {
             "fn add(a: i32, b: i32) -> i32 { return a + b; }\n\
              fn main() -> i32 { return add(3, 4) * 5; }",
         );
-        assert!(matches!(
-            CompilerDriver::build_flat_module(&context, &prog, &empty, &[], false, false),
-            Some(Ok(_))
-        ));
+        assert!(
+            CompilerDriver::build_flat_module(&context, &prog, &empty, &[], false, false)
+                .expect("no compiler error")
+                .is_some()
+        );
 
         // In subset: a libm extern call (declared `func.func private`, linked by the JIT).
         let ext = parse(
             "extern { safe fn sqrtf(x: f32) -> f32; }\n\
              fn main() -> i32 { print(sqrtf(16.0)); return 0; }",
         );
-        assert!(matches!(
-            CompilerDriver::build_flat_module(&context, &ext, &empty, &[], false, false),
-            Some(Ok(_))
-        ));
+        assert!(
+            CompilerDriver::build_flat_module(&context, &ext, &empty, &[], false, false)
+                .expect("no compiler error")
+                .is_some()
+        );
 
         // In subset: structs (including a struct return) now build through the flat path -- the flat
         // build runs a registry-backed type-check to annotate `StructInit` GIDs (#215).
@@ -2266,16 +2270,18 @@ mod flat_codegen_tests {
              fn mk() -> P { return P { x: 1, y: 2 }; }\n\
              fn main() -> i32 { let p = mk(); return p.x + p.y; }",
         );
-        assert!(matches!(
-            CompilerDriver::build_flat_module(&context, &strukt, &empty, &[], false, false),
-            Some(Ok(_))
-        ));
+        assert!(
+            CompilerDriver::build_flat_module(&context, &strukt, &empty, &[], false, false)
+                .expect("no compiler error")
+                .is_some()
+        );
 
         // Outside the subset: a bare call to an *undefined* Vx function has no body to lower -> the
         // whole program declines -> AST fallback (never a wrong result).
         let unknown = parse("fn main() -> i32 { return mystery(1); }");
         assert!(
             CompilerDriver::build_flat_module(&context, &unknown, &empty, &[], false, false)
+                .expect("no compiler error")
                 .is_none()
         );
     }

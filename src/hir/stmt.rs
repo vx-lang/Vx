@@ -350,6 +350,7 @@ impl<'a> TypeChecker<'a> {
         return_type: &Type,
         consume: bool,
     ) {
+        let prev_statement_span = std::mem::replace(&mut self.current_statement_span, stmt.span());
         match stmt {
             Statement::LetDecl(decl) if crate::hir::check::tasks::is_spawn(&decl.expr) => {
                 self.check_spawn_let(decl, consume)
@@ -418,6 +419,7 @@ impl<'a> TypeChecker<'a> {
             Statement::Drop(_) | Statement::Error(_) => {}
         }
         self.check_frame_escape(stmt);
+        self.current_statement_span = prev_statement_span;
     }
 
     /// Check a `let` binding: type the initializer, bind the name (annotation wins), record the
@@ -529,6 +531,13 @@ impl<'a> TypeChecker<'a> {
             }
             ty
         };
+
+        // The region's device has to represent what the body builds. A type annotation, or a
+        // type inferred from an untyped literal, has no expression that carries it, so the
+        // binding is checked here; expression types are checked as they are typed.
+        if self.active_space_declares_dtypes {
+            self.check_type_element_types_in_active_region(&binding_ty, &context, span, span);
+        }
 
         self.bind_view(name.as_ref(), *_is_mut, expr, &binding_ty, span);
         if !self.speculating && !Self::views_foreign_memory(expr) {
@@ -1900,7 +1909,11 @@ impl<'a> TypeChecker<'a> {
                         .zip(args)
                         .collect();
                     names.insert("return".into(), result.clone());
-                    for ens in &func.ensures {
+                    for ens in func
+                        .ensures
+                        .iter()
+                        .filter(|e| !crate::hir::check::atomic_contracts::is_access_clause(e))
+                    {
                         facts.push(hir::prover::substitute_names(ens, &names));
                     }
                 }
@@ -2193,6 +2206,7 @@ impl<'a> TypeChecker<'a> {
                 Some(items[i].clone())
             }
             Expr::FunctionCall(FunctionCallExpr {
+                owner_type_args: _,
                 name,
                 type_args,
                 args,
@@ -2347,6 +2361,7 @@ impl<'a> TypeChecker<'a> {
         env: &HashMap<crate::symbol::Symbol, Value>,
     ) -> Option<Vec<(crate::symbol::Symbol, Value)>> {
         let FunctionCallExpr {
+            owner_type_args: _,
             name,
             type_args: None,
             args,

@@ -99,6 +99,8 @@ pub struct MeliorGenerator<'c> {
     /// The `queued_drops` of the statement being lowered: they run once its value is computed.
     pub(crate) value_drops: Vec<WaitingDrop<'c>>,
     pub expected_type: Option<Type<'c>>,
+    /// The levels of the `across` loops around the code, for the lane reductions.
+    pub(crate) across_kinds: Vec<crate::arch::LevelKind>,
     pub in_spawn: bool,
     pub break_blocks: Vec<*const melior::ir::Block<'c>>,
     pub continue_blocks: Vec<*const melior::ir::Block<'c>>,
@@ -851,6 +853,7 @@ impl<'c> MeliorGenerator<'c> {
             queued_drops: Vec::new(),
             value_drops: Vec::new(),
             expected_type: None,
+            across_kinds: Vec::new(),
             in_spawn: false,
             break_blocks: Vec::new(),
             continue_blocks: Vec::new(),

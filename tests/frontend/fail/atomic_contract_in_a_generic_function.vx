@@ -1,0 +1,25 @@
+//===- atomic_contract_in_a_generic_function.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A generic function with `ensures atomic(t)` reads an element of `t` without an atomic
+// operation. The compiler checks the copy that the call makes, and the error names the function
+// as the program wrote it.
+//
+// RUN: not vxc %s --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: not vxc %s -j 2 --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E8007] at 19:10: `reads_an_element` says `atomic(t)`, so it may use `t` only in an atomic operation
+
+fn reads_an_element<M : Memory>(t : &Tensor<i32, [?], Memory::M>, i : i32) -> i32
+ensures atomic(t)
+{
+  return t[i];
+}
+
+fn main() -> i32 {
+  let h = Tensor<i32, [2]>::fill(3);
+  return reads_an_element(&h, 0);
+}

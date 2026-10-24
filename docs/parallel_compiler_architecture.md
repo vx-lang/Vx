@@ -1070,8 +1070,8 @@ This section cross-references the design above to the actual sources, with an ho
 implementation status, so the architecture can be cited precisely (papers, reviews). Sections 1–8
 describe the *target* architecture; parts of it are fully implemented, parts are scaffolding whose
 data flow is not yet connected. This map states which is which. The narrative log of closing these
-gaps (what/why/tests, per commit) is
-[`discussions/parallel_pipeline_convergence.md`](./discussions/parallel_pipeline_convergence.md).
+gaps (what/why/tests, per commit) lived in
+`discussions/parallel_pipeline_convergence.md` (no longer in the tree; see git history).
 
 ### 9.1 Design decisions & rationale
 
@@ -1137,7 +1137,7 @@ The sequential driver stays the default until those gaps close; §9.3's "scaffol
 **Decision (2026-07, [#197](https://github.com/vx-lang/Vx/issues/197)): converge.** The flat-array
 pipeline will become the production path — that is the architecture's core claim. The staged,
 keep-green roadmap (the AST path stays the oracle until the flat path is at parity via differential
-testing) is [`discussions/implementation_plans/flat_pipeline_convergence.md`](./discussions/implementation_plans/flat_pipeline_convergence.md).
+testing) is [#197](https://github.com/vx-lang/Vx/issues/197).
 
 ### 9.5 Determinism guarantees & regression protection
 

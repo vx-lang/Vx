@@ -10,29 +10,17 @@
 // It manages heap allocations, dynamic resizing, and safe pointer arithmetic for
 // variable-length arrays used within the Vx standard library.
 //
-// Two surfaces live here:
-//
-//   * `instantiate_vec_ffi!` — opaque-handle `Vec<T>` endpoints (`vx_vec_*_i32`
-//     etc.), used by the FFI demo/backend tests.
-//
-//   * A *type-erased byte allocator* (`vx_vec_alloc`/`grow`/`free`/`bounds_check`)
-//     that backs `stdlib/std/vec.vx`. The Vx `Vec<T>` keeps a typed `data: *mut T`
-//     view and does its own typed loads/stores, but delegates every *dangerous*
-//     operation — alignment, growth doubling, `capacity * elem_size` overflow,
-//     out-of-memory, and bounds enforcement — to Rust here. That way the hand-
-//     rolled correctness pitfalls (silent i32 overflow, unchecked malloc, and the
-//     compile-time-only `assert` bounds "checks") become Rust's well-defined,
-//     abort-on-error behavior instead.
+// A *type-erased byte allocator* (`vx_vec_alloc`/`grow`/`free`/`bounds_check`)
+// backs `stdlib/std/vec.vx`. The Vx `Vec<T>` keeps a typed `data: *mut T`
+// view and does its own typed loads/stores, but delegates every *dangerous*
+// operation — alignment, growth doubling, `capacity * elem_size` overflow,
+// out-of-memory, and bounds enforcement — to Rust here. That way the hand-
+// rolled correctness pitfalls (silent i32 overflow, unchecked malloc, and the
+// compile-time-only `assert` bounds "checks") become Rust's well-defined,
+// abort-on-error behavior instead.
 //
 //===----------------------------------------------------------------------===//
-use crate::instantiate_vec_ffi;
 use std::alloc::{alloc, dealloc, realloc, Layout};
-
-// Instantiate FFI endpoints for primitive vectors
-instantiate_vec_ffi!(i32, i32);
-instantiate_vec_ffi!(f32, f32);
-instantiate_vec_ffi!(i64, i64);
-instantiate_vec_ffi!(f64, f64);
 
 /// Fixed over-alignment for Vx `Vec<T>` backing storage. 16 bytes covers every
 /// scalar Vx element type (i8..i64, f32/f64, raw pointers) and matches the
@@ -132,33 +120,6 @@ pub extern "C" fn vx_vec_bounds_check(index: i64, len: i64) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_vec_i32_ffi() {
-        let ptr = vx_vec_new_i32();
-        assert!(!ptr.is_null());
-        assert_eq!(vx_vec_len_i32(ptr), 0);
-
-        vx_vec_push_i32(ptr, 42);
-        assert_eq!(vx_vec_len_i32(ptr), 1);
-
-        vx_vec_push_i32(ptr, 100);
-        assert_eq!(vx_vec_len_i32(ptr), 2);
-
-        vx_vec_drop_i32(ptr);
-    }
-
-    #[test]
-    fn test_vec_f32_ffi() {
-        let ptr = vx_vec_new_f32();
-        assert!(!ptr.is_null());
-        assert_eq!(vx_vec_len_f32(ptr), 0);
-
-        vx_vec_push_f32(ptr, 1.5);
-        assert_eq!(vx_vec_len_f32(ptr), 1);
-
-        vx_vec_drop_f32(ptr);
-    }
 
     // -- type-erased byte allocator (backs stdlib/std/vec.vx) ------------------
 

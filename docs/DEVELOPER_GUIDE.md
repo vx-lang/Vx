@@ -217,8 +217,8 @@ The path through the compiler, in order. A new statement or expression usually t
    grammar is not in the language.
 1. **Tests** — a `pass` fixture for the feature working, and a `fail` fixture for each way it can
    be used wrongly.
-1. **Documentation** — the book under `www/book/src/` teaches the language. CI compiles every
-   example in it, so an example that does not build fails the build.
+1. **Documentation** — the book under `www/book/src/` teaches the language. Keep each example
+   that is a whole program (a code block with `fn main`) compiling. No CI job checks this yet.
 
 Prefer an `assert` over a silent fallback. This is a compiler: crashing is better than emitting
 wrong code quietly.

@@ -3,7 +3,7 @@
 > [!IMPORTANT]
 > **Companion document:** `borrow_checker_precision_analysis.md` (no longer in the tree; see git history)
 > measures this design against Rust's NLL and Polonius on nine reduced cases
-> (tracked in [#243](https://github.com/hiraditya/Vx/issues/243)). Read it alongside
+> (tracked in [#243](https://github.com/vx-lang/Vx/issues/243)). Read it alongside
 > this one — it does not supersede this document, but it corrects and extends it in
 > three places:
 >

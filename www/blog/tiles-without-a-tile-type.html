@@ -47,7 +47,7 @@
 
 <p class="lede">A developer recently asked if Vx could support tile-based GPU programming like NVIDIA's cuTile. To find out, I wrote a shared-memory staging kernel in Vx and examined the compiler's PTX output.</p>
 
-<h2 id="tiles-versus-threads">Tiles versus threads</h2>
+<h2 id="tiles-versus-threads"><a href="#tiles-versus-threads">Tiles versus threads</a></h2>
 
 <p>In standard CUDA programming, you write code from the perspective of an individual thread. The programmer coordinates the entire cooperative thread group: computing array offsets with <code>threadIdx</code> and <code>blockIdx</code>, staging data into <code>__shared__</code> memory, synchronizing threads with <code>__syncthreads()</code>, and loading elements back out.</p>
 
@@ -57,7 +57,7 @@
 
 <p>Vx takes a different angle by placing memory hierarchies directly into the type system. Every tensor type tracks which physical memory space holds it and which processor can access it. Can this same placement system compile a working tile-style kernel?</p>
 
-<h2 id="the-staging-kernel">The staging kernel</h2>
+<h2 id="the-staging-kernel"><a href="#the-staging-kernel">The staging kernel</a></h2>
 
 <p>To test this question, I wrote a minimal staging kernel. It copies slices of an array from GPU global memory (HBM) into shared memory (SMEM), synchronizes, and writes the results back to global memory. The arithmetic is intentionally simple so the memory patterns and loop structures remain easy to follow:</p>
 
@@ -114,7 +114,7 @@
   <li>Two <code>barrier()</code> calls to coordinate thread synchronization.</li>
 </ul>
 
-<h2 id="how-the-compiler-maps-loops-to-ptx">How the compiler maps loops to PTX</h2>
+<h2 id="how-the-compiler-maps-loops-to-ptx"><a href="#how-the-compiler-maps-loops-to-ptx">How the compiler maps loops to PTX</a></h2>
 
 <p>To compile this kernel, the compiler must determine which loop runs over thread blocks and which loop runs over individual threads. It does this through a check called <code>parallel_two_level</code>. To guarantee that threads never race or leave unwritten gaps, the analysis verifies every index expression that writes to a captured array.</p>
 
@@ -170,7 +170,7 @@
 
 <p>There is one case where this equivalence breaks down: placing a <code>barrier()</code> inside a thread loop. No serial execution order can satisfy a barrier within a single thread's loop iterations. In that scenario, the compiler marks the payload with <code>coop=1</code>, instructing the runtime to reject host fallback and avoid returning corrupted data.</p>
 
-<h2 id="two-compile-time-checks-cuda-lacks">Two compile-time checks CUDA lacks</h2>
+<h2 id="two-compile-time-checks-cuda-lacks"><a href="#two-compile-time-checks-cuda-lacks">Two compile-time checks CUDA lacks</a></h2>
 
 <p>Writing this kernel triggered two compiler errors that have no direct equivalents in traditional GPU programming.</p>
 
@@ -188,7 +188,7 @@
 
 <p>This message comes from <code>tests/frontend/fail/three_dtcm_tiles_do_not_fit_a_cortex_m7.vx</code>. That test targets the tightly-coupled memory of an ARM Cortex-M7 microcontroller, not a GPU. The check keys on the declared capacity of a space rather than on what kind of part holds it, which is the point: it runs on a laptop, with no device toolchain involved.</p>
 
-<h2 id="what-is-still-missing">What is still missing</h2>
+<h2 id="what-is-still-missing"><a href="#what-is-still-missing">What is still missing</a></h2>
 
 <p>The kernel above demonstrates that Vx can compile the physical mechanics of a shared-memory staging pipeline. However, Vx does not yet provide a complete tile programming model. Five major features remain unimplemented:</p>
 
@@ -204,7 +204,7 @@
   <li><strong>No hardware scheduling or pipelining.</strong> Block dimensions match the thread loop trip count, and grid dimensions match the block loop trip count. The compiler offers no autotuning, software pipelining, or double buffering. It does not generate asynchronous copy instructions (such as <code>cp.async</code> or Hopper TMA) inside kernel bodies; asynchronous copies exist only during transfers managed by a declared hardware <code>copy_engine</code>.</li>
 </ul>
 
-<h2 id="where-this-leaves-us">Where this leaves us</h2>
+<h2 id="where-this-leaves-us"><a href="#where-this-leaves-us">Where this leaves us</a></h2>
 
 <p>Vx can already lower a shared-memory staging pattern to a functional GPU device image. It does so by using static analysis to prove properties of nested loops. The developer still writes explicit element loops, and hardware tensor instructions remain unavailable.</p>
 
@@ -234,5 +234,6 @@ the type in the first place.</p>
   <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>.</p>
 </footer>
 
+<script src="/blog/copy-code.js" defer></script>
 </body>
 </html>

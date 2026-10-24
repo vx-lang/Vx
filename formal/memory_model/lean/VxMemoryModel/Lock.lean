@@ -24,6 +24,10 @@ variable (P : ChanProg) (m : Nat)
 def NotLock (k : Kind) (_ : Order) (x : Nat) : Prop :=
   k = .fence ∨ (x ≠ P.cnt .next m ∧ x ≠ P.cnt .serving m)
 
+-- `G` is what an access needs while the thread does not hold the lock `m`. `lock_excl` needs
+-- nothing. A rule on the code can ask that some places are accessed only under the lock.
+variable (G : Kind → Order → Nat → Prop)
+
 /-- Where a thread is in a `locked` block of the lock `m`. -/
 inductive Hold where
   | free
@@ -44,7 +48,8 @@ def Hold.Calm : Hold → Prop
 /-- The accesses that a thread can make in each state of `Hold`. -/
 inductive HTrans : Hold → Option Label → Hold → Prop
   | silent {h} : HTrans h none h
-  | other {h l} : h.Calm → P.NotLock m l.kind l.order l.loc → HTrans h (some l) h
+  | other {h l} : h.Calm → P.NotLock m l.kind l.order l.loc → (h = .free → G l.kind l.order l.loc) →
+    HTrans h (some l) h
   | take {t} : HTrans .free (some ⟨.read, .sc, P.cnt .next m, t, false⟩) (.took t)
   | count {t} : HTrans (.took t) (some ⟨.write, .sc, P.cnt .next m, t + 1, true⟩) (.wait t)
   | peek {t v} : v ≠ t → HTrans (.wait t) (some ⟨.read, .sc, P.cnt .serving m, v, false⟩) (.wait t)
@@ -61,7 +66,7 @@ abbrev peeks : Stmt := .loop P.waitCond (P.peek m)
 
 /-- Lowered code, with each `locked` block of the lock `m` whole. -/
 inductive HClean : Stmt → Prop
-  | other {s} : s.Accesses (P.NotLock m) → HClean s
+  | other {s} : s.Accesses (fun k o x => P.NotLock m k o x ∧ G k o x) → HClean s
   | locked {b} : b.Accesses (P.NotLock m) → HClean (.seq (P.lockCode m) (.seq b (P.unl m)))
   | seq {s t} : HClean s → HClean t → HClean (.seq s t)
   | ite {e s t} : HClean s → HClean t → HClean (.ite e s t)
@@ -70,8 +75,8 @@ inductive HClean : Stmt → Prop
 /-- The states of lowered code, with their state of `Hold`. While the thread waits for the lock,
 the register `tmp` holds its ticket. -/
 inductive HGood (regs : Nat → Int) : Hold → Stmt → Prop
-  | clean {s} : P.HClean m s → HGood regs .free s
-  | seq {h s t} : HGood regs h s → P.HClean m t → HGood regs h (.seq s t)
+  | clean {s} : P.HClean m G s → HGood regs .free s
+  | seq {h s t} : HGood regs h s → P.HClean m G t → HGood regs h (.seq s t)
   | took {t b} : b.Accesses (P.NotLock m) → regs P.tmp = t →
     HGood regs (.took t) (.seq (.seq (.rmwStore (P.cnt .next m) (t + 1) .sc)
       (.seq (P.peek m) (P.peeks m))) (.seq b (P.unl m)))
@@ -89,18 +94,18 @@ inductive HGood (regs : Nat → Int) : Hold → Stmt → Prop
   | unlocking {t} : HGood regs (.held t) (P.unl m)
   | leaving {t v} : HGood regs (.leaving t) (.rmwStore (P.cnt .serving m) v .sc)
 
-variable {P m}
+variable {P m G}
 
-theorem HClean.step {s} (hcl : P.HClean m s) :
-    ∀ {regs a s' regs'}, Step s regs a s' regs' → ∃ h, P.HGood m regs' h s' ∧ P.HTrans m .free a h := by
+theorem HClean.step {s} (hcl : P.HClean m G s) :
+    ∀ {regs a s' regs'}, Step s regs a s' regs' → ∃ h, P.HGood m G regs' h s' ∧ P.HTrans m G .free a h := by
   induction hcl with
   | other hs =>
     intro regs a s' regs' h
-    obtain ⟨hs', ha⟩ := (accessRule (P.NotLock m)).step h hs
+    obtain ⟨hs', ha⟩ := (accessRule _).step h hs
     refine ⟨_, .clean (.other hs'), ?_⟩
     cases a with
     | none => exact .silent
-    | some l => exact .other trivial (ha l rfl)
+    | some l => exact .other trivial (ha l rfl).1 fun _ => (ha l rfl).2
   | locked hb =>
     intro regs a s' regs' h
     cases h with
@@ -127,8 +132,8 @@ theorem HClean.step {s} (hcl : P.HClean m s) :
     | loop => exact ⟨_, .clean (.ite (.seq hs (.loop hs)) (.other trivial)), .silent⟩
 
 /-- Each step of lowered code keeps `HGood`, and its access follows `HTrans`. -/
-theorem HGood.step {h s regs} (hg : P.HGood m regs h s) :
-    ∀ {a s' regs'}, Step s regs a s' regs' → ∃ h', P.HGood m regs' h' s' ∧ P.HTrans m h a h' := by
+theorem HGood.step {h s regs} (hg : P.HGood m G regs h s) :
+    ∀ {a s' regs'}, Step s regs a s' regs' → ∃ h', P.HGood m G regs' h' s' ∧ P.HTrans m G h a h' := by
   induction hg with
   | clean hcl => exact hcl.step
   | seq hg ht ih =>
@@ -208,7 +213,7 @@ theorem HGood.step {h s regs} (hg : P.HGood m regs h s) :
       refine ⟨.held t, .inside hb', ?_⟩
       cases a with
       | none => exact .silent
-      | some l => exact .other trivial (ha l rfl)
+      | some l => exact .other trivial (ha l rfl) nofun
   | unlocking =>
     intro a s' regs' h
     cases h with
@@ -218,18 +223,18 @@ theorem HGood.step {h s regs} (hg : P.HGood m regs h s) :
     cases h with
     | rmwStore => exact ⟨_, .clean (.other trivial), .unlock⟩
 
-variable (P m) in
+variable (P m G) in
 /-- The lists of accesses that `HTrans` allows from a state. -/
 inductive HAccepts : Hold → List Label → Prop
   | nil {h} : HAccepts h []
-  | cons {h h' a L} : P.HTrans m h (some a) h' → HAccepts h' L → HAccepts h (a :: L)
+  | cons {h h' a L} : P.HTrans m G h (some a) h' → HAccepts h' L → HAccepts h (a :: L)
 
-theorem HTrans.none_eq {h h'} (ht : P.HTrans m h none h') : h' = h := by
+theorem HTrans.none_eq {h h'} (ht : P.HTrans m G h none h') : h' = h := by
   cases ht <;> rfl
 
 /-- A run of lowered code makes a list of accesses that `HTrans` allows. -/
 theorem Runs.haccepts {s regs L} (hr : Runs s regs L) :
-    ∀ {h}, P.HGood m regs h s → P.HAccepts m h L := by
+    ∀ {h}, P.HGood m G regs h s → P.HAccepts m G h L := by
   induction hr with
   | stop => exact fun _ => .nil
   | silent hs _ ih =>
@@ -312,36 +317,36 @@ theorem lower_notLock {s : CStmt} (hs : P.StmtOk s) (hn : ¬ s.Locks m) :
   | result => exact Avoid.notLock hm slot_avoid
 
 theorem hclean_lower {s : CStmt} (hs : P.StmtOk s) :
-    P.HClean m (P.toTaskProg.lower (P.lowerC s)) := by
+    P.HClean m (fun _ _ _ => True) (P.toTaskProg.lower (P.lowerC s)) := by
   induction s with
   | base | send | recv | drop | fail | checkCancel | result =>
-    exact .other (lower_notLock hm hs nofun)
+    exact .other ((lower_notLock hm hs nofun).mono fun _ _ _ h => ⟨h, trivial⟩)
   | locked m' s ih =>
     by_cases hne : m' = m
     · subst hne
       exact .locked (lower_notLock hm hs.2.2 hs.2.1)
-    · exact .seq (.other (lockCode_notLock hm hs.1 hne))
-        (.seq (ih hs.2.2) (.other ⟨notLock_cnt (q := .serving) hm hs.1 fun _ => hne,
-          notLock_cnt (q := .serving) hm hs.1 fun _ => hne⟩))
+    · exact .seq (.other ((lockCode_notLock hm hs.1 hne).mono fun _ _ _ h => ⟨h, trivial⟩))
+        (.seq (ih hs.2.2) (.other ⟨⟨notLock_cnt (q := .serving) hm hs.1 fun _ => hne, trivial⟩,
+          ⟨notLock_cnt (q := .serving) hm hs.1 fun _ => hne, trivial⟩⟩))
   | seq _ _ ih1 ih2 => exact .seq (ih1 hs.1) (ih2 hs.2)
   | ite _ _ _ ih1 ih2 => exact .ite (ih1 hs.1) (ih2 hs.2)
   | loop _ _ ih => exact .loop (ih hs)
   | tasksBlock _ ih =>
-    exact .seq (.other ((clearMarks_avoid _).mono fun _ _ _ h => Avoid.notLock hm h))
-      (.seq (ih hs) (.other ((joinMarked_avoid _).mono fun _ _ _ h => Avoid.notLock hm h)))
+    exact .seq (.other ((clearMarks_avoid _).mono fun _ _ _ h => ⟨Avoid.notLock hm h, trivial⟩))
+      (.seq (ih hs) (.other ((joinMarked_avoid _).mono fun _ _ _ h => ⟨Avoid.notLock hm h, trivial⟩)))
 
-theorem hclean_body (hP : P.Ok) (t : Nat) : P.HClean m (P.body t) := by
+theorem hclean_body (hP : P.Ok) (t : Nat) : P.HClean m (fun _ _ _ => True) (P.body t) := by
   cases t with
   | zero => exact hclean_lower hm hP.main
   | succ t =>
-    show P.HClean m (P.toTaskProg.taskCode t)
+    show P.HClean m (fun _ _ _ => True) (P.toTaskProg.taskCode t)
     unfold TaskProg.taskCode
     split
-    · refine .seq (.other (Avoid.notLock hm (Or.inr (Or.inr ?_))))
-        (.seq (hclean_lower hm (hP.task t)) (.other (Avoid.notLock hm (Or.inr (Or.inr ?_)))))
-      · simp only [TaskProg.start, toTaskProg]
+    · refine .seq (.other ⟨Avoid.notLock hm (Or.inr (Or.inr ?_)), trivial⟩)
+        (.seq (hclean_lower hm (hP.task t)) (.other ⟨Avoid.notLock hm (Or.inr (Or.inr ?_)), trivial⟩))
+      · simp only [TaskProg.start, toTaskProg, flag, slot]
         omega
-      · simp only [TaskProg.done, toTaskProg]
+      · simp only [TaskProg.done, toTaskProg, flag, slot]
         omega
     · exact .other trivial
 
@@ -406,7 +411,7 @@ theorem notLock_unlock {k o x} (h : P.NotLock m k o x) (hk : k = .write) :
 
 /-- Before an `unlock`, its block took its ticket, read `serving` as the ticket, and wrote
 `serving` nowhere. -/
-theorem HAccepts.unlock_hist (hm : m < P.locks) {h L} (hacc : P.HAccepts m h L) :
+theorem HAccepts.unlock_hist (hm : m < P.locks) {h L} (hacc : P.HAccepts m G h L) :
     ∀ {i : Nat} {l : Label}, L[i]? = some l → l.kind = .write → l.loc = P.cnt .serving m →
       P.HPre m h L i ∨ P.UnlockHist m L i := by
   induction hacc with
@@ -418,7 +423,7 @@ theorem HAccepts.unlock_hist (hm : m < P.locks) {h L} (hacc : P.HAccepts m h L) 
       simp only [List.getElem?_cons_zero, Option.some.injEq] at hl
       subst hl
       cases htr with
-      | other _ hav => exact (notLock_unlock hav hk hx).elim
+      | other _ hav _ => exact (notLock_unlock hav hk hx).elim
       | take | peek | enter | leave => cases hk
       | count => exact absurd (cnt_inj (q := .next) (q' := .serving) hx hm hm).1 nofun
       | unlock => exact Or.inl rfl
@@ -427,7 +432,7 @@ theorem HAccepts.unlock_hist (hm : m < P.locks) {h L} (hacc : P.HAccepts m h L) 
           ¬ (b.kind = .write ∧ b.loc = P.cnt .serving m) := fun ⟨h1, h2⟩ => hb.elim (· h1) (· h2)
       rcases ih (by simpa using hl) hk hx with hpre | hist
       · cases htr with
-        | other hc hav =>
+        | other hc hav _ =>
           have ha : ¬ (a.kind = .write ∧ a.loc = P.cnt .serving m) := by
             rcases hav with h | h
             · exact notW (Or.inl (by rw [h]; nofun))
@@ -465,7 +470,7 @@ include run
 
 /-- The accesses of the thread of `e` after the writes at the start, up to `e`, follow `HTrans`. -/
 theorem hview (hP : P.Ok) (hm : m < P.locks) (e : X.E) :
-    P.HAccepts m .free ((List.range (run.idx e + 1 - P.pre (X.thread e))).map
+    P.HAccepts m (fun _ _ _ => True) .free ((List.range (run.idx e + 1 - P.pre (X.thread e))).map
       fun i => run.lab (X.thread e) (P.pre (X.thread e) + i)) :=
   Runs.haccepts (trace_rest (run.trace e)).2 (.clean (hclean_body hm hP _))
 

@@ -328,3 +328,26 @@ fn a_matmul_is_left_to_the_vendor_library() {
          anyway"
     );
 }
+
+/// Two kernels that ask for the same device architecture -- one placed on the
+/// built-in GPU topology, which declares no arch, one on a topology whose machine
+/// file says `arch: nvptx64` -- share one image, and both are entry points of it.
+///
+/// Every admitted kernel goes into one device module, and that module becomes one
+/// image, so the kernels in it have to agree on the pipeline that compiles the
+/// image. These two agree. A check on the declared `arch:` text instead of the
+/// pipelines those architectures name would refuse a program that has one answer.
+#[test]
+fn two_kernels_on_one_architecture_share_one_image() {
+    let ir = emit_llvm("two_kernels_on_one_architecture.vx");
+    assert!(
+        ir.contains("image="),
+        "both kernels ask for nvptx64, so both launches carry an image"
+    );
+    let image = extract_image(&ir);
+    assert_eq!(
+        image.matches(".visible .entry ").count(),
+        2,
+        "the one image must hold both kernels as entry points:\n{image}"
+    );
+}

@@ -2,9 +2,10 @@
 // the command line or set in the environment becomes a number.
 //
 // Every tool in this directory that touches the card includes this rather than
-// deciding for itself, because the failure it prevents is the machine's: the
-// owner's machine becomes unstable above 12 GiB of VRAM in use, and a run that
-// asks for more can take the driver down with it.
+// deciding for itself. A run starts at a conservative ceiling and raises it
+// deliberately through `VX_VRAM_CEILING`. The upper limit below stops a
+// mistyped or absurd ceiling from making a tool try to allocate more than the
+// card holds. Raise that limit only after checking the card can hold more.
 #pragma once
 
 #include <cerrno>
@@ -16,14 +17,15 @@
 // setting `VX_VRAM_CEILING`, so the larger allocation is always deliberate.
 static constexpr uint64_t kVramCeilingDefault = 2ull * 1024 * 1024 * 1024;
 
-// The most `VX_VRAM_CEILING` may be set to, so the variable cannot walk a run
-// past the ceiling.
+// The most `VX_VRAM_CEILING` may be set to. The upper limit protects the
+// measurement machine: it refuses a mistyped or absurd value before anything is
+// allocated. Change it only after checking that the card can hold more.
 static constexpr uint64_t kVramCeilingMax = 12ull * 1024 * 1024 * 1024;
 
 // The largest per-buffer size in MiB a helper may be asked for when its peak is
 // three buffers of that size: `3 * size * MiB` is then at most
-// `kVramCeilingMax`, so the peak cannot wrap a 64-bit count before
-// `requireWithinCeiling` sees it.
+// `kVramCeilingMax`, far below a 64-bit count. This size cap, not the ceiling
+// bound, is what keeps the peak arithmetic from wrapping.
 static constexpr uint64_t kVramCeilingMaxSizeMiB =
     kVramCeilingMax / 3 / (1024 * 1024);
 

@@ -35,8 +35,8 @@ theorem oneLock_ok : oneLock.Ok where
     | _ + 1 => by simp [oneLock, ChanProg.StmtOk, Stmt.Below]
   cap _ h := absurd h (by simp [oneLock])
 
-/-- `next` and `serving` of lock 0 are the places 1 and 2. The flags `start 0` and `done 0` of the
-task are 3 and 4. -/
+/-- `next` and `serving` of lock 0 are the places 1 and 2. The failure slot and the cancel flag are
+3 and 4. The flags `start 0` and `done 0` of the task are 5 and 6. -/
 theorem oneLock_initList : oneLock.initList = [(1, 0), (2, 0)] := by decide
 
 /-- Events: 0 to 9 are the main code, and 10 to 18 are task 0. -/
@@ -45,8 +45,8 @@ def oneLockData : Data 19 := Data.ofLists 19
     .read, .read, .write, .read, .read, .read, .read, .write, .write]
   [.sc, .sc, .sc, .sc, .sc, .sc, .plain, .sc, .sc, .sc,
     .sc, .sc, .sc, .sc, .sc, .plain, .sc, .sc, .sc]
-  [1, 2, 3, 1, 1, 2, 0, 2, 2, 4,
-    3, 1, 1, 2, 2, 0, 2, 2, 4]
+  [1, 2, 5, 1, 1, 2, 0, 2, 2, 6,
+    5, 1, 1, 2, 2, 0, 2, 2, 6]
   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1]
   ((List.range 19).flatMap fun a => (List.range 19).filterMap fun b =>
     if a < b ∧ (b < 10 ∨ 10 ≤ a) then some (a, b) else none)
@@ -57,15 +57,15 @@ def oneLockData : Data 19 := Data.ofLists 19
 def oneLockLabels : Nat → Nat → Label
   | 0, 0 => ⟨.write, .sc, 1, 0, false⟩
   | 0, 1 => ⟨.write, .sc, 2, 0, false⟩
-  | 0, 2 => ⟨.write, .sc, 3, 1, false⟩
+  | 0, 2 => ⟨.write, .sc, 5, 1, false⟩
   | 0, 3 => ⟨.read, .sc, 1, 0, false⟩
   | 0, 4 => ⟨.write, .sc, 1, 1, true⟩
   | 0, 5 => ⟨.read, .sc, 2, 0, false⟩
   | 0, 6 => ⟨.write, .plain, 0, 7, false⟩
   | 0, 7 => ⟨.read, .sc, 2, 0, false⟩
   | 0, 8 => ⟨.write, .sc, 2, 1, true⟩
-  | 0, 9 => ⟨.read, .sc, 4, 1, false⟩
-  | 1, 0 => ⟨.read, .sc, 3, 1, false⟩
+  | 0, 9 => ⟨.read, .sc, 6, 1, false⟩
+  | 1, 0 => ⟨.read, .sc, 5, 1, false⟩
   | 1, 1 => ⟨.read, .sc, 1, 1, false⟩
   | 1, 2 => ⟨.write, .sc, 1, 2, true⟩
   | 1, 3 => ⟨.read, .sc, 2, 0, false⟩
@@ -73,7 +73,7 @@ def oneLockLabels : Nat → Nat → Label
   | 1, 5 => ⟨.read, .plain, 0, 7, false⟩
   | 1, 6 => ⟨.read, .sc, 2, 1, false⟩
   | 1, 7 => ⟨.write, .sc, 2, 2, true⟩
-  | 1, 8 => ⟨.write, .sc, 4, 1, false⟩
+  | 1, 8 => ⟨.write, .sc, 6, 1, false⟩
   | _, _ => ⟨.fence, .plain, 0, 0, false⟩
 
 /-- The writes at the start, the `spawn`, the `lock` with ticket 0, the write, the `unlock` and the

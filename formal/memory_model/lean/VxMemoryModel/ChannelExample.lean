@@ -35,8 +35,8 @@ theorem oneSend_ok : oneSend.Ok where
   cap _ _ := by simp [oneSend]
 
 /-- The counters are the places 0 to 2: `send`s, `recv`s and drops. `full 0` and `full 1` are 3
-and 4, the values are 5 and 6, and `taken 0` to `taken 3` are 7 to 10. The flags `start 0` and
-`done 0` of the task are 11 and 12. -/
+and 4, the values are 5 and 6, and `taken 0` to `taken 3` are 7 to 10. The failure slot and the
+cancel flag are 11 and 12. The flags `start 0` and `done 0` of the task are 13 and 14. -/
 theorem oneSend_initList :
     oneSend.initList = [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (7, 1)] := by decide
 
@@ -47,8 +47,8 @@ def oneSendData : Data 28 := Data.ofLists 28
     .read, .read, .write, .read, .read, .read, .write, .read, .write, .read, .read, .write, .write]
   [.sc, .sc, .sc, .sc, .sc, .sc, .sc, .sc, .sc, .plain, .sc, .sc, .sc, .sc, .sc,
     .sc, .sc, .sc, .sc, .sc, .plain, .sc, .sc, .sc, .sc, .sc, .sc, .sc]
-  [0, 1, 2, 3, 4, 7, 0, 0, 7, 5, 3, 2, 2, 11, 12,
-    11, 1, 1, 2, 3, 5, 8, 1, 1, 2, 4, 9, 12]
+  [0, 1, 2, 3, 4, 7, 0, 0, 7, 5, 3, 2, 2, 13, 14,
+    13, 1, 1, 2, 3, 5, 8, 1, 1, 2, 4, 9, 14]
   [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
   ((List.range 28).flatMap fun a => (List.range 28).filterMap fun b =>
     if a < b ∧ (b < 15 ∨ 15 ≤ a) then some (a, b) else none)
@@ -71,9 +71,9 @@ def oneSendLabels : Nat → Nat → Label
   | 0, 10 => ⟨.write, .sc, 3, 1, false⟩
   | 0, 11 => ⟨.read, .sc, 2, 0, false⟩
   | 0, 12 => ⟨.write, .sc, 2, 1, true⟩
-  | 0, 13 => ⟨.write, .sc, 11, 1, false⟩
-  | 0, 14 => ⟨.read, .sc, 12, 1, false⟩
-  | 1, 0 => ⟨.read, .sc, 11, 1, false⟩
+  | 0, 13 => ⟨.write, .sc, 13, 1, false⟩
+  | 0, 14 => ⟨.read, .sc, 14, 1, false⟩
+  | 1, 0 => ⟨.read, .sc, 13, 1, false⟩
   | 1, 1 => ⟨.read, .sc, 1, 0, false⟩
   | 1, 2 => ⟨.write, .sc, 1, 1, true⟩
   | 1, 3 => ⟨.read, .sc, 2, 1, false⟩
@@ -85,7 +85,7 @@ def oneSendLabels : Nat → Nat → Label
   | 1, 9 => ⟨.read, .sc, 2, 1, false⟩
   | 1, 10 => ⟨.read, .sc, 4, 0, false⟩
   | 1, 11 => ⟨.write, .sc, 9, 1, false⟩
-  | 1, 12 => ⟨.write, .sc, 12, 1, false⟩
+  | 1, 12 => ⟨.write, .sc, 14, 1, false⟩
   | _, _ => ⟨.fence, .plain, 0, 0, false⟩
 
 /-- The writes at the start, the `send`, the drop, the `spawn` and the `join`. The `send` gets the
