@@ -214,6 +214,11 @@ spawn on(Topology::Gpu) {
   memory.
 - `lanes::sum`, `lanes::max` and their `_unordered` versions combine a tensor over the lanes of
   a block or a subgroup, and every lane gets the result (`docs/lane_reductions.md`).
+- Code after the nest of blocks runs once, after every pass, in the same kernel. Each pass ends
+  with an atomic add to a count that the compiler makes, between two fences for the device. The
+  pass that sees the last count runs the code on lane 0. A nest with no passes runs no such
+  code, and a nest with two axes of blocks cannot have it yet
+  (`discussions/last_arriver_in_across_loops.md`).
 - Delete each `across` and the program means the same. The CPU copy of the region runs one
   block of one lane, and a loop steps over the passes of the others.
 - A size is not a kernel argument. The launch passes each size that is not a number after the

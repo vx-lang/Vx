@@ -3095,10 +3095,16 @@ impl<'r> Lowerer<'r> {
             );
             shape.push((3, block));
         }
+        let tail = match (&s.arrivals, lanes) {
+            (Some(space), Some(_)) => Some(self.lower_arrivals(&s.stmts, space)?),
+            _ => None,
+        };
+        let count = tail.as_ref().map(|t| t.count.reg);
         let outer = std::mem::replace(
             &mut self.across,
             AcrossState {
                 lanes: lanes.unwrap_or(0),
+                tail,
                 ..AcrossState::default()
             },
         );
@@ -3114,7 +3120,57 @@ impl<'r> Lowerer<'r> {
             true,
         );
         self.across = outer;
+        if let (Ok(_), Some(count)) = (&lowered, count) {
+            self.emit_effect(Opcode::TensorDrop, count, Register(0), 0);
+        }
         lowered
+    }
+
+    /// The count of the passes of a nest of blocks that ended, a zeroed `u32` in `space`, and
+    /// the code after the nest, for a region with code there. The host counts the passes.
+    fn lower_arrivals(
+        &mut self,
+        stmts: &[Statement],
+        space: &crate::syntax::MemorySpace,
+    ) -> Lowered<across::Tail> {
+        let at = stmts
+            .iter()
+            .position(|s| matches!(s, Statement::ForLoop(f) if f.across.is_some()))
+            .ok_or(crate::emitter_gap!())?;
+        let Statement::ForLoop(nest) = &stmts[at] else {
+            return Err(crate::emitter_gap!());
+        };
+        let Expr::Range(range) = &*nest.iterable else {
+            return Err(crate::emitter_gap!());
+        };
+        let end = self.lower_expr(&range.end)?;
+        let start = self.lower_expr(&range.start)?;
+        let passes = self.emit_value(Opcode::Sub, end.reg, start.reg, ElementType::I32, 0);
+        let one = self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 1);
+        let last = self.emit_value(Opcode::Sub, passes.reg, one.reg, ElementType::I32, 0);
+        let ty = LoweredTy::Tensor {
+            elem: ElementType::U32,
+            shape: vec!["1".to_string()],
+        };
+        let host = self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty.clone(), 4);
+        self.emit_effect(Opcode::TensorZero, host.reg, Register(0), 0);
+        let mem_id = crate::arch::memory_space_dispatch_id(space) as u32 as u64;
+        let count = self.emit_typed(Opcode::Transfer, host.reg, Register(0), ty, mem_id);
+        self.emit_effect(Opcode::TensorDrop, host.reg, Register(0), 0);
+        let after: Vec<&Statement> = stmts[at + 1..]
+            .iter()
+            .filter(|s| !matches!(s, Statement::Drop(_)))
+            .filter(|s| !matches!(s, Statement::ForLoop(f) if f.across.is_some()))
+            .collect();
+        Ok(across::Tail {
+            stmts: after.iter().map(|s| (*s).clone()).collect(),
+            skip: after
+                .iter()
+                .map(|s| *s as *const Statement as usize)
+                .collect(),
+            count,
+            last,
+        })
     }
 
     /// A `tasks` block or a task body: a `vx.spawn` region with the topology id of its kind.
@@ -3203,7 +3259,15 @@ impl<'r> Lowerer<'r> {
             btrip | SPAWN_TWO_LEVEL
         } else {
             for stmt in stmts {
-                self.lower_stmt(stmt)?;
+                // The last pass of the nest of blocks runs the code after the nest.
+                let after = self
+                    .across
+                    .tail
+                    .as_ref()
+                    .is_some_and(|t| t.skip.contains(&(stmt as *const Statement as usize)));
+                if !after {
+                    self.lower_stmt(stmt)?;
+                }
             }
             0
         };
