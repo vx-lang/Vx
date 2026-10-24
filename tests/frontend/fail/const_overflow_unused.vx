@@ -1,0 +1,18 @@
+//===- const_overflow_unused.vx - Vx Compiler --------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A const whose value does not fit its type is reported even when nothing uses it
+// (Vx#2094).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// CHECK: Error[E3044] at [[@LINE+1]]:1: const 'A' has a value that does not fit its declared type
+const A : i32 = 2147483647 + 1;
+
+fn main() -> i32 {
+  return 0;
+}

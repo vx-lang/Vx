@@ -67,6 +67,38 @@ impl TypeChecker<'_> {
         self.check_placements_name_a_place();
         // An `extern` signature has to be spellable in C, and a tensor is not.
         self.check_extern_signatures();
+        // A `const` whose value does not fit its type, or has no value while compiling, is
+        // reported once here. Uses only substitute the value (Vx#2094).
+        self.check_const_declarations();
+    }
+
+    /// Report E3044 once per scalar `const` that has no usable value, at the declaration.
+    ///
+    /// The check used to run when a use asked for the value, so a `const` used twice got two
+    /// errors and an unused overflowing `const` got none. Tables stay checked at the use that
+    /// names them, where the diagnostic says how to read them.
+    fn check_const_declarations(&mut self) {
+        let mut consts: Vec<&crate::syntax::ConstDecl> =
+            self.env.consts.values().copied().collect();
+        // Source order, so FileCheck on multi-const fixtures stays stable.
+        consts.sort_by(|a, b| {
+            (a.span.line, a.span.column, a.name.as_ref()).cmp(&(
+                b.span.line,
+                b.span.column,
+                b.name.as_ref(),
+            ))
+        });
+        for decl in consts {
+            match crate::registry::ConstTable::from_decl(decl) {
+                Ok(None) => {
+                    let _ = self.const_literal(decl, &decl.span, true);
+                }
+                Ok(Some(_)) => {}
+                // Bad tables are reported when named; an unused bad table is rare and the use
+                // site message says how to read a table.
+                Err(_) => {}
+            }
+        }
     }
 
     /// Refuse a tensor anywhere in an `extern` signature.
