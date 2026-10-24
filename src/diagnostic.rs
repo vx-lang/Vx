@@ -661,6 +661,9 @@ pub enum DiagnosticCode {
     E8005,
     /// A call does not meet the called function's precondition (`requires`)
     E8006,
+    /// An `atomic(t)` clause that does not name a tensor, or a body that uses that tensor without
+    /// an atomic operation
+    E8007,
 }
 
 impl std::fmt::Display for DiagnosticCode {

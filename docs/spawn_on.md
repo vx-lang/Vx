@@ -203,6 +203,9 @@ spawn on(Topology::Gpu) {
 - E6032 checks the place and the size of each `across` loop. It also checks that no pass
   touches what another pass writes (L4), and that every lane reaches the end of each lane loop
   (L5, L8, L10).
+- An atomic operation races with no other one. It is a call to a function that says
+  `ensures atomic(t)`, or an `mlir!` block with `ensures : [atomic(t)]`. Every access to `t` in
+  the loop must then be atomic (#2139, `discussions/mlir_declared_writes_in_across.md`).
 - Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
   memory.
 - Delete each `across` and the program means the same. The CPU copy of the region runs one

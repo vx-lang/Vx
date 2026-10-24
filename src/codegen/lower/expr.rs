@@ -3725,17 +3725,27 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
         let mut input_types_str = Vec::new();
 
         for (name, expr, ty_str) in &self.inputs {
-            let (mut val, val_ty, block) = gen.generate_expr(expr, block)?;
-            if val_ty.to_string().starts_with("memref<memref<") && ty_str.starts_with("memref<") {
+            let (mut val, mut val_ty, block) = gen.generate_expr(expr, block)?;
+            let val_str = val_ty.to_string();
+            if val_str.starts_with("memref<memref<") && ty_str.starts_with("memref<") {
+                // A reference to a tensor: load the tensor, with its own type.
+                let inner = &val_str["memref<".len()..val_str.len() - 1];
+                let inner_ty = Type::parse(gen.context, inner).ok_or_else(|| {
+                    crate::codegen::lower::LowerError::ParseType(inner.to_string())
+                })?;
                 let load_op = OperationBuilder::new("memref.load", gen.loc())
                     .add_operands(&[val])
-                    .add_results(&[Type::parse(gen.context, ty_str).ok_or_else(|| {
-                        crate::codegen::lower::LowerError::ParseType(
-                            "Type::parse failed".to_string(),
-                        )
-                    })?])
+                    .add_results(&[inner_ty])
                     .build()?;
                 val = block.append_operation(load_op).result(0)?.into();
+                val_ty = inner_ty;
+            }
+            // A tensor can have a static size or the address space of its memory, where the
+            // block names another type.
+            if let Some(want) = Type::parse(gen.context, ty_str) {
+                if gen.is_memref(&val_ty) && gen.is_memref(&want) && val_ty != want {
+                    val = crate::codegen::lower::cast_memref(gen, &block, val, val_ty, want)?;
+                }
             }
             mlir_args.push(val);
             input_types_str.push(format!("{}: {}", name, ty_str));

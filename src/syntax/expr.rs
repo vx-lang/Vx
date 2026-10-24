@@ -932,6 +932,8 @@ pub struct InlineMlirExpr {
     pub clobbers: Vec<Expr>,
     pub returns: Option<Type>, // None for void
     pub dialects: Vec<String>,
+    /// What the block writes, as `atomic(t)` clauses. Not evaluated, so visitors skip them.
+    pub ensures: Vec<Expr>,
     pub block_str: String,
     pub span: Span,
 }
@@ -1626,6 +1628,7 @@ impl Expr {
                     .as_ref()
                     .map(|t| substitute_mlir_returns(t, mapping)),
                 dialects: e.dialects.clone(),
+                ensures: e.ensures.iter().map(|ex| ex.substitute(mapping)).collect(),
                 block_str: substitute_words(&e.block_str, mapping),
                 span: e.span,
             }),

@@ -1909,7 +1909,11 @@ impl<'a> TypeChecker<'a> {
                         .zip(args)
                         .collect();
                     names.insert("return".into(), result.clone());
-                    for ens in &func.ensures {
+                    for ens in func
+                        .ensures
+                        .iter()
+                        .filter(|e| !crate::hir::check::atomic_contracts::is_atomic_clause(e))
+                    {
                         facts.push(hir::prover::substitute_names(ens, &names));
                     }
                 }

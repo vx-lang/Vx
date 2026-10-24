@@ -418,6 +418,7 @@ impl<'a> TypeChecker<'a> {
                 for (_, arg_expr, _) in &mut e.inputs {
                     self.check_expr_type_flag(arg_expr, consume);
                 }
+                self.check_atomic_block(e);
                 // Typecheck clobbers. The block writes to each of them, so each one changes.
                 for clobber in &mut e.clobbers {
                     self.record_change(clobber);

@@ -1751,8 +1751,15 @@ impl<'a> TypeChecker<'a> {
         }
 
         let prev_constraints = self.consteval.constraints.clone();
-        let prev_ensures =
-            std::mem::replace(&mut self.consteval.current_ensures, func.ensures.clone());
+        self.check_atomic_contract(func);
+        // An atomic clause is for the race proof, not for the prover.
+        let proved: Vec<Expr> = func
+            .ensures
+            .iter()
+            .filter(|e| !crate::hir::check::atomic_contracts::is_atomic_clause(e))
+            .cloned()
+            .collect();
+        let prev_ensures = std::mem::replace(&mut self.consteval.current_ensures, proved);
         let prev_ret_ty = self.current_return_type.clone();
         let prev_fn = std::mem::replace(&mut self.current_function, func.name.as_ref().to_string());
         self.current_return_type = Some(func.return_type.clone());
@@ -1862,7 +1869,11 @@ impl<'a> TypeChecker<'a> {
         // Each `return` checked the `ensures` where it stood. A body that can also reach its end
         // without one is checked here, from what is known at the end.
         if !exits && !self.speculating {
-            for ens in &func.ensures {
+            for ens in func
+                .ensures
+                .iter()
+                .filter(|e| !crate::hir::check::atomic_contracts::is_atomic_clause(e))
+            {
                 if !self.prove_expr(ens) {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E8001,

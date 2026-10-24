@@ -71,6 +71,8 @@ struct Walk<'g> {
     auto_schedule: bool,
     /// The memories with `scope: cta` or `scope: sm`, whose tensors the lanes of a block share.
     shared: HashSet<String>,
+    /// The parameters with an `atomic` clause, for each function that has one.
+    contracts: HashMap<String, Vec<usize>>,
 }
 
 impl crate::hir::TypeChecker<'_> {
@@ -95,6 +97,7 @@ impl crate::hir::TypeChecker<'_> {
             found: HashMap::new(),
             auto_schedule: self.worker.global.auto_schedule_levels,
             shared,
+            contracts: self.atomic_contracts(),
         };
         walk.stmts(body, &Ctx::default());
         mark_stmts(body, &walk.found);
@@ -871,9 +874,11 @@ impl Walk<'_> {
             }
         }
         // L4: no pass may touch a place that another pass writes.
-        if let Some((why, at)) =
-            crate::hir::check::across_proof::across_loop_race(f, kind_word(level.kind))
-        {
+        if let Some((why, at)) = crate::hir::check::across_proof::across_loop_race(
+            f,
+            kind_word(level.kind),
+            &self.contracts,
+        ) {
             self.error(why, at);
         }
         // L5: a lane loop may not read what only lane 0 has.

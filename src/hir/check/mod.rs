@@ -18,6 +18,7 @@ pub mod access;
 pub mod across;
 pub mod across_lanes;
 pub mod across_proof;
+pub mod atomic_contracts;
 pub mod autodiff;
 pub mod calls;
 pub mod capacity_fold;
