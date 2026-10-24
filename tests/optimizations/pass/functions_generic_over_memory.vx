@@ -8,17 +8,15 @@
 // `<M : Memory>` lets one function take a tensor in any memory, and `on Topology::D` with no
 // argument that binds `D` runs where it is called. The device region and `main` call the same
 // functions, with tensors in HBM and in host memory. Each call gets its own copy of the function,
-// and the copies that the region calls are in the GPU image.
+// and the GPU kernel inlines the copies that the region calls: it stores the 7 of `seven`.
 //
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
 // CHECK: device 40 7 22 host 6 7 4
-// PTX-DAG: .func {{.*}} sum_two_24ptr
-// PTX-DAG: .func {{.*}} seven_24topology
-// PTX-DAG: .func {{.*}} first_of_each_24ptr
-// PTX-DAG: .entry vx_npu_kernel_0
+// PTX: .entry vx_npu_kernel_0(
+// PTX-SAME: st.global.b32 {{[^"]*}}, 7;
 
 // The sum of the first two elements, wherever the tensor is.
 fn sum_two<M : Memory, D : Topology>(t : &Tensor<i32, [?], Memory::M>) on Topology::D -> i32 {
