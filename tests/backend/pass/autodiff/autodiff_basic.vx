@@ -1,9 +1,8 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // RUN: vxc --emit-mlir %s 2>&1 | FileCheck %s
-// CHECK-DAG: llvm.func {{(hidden )?}}@vx_googletest_expect_eq_f32(
 // CHECK-DAG: llvm.func {{(hidden )?}}@__enzyme_autodiff_grad_poly(
 // CHECK-LABEL: llvm.func {{(hidden )?}}@f32$expect_eq(%arg0: f32, %arg1: f32) -> i32
-// CHECK: llvm.call @vx_googletest_expect_eq_f32(%{{.*}}, %{{.*}}) : {{.*}}
+// CHECK: llvm.fcmp "une" %arg0, %arg1 : f32
 // CHECK-LABEL: llvm.func {{(hidden )?}}@expect_eq$f32(%arg0: f32, %arg1: f32) -> i32
 // CHECK: llvm.call @f32$expect_eq(%{{.*}}, %{{.*}}) : {{.*}}
 // CHECK-LABEL: llvm.func {{(hidden )?}}@poly(%arg0: f32) -> f32

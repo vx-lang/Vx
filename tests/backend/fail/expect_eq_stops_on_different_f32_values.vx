@@ -1,0 +1,27 @@
+//===- expect_eq_stops_on_different_f32_values.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `expect_eq` on two equal `f32` values lets the program go on. On two different values, it
+// prints both and stops the program.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// CHECK: the equal values passed
+// CHECK: expect_eq failed: expected 2.5, actual 1.5
+// CHECK: panic: expect_eq failed
+// CHECK-NOT: after the failure
+import std::googletest;
+
+fn main() -> i32 {
+  let half : f32 = 0.5;
+  expect_eq(half, half);
+  println!("the equal values passed");
+  let actual : f32 = 1.5;
+  let expected : f32 = 2.5;
+  expect_eq(actual, expected);
+  println!("after the failure");
+  return 0;
+}

@@ -39,11 +39,10 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: llvm.func {{(hidden )?}}@vx_googletest_expect_eq_f32(
 // CHECK-DAG: llvm.func {{(hidden )?}}@__enzyme_autodiff_grad_compute_val(
 // CHECK-DAG: llvm.func {{(hidden )?}}@__enzyme_fwddiff_jvp_compute_val(
 // CHECK-LABEL: llvm.func {{(hidden )?}}@f32$expect_eq(%arg0: f32, %arg1: f32) -> i32
-// CHECK: llvm.call @vx_googletest_expect_eq_f32(%{{.*}}, %{{.*}}) : {{.*}}
+// CHECK: llvm.fcmp "une" %arg0, %arg1 : f32
 // CHECK-LABEL: llvm.func {{(hidden )?}}@expect_eq$f32(%arg0: f32, %arg1: f32) -> i32
 // CHECK: llvm.call @f32$expect_eq(%{{.*}}, %{{.*}}) : {{.*}}
 // CHECK-LABEL: llvm.func {{(hidden )?}}@compute_val(%arg0: f32) -> f32
