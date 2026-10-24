@@ -1,0 +1,112 @@
+//===- across_kernels_from_polybench_and_rodinia_that_are_refused.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Kernels from PolyBench (jacobi-2d in place) and Rodinia (hotspot, nw), written with `across`
+// loops, that the checker refuses (E6032). Only the passes of `jacobi_2d_in_place` really meet.
+// In the other two, a guard or the order of the steps keeps the passes apart, and the checker
+// does not see it: it wants each read of a tensor that the loop writes to use the write's index.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
+// CHECK: Error[E6032] at 28:{{.*}}a pass of this block loop may read an element of `a` that another pass writes: the read
+// CHECK: Error[E6032] at 28:{{.*}}a pass of this lane loop may read an element of `a` that another pass writes: the read
+// CHECK: Error[E6032] at 68:{{.*}}two passes of this block loop may write the same element of `dst`: an index of the write
+// CHECK: Error[E6032] at 86:{{.*}}a pass of this block loop may read an element of `score` that another pass writes: the
+// CHECK: Error[E6032] at 87:{{.*}}two passes of this lane loop may write the same element of `cells`: the writes must use
+// CHECK: Error[E6032] at 95:{{.*}}a pass of this lane loop may read an element of `cells` that another pass writes: the
+
+import core::num;
+
+// The same stencil in place: a pass reads the neighbors that other passes write.
+pub fn jacobi_2d_in_place(a : &mut Tensor<f32, [?, ?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for i in 1..n - 1 across blocks {
+      for j in 1..n - 1 across lanes(256) {
+        a[i][j] = 0.2 * (a[i][j] + a[i][j - 1] + a[i][j + 1] + a[i + 1][j] + a[i - 1][j]);
+      }
+    }
+  }
+  return;
+}
+
+// Rodinia's hotspot kernel: each block loads a 16x16 tile, with its border, into shared memory,
+// takes two steps there, and writes back the 12x12 cells inside the border. The tiles of two
+// blocks overlap by the border, so the write index is `bi * 12 + ty - 2`, and only the guard on
+// `ty` keeps two blocks off one cell.
+pub fn hotspot_pyramid(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, power : &Tensor<f32, [?, ?], Memory::HBM>, tiles : i32, step : f32) -> void {
+  spawn on(Topology::Device) {
+    for bi in 0..tiles across blocks {
+      for bj in 0..tiles across blocks {
+        let mut now = unsafe { Tensor<f32, [16, 16], Memory::SMEM>::uninit() };
+        let mut next = unsafe {
+          Tensor<f32, [16, 16], Memory::SMEM>::uninit()
+        };
+        for ty in 0..16 across lanes {
+          for tx in 0..16 across lanes {
+            now[ty][tx] = src[bi * 12 + ty][bj * 12 + tx];
+          }
+        }
+        for s in 0..2 {
+          for ty in 1..15 across lanes {
+            for tx in 1..15 across lanes {
+              let c = now[ty][tx];
+              next[ty][tx] = c + step * (power[bi * 12 + ty][bj * 12 + tx] + now[ty - 1][tx] + now[ty + 1][tx] + now[ty][tx - 1] + now[ty][tx + 1] - 4.0 * c);
+            }
+          }
+          for ty in 1..15 across lanes {
+            for tx in 1..15 across lanes {
+              now[ty][tx] = next[ty][tx];
+            }
+          }
+        }
+        for ty in 0..16 across lanes {
+          for tx in 0..16 across lanes {
+            if ty >= 2 && ty < 14 && tx >= 2 && tx < 14 {
+              dst[bi * 12 + ty][bj * 12 + tx] = now[ty][tx];
+            }
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+// Rodinia nw: one block for each 16x16 tile on an anti-diagonal of tiles, launched once for each
+// anti-diagonal. In the tile, the lanes walk the cell diagonals in shared memory. A cell reads
+// the cells above it and to its left, which another lane wrote on the step before.
+pub fn needleman_wunsch(score : &mut Tensor<i32, [?, ?], Memory::HBM>, refs : &Tensor<i32, [?, ?], Memory::HBM>, diagonal : i32, first : i32, count : i32, penalty : i32) -> void {
+  spawn on(Topology::Device) {
+    for k in 0..count across blocks {
+      let mut cells = unsafe { Tensor<i32, [17, 17], Memory::SMEM>::uninit() };
+      for x in 0..17 across lanes {
+        cells[0][x] = score[(first + k) * 16][(diagonal - first - k) * 16 + x];
+        cells[x][0] = score[(first + k) * 16 + x][(diagonal - first - k) * 16];
+      }
+      for m in 0..31 {
+        for x in 0..16 across lanes {
+          let y = m - x;
+          if y >= 0 && y < 16 {
+            let up = cells[y][x + 1] - penalty;
+            let left = cells[y + 1][x] - penalty;
+            let corner = cells[y][x] + refs[(first + k) * 16 + y][(diagonal - first - k) * 16 + x];
+            cells[y + 1][x + 1] = up.max(left).max(corner);
+          }
+        }
+      }
+      for y in 0..16 across lanes {
+        for x in 0..16 across lanes {
+          score[(first + k) * 16 + y + 1][(diagonal - first - k) * 16 + x + 1] = cells[y + 1][x + 1];
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

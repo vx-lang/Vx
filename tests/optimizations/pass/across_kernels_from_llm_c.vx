@@ -1,0 +1,372 @@
+//===- across_kernels_from_llm_c.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Kernels from llm.c's CUDA training code, written with `across` loops, that the checker accepts.
+// Each keeps llm.c's algorithm, and a comment says where the Vx form differs from llm.c's. The
+// kernels that the checker refuses are in across_kernels_from_llm_c_that_are_refused.vx.
+//
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --allow-empty --implicit-check-not=Error
+
+import core::num;
+
+// out[b][t][c] = wte[ix[b][t]][c] + wpe[t][c].
+pub fn encoder_forward(out : &mut Tensor<f32, [?, ?, 768], Memory::HBM>, ix : &Tensor<i32, [?, ?], Memory::HBM>, wte : &Tensor<f32, [?, 768], Memory::HBM>, wpe : &Tensor<f32, [?, 768], Memory::HBM>, batch : i32, seq : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..batch across blocks {
+      for t in 0..seq across blocks {
+        for c in 0..768 across lanes(256) {
+          out[b][t][c] = wte[ix[b][t]][c] + wpe[t][c];
+        }
+      }
+    }
+  }
+  return;
+}
+
+// One block for each row: the lanes sum into shared memory, lane 0 adds the sums, and the lanes
+// normalize. llm.c takes the inverse square
+// root with rsqrtf, which is `1.0 / x.sqrt()` here.
+pub fn layernorm_forward(out : &mut Tensor<f32, [?, 768], Memory::HBM>, mean : &mut Tensor<f32, [?], Memory::HBM>, rstd : &mut Tensor<f32, [?], Memory::HBM>, inp : &Tensor<f32, [?, 768], Memory::HBM>, weight : &Tensor<f32, [768], Memory::HBM>, bias : &Tensor<f32, [768], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      let mut part = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      let mut stat = unsafe { Tensor<f32, [2], Memory::SMEM>::uninit() };
+      for l in 0..256 across lanes {
+        let mut s : f32 = 0.0;
+        for k in 0..3 {
+          s = s + inp[r][k * 256 + l];
+        }
+        part[l] = s;
+      }
+      let mut total : f32 = 0.0;
+      for k in 0..256 {
+        total = total + part[k];
+      }
+      stat[0] = total / 768.0;
+      for l in 0..256 across lanes {
+        let mut s : f32 = 0.0;
+        for k in 0..3 {
+          let d = inp[r][k * 256 + l] - stat[0];
+          s = s + d * d;
+        }
+        part[l] = s;
+      }
+      let mut var : f32 = 0.0;
+      for k in 0..256 {
+        var = var + part[k];
+      }
+      stat[1] = 1.0 / (var / 768.0 + 0.00001).sqrt();
+      mean[r] = stat[0];
+      rstd[r] = stat[1];
+      for l in 0..256 across lanes {
+        for k in 0..3 {
+          let c = k * 256 + l;
+          out[r][c] = (inp[r][c] - stat[0]) * stat[1] * weight[c] + bias[c];
+        }
+      }
+    }
+  }
+  return;
+}
+
+// The mean of a row in a local of the block. The code of the block writes no memory, so every
+// lane runs it, and each lane has its own `mean`.
+pub fn layernorm_mean_in_a_local(out : &mut Tensor<f32, [?, 256], Memory::HBM>, inp : &Tensor<f32, [?, 256], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      let mut total : f32 = 0.0;
+      for k in 0..256 {
+        total = total + inp[r][k];
+      }
+      let mean = total / 256.0;
+      for l in 0..256 across lanes {
+        out[r][l] = inp[r][l] - mean;
+      }
+    }
+  }
+  return;
+}
+
+// llm.c's softmax_forward: one block for each row, a block maximum and a block sum.
+pub fn softmax_forward(out : &mut Tensor<f32, [?, 1024], Memory::HBM>, inp : &Tensor<f32, [?, 1024], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      let mut part = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      let mut stat = unsafe { Tensor<f32, [2], Memory::SMEM>::uninit() };
+      for l in 0..256 across lanes {
+        let mut m : f32 = inp[r][l];
+        for k in 1..4 {
+          m = m.max(inp[r][k * 256 + l]);
+        }
+        part[l] = m;
+      }
+      let mut m : f32 = part[0];
+      for k in 1..256 {
+        m = m.max(part[k]);
+      }
+      stat[0] = m;
+      for l in 0..256 across lanes {
+        let mut s : f32 = 0.0;
+        for k in 0..4 {
+          let e = (inp[r][k * 256 + l] - stat[0]).exp();
+          out[r][k * 256 + l] = e;
+          s = s + e;
+        }
+        part[l] = s;
+      }
+      let mut s : f32 = 0.0;
+      for k in 0..256 {
+        s = s + part[k];
+      }
+      stat[1] = 1.0 / s;
+      for l in 0..256 across lanes {
+        for k in 0..4 {
+          out[r][k * 256 + l] = out[r][k * 256 + l] * stat[1];
+        }
+      }
+    }
+  }
+  return;
+}
+
+// The tanh approximation of GELU, for each element.
+pub fn gelu_forward(out : &mut Tensor<f32, [?], Memory::HBM>, inp : &Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          let x = inp[i];
+          let cube = 0.044715 * x * x * x;
+          out[i] = 0.5 * x * (1.0 + (0.7978846 * (x + cube)).tanh());
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn gelu_backward(dinp : &mut Tensor<f32, [?], Memory::HBM>, inp : &Tensor<f32, [?], Memory::HBM>, dout : &Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          let x = inp[i];
+          let cube = 0.044715 * x * x * x;
+          let th = (0.7978846 * (x + cube)).tanh();
+          let sech2 = 1.0 - th * th;
+          let local = 0.5 * (1.0 + th) + x * 0.5 * sech2 * 0.7978846 * (1.0 + 3.0 * 0.044715 * x * x);
+          dinp[i] = dinp[i] + local * dout[i];
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn residual_forward(out : &mut Tensor<f32, [?], Memory::HBM>, a : &Tensor<f32, [?], Memory::HBM>, b2 : &Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          out[i] = a[i] + b2[i];
+        }
+      }
+    }
+  }
+  return;
+}
+
+// losses[b][t] = -ln(probs[b][t][targets[b][t]]).
+pub fn crossentropy_forward(losses : &mut Tensor<f32, [?, ?], Memory::HBM>, probs : &Tensor<f32, [?, ?, ?], Memory::HBM>, targets : &Tensor<i32, [?, ?], Memory::HBM>, batch : i32, seq : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..batch across blocks {
+      for t in 0..seq across lanes(128) {
+        losses[b][t] = 0.0 - probs[b][t][targets[b][t]].ln();
+      }
+    }
+  }
+  return;
+}
+
+// dlogits[b][t][v] += (probs[b][t][v] - [v == target]) * dloss[b][t].
+pub fn crossentropy_softmax_backward(dlogits : &mut Tensor<f32, [?, ?, ?], Memory::HBM>, dloss : &Tensor<f32, [?, ?], Memory::HBM>, probs : &Tensor<f32, [?, ?, ?], Memory::HBM>, targets : &Tensor<i32, [?, ?], Memory::HBM>, batch : i32, seq : i32, vocab : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..batch across blocks {
+      for t in 0..seq across blocks {
+        for v in 0..vocab across lanes(256) {
+          let mut indicator : f32 = 0.0;
+          if v == targets[b][t] {
+            indicator = 1.0;
+          }
+          dlogits[b][t][v] = dlogits[b][t][v] + (probs[b][t][v] - indicator) * dloss[b][t];
+        }
+      }
+    }
+  }
+  return;
+}
+
+// One AdamW step for each parameter. The host passes the two bias corrections.
+pub fn adamw(params : &mut Tensor<f32, [?], Memory::HBM>, grads : &Tensor<f32, [?], Memory::HBM>, m : &mut Tensor<f32, [?], Memory::HBM>, v : &mut Tensor<f32, [?], Memory::HBM>, n : i32, lr : f32, beta1 : f32, beta2 : f32, correction1 : f32, correction2 : f32, eps : f32, decay : f32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          let g = grads[i];
+          let mi = beta1 * m[i] + (1.0 - beta1) * g;
+          let vi = beta2 * v[i] + (1.0 - beta2) * g * g;
+          m[i] = mi;
+          v[i] = vi;
+          let mhat = mi / correction1;
+          let vhat = vi / correction2;
+          params[i] = params[i] - lr * (mhat / (vhat.sqrt() + eps) + decay * params[i]);
+        }
+      }
+    }
+  }
+  return;
+}
+
+// Splits qkv [b][n][3][h][d] into q, k and v [b][h][n][d]. llm.c recovers b, n, h and d from one
+// flat index with `/` and `%`. Here each is a loop of its own.
+pub fn attention_permute(q : &mut Tensor<f32, [?, 12, ?, 64], Memory::HBM>, k : &mut Tensor<f32, [?, 12, ?, 64], Memory::HBM>, v : &mut Tensor<f32, [?, 12, ?, 64], Memory::HBM>, qkv : &Tensor<f32, [?, ?, 3, 12, 64], Memory::HBM>, batch : i32, seq : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..batch across blocks {
+      for n in 0..seq across blocks {
+        for h in 0..12 across lanes {
+          for d in 0..64 across lanes {
+            q[b][h][n][d] = qkv[b][n][0][h][d];
+            k[b][h][n][d] = qkv[b][n][1][h][d];
+            v[b][h][n][d] = qkv[b][n][2][h][d];
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn attention_unpermute(out : &mut Tensor<f32, [?, ?, 12, 64], Memory::HBM>, inp : &Tensor<f32, [?, 12, ?, 64], Memory::HBM>, batch : i32, seq : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..batch across blocks {
+      for n in 0..seq across blocks {
+        for h in 0..12 across lanes {
+          for d in 0..64 across lanes {
+            out[b][n][h][d] = inp[b][h][n][d];
+          }
+        }
+      }
+    }
+  }
+  return;
+}
+
+// The causal softmax of one row of attention scores: row t reads columns 0..=t.
+pub fn attention_softmax_causal(att : &mut Tensor<f32, [?, ?, ?], Memory::HBM>, preatt : &Tensor<f32, [?, ?, ?], Memory::HBM>, heads : i32, seq : i32, scale : f32) -> void {
+  spawn on(Topology::Device) {
+    for h in 0..heads across blocks {
+      for t in 0..seq across blocks {
+        let mut part = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+        let mut stat = unsafe { Tensor<f32, [2], Memory::SMEM>::uninit() };
+        for l in 0..128 across lanes {
+          let mut m : f32 = -1000000000.0;
+          let mut c = l;
+          while c <= t {
+            m = m.max(preatt[h][t][c] * scale);
+            c = c + 128;
+          }
+          part[l] = m;
+        }
+        let mut m : f32 = part[0];
+        for k in 1..128 {
+          m = m.max(part[k]);
+        }
+        stat[0] = m;
+        for l in 0..128 across lanes {
+          let mut s : f32 = 0.0;
+          let mut c = l;
+          while c <= t {
+            s = s + (preatt[h][t][c] * scale - stat[0]).exp();
+            c = c + 128;
+          }
+          part[l] = s;
+        }
+        let mut s : f32 = 0.0;
+        for k in 0..128 {
+          s = s + part[k];
+        }
+        stat[1] = 1.0 / s;
+        for c in 0..seq across lanes(128) {
+          let mut a : f32 = 0.0;
+          if c <= t {
+            a = (preatt[h][t][c] * scale - stat[0]).exp() * stat[1];
+          }
+          att[h][t][c] = a;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// out[r][o] = bias[o] + sum over c of inp[r][c] * weight[o][c], one output for each lane.
+pub fn matmul_forward(out : &mut Tensor<f32, [?, ?], Memory::HBM>, inp : &Tensor<f32, [?, ?], Memory::HBM>, weight : &Tensor<f32, [?, ?], Memory::HBM>, bias : &Tensor<f32, [?], Memory::HBM>, rows : i32, cols : i32, outs : i32) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      for o in 0..outs across lanes(256) {
+        let mut s : f32 = bias[o];
+        for c in 0..cols {
+          s = s + inp[r][c] * weight[o][c];
+        }
+        out[r][o] = s;
+      }
+    }
+  }
+  return;
+}
+
+// dbias[o] += sum over rows of dout[r][o]. llm.c adds the sums of its blocks with atomicAdd.
+// Here each lane owns one `o` and walks the rows itself.
+pub fn matmul_backward_bias_by_column(dbias : &mut Tensor<f32, [?], Memory::HBM>, dout : &Tensor<f32, [?, ?], Memory::HBM>, rows : i32, outs : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(outs + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let o = b * 256 + l;
+        if o < outs {
+          let mut s : f32 = 0.0;
+          for r in 0..rows {
+            s = s + dout[r][o];
+          }
+          dbias[o] = dbias[o] + s;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// The kernel skips rows with no tokens, with the condition in each lane.
+pub fn skip_empty_rows_in_each_lane(out : &mut Tensor<f32, [?, 256], Memory::HBM>, inp : &Tensor<f32, [?, 256], Memory::HBM>, lengths : &Tensor<i32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      for l in 0..256 across lanes {
+        if lengths[r] > 0 {
+          out[r][l] = inp[r][l] * 2.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
