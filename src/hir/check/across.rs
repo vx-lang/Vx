@@ -149,6 +149,17 @@ pub(crate) fn code_after_the_nest(stmts: &[Statement]) -> bool {
     })
 }
 
+/// Whether a region's nest of blocks has code of a group: code in the outer loop of blocks, after
+/// the inner one, that runs once for each pass of the outer loop.
+pub(crate) fn code_of_a_group(stmts: &[Statement]) -> bool {
+    stmts.iter().any(|s| match s {
+        Statement::ForLoop(f) if f.across.is_some() => {
+            f.body.len() > 1 && same_level(&f.body[0], f)
+        }
+        _ => false,
+    })
+}
+
 /// Whether `s` is an `across` loop of the level of `nest`.
 pub(crate) fn same_level(s: &Statement, nest: &ForLoopStmt) -> bool {
     let level = nest.across.as_ref().map(|a| &a.level);
@@ -730,7 +741,8 @@ impl Walk<'_> {
             if let (Some(s), true) = (tail.first(), axes) {
                 self.error(
                     "code after an `across` nest of blocks with more than one axis is not built \
-                     yet. Make the blocks one axis"
+                     yet. Make the blocks one axis, or put the code in the outer loop of blocks, \
+                     after the inner one, where it runs once for each pass of the outer loop"
                         .to_string(),
                     s.span(),
                 );
@@ -1029,7 +1041,24 @@ impl Walk<'_> {
                 _ => None,
             };
             let whole_body = f.body.len() == 1 && same_level(&f.body[0]).is_some();
-            for s in &f.body {
+            // The outer loop of blocks may have code after its inner one: the code of a group,
+            // which runs once for each pass of the outer loop, after the inner passes of it.
+            let group = level.kind == LevelKind::Blocks
+                && ctx.axes.iter().all(|x| x.kind != LevelKind::Blocks)
+                && f.body.len() > 1
+                && same_level(&f.body[0]).is_some();
+            if group {
+                if let Statement::ForLoop(inner) = &f.body[0] {
+                    if let Some(at) = inner.body.iter().find_map(same_level) {
+                        self.error(
+                            "a nest of blocks with code of a group has two axes, not three"
+                                .to_string(),
+                            at,
+                        );
+                    }
+                }
+            }
+            for s in f.body.iter().skip(usize::from(group)) {
                 if whole_body {
                     break;
                 }

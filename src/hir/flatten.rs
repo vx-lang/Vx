@@ -3126,8 +3126,10 @@ impl<'r> Lowerer<'r> {
         lowered
     }
 
-    /// The count of the passes of a nest of blocks that ended, a zeroed `u32` in `space`, and
-    /// the code after the nest, for a region with code there. The host counts the passes.
+    /// The count of the passes of a nest of blocks that ended, zeroed in `space`, and the code
+    /// that runs after them. That code is after the nest, or in the outer loop of blocks after the
+    /// inner one: the code of a group, one for each pass of the outer loop. The host counts the
+    /// passes and the groups.
     fn lower_arrivals(
         &mut self,
         stmts: &[Statement],
@@ -3140,17 +3142,42 @@ impl<'r> Lowerer<'r> {
         let Statement::ForLoop(nest) = &stmts[at] else {
             return Err(crate::emitter_gap!());
         };
-        let Expr::Range(range) = &*nest.iterable else {
-            return Err(crate::emitter_gap!());
+        let grouped =
+            nest.body.len() > 1 && crate::hir::check::across::same_level(&nest.body[0], nest);
+        // The loop whose passes count, the statements that run after them, and the outer loop
+        // of a group.
+        let (counted, after, outer): (
+            &crate::syntax::ForLoopStmt,
+            Vec<&Statement>,
+            Option<&crate::syntax::ForLoopStmt>,
+        ) = if grouped {
+            let Statement::ForLoop(inner) = &nest.body[0] else {
+                return Err(crate::emitter_gap!());
+            };
+            (inner, nest.body[1..].iter().collect(), Some(nest))
+        } else {
+            let after = stmts[at + 1..]
+                .iter()
+                .filter(|s| !matches!(s, Statement::Drop(_)))
+                .filter(|s| !crate::hir::check::across::same_level(s, nest))
+                .collect();
+            (nest, after, None)
         };
-        let end = self.lower_expr(&range.end)?;
-        let start = self.lower_expr(&range.start)?;
-        let passes = self.emit_value(Opcode::Sub, end.reg, start.reg, ElementType::I32, 0);
+        let (start, passes) = self.lower_trip(counted)?;
         let one = self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 1);
         let last = self.emit_value(Opcode::Sub, passes.reg, one.reg, ElementType::I32, 0);
-        // Element 0 counts the passes that ended, and one more element for each pass says
-        // whether that pass was the last.
-        let size = self.emit_value(Opcode::Add, passes.reg, one.reg, ElementType::I32, 0);
+        let group = match outer {
+            Some(o) => {
+                let (start, groups) = self.lower_trip(o)?;
+                Some((o.iter.as_str().into(), start, groups))
+            }
+            None => None,
+        };
+        let groups = group.as_ref().map_or(one.clone(), |(_, _, g)| g.clone());
+        // An element for each group counts the passes of it that ended, and one more element for
+        // each pass says whether that pass was the last of its group.
+        let flags = self.emit_value(Opcode::Mul, groups.reg, passes.reg, ElementType::I32, 0);
+        let size = self.emit_value(Opcode::Add, groups.reg, flags.reg, ElementType::I32, 0);
         let ty = LoweredTy::Tensor {
             elem: ElementType::U32,
             shape: vec!["?".to_string()],
@@ -3161,21 +3188,32 @@ impl<'r> Lowerer<'r> {
         let mem_id = crate::arch::memory_space_dispatch_id(space) as u32 as u64;
         let count = self.emit_typed(Opcode::Transfer, host.reg, Register(0), ty, mem_id);
         self.emit_effect(Opcode::TensorDrop, host.reg, Register(0), 0);
-        let after: Vec<&Statement> = stmts[at + 1..]
-            .iter()
-            .filter(|s| !matches!(s, Statement::Drop(_)))
-            .filter(|s| !crate::hir::check::across::same_level(s, nest))
-            .collect();
         Ok(across::Tail {
             stmts: after.iter().map(|s| (*s).clone()).collect(),
             skip: after
                 .iter()
                 .map(|s| *s as *const Statement as usize)
                 .collect(),
+            counted: counted as *const crate::syntax::ForLoopStmt as usize,
+            outer_body: outer.map(|o| o.body.as_ptr() as usize),
+            group: group.map(|(name, start, _)| (name, start)),
+            groups,
             count,
             start,
+            passes,
             last,
         })
+    }
+
+    /// The first index and the number of passes of the loop `f`, which goes over a range.
+    fn lower_trip(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<(Val, Val)> {
+        let Expr::Range(range) = &*f.iterable else {
+            return Err(crate::emitter_gap!());
+        };
+        let end = self.lower_expr(&range.end)?;
+        let start = self.lower_expr(&range.start)?;
+        let passes = self.emit_value(Opcode::Sub, end.reg, start.reg, ElementType::I32, 0);
+        Ok((start, passes))
     }
 
     /// A `tasks` block or a task body: a `vx.spawn` region with the topology id of its kind.
