@@ -476,8 +476,10 @@ of <a href="/blog/glm-on-an-a100.html">GLM-5 on an A100</a> went through a build
 through <code>spawn on(..)</code>, which then had no warp shuffles.</li>
 <li><strong>The race proof is strict.</strong> It refuses a method call in an
 <code>across</code> loop. It does not read an <code>if l == 0</code> around a write, so in
-<code>count_positive</code> each lane writes its own element. <code>atomic</code> and
-<code>writes_only</code> are the only contracts that a block can state today.
+<code>count_positive</code> each lane writes its own element
+(<a href="https://github.com/vx-lang/Vx/issues/2204">#2204</a>). <code>atomic</code> and
+<code>writes_only</code> are the only contracts that a block can state today
+(<a href="https://github.com/vx-lang/Vx/issues/2205">#2205</a>).
 <code>ordered</code>, for the producer and consumer handshake of fast GEMMs, is a
 <a href="https://github.com/vx-lang/Vx/blob/main/docs/discussions/mlir_declared_writes_in_across.md">proposal</a>.</li>
 <li><strong>Automatic differentiation runs on LLVM IR, not MLIR.</strong> Enzyme does it after the
