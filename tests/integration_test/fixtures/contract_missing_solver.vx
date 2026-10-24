@@ -1,0 +1,23 @@
+//===- contract_missing_solver.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Fixture for missing_solver_test.rs (Vx#2083). Not under tests/frontend/fail —
+// that runner always executes RUN lines, and with z3 present this program is valid.
+
+fn tiled_index(tr : i32, tc : i32, row : i32, col : i32) -> i32
+requires tr >= 0 && tr < 4 && tc >= 0 && tc < 4
+requires row >= 0 && row < 16 && col >= 0 && col < 16
+ensures return >= 0 && return < 4096 {
+  let r = tr * 16 + row;
+  let c = tc * 16 + col;
+  return r * 64 + c;
+}
+
+fn main() -> i32 {
+  println!(tiled_index(3, 3, 15, 15));
+  return 0;
+}

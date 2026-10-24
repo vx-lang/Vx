@@ -235,3 +235,43 @@ fn a_transfer_site_obligation_also_fails_the_build() {
         present.stdout
     );
 }
+
+/// A function with `requires` / `ensures` is the contracts path into the prover. With no z3,
+/// the warning must not advertise `VX_ALLOW_UNVERIFIED` — that variable does not apply here
+/// (Vx#2083).
+const CONTRACTS: &str = "tests/integration_test/fixtures/contract_missing_solver.vx";
+
+#[test]
+fn a_contract_without_z3_does_not_advertise_the_transfer_opt_out() {
+    // Tiny fixture: one requires, no body proof needed beyond spawning z3.
+    let none = compile_file(CONTRACTS, &[], false, false);
+    assert!(
+        none.stdout.contains("no SMT solver available") || none.stdout.contains("SMT solver error"),
+        "missing z3 must surface through the contracts prover, got:\n{}",
+        none.stdout
+    );
+    assert!(
+        !none.stdout.contains("VX_ALLOW_UNVERIFIED"),
+        "contracts must not name the transfer-only opt-out:\n{}",
+        none.stdout
+    );
+    assert!(
+        none.stdout.contains("brew install z3") || none.stdout.contains("apt install z3"),
+        "contracts must still say how to install z3:\n{}",
+        none.stdout
+    );
+
+    // Setting the variable must not change the contracts outcome (still errors, still no
+    // opt-out advice).
+    let allowed = compile_file(CONTRACTS, &[], false, true);
+    assert!(
+        !allowed.stdout.contains("VX_ALLOW_UNVERIFIED"),
+        "even with the variable set, contracts must not advertise it:\n{}",
+        allowed.stdout
+    );
+    assert!(
+        !allowed.ok,
+        "VX_ALLOW_UNVERIFIED must not let unproved contracts build:\n{}",
+        allowed.stdout
+    );
+}

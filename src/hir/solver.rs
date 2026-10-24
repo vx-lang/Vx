@@ -51,16 +51,32 @@ pub fn unverified_allowed() -> bool {
         .unwrap_or(false)
 }
 
-/// The message shown when an obligation cannot be discharged because no solver is available.
+/// The message shown when a `relaxed` transfer obligation cannot be discharged because no
+/// solver is available.
 ///
-/// Names the tool, why it is needed, and the escape hatch — a diagnostic that says only
-/// "z3 not found" leaves the reader to guess whether it mattered.
+/// Names the tool, why it is needed, and the escape hatch. A diagnostic that says only
+/// "z3 not found" leaves the reader to guess whether it mattered. Contracts use
+/// [`contracts_missing_message`] instead: they do not read `VX_ALLOW_UNVERIFIED` (Vx#2083).
 pub fn missing_message(reason: &str) -> String {
     format!(
         "no SMT solver available, so this proof obligation could not be discharged ({reason}). \
-         Vx runs `z3` to verify comptime checks and `relaxed` transfer visibility; install it \
+         Vx runs `z3` to verify contracts and `relaxed` transfer visibility; install it \
          (macOS: `brew install z3`, Ubuntu: `apt install z3`) or set {ALLOW_UNVERIFIED}=1 to \
          compile with obligations left unverified"
+    )
+}
+
+/// The message shown when a contract (`requires` / `ensures`) cannot be proved because no
+/// solver is available.
+///
+/// Same shape as [`missing_message`], but without the `VX_ALLOW_UNVERIFIED` advice: that
+/// variable only downgrades `relaxed` transfer checks, and naming it here sent readers to an
+/// escape hatch that does nothing for contracts (Vx#2083).
+pub fn contracts_missing_message(reason: &str) -> String {
+    format!(
+        "no SMT solver available, so this contract could not be discharged ({reason}). \
+         Vx runs `z3` to verify contracts and `relaxed` transfer visibility; install it \
+         (macOS: `brew install z3`, Ubuntu: `apt install z3`)"
     )
 }
 
@@ -75,6 +91,33 @@ mod tests {
         let m = missing_message("No such file or directory");
         assert!(m.contains("z3"), "must name the tool: {m}");
         assert!(m.contains(ALLOW_UNVERIFIED), "must name the opt-out: {m}");
+        assert!(
+            m.contains("contracts") && m.contains("relaxed"),
+            "must name the checks z3 verifies: {m}"
+        );
+        assert!(
+            m.contains("brew install z3"),
+            "must say how to install: {m}"
+        );
+        assert!(
+            m.contains("No such file or directory"),
+            "must carry the underlying reason: {m}"
+        );
+    }
+
+    /// Contracts must not advertise `VX_ALLOW_UNVERIFIED`: that variable does not apply to them.
+    #[test]
+    fn the_contracts_message_names_the_tool_but_not_the_transfer_opt_out() {
+        let m = contracts_missing_message("No such file or directory");
+        assert!(m.contains("z3"), "must name the tool: {m}");
+        assert!(
+            m.contains("contracts") && m.contains("relaxed"),
+            "must name the checks z3 verifies: {m}"
+        );
+        assert!(
+            !m.contains(ALLOW_UNVERIFIED),
+            "must not name the transfer-only opt-out: {m}"
+        );
         assert!(
             m.contains("brew install z3"),
             "must say how to install: {m}"
