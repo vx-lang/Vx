@@ -141,6 +141,11 @@ impl crate::hir::TypeChecker<'_> {
         if clauses.is_empty() || self.speculating {
             return;
         }
+        // An instance of a generic function is named by its template in a message.
+        let shown = match f.name.split_once('$') {
+            Some((template, _)) if self.env.generic_functions.contains_key(template) => template,
+            _ => f.name.as_ref(),
+        };
         let mut names = HashSet::new();
         for clause in clauses {
             let Some(name) = atomic_name(clause) else {
@@ -148,7 +153,7 @@ impl crate::hir::TypeChecker<'_> {
                     format!(
                         "`atomic` takes one parameter of `{}`: the tensor whose elements it \
                          changes only with atomic operations",
-                        f.name
+                        shown
                     ),
                     clause.span(),
                 );
@@ -156,7 +161,7 @@ impl crate::hir::TypeChecker<'_> {
             };
             match f.params.iter().find(|(p, _)| p.as_ref() == name) {
                 None => self.atomic_error(
-                    format!("`atomic({name})` names no parameter of `{}`", f.name),
+                    format!("`atomic({name})` names no parameter of `{shown}`"),
                     clause.span(),
                 ),
                 Some((_, ty)) if !atomic_tensor(ty) => self.atomic_error(
@@ -181,7 +186,7 @@ impl crate::hir::TypeChecker<'_> {
                     "`{}` says `atomic({name})`, so it may use `{name}` only in an atomic \
                      operation: an `mlir!` block with `ensures : [atomic({name})]`, or a call to a \
                      function that says `atomic` for that argument",
-                    f.name
+                    shown
                 ),
                 at,
             );
@@ -246,11 +251,16 @@ impl crate::hir::TypeChecker<'_> {
         }
     }
 
-    /// The parameters with an atomic clause, for each function that has one.
+    /// The parameters with an atomic clause, for each function that has one. A call to a generic
+    /// function names the template before its body is checked and the instance after, so both
+    /// are here.
     pub(crate) fn atomic_contracts(&self) -> HashMap<String, Vec<usize>> {
-        self.env
-            .syntax_functions
-            .iter()
+        let syntax = self.env.syntax_functions.iter().map(|(n, f)| (n, *f));
+        let templates = self.env.generic_functions.iter().map(|(n, (f, _))| (n, *f));
+        let instances = self.mono.functions.iter().map(|(f, _)| (&f.name, f));
+        syntax
+            .chain(templates)
+            .chain(instances)
             .filter_map(|(name, f)| {
                 let params = atomic_params(f);
                 (!params.is_empty()).then(|| (name.as_ref().to_string(), params))
