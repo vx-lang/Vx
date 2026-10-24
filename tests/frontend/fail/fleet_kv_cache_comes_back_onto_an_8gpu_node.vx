@@ -1,0 +1,27 @@
+//===- fleet_kv_cache_comes_back_onto_an_8gpu_node.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A 2 MiB KV cache on the 8-GPU node in fleet/node-8gpu.vx moves to another machine and back,
+// then to the host. The way back crosses the InfiniBand port at 50 GB/s and PCIe at 63 GB/s,
+// the rates of the way out, so each hop has a cost in picoseconds. Without the routes back, the
+// second transfer was "no hardware path exists" (E6002). The program compiles: it lives in `fail/`
+// because that directory's harness runs the RUN line, with its `--machine`.
+//
+// RUN: vxc --host default --machine fleet/node-8gpu.vx %s --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s --implicit-check-not=E6002
+// CHECK: "verdict": "admitted"
+// CHECK: "path": ["Remote_HBM", "NIC_RAM"]{{.*}}"bytes": 2097152, "derived_cost": 41943040, "derived_unit": "ps"
+// CHECK: "path": ["NIC_RAM", "HBM"]{{.*}}"bytes": 2097152, "derived_cost": 33288127, "derived_unit": "ps"
+// CHECK: "path": ["HBM", "CPU_DRAM"]
+
+fn main() -> i32 {
+  let kv : Tensor<f16, [1024, 1024]> = Tensor<f16>([1024, 1024]);
+  let here = transfer(kv, Memory::HBM);
+  let away = transfer(here, Memory::Remote_HBM);
+  let back = transfer(away, Memory::HBM);
+  let _host = transfer(back, Memory::CPU_DRAM);
+  return 0;
+}

@@ -83,6 +83,9 @@ Topology Node {
   // spec: PCIe Gen4 x16 = 31.5 GB/s per direction (16 GT/s x 16 lanes,
   // 128b/130b). UNVERIFIED on the rented part, as in fleet/a100-80.vx.
   transfer Memory::CPU_DRAM -> Memory::HBM : 31.5 GB/s,
+  // spec: the same PCIe Gen4 x16 link in the other direction; the 31.5 GB/s above is per
+  // direction. Reading a placed tensor back is how a program says it still holds it.
+  transfer Memory::HBM -> Memory::CPU_DRAM : 31.5 GB/s,
   transfer Memory::HBM -> Memory::L2,
   transfer Memory::L2 -> Memory::SMEM,
 

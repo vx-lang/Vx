@@ -84,6 +84,9 @@ Topology Device {
   // 3.1 and later. No fp8 or fp4 type exists in the language.
   dtypes: [f32, bf16, f16, i8, u8, i16, u16, i32, u32, i64, u64, bool],
   transfer Memory::CPU_DRAM -> Memory::HBM : 120 GB/s,
+  // The same memcpy in the other direction, declared at the same peak and UNVERIFIED for
+  // the reason above. Reading a placed tensor back is how a program says it still holds it.
+  transfer Memory::HBM -> Memory::CPU_DRAM : 120 GB/s,
   transfer Memory::HBM -> Memory::L2,
   transfer Memory::L2 -> Memory::SMEM
 }

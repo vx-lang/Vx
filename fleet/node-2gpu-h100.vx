@@ -86,6 +86,9 @@ Topology Node {
   // part in an HGX baseboard may instead reach the host over NVLink-C2C at
   // ~450 GB/s on a Grace-Hopper module.
   transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
+  // spec: the same PCIe Gen5 x16 link in the other direction; the 63 GB/s above is per
+  // direction. Reading a placed tensor back is how a program says it still holds it.
+  transfer Memory::HBM -> Memory::CPU_DRAM : 63 GB/s,
   transfer Memory::HBM -> Memory::L2,
   transfer Memory::L2 -> Memory::SMEM,
 

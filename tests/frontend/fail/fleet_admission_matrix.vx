@@ -30,6 +30,18 @@
 // what proves the sum actually happened.
 // RUN: not vxc --host default --machine fleet/a100-40.vx fleet/admit.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=SUMMED %s
 //
+// Every other machine file gives a capacity verdict too, and no E6002 ("no hardware path
+// exists"): each declares the route from its device memory back to the host. The H200 and
+// the MI300X hold the 70B configuration, and the rest are too small for it.
+// RUN: vxc --host default --machine fleet/h200.vx fleet/admit.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=FITS --implicit-check-not=E6002 %s
+// RUN: vxc --host default --machine fleet/mi300x.vx fleet/admit.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=FITS --implicit-check-not=E6002 %s
+// RUN: not vxc --host default --machine fleet/node-2gpu-a100.vx fleet/admit.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=TOO_BIG --implicit-check-not=E6002 %s
+// RUN: not vxc --host default --machine fleet/node-2gpu-h100.vx fleet/admit.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=TOO_BIG --implicit-check-not=E6002 %s
+// RUN: not vxc --host default --machine fleet/node-8gpu.vx fleet/admit.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=TOO_BIG --implicit-check-not=E6002 %s
+// RUN: not vxc --host default --machine fleet/m4-uma.vx fleet/admit.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=TOO_BIG --implicit-check-not=E6002 %s
+// RUN: not vxc --host default --machine fleet/xeon-8275cl.vx fleet/admit.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=TOO_BIG --implicit-check-not=E6002 %s
+// RUN: not vxc --host default --machine fleet/xeon-e5-2666v3.vx fleet/admit.vx --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck --check-prefix=TOO_BIG --implicit-check-not=E6002 %s
+//
 // This fixture's own body is inert; the RUN lines above are the test. It lives
 // in `fail/` because that is the directory whose harness executes RUN lines.
 
@@ -50,3 +62,8 @@ fn main() -> i32 {
 // not just the single oversized weight tensor.
 // SUMMED: "verdict": "rejected"
 // SUMMED: "tiles": 3
+
+// FITS: "verdict": "admitted"
+
+// TOO_BIG: "verdict": "rejected"
+// TOO_BIG: "code": "E6009"

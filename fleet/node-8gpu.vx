@@ -83,6 +83,9 @@ Topology Node {
   // a 7x difference in every host-seam prediction. Settling it is an open experiment (utils/memalg).
   // The on-die hops below declare no cost -- their `bandwidth:` figures derive it (E6013).
   transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
+  // spec: the same PCIe Gen5 x16 link in the other direction; the 63 GB/s above is per
+  // direction. Reading a placed tensor back is how a program says it still holds it.
+  transfer Memory::HBM -> Memory::CPU_DRAM : 63 GB/s,
   transfer Memory::HBM -> Memory::L2,
   // spec: Ampere cp.async (PTX ISA 8.3 section 9.7.8.24) -- same engine the SKU file
   // fleet/a100-80.vx declares; node files repeat the SKU hierarchy verbatim (#224).
@@ -114,5 +117,10 @@ Topology Node {
   // spec: NVIDIA ConnectX-7 / InfiniBand NDR -- 400 Gb/s = 50 GB/s per port. This is the
   // between-machine edge the fleet campaign exists to measure, and it is deliberately the *port* rate
   // rather than any aggregate: a placement crossing it is one flow on one port.
-  transfer Memory::NIC_RAM -> Memory::Remote_HBM : 50 GB/s
+  transfer Memory::NIC_RAM -> Memory::Remote_HBM : 50 GB/s,
+  // The way back from another machine, over the same port and the same root complex.
+  // spec: NVIDIA ConnectX-7 / InfiniBand NDR -- 400 Gb/s = 50 GB/s per port, per direction.
+  transfer Memory::Remote_HBM -> Memory::NIC_RAM : 50 GB/s,
+  // spec: PCIe Gen5 x16 = 63 GB/s per direction, the NIC-to-GPU link above reversed.
+  transfer Memory::NIC_RAM -> Memory::HBM : 63 GB/s
 }

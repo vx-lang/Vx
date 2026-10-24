@@ -132,6 +132,9 @@ Topology Device {
   memory: Memory::HBM,
   visible: [Memory::HBM, Memory::PEER_HBM, Memory::L2],
   transfer Memory::CPU_DRAM -> Memory::HBM : 140 GB/s,
+  // The same memcpy in the other direction, declared at the same peak and UNVERIFIED for
+  // the reason above. Reading a placed tensor back is how a program says it still holds it.
+  transfer Memory::HBM -> Memory::CPU_DRAM : 140 GB/s,
   transfer Memory::HBM -> Memory::L2,
   transfer Memory::HBM -> Memory::PEER_HBM : 62 GB/s,
   transfer Memory::PEER_HBM -> Memory::HBM : 62 GB/s
