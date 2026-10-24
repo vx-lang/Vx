@@ -6074,6 +6074,85 @@ struct CheckIntegerDivisionPass
   }
 };
 
+// A program can declare a C function that a lowering also calls: `malloc` and
+// `free` for a heap buffer or a task, `aligned_alloc` for an aligned buffer.
+// The lowerings look for an `llvm.func`, but the program's declaration is a
+// `func.func` until convert-func-to-llvm, so they made a second one. This pass
+// turns the program's declaration, and the calls to it, into that `llvm.func`.
+// A declaration of another type is left as it is.
+struct LibcExternsToLLVMPass
+    : public PassWrapper<LibcExternsToLLVMPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LibcExternsToLLVMPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-libc-externs-to-llvm";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Turns a program's declarations of malloc, free and aligned_alloc "
+           "into the llvm.func that the lowerings call";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<LLVM::LLVMDialect>();
+  }
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    MLIRContext *ctx = module.getContext();
+    Type ptr = LLVM::LLVMPointerType::get(ctx);
+    Type i64 = IntegerType::get(ctx, 64);
+    Type none = LLVM::LLVMVoidType::get(ctx);
+    // The types that `LLVM::lookupOrCreateMallocFn` and its siblings use.
+    const std::pair<llvm::StringRef, LLVM::LLVMFunctionType> wanted[] = {
+        {"malloc", LLVM::LLVMFunctionType::get(ptr, {i64})},
+        {"free", LLVM::LLVMFunctionType::get(none, {ptr})},
+        {"aligned_alloc", LLVM::LLVMFunctionType::get(ptr, {i64, i64})},
+    };
+    bool changed = false;
+    for (auto [name, type] : wanted) {
+      auto decl = module.lookupSymbol<func::FuncOp>(name);
+      if (!decl || !decl.isExternal())
+        continue;
+      FunctionType declType = decl.getFunctionType();
+      if (declType.getNumResults() > 1)
+        continue;
+      Type result = declType.getNumResults() ? declType.getResult(0) : none;
+      if (LLVM::LLVMFunctionType::get(result, declType.getInputs()) != type)
+        continue;
+      std::optional<SymbolTable::UseRange> uses = decl.getSymbolUses(module);
+      if (!uses)
+        continue;
+      SmallVector<func::CallOp> calls;
+      bool onlyCalls = true;
+      for (const SymbolTable::SymbolUse &use : *uses) {
+        if (auto call = dyn_cast<func::CallOp>(use.getUser()))
+          calls.push_back(call);
+        else
+          onlyCalls = false;
+      }
+      if (!onlyCalls)
+        continue;
+      OpBuilder b(decl);
+      auto fn = LLVM::LLVMFuncOp::create(b, decl.getLoc(), name, type);
+      for (func::CallOp call : calls) {
+        b.setInsertionPoint(call);
+        auto replacement =
+            LLVM::CallOp::create(b, call.getLoc(), fn, call.getOperands());
+        call.replaceAllUsesWith(replacement->getResults());
+        call.erase();
+      }
+      decl.erase();
+      changed = true;
+    }
+    // A module this pass left alone is not verified again here. The pass runs
+    // first, and a module that is not valid until convert-vx-to-standard
+    // rewrites it was reported here.
+    if (!changed)
+      markAllAnalysesPreserved();
+  }
+};
+
 // A function the program defines is hidden and dso_local: the linked
 // executable does not export it. An exported `write` replaced libc's for the
 // shared runtime library too, so `print`, which calls `write`, called the
@@ -6207,6 +6286,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<HideProgramSymbolsPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<LibcExternsToLLVMPass>();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<BoundedInlinerPass>();

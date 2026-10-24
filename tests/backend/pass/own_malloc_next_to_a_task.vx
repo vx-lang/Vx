@@ -1,0 +1,28 @@
+//===- own_malloc_next_to_a_task.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program that calls `malloc` itself can also start a task. The task code calls `malloc`
+// too, and both calls use one declaration. A second declaration stopped the compile with
+// "redefinition of symbol named 'malloc'".
+import std::alloc;
+
+fn main() -> i32 {
+  let p : *mut i32 = unsafe { malloc(4) };
+  unsafe { p[0] = 5; }
+  let mut total : i32 = 0;
+  tasks {
+    let a = spawn {
+      2
+    };
+    total = a.join();
+  }
+  print(total + unsafe { p[0] });
+  unsafe { free(p); }
+  return 0;
+}
+
+// EXPECT: 7

@@ -17,7 +17,7 @@
 // `b` is dropped when `main` returns, and dropping a `Box` frees its allocation.
 // CHECK: call @Box$i32$drop$i32(%{{.*}}) : (!llvm.ptr) -> ()
 // CHECK-LABEL: func.func @Box$i32$drop$i32(%arg0: !llvm.ptr {llvm.noalias})
-// CHECK: call @free(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @free(%{{.*}}) : (!llvm.ptr) -> ()
 
 import std::box;
 import std::io;
