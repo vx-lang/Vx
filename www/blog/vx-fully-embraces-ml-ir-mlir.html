@@ -5,13 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vx fully embraces {ML, IR, MLIR}</title>
 <meta name="author" content="Aditya Kumar">
-<meta name="description" content="Vx compiles tensor programs through its own intermediate representation and its own MLIR dialect, which keeps where data lives and where code runs, then hands off to upstream MLIR for GPU kernels and LLVM. Each stage is shown on real programs, along with what is not covered yet.">
+<meta name="description" content="Vx compiles tensor programs through its own IR and its own MLIR dialect, down to GPU kernels with shared memory and warp shuffles. Inside Vx source, mlir! blocks write the core library and the GPU instructions, and each block states what it writes, so the race proof can check a kernel that calls it.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
 <meta property="og:title" content="Vx fully embraces {ML, IR, MLIR}">
-<meta property="og:description" content="Tensor programs, Vx's own IR, and a Vx MLIR dialect that keeps placement until it becomes kernels and copies.">
+<meta property="og:description" content="Tensor programs, Vx's own IR, a Vx MLIR dialect down to PTX, and mlir! blocks that state what they write.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-10-03T18:00:00Z">
+<meta property="article:modified_time" content="2026-10-24T18:00:00Z">
 <meta property="og:url" content="https://vxlang.org/blog/vx-fully-embraces-ml-ir-mlir.html">
 <meta property="og:image" content="https://vxlang.org/cards/blog-vx-fully-embraces-ml-ir-mlir.png">
 <meta property="og:image:alt" content="Vx fully embraces {ML, IR, MLIR}: tensor programs lowered through a Vx MLIR dialect into GPU kernels.">
@@ -41,38 +42,36 @@
 <article class="post">
 
 <h1>Vx fully embraces <code>{ML, IR, MLIR}</code></h1>
-<p class="post-meta">Aditya Kumar &middot; 3 October 2026</p>
+<p class="post-meta">Aditya Kumar &middot; 3 October 2026, rewritten 24 October 2026</p>
 
-<blockquote class="tldr"><strong>TL;DR</strong> — <code>{ML, IR, MLIR}</code> is shell
+<blockquote class="tldr"><strong>TL;DR</strong> &mdash; <code>{ML, IR, MLIR}</code> is shell
 brace expansion for the three things this post is about. <strong>ML:</strong> tensors are
-built-in values, <code>a @ b</code> becomes a <code>linalg.matmul</code>, and the standard library
-has softmax and reductions; <code>grad</code> differentiates scalar functions through Enzyme.
-<strong>IR:</strong> Vx has its own flat intermediate representation, and a library can ship as
-that IR instead of as source. <strong>MLIR:</strong> Vx defines its own MLIR dialect, written in
-TableGen, that keeps where data lives and where code runs; its own passes lower that into the
-upstream <code>gpu</code>, <code>linalg</code> and <code>llvm</code> dialects, and MLIR's NVVM
-path turns a GPU region into PTX. The last section lists what &ldquo;fully&rdquo; does not cover
-yet.</blockquote>
+built-in values, and <code>a @ b</code> becomes a <code>linalg.matmul</code>.
+<strong>IR:</strong> Vx has its own intermediate representation, and a library can ship as it.
+<strong>MLIR:</strong> Vx has its own MLIR dialect. A GPU loop goes through it to a kernel with
+shared memory and warp shuffles. Inside Vx source, <code>mlir!</code> blocks write the core
+library and the GPU instructions. Each block states what it writes, and the compiler checks that
+against the MLIR. The last section lists what &ldquo;fully&rdquo; does not cover yet.</blockquote>
 
-<p>Three words, three meanings. <strong>ML</strong> is machine learning: the tensor programs
-Vx is built to compile. An <strong>IR</strong>, or intermediate representation, is the form a
-compiler holds a program in between reading the source and writing machine code.
-<strong>MLIR</strong> is the LLVM project's framework for building IRs out of
-<em>dialects</em>: sets of operations at one level of abstraction, such as linear algebra, GPU
-kernels or plain LLVM instructions. A compiler <em>lowers</em> a program by rewriting it from
-higher dialects into lower ones until only machine code is left.</p>
+<p><strong>ML</strong> is machine learning: the tensor programs that Vx compiles. An
+<strong>IR</strong>, or intermediate representation, is the form a compiler holds a program in
+between the source and the machine code. <strong>MLIR</strong> is the LLVM project's framework
+for IRs. An MLIR IR is made of <em>dialects</em>: sets of operations at one level, such as linear
+algebra, GPU kernels or LLVM instructions. A compiler <em>lowers</em> a program from higher
+dialects into lower ones, until only machine code is left.</p>
 
-<p>This post follows small Vx programs down that path and shows the output of each stage.
-Every program here was compiled and run with <code>vxc</code> built from commit 4dbc0f35.</p>
+<p>The first version of this post had one <code>mlir!</code> example, and its programs no longer
+compile. This version is new. Every program here was compiled with <code>vxc</code> built from
+commit a24dbc65.</p>
 
 <h2 id="ml-tensors-the-compiler-understands"><a href="#ml-tensors-the-compiler-understands">ML: tensors the compiler understands</a></h2>
 
-<p>A tensor's element type and shape are part of its type, so the compiler knows both
-before the program runs. Matrix multiplication is the <code>@</code> operator:</p>
+<p>The element type and the shape of a tensor are part of its type. Matrix multiplication is the
+<code>@</code> operator:</p>
 
 <pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
-  <span class="k">let</span> <span class="k">mut</span> a = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">2</span>, <span class="n">3</span>]&gt;::<span class="f">uninit</span>();
-  <span class="k">let</span> <span class="k">mut</span> b = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">3</span>, <span class="n">2</span>]&gt;::<span class="f">uninit</span>();
+  <span class="k">let</span> <span class="k">mut</span> a = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">2</span>, <span class="n">3</span>]&gt;::<span class="f">new</span>();
+  <span class="k">let</span> <span class="k">mut</span> b = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">3</span>, <span class="n">2</span>]&gt;::<span class="f">new</span>();
   <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">2</span> {
     <span class="k">for</span> k <span class="k">in</span> <span class="n">0</span>..<span class="n">3</span> {
       a[i][k] = (i * <span class="n">3</span> + k + <span class="n">1</span>) <span class="k">as</span> <span class="t">f32</span>;
@@ -84,95 +83,29 @@ before the program runs. Matrix multiplication is the <code>@</code> operator:</
   <span class="k">return</span> <span class="n">0</span>;
 }</code></pre>
 
-<p>This prints <code>15</code>: row 1 of <code>a</code> is 4, 5, 6, and every column of
-<code>b</code> is ones. The <code>@</code> does not become three nested loops in the compiler's
-output. It becomes one operation from MLIR's <code>linalg</code> dialect, which still says
-&ldquo;this is a matrix product of a 2&times;3 and a 3&times;2&rdquo;
-(<code>vxc matmul.vx --action emit-mlir</code>):</p>
+<p>It prints <code>15</code>, the sum of row 1 of <code>a</code>. The <code>@</code> does not
+become three loops. It becomes one <code>linalg.matmul</code>, which still says &ldquo;a
+2&times;3 times a 3&times;2&rdquo; (<code>vxc matmul.vx --action emit-mlir</code>):</p>
 
-<pre><code>linalg.fill ins(%cst_10 : f32) outs(%alloc_9 : memref&lt;2x2xf32&gt;)
-linalg.matmul ins(%alloc, %alloc_3 : memref&lt;2x3xf32&gt;, memref&lt;3x2xf32&gt;) outs(%alloc_9 : memref&lt;2x2xf32&gt;)</code></pre>
+<pre><code>linalg.matmul ins(%alloc, %alloc_0 : memref&lt;2x3xf32&gt;, memref&lt;3x2xf32&gt;) outs(%alloc_2 : memref&lt;2x2xf32&gt;)</code></pre>
 
-<p>Because the product is still a <code>linalg.matmul</code> at this point, later stages can
-choose how to run it. When such a product is placed on an NVIDIA GPU, it is left at this level
-on purpose so the runtime can hand it to cuBLAS instead of running a kernel Vx generated.</p>
+<p>So a later stage can choose how to run it. When the product is placed on an NVIDIA GPU, the
+runtime gives it to cuBLAS.</p>
 
-<p>The same works for <code>f16</code> and <code>bf16</code>. A test in the suite adds two
-<code>f16</code> values, stores into an <code>f16</code> tensor, and multiplies two
-<code>f16</code> matrices, printing <code>4 1.5 6</code>.</p>
-
-<p>The standard library's <code>std::tensor</code> has the reductions a model needs:
-<code>sum</code>, <code>dot</code>, <code>mean</code>, <code>max</code>, <code>argmax</code>,
-<code>variance</code>, <code>softmax_inplace</code> and more. Here is a softmax over scores large
-enough that a careless <code>exp</code> would overflow:</p>
-
-<pre><code><span class="k">import</span> std::tensor;
-
-<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
-  <span class="c">// Scores for three classes, large enough that exp(1002) overflows an f32.</span>
-  <span class="k">let</span> <span class="k">mut</span> logits = <span class="t">Tensor</span>&lt;<span class="t">f32</span>&gt;([<span class="n">3</span>]);
-  logits[<span class="n">0</span>] = <span class="n">1000.0</span>;
-  logits[<span class="n">1</span>] = <span class="n">1001.0</span>;
-  logits[<span class="n">2</span>] = <span class="n">1002.0</span>;
-
-  <span class="k">let</span> _done = logits.<span class="f">softmax_inplace</span>();
-  <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">3</span> {
-    <span class="f">print</span>((logits[i] * <span class="n">1000.0</span>).<span class="f">round</span>() / <span class="n">1000.0</span>);
-    print!(" ");
-  }
-  <span class="k">match</span> logits.<span class="f">argmax</span>() {
-    <span class="t">Option</span>&lt;<span class="t">i32</span>&gt;::<span class="t">Some</span>(best) =&gt; {
-      print!("best class: ");
-      <span class="f">print</span>(best);
-    }
-    <span class="t">Option</span>&lt;<span class="t">i32</span>&gt;::None =&gt; {
-      print!("empty");
-    }
-  }
-  <span class="k">return</span> <span class="n">0</span>;
-}</code></pre>
-
-<p>It prints <code>0.09 0.245 0.665 best class: 2</code>, the same as a numerically stable
-softmax in Python. Parts of <code>std::tensor</code> are written in MLIR directly, inside Vx, and
-the <code>f32</code> <code>softmax_inplace</code> is one of them: its body is built from blocks
-written with the upstream <code>scf</code> and <code>vector</code> dialects, and those operations appear in this program's
-MLIR as they were written. More on that
-below.</p>
-
-<p>Training needs derivatives, and <code>grad</code> gives them:</p>
-
-<pre><code><span class="k">fn</span> <span class="f">poly</span>(x : <span class="t">f32</span>) -&gt; <span class="t">f32</span> {
-  <span class="k">return</span> x * x * x;
-}
-
-<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
-  <span class="k">let</span> x : <span class="t">f32</span> = <span class="n">2.0</span>;
-  <span class="c">// The derivative of x^3 is 3x^2, which is 12 at x = 2.</span>
-  <span class="k">let</span> dx : <span class="t">f32</span> = <span class="f">grad</span>(poly, x);
-  <span class="f">print</span>(dx);
-  <span class="k">return</span> <span class="n">0</span>;
-}</code></pre>
-
-<p>The compiler turns <code>grad(poly, x)</code> into a call that the
-<a href="https://enzyme.mit.edu">Enzyme</a> automatic-differentiation plugin fills in later, on
-the LLVM IR:</p>
-
-<pre><code>func.func private @__enzyme_autodiff_grad_poly((f32) -&gt; f32, f32) -&gt; f32
-%0 = call @__enzyme_autodiff_grad_poly(%f, %cst) : ((f32) -&gt; f32, f32) -&gt; f32</code></pre>
-
-<p><code>jvp</code> and <code>vjp</code>, forward and reverse mode, work the same way. The
-continuous-integration machines build Enzyme and run these programs; the machine this post was
-written on does not have Enzyme, so the call above is as far as it was checked here.</p>
+<p><code>std::tensor</code> has the reductions that a model needs, such as <code>sum</code>,
+<code>max</code>, <code>argmax</code> and <code>softmax_inplace</code>. <code>grad</code>,
+<code>jvp</code> and <code>vjp</code> differentiate a function. The compiler turns
+<code>grad(f, x)</code> into a call that the <a href="https://enzyme.mit.edu">Enzyme</a> plugin
+fills in, on the LLVM IR.</p>
 
 <h2 id="ir-vxs-own-and-a-library-can-ship-as-it"><a href="#ir-vxs-own-and-a-library-can-ship-as-it">IR: Vx's own, and a library can ship as it</a></h2>
 
-<p>Between the source and MLIR, Vx keeps the program in its own IR: the <em>flat HIR</em>,
-a list of simple instructions in which each value is named by its position. In a normal
-compile it is produced after type checking and borrow checking, so everything in it is already known to be well typed,
-and it is what the default code generator reads.</p>
+<p>Between the source and MLIR, Vx holds the program in its own IR, the <em>flat HIR</em>. It
+is a list of simple instructions, made after the type check and the borrow check. The default
+code generator reads it.</p>
 
-<p>That IR is also a file format. <code>--action emit-interface</code> writes a module's
-function signatures and its flat-HIR bodies to a <code>.vxlib</code> file, and a later compile can
+<p>The flat HIR is also a file format. <code>--action emit-interface</code> checks a module, then
+writes its signatures and its flat-HIR bodies to a <code>.vxlib</code> file. A later compile can
 import that file without the source:</p>
 
 <pre><code><span class="k">fn</span> <span class="f">relu</span>(x : <span class="t">f32</span>) -&gt; <span class="t">f32</span> {
@@ -183,8 +116,8 @@ import that file without the source:</p>
 }</code></pre>
 
 <pre><code>$ vxc activations.vx --action emit-interface -o activations.vxlib
-Wrote module interface (782 bytes) to activations.vxlib
-  fn_sigs 1/1  methods 0/0  bodies 1/1  structs 0/0  (nothing skipped)
+Wrote module interface (790 bytes) to activations.vxlib
+  fn_sigs 1/1  methods 0/0  bodies 1/1  structs 0/0  enums 0/0  (nothing skipped)
 $ rm activations.vx</code></pre>
 
 <!-- vx-doctest: skip: imports the .vxlib built in the step above -->
@@ -195,226 +128,386 @@ $ rm activations.vx</code></pre>
   <span class="k">return</span> <span class="n">0</span>;
 }</code></pre>
 
-<p>With <code>activations.vx</code> deleted, this program still type-checks against the
-signatures in the <code>.vxlib</code>, links the body of <code>relu</code> from it, and prints
-<code>4</code>.</p>
+<p>This prints <code>4</code>, with <code>activations.vx</code> deleted.</p>
 
 <h2 id="mlir-a-dialect-of-its-own"><a href="#mlir-a-dialect-of-its-own">MLIR: a dialect of its own</a></h2>
 
-<p>The upstream dialects describe computation well, but none of them says &ldquo;this
-buffer lives in the GPU's memory&rdquo; or &ldquo;run this region on that device&rdquo;. Vx adds
-a dialect, <code>vx</code>, that does. It is defined in TableGen, MLIR's language for declaring
-operations, in <code>include/VxDialect.td</code>. The two central operations, with their comments
-and printing formats trimmed:</p>
+<p>No upstream dialect says &ldquo;this buffer is in GPU memory&rdquo; or &ldquo;run this region
+on that device&rdquo;. The <code>vx</code> dialect says it. It has 16 operations, defined in
+TableGen in <code>include/VxDialect.td</code>. Two of them, trimmed:</p>
 
 <!-- vx-doctest: skip: TableGen -->
 <pre><code>def Vx_SpawnOp : Vx_Op&lt;"spawn"&gt; {
     let summary = "Spawns execution on a specific topology.";
     let arguments = (ins I32Attr:$topology);
-    let results = (outs Variadic&lt;AnyType&gt;:$results);
     let regions = (region AnyRegion:$body);
 }
 
-def Vx_TransferOp : Vx_Op&lt;"transfer", [MemoryEffects&lt;[MemWrite]&gt;]&gt; {
-    let summary = "Transfers a tensor to a target topology.";
-    let arguments = (ins Arg&lt;AnyType, "the value to copy", [MemRead]&gt;:$src,
-                         I32Attr:$target_topology);
-    let results = (outs Res&lt;AnyType, "the copy on the target topology",
-                            [MemAlloc]&gt;:$dst);
+def Vx_LaneReduceOp : Vx_Op&lt;"lane_reduce", [MemoryEffects&lt;[MemRead, MemWrite]&gt;]&gt; {
+    let summary = "Combine the first elements of a tensor over the lanes.";
+    let arguments = (ins AnyMemRef:$input, I32:$count, StrAttr:$kind,
+                     UnitAttr:$ordered, UnitAttr:$subgroup, UnitAttr:$serial);
+    let results = (outs F32:$result);
 }</code></pre>
 
-<p>The dialect has ten more operations, among them <code>vx.free</code>,
-<code>vx.drop</code>, <code>vx.launch</code>, <code>vx.kernel</code> and <code>vx.barrier</code>.
-Here is a program that uses <code>vx.spawn</code> and <code>vx.transfer</code>. It copies two vectors to the GPU, computes <code>y = 2x + y</code> there, and copies
-the result back:</p>
+<p>Here is a GPU program that uses both. Each block of 256 lanes divides one row by the sum of
+the row. With <code>across blocks</code> and <code>across lanes</code>, the passes of a loop run at the
+same time. They run on the blocks and the threads of the GPU. <code>Memory::SMEM</code> is the
+shared memory of one block. <code>lanes::sum</code> adds the row over the lanes:</p>
 
-<pre><code><span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
-  <span class="k">let</span> <span class="k">mut</span> x_host = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">8</span>]&gt;::<span class="f">uninit</span>();
-  <span class="k">let</span> <span class="k">mut</span> y_host = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">8</span>]&gt;::<span class="f">uninit</span>();
-  <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">8</span> {
-    x_host[i] = i <span class="k">as</span> <span class="t">f32</span>;
-    y_host[i] = <span class="n">1.0</span>;
-  }
-
-  <span class="k">let</span> x = <span class="f">transfer</span>(x_host, <span class="t">Memory</span>::GPU_HBM);
-  <span class="k">let</span> <span class="k">mut</span> y = <span class="f">transfer</span>(y_host, <span class="t">Memory</span>::GPU_HBM);
-
-  <span class="k">spawn</span> <span class="k">on</span>(<span class="t">Topology</span>::GPU) {
-    <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">8</span> {
-      y[i] = <span class="n">2.0</span> * x[i] + y[i];
+<pre><code><span class="c">// Each block of 256 lanes divides one row of `x` by the row's sum.</span>
+<span class="k">fn</span> <span class="f">normalize</span>(out : &amp;<span class="k">mut</span> <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [?], <span class="t">Memory</span>::HBM&gt;, x : &amp;<span class="t">Tensor</span>&lt;<span class="t">f32</span>, [?], <span class="t">Memory</span>::HBM&gt;, rows : <span class="t">i32</span>) -&gt; <span class="t">void</span> {
+  <span class="k">spawn</span> <span class="k">on</span>(<span class="t">Topology</span>::Device) {
+    <span class="k">for</span> b <span class="k">in</span> <span class="n">0</span>..rows <span class="k">across</span> blocks {
+      <span class="k">let</span> <span class="k">mut</span> part = <span class="k">unsafe</span> { <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">256</span>], <span class="t">Memory</span>::SMEM&gt;::<span class="f">uninit</span>() };
+      <span class="k">for</span> t <span class="k">in</span> <span class="n">0</span>..<span class="n">256</span> <span class="k">across</span> lanes {
+        part[t] = x[b * <span class="n">256</span> + t];
+      }
+      <span class="k">let</span> s = lanes::<span class="f">sum</span>(&amp;part, <span class="n">256</span>);
+      <span class="k">for</span> t <span class="k">in</span> <span class="n">0</span>..<span class="n">256</span> <span class="k">across</span> lanes {
+        out[b * <span class="n">256</span> + t] = x[b * <span class="n">256</span> + t] / s;
+      }
     }
   }
+  <span class="k">return</span>;
+}
 
-  <span class="k">let</span> result = <span class="f">transfer</span>(y, <span class="t">Memory</span>::CPU_DRAM);
-  <span class="f">print</span>(result);
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> host = <span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">512</span>]&gt;::<span class="f">fill</span>(<span class="n">1.0</span>);
+  <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">256</span> {
+    host[<span class="n">256</span> + i] = i <span class="k">as</span> <span class="t">f32</span>;
+  }
+  <span class="k">let</span> x = <span class="f">transfer</span>(host, <span class="t">Memory</span>::HBM);
+  <span class="k">let</span> <span class="k">mut</span> out = <span class="f">transfer</span>(<span class="t">Tensor</span>&lt;<span class="t">f32</span>, [<span class="n">512</span>]&gt;::<span class="f">fill</span>(<span class="n">0.0</span>), <span class="t">Memory</span>::HBM);
+  <span class="f">normalize</span>(&amp;<span class="k">mut</span> out, &amp;x, <span class="n">2</span>);
+  <span class="k">let</span> r = <span class="f">transfer</span>(out, <span class="t">Memory</span>::CPU_DRAM);
+  println!("{} {} {}", r[<span class="n">0</span>], r[<span class="n">256</span> + <span class="n">1</span>], r[<span class="n">511</span>]);
   <span class="k">return</span> <span class="n">0</span>;
 }</code></pre>
 
-<p>After a line that describes the buffer, it prints <code>[1,  3,  5,  7,  9,  11,  13,  15]</code>.
-Leave out the copy back and print <code>y</code> directly, and the type checker stops the build, because the CPU cannot read GPU memory:</p>
+<pre><code>$ vxc rows.vx --host default --machine fleet/a100-80.vx --run
+0.00390625 0.000030637257 0.0078125</code></pre>
 
-<pre class="diag"><code>Error[E6003] at 18:9: 'y' lives in GPU_HBM but CPU sees only [CPU_DRAM, NPU_HBM]; insert an explicit transfer to CPU_DRAM (cost 50 on the declared path)
-Error[E6003] at 18:3: `print` reads its argument on CPU, which sees only [CPU_DRAM, NPU_HBM], but the value lives in GPU_HBM; bring it home first with `transfer(.., Memory::CPU_DRAM)`</code></pre>
+<p>Row 0 is all ones, so each value is 1/256. Row 1 is 0 to 255, which add up to 32640. The
+machine file <code>fleet/a100-80.vx</code> describes an A100: its memories, its chip, and its
+levels of blocks and lanes.</p>
 
 <h3 id="stage-1-the-vx-dialect"><a href="#stage-1-the-vx-dialect">Stage 1: the <code>vx</code> dialect</a></h3>
 
-<p>In the MLIR that <code>vxc --action emit-mlir</code> prints, the placement is still
-there, as operations rather than as a guess. Topology 500 is the GPU and 0 is the CPU.
-<code>vx.drop</code> marks the point where a buffer is no longer needed. The loop body is left
-out here:</p>
+<p>In the output of <code>--action emit-mlir</code>, the region is a <code>vx.spawn</code>. The
+loops are still loops. The address space <code>3</code> on the memref is shared memory. The chip
+comes from the machine file. Trimmed:</p>
 
-<pre><code>%11 = "vx.transfer"(%alloc) &lt;{target_topology = 500 : i32}&gt; : (memref&lt;8xf32&gt;) -&gt; memref&lt;8xf32&gt;
-vx.drop %alloc : memref&lt;8xf32&gt;
-%12 = "vx.transfer"(%alloc_1) &lt;{target_topology = 500 : i32}&gt; : (memref&lt;8xf32&gt;) -&gt; memref&lt;8xf32&gt;
-vx.drop %alloc_1 : memref&lt;8xf32&gt;
-vx.spawn topology(500) {
-  // the loop, with its start, bound and step marked as parallel
+<pre><code>vx.spawn topology(1036766083) {
+  %alloca_1 = memref.alloca() {alignment = 16 : i64} : memref&lt;256xf32, 3&gt;
+  vx.launch_dim %arg2 axis(0)
+  vx.launch_dim %c256_i32 axis(3)
+  %block_id_x = gpu.block_id  x
+  ...
+  vx.barrier
+  %23 = "vx.lane_reduce"(%alloca_1, %c256_i32_10) &lt;{kind = "sum", ordered}&gt; : (memref&lt;256xf32, 3&gt;, i32) -&gt; f32
+  ...
+  %42 = arith.divf %41, %23 : f32
+  memref.store %42, %arg0[%35] : memref&lt;?xf32&gt;
+  ...
+  vx.drop %alloca_1 : memref&lt;256xf32, 3&gt;
   vx.yield
-} {vx_parallel_trip = 8 : i64}
-vx.drop %11 : memref&lt;8xf32&gt;
-%13 = "vx.transfer"(%12) &lt;{target_topology = 0 : i32}&gt; : (memref&lt;8xf32&gt;) -&gt; memref&lt;8xf32&gt;
-vx.drop %12 : memref&lt;8xf32&gt;</code></pre>
+} {arch = "nvptx64", chip = "sm_80", topology_name = "Device", vx.across}</code></pre>
+
+<p><code>vx.launch_dim</code> gives the launch shape: <code>rows</code> blocks on axis 0, and
+256 threads in a block (axis 3). The compiler put a <code>vx.barrier</code> after the first lane
+loop, so that every lane writes <code>part</code> before the sum reads it.</p>
 
 <h3 id="stage-2-vxs-passes-into-upstream-dialects"><a href="#stage-2-vxs-passes-into-upstream-dialects">Stage 2: Vx's passes, into upstream dialects</a></h3>
 
-<p>Vx's own pass, <code>convert-vx-to-standard</code>, takes the region out into a kernel and
-launches it. Each <code>vx.drop</code> becomes a free: <code>memref.dealloc</code> for a buffer on
-the CPU, <code>vx.free</code> for a copy on the GPU. The kernel is also written out in MLIR's
-standard <code>gpu</code> dialect, for the GPU compiler, with each thread computing its index from
-<code>gpu.block_id</code> and <code>gpu.thread_id</code>:</p>
+<p>The pass <code>convert-vx-to-standard</code> moves the region out into a kernel. The host
+launches it with the shape from stage 1:</p>
 
-<pre><code>%11 = "vx.transfer"(%alloc) &lt;{target_topology = 500 : i32}&gt; : (memref&lt;8xf32&gt;) -&gt; memref&lt;8xf32&gt;
-memref.dealloc %alloc : memref&lt;8xf32&gt;
-%12 = "vx.transfer"(%alloc_1) &lt;{target_topology = 500 : i32}&gt; : (memref&lt;8xf32&gt;) -&gt; memref&lt;8xf32&gt;
-memref.dealloc %alloc_1 : memref&lt;8xf32&gt;
-vx.launch @vx_npu_kernel_0(%11, %12) {topology = 500 : i32, vx_parallel_trip = 8 : i64} : (memref&lt;8xf32&gt;, memref&lt;8xf32&gt;) -&gt; ()
-vx.free %11 {topology = 500 : i32} : memref&lt;8xf32&gt;
-%13 = "vx.transfer"(%12) &lt;{target_topology = 0 : i32}&gt; : (memref&lt;8xf32&gt;) -&gt; memref&lt;8xf32&gt;
-vx.free %12 {topology = 500 : i32} : memref&lt;8xf32&gt;</code></pre>
+<pre><code>vx.launch @vx_npu_kernel_0(%arg0, %arg1, %arg2, %arg2) {topology = 1036766083 : i32, vx.across, vx.launch_block = "256", vx.launch_grid = "$0", ...}</code></pre>
 
-<pre><code>gpu.module @vx_kernels {
-  gpu.func @vx_npu_kernel_0(%arg0: memref&lt;8xf32&gt;, %arg1: memref&lt;8xf32&gt;) kernel {
-    %c0_i32 = arith.constant 0 : i32
-    %c8_i32 = arith.constant 8 : i32
-    %cst = arith.constant 2.000000e+00 : f32
-    %c1_i32 = arith.constant 1 : i32
-    %alloca = memref.alloca() : memref&lt;i32&gt;
-    %block_dim_x = gpu.block_dim  x
-    %block_id_x = gpu.block_id  x
-    %thread_id_x = gpu.thread_id  x
-    %0 = arith.muli %block_id_x, %block_dim_x : index
-    %1 = arith.addi %0, %thread_id_x : index
-    %2 = arith.index_cast %1 : index to i32
+<p>The kernel has two copies. The GPU copy is in MLIR's <code>gpu</code> dialect. There,
+<code>vx.lane_reduce</code> becomes 5 shuffles in each warp of 32 lanes. The first lane of each
+warp writes its sum to shared memory, and after a barrier the warps add those sums with 5 more
+shuffles:</p>
+
+<pre><code>gpu.module @vx_kernels attributes {vx.chip = "sm_80"} {
+  memref.global "private" @vx_npu_kernel_0_smem_1 : memref&lt;256xf32, 3&gt; {alignment = 16 : i64}
+  memref.global "private" @vx_npu_kernel_0_smem_0 : memref&lt;32xf32, 3&gt; {alignment = 16 : i64}
+  gpu.func @vx_npu_kernel_0(%arg0: memref&lt;?xf32&gt;, %arg1: memref&lt;?xf32&gt;, %arg2: i32) kernel {
+    ...
+    gpu.barrier
+    ...
+    %shuffleResult, %valid = gpu.shuffle  down %28, %c16_i32, %c32_i32 : f32
+    %29 = arith.addf %28, %shuffleResult : f32
+    %shuffleResult_7, %valid_8 = gpu.shuffle  down %29, %c8_i32, %c32_i32_6 : f32
+    %30 = arith.addf %29, %shuffleResult_7 : f32
     ...</code></pre>
 
-<p>From here on, the work is done by upstream MLIR passes. Vx's <code>vx-to-llvm</code> pass
-runs <code>convert-gpu-to-nvvm</code> and <code>gpu-module-to-binary</code> on the GPU module; the host code goes
-through the usual conversions to the <code>llvm</code> dialect, and then to LLVM IR.</p>
+<p>The CPU copy is a <code>vx.kernel</code>. There, the same operation becomes loops that add in
+the same order, so the two copies give the same bits. This machine has no GPU, so the CPU copy
+printed the result above.</p>
+
+<p>From here, upstream MLIR passes do the work. <code>convert-gpu-to-nvvm</code> and
+<code>gpu-module-to-binary</code> make PTX from the GPU module. The host code goes to the
+<code>llvm</code> dialect and then to LLVM IR.</p>
 
 <h3 id="stage-3-ptx"><a href="#stage-3-ptx">Stage 3: PTX</a></h3>
 
-<p>PTX is NVIDIA's assembly language for GPUs. In the <code>llvm</code> dialect that
-<code>vxc --action emit-llvm</code> prints, one step before LLVM IR, the dispatch call carries the kernel as PTX text.
-Decoded, its loop is a grid-stride loop, and <code>2.0 * x</code> has become
-<code>x + x</code>:</p>
+<p>PTX is NVIDIA's assembly language for GPUs. <code>vxc --emit-ptx</code> writes the kernels to a
+file, and a <code>.json</code> file beside it gives the parameters and the launch shape of each
+kernel. The kernel has the name of the function. The middle of it:</p>
 
 <!-- vx-doctest: skip: PTX -->
 <pre><code>.version 7.6
 .target sm_80
-.address_size 64
 ...
-	mov.u32 	%r1, %ntid.x;
-	mov.u32 	%r3, %ctaid.x;
-	mov.u32 	%r4, %tid.x;
-	mad.lo.s32 	%r10, %r3, %r1, %r4;
-	setp.gt.s32 	%p1, %r10, 7;
-	@%p1 bra 	$L__BB0_3;
-	mov.u32 	%r5, %nctaid.x;
-	mul.lo.s32 	%r2, %r5, %r1;
-$L__BB0_2:
-	mul.wide.s32 	%rd5, %r10, 4;
-	add.s64 	%rd6, %rd1, %rd5;
-	ld.global.b32 	%r6, [%rd6];
-	add.rn.f32 	%r7, %r6, %r6;
-	add.s64 	%rd7, %rd2, %rd5;
-	ld.global.b32 	%r8, [%rd7];
-	add.rn.f32 	%r9, %r7, %r8;
-	st.global.b32 	[%rd7], %r9;
-	add.s32 	%r10, %r10, %r2;
-	setp.lt.s32 	%p2, %r10, 8;
-	@%p2 bra 	$L__BB0_2;</code></pre>
+.visible .entry normalize(
+...
+	.shared .align 16 .b8 vx_npu_kernel_0_smem_1[1024];
+	.shared .align 16 .b8 vx_npu_kernel_0_smem_0[128];
+...
+	bar.sync 	0;
+	...
+	shfl.sync.down.b32 	%r11, %r35, 16, 31, -1;
+	add.rn.f32 	%r12, %r35, %r11;
+	shfl.sync.down.b32 	%r13, %r12, 8, 31, -1;
+	add.rn.f32 	%r14, %r12, %r13;
+	...
+	st.shared.b32 	[%rd5], %r5;
+	bar.sync 	0;
+	...
+	shfl.sync.idx.b32 	%r6, %r29, 0, 31, -1;
+	bar.sync 	0;
+	...
+	div.rn.f32 	%r31, %r30, %r6;
+	st.global.b32 	[%rd23], %r31;</code></pre>
 
-<p>The test suite checks that this PTX is produced and holds the loop, not just a stub.
-It has no GPU to run it on. Neither had the machine this post was written on, so the runtime ran
-the same region on the CPU, which is how the program printed its result above.</p>
+<p>The last <code>shfl.sync.idx</code> gives the sum of lane 0 to every lane of the warp.</p>
 
-<h3 id="mlir-inside-vx-source"><a href="#mlir-inside-vx-source">MLIR inside Vx source</a></h3>
+<h2 id="mlir-inside-vx-source"><a href="#mlir-inside-vx-source">MLIR inside Vx source</a></h2>
 
-<p>The traffic goes both ways. A Vx function can contain MLIR, through
-<code>mlir!</code>. This is <code>fill</code> from <code>std::tensor</code>:</p>
+<p>The traffic also goes the other way. A Vx function can contain MLIR, in an
+<code>mlir!</code> block. The block names its inputs, its result type and its dialects. The
+<code>core</code> library declares no <code>extern</code> function. About 130 <code>mlir!</code>
+blocks write its integer methods, its math functions, its pointers and its atomics. So
+<code>core</code> also works in a GPU kernel, which has no C library.</p>
 
-<!-- vx-doctest: skip: a method from inside an impl block -->
-<pre><code><span class="k">fn</span> <span class="f">fill</span>(self : &amp;<span class="k">mut</span> <span class="t">Tensor</span>&lt;<span class="t">T</span>, [?, ?]&gt;, val : <span class="t">T</span>) -&gt; <span class="t">void</span> {
-  mlir!(
-  inputs: (%arg_t = self: <span class="f">memref</span>&lt;?x?xf32&gt;, %arg_v = val: <span class="t">f32</span>),
-  clobbers: [self],
-  dialects: ["linalg"]
-  ) {
-    linalg.fill <span class="f">ins</span>(%arg_v : <span class="t">f32</span>) <span class="f">outs</span>(%arg_t : <span class="f">memref</span>&lt;?x?xf32&gt;)
-    macro.yield
+<h3 id="one-block-for-the-cpu-and-the-gpu"><a href="#one-block-for-the-cpu-and-the-gpu">One block for the CPU and the GPU</a></h3>
+
+<p>The atomics of <code>core::sync::atomic</code> are an example. A <code>macro_rules</code> macro
+stamps one function for each integer type and each operation. <code>$op</code> is the operation,
+such as <code>add</code> or <code>max</code>, and <code>$mlir</code> is the MLIR type. The case for
+<code>Relaxed</code>, trimmed:</p>
+
+<!-- vx-doctest: skip: the body of a macro_rules macro -->
+<pre><code><span class="k">fn</span> <span class="f">$name</span>&lt;M : <span class="t">Memory</span>, D : <span class="t">Topology</span>&gt;(t : &amp;<span class="t">Tensor</span>&lt;<span class="t">$t</span>, [?], <span class="t">Memory</span>::M&gt;, i : <span class="t">i32</span>, val : <span class="t">$t</span>, order : <span class="t">AtomicOrdering</span>) <span class="k">on</span> <span class="t">Topology</span>::D -&gt; <span class="t">$t</span>
+<span class="k">ensures</span> <span class="f">atomic</span>(t)
+{
+  <span class="f">assert</span>(i &gt;= <span class="n">0</span> &amp;&amp; i &lt; <span class="f">$len</span>(t), "atomic read-modify-write: the index is outside the tensor");
+  <span class="k">match</span> order {
+    <span class="t">AtomicOrdering</span>::Relaxed =&gt; {
+      <span class="k">return</span> mlir!( inputs : (%t = t : memref&lt;?x$mlir&gt;, %i = i : <span class="t">i32</span>, %x = val : $mlir), returns : <span class="t">$t</span>,
+                    dialects : ["memref", "arith", "llvm"], ensures : [<span class="f">atomic</span>(t)]) {
+        %a = memref.extract_aligned_pointer_as_index %t : memref&lt;?x$mlir&gt; -&gt; index
+        ...
+        %p = llvm.getelementptr %base[%k] : (!llvm.ptr, i64) -&gt; !llvm.ptr, $mlir
+        %r = llvm.atomicrmw $op %p, %x monotonic : !llvm.ptr, $mlir
+        macro.yield %r : $mlir
+      };
+    }
+    ...
+  }
+}</code></pre>
+
+<p>A program calls it as an ordinary function. This one counts the values of <code>x</code>. Each
+block counts in its shared memory first, and then adds its counts to the totals in GPU
+memory:</p>
+
+<pre><code><span class="k">import</span> core::sync::atomic;
+
+<span class="c">// Counts the values of `x`, which are 0 to 7. Each block counts in shared memory first,</span>
+<span class="c">// then adds its counts to the totals in GPU memory.</span>
+<span class="k">fn</span> <span class="f">histogram</span>(counts : &amp;<span class="t">Tensor</span>&lt;<span class="t">u32</span>, [<span class="n">8</span>], <span class="t">Memory</span>::HBM&gt;, x : &amp;<span class="t">Tensor</span>&lt;<span class="t">i32</span>, [?], <span class="t">Memory</span>::HBM&gt;, blocks : <span class="t">i32</span>) -&gt; <span class="t">void</span> {
+  <span class="k">spawn</span> <span class="k">on</span>(<span class="t">Topology</span>::Device) {
+    <span class="k">for</span> b <span class="k">in</span> <span class="n">0</span>..blocks <span class="k">across</span> blocks {
+      <span class="k">let</span> local = <span class="t">Tensor</span>&lt;<span class="t">u32</span>, [<span class="n">8</span>], <span class="t">Memory</span>::SMEM&gt;::<span class="f">fill</span>(<span class="n">0u32</span>);
+      <span class="k">for</span> l <span class="k">in</span> <span class="n">0</span>..<span class="n">256</span> <span class="k">across</span> lanes {
+        <span class="k">let</span> _old = <span class="f">atomic_fetch_add_u32</span>(&amp;local, x[b * <span class="n">256</span> + l], <span class="n">1u32</span>, <span class="t">AtomicOrdering</span>::Relaxed);
+      }
+      <span class="k">for</span> l <span class="k">in</span> <span class="n">0</span>..<span class="n">8</span> <span class="k">across</span> lanes {
+        <span class="k">let</span> _old = <span class="f">atomic_fetch_add_u32</span>(counts, l, local[l], <span class="t">AtomicOrdering</span>::Relaxed);
+      }
+    }
+  }
+  <span class="k">return</span>;
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="k">let</span> <span class="k">mut</span> values = <span class="t">Tensor</span>&lt;<span class="t">i32</span>, [<span class="n">1024</span>]&gt;::<span class="f">fill</span>(<span class="n">0</span>);
+  <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">1024</span> {
+    values[i] = (i * <span class="n">5</span>) % <span class="n">8</span>;
+  }
+  <span class="k">let</span> x = <span class="f">transfer</span>(values, <span class="t">Memory</span>::HBM);
+  <span class="k">let</span> counts = <span class="f">transfer</span>(<span class="t">Tensor</span>&lt;<span class="t">u32</span>, [<span class="n">8</span>]&gt;::<span class="f">fill</span>(<span class="n">0u32</span>), <span class="t">Memory</span>::HBM);
+  <span class="f">histogram</span>(&amp;counts, &amp;x, <span class="n">4</span>);
+  <span class="k">let</span> c = <span class="f">transfer</span>(counts, <span class="t">Memory</span>::CPU_DRAM);
+  println!("{} {} {} {} {} {} {} {}", c[<span class="n">0</span>], c[<span class="n">1</span>], c[<span class="n">2</span>], c[<span class="n">3</span>], c[<span class="n">4</span>], c[<span class="n">5</span>], c[<span class="n">6</span>], c[<span class="n">7</span>]);
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>It prints <code>128 128 128 128 128 128 128 128</code>. The memory space <code>M</code> is a
+type parameter, so the compiler makes one copy of the function for shared memory and one for GPU
+memory. In the kernel, the add to <code>local</code> is a shared-memory atomic, and the add to
+<code>counts</code> is a global one. The ordering <code>Relaxed</code> is a constant, so the
+other cases of the <code>match</code> are gone:</p>
+
+<!-- vx-doctest: skip: PTX -->
+<pre><code>	atom.shared.add.u32 	%r12, [%rd19], 1;
+	...
+	bar.sync 	0;
+	...
+	atom.global.add.u32 	%r14, [%rd25], %r13;</code></pre>
+
+<p>On the CPU, the same block becomes an LLVM <code>atomicrmw</code>. That is how this machine
+printed the counts.</p>
+
+<h3 id="a-block-says-what-it-writes"><a href="#a-block-says-what-it-writes">A block says what it writes</a></h3>
+
+<p>The passes of an <code>across</code> loop run at the same time. So the compiler proves that no
+two passes write the same place, and that no pass reads a place that another pass writes. A
+loop that it cannot prove is an error (E6032).</p>
+
+<p>The proof does not read MLIR. So an <code>mlir!</code> block with no contract is refused in an
+<code>across</code> loop:</p>
+
+<pre class="diag"><code>Error[E6032] at 151:24: an `mlir!` block in an `across` loop may write memory that the checker cannot see</code></pre>
+
+<p>The <code>ensures</code> entry of a block is its contract. <code>ensures : [atomic(t)]</code>
+above says that each access to <code>t</code> is atomic, so two passes can add to one element.
+<code>ensures : [writes_only()]</code> says that the block writes no memory. The function that
+holds the block states the same contract after its signature, and a call in the loop uses
+it.</p>
+
+<p>Here is an instruction that only a GPU has. <code>nvvm.vote.sync ballot</code> gives each lane
+of a warp one bit for each lane whose condition is true. <code>math.ctpop</code> counts the
+bits:</p>
+
+<pre><code><span class="c">// How many lanes of the warp have `p` true. It writes no memory.</span>
+<span class="k">fn</span> <span class="f">count_true</span>(p : <span class="t">bool</span>) <span class="k">on</span> <span class="t">Topology</span>::Device -&gt; <span class="t">i32</span>
+<span class="k">ensures</span> <span class="f">writes_only</span>()
+{
+  <span class="k">return</span> mlir!( inputs : (%p = p : i1), returns : <span class="t">i32</span>, dialects : ["nvvm", "llvm", "math"], ensures : [<span class="f">writes_only</span>()]) {
+    %all = llvm.mlir.constant(-1 : i32) : i32
+    %bits = nvvm.vote.sync ballot %all, %p -&gt; i32
+    %r = math.ctpop %bits : i32
+    macro.yield %r : i32
+  };
+}
+
+<span class="c">// Each lane gets the number of positive values in its warp.</span>
+<span class="k">pub</span> <span class="k">fn</span> <span class="f">count_positive</span>(out : &amp;<span class="k">mut</span> <span class="t">Tensor</span>&lt;<span class="t">i32</span>, [?], <span class="t">Memory</span>::HBM&gt;, x : &amp;<span class="t">Tensor</span>&lt;<span class="t">f32</span>, [?], <span class="t">Memory</span>::HBM&gt;, warps : <span class="t">i32</span>) -&gt; <span class="t">void</span> {
+  <span class="k">spawn</span> <span class="k">on</span>(<span class="t">Topology</span>::Device) {
+    <span class="k">for</span> w <span class="k">in</span> <span class="n">0</span>..warps <span class="k">across</span> blocks {
+      <span class="k">for</span> l <span class="k">in</span> <span class="n">0</span>..<span class="n">32</span> <span class="k">across</span> lanes {
+        out[w * <span class="n">32</span> + l] = <span class="f">count_true</span>(x[w * <span class="n">32</span> + l] &gt; <span class="n">0.0</span>);
+      }
+    }
+  }
+  <span class="k">return</span>;
+}</code></pre>
+
+<p>In the PTX of <code>count_positive</code>, the block is two instructions:</p>
+
+<!-- vx-doctest: skip: PTX -->
+<pre><code>	vote.sync.ballot.b32 	%r9, %p3, -1;
+	popc.b32 	%r10, %r9;</code></pre>
+
+<p>Take out the two <code>ensures</code>, and the call is refused:</p>
+
+<pre class="diag"><code>Error[E6032] at 17:27: the call to `count_true` may write through an argument, and the checker does not read its body. Write its work in the loop</code></pre>
+
+<h3 id="the-compiler-checks-the-contract"><a href="#the-compiler-checks-the-contract">The compiler checks the contract</a></h3>
+
+<p>A contract that nothing checks is a comment. So the compiler reads the MLIR of the block, and
+compares each operation on an input with the contract. This block says <code>atomic(t)</code>,
+but it does a plain load, an add and a store:</p>
+
+<pre><code><span class="c">// Says that each access to `t` is atomic, but it loads, adds and stores.</span>
+<span class="k">fn</span> <span class="f">add_one</span>(t : &amp;<span class="t">Tensor</span>&lt;<span class="t">i32</span>, [?], <span class="t">Memory</span>::HBM&gt;, i : <span class="t">i32</span>) <span class="k">on</span> <span class="t">Topology</span>::Device -&gt; <span class="t">i32</span>
+<span class="k">ensures</span> <span class="f">atomic</span>(t)
+{
+  <span class="k">return</span> mlir!( inputs : (%t = t : memref&lt;?xi32&gt;, %i = i : <span class="t">i32</span>), returns : <span class="t">i32</span>, dialects : ["memref", "arith"], ensures : [<span class="f">atomic</span>(t)]) {
+    %k = arith.index_cast %i : i32 to index
+    %old = memref.load %t[%k] : memref&lt;?xi32&gt;
+    %one = arith.constant 1 : i32
+    %new = arith.addi %old, %one : i32
+    memref.store %new, %t[%k] : memref&lt;?xi32&gt;
+    macro.yield %old : i32
   };
 }</code></pre>
 
-<p>The block names its inputs, the dialects it uses, and the arguments it writes. Because of
-<code>clobbers</code>, the compile-time interpreter knows that <code>fill</code> changes
-<code>self</code>, even though it cannot read the MLIR inside.</p>
+<pre class="diag"><code>Error[E8007] at 5:17: the block says `atomic(t)`, but `%old = memref.load %t[%k] : memref&lt;?xi32&gt;` reads or writes `%t` without an atomic operation</code></pre>
+
+<p>Some things stay trusted. An input of type <code>!llvm.ptr</code> is an address, and the
+compiler cannot see which tensor it points into. The compiler also trusts that the PTX of an
+operation does what the operation says.</p>
+
+<p>The MLIR itself is checked when the program compiles, not when it runs. A block that is not
+valid MLIR is an error at the block, with the message of the MLIR parser:</p>
+
+<pre class="diag"><code>The `mlir!` block at line 2, column 17 is not valid MLIR: custom op 'arith.no_such_op' is unknown
+The `mlir!` block at line 2, column 17 takes its input `%t` as `memref&lt;4xf32&gt;`, but the value is a `memref&lt;8xf32&gt;`: 'memref.cast' op operand type 'memref&lt;8xf32&gt;' and result type 'memref&lt;4xf32&gt;' are cast incompatible</code></pre>
+
+<p>A block can also name the arguments that it changes, with <code>clobbers</code>. The
+compile-time interpreter cannot run MLIR, but with <code>clobbers</code> it knows which values the
+block changed.</p>
 
 <h2 id="what-fully-does-not-cover-yet"><a href="#what-fully-does-not-cover-yet">What &ldquo;fully&rdquo; does not cover yet</a></h2>
 
 <ul>
-<li><strong>Automatic differentiation runs on LLVM IR, not MLIR, and is tested only on
-scalars.</strong> Enzyme does the differentiation after lowering. The default code generator
-declines <code>grad</code> on a function that takes a tensor and leaves it to the older one, and
-no test differentiates a function over tensors.</li>
+<li><strong>No kernel in the test suite runs on a GPU.</strong> The suite checks the PTX, and runs
+the CPU copy of each kernel. The machine this post was written on has no GPU either.</li>
+<li><strong>Only NVIDIA machines have <code>across</code> loops.</strong> The machine files for the
+AMD MI300X and the Intel Arc A770 have no <code>levels:</code>, so the loops above are refused
+there. SPIR-V and AMD GPU code are not generated.</li>
+<li><strong>No tensor cores.</strong> Nothing generates <code>mma</code> or <code>wgmma</code> yet.
+Vx keeps chip details out of the language, so these will be MLIR passes, not syntax. The kernels
+of <a href="/blog/glm-on-an-a100.html">GLM-5 on an A100</a> went through a build script, not
+through <code>spawn on(..)</code>, which then had no warp shuffles.</li>
+<li><strong>The race proof is strict.</strong> It refuses a method call in an
+<code>across</code> loop. It does not read an <code>if l == 0</code> around a write, so in
+<code>count_positive</code> each lane writes its own element. <code>atomic</code> and
+<code>writes_only</code> are the only contracts that a block can state today.
+<code>ordered</code>, for the producer and consumer handshake of fast GEMMs, is a
+<a href="https://github.com/vx-lang/Vx/blob/main/docs/discussions/mlir_declared_writes_in_across.md">proposal</a>.</li>
+<li><strong>Automatic differentiation runs on LLVM IR, not MLIR.</strong> Enzyme does it after the
+lowering, and no test differentiates a function of tensors.</li>
 <li><strong>The Apple Neural Engine is not reached through MLIR.</strong> The runtime loads CoreML
-models that are generated when Vx is built, and uses them for the operations they cover.</li>
-<li><strong>General GPU kernels are not finished</strong>
-(<a href="https://github.com/vx-lang/Vx/issues/251">#251</a>). The PTX above comes from the
-built-in GPU topology. Against a declared H100 machine file, the same loop is refused today with
-a message that only a matmul is routed there. No test runs generated PTX on a real GPU.</li>
-<li><strong>There is no attention kernel.</strong> The Llama 2 port compiles to MLIR, but the
-test only compiles it. Its matrix products are placed on the GPU, while RMSNorm, RoPE, the
-attention loops and SwiGLU run on the host.</li>
-<li><strong>Not every program takes the default path.</strong> 56 of the 345 programs in the
-backend test suite that run without special hardware or flags are declined by the flat-HIR code generator and fall back to an older one that
-works from the syntax tree.</li>
-<li><strong>A <code>.vxlib</code> is not checked when it is written.</strong>
-<code>--action emit-interface</code> does not type-check or borrow-check the library, so a
-function with a type error can be written to a <code>.vxlib</code>. Compile the library normally
-first.</li>
-<li><strong>Running a program goes through the LLVM tools.</strong> <code>vxc</code> runs
-<code>mlir-translate</code>, <code>opt</code>, <code>llc</code> and <code>clang</code> as separate
-programs, rather than calling MLIR's execution engine in-process.</li>
-<li><strong>Some upstream dialects go unused.</strong> Vx works on buffers
-(<code>memref</code>) from the start, so MLIR's tensor-level pipeline and bufferization passes do
-not run. SPIR-V and AMD GPU targets are not wired up.</li>
+models that are made when Vx is built.</li>
+<li><strong>To run a program, <code>vxc</code> starts the LLVM tools</strong>
+(<code>mlir-translate</code>, <code>opt</code>, <code>llc</code> and <code>clang</code>) as
+separate programs. It does not use MLIR's execution engine.</li>
+<li><strong>Some upstream dialects are not used.</strong> Vx works on buffers
+(<code>memref</code>) from the start, so MLIR's tensor-level passes and bufferization do not
+run.</li>
 </ul>
 
-<p>So &ldquo;fully&rdquo; describes the direction more than the finish line. But the
-direction is concrete. Placement lives in the types, survives into Vx's own IR, is spelled out as
-operations in Vx's own MLIR dialect, and is handed to upstream MLIR only at the point where it
-turns into kernels and copies. Nothing along the way has to guess where a value lives.</p>
+<p>So &ldquo;fully&rdquo; describes the direction more than the finish line. But the direction
+is concrete. Placement is in the types, and it stays in Vx's own IR and in the <code>vx</code>
+dialect until it becomes kernels and copies. And the MLIR that a programmer writes by hand gets a
+contract that the compiler checks.</p>
 
-<p><em>Corrected 5 October 2026:</em> the softmax example now uses <code>f32</code>, whose
-<code>softmax_inplace</code> is the one built from MLIR blocks; the borrow checker does not read
-<code>clobbers</code>; the compiler output and the test counts are from a newer commit; and
-<code>.vxlib</code> files are not checked when they are written.</p>
+<p><em>Rewritten 24 October 2026.</em> The first version's programs no longer compiled, because
+<code>::uninit()</code> now needs <code>unsafe</code>. This version adds the GPU loops, the lane
+sums and the <code>mlir!</code> contracts. A <code>.vxlib</code> is now checked when it is
+written.</p>
 
 <p class="post-foot">For why keeping structure until code generation matters, see
 <a href="/blog/premature-de-optimization.html">Premature de-optimization is the root of all
 evil</a>. For GPU tiles in shared memory, see
 <a href="/blog/tiles-without-a-tile-type.html">Tiles, without a tile type</a>. The dialect is in
-<code>include/VxDialect.td</code> and its lowering in <code>src/dialect/VxLowering.cpp</code>.</p>
+<code>include/VxDialect.td</code>, its lowering in <code>src/dialect/VxLowering.cpp</code>, and the
+lane sums in <code>docs/lane_reductions.md</code>.</p>
 </article>
 
 </main>
