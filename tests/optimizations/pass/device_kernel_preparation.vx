@@ -59,7 +59,7 @@
 // CHECK-DAG: memref.global "private" constant @__vx_const_LIBM_EXP_M1
 // CHECK-DAG: memref.global "private" constant @__vx_const_LIBM_EXP_M2
 // CHECK-DAG: gpu.func @vx_npu_kernel_0
-// CHECK-DAG: func.func @libm_expf(
+// CHECK-DAG: func.func private @libm_expf(
 
 import core::num;
 

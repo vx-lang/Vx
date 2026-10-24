@@ -6,12 +6,12 @@
 //
 //===----------------------------------------------------------------------===//
 // A GPU region gives its shared tensor to `put`. The parameter of `put` keeps the memory space
-// of shared memory (address space 3), so the call needs no cast, and `put` stores to shared
-// memory in the PTX.
+// of shared memory (address space 3), so the call needs no cast. The kernel inlines `put`, and
+// its store is to shared memory in the PTX.
 //
 // REQUIRES: flat-codegen
 // RUN: vxc %s --host default --machine fleet/a100-40.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not='runs on the CPU'
-// CHECK: image={{.*}}.visible .func put({{.*}}st.shared.b32
+// CHECK: image={{.*}}.visible .entry vx_npu_kernel_0({{.*}}st.shared.b32
 // CHECK: llvm.func hidden @put(%arg0: !llvm.ptr<3>, %arg1: !llvm.ptr<3>,
 
 fn thread_id() on Topology::Device -> i32 {
