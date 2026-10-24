@@ -350,6 +350,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/atomic_adds_in_across_loops.vx",                  // needs --machine
             "optimizations/pass/functions_generic_over_memory.vx",                // needs --machine
             "optimizations/pass/element_atomics_in_across_loops.vx",              // needs --machine
+            "optimizations/pass/float_atomics_in_across_loops.vx",                // needs --machine
             "optimizations/pass/across_kernels_that_pass_the_checks.vx",          // needs --machine
             "optimizations/pass/if_values_that_read_a_tensor.vx",                 // needs --machine
             "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f

@@ -611,13 +611,13 @@ fn compiler_fence(order : AtomicOrdering) -> void {
 // `<M : Memory>` takes a tensor in any memory, and `on Topology::D` runs where the caller runs.
 //
 // Each one answers the value from before the change. An index outside the tensor fails an
-// `assert`. Each function is stamped for `i32`, `u32`, `i64` and `u64`, and the name ends with the
-// type: `atomic_fetch_add_u32`.
+// `assert`. Each function is stamped for `i32`, `u32`, `i64`, `u64`, `f32` and `f64`, and the name
+// ends with the type: `atomic_fetch_add_u32`.
 
-/// Stamps the length, load, store and compare-and-swap for tensors of `$t`. `$mlir` is the MLIR
-/// type of `$t`, and `$align` its size in bytes.
+/// Stamps the length, load and store for tensors of `$t`. `$mlir` is the MLIR type of `$t`, and
+/// `$align` its size in bytes.
 macro_rules stamp_element_atomics {
-  ($t : ident , $mlir : ident , $align : expr , $len : ident , $load : ident , $store : ident , $cas : ident) => {
+  ($t : ident , $mlir : ident , $align : expr , $len : ident , $load : ident , $store : ident) => {
     /// The number of elements of `t`. It reads no element.
     fn $len<M : Memory, D : Topology>(t : &Tensor<$t, [?], Memory::M>) on Topology::D -> i32
     ensures atomic(t)
@@ -747,7 +747,12 @@ macro_rules stamp_element_atomics {
       // A `match` ending a function counts as its result. This keeps it a statement.
       return;
     }
+  };
+}
 
+/// Stamps the compare-and-swap for tensors of `$t`. LLVM has one only for integers.
+macro_rules stamp_element_cas {
+  ($t : ident , $mlir : ident , $len : ident , $cas : ident) => {
     /// Writes `new` to `t[i]` if it holds `current`, and answers the value it found. So it wrote
     /// when the answer is `current`. The failure ordering is the strongest one `order` allows.
     fn $cas<M : Memory, D : Topology>(t : &Tensor<$t, [?], Memory::M>, i : i32, current : $t, new : $t, order : AtomicOrdering) on Topology::D -> $t
@@ -919,33 +924,52 @@ macro_rules stamp_element_rmw {
   };
 }
 
-stamp_element_atomics!(i32 , i32 , 4 , core_atomic_len_i32 , atomic_load_i32 , atomic_store_i32 , atomic_compare_and_swap_i32);
+stamp_element_atomics!(i32 , i32 , 4 , core_atomic_len_i32 , atomic_load_i32 , atomic_store_i32);
+stamp_element_cas!(i32 , i32 , core_atomic_len_i32 , atomic_compare_and_swap_i32);
 stamp_element_rmw!(atomic_swap_i32 , i32 , i32 , core_atomic_len_i32 , xchg);
 stamp_element_rmw!(atomic_fetch_add_i32 , i32 , i32 , core_atomic_len_i32 , add);
 stamp_element_rmw!(atomic_fetch_sub_i32 , i32 , i32 , core_atomic_len_i32 , sub);
 stamp_element_rmw!(atomic_fetch_max_i32 , i32 , i32 , core_atomic_len_i32 , max);
 stamp_element_rmw!(atomic_fetch_min_i32 , i32 , i32 , core_atomic_len_i32 , min);
 
-stamp_element_atomics!(u32 , i32 , 4 , core_atomic_len_u32 , atomic_load_u32 , atomic_store_u32 , atomic_compare_and_swap_u32);
+stamp_element_atomics!(u32 , i32 , 4 , core_atomic_len_u32 , atomic_load_u32 , atomic_store_u32);
+stamp_element_cas!(u32 , i32 , core_atomic_len_u32 , atomic_compare_and_swap_u32);
 stamp_element_rmw!(atomic_swap_u32 , u32 , i32 , core_atomic_len_u32 , xchg);
 stamp_element_rmw!(atomic_fetch_add_u32 , u32 , i32 , core_atomic_len_u32 , add);
 stamp_element_rmw!(atomic_fetch_sub_u32 , u32 , i32 , core_atomic_len_u32 , sub);
 stamp_element_rmw!(atomic_fetch_max_u32 , u32 , i32 , core_atomic_len_u32 , umax);
 stamp_element_rmw!(atomic_fetch_min_u32 , u32 , i32 , core_atomic_len_u32 , umin);
 
-stamp_element_atomics!(i64 , i64 , 8 , core_atomic_len_i64 , atomic_load_i64 , atomic_store_i64 , atomic_compare_and_swap_i64);
+stamp_element_atomics!(i64 , i64 , 8 , core_atomic_len_i64 , atomic_load_i64 , atomic_store_i64);
+stamp_element_cas!(i64 , i64 , core_atomic_len_i64 , atomic_compare_and_swap_i64);
 stamp_element_rmw!(atomic_swap_i64 , i64 , i64 , core_atomic_len_i64 , xchg);
 stamp_element_rmw!(atomic_fetch_add_i64 , i64 , i64 , core_atomic_len_i64 , add);
 stamp_element_rmw!(atomic_fetch_sub_i64 , i64 , i64 , core_atomic_len_i64 , sub);
 stamp_element_rmw!(atomic_fetch_max_i64 , i64 , i64 , core_atomic_len_i64 , max);
 stamp_element_rmw!(atomic_fetch_min_i64 , i64 , i64 , core_atomic_len_i64 , min);
 
-stamp_element_atomics!(u64 , i64 , 8 , core_atomic_len_u64 , atomic_load_u64 , atomic_store_u64 , atomic_compare_and_swap_u64);
+stamp_element_atomics!(u64 , i64 , 8 , core_atomic_len_u64 , atomic_load_u64 , atomic_store_u64);
+stamp_element_cas!(u64 , i64 , core_atomic_len_u64 , atomic_compare_and_swap_u64);
 stamp_element_rmw!(atomic_swap_u64 , u64 , i64 , core_atomic_len_u64 , xchg);
 stamp_element_rmw!(atomic_fetch_add_u64 , u64 , i64 , core_atomic_len_u64 , add);
 stamp_element_rmw!(atomic_fetch_sub_u64 , u64 , i64 , core_atomic_len_u64 , sub);
 stamp_element_rmw!(atomic_fetch_max_u64 , u64 , i64 , core_atomic_len_u64 , umax);
 stamp_element_rmw!(atomic_fetch_min_u64 , u64 , i64 , core_atomic_len_u64 , umin);
+
+// `f32` and `f64` have the same functions except `compare_and_swap`. `fetch_max` and `fetch_min`
+// follow `f32::max`: a NaN loses to a number.
+stamp_element_atomics!(f32 , f32 , 4 , core_atomic_len_f32 , atomic_load_f32 , atomic_store_f32);
+stamp_element_rmw!(atomic_swap_f32 , f32 , f32 , core_atomic_len_f32 , xchg);
+stamp_element_rmw!(atomic_fetch_add_f32 , f32 , f32 , core_atomic_len_f32 , fadd);
+stamp_element_rmw!(atomic_fetch_sub_f32 , f32 , f32 , core_atomic_len_f32 , fsub);
+stamp_element_rmw!(atomic_fetch_max_f32 , f32 , f32 , core_atomic_len_f32 , fmax);
+stamp_element_rmw!(atomic_fetch_min_f32 , f32 , f32 , core_atomic_len_f32 , fmin);
+stamp_element_atomics!(f64 , f64 , 8 , core_atomic_len_f64 , atomic_load_f64 , atomic_store_f64);
+stamp_element_rmw!(atomic_swap_f64 , f64 , f64 , core_atomic_len_f64 , xchg);
+stamp_element_rmw!(atomic_fetch_add_f64 , f64 , f64 , core_atomic_len_f64 , fadd);
+stamp_element_rmw!(atomic_fetch_sub_f64 , f64 , f64 , core_atomic_len_f64 , fsub);
+stamp_element_rmw!(atomic_fetch_max_f64 , f64 , f64 , core_atomic_len_f64 , fmax);
+stamp_element_rmw!(atomic_fetch_min_f64 , f64 , f64 , core_atomic_len_f64 , fmin);
 
 // Adds 1, or writes 0 when the old value is `val` or more, so the element counts from 0 to `val`
 // and starts again. NVPTX has one instruction for it, `atom.inc`, which the GPU does not merge

@@ -81,7 +81,8 @@ fn atomic_tensor(ty: &Type) -> bool {
                     | ElementType::U32
                     | ElementType::I64
                     | ElementType::U64
-                    | ElementType::F32,
+                    | ElementType::F32
+                    | ElementType::F64,
                 ..
             )
         ),
@@ -166,8 +167,8 @@ impl crate::hir::TypeChecker<'_> {
                 ),
                 Some((_, ty)) if !atomic_tensor(ty) => self.atomic_error(
                     format!(
-                        "`atomic({name})` must name a `&` tensor of `i32`, `u32`, `i64`, `u64` \
-                         or `f32`, but `{name}` is `{ty}`"
+                        "`atomic({name})` must name a `&` tensor of `i32`, `u32`, `i64`, `u64`, \
+                         `f32` or `f64`, but `{name}` is `{ty}`"
                     ),
                     clause.span(),
                 ),

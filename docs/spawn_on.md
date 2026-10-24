@@ -206,8 +206,8 @@ spawn on(Topology::Gpu) {
 - An atomic operation races with no other one. It is a call to a function that says
   `ensures atomic(t)`, or an `mlir!` block with `ensures : [atomic(t)]`. Every access to `t` in
   the loop must then be atomic (#2139, `discussions/mlir_declared_writes_in_across.md`).
-  `core::sync::atomic` has these functions for an element of a tensor in any memory, such as
-  `atomic_fetch_add_u32(&counts, i, 1u32, AtomicOrdering::Relaxed)`.
+  `core::sync::atomic` has these functions for an integer or float element of a tensor in any
+  memory, such as `atomic_fetch_add_u32(&counts, i, 1u32, AtomicOrdering::Relaxed)`.
 - Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
   memory.
 - Delete each `across` and the program means the same. The CPU copy of the region runs one

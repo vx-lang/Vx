@@ -13,7 +13,7 @@
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: not vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: Error[E8007] at 51:{{.*}}`atomic(u)` names no parameter of `names_no_parameter`
-// CHECK: Error[E8007] at 57:{{.*}}`atomic(t)` must name a `&` tensor of `i32`, `u32`, `i64`, `u64` or `f32`, but `t` is `&mut Tensor<i32, [?], Memory::HBM>`
+// CHECK: Error[E8007] at 57:{{.*}}`atomic(t)` must name a `&` tensor of `i32`, `u32`, `i64`, `u64`, `f32` or `f64`, but `t` is `&mut Tensor<i32, [?], Memory::HBM>`
 // CHECK: Error[E8007] at 63:{{.*}}`atomic(t)` must name a `&` tensor{{.*}} but `t` is `i32`
 // CHECK: Error[E8007] at 69:{{.*}}`atomic` takes one parameter of `names_two_things`
 // CHECK: Error[E8007] at 77:{{.*}}`reads_an_element` says `atomic(t)`, so it may use `t` only in an atomic operation
