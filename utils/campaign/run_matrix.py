@@ -14,8 +14,9 @@ any rented time is burning, so a toolchain bug is found for free rather than at
 an hourly rate.
 
 **Execute** (needs the SKU). For each admitted cell, map the verdict to engine
-arguments and launch, capturing the outcome verbatim. Not implemented here: see
-`classify_outcome` for why the classifier is deliberately left to a pilot run.
+arguments and launch, capturing the outcome verbatim. Not implemented here.
+`classify_outcome` maps a launch's output to an outcome, with the patterns of the
+pilot run's real output.
 
 The reference program is never edited. Only the constants in its single `admit<
 ...>` call change per cell, which is exactly the claim under test -- one program
@@ -159,24 +160,65 @@ def predict(cfg: Config, sku: str, vxc: Path, workdir: Path) -> dict:
     }
 
 
-def classify_outcome(_stdout: str, _stderr: str) -> str:
-    """Map an engine launch's output to the ground-truth taxonomy.
+# Verbatim substrings of vLLM 0.31.0's output, from the pilot runs on H100, A100-80GB, H200 and
+# B200 (#289, 2026-10-05). Each outcome below names the substring that decides it.
+#
+# Printed once startup has passed: "GPU KV cache size: N tokens".
+KV_CACHE_SIZE = "GPU KV cache size:"
+# vLLM refuses a max_model_len that its KV cache cannot hold, and says how long it could be.
+ESTIMATED_MAX_LEN = "estimated maximum model length is"
+# Weights loaded; the out-of-memory error of a load comes after this, in the profiling run.
+MODEL_LOADING_TOOK = "Model loading took"
+TORCH_OOM = "torch.OutOfMemoryError: CUDA out of memory"
+# Out of memory on the first full-length prompt, after startup passed.
+PREFILL_FAILURES = ("cudaErrorMemoryAllocation", "EngineDeadError")
+# Two crashes of the image, not of memory: no CUDA compiler, and no C compiler.
+SETUP_FAULTS = (
+    "Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist",
+    "InductorError: RuntimeError: Failed to find C compiler",
+)
 
-    DELIBERATELY UNIMPLEMENTED. The taxonomy is fixed --
-    BOOT_OK_SERVE_OK / ENGINE_REFUSES / OOM_AT_LOAD / OOM_AT_PREFILL / OTHER_FAIL
-    -- but the *patterns* that map real output onto it are not, and writing them
-    from memory is how a campaign silently mislabels its own ground truth. In
-    particular ENGINE_REFUSES is the paper's most valuable category (it is vLLM
-    performing runtime admission, the very check Vx claims to do statically), and
-    a pattern that misses it would score as OTHER_FAIL and quietly discard the
-    best evidence in the dataset.
 
-    Build these from a pilot run's captured logs, not from recollection of what
-    vLLM prints. Until then `--execute` records output verbatim and classifies
-    everything as UNCLASSIFIED, which is honest and reversible: the raw logs can
-    be re-classified once the patterns are known.
+@dataclass(frozen=True)
+class Outcome:
+    """What one engine launch did."""
+    label: str
+    # The substring that decided the label, or None when none did.
+    pattern: str | None = None
+    # True when the image lacks a tool. Such a launch says nothing about memory, so it is
+    # OTHER_FAIL and must be rerun in a fixed image rather than scored.
+    setup_fault: bool = False
+
+
+def classify_outcome(log: str, served: bool | None = None) -> Outcome:
+    """Map one launch's output to BOOT_OK_SERVE_OK, ENGINE_REFUSES, OOM_AT_LOAD,
+    OOM_AT_PREFILL or OTHER_FAIL, from the pilot's verbatim patterns.
+
+    `log` is the engine's stdout and stderr in the order they were written. `served` is whether
+    the request sent after startup came back: None when no request was sent.
+
+    A log that no pattern covers is UNCLASSIFIED, not OTHER_FAIL. The raw log is kept, so it can
+    be classified once its pattern is known.
     """
-    return "UNCLASSIFIED"
+    for fault in SETUP_FAULTS:
+        if fault in log:
+            return Outcome("OTHER_FAIL", fault, setup_fault=True)
+    if ESTIMATED_MAX_LEN in log:
+        return Outcome("ENGINE_REFUSES", ESTIMATED_MAX_LEN)
+    started = log.find(KV_CACHE_SIZE)
+    oom = log.find(TORCH_OOM)
+    if oom != -1 and (started == -1 or oom < started):
+        return Outcome("OOM_AT_LOAD", TORCH_OOM)
+    if started != -1:
+        after = log[started:]
+        for failure in PREFILL_FAILURES:
+            if failure in after:
+                return Outcome("OOM_AT_PREFILL", failure)
+        if served:
+            return Outcome("BOOT_OK_SERVE_OK", KV_CACHE_SIZE)
+        if served is False:
+            return Outcome("OTHER_FAIL")
+    return Outcome("UNCLASSIFIED")
 
 
 def main() -> int:
@@ -191,8 +233,7 @@ def main() -> int:
 
     if args.execute:
         sys.exit(
-            "run_matrix: --execute is not implemented. It requires the rented SKU and a "
-            "classifier built from a pilot run's real logs; see classify_outcome(). "
+            "run_matrix: --execute is not implemented. It requires the rented SKU. "
             "Predict-only runs anywhere and is what this script is for today."
         )
     if not args.vxc.exists():

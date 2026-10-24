@@ -66,6 +66,11 @@ jobs:
       - name: Check blog headings have ids
         run: python3 scripts/tools/check_blog_heading_ids.py
 
+      # The outcome classifier of the admission-matrix harness, against the pilot run's strings.
+      # Only needs python3 and the checkout.
+      - name: Test the admission matrix harness
+        run: python3 -m unittest discover -s utils/campaign -p 'test_*.py'
+
       # Process-global atomics are banned for the same reason as locks: a compilation must be
       # isolated, and a static a worker thread can write is shared mutable state whether or not
       # it takes a lock to do it. A cached answer also survives across compilations in a long-lived
