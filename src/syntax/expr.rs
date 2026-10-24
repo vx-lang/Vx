@@ -124,9 +124,13 @@ pub struct SpawnOnExpr {
     pub stmts: Vec<Statement>,
     pub ret: Option<Box<Expr>>,
     pub span: Span,
-    /// For a region with code after its `across` nest of blocks: the memory that holds the
-    /// count of the passes that ended, set by the checker. The last pass runs that code.
-    pub arrivals: Option<crate::syntax::MemorySpace>,
+    /// For a region with code after its `across` nest of blocks, or code of a group: the memory
+    /// that holds the count of the passes that ended, and a shared memory of a block, set by the
+    /// checker. The last pass runs that code.
+    pub arrivals: Option<(
+        crate::syntax::MemorySpace,
+        Option<crate::syntax::MemorySpace>,
+    )>,
 }
 impl SpawnOnExpr {
     pub fn new(top: Topology, stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {

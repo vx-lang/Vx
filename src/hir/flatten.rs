@@ -3096,7 +3096,14 @@ impl<'r> Lowerer<'r> {
             shape.push((3, block));
         }
         let tail = match (&s.arrivals, lanes) {
-            (Some(space), Some(_)) => Some(self.lower_arrivals(&s.stmts, space)?),
+            (Some((space, Some(shared))), Some(_)) => {
+                Some(self.lower_arrivals(&s.stmts, space, shared)?)
+            }
+            (Some(_), Some(_)) => {
+                return Err(Decline::Unsupported {
+                    what: "code after a nest of blocks on a topology with no shared memory",
+                })
+            }
             _ => None,
         };
         let count = tail.as_ref().map(|t| t.count.reg);
@@ -3134,6 +3141,7 @@ impl<'r> Lowerer<'r> {
         &mut self,
         stmts: &[Statement],
         space: &crate::syntax::MemorySpace,
+        shared: &crate::syntax::MemorySpace,
     ) -> Lowered<across::Tail> {
         let at = stmts
             .iter()
@@ -3163,31 +3171,46 @@ impl<'r> Lowerer<'r> {
                 .collect();
             (nest, after, None)
         };
-        let (start, passes) = self.lower_trip(counted)?;
+        let range = |f: &crate::syntax::ForLoopStmt| match &*f.iterable {
+            Expr::Range(r) => Ok(r.clone()),
+            _ => Err(crate::emitter_gap!()),
+        };
+        let counted_range = range(counted)?;
         let one = self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 1);
-        let last = self.emit_value(Opcode::Sub, passes.reg, one.reg, ElementType::I32, 0);
         let group = match outer {
             Some(o) => {
-                let (start, groups) = self.lower_trip(o)?;
-                Some((o.iter.as_str().into(), start, groups))
+                let (_, groups) = self.lower_trip(o)?;
+                Some((o.iter.as_str().into(), range(o)?, groups))
             }
             None => None,
         };
         let groups = group.as_ref().map_or(one.clone(), |(_, _, g)| g.clone());
-        // An element for each group counts the passes of it that ended, and one more element for
-        // each pass says whether that pass was the last of its group.
-        let flags = self.emit_value(Opcode::Mul, groups.reg, passes.reg, ElementType::I32, 0);
-        let size = self.emit_value(Opcode::Add, groups.reg, flags.reg, ElementType::I32, 0);
+        // An element for each group counts the passes of it that ended.
         let ty = LoweredTy::Tensor {
             elem: ElementType::U32,
             shape: vec!["?".to_string()],
         };
-        self.emit_effect(Opcode::Arg, size.reg, Register(0), 0);
+        self.emit_effect(Opcode::Arg, groups.reg, Register(0), 0);
         let host = self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty.clone(), 0);
         self.emit_effect(Opcode::TensorZero, host.reg, Register(0), 0);
         let mem_id = crate::arch::memory_space_dispatch_id(space) as u32 as u64;
-        let count = self.emit_typed(Opcode::Transfer, host.reg, Register(0), ty, mem_id);
+        // `--emit-ptx` names the count by its length: one for a whole nest, or the size of the
+        // first axis of blocks when the outer loop of a group goes over all of it.
+        let whole_axis = outer.is_some_and(|o| {
+            o.across.as_ref().is_some_and(|a| a.share.is_none())
+                && matches!(&*o.iterable, Expr::Range(r)
+                    if matches!(&*r.start, Expr::Number(n) if n.value.as_ref() == "0"))
+        });
+        let length = match outer {
+            None => "one",
+            Some(_) if whole_axis => "axis0",
+            Some(_) => "",
+        };
+        self.strings.push(length.to_string());
+        let length = Register(self.strings.len() as u32);
+        let count = self.emit_typed(Opcode::Transfer, host.reg, length, ty, mem_id);
         self.emit_effect(Opcode::TensorDrop, host.reg, Register(0), 0);
+        let shared_id = crate::arch::memory_space_dispatch_id(shared) as u32 as u64;
         Ok(across::Tail {
             stmts: after.iter().map(|s| (*s).clone()).collect(),
             skip: after
@@ -3196,12 +3219,11 @@ impl<'r> Lowerer<'r> {
                 .collect(),
             counted: counted as *const crate::syntax::ForLoopStmt as usize,
             outer_body: outer.map(|o| o.body.as_ptr() as usize),
-            group: group.map(|(name, start, _)| (name, start)),
-            groups,
+            group: group.map(|(name, range, _)| (name, range)),
+            range: counted_range,
             count,
-            start,
-            passes,
-            last,
+            shared: shared_id,
+            flag: None,
         })
     }
 
@@ -3260,6 +3282,23 @@ impl<'r> Lowerer<'r> {
         self.emit_effect(Opcode::Spawn, Register(0), Register(0), imm);
         if launch.across {
             self.emit_effect(Opcode::AcrossRegion, Register(0), Register(0), 0);
+        }
+        // The flag that tells the lanes of a pass whether it was the last, in shared memory.
+        if let Some(space) = self.across.tail.as_ref().map(|t| t.shared) {
+            let ty = LoweredTy::Tensor {
+                elem: ElementType::U32,
+                shape: vec!["1".to_string()],
+            };
+            let flag = self.emit_typed(
+                Opcode::TensorAlloc,
+                Register(0),
+                Register(space as u32),
+                ty,
+                4,
+            );
+            if let Some(t) = self.across.tail.as_mut() {
+                t.flag = Some(flag);
+            }
         }
         for (axis, v) in launch.shape {
             self.emit_effect(Opcode::LaunchDim, v.reg, Register(0), *axis);

@@ -287,6 +287,14 @@ grid, so a smaller grid is also correct. The kernel needs exactly the lanes of `
 
 With no `launch`, the program that launches the kernel chooses the grid and the block.
 
+A kernel with code after its nest of blocks, or with the code of a group, counts the passes that
+ended. Its last parameter is that count, `arrivals`, of `kind` `arrivals`: a tensor of `u32` with
+`elements` elements, one for each group. `elements` is 1 for code after the whole nest, and the
+size of the first axis of blocks for the code of a group, such as `{"param": "heads"}`. The
+caller zeroes the buffer before the first launch. The last pass of each group sets its element
+back to 0, so later launches, such as the replays of a CUDA graph, use the same buffer with no
+new zeroing. Two launches that run at the same time need two buffers.
+
 ### 3.6 Calling a Vx function that launches GPU kernels
 
 A host program that is not Vx, for example Python with `ctypes`, can call a `pub fn` from a
