@@ -200,17 +200,13 @@ pub fn lower_to_llvm<'c>(context: &'c Context, module: &mut Module<'c>) -> Resul
     // `vx-expand-narrow-floats` and `arith-expand` turn conversions to and from fp8, fp4 and bf16
     // into integer operations; see the note on the copy of this pipeline in src/driver.rs.
     let mut pipeline =
-        "builtin.module(convert-vx-to-standard,vx-check-integer-division,vx-reorderable-reductions,vx-expand-narrow-floats,arith-expand{include-bf16=true include-f8e8m0=true},vx-to-llvm,".to_string();
+        "builtin.module(vx-libc-externs-to-llvm,convert-vx-to-standard,vx-check-integer-division,vx-reorderable-reductions,vx-expand-narrow-floats,arith-expand{include-bf16=true include-f8e8m0=true},vx-to-llvm,".to_string();
     if has_enzyme {
         pipeline.push_str("enzyme,");
     }
-    // symbol-dce must precede finalize-memref-to-llvm. An unused `extern`
-    // declaration lands as `func.func private @malloc`, which memref
-    // finalization cannot reuse (it looks for an llvm.func), so it creates its
-    // own `@malloc` and the symbol table uniques the name -- one `@malloc_N`
-    // per allocation site, none of which resolves at link time. Importing
-    // std::vec was enough to trigger it. Dropping dead declarations first lets
-    // the lowering define `@malloc` under its own name.
+    // `vx-libc-externs-to-llvm` makes a program's `malloc` and `free` the `llvm.func` that
+    // the task lowering and finalize-memref-to-llvm reuse, so neither declares a second one.
+    // symbol-dce drops the declarations that nothing calls.
     // `vx-promote-buffers-to-stack` + `vx-normalize-stack-buffers`: a small buffer that does not escape
     // belongs on the stack rather than in a `malloc` nothing frees, and the hoist is what makes
     // the promoted allocation a frame slot instead of per-iteration stack growth (#641). What

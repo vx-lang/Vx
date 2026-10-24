@@ -1994,6 +1994,9 @@ fn get_optimization_pipeline(
     let mut passes = vec![];
 
     if opt_level > 0 || llvm_lower {
+        // First, so that the lowerings below reuse a program's own `malloc` and `free` rather
+        // than declare a second one. See the pass.
+        passes.push("vx-libc-externs-to-llvm".to_string());
         passes.push("convert-vx-to-standard".to_string());
         // Before any optimization, so none can remove or move a division before it is checked.
         passes.push("vx-check-integer-division".to_string());
@@ -2049,11 +2052,9 @@ fn get_optimization_pipeline(
         // `expand-strided-metadata` writes some offsets as `affine.apply`, so `lower-affine`
         // runs again. After the buffer passes, so they see the module as they always have.
         passes.push("func.func(lower-affine)".to_string());
-        // Must precede finalize-memref-to-llvm: an unused `extern` lands as
-        // `func.func private @malloc`, which memref finalization cannot reuse
-        // (it looks for an llvm.func), so it creates its own and the symbol
-        // table uniques the name -- one dangling `@malloc_N` per allocation
-        // site. Keep in sync with the pipeline in src/codegen/mod.rs.
+        // Drops the declarations that nothing calls. `vx-libc-externs-to-llvm` already made a
+        // program's `malloc` and `free` the `llvm.func` that finalize-memref-to-llvm reuses.
+        // Keep in sync with the pipeline in src/codegen/mod.rs.
         passes.push("symbol-dce".to_string());
         passes.push("finalize-memref-to-llvm".to_string());
         passes.push("convert-vector-to-llvm".to_string());

@@ -1,0 +1,33 @@
+//===- own_malloc_and_free_next_to_a_heap_tensor.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program that calls `malloc` and `free` itself can also put a tensor on the heap. The
+// tensor's buffer comes from `malloc` and goes back with `free` too, and each name has one
+// declaration. A second declaration was renamed to `malloc_0` or `free_1`, and the link failed.
+import std::alloc;
+
+fn sum(n : i64) -> f32 {
+  let mut t = Tensor<f32>([n]);
+  let mut s : f32 = 0.0;
+  for i in 0..n {
+    t[i] = 1.5;
+    s = s + t[i];
+  }
+  return s;
+}
+
+fn main() -> i32 {
+  let p : *mut i32 = unsafe { malloc(4) };
+  unsafe { p[0] = 5; }
+  print(sum(4));
+  print!(" ");
+  print(unsafe { p[0] });
+  unsafe { free(p); }
+  return 0;
+}
+
+// EXPECT: 6 5

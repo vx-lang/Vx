@@ -18,5 +18,5 @@ extern "C" {
   /// afterwards whether or not it moved.
   fn realloc(ptr : *mut i8, size : i64) -> *mut i8;
   /// C's `free`. Freeing twice, or freeing what `malloc` did not return, is undefined.
-  fn free(ptr : *mut i8) -> i32;
+  fn free(ptr : *mut i8) -> void;
 }
