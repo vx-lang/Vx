@@ -1891,11 +1891,11 @@ fn flat_matches_ast_reborrow_of_a_raw_pointer() {
     // `&mut *ptr` on a raw pointer is the pointer itself, returned as a reference and read
     // through: the `Vec::as_mut_slice` shape.
     assert_parity(
-        "extern \"C\" { fn vx_vec_alloc(elem_size: i64, cap: i64) -> *mut i8; }\n\
+        "extern \"C\" { fn malloc(size: i64) -> *mut i8; }\n\
          struct Buf { data : *mut i32 }\n\
          fn first(b : &mut Buf) -> &mut i32 { let ptr : *mut i32 = b.data; \
            return unsafe { &mut *ptr }; }\n\
-         fn main() -> i32 { let p : *mut i32 = unsafe { vx_vec_alloc(4, 4) }; \
+         fn main() -> i32 { let p : *mut i32 = unsafe { malloc(16) }; \
            let mut b = Buf { data : p }; unsafe { b.data[0] = 42; } \
            let r = first(&mut b); return *r; }",
         42,
@@ -3452,7 +3452,7 @@ fn flat_matches_ast_corpus_tensor_view_2d() {
 }
 
 /// A minimal self-contained `Vec<T>` (the shape of `stdlib/std/vec.vx`, minus googletest): a struct
-/// with a raw-pointer field, a generic `impl` allocating through the Rust byte allocator, and
+/// with a raw-pointer field, a generic `impl` allocating through `malloc`, and
 /// `push`/`get`/`len`. Exercises the whole `#242` surface — a pointer-field aggregate, field access
 /// through a `self` pointer, raw-pointer indexing, construction, and a generic static call.
 /// A self-contained `Vec` + `VecIter` + `Option` (the shape of `stdlib/std/vec.vx`) exercising the
@@ -3463,15 +3463,15 @@ fn flat_matches_ast_corpus_tensor_view_2d() {
 /// differential reference here — the stdlib form is validated flat-vs-oracle by the corpus sweep. (#242)
 const ITER_MINI: &str = r#"
 extern "C" {
-  fn vx_vec_alloc(elem_size: i64, cap: i64) -> *mut i8;
-  fn vx_vec_grow(ptr: *mut i8, old_cap: i64, new_cap: i64, elem_size: i64) -> *mut i8;
+  fn malloc(size: i64) -> *mut i8;
+  fn realloc(ptr: *mut i8, size: i64) -> *mut i8;
 }
 struct Vec<T> { data: *mut T, len: i32, capacity: i32 }
 enum Option<T> { Some(T), None }
 struct VecIter<T> { vec: *const Vec<T>, current: i32 }
 impl<T> Vec<T> {
   fn with_capacity(capacity: i32) -> Vec<T> {
-    let ptr: *mut T = unsafe { vx_vec_alloc(sizeof<T>(), capacity as i64) };
+    let ptr: *mut T = unsafe { malloc(sizeof<T>() * (capacity as i64)) };
     return Vec<T> { data: ptr, len: 0, capacity: capacity };
   }
   fn new() -> Vec<T> { return Vec<T>::with_capacity(2); }
@@ -3480,7 +3480,7 @@ impl<T> Vec<T> {
       let mut nc: i32 = 4;
       if self.capacity > 0 { nc = self.capacity * 2; }
       let p: *mut i8 = self.data;
-      self.data = unsafe { vx_vec_grow(p, self.capacity as i64, nc as i64, sizeof<T>()) };
+      self.data = unsafe { realloc(p, sizeof<T>() * (nc as i64)) };
       self.capacity = nc;
     }
     unsafe { self.data[self.len] = val; }
@@ -3531,14 +3531,13 @@ fn flat_lowers_for_over_iterator_count() {
 
 const VEC_MINI: &str = r#"
 extern "C" {
-  fn vx_vec_alloc(elem_size: i64, cap: i64) -> *mut i8;
-  fn vx_vec_grow(ptr: *mut i8, old_cap: i64, new_cap: i64, elem_size: i64) -> *mut i8;
-  fn vx_vec_bounds_check(index: i64, len: i64) -> i32;
+  fn malloc(size: i64) -> *mut i8;
+  fn realloc(ptr: *mut i8, size: i64) -> *mut i8;
 }
 struct Vec<T> { data: *mut T, len: i32, capacity: i32 }
 impl<T> Vec<T> {
   fn with_capacity(capacity: i32) -> Vec<T> {
-    let ptr: *mut T = unsafe { vx_vec_alloc(sizeof<T>(), capacity as i64) };
+    let ptr: *mut T = unsafe { malloc(sizeof<T>() * (capacity as i64)) };
     return Vec<T> { data: ptr, len: 0, capacity: capacity };
   }
   fn new() -> Vec<T> { return Vec<T>::with_capacity(2); }
@@ -3547,7 +3546,7 @@ impl<T> Vec<T> {
       let mut new_cap: i32 = 4;
       if self.capacity > 0 { new_cap = self.capacity * 2; }
       let ptr: *mut i8 = self.data;
-      self.data = unsafe { vx_vec_grow(ptr, self.capacity as i64, new_cap as i64, sizeof<T>()) };
+      self.data = unsafe { realloc(ptr, sizeof<T>() * (new_cap as i64)) };
       self.capacity = new_cap;
     }
     unsafe { self.data[self.len] = val; }
@@ -3555,7 +3554,6 @@ impl<T> Vec<T> {
     return 0;
   }
   fn get(self: &Vec<T>, index: i32) -> T {
-    unsafe { vx_vec_bounds_check(index as i64, self.len as i64); }
     return unsafe { self.data[index] };
   }
   fn len(self: &Vec<T>) -> i32 { return self.len; }
@@ -3566,7 +3564,7 @@ impl<T> Vec<T> {
 fn flat_matches_ast_vec_push_get_len() {
     // The core `Vec<T>` surface (#242) end to end through the flat path: `Vec<i32>::new()` (a
     // generic static call returning an aggregate by value), three `push`es (the third grows the
-    // buffer through `vx_vec_grow`), field access through the `&mut self`/`&self` pointer, raw-pointer
+    // buffer through `realloc`), field access through the `&mut self`/`&self` pointer, raw-pointer
     // element stores/loads (`self.data[i]`), and `&v` aggregate borrows at the rewritten method calls.
     // `10 + 30 + 3 = 43`.
     assert_parity(

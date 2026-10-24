@@ -10,7 +10,7 @@
 // before the code waits for the first one, and the two run at the same time.
 //
 // REQUIRES: flat-codegen
-// RUN: vxc %s --emit-mlir --disable-mlir-optimizations | vx-opt --pass-pipeline="builtin.module(convert-vx-to-standard)" | FileCheck %s
+// RUN: vxc %s --emit-mlir --disable-mlir-optimizations | vx-opt --pass-pipeline="builtin.module(vx-libc-externs-to-llvm,convert-vx-to-standard)" | FileCheck %s
 // CHECK-LABEL: func.func @two_lengths
 // CHECK:       llvm.call @vx_tasks_begin
 // CHECK:       llvm.call @vx_task_start

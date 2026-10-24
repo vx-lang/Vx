@@ -10,30 +10,70 @@ import core::iter::traits;
 import core::marker;
 import core::mem;
 import core::ops;
+import core::ptr;
+import std::alloc;
 
-// Memory management is delegated to the type-erased byte allocator in
-// `stdlib/rust_core` (collections/vec.rs). Rust owns alignment, growth doubling,
-// `capacity * elem_size` overflow, out-of-memory, and bounds enforcement, so the
-// hand-rolled correctness pitfalls (silent i32 overflow, unchecked malloc, and
-// the compile-time-only `assert` bounds checks) are gone. Vx keeps only a typed
-// `data : *mut T` view into the Rust-managed buffer and does its own typed
-// element loads/stores.
-extern "C" {
-  /// Allocate a buffer for `cap` elements of `elem_size` bytes. Rust owns the alignment
-  /// and the overflow check on the product.
-  fn vx_vec_alloc(elem_size : i64, cap : i64) -> *mut i8;
-  /// Reallocate to `new_cap` elements, moving the contents. The old pointer is invalid after.
-  fn vx_vec_grow(ptr : *mut i8, old_cap : i64, new_cap : i64, elem_size : i64) -> *mut i8;
-  /// Release the buffer.
-  fn vx_vec_free(ptr : *mut i8, cap : i64, elem_size : i64) -> i32;
-  /// Abort the process when `index` is outside `0..len`, printing both. Answers 0 otherwise.
-  fn vx_vec_bounds_check(index : i64, len : i64) -> i32;
+/// The size in bytes of `cap` elements of `elem_size` bytes. Stops the program when the
+/// product does not fit in an `i64`.
+fn vec_bytes(cap : i64, elem_size : i64) -> i64 {
+  if cap < 0 || elem_size < 0 {
+    panic("Vec: negative capacity or element size");
+  }
+  if elem_size > 0 && cap > 9223372036854775807 / elem_size {
+    panic("Vec: capacity * element size overflows");
+  }
+  return cap * elem_size;
 }
 
-/// A growable array of `T`, held in a buffer the Rust core owns.
+/// A buffer for `cap` elements of `elem_size` bytes, or null when that is zero bytes.
+/// `malloc` gives 16-byte alignment, which every Vx scalar type needs at most.
+fn vec_alloc(elem_size : i64, cap : i64) -> *mut i8 {
+  let bytes = vec_bytes(cap, elem_size);
+  if bytes == 0 {
+    return null_mut<i8>();
+  }
+  let p : *mut i8 = unsafe { malloc(bytes) };
+  if is_null_mut(p) {
+    panic("Vec: out of memory");
+  }
+  return p;
+}
+
+/// The buffer resized to `new_cap` elements, keeping its contents. A null `ptr` makes a new
+/// buffer. `ptr` is invalid afterwards.
+fn vec_grow(ptr : *mut i8, new_cap : i64, elem_size : i64) -> *mut i8 {
+  let bytes = vec_bytes(new_cap, elem_size);
+  if bytes == 0 {
+    return ptr;
+  }
+  let mut p : *mut i8 = null_mut<i8>();
+  if is_null_mut(ptr) {
+    p = unsafe { malloc(bytes) };
+  } else {
+    p = unsafe { realloc(ptr, bytes) };
+  }
+  if is_null_mut(p) {
+    panic("Vec: out of memory");
+  }
+  return p;
+}
+
+/// Stops the program when `index` is outside `0..len`, and prints both first.
+fn vec_check_index(index : i64, len : i64) -> i32 {
+  if index < 0 || index >= len {
+    print!("Vec: index ");
+    print(index);
+    print!(" is out of bounds for length ");
+    print(len);
+    print!("\n");
+    panic("Vec: index out of bounds");
+  }
+  return 0;
+}
+
+/// A growable array of `T`.
 ///
-/// Vx keeps a typed view into that buffer and does its own element loads and stores; growth,
-/// alignment and the `capacity * elem_size` overflow check belong to Rust. The buffer is
+/// It holds a buffer from `malloc` and does its own element loads and stores. The buffer is
 /// released when the vector is dropped.
 struct Vec<T> {
   data : *mut T,
@@ -54,7 +94,7 @@ Vec<T> {
 
   /// An empty vector with room for `capacity` elements before it has to grow.
   fn with_capacity(capacity : i32) -> Vec<T> {
-    let ptr : *mut T = unsafe { vx_vec_alloc(sizeof<T>(), capacity as i64) };
+    let ptr : *mut T = vec_alloc(sizeof<T>(), capacity as i64);
     return Vec<T> {
       data : ptr, len : 0, capacity : capacity
     };
@@ -101,13 +141,8 @@ Vec<T> {
       .capacity > 0 {
         new_cap = self.capacity * 2;
       }
-      // Rust owns the realloc and the overflow-checked byte-size math; a
-      // capacity that overflows i32 here aborts cleanly in `vx_vec_grow`
-      // instead of silently wrapping to a bogus allocation.
       let ptr : *mut i8 = self.data;
-      self.data = unsafe {
-        vx_vec_grow(ptr, self.capacity as i64, new_cap as i64, sizeof<T>())
-      };
+      self.data = vec_grow(ptr, new_cap as i64, sizeof<T>());
       self.capacity = new_cap;
     }
     unsafe { self.data[self.len] = val; }
@@ -120,10 +155,10 @@ Vec<T> {
   ///
   /// # Panics
   ///
-  /// When `index` is negative or not below `len`. The check is in the Rust core, which prints
-  /// the index and the length and aborts the process -- it does not unwind.
+  /// When `index` is negative or not below `len`. It prints the index and the length, and stops
+  /// the program.
   fn get_ref(self : &Vec<T>, index: i32) -> &T {
-    unsafe { vx_vec_bounds_check(index as i64, self.len as i64); }
+    vec_check_index(index as i64, self.len as i64);
     return unsafe { &self.data[index] };
   }
 
@@ -134,7 +169,7 @@ Vec<T> {
   /// As `get_ref` does, and for the same reason. Setting past the end does not extend the
   /// vector; `push` is what grows it.
   fn set(self : &mut Vec<T>, index: i32, val: T) -> i32 {
-    unsafe { vx_vec_bounds_check(index as i64, self.len as i64); }
+    vec_check_index(index as i64, self.len as i64);
     let old : T = unsafe { self.data[index] };
     drop(old);
     unsafe { self.data[index] = val; }
@@ -187,7 +222,7 @@ impl<T : Copy> Vec<T> {
   ///
   /// As `get_ref` does.
   fn get(self : &Vec<T>, index: i32) -> T {
-    unsafe { vx_vec_bounds_check(index as i64, self.len as i64); }
+    vec_check_index(index as i64, self.len as i64);
     return unsafe { self.data[index] };
   }
 }
@@ -201,10 +236,8 @@ impl<T> Drop for Vec<T> {
         drop(element);
       }
     }
-    unsafe {
-      let ptr_i8 : *mut i8 = self.data;
-      vx_vec_free(ptr_i8, self.capacity as i64, sizeof<T>());
-    }
+    let ptr_i8 : *mut i8 = self.data;
+    unsafe { free(ptr_i8); }
   }
 }
 

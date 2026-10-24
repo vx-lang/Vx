@@ -11,8 +11,7 @@
 extern "C" {
   /// C's `malloc`: `size` bytes of uninitialised heap, or null when it cannot.
   ///
-  /// Vx cannot test the result against null (Vx#714), so a failed allocation is found by
-  /// writing through it.
+  /// `core::ptr::is_null_mut` tests the result.
   fn malloc(size : i64) -> *mut i8;
   /// C's `realloc`: the block resized, moving it if need be. The old pointer is invalid
   /// afterwards whether or not it moved.

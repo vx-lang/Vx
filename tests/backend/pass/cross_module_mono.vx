@@ -16,8 +16,7 @@
 //
 // The code generators emit the three functions in different orders, so each is checked on
 // its own.
-// CHECK-DAG: func.func private @vx_vec_grow(
-// CHECK-DAG: func.func private @vx_vec_bounds_check(
+// CHECK-DAG: func.func private @realloc(
 // CHECK-DAG: func.func @graph_inf() -> i32
 // DIJKSTRA-LABEL: func.func @dijkstra(
 // DIJKSTRA: call @ref$const$Graph$node_count(
