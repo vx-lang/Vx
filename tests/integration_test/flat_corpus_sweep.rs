@@ -352,6 +352,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/element_atomics_in_across_loops.vx",              // needs --machine
             "optimizations/pass/float_atomics_in_across_loops.vx",                // needs --machine
             "optimizations/pass/scoped_fences_in_across_loops.vx",                // needs --machine
+            "optimizations/pass/gpu_image_keeps_only_the_kernels.vx",             // needs --machine
             "optimizations/pass/across_kernels_that_pass_the_checks.vx",          // needs --machine
             "optimizations/pass/lane_reductions_on_the_cpu.vx",                   // needs --machine
             "optimizations/pass/lane_reductions_on_the_gpu.vx",                   // needs --machine
