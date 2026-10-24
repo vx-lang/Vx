@@ -1,0 +1,49 @@
+//===- code_after_the_blocks_runs_in_the_last_pass.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Code after the `across` nest of blocks runs once, after every pass of the nest, in the same
+// kernel. Each of the 8 blocks writes 32 partial results, and the code after the nest adds all
+// 256 of them: 0 + 1 + .. + 255 = 32640. It also uses `scale`, a value from before the nest, and
+// counts how many times it ran in `runs`.
+//
+// On the GPU, each pass ends with a barrier, a release fence and an atomic add to a count that
+// the compiler makes. The pass that sees the last count takes an acquire fence and runs the code.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// CHECK: total 32640 scaled 65280 last 255 runs 1
+// PTX: .entry vx_npu_kernel_0(
+// PTX-SAME: bar.sync
+// PTX-SAME: fence.acq_rel.gpu
+// PTX-SAME: atom.global.add.u32
+// PTX-SAME: fence.acq_rel.gpu
+
+fn main() -> i32 {
+  let mut partial = transfer(Tensor<i32, [256]>::fill(0), Memory::HBM);
+  let mut out = transfer(Tensor<i32, [4]>::fill(0), Memory::HBM);
+  spawn on(Topology::Device) {
+    let scale = 2;
+    for b in 0..8 across blocks {
+      for l in 0..32 across lanes {
+        partial[b * 32 + l] = b * 32 + l;
+      }
+    }
+    let mut sum = 0;
+    for i in 0..256 {
+      sum = sum + partial[i];
+    }
+    out[0] = sum;
+    out[1] = sum * scale;
+    out[2] = partial[255];
+    out[3] = out[3] + 1;
+  }
+  let o = transfer(out, Memory::CPU_DRAM);
+  println!("total {} scaled {} last {} runs {}", o[0], o[1], o[2], o[3]);
+  return 0;
+}

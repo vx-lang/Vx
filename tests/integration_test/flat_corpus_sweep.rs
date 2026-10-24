@@ -348,6 +348,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/gpu_kernel_stack_slots_keep_their_order.vx",      // needs --machine
             "optimizations/pass/across_loops_run_in_order_on_the_cpu.vx",         // needs --machine
             "optimizations/pass/atomic_adds_in_across_loops.vx",                  // needs --machine
+            "optimizations/pass/code_after_the_blocks_runs_in_the_last_pass.vx",  // needs --machine
             "optimizations/pass/across_kernels_that_pass_the_checks.vx",          // needs --machine
             "optimizations/pass/lane_reductions_on_the_cpu.vx",                   // needs --machine
             "optimizations/pass/lane_reductions_on_the_gpu.vx",                   // needs --machine

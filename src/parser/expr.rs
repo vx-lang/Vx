@@ -1373,6 +1373,7 @@ impl<'a> Parser<'a> {
                                 length: token.length,
                                 expansion: self.expansion(),
                             },
+                            arrivals: None,
                         })
                     }
                     TokenType::Unknown('"') => {

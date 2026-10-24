@@ -8,7 +8,8 @@
 //
 // Where an `across` loop may be, and what its size may be (E6032). The design is in #252: a
 // region with `across` has one `blocks` nest at its top level, the levels nest blocks, then
-// subgroups, then lanes, and a block's size is known when the kernel is compiled.
+// subgroups, then lanes, and a block's size is known when the kernel is compiled. Code after the
+// nest runs once, in the last pass to end.
 //
 //===----------------------------------------------------------------------===//
 
@@ -134,6 +135,17 @@ impl crate::hir::TypeChecker<'_> {
 }
 
 /// The integer that `e` is when it is a literal.
+/// Whether a region's statements have code after a top-level `across` loop: code that runs once,
+/// after every pass of the nest.
+pub(crate) fn code_after_the_nest(stmts: &[Statement]) -> bool {
+    let nest = |s: &Statement| matches!(s, Statement::ForLoop(f) if f.across.is_some());
+    stmts.iter().position(nest).is_some_and(|at| {
+        stmts[at + 1..]
+            .iter()
+            .any(|s| !nest(s) && !matches!(s, Statement::Drop(_)))
+    })
+}
+
 fn literal(e: &Expr) -> Option<u64> {
     match e {
         Expr::Number(n) => n.value.parse().ok(),
@@ -645,7 +657,7 @@ impl Walk<'_> {
             })
             .collect();
         // L10: before the nest, every lane runs the code, so it may only declare values, and
-        // it may not read what the blocks write. Nothing comes after the nest.
+        // it may not read what the blocks write. After the nest, the last pass runs the code.
         if let Some(first) = nests.first() {
             let at = stmts
                 .iter()
@@ -684,15 +696,23 @@ impl Walk<'_> {
                     ),
                 }
             }
-            for s in &stmts[at + 1..] {
-                let nest = matches!(s, Statement::ForLoop(f) if f.across.is_some());
-                if !nest && !matches!(s, Statement::Drop(_)) {
-                    self.error(
-                        "a region with `across` loops does nothing after its nest of blocks"
-                            .to_string(),
-                        s.span(),
-                    );
-                }
+            // After the nest, the code runs once, in the last pass to end.
+            let tail: Vec<&Statement> = stmts[at + 1..]
+                .iter()
+                .filter(|s| !matches!(s, Statement::Drop(_)))
+                .filter(|s| !matches!(s, Statement::ForLoop(f) if f.across.is_some()))
+                .collect();
+            let axes = first
+                .body
+                .iter()
+                .any(|s| matches!(s, Statement::ForLoop(f) if f.across.as_ref().map(|a| &a.level) == Some(&blocks)));
+            if let (Some(s), true) = (tail.first(), axes) {
+                self.error(
+                    "code after an `across` nest of blocks with more than one axis is not built \
+                     yet. Make the blocks one axis"
+                        .to_string(),
+                    s.span(),
+                );
             }
         }
         for extra in nests.iter().skip(1) {

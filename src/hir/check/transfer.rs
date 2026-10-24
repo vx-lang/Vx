@@ -2276,6 +2276,7 @@ impl<'a> TypeChecker<'a> {
                 stmts,
                 ret,
                 span,
+                arrivals,
             }) => {
                 let spawn_span = *span;
                 let mut actual_top = top.clone();
@@ -2291,6 +2292,10 @@ impl<'a> TypeChecker<'a> {
                     }
                     actual_top = self.active_topology.clone();
                 }
+                // Code after the `across` nest runs once, in the last pass to end. That pass
+                // knows it is the last from a count in the region's own memory.
+                *arrivals = crate::hir::check::across::code_after_the_nest(stmts)
+                    .then(|| self.transfer_cost_graph.default_memory_for(&actual_top));
 
                 // Typo-safety for the open topology set: a user-defined topology with no
                 // registered descriptor (not declared via `Topology <Name> { ... }` and not

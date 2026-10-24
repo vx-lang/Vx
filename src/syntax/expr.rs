@@ -124,6 +124,9 @@ pub struct SpawnOnExpr {
     pub stmts: Vec<Statement>,
     pub ret: Option<Box<Expr>>,
     pub span: Span,
+    /// For a region with code after its `across` nest of blocks: the memory that holds the
+    /// count of the passes that ended, set by the checker. The last pass runs that code.
+    pub arrivals: Option<crate::syntax::MemorySpace>,
 }
 impl SpawnOnExpr {
     pub fn new(top: Topology, stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -132,6 +135,7 @@ impl SpawnOnExpr {
             stmts,
             ret,
             span,
+            arrivals: None,
         }
     }
 }
@@ -1522,6 +1526,7 @@ impl Expr {
                 stmts: e.stmts.iter().map(|s| s.substitute(mapping)).collect(),
                 ret: e.ret.as_ref().map(|r| Box::new(r.substitute(mapping))),
                 span: e.span,
+                arrivals: e.arrivals.clone(),
             }),
             Expr::TaskBlock(e) => Expr::TaskBlock(TaskBlockExpr {
                 kind: e.kind,
