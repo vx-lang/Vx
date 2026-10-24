@@ -85,6 +85,15 @@ Memory SMEM {
 > through `Memory::CPU_DRAM` while a machine model is in force must name one (`E6014`), because
 > `--machine` describes an accelerator and says nothing about the machine it hangs off.
 
+### 2.4 Data races
+
+A data race is two accesses to one place from two tasks at the same time. At least one of them writes, and at least one of them is not atomic.
+
+- Safe code has no data races. The borrow checker and the `Send` and `Sync` rules refuse a program that can have one.
+- A data race in `unsafe` code is undefined behavior. The compiler may assume that it does not occur, so the program can give any result.
+
+Tasks that must write one place share an atomic, such as `AtomicI32` in `core::sync::atomic`. The rules are S5, S6 and U1 to U4 in [`cpu_tasks_send_sync_and_shared_atomics.md`](../discussions/cpu_tasks_send_sync_and_shared_atomics.md).
+
 ______________________________________________________________________
 
 ## 3. Typestates and Hardware Fallibility
