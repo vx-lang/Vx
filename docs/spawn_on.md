@@ -208,6 +208,11 @@ spawn on(Topology::Gpu) {
   the loop must then be atomic (#2139, `discussions/mlir_declared_writes_in_across.md`).
 - Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
   memory.
+- Code after the nest of blocks runs once, after every pass, in the same kernel. Each pass ends
+  with an atomic add to a count that the compiler makes, between two fences for the device. The
+  pass that sees the last count runs the code on lane 0. A nest with no passes runs no such
+  code, and a nest with two axes of blocks cannot have it yet
+  (`discussions/last_arriver_in_across_loops.md`).
 - Delete each `across` and the program means the same. The CPU copy of the region runs one
   block of one lane, and a loop steps over the passes of the others.
 - A size is not a kernel argument. The launch passes each size that is not a number after the

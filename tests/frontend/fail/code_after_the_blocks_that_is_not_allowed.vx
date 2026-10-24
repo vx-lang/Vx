@@ -1,0 +1,60 @@
+//===- code_after_the_blocks_that_is_not_allowed.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Code after the `across` nest of blocks runs once, in the last pass to end. A lane loop there,
+// alone or inside an `if`, is outside the loop of blocks (E6032). A nest with two axes of blocks
+// cannot have code after it yet.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: not vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E6032] at 25:20: a lane loop is valid only inside the `across` loop of blocks
+// CHECK: Error[E6032] at 40:22: a lane loop is valid only inside the `across` loop of blocks
+// CHECK: Error[E6032] at 57:5: code after an `across` nest of blocks with more than one axis is not built yet. Make the blocks one axis
+
+pub fn lanes_after_the_nest(t : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes {
+        t[b * 32 + l] = l;
+      }
+    }
+    for l in 0..32 across lanes {
+      t[l] = 0;
+    }
+  }
+  return;
+}
+
+pub fn lanes_in_an_if_after_the_nest(t : &mut Tensor<i32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes {
+        t[b * 32 + l] = l;
+      }
+    }
+    if n > 0 {
+      for l in 0..32 across lanes {
+        t[l] = 0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn two_axes(t : &mut Tensor<i32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for y in 0..2 across blocks {
+      for x in 0..2 across blocks {
+        for l in 0..32 across lanes {
+          t[(y * 2 + x) * 32 + l] = l;
+        }
+      }
+    }
+    t[0] = 1;
+  }
+  return;
+}
