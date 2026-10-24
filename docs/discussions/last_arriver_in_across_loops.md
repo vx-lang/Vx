@@ -3,7 +3,9 @@
 Status: option C is built (#2139, item 5). The checker records the memory for the count, and the
 flat code generator writes the count, the fences and the guard. The block of the last pass runs
 the code after the nest, so that code may hold lane loops. A nest with no passes runs no code
-after it, and a nest with two axes of blocks cannot have code after it yet.
+after it, and a nest with two axes of blocks cannot have code after it yet. Code in the outer loop
+of two axes, after the inner loop, is the code of a group: each pass of the outer loop has its own
+count, and the last inner pass of the group runs the code.
 
 ## The pattern
 

@@ -59,16 +59,27 @@ pub(super) struct AcrossState {
     pub pass: Option<crate::symbol::Symbol>,
 }
 
-/// The code after a nest of blocks. Each pass adds 1 to element 0 of `count` when it ends, and
-/// the pass that sees `last`, one less than the number of passes, runs `stmts` in its block.
-/// Element `1 + b - start` tells the lanes of pass `b` whether it is the last one.
+/// The code after the passes of a nest of blocks, or of a group: each pass of the outer loop is
+/// a group of the passes of the inner one. Each pass adds 1 to the element of its group in
+/// `count` when it ends, and the pass that sees `last`, one less than the passes of a group, runs
+/// `stmts` in its block. After the `groups` counts, one element for each pass tells its lanes
+/// whether it is the last one of its group.
 #[derive(Clone)]
 pub(super) struct Tail {
     pub stmts: Vec<Statement>,
     /// The addresses of the statements in the region, which the region does not lower itself.
     pub skip: HashSet<usize>,
+    /// The loop whose passes count, by its address.
+    pub counted: usize,
+    /// The body of the outer loop of a group, which lowers only its inner loop, by its address.
+    pub outer_body: Option<usize>,
+    /// The variable of the outer loop of a group, and the first value of it.
+    pub group: Option<(crate::symbol::Symbol, Val)>,
+    pub groups: Val,
     pub count: Val,
+    /// The first index of the counted loop, and the number of its passes in a group.
     pub start: Val,
+    pub passes: Val,
     pub last: Val,
 }
 
@@ -76,9 +87,9 @@ pub(super) struct Tail {
 /// count, and an acquire fence. Each fence is for the device, so the writes of every pass are
 /// visible to the last one. The pass's own element of the count says whether it was the last.
 const ARRIVE: &str = r#"llvm.fence syncscope("device") release
-%vx_zero = arith.constant 0 : index
+%vx_group = arith.index_cast %group : i32 to index
 %vx_one = arith.constant 1 : i32
-%vx_old = memref.atomic_rmw addi %vx_one, %count[%vx_zero] : (i32, memref<?xi32>) -> i32
+%vx_old = memref.atomic_rmw addi %vx_one, %count[%vx_group] : (i32, memref<?xi32>) -> i32
 %vx_is_last = arith.cmpi eq, %vx_old, %last : i32
 llvm.fence syncscope("device") acquire
 %vx_last = arith.extui %vx_is_last : i1 to i32
@@ -216,6 +227,14 @@ impl Lowerer<'_> {
         stmts: &[Statement],
         level: AcrossLevel,
     ) -> Lowered<()> {
+        // The outer loop of a group lowers its inner loop. The code after it runs in the last
+        // pass of each group.
+        let outer = self.across.tail.as_ref().and_then(|t| t.outer_body);
+        let stmts = if outer == Some(stmts.as_ptr() as usize) {
+            &stmts[..1]
+        } else {
+            stmts
+        };
         let mut i = 0;
         while i < stmts.len() {
             if across_lanes::holds_across(&stmts[i]) {
@@ -280,9 +299,29 @@ impl Lowerer<'_> {
     /// the add. Code that every lane runs writes no memory.
     fn arrive(&mut self, pass: Val) -> Lowered<()> {
         let tail = self.across.tail.clone().ok_or(crate::emitter_gap!())?;
+        let group = match &tail.group {
+            Some((name, start)) => {
+                let id = crate::syntax::IdentifierExpr::new(
+                    name.clone(),
+                    crate::syntax::Span::default(),
+                );
+                let outer = self.lower_expr(&Expr::Identifier(id))?;
+                self.emit_value(Opcode::Sub, outer.reg, start.reg, ElementType::I32, 0)
+            }
+            None => self.const_i32(0),
+        };
+        // The flag of this pass: after the counts, at `group * passes + pass - start`.
         let offset = self.emit_value(Opcode::Sub, pass.reg, tail.start.reg, ElementType::I32, 0);
+        let row = self.emit_value(Opcode::Mul, group.reg, tail.passes.reg, ElementType::I32, 0);
+        let in_flags = self.emit_value(Opcode::Add, row.reg, offset.reg, ElementType::I32, 0);
+        let slot = self.emit_value(
+            Opcode::Add,
+            tail.groups.reg,
+            in_flags.reg,
+            ElementType::I32,
+            0,
+        );
         let one = self.const_i32(1);
-        let slot = self.emit_value(Opcode::Add, offset.reg, one.reg, ElementType::I32, 0);
         let lane = self.across_id(ACROSS_LANE, 0);
         let zero = self.const_i32(0);
         let first = self.emit_value(
@@ -297,6 +336,7 @@ impl Lowerer<'_> {
             ARRIVE,
             &[
                 ("%count", "memref<?xi32>", &tail.count),
+                ("%group", "i32", &group),
                 ("%last", "i32", &tail.last),
                 ("%slot", "i32", &slot),
             ],
@@ -419,8 +459,13 @@ impl Lowerer<'_> {
         kind: LevelKind,
     ) -> Lowered<()> {
         if kind == LevelKind::Blocks {
-            // The outer loop of blocks is the nest whose passes count.
-            if self.across.blocks == 0 && self.across.tail.is_some() {
+            // The passes of this loop count.
+            if self
+                .across
+                .tail
+                .as_ref()
+                .is_some_and(|t| t.counted == f as *const _ as usize)
+            {
                 self.across.arrive_body = Some(f.body.as_ptr() as usize);
                 self.across.pass = Some(f.iter.as_str().into());
             }
