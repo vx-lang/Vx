@@ -142,7 +142,10 @@ binary_expr ::=
     | binary_expr "|" binary_expr
     | binary_expr "@" binary_expr
     | binary_expr ".." binary_expr
-    | primary_expr
+    | cast_expr
+
+// `as` binds after a prefix `-` or `!`: `-x as T` is `(-x) as T`.
+cast_expr ::= primary_expr ( "as" type )*
 
 primary_expr ::= 
     | "!" primary_expr

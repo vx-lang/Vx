@@ -1,0 +1,17 @@
+//===- prefix_neg_then_as_cast.vx - Vx Compiler -------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `-x as T` is `(-x) as T`. With x = -128i8, the negation wraps in i8 and the
+// cast then yields -128. The old parse `-(x as T)` printed 128.
+//
+// EXPECT: -128
+fn main() -> i32 {
+  let x : i8 = -128i8;
+  let y : i32 = -x as i32;
+  println!(y);
+  return 0;
+}

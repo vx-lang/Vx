@@ -215,6 +215,7 @@ fn dispatch<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
     minimum value of its type by -1.
 - Relational Operators: `==`, `!=`, `<`, `>`, `<=`, `>=` (Returns a Boolean evaluation)
 - Logical Operators: `&&`, `||`, `!` (Requires Boolean operands)
+- Cast: `e as T`. Binds after a prefix `-` or `!`, so `-x as T` is `(-x) as T` and `!x as T` is `(!x) as T`. Field access, indexing and calls stay on the operand (`-x.f`, `-a[i]`, `-f()`).
 - Range: `..` (e.g. `0..4`, and inside a topology index such as `NPU[0..4]`)
 
 ## 5. Semantics of Data Movement: `transfer`
