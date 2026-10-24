@@ -1,0 +1,55 @@
+//===- raw_pointer_made_from_a_borrow_keeps_it_through_core_ptr.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A raw pointer passed by value borrows nothing, but a pointer made from it holds what it holds.
+// `p` after `let p = (&mut x) as *mut i64` holds `&mut x`, so `x` stays borrowed while a pointer
+// made from `p` is in use: through one call, through two, and through an `extern`, whose body
+// the checker cannot see.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E4002] at 28:3: Cannot access 'x' because it is mutably borrowed.
+// CHECK: Error[E4002] at 37:3: Cannot access 'x' because it is mutably borrowed.
+// CHECK: Error[E4002] at 46:3: Cannot access 'x' because it is mutably borrowed.
+// CHECK: {{^}}Semantic check failed on {{.*}}: 3 error(s) emitted
+import core::ptr;
+
+extern "C" {
+  fn vx_advance_ptr(p : *mut f32, offset : i32) -> *mut f32;
+}
+
+fn through_add_mut() -> i64 {
+  let mut x : i64 = 5;
+  let p = (&mut x) as *mut i64;
+  let q = add_mut(p, 0);
+  x = 6;
+  return unsafe { *q };
+}
+
+fn through_two_calls() -> i64 {
+  let mut x : i64 = 5;
+  let p = (&mut x) as *mut i64;
+  let q = add_mut(p, 0);
+  let r = offset_mut(q, 0);
+  x = 7;
+  return unsafe { *r };
+}
+
+fn through_an_extern() -> f32 {
+  let mut x : f32 = 5.0;
+  let p = (&mut x) as *mut f32;
+  let mut q = null_mut<f32>();
+  unsafe { q = vx_advance_ptr(p, 0); }
+  x = 6.0;
+  return unsafe { *q };
+}
+
+fn main() -> i32 {
+  print(through_add_mut());
+  print(through_two_calls());
+  print(through_an_extern());
+  return 0;
+}

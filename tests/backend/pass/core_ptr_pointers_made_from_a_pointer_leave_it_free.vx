@@ -1,0 +1,54 @@
+//===- core_ptr_pointers_made_from_a_pointer_leave_it_free.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A raw pointer passed by value is a copy, and two raw pointers may alias. So a pointer that
+// `add_mut`, `offset_mut` or `sub_mut` makes from another leaves that one free. The program keeps
+// a base pointer next to the pointers made from it and uses them all, as the llama programs do
+// with the runtime's `vx_advance_ptr` (#2145). A pointer in a field is the same.
+//
+// Element k holds 10 * k. A pointer one element off reads a different number, and a write through
+// one pointer is read back through another.
+import core::ptr;
+import std::alloc;
+
+struct Weights {
+  base : *mut i64,
+}
+
+fn main() -> i32 {
+  let p0 : *mut i64 = unsafe { malloc(64) };
+  let mut i : i64 = 0;
+  while i < 8 {
+    unsafe { p0[i] = i * 10; }
+    i = i + 1;
+  }
+  let p1 = add_mut(p0, 2);
+  let p2 = offset_mut(p1, 3);
+  let p3 = sub_mut(p2, 4);
+  unsafe { print(p1[0]); }
+  print!(" ");
+  unsafe { print(p2[0]); }
+  print!(" ");
+  unsafe { print(p3[0]); }
+  print!(" | ");
+  // Write through `p2` and read through `p0`, with `p1` still in use after.
+  unsafe { p2[0] = 99; }
+  unsafe { print(p0[5]); }
+  print!(" ");
+  unsafe { print(p1[0]); }
+  print!(" | ");
+  let w = Weights {
+    base : p0
+  };
+  let r = add_mut(w.base, 7);
+  unsafe { print(w.base[0]); }
+  print!(" ");
+  unsafe { print(r[0]); }
+  return 0;
+}
+
+// EXPECT: 20 50 10 | 99 20 | 0 70

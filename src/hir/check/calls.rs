@@ -43,6 +43,11 @@ struct ReborrowPlan {
     base_snapshots: HashMap<String, Option<Vec<BorrowRecord>>>,
     /// By-value arguments that can hold a reference, `s` after `let s = View { r : &x }`.
     held_args: Vec<String>,
+    /// (arg index, base) for each raw pointer passed by value. It borrows nothing; the result
+    /// holds what it holds.
+    ptr_args: Vec<(usize, String)>,
+    /// The callee is an `extern`, whose body the checker cannot see.
+    is_extern: bool,
 }
 
 /// How an impl block is named in a diagnostic: the trait with its arguments, so two impls of
@@ -348,6 +353,7 @@ impl<'a> TypeChecker<'a> {
         let mut ref_args: Vec<(usize, String, Vec<String>, bool, bool)> = Vec::new();
         let mut base_snapshots: HashMap<String, Option<Vec<BorrowRecord>>> = HashMap::new();
         let mut held_args = Vec::new();
+        let mut ptr_args = Vec::new();
         let is_extern = self
             .env
             .externs
@@ -362,13 +368,18 @@ impl<'a> TypeChecker<'a> {
                         while let Expr::AsCast(cast) = arg {
                             arg = &cast.expr;
                         }
-                        // The checker cannot see an `extern` function's body, so it takes the
-                        // result to come from every argument. A raw pointer passed by value is
-                        // a copy and borrows nothing; only a borrow written at the call counts.
-                        if is_extern
-                            && matches!(pty, Type::Pointer(..))
-                            && !matches!(arg, Expr::Borrow(_))
-                        {
+                        // A raw pointer passed by value is a copy. The callee cannot reach the
+                        // caller's variable through it, and two raw pointers may alias, so the
+                        // variable is not borrowed: `add_mut(p, 4)` leaves `p` free, for every
+                        // callee, `extern` or not. The result may point where the pointer
+                        // points, so it holds what the pointer holds: `p` after
+                        // `let p = (&mut x) as *mut i64` holds `&mut x`, and so does the result.
+                        // Only a borrow written at the call, `(&mut b) as *mut u8`, borrows a
+                        // place.
+                        if matches!(pty, Type::Pointer(..)) && !matches!(arg, Expr::Borrow(_)) {
+                            if let Some((base, _)) = Self::arg_reborrow_base(arg) {
+                                ptr_args.push((i, base));
+                            }
                             continue;
                         }
                         if let Some((base, path)) = Self::arg_reborrow_base(arg) {
@@ -404,6 +415,8 @@ impl<'a> TypeChecker<'a> {
             ref_args,
             base_snapshots,
             held_args,
+            ptr_args,
+            is_extern,
         }
     }
 
@@ -581,6 +594,20 @@ impl<'a> TypeChecker<'a> {
             );
             // `let r = keep(m)`: `r` may point where `m` points, so it holds every borrow
             // `m` holds, as it would after `let r = m`.
+            if persists(*i) {
+                if let Some(target) = self.current_assignment_target.clone() {
+                    self.borrow.copy_borrows(base, &target, self.scopes.len());
+                }
+            }
+        }
+        // A raw pointer argument borrows nothing, but the result holds what the pointer holds.
+        // The checker cannot see an `extern` function's body, so its provenance is "any
+        // parameter": a pointer that one returns may come from any of its pointer arguments.
+        for (i, base) in &plan.ptr_args {
+            assert!(
+                !(plan.is_extern && plan.ret_is_ref) || persists(*i),
+                "an extern's result must hold what each of its pointer arguments holds"
+            );
             if persists(*i) {
                 if let Some(target) = self.current_assignment_target.clone() {
                     self.borrow.copy_borrows(base, &target, self.scopes.len());
