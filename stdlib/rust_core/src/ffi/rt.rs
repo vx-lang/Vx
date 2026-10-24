@@ -68,32 +68,6 @@ pub extern "C" fn vx_init_signals() {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn vx_sqrtf(x: f32) -> f32 {
-    x.sqrt()
-}
-
-#[no_mangle]
-pub extern "C" fn vx_expf(x: f32) -> f32 {
-    x.exp()
-}
-
-#[no_mangle]
-pub extern "C" fn vx_cosf(x: f32) -> f32 {
-    x.cos()
-}
-
-#[no_mangle]
-pub extern "C" fn vx_sinf(x: f32) -> f32 {
-    x.sin()
-}
-
-#[no_mangle]
-pub extern "C" fn vx_get_rope_freq(pos: i32, i: i32, head_size: i32) -> f32 {
-    let freq = 10000.0f32.powf(-(i as f32) / (head_size as f32));
-    (pos as f32) * freq
-}
-
 // ============================================================================
 // Timing & Benchmarking
 // ============================================================================
@@ -225,14 +199,6 @@ pub extern "C" fn vx_advance_ptr_const(p: *const f32, offset: i32) -> *const f32
 #[no_mangle]
 pub extern "C" fn vx_advance_ptr_f32(p: *mut f32, offset: i32) -> *mut f32 {
     unsafe { p.add(offset as usize) }
-}
-
-#[no_mangle]
-pub extern "C" fn vx_memcpy(dest: *mut f32, src: *const f32, num_bytes: i32) -> i32 {
-    unsafe {
-        ptr::copy_nonoverlapping(src as *const u8, dest as *mut u8, num_bytes as usize);
-    }
-    0
 }
 
 #[no_mangle]
