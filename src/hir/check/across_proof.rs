@@ -14,8 +14,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+use crate::hir::comptime_interpreter::ComptimeInterpreter;
 use crate::hir::flatten::is_tensor_alloc_call;
 use crate::syntax::stmt::{ForLoopStmt, Statement};
+use crate::syntax::types::{scalar_of, ElementType};
 use crate::syntax::{BinaryOp, Expr, Span, UnaryOp};
 use std::collections::{BTreeMap, HashMap};
 
@@ -68,9 +70,12 @@ impl Affine {
 #[derive(Clone)]
 enum Binding {
     /// A loop index of this pass, with its range when the bounds are numbers.
-    Index { key: String },
-    /// A `let` whose value is this form, the same each time it is read.
-    Value(Affine),
+    Index {
+        key: String,
+        ty: Option<ElementType>,
+    },
+    /// A `let` whose value is this form, of this type, the same each time it is read.
+    Value(Affine, Option<ElementType>),
     /// A tensor that the pass makes, so no other pass sees it.
     Tensor,
     /// Any other name of the pass.
@@ -120,7 +125,7 @@ pub(crate) fn across_loop_race(f: &ForLoopStmt, level: &str) -> Option<(String, 
         error: None,
         at: f.span,
     };
-    p.own = p.bind_index(&f.iter, range);
+    p.own = p.bind_index(&f.iter, range, range_type(&f.iterable));
     p.stmts(&f.body);
     if let Some(e) = p.error {
         return Some(e);
@@ -131,6 +136,17 @@ pub(crate) fn across_loop_race(f: &ForLoopStmt, level: &str) -> Option<(String, 
 fn int(e: &Expr) -> Option<i64> {
     match e {
         Expr::Number(n) => n.value.parse().ok(),
+        _ => None,
+    }
+}
+
+/// The type of a loop's index, from a number at either end of its range.
+fn range_type(iterable: &Expr) -> Option<ElementType> {
+    match iterable {
+        Expr::Range(r) => [&*r.start, &*r.end].into_iter().find_map(|e| match e {
+            Expr::Number(n) => n.ty.clone(),
+            _ => None,
+        }),
         _ => None,
     }
 }
@@ -154,11 +170,22 @@ impl Proof {
             .insert(name.to_string(), b);
     }
 
-    fn bind_index(&mut self, name: &str, range: Option<(i64, i64)>) -> String {
+    fn bind_index(
+        &mut self,
+        name: &str,
+        range: Option<(i64, i64)>,
+        ty: Option<ElementType>,
+    ) -> String {
         let key = format!("{name}#{}", self.next_key);
         self.next_key += 1;
         self.ranges.insert(key.clone(), range);
-        self.bind(name, Binding::Index { key: key.clone() });
+        self.bind(
+            name,
+            Binding::Index {
+                key: key.clone(),
+                ty,
+            },
+        );
         key
     }
 
@@ -184,7 +211,9 @@ impl Proof {
                 let value = crate::syntax::bare_unsafe_value(&l.expr);
                 let b = match value {
                     Expr::FunctionCall(fc) if is_tensor_alloc_call(fc) => Binding::Tensor,
-                    _ if !l.is_mut => self.affine(&l.expr).map_or(Binding::Other, Binding::Value),
+                    _ if !l.is_mut => self.affine(&l.expr).map_or(Binding::Other, |a| {
+                        Binding::Value(a, self.int_type(&l.expr))
+                    }),
                     _ => Binding::Other,
                 };
                 self.bind(l.name.as_ref(), b);
@@ -206,7 +235,7 @@ impl Proof {
                     _ => None,
                 };
                 self.scopes.push(HashMap::new());
-                self.bind_index(&inner.iter, range);
+                self.bind_index(&inner.iter, range, range_type(&inner.iterable));
                 self.stmts(&inner.body);
                 self.scopes.pop();
             }
@@ -402,21 +431,40 @@ impl Proof {
         }
     }
 
+    /// The form of `e`, when the program computes it as an exact integer. A cast that may change
+    /// the value, or arithmetic that may wrap, has no form: two passes could then meet.
     fn affine(&self, e: &Expr) -> Option<Affine> {
         match e {
             Expr::Number(n) => n.value.parse().ok().map(Affine::constant),
             Expr::Identifier(id) => match self.lookup(id.name.as_ref()) {
                 Some(Binding::Index { key, .. }) => Some(Affine::var(key.clone())),
-                Some(Binding::Value(a)) => Some(a.clone()),
+                Some(Binding::Value(a, _)) => Some(a.clone()),
                 Some(Binding::Tensor | Binding::Other) => None,
                 // From outside the loop: the same in every pass.
                 None => Some(Affine::var(format!("{}#outside", id.name))),
             },
-            Expr::AsCast(c) => self.affine(&c.expr),
-            Expr::UnaryOp(u) if u.op == UnaryOp::Neg => self.affine(&u.expr)?.scale(-1),
+            Expr::AsCast(c) => {
+                let form = self.affine(&c.expr)?;
+                let (min, max) = scalar_of(&c.target_ty)
+                    .as_ref()
+                    .and_then(ComptimeInterpreter::integer_range)?;
+                let holds = |(lo, hi): (i128, i128)| min <= lo && hi <= max;
+                let source = c
+                    .source_ty
+                    .as_ref()
+                    .and_then(scalar_of)
+                    .as_ref()
+                    .and_then(ComptimeInterpreter::integer_range);
+                (source.is_some_and(holds) || self.bounds(&form).is_some_and(holds)).then_some(form)
+            }
+            Expr::UnaryOp(u) if u.op == UnaryOp::Neg => {
+                let form = self.affine(&u.expr)?.scale(-1)?;
+                self.fits(&form, self.int_type(&u.expr).as_ref())
+                    .then_some(form)
+            }
             Expr::BinaryOp(b) => {
                 let (l, r) = (self.affine(&b.lhs)?, self.affine(&b.rhs)?);
-                match b.op {
+                let form = match b.op {
                     BinaryOp::Add => l.add(&r, 1),
                     BinaryOp::Sub => l.add(&r, -1),
                     BinaryOp::Mul => match (l.as_constant(), r.as_constant()) {
@@ -425,10 +473,58 @@ impl Proof {
                         _ => None,
                     },
                     _ => None,
-                }
+                }?;
+                self.fits(&form, b.operand_ty.as_ref()).then_some(form)
             }
             _ => None,
         }
+    }
+
+    /// The integer type of `e`, when the checker recorded it.
+    fn int_type(&self, e: &Expr) -> Option<ElementType> {
+        match e {
+            Expr::Number(n) => n.ty.clone(),
+            Expr::BinaryOp(b) => b.operand_ty.clone(),
+            Expr::AsCast(c) => scalar_of(&c.target_ty),
+            Expr::UnaryOp(u) => self.int_type(&u.expr),
+            Expr::Identifier(id) => match self.lookup(id.name.as_ref()) {
+                Some(Binding::Index { ty, .. } | Binding::Value(_, ty)) => ty.clone(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The least and the greatest value of `form`, when each of its variables is a loop index
+    /// whose range is numbers.
+    fn bounds(&self, form: &Affine) -> Option<(i128, i128)> {
+        let (mut lo, mut hi) = (form.constant as i128, form.constant as i128);
+        for (v, &c) in &form.terms {
+            let (a, b) = self
+                .ranges
+                .get(v)
+                .copied()
+                .flatten()
+                .filter(|(a, b)| b > a)?;
+            let (x, y) = (c as i128 * a as i128, c as i128 * (b as i128 - 1));
+            lo += x.min(y);
+            hi += x.max(y);
+        }
+        Some((lo, hi))
+    }
+
+    /// Whether the program computes `form` in `ty` without wrapping. A coefficient or the
+    /// constant must fit the type, and so must each value over the known ranges.
+    fn fits(&self, form: &Affine, ty: Option<&ElementType>) -> bool {
+        let Some((min, max)) = ty.and_then(ComptimeInterpreter::integer_range) else {
+            return false;
+        };
+        let small = |c: i64| (c.unsigned_abs() as i128) <= max;
+        form.terms.values().all(|&c| small(c))
+            && small(form.constant)
+            && self
+                .bounds(form)
+                .is_none_or(|(lo, hi)| min <= lo && hi <= max)
     }
 
     /// Whether two passes that compute `form` to the same value are the same pass.
