@@ -45,6 +45,22 @@ def readsFrom (X : Execution) (r w : X.E) (a b : X.E) : Prop :=
 
 def Finite (X : Execution) : Prop := ∃ l : List X.E, ∀ e, e ∈ l
 
+/-- `co` is transitive, and it orders each two writes to one place. -/
+structure CoOrder (X : Execution) : Prop where
+  trans : ∀ a b c, X.co a b → X.co b c → X.co a c
+  total : ∀ a b, X.IsWrite a → X.IsWrite b → X.loc a = X.loc b → a ≠ b → X.co a b ∨ X.co b a
+
+theorem Finite.restrict {X : Execution} (h : X.Finite) (S : X.E → Prop) : (X.restrict S).Finite := by
+  classical
+  obtain ⟨l, hl⟩ := h
+  refine ⟨l.filterMap fun x => if hx : S x then some ⟨x, hx⟩ else none, fun e => ?_⟩
+  exact List.mem_filterMap.2 ⟨e.val, hl _, by simp [e.property]; rfl⟩
+
+theorem CoOrder.restrict {X : Execution} (h : X.CoOrder) (S : X.E → Prop) :
+    (X.restrict S).CoOrder where
+  trans a b c := h.trans a.val b.val c.val
+  total a b ha hb hl hne := h.total a.val b.val ha hb hl fun e => hne (Subtype.ext e)
+
 end Execution
 
 structure Program where
@@ -186,9 +202,10 @@ theorem dataRace_restrictLe {X : Execution} {S T : X.E → Prop} (h : ∀ x, S x
 /-- The step of the proof. `S` is a prefix, `m` is an event of `S` with nothing after it, and
 `S` without `m` has no race. Then `S` has no race with `m`, when `m` is not atomic or when all
 other events of `S` come before `m`. -/
-theorem Program.no_race_with_last (P : Program)
-    (hP : ∀ Y, P.Execs Y → Y.WellFormed → Y.SeqConsistent → Y.RaceFree)
-    {X : Execution} (hX : P.Execs X) (wf : X.WellFormed)
+theorem Program.no_race_with_last (P : Program) {X : Execution}
+    (hP : ∀ Y, P.Execs Y → Y.WellFormed → Y.SeqConsistent → Y.Finite → (X.CoOrder → Y.CoOrder) →
+      Y.RaceFree)
+    (hX : P.Execs X) (wf : X.WellFormed)
     (hsc : ∀ e, X.IsAtomic e → X.IsSeqCst e) (hnf : ∀ e, ¬ X.IsFence e) (hc : X.Consistent)
     {l : List X.E} (hl : ∀ e, e ∈ l) {S : X.E → Prop} (hS : X.Downclosed S) {m : X.E}
     (hmS : S m) (hmax' : ∀ x, S x → ¬ (X.po m x ∨ X.rf m x))
@@ -224,6 +241,7 @@ theorem Program.no_race_with_last (P : Program)
       rmw := fun _ _ h => h }
     exact toS'.seqConsistent hS'sc
   have hPY : P.Execs Y := P.prefix_closed X S hX hS
+  have hfinY : Y.Finite := Finite.restrict ⟨l, hl⟩ S
   have hpm : p ≠ mY := hrace.1.1
   have hpm' : p.val ≠ m := fun h => hpm (Subtype.ext h)
   have hrmwa : ∀ r w, Y.rmw r w → Y.IsAtomic w := fun r w h => (wfY.rmw_atomic r w h).2.2.2
@@ -398,7 +416,8 @@ theorem Program.no_race_with_last (P : Program)
         exact hgw.imp (fun hna hacq => hna (atomic_of_acquire hacq)) id)
       (fun r h => Kind.noConfusion ((wfY.rmw_atomic _ _ h).2.1.symm.trans hR))
       wfY.rmw_po hrmwa hnfY hT hrace
-    exact hGracy (hP G (P.receptive Y mY wY hPY hR hpoY hwl.1 hloc) wfG hGsc)
+    exact hGracy (hP G (P.receptive Y mY wY hPY hR hpoY hwl.1 hloc) wfG hGsc hfinY
+      fun ho => let h := ho.restrict S; ⟨h.trans, h.total⟩)
   · by_cases hmA : X.IsAtomic m
     · -- An atomic write that comes after all other events comes after `p`.
       have huniq := hcase.resolve_left (fun h => h hmA)
@@ -441,13 +460,34 @@ theorem Program.no_race_with_last (P : Program)
       (fun y h => absurd hW (fun hw =>
         Kind.noConfusion ((wfY.rf_write_read _ _ h).2.1.symm.trans hw)))
       (fun r h => hmA (hrmwa _ _ h)) wfY.rmw_po hrmwa hnfY hT hrace
-    exact hGracy (hP G (P.any_co Y co'' hPY) wfG hGsc)
+    -- `co''` keeps the order of `co`, and puts `m` after each other write to its place.
+    have hcoG : X.CoOrder → G.CoOrder := fun ho =>
+      let h := ho.restrict S
+      { trans := fun a b c hab hbc => by
+          rcases hab with ⟨ha, hb, hab⟩ | ⟨rfl, -, -, -⟩
+          · rcases hbc with ⟨-, hc, hbc⟩ | ⟨rfl, -, -, hbl⟩
+            · exact Or.inl ⟨ha, hc, h.trans a b c hab hbc⟩
+            · obtain ⟨haW, -, hl⟩ := wfY.co_writes a b hab
+              exact Or.inr ⟨rfl, ha, haW, hl.trans hbl⟩
+          · rcases hbc with ⟨h', -, -⟩ | ⟨-, h', -, -⟩ <;> exact absurd rfl h'
+        total := fun a b ha hb hl hne => by
+          by_cases ham : a = mY
+          · subst ham
+            exact Or.inr (Or.inr ⟨rfl, fun e => hne e.symm, hb, hl.symm⟩)
+          by_cases hbm : b = mY
+          · subst hbm
+            exact Or.inl (Or.inr ⟨rfl, ham, ha, hl⟩)
+          rcases h.total a b ha hb hl hne with h | h
+          · exact Or.inl (Or.inl ⟨ham, hbm, h⟩)
+          · exact Or.inr (Or.inl ⟨hbm, ham, h⟩) }
+    exact hGracy (hP G (P.any_co Y co'' hPY) wfG hGsc hfinY hcoG)
 
-/-- DRF-SC for programs. If no interleaving of `P` has a data race, then every execution of `P`
-that the model allows is an interleaving. -/
-theorem Program.drf_sc (P : Program)
-    (hP : ∀ Y, P.Execs Y → Y.WellFormed → Y.SeqConsistent → Y.RaceFree)
-    {X : Execution} (hX : P.Execs X) (wf : X.WellFormed) (hfin : X.Finite)
+/-- The proof of DRF-SC. The interleavings that it asks to be race free are finite, and their
+`co` orders the writes to each place when the `co` of `X` does. -/
+theorem Program.drf_sc_core (P : Program) {X : Execution}
+    (hP : ∀ Y, P.Execs Y → Y.WellFormed → Y.SeqConsistent → Y.Finite → (X.CoOrder → Y.CoOrder) →
+      Y.RaceFree)
+    (hX : P.Execs X) (wf : X.WellFormed) (hfin : X.Finite)
     (hsc : ∀ e, X.IsAtomic e → X.IsSeqCst e)
     (hnf : ∀ e, ¬ X.IsFence e) (hc : X.Consistent) : X.SeqConsistent := by
   obtain ⟨l, hl⟩ := hfin
@@ -517,5 +557,23 @@ theorem Program.drf_sc (P : Program)
       ⟨⟨fun h => hcnf.1 (congrArg Subtype.val h), hcnf.2⟩, ht,
         fun h => hab ((restrictHom X _).hb h), fun h => hba ((restrictHom X _).hb h), hat⟩
   exact seqConsistent_of_raceFree wf hsc hnf hc hrace
+
+/-- DRF-SC for programs. If no interleaving of `P` has a data race, then every execution of `P`
+that the model allows is an interleaving. -/
+theorem Program.drf_sc (P : Program)
+    (hP : ∀ Y, P.Execs Y → Y.WellFormed → Y.SeqConsistent → Y.RaceFree)
+    {X : Execution} (hX : P.Execs X) (wf : X.WellFormed) (hfin : X.Finite)
+    (hsc : ∀ e, X.IsAtomic e → X.IsSeqCst e)
+    (hnf : ∀ e, ¬ X.IsFence e) (hc : X.Consistent) : X.SeqConsistent :=
+  P.drf_sc_core (fun Y hY wf hsc _ _ => hP Y hY wf hsc) hX wf hfin hsc hnf hc
+
+/-- DRF-SC for programs, when `co` orders the writes to each place, as RC11 asks. Then only the
+finite interleavings in which `co` orders the writes to each place need to be race free. -/
+theorem Program.drf_sc_co (P : Program)
+    (hP : ∀ Y, P.Execs Y → Y.WellFormed → Y.SeqConsistent → Y.Finite → Y.CoOrder → Y.RaceFree)
+    {X : Execution} (hX : P.Execs X) (wf : X.WellFormed) (hfin : X.Finite) (ho : X.CoOrder)
+    (hsc : ∀ e, X.IsAtomic e → X.IsSeqCst e)
+    (hnf : ∀ e, ¬ X.IsFence e) (hc : X.Consistent) : X.SeqConsistent :=
+  P.drf_sc_core (fun Y hY wf hsc hf hco => hP Y hY wf hsc hf (hco ho)) hX wf hfin hsc hnf hc
 
 end Vx

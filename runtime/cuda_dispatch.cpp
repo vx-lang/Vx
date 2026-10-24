@@ -1073,7 +1073,9 @@ bool run_device_image(const void *payload, size_t payload_size,
      device, so a loaded function is only reusable on the device it was loaded
      for. Keyed by both, because keying by name alone hands GPU 1 a function
      belonging to GPU 0's context -- which fails at launch rather than
-     silently, but fails a long way from the cause. */
+     silently, but fails a long way from the cause. The key also has the
+     library that holds the payload, because two libraries can use the same
+     kernel name. */
   struct Loaded {
     CUfunction fn;
     /* The parameters that the entry declares, read from the image once. */
@@ -1086,8 +1088,10 @@ bool run_device_image(const void *payload, size_t payload_size,
 
   int device = 0;
   cudaGetDevice(&device);
+  char library[32];
+  snprintf(library, sizeof library, "%p", vx_payload_library(payload));
   const std::string key =
-      std::string(kernel_name) + "@" + std::to_string(device);
+      std::string(kernel_name) + "@" + std::to_string(device) + "@" + library;
 
   CUfunction fn = nullptr;
   int declared = 0;

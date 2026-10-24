@@ -1,0 +1,65 @@
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Preserve integers, floats, and pointers through whole-enum arguments and returns.
+// REQUIRES: flat-codegen
+// EXPECT: 4294967301 1.5 29
+
+struct Node {
+  value: i64
+}
+enum Value {
+  Float(f64), Integer(u64), Pointer(*const Node)
+}
+fn integer() -> Value {
+  return Value::Integer(4294967301u64);
+}
+fn floating() -> Value {
+  return Value::Float(1.5);
+}
+fn pointer(p: *const Node) -> Value {
+  return Value::Pointer(p);
+}
+fn read_integer(value: Value) -> u64 {
+  match value {
+    Value::Integer(v) => {
+      return v;
+    },
+    _ => {
+      return 0u64;
+    }
+  }
+}
+fn read_float(value: Value) -> f64 {
+  match value {
+    Value::Float(v) => {
+      return v;
+    },
+    _ => {
+      return 0.0;
+    }
+  }
+}
+fn read_pointer(value: Value) -> i64 {
+  match value {
+    Value::Pointer(v) => {
+      return unsafe { (*v).value };
+    },
+    _ => {
+      return 0;
+    }
+  }
+}
+fn main() -> i32 {
+  let _nearby = Node {
+    value: 17
+  };
+  let node = Node {
+    value: 29
+  };
+  print(read_integer(integer())); print(" ");
+  print(read_float(floating())); print(" ");
+  print(read_pointer(pointer((&node) as *const Node)));
+  return 0;
+}

@@ -1,0 +1,61 @@
+//===- enum_tensor_pointers_construct_and_match.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Construct and match enums containing host and GPU tensor pointers.
+// The program does not dereference the pointers.
+// REQUIRES: flat-codegen
+// EXPECT: 5 7 3 3
+
+enum Opt<T> {
+  Some(T), None
+}
+
+fn read_host(x: Opt<*const Tensor<f32, [4]>>) -> i32 {
+  match x {
+    Opt::Some(p) => {
+      return 5;
+    },
+    Opt::None => {
+      return 3;
+    }
+  }
+}
+
+fn read_gpu(x: Opt<*const Tensor<f32, [4], Memory::GPU_HBM>>) -> i32 {
+  let empty = Opt<*const Tensor<f32, [4], Memory::GPU_HBM>>::None;
+  match empty {
+    Opt::Some(p) => {
+      return -1;
+    },
+    Opt::None => {}
+  }
+  match x {
+    Opt::Some(p) => {
+      return 7;
+    },
+    Opt::None => {
+      return 3;
+    }
+  }
+}
+
+fn make_gpu<T>(p: *const Tensor<T, [4], Memory::GPU_HBM>) -> Opt<*const Tensor<T, [4], Memory::GPU_HBM>> {
+  return Opt<*const Tensor<T, [4], Memory::GPU_HBM>>::Some(p);
+}
+
+fn main() -> i32 {
+  let host = unsafe { 0 as *const Tensor<f32, [4]> };
+  let gpu = unsafe { 0 as *const Tensor<f32, [4], Memory::GPU_HBM> };
+  print(read_host(Opt<*const Tensor<f32, [4]>>::Some(host)));
+  print(" ");
+  print(read_gpu(make_gpu<f32>(gpu)));
+  print(" ");
+  print(read_host(Opt<*const Tensor<f32, [4]>>::None));
+  print(" ");
+  print(read_gpu(Opt<*const Tensor<f32, [4], Memory::GPU_HBM>>::None));
+  return 0;
+}

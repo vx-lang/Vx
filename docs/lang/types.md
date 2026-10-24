@@ -247,7 +247,8 @@ fn invalid_cross_access() -> i32 {
 it per concrete target at each call site. Moving a value between two topology variables
 requires a `where Reachable<S, D>` constraint (discharged against the transfer cost graph), and
 the same relation is available as a compile-time `Reachable<A, B>` predicate for `if comptime`
-branch pruning. See [syntax.md §3.2](./syntax.md#32-topology-polymorphic-functions) for the
+branch pruning. An `M: Memory` bound does the same for the memory of a tensor:
+`Tensor<T, [?], Memory::M>` takes a tensor in any memory. See [syntax.md §3.2](./syntax.md#32-topology-polymorphic-functions) for the
 surface syntax and [`hardware_monad.md`](./hardware_monad.md) for the categorical model.
 
 ### 3.5 When Two Topologies Are the Same Topology

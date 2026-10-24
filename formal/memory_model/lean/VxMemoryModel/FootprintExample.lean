@@ -19,11 +19,12 @@ def blockPhases : List Phase :=
 
 def blockFoot : TaskProg := { forkJoin with main := seqAll blockPhases }
 
-theorem blockFoot_footprints : blockFoot.Footprints blockPhases where
+theorem blockFoot_footprints : blockFoot.Footprints (· < blockFoot.flags) blockPhases where
   ok :=
     { main := by
         simp [blockFoot, blockPhases, seqAll, Phase.stmt, Stmt.Below, forkJoin, input, out1, out2]
       task := forkJoin_ok.task }
+  le_flags _ h := h
   main := rfl
   phases := by
     simp [PhasesOk, blockPhases, Phase.Ok, Phase.ids, Stmt.NoTasks, Stmt.NoBlocks, Stmt.RegsBelow,

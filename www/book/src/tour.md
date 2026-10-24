@@ -315,14 +315,16 @@ Raw pointers exist, and the operations that can go wrong with them require `unsa
 
 ```rust
 extern "C" {
-    fn vx_vec_new_i32() -> *mut i8;
-    fn vx_vec_push_i32(vec : *mut i8, val : i32) -> i32;
+    fn malloc(size : i64) -> *mut i8;
+    fn free(p : *mut i8) -> void;
 }
 
 fn main() -> i32 {
     unsafe {
-        let v = vx_vec_new_i32();
-        vx_vec_push_i32(v, 42);
+        let p = malloc(4);
+        p[0] = 42;
+        print(p[0]);
+        free(p);
     }
     return 0;
 }

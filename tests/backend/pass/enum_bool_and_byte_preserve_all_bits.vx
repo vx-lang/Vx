@@ -1,0 +1,90 @@
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Preserve each variant through copies, borrowed access, fields, calls, and returns.
+// REQUIRES: flat-codegen
+// EXPECT: 254 254 254 254 13 11 1 0
+
+enum Value<T> {
+  Bit(bool), Byte(T), Nibble(u4)
+}
+enum Reversed<T> {
+  Nibble(u4), Byte(T), Bit(bool)
+}
+struct Holder<T> {
+  value: Value<T>, tail: i32
+}
+fn make() -> Value<u8> {
+  return Value<u8>::Byte(254u8);
+}
+fn reverse() -> Reversed<u8> {
+  return Reversed<u8>::Byte(254u8);
+}
+fn read(value: Value<u8>) -> u8 {
+  match value {
+    Value::Bit(v) => {
+      if v {
+        return 1u8;
+      } return 0u8;
+    },
+    Value::Byte(v) => {
+      return v;
+    },
+    Value::Nibble(v) => {
+      return v as u8;
+    }
+  }
+}
+fn read_reversed(value: Reversed<u8>) -> u8 {
+  match value {
+    Reversed::Nibble(v) => {
+      return v as u8;
+    },
+    Reversed::Byte(v) => {
+      return v;
+    },
+    Reversed::Bit(v) => {
+      if v {
+        return 1u8;
+      } return 0u8;
+    }
+  }
+}
+fn borrowed(value: &Value<u8>) -> u8 {
+  match *value {
+    Value::Bit(v) => {
+      if v {
+        return 1u8;
+      } return 0u8;
+    },
+    Value::Byte(v) => {
+      return v;
+    },
+    Value::Nibble(v) => {
+      return v as u8;
+    }
+  }
+}
+fn field(value: Value<u8>) -> u8 {
+  let holder: Holder<u8> = Holder<u8> {
+    value: value, tail: 23
+  };
+  return read(holder.value);
+}
+fn main() -> i32 {
+  let original = make();
+  let copy = original;
+  print(read(copy)); print(" ");
+  let for_borrow = make();
+  print(borrowed(&for_borrow)); print(" ");
+  print(field(make())); print(" ");
+  print(read_reversed(reverse())); print(" ");
+  print(read(Value<u8>::Nibble(13u4))); print(" ");
+  print(read_reversed(Reversed<u8>::Nibble(11u4)));
+  print(" ");
+  print(read(Value<u8>::Bit(true)));
+  print(" ");
+  print(read_reversed(Reversed<u8>::Bit(false)));
+  return 0;
+}

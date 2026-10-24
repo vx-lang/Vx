@@ -625,7 +625,8 @@ pub enum DiagnosticCode {
     /// or one whose arch cannot launch them (without `-fauto-schedule-levels`), a level the
     /// topology does not name, a loop outside a `spawn on` region or in the wrong order, a size
     /// that is not known when the kernel is compiled or is over the limit, or a jump out of the
-    /// loop.
+    /// loop. Also a lane reduction (`lanes::sum` and the others) outside the code of a loop of
+    /// blocks or subgroups, or with a tensor that is too large.
     E6032,
     /// An index into a tensor in a `scope: thread` space that is not known when compiling. Such
     /// a tensor stays in registers, and a register has no address. So each index must be a
@@ -661,6 +662,9 @@ pub enum DiagnosticCode {
     E8005,
     /// A call does not meet the called function's precondition (`requires`)
     E8006,
+    /// An access clause that does not hold: an `atomic(t)` whose body uses `t` without an atomic
+    /// operation, or a `writes_only()` whose body may write memory
+    E8007,
 }
 
 impl std::fmt::Display for DiagnosticCode {

@@ -7,20 +7,20 @@
 //===----------------------------------------------------------------------===//
 // Kernels from llm.c's CUDA training code, written with `across` loops, that the checker refuses
 // (E6032), and two forms that a CUDA programmer would write for llm.c's layernorm and for padded
-// rows. Each has a passing form in across_kernels_from_llm_c.vx, except `encoder_backward`: its
-// write goes to the row of the token id, which only the data knows.
+// rows. Each has a passing form in across_kernels_from_llm_c.vx. Two need an atomic add, as in
+// llm.c, because the data decides where they write.
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
 // CHECK: Error[E6032] at 29:{{.*}}two passes of this block loop may write the same element of `dwte`: an index of the write
 // CHECK: Error[E6032] at 68:{{.*}}the call to `f32$rsqrt` may write through an argument, and the checker does not read its
 // CHECK: Error[E6032] at 88:{{.*}}two passes of this block loop may write the same element of `dbias`: an index of the
 // CHECK: Error[E6032] at 107:{{.*}}this lane loop reads `mean`, which only lane 0 has: lane 0 alone runs the code that sets
-// CHECK: Error[E6032] at 119:{{.*}}this condition decides whether the lanes reach the end of a lane loop, so it must be the
-// CHECK: Error[E6032] at 134:{{.*}}this condition decides whether the lanes reach the end of a lane loop, so it must be the
+// CHECK: Error[E6032] at 119:{{.*}}this condition decides whether the lanes reach the end of a lane loop
+// CHECK: Error[E6032] at 134:{{.*}}this condition decides whether the lanes reach the end of a lane loop
 
 import core::num;
 
-// dwte[ix[b][t]][c] += dout[b][t][c]: two tokens with one id add to one row.
+// dwte[ix[b][t]][c] += dout[b][t][c] as a plain write: two tokens with one id meet at one row.
 pub fn encoder_backward(dwte : &mut Tensor<f32, [?, 768], Memory::HBM>, dout : &Tensor<f32, [?, ?, 768], Memory::HBM>, ix : &Tensor<i32, [?, ?], Memory::HBM>, batch : i32, seq : i32) -> void {
   spawn on(Topology::Device) {
     for b in 0..batch across blocks {

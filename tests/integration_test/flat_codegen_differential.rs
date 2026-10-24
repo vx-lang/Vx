@@ -228,7 +228,7 @@ fn flat_llvm(src: &str) -> Option<String> {
         .iter()
         .map(|w| w.local_inline_blocks.as_slice())
         .collect();
-    let agg_layouts: Vec<_> = lowered
+    let agg_layouts: Vec<vxc::layout::GeneratedAggregateLayout> = lowered
         .iter()
         .flat_map(|w| w.local_agg_layouts.iter().cloned())
         .collect();
@@ -329,7 +329,7 @@ fn flat_module_mlir(src: &str) -> Option<String> {
         .iter()
         .map(|w| w.local_inline_blocks.as_slice())
         .collect();
-    let agg_layouts: Vec<_> = lowered
+    let agg_layouts: Vec<vxc::layout::GeneratedAggregateLayout> = lowered
         .iter()
         .flat_map(|w| w.local_agg_layouts.iter().cloned())
         .collect();
@@ -1517,6 +1517,231 @@ fn parallel_driver_falls_back_for_an_unsupported_enum_layout() {
         return;
     }
     assert_enum_layout_falls_back(Some(2));
+}
+
+fn assert_enum_variants_with_different_structs_run(jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "enum_variants_with_different_structs.vx",
+        &["17", "25", "17", "25", "29"],
+        jobs,
+    );
+}
+
+fn assert_generated_aggregate_runs(fixture: &str, expected: &[&str], jobs: Option<usize>) {
+    assert_generated_aggregate_runs_at_optimization(fixture, expected, jobs, 0);
+}
+
+fn assert_generated_aggregate_runs_at_optimization(
+    fixture: &str,
+    expected: &[&str],
+    jobs: Option<usize>,
+    optimization: u8,
+) {
+    let dir = tempfile::tempdir().expect("create fixture directory");
+    let path = dir.path().join("enum_metadata.vx");
+    let source = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/backend/pass")
+            .join(fixture),
+    )
+    .expect("read fixture");
+    std::fs::write(&path, source).expect("write fixture");
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_vxc"));
+    command
+        .arg(&path)
+        .arg("--run")
+        .arg(format!("-O{optimization}"))
+        .env("VX_FLAT_DBG", "1");
+    if let Some(jobs) = jobs {
+        command.arg("-j").arg(jobs.to_string());
+    }
+    let output = command.output().expect("compile and run fixture");
+    let log = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "compilation with jobs={jobs:?}: {log}\n{stdout}"
+    );
+    let marker = if jobs.is_some() {
+        "[parallel-frontend] emitted module with -j 2"
+    } else {
+        "[flat-codegen] emitted module via the flat path"
+    };
+    assert!(log.contains(marker), "flat path with jobs={jobs:?}: {log}");
+    // Native compilation prints progress before the program's final output line.
+    let values = stdout
+        .lines()
+        .last()
+        .expect("program prints its payload values");
+    let actual: Vec<_> = values.split_whitespace().collect();
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "printed values from {fixture} with jobs={jobs:?}: {stdout}"
+    );
+    for (i, expected) in expected.iter().enumerate() {
+        assert_eq!(actual[i], *expected, "payload value {i} with jobs={jobs:?}");
+    }
+}
+
+#[rstest::rstest]
+#[case::i64_before_pointer("enum_with_integer_and_pointer_variants.vx")]
+#[case::pointer_before_i64("enum_with_pointer_before_i64.vx")]
+#[case::i32_before_pointer("enum_with_i32_before_pointer.vx")]
+#[case::pointer_before_i32("enum_with_pointer_before_i32.vx")]
+fn enum_with_integer_and_pointer_variants_runs(#[case] fixture: &str) {
+    assert_generated_aggregate_runs(fixture, &["5", "7"], None);
+}
+
+#[rstest::rstest]
+#[case::i64_before_pointer("enum_with_integer_and_pointer_variants.vx")]
+#[case::pointer_before_i64("enum_with_pointer_before_i64.vx")]
+#[case::i32_before_pointer("enum_with_i32_before_pointer.vx")]
+#[case::pointer_before_i32("enum_with_pointer_before_i32.vx")]
+fn enum_with_integer_and_pointer_variants_runs_in_parallel(#[case] fixture: &str) {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_generated_aggregate_runs(fixture, &["5", "7"], Some(2));
+}
+
+#[test]
+fn enum_variants_with_different_structs_run() {
+    assert_enum_variants_with_different_structs_run(None);
+}
+
+#[test]
+fn enum_variants_with_different_structs_run_in_parallel() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_enum_variants_with_different_structs_run(Some(2));
+}
+
+#[test]
+fn generic_struct_with_nested_pointer_fields_runs() {
+    assert_generated_aggregate_runs(
+        "generic_struct_with_nested_pointer_fields.vx",
+        &["5", "1", "17", "31"],
+        None,
+    );
+}
+
+#[test]
+fn generic_struct_with_nested_pointer_fields_runs_in_parallel() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_generated_aggregate_runs(
+        "generic_struct_with_nested_pointer_fields.vx",
+        &["5", "1", "17", "31"],
+        Some(2),
+    );
+}
+
+#[test]
+fn generic_structs_with_borrowed_tensors_run() {
+    assert_generated_aggregate_runs(
+        "generic_structs_with_borrowed_tensors.vx",
+        &["5", "41", "7", "43"],
+        None,
+    );
+}
+
+#[test]
+fn generic_structs_with_borrowed_tensors_run_in_parallel() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_generated_aggregate_runs(
+        "generic_structs_with_borrowed_tensors.vx",
+        &["5", "41", "7", "43"],
+        Some(2),
+    );
+}
+
+#[test]
+fn enum_borrows_from_separate_functions_run() {
+    assert_generated_aggregate_runs(
+        "enum_borrows_from_separate_functions.vx",
+        &["11", "23"],
+        None,
+    );
+}
+
+#[test]
+fn enum_borrows_from_separate_functions_run_in_parallel() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_generated_aggregate_runs(
+        "enum_borrows_from_separate_functions.vx",
+        &["11", "23"],
+        Some(2),
+    );
+}
+
+#[test]
+fn enum_tensor_pointers_construct_and_match() {
+    assert_generated_aggregate_runs(
+        "enum_tensor_pointers_construct_and_match.vx",
+        &["5", "7", "3", "3"],
+        None,
+    );
+}
+
+#[test]
+fn enum_tensor_pointers_construct_and_match_in_parallel() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_generated_aggregate_runs(
+        "enum_tensor_pointers_construct_and_match.vx",
+        &["5", "7", "3", "3"],
+        Some(2),
+    );
+}
+
+#[test]
+fn enum_parameters_with_host_and_gpu_tensor_pointers_compile() {
+    assert_generated_aggregate_runs("enum_pointer_tensor_placements.vx", &["3"], None);
+}
+
+#[test]
+fn enum_parameters_with_host_and_gpu_tensor_pointers_compile_in_parallel() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_generated_aggregate_runs("enum_pointer_tensor_placements.vx", &["3"], Some(2));
+}
+
+#[test]
+fn nested_struct_with_a_leading_zero_constant_runs() {
+    assert_generated_aggregate_runs(
+        "nested_struct_with_a_leading_zero_constant.vx",
+        &["17"],
+        None,
+    );
+}
+
+#[test]
+fn nested_struct_with_a_leading_zero_constant_runs_in_parallel() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_generated_aggregate_runs(
+        "nested_struct_with_a_leading_zero_constant.vx",
+        &["17"],
+        Some(2),
+    );
 }
 
 #[test]
@@ -3837,4 +4062,116 @@ fn a_generic_over_two_tensor_shapes_gets_two_monomorphs() {
         out.contains("exited with code: 8"),
         "expected 1.0 + 7.0 through two distinct monomorphs, got:\n{out}"
     );
+}
+
+// Native output alone cannot detect merging two identity functions with pointer arguments.
+// Also inspect the generated definitions and the targets their calls select.
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn generic_functions_keep_tensor_pointer_placements(#[case] jobs: Option<usize>) {
+    let fixture = "generic_function_with_tensor_pointer_placements.vx";
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/backend/pass")
+        .join(fixture);
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_vxc"));
+    command
+        .arg(&path)
+        .arg("--emit-mlir")
+        .env("VX_FLAT_DBG", "1");
+    if let Some(jobs) = jobs {
+        command.arg("-j").arg(jobs.to_string());
+    }
+    let output = command
+        .output()
+        .expect("compile tensor pointer specializations");
+    let log = String::from_utf8_lossy(&output.stderr);
+    let mlir = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "compilation with jobs={jobs:?}: {log}\n{mlir}"
+    );
+    for function in ["host_first", "gpu_first"] {
+        let symbols = |operation: &str| -> std::collections::BTreeSet<String> {
+            mlir.lines()
+                .filter(|line| line.contains(operation))
+                .filter_map(|line| line.split('@').nth(1))
+                .map(|tail| tail.split('(').next().unwrap().trim_matches('"').to_owned())
+                .filter(|name| name.starts_with(&format!("{function}$")))
+                .collect()
+        };
+        let definitions = symbols("func.func");
+        let calls = symbols("call @");
+        assert_eq!(
+            definitions.len(),
+            2,
+            "{function} must define two placement specializations: {mlir}"
+        );
+        assert_eq!(
+            calls, definitions,
+            "{function} calls must select both placement specializations: {mlir}"
+        );
+    }
+    assert_generated_aggregate_runs(fixture, &["5", "7", "7", "5"], jobs);
+}
+
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn enum_variants_with_two_payload_fields_run(#[case] jobs: Option<usize>) {
+    assert_generated_aggregate_runs(
+        "enum_variants_with_two_payload_fields.vx",
+        &["5", "17", "7", "25", "-1"],
+        jobs,
+    );
+}
+
+#[test]
+fn flat_lowers_iterator_with_payload_in_second_variant() {
+    let source = ITER_MINI.replace(
+        "enum Option<T> { Some(T), None }",
+        "enum Option<T> { None, Some(T) }",
+    );
+    assert_flat_exit(&format!("{source}\nfn main() -> i32 {{ let mut v = Vec<i32>::new(); v.push(10); v.push(20); v.push(30); let mut sum: i32 = 0; for value in v.iter() {{ sum = sum + value; }} return sum; }}"), 60);
+}
+
+#[rstest::rstest]
+#[case::normal(None, 0)]
+#[case::parallel(Some(2), 0)]
+#[case::optimized_normal(None, 2)]
+#[case::optimized_parallel(Some(2), 2)]
+fn enum_payloads_keep_size_and_alignment(#[case] jobs: Option<usize>, #[case] optimization: u8) {
+    assert_generated_aggregate_runs_at_optimization(
+        "enum_payloads_have_different_size_and_alignment.vx",
+        &["119", "120", "139", "140", "-1", "-2"],
+        jobs,
+        optimization,
+    );
+}
+
+#[rstest::rstest]
+#[case::normal(None, 0)]
+#[case::parallel(Some(2), 0)]
+#[case::optimized_normal(None, 2)]
+#[case::optimized_parallel(Some(2), 2)]
+fn enum_shared_storage_preserves_all_payload_bits(
+    #[case] jobs: Option<usize>,
+    #[case] optimization: u8,
+    #[values(
+        "enum_bool_and_byte_preserve_all_bits.vx",
+        "enum_padded_and_dense_preserve_all_bits.vx",
+        "enum_copies_preserve_numbers_and_pointers.vx"
+    )]
+    fixture: &str,
+) {
+    let expected: &[&str] = match fixture {
+        "enum_bool_and_byte_preserve_all_bits.vx" => {
+            &["254", "254", "254", "254", "13", "11", "1", "0"]
+        }
+        "enum_padded_and_dense_preserve_all_bits.vx" => {
+            &["1540", "1540", "1540", "1540", "22", "34"]
+        }
+        _ => &["4294967301", "1.5", "29"],
+    };
+    assert_generated_aggregate_runs_at_optimization(fixture, expected, jobs, optimization);
 }

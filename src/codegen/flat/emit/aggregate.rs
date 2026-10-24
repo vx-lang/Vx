@@ -28,8 +28,7 @@ impl FnEmit<'_> {
             .iter()
             .position(|&o| o == ins.imm)
             .ok_or(crate::emitter_gap!())?;
-        // The field's declared MLIR type (a scalar element or `!llvm.ptr`), so a pointer field
-        // (`Vec`'s `data`) stores an `!llvm.ptr` value and a scalar field its element (#242).
+        // Tensor descriptors use the storage field's declared type.
         let fty = agg
             .field_tys
             .get(field_idx)
@@ -84,10 +83,7 @@ impl FnEmit<'_> {
             .get(&idx)
             .map(|(own, sibs)| alias_store_attrs(*own, sibs))
             .unwrap_or_default();
-        // The value's own scalar type, not the slot's. They differ only for an enum payload,
-        // whose slot is sized for the widest variant and holds whichever one was built
-        // (Vx#570); a pointer is left to the declared type, which is what carries it.
-        // A struct stored into a payload slot sized for another variant is typed as itself too.
+        // Enum variants share storage but can store different types. Use the value's own type.
         let value_agg = self
             .agg_val_of
             .get(ins.operand2.0 as usize)
@@ -103,19 +99,21 @@ impl FnEmit<'_> {
             .cloned()
             .flatten()
             .is_some();
-        let store_ty = match self.etypes.get(ins.operand2.0 as usize).cloned().flatten() {
-            Some(e) if is_scalar_field(&fty) || (fty.starts_with("!llvm.struct") && !is_tensor) => {
-                crate::mlir_ty::mlir_scalar(&e).unwrap_or(&fty).to_string()
+        let store_ty = if self.is_pointer_value(ins.operand2.0 as usize)? {
+            "!llvm.ptr".to_string()
+        } else {
+            match self.etypes.get(ins.operand2.0 as usize).cloned().flatten() {
+                Some(e) if !is_tensor => crate::mlir_ty::mlir_scalar(&e)
+                    .ok_or(crate::emitter_gap!())?
+                    .to_string(),
+                _ => value_agg.unwrap_or_else(|| fty.clone()),
             }
-            _ => value_agg.unwrap_or_else(|| fty.clone()),
         };
         self.body += &format!("  llvm.store {val}, {p}{attrs} : {store_ty}, !llvm.ptr\n");
         Ok(())
     }
 
-    // Load a scalar struct field. `operand1` is the struct slot, `imm` the field's byte offset,
-    // and this instruction's own `type_idx` the field's scalar type. GEP to the field, then
-    // `llvm.load`.
+    // Load a field using its byte offset, or an enum payload using its variant and field indices.
     pub(crate) fn op_field_load(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let gid = (*self
             .agg_of
@@ -123,11 +121,18 @@ impl FnEmit<'_> {
             .ok_or(crate::emitter_gap!())?)
         .ok_or(crate::emitter_gap!())?;
         let agg = self.ctx.aggs.get(&gid).ok_or(crate::emitter_gap!())?;
-        let field_idx = agg
-            .offsets
-            .iter()
-            .position(|&o| o == ins.imm)
-            .ok_or(crate::emitter_gap!())?;
+        let payload_index = (ins.opcode == Opcode::EnumPayloadLoad)
+            .then(|| crate::bytecode::EnumPayloadIndex::decode(ins.imm));
+        let field_idx = match payload_index {
+            Some(index) => (index.field as usize)
+                .checked_add(1)
+                .ok_or(crate::emitter_gap!())?,
+            None => agg
+                .offsets
+                .iter()
+                .position(|&o| o == ins.imm)
+                .ok_or(crate::emitter_gap!())?,
+        };
         // The field's declared MLIR type drives the load: a scalar field yields its element
         // (tracked in `etypes`), a pointer field (`Vec`'s `data`) an `!llvm.ptr` value
         // (tracked in `ptr_of`) — the type is taken from the layout, not the read register's
@@ -140,7 +145,30 @@ impl FnEmit<'_> {
         // A pointer field pointing to a modelled aggregate (`VecIter`'s `vec : *const Vec<T>`)
         // tags its loaded value with the pointee GID, so a chained field access through it
         // (`(*self.vec).len`) GEPs the pointee. (#242)
-        let pointee = agg.field_pointee.get(field_idx).copied().flatten();
+        let payload = match payload_index {
+            None => None,
+            Some(index) => Some(
+                agg.variant_payloads
+                    .get(index.variant as usize)
+                    .and_then(|payloads| payloads.get(index.field as usize))
+                    .ok_or(crate::emitter_gap!())?,
+            ),
+        };
+        let pointee = match payload {
+            Some(payload) => payload.pointer_target_id,
+            None => agg.field_pointee.get(field_idx).copied().flatten(),
+        };
+        let nested = match payload {
+            Some(payload) => payload.aggregate_id,
+            None => agg.field_agg.get(field_idx).copied().flatten(),
+        };
+        let pointer = match payload {
+            Some(payload) => matches!(
+                payload.ty,
+                Type::Pointer(..) | Type::Borrow { .. } | Type::Ref(..)
+            ),
+            None => fty == "!llvm.ptr",
+        };
         let slot = self
             .names
             .get(ins.operand1.0 as usize)
@@ -154,28 +182,32 @@ impl FnEmit<'_> {
         // Read back at the type this instruction says it produces, for the same reason the
         // store writes at the value's: an enum payload slot holds whichever variant was
         // built, not the one the layout is named after.
-        let result_agg = self
-            .types
-            .get(ins.type_idx.0 as usize)
-            .and_then(|g| self.ctx.aggs.get(g))
+        let result_agg = nested
+            .or_else(|| self.types.get(ins.type_idx.0 as usize).copied())
+            .and_then(|g| self.ctx.aggs.get(&g))
             .map(|a| a.struct_ty.clone());
         let result_is_tensor = self
             .types
             .get(ins.type_idx.0 as usize)
             .is_some_and(|g| self.ctx.tensors.contains_key(g));
-        let load_ty = match self
-            .types
-            .get(ins.type_idx.0 as usize)
-            .copied()
-            .and_then(elem_of_gid)
-        {
-            Some(e)
-                if is_scalar_field(&fty)
-                    || (fty.starts_with("!llvm.struct") && !result_is_tensor) =>
+        let load_ty = if pointer {
+            "!llvm.ptr".to_string()
+        } else {
+            match self
+                .types
+                .get(ins.type_idx.0 as usize)
+                .copied()
+                .and_then(elem_of_gid)
             {
-                crate::mlir_ty::mlir_scalar(&e).unwrap_or(&fty).to_string()
+                Some(e)
+                    if payload.is_some()
+                        || is_scalar_field(&fty)
+                        || (fty.starts_with("!llvm.struct") && !result_is_tensor) =>
+                {
+                    crate::mlir_ty::mlir_scalar(&e).unwrap_or(&fty).to_string()
+                }
+                _ => result_agg.unwrap_or_else(|| fty.clone()),
             }
-            _ => result_agg.unwrap_or_else(|| fty.clone()),
         };
         self.body += &format!("  {n} = llvm.load {p} : !llvm.ptr -> {load_ty}\n");
         self.names[idx] = n;
@@ -191,18 +223,17 @@ impl FnEmit<'_> {
             self.mem_of[idx] = Some(memty);
             return Ok(());
         }
-        if fty == "!llvm.ptr" {
+        if pointer {
             self.ptr_of[idx] = true;
             self.agg_of[idx] = pointee;
-        } else if let Some(nested_gid) = agg.field_agg.get(field_idx).copied().flatten() {
+        } else if let Some(nested_gid) = nested {
             // A by-value nested-aggregate field load yields the whole `!llvm.struct` value,
             // tracked as an aggregate value so it can be re-stored / passed by value. (#242)
             self.agg_val_of[idx] = Some(nested_gid);
         } else if let Some(g) =
             gid_res.filter(|g| fty.starts_with("!llvm.struct") && self.ctx.aggs.contains_key(g))
         {
-            // A synthesized layout (a generic struct instance) records no nested aggregates, so
-            // the result's own type says which aggregate the field holds.
+            // The result type can identify an aggregate when field metadata is unavailable.
             self.agg_val_of[idx] = Some(g);
         } else {
             // The instruction's own type keeps the field's signedness, which its MLIR spelling

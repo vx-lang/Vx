@@ -1,0 +1,30 @@
+//===- nested_struct_with_a_leading_zero_constant.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Read a nested struct by value with the constant argument written as 03 throughout.
+// Compilation must use flat code generation.
+// REQUIRES: flat-codegen
+// EXPECT: 17
+
+struct Sized<T, const N: i32> {
+  value: T
+}
+struct Holder<T, const N: i32> {
+  inner: Sized<T, N>
+}
+fn read(s: Sized<i32, 03>) -> i32 {
+  return s.value;
+}
+fn main() -> i32 {
+  let h = Holder<i32, 03> {
+    inner: Sized<i32, 03> {
+      value: 17
+    }
+  };
+  print(read(h.inner));
+  return 0;
+}

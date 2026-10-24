@@ -1,0 +1,87 @@
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Preserve each variant through copies, borrowed access, fields, calls, and returns.
+// REQUIRES: flat-codegen
+// EXPECT: 1540 1540 1540 1540 22 34
+
+struct Padded {
+  small: i8, big: i64
+}
+struct Dense {
+  a: i64, b: i64
+}
+impl Copy for Padded {}
+impl Copy for Dense {}
+enum Value<T> {
+  Padded(Padded), Dense(T)
+}
+enum Reversed<T> {
+  Dense(T), Padded(Padded)
+}
+struct Holder<T> {
+  value: Value<T>, tail: i64
+}
+fn make() -> Value<Dense> {
+  return Value<Dense>::Dense(Dense {
+    a: 513, b: 1027
+  });
+}
+fn reverse() -> Reversed<Dense> {
+  return Reversed<Dense>::Dense(Dense {
+    a: 513, b: 1027
+  });
+}
+fn read(value: Value<Dense>) -> i64 {
+  match value {
+    Value::Padded(v) => {
+      return v.big + (v.small as i64);
+    },
+    Value::Dense(v) => {
+      return v.a + v.b;
+    }
+  }
+}
+fn read_reversed(value: Reversed<Dense>) -> i64 {
+  match value {
+    Reversed::Dense(v) => {
+      return v.a + v.b;
+    },
+    Reversed::Padded(v) => {
+      return v.big + (v.small as i64);
+    }
+  }
+}
+fn borrowed(value: &Value<Dense>) -> i64 {
+  match *value {
+    Value::Padded(v) => {
+      return v.big + (v.small as i64);
+    },
+    Value::Dense(v) => {
+      return v.a + v.b;
+    }
+  }
+}
+fn field(value: Value<Dense>) -> i64 {
+  let holder: Holder<Dense> = Holder<Dense> {
+    value: value, tail: 23
+  };
+  return read(holder.value);
+}
+fn main() -> i32 {
+  let original = make();
+  let copy = original;
+  print(read(copy)); print(" ");
+  let for_borrow = make();
+  print(borrowed(&for_borrow)); print(" ");
+  print(field(make())); print(" ");
+  print(read_reversed(reverse())); print(" ");
+  print(read(Value<Dense>::Padded(Padded {
+    small: 3, big: 19
+  }))); print(" ");
+  print(read_reversed(Reversed<Dense>::Padded(Padded {
+    small: 5, big: 29
+  })));
+  return 0;
+}

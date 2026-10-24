@@ -1,0 +1,37 @@
+//===- generic_function_with_tensor_pointer_placements.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Call generic functions with host and GPU tensor pointers in both orders.
+// The program does not dereference the pointers.
+// REQUIRES: flat-codegen
+// EXPECT: 5 7 7 5
+
+fn host_first<T>(value: T) -> T {
+  return value;
+}
+
+fn gpu_first<T>(value: T) -> T {
+  return value;
+}
+
+fn read_host(_value: *const Tensor<f32, [4]>) -> i32 {
+  return 5;
+}
+
+fn read_gpu(_value: *const Tensor<f32, [4], Memory::GPU_HBM>) -> i32 {
+  return 7;
+}
+
+fn main() -> i32 {
+  let host = unsafe { 0 as *const Tensor<f32, [4]> };
+  let gpu = unsafe { 0 as *const Tensor<f32, [4], Memory::GPU_HBM> };
+  print(read_host(host_first(host))); print(" ");
+  print(read_gpu(host_first(gpu))); print(" ");
+  print(read_gpu(gpu_first(gpu))); print(" ");
+  print(read_host(gpu_first(host)));
+  return 0;
+}

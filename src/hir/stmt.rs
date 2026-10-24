@@ -1909,7 +1909,11 @@ impl<'a> TypeChecker<'a> {
                         .zip(args)
                         .collect();
                     names.insert("return".into(), result.clone());
-                    for ens in &func.ensures {
+                    for ens in func
+                        .ensures
+                        .iter()
+                        .filter(|e| !crate::hir::check::atomic_contracts::is_access_clause(e))
+                    {
                         facts.push(hir::prover::substitute_names(ens, &names));
                     }
                 }
@@ -2202,6 +2206,7 @@ impl<'a> TypeChecker<'a> {
                 Some(items[i].clone())
             }
             Expr::FunctionCall(FunctionCallExpr {
+                owner_type_args: _,
                 name,
                 type_args,
                 args,
@@ -2356,6 +2361,7 @@ impl<'a> TypeChecker<'a> {
         env: &HashMap<crate::symbol::Symbol, Value>,
     ) -> Option<Vec<(crate::symbol::Symbol, Value)>> {
         let FunctionCallExpr {
+            owner_type_args: _,
             name,
             type_args: None,
             args,

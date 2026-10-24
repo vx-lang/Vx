@@ -534,7 +534,10 @@ impl FnEmit<'_> {
             .ok_or(crate::emitter_gap!())?
             .clone()
             .ok_or(crate::emitter_gap!())?;
-        let dst_ty = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
+        // The tensor stays where it is: only its extents change.
+        let dst_ty = tensor_memref_ty(elem, shape)
+            .and_then(|ty| crate::codegen::lower::memref_in_space_of(&ty, &src_ty))
+            .ok_or(crate::emitter_gap!())?;
         self.names[idx] = self.cast_memref_value(&format!("v{idx}"), &a, &src_ty, &dst_ty)?;
         self.mem_of[idx] = Some(dst_ty);
         Ok(())

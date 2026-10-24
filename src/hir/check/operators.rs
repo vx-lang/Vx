@@ -999,6 +999,7 @@ impl<'a> TypeChecker<'a> {
                     span,
                 });
                 let mut call = Expr::FunctionCall(crate::syntax::expr::FunctionCallExpr {
+                    owner_type_args: None,
                     name: helper.into(),
                     type_args: None,
                     args: vec![lhs_ref, rhs_ref],

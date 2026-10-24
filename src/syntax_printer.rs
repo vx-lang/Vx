@@ -239,6 +239,7 @@ impl AstPrinter {
                 Self::print_expr(w, rhs, &new_indent, true)?;
             }
             Expr::FunctionCall(FunctionCallExpr {
+                owner_type_args: _,
                 name,
                 type_args: _,
                 args,
@@ -282,6 +283,7 @@ impl AstPrinter {
                 variant_name: variant,
                 payload: _,
                 span: _,
+                type_args: _,
             }) => {
                 indent.print(w)?;
                 writeln!(w, "{}Enum({}::{})", prefix, enum_name, variant)?;

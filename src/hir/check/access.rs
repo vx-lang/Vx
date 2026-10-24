@@ -34,7 +34,7 @@ impl<'a> TypeChecker<'a> {
         match ty {
             Type::Scalar(e) if !matches!(e, ElementType::Generic(_)) => return true,
             Type::Borrow { is_mut: false, .. } | Type::Pointer(..) | Type::Function(..) => {
-                return true
+                return true;
             }
             _ => {}
         }
@@ -117,14 +117,14 @@ impl<'a> TypeChecker<'a> {
                 .const_value(&decl.expr, &mut vec![decl.name.clone()])
                 .is_some() =>
             {
-                return report(self, "has a value that does not fit its declared type")
+                return report(self, "has a value that does not fit its declared type");
             }
             None => {
                 return report(
                     self,
                     "has no value known while compiling: write a literal, or arithmetic on \
                      literals and other consts",
-                )
+                );
             }
         };
         match (value, elem == ElementType::Bool) {
@@ -1099,14 +1099,19 @@ impl<'a> TypeChecker<'a> {
     /// `t[i]` where the compiler knows both the extent of `t`'s first axis and the largest
     /// value `i` can take: an index past the end is an error. This holds for a row too, so
     /// `t[0][j]` cannot reach into the next row.
+    ///
+    /// Returns whether this call reported an E8003. Callers that also have a value-based
+    /// array range check should run that check only when this returns false, so an index
+    /// that neither path covers (for example inside a closure, where this returns early)
+    /// still gets an error, and an index that both could cover gets only one.
     fn check_tensor_index_in_range(
         &mut self,
         dims: &[crate::syntax::types::Dim],
         idx: &Expr,
         ix_span: &crate::syntax::Span,
-    ) {
+    ) -> bool {
         if self.speculating || !self.mono.closure_captures_stack.is_empty() {
-            return;
+            return false;
         }
         let env = self.consteval_snapshot();
         let Some(Value::Int(extent)) = dims
@@ -1114,10 +1119,10 @@ impl<'a> TypeChecker<'a> {
             .and_then(|d| d.as_static())
             .and_then(|e| self.eval_expr(e, &env))
         else {
-            return;
+            return false;
         };
         let Some(largest) = self.largest_index_value(idx, &env) else {
-            return;
+            return false;
         };
         if largest >= extent || largest < 0 {
             let constant = matches!(self.eval_expr(idx, &env), Some(Value::Int(_)));
@@ -1136,7 +1141,9 @@ impl<'a> TypeChecker<'a> {
                 message,
                 Some(crate::diagnostic::SourceSpan::from_ast_span(ix_span)),
             );
+            return true;
         }
+        false
     }
 
     /// Whether a tensor placed in `placement` must stay in registers: its space is declared
@@ -1441,9 +1448,31 @@ impl<'a> TypeChecker<'a> {
 
                 self.check_expr_type(idx);
 
+                // Look through a Pinned/Ref device wrapper to the underlying tensor so that
+                // indexing a transferred tensor follows the same rule as a local one.
+                let base = match obj_ty {
+                    Type::Pinned(inner, _) | Type::Ref(inner, _) => *inner,
+                    // A borrow indexes like what it borrows: `t[i]` on `&Tensor<f32, [N, D]>` is
+                    // the row. Answering with the inner type applied the index to nothing, so
+                    // `t[0][0]` was the row rather than the element (Vx#417).
+                    Type::Borrow { inner, .. } => *inner,
+                    other => other,
+                };
+
                 // When the array and the index are both known at compile time, the range
                 // can be checked now instead of being left to a read at run time.
-                if !self.speculating {
+                // Run the type-based tensor check first; it returns whether it reported.
+                // The value-based array check runs only when the type check did not report,
+                // so a Tensor with a static shape gets one E8003, and an index the type
+                // check skips (for example inside a closure) still gets the value check.
+                let mut type_reported = false;
+                if let Type::Tensor(_, dims, placement) = &base {
+                    type_reported = self.check_tensor_index_in_range(dims, idx, &ix_span);
+                    if self.is_register_space(placement.as_ref()) {
+                        self.check_register_index(obj, idx, &ix_span);
+                    }
+                }
+                if !self.speculating && !type_reported {
                     let tmp_env = self.consteval_snapshot();
                     if let (Some(Value::Array(items)), Some(index_val)) =
                         (self.eval_expr(obj, &tmp_env), self.eval_expr(idx, &tmp_env))
@@ -1464,23 +1493,6 @@ impl<'a> TypeChecker<'a> {
                                 Some(crate::diagnostic::SourceSpan::from_ast_span(&ix_span)),
                             );
                         }
-                    }
-                }
-
-                // Look through a Pinned/Ref device wrapper to the underlying tensor so that
-                // indexing a transferred tensor follows the same rule as a local one.
-                let base = match obj_ty {
-                    Type::Pinned(inner, _) | Type::Ref(inner, _) => *inner,
-                    // A borrow indexes like what it borrows: `t[i]` on `&Tensor<f32, [N, D]>` is
-                    // the row. Answering with the inner type applied the index to nothing, so
-                    // `t[0][0]` was the row rather than the element (Vx#417).
-                    Type::Borrow { inner, .. } => *inner,
-                    other => other,
-                };
-                if let Type::Tensor(_, dims, placement) = &base {
-                    self.check_tensor_index_in_range(dims, idx, &ix_span);
-                    if self.is_register_space(placement.as_ref()) {
-                        self.check_register_index(obj, idx, &ix_span);
                     }
                 }
                 if let Type::Pointer(..) = &base {

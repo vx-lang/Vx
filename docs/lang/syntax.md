@@ -138,6 +138,21 @@ fn run_on<D: Topology>(x: Pinned<i32, Topology::D>) -> i32 {
 }
 ```
 
+**The caller's topology.** When no argument binds `D`, `on Topology::D` makes the function run
+where its caller runs. Host code and a `spawn on(Topology::Device)` region can both call a library
+function written this way, and each one gets its own copy.
+
+**Memory parameters.** A function can also be generic over the memory of a tensor, with an
+`M: Memory` bound. Each call binds `M` to the memory of its tensor argument, and two arguments
+that name `Memory::M` must be in the same memory. A program with no memory called `M` can still
+use the function, because `Memory::M` names the parameter there.
+
+```rust
+fn sum_two<M: Memory, D: Topology>(t: &Tensor<i32, [?], Memory::M>) on Topology::D -> i32 {
+    return t[0] + t[1];
+}
+```
+
 **`where Reachable<A, B>` constraints.** When a polymorphic function moves data between two
 topology variables it must state that a transfer between them is possible. The
 `where Reachable<S, D>` clause is discharged at each call site against the transfer cost graph

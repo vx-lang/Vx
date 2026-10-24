@@ -87,6 +87,8 @@ pub enum Opcode {
     /// Load a struct field: `operand1` is the aggregate's slot handle (from `Alloca`), `imm` the
     /// field's byte offset (from the registry layout), and `type_idx` the field's type. The result
     /// is the loaded field value — the field-addressed counterpart of `SlotLoad`.
+    /// Enum tags use this operation. Enum payloads use `EnumPayloadLoad` instead.
+    /// `operand2` is unused and must be zero.
     FieldLoad = 22,
     /// Store into a struct field (no result): `operand1` is the aggregate's slot handle, `operand2`
     /// the value to store, and `imm` the field's byte offset. Used to initialize a struct field by
@@ -309,7 +311,45 @@ pub enum Opcode {
     /// plain loop: `imm` is the kind of its `across` level, one of `LOOP_HINT_*`. The code
     /// generator puts the level on that `Br` as metadata.
     LoopHint = 69,
+    /// Load an enum payload: `operand1` is the enum slot, `type_idx` the payload's result type.
+    /// `imm` encodes an `EnumPayloadIndex`. The layout supplies the field's address and metadata.
+    /// `operand2` is unused and must be zero.
+    EnumPayloadLoad = 70,
+    /// A lane reduction (`lanes::sum` and the others) of the tensor `operand1` over its first
+    /// `operand2` elements, an `f32` that every lane gets. `imm` holds `LANE_REDUCE_*`.
+    LaneReduce = 71,
 }
+
+/// A zero-based variant and payload field, stored entirely in an instruction's immediate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnumPayloadIndex {
+    pub variant: u32,
+    pub field: u32,
+}
+
+impl EnumPayloadIndex {
+    pub fn encode(self) -> u64 {
+        u64::from(self.variant) | (u64::from(self.field) << 32)
+    }
+
+    pub fn decode(imm: u64) -> Self {
+        Self {
+            variant: imm as u32,
+            field: (imm >> 32) as u32,
+        }
+    }
+}
+
+/// `Opcode::LaneReduce`: the larger value, not the sum.
+pub const LANE_REDUCE_MAX: u64 = 1;
+/// `Opcode::LaneReduce`: in the order that docs/lane_reductions.md gives.
+pub const LANE_REDUCE_ORDERED: u64 = 2;
+/// `Opcode::LaneReduce`: over the lanes of a subgroup, not of a block.
+pub const LANE_REDUCE_SUBGROUP: u64 = 4;
+/// `Opcode::LaneReduce`: the index of the larger value. `operand1` is the tensor of values,
+/// `operand2` the tensor of indices, and the `Arg` just before is the count. The result is an
+/// `i32`.
+pub const LANE_REDUCE_ARGMAX: u64 = 8;
 
 /// `Opcode::LoopHint`: the loop was `across` a level of blocks.
 pub const LOOP_HINT_BLOCKS: u64 = 0;
@@ -381,6 +421,8 @@ impl Opcode {
             67 => AffineFor,
             68 => AffineForEnd,
             69 => LoopHint,
+            70 => EnumPayloadLoad,
+            71 => LaneReduce,
             8 => Call,
             9 => Ret,
             10 => Matmul,
@@ -504,3 +546,34 @@ pub const IMM_PARALLEL_BOUND: u64 = 4;
 /// no bound tag: on the host a block's thread loops run serially inside one worker, which is the
 /// schedule the erased barriers already assume.
 pub const IMM_BLOCK_BOUND: u64 = 5;
+
+#[cfg(test)]
+mod enum_payload_tests {
+    use super::*;
+
+    #[rstest::rstest]
+    #[case::first(0, 0, 0)]
+    #[case::different_indices(7, 11, 0x0000_000b_0000_0007)]
+    #[case::largest(u32::MAX, u32::MAX, u64::MAX)]
+    fn enum_payload_indices_keep_both_immediates(
+        #[case] variant: u32,
+        #[case] field: u32,
+        #[case] encoded: u64,
+    ) {
+        let index = EnumPayloadIndex { variant, field };
+        assert_eq!(
+            (index.encode(), EnumPayloadIndex::decode(encoded)),
+            (encoded, index),
+            "variant and field must occupy separate halves of the immediate"
+        );
+    }
+
+    #[test]
+    fn enum_payload_load_has_a_distinct_wire_opcode() {
+        assert_eq!(
+            (Opcode::EnumPayloadLoad as u32, Opcode::from_u32(70)),
+            (70, Some(Opcode::EnumPayloadLoad)),
+            "enum payload loads must retain their own wire opcode"
+        );
+    }
+}

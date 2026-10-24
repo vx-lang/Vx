@@ -2862,6 +2862,7 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let FunctionCallExpr {
+            owner_type_args: _,
             name,
             args,
             type_args,
@@ -2877,6 +2878,9 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         // kernel its device twin (`isDeviceLowerableDialect` excludes func).
         if let Some(prim) = name.as_ref().strip_prefix("raw::") {
             return lower_raw_primitive(gen, block, prim, args);
+        }
+        if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(name) {
+            return lower_lane_reduce(gen, block, op, ordered, args);
         }
         // `tensor_view_2d(ptr, rows, cols)` -- a rank-2 tensor over memory it
         // does not own, with no copy (#336).
@@ -3701,6 +3705,7 @@ impl<'c> LowerToMelior<'c> for MethodCallExpr {
         new_args.extend(args.clone());
         gen.generate_expr(
             &Expr::FunctionCall(FunctionCallExpr {
+                owner_type_args: None,
                 name: method_name.clone(),
                 type_args: None,
                 args: new_args,
@@ -3723,17 +3728,27 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
         let mut input_types_str = Vec::new();
 
         for (name, expr, ty_str) in &self.inputs {
-            let (mut val, val_ty, block) = gen.generate_expr(expr, block)?;
-            if val_ty.to_string().starts_with("memref<memref<") && ty_str.starts_with("memref<") {
+            let (mut val, mut val_ty, block) = gen.generate_expr(expr, block)?;
+            let val_str = val_ty.to_string();
+            if val_str.starts_with("memref<memref<") && ty_str.starts_with("memref<") {
+                // A reference to a tensor: load the tensor, with its own type.
+                let inner = &val_str["memref<".len()..val_str.len() - 1];
+                let inner_ty = Type::parse(gen.context, inner).ok_or_else(|| {
+                    crate::codegen::lower::LowerError::ParseType(inner.to_string())
+                })?;
                 let load_op = OperationBuilder::new("memref.load", gen.loc())
                     .add_operands(&[val])
-                    .add_results(&[Type::parse(gen.context, ty_str).ok_or_else(|| {
-                        crate::codegen::lower::LowerError::ParseType(
-                            "Type::parse failed".to_string(),
-                        )
-                    })?])
+                    .add_results(&[inner_ty])
                     .build()?;
                 val = block.append_operation(load_op).result(0)?.into();
+                val_ty = inner_ty;
+            }
+            // A tensor can have a static size or the address space of its memory, where the
+            // block names another type.
+            if let Some(want) = Type::parse(gen.context, ty_str) {
+                if gen.is_memref(&val_ty) && gen.is_memref(&want) && val_ty != want {
+                    val = crate::codegen::lower::cast_memref(gen, &block, val, val_ty, want)?;
+                }
             }
             mlir_args.push(val);
             input_types_str.push(format!("{}: {}", name, ty_str));
@@ -4231,6 +4246,7 @@ impl<'c> LowerToMelior<'c> for EnumVariantExpr {
             variant_name,
             payload,
             span: _,
+            type_args: _,
         } = self;
 
         let mut tag_val = 0;
@@ -4383,6 +4399,7 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
         };
 
         let new_call = Expr::FunctionCall(FunctionCallExpr {
+            owner_type_args: None,
             name: format!("Vec_{}::new", type_suffix).into(),
             args: vec![],
             type_args: None,
@@ -4430,6 +4447,7 @@ impl<'c> LowerToMelior<'c> for VecMacroExpr {
 
         for el in &self.elements {
             let push_call = Expr::FunctionCall(FunctionCallExpr {
+                owner_type_args: None,
                 name: format!("Vec_{}::push", type_suffix).into(),
                 args: vec![
                     Expr::Borrow(BorrowExpr {
@@ -5342,4 +5360,80 @@ fn lower_tensor_negate<'c>(
 fn function_type<'c>(gen: &MeliorGenerator<'c>, args: &[Type<'c>], ret: Type<'c>) -> Type<'c> {
     let results: &[Type<'c>] = if ret == gen.none_ty { &[] } else { &[ret] };
     melior::ir::r#type::FunctionType::new(gen.context, args, results).into()
+}
+
+/// `lanes::sum(&t, n)` and the other lane reductions, as `vx.lane_reduce` or `vx.lane_argmax`. This code generator
+/// runs `across` loops as plain loops, on one lane, so the op is `serial`: both copies of the
+/// kernel expand it into the loops of the CPU.
+fn lower_lane_reduce<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    op: crate::hir::check::lanes::LaneOp,
+    ordered: bool,
+    args: &[Expr],
+) -> Result<
+    (
+        Value<'c, 'c>,
+        melior::ir::Type<'c>,
+        melior::ir::BlockRef<'c, 'c>,
+    ),
+    LowerError,
+> {
+    let argmax = op == crate::hir::check::lanes::LaneOp::ArgMax;
+    let Some((n, tensors)) = args.split_last() else {
+        return Err(LowerError::ParseType(
+            "a lane reduction takes arguments".to_string(),
+        ));
+    };
+    let mut block = block;
+    let mut operands = Vec::new();
+    for tensor in tensors {
+        let (mut t, t_ty, b) = gen.generate_expr(tensor, block)?;
+        block = b;
+        // A tensor that the code generator keeps behind a pointer.
+        if let Ok(outer) = melior::ir::r#type::MemRefType::try_from(t_ty) {
+            use melior::ir::r#type::ShapedTypeLike;
+            let inner = outer.element();
+            if melior::ir::r#type::MemRefType::try_from(inner).is_ok() {
+                let load = OperationBuilder::new("memref.load", gen.loc())
+                    .add_operands(&[t])
+                    .add_results(&[inner])
+                    .build()?;
+                t = block.append_operation(load).result(0)?.into();
+            }
+        }
+        operands.push(t);
+    }
+    let (count, count_ty, block) = gen.generate_expr(n, block)?;
+    operands.push(gen.coerce_type(&block, count, count_ty, gen.i32_ty)?);
+    let kind = match op {
+        crate::hir::check::lanes::LaneOp::Sum => "sum",
+        crate::hir::check::lanes::LaneOp::Max | crate::hir::check::lanes::LaneOp::ArgMax => "max",
+    };
+    let unit = melior::ir::attribute::Attribute::unit(gen.context);
+    let mut attrs = vec![(Identifier::new(gen.context, "serial"), unit)];
+    if !argmax {
+        attrs.push((
+            Identifier::new(gen.context, "kind"),
+            StringAttribute::new(gen.context, kind).into(),
+        ));
+    }
+    if ordered {
+        attrs.push((Identifier::new(gen.context, "ordered"), unit));
+    }
+    if gen.across_kinds.last() == Some(&crate::arch::LevelKind::Subgroups) {
+        attrs.push((Identifier::new(gen.context, "subgroup"), unit));
+    }
+    let (name, ty) = if argmax {
+        ("vx.lane_argmax", gen.i32_ty)
+    } else {
+        ("vx.lane_reduce", gen.f32_ty)
+    };
+    let reduce = OperationBuilder::new(name, gen.loc())
+        .add_operands(&operands)
+        .add_attributes(&attrs)
+        .add_results(&[ty])
+        .build()?;
+    let v = block.append_operation(reduce).result(0)?.into();
+    Ok((v, ty, block))
 }

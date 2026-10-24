@@ -129,13 +129,9 @@ pub struct LocalWorkerState {
     /// This function's inline `mlir!` blocks, indexed by an `InlineMlir` instruction's `imm`.
     pub local_inline_blocks: Vec<crate::hir::flatten::InlineBlock>,
 
-    /// Synthetic aggregate layouts for *monomorphized data-carrying enum instances* (`Option<i32>` ->
-    /// `{ i32 tag, i32 payload }`), keyed by a per-instance GID, as `(gid, field byte offsets, field
-    /// MLIR types)`. Such an instance's layout is instance-dependent (the by-value payload varies with
-    /// `T`) and so isn't in the frozen registry `layouts` (which only holds the generic base); the
-    /// lowerer synthesizes it here as it constructs/matches an enum, and the flat codegen folds these
-    /// into its aggregate map — the tagged-union analogue of `local_tensor_types`. (#242)
-    pub local_agg_layouts: Vec<(TypeId, Vec<u64>, Vec<String>)>,
+    /// Generated struct and enum instance layouts, including storage and actual variant metadata.
+    /// Each lowerer builds these locally because concrete layouts can depend on generic arguments.
+    pub local_agg_layouts: Vec<crate::layout::GeneratedAggregateLayout>,
 
     /// Per-function place-write alias table (M2b-2): for each `*r = v` store through a `&mut o.field`
     /// place, `(stream position, group id, disjoint-sibling group ids)`. Codegen emits an `alias_scopes`

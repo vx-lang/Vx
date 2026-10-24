@@ -431,6 +431,14 @@ theorem drf_sc (P : TaskProg) (hm : P.main.SeqCstOnly) (ht : ∀ t, (P.task t).S
     (hc : X.Consistent) : X.SeqConsistent :=
   P.toProg.drf_sc (seqCstOnly hm ht) hP hX wf hfin hc
 
+/-- `drf_sc`, when `co` orders the writes to each place. -/
+theorem drf_sc_co (P : TaskProg) (hm : P.main.SeqCstOnly) (ht : ∀ t, (P.task t).SeqCstOnly)
+    (hP : ∀ Y, P.toProg.Execs Y → Y.WellFormed → Y.SeqConsistent → Y.Finite → Y.CoOrder →
+      Y.RaceFree)
+    {X : Execution} (hX : P.toProg.Execs X) (wf : X.WellFormed) (hfin : X.Finite)
+    (ho : X.CoOrder) (hc : X.Consistent) : X.SeqConsistent :=
+  P.toProg.drf_sc_co (seqCstOnly hm ht) hP hX wf hfin ho hc
+
 end TaskProg
 
 end Vx

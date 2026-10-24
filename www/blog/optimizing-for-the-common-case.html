@@ -57,7 +57,7 @@ rare case can be slow, as long as it stays correct. The same rule works for a pr
 language. There, the cost is what the programmer must write and read. So the common case should
 need no extra words, and the rare case should be visible in the code.</p>
 
-<h2 id="the-common-case-one-task-per-index">The common case: one task per index</h2>
+<h2 id="the-common-case-one-task-per-index"><a href="#the-common-case-one-task-per-index">The common case: one task per index</a></h2>
 
 <p>Most parallel code starts a task for each item of a list, or for each index of a range. Each
 task needs its own index, and it reads data that all the tasks share. In Vx, the loop looks like
@@ -85,7 +85,7 @@ of <code>i</code>, so <code>i</code> may end with its iteration of the loop. A t
 end at its <code>spawn</code>, which the design allows. Threads come later
 (<a href="https://github.com/vx-lang/Vx/issues/1863">#1863</a>).</p>
 
-<h2 id="three-languages-made-this-loop-a-trap">Three languages made this loop a trap</h2>
+<h2 id="three-languages-made-this-loop-a-trap"><a href="#three-languages-made-this-loop-a-trap">Three languages made this loop a trap</a></h2>
 
 <p>The loop looks simple, but three popular languages first got it wrong. In each one, the task or
 the closure kept a reference to the loop variable, and the loop changed that variable. This is the
@@ -126,7 +126,7 @@ post</a>). JavaScript made the same choice with <code>let</code>. A closure made
 <p>In all three languages, the fix made the common case right with no new keyword. Each iteration
 of the loop got its own variable.</p>
 
-<h2 id="rust-correct-with-one-keyword">Rust: correct, with one keyword</h2>
+<h2 id="rust-correct-with-one-keyword"><a href="#rust-correct-with-one-keyword">Rust: correct, with one keyword</a></h2>
 
 <p>Rust's scoped threads borrow the variables that they use. A borrow of <code>i</code> cannot
 outlive its iteration, and a scoped thread may run until the end of the scope. So Rust refuses the
@@ -176,7 +176,7 @@ later write to it. This program compiles, and the thread never stops:</p>
 <code>move</code>, Rust refuses the write: <code>error[E0506]: cannot assign to `stop` because it
 is borrowed</code>.</p>
 
-<h2 id="vx-the-use-decides">Vx: the use decides</h2>
+<h2 id="vx-the-use-decides"><a href="#vx-the-use-decides">Vx: the use decides</a></h2>
 
 <p>A Vx task takes each variable the way its body uses it
 (<a href="https://github.com/vx-lang/Vx/issues/1938">#1938</a>):</p>
@@ -241,7 +241,7 @@ ends with its iteration of the loop. To move a variable that the body only borro
 <blockquote><p>In Vx, a task takes each variable the way it uses it (borrow, copy or move) with no
 <code>move</code> keyword, and a copy can never go stale.</p></blockquote>
 
-<h2 id="the-trap-in-a-silent-copy">The trap in a silent copy</h2>
+<h2 id="the-trap-in-a-silent-copy"><a href="#the-trap-in-a-silent-copy">The trap in a silent copy</a></h2>
 
 <p>A silent copy goes wrong when the code around the task writes the variable later. The task
 never sees the new value. The first version of the change that adds tasks
@@ -268,7 +268,7 @@ showed it. A warning, W1034, reported a write to a variable that a running task 
 reported code that was correct, such as <code>spawn { work(x) }; x += 1;</code>. A warning that
 fires on correct code teaches people to ignore it.</p>
 
-<h2 id="a-copy-that-can-never-go-stale">A copy that can never go stale</h2>
+<h2 id="a-copy-that-can-never-go-stale"><a href="#a-copy-that-can-never-go-stale">A copy that can never go stale</a></h2>
 
 <p>The fix keeps the copy and forbids the write that would show it. Until the task's join, or the
 end of its <code>tasks</code> block, the code around the task may not write a variable that the
@@ -331,7 +331,7 @@ tasks that outlive their block.</p>
 </table>
 </div>
 
-<h2 id="closures-are-next">Closures are next</h2>
+<h2 id="closures-are-next"><a href="#closures-are-next">Closures are next</a></h2>
 
 <p>A Vx closure has the same problem today:</p>
 
@@ -348,7 +348,7 @@ program: <code>error[E0506]: cannot assign to `x` because it is borrowed</code>.
 is to give closures the same rule until their last use. That change can break programs that
 compile today, and each one needs a one-line fix, so a warning comes first, for one release.</p>
 
-<h2 id="the-pattern">The pattern</h2>
+<h2 id="the-pattern"><a href="#the-pattern">The pattern</a></h2>
 
 <p>The design follows three rules:</p>
 

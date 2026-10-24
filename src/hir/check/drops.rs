@@ -672,7 +672,7 @@ impl<'a> TypeChecker<'a> {
             .clone();
         let mut mapping = HashMap::new();
         self.unify_types(&ib.target_type, ty, &mut mapping);
-        let (_, name) = self.instantiate_impl_method(&method, &mapping, ty, ib);
+        let (_, name) = self.instantiate_impl_method(&method, &mapping, ty, ib)?;
         Some(name.into())
     }
 

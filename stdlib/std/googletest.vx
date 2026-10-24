@@ -6,35 +6,41 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-
-extern {
-  /// The Rust core behind `f32`'s `expect_eq`.
-  fn vx_googletest_expect_eq_f32(actual : f32, expected : f32)->i32;
-  /// The Rust core behind `i32`'s `expect_eq`.
-  fn vx_googletest_expect_eq_i32(actual : i32, expected : i32)->i32;
-}
+// `expect_eq` compares a value with the one a test expects. When they differ, it prints both
+// and stops the program, so the test fails with a non-zero exit code.
 
 trait GoogletestEq {
-  /// Report whether this value equals `expected`, and answer non-zero when it does not.
-  ///
-  /// Records the comparison rather than stopping at it, so a test reports every failure it
-  /// finds rather than only the first.
+  /// Answers 0 when this value equals `expected`. Otherwise prints both and stops the program.
   fn expect_eq(self : Self, expected : Self)->i32;
 }
 
 impl GoogletestEq for f32 {
   /// Compared exactly, so two values a rounding step apart are reported as different.
   fn expect_eq(self : f32, expected : f32) -> i32 {
-    let res : i32 = unsafe { vx_googletest_expect_eq_f32(self, expected) };
-    return res;
+    if self != expected {
+      print!("expect_eq failed: expected ");
+      print(expected);
+      print!(", actual ");
+      print(self);
+      print!("\n");
+      panic("expect_eq failed");
+    }
+    return 0;
   }
 }
 
 impl GoogletestEq for i32 {
   /// Compared exactly.
   fn expect_eq(self : i32, expected : i32) -> i32 {
-    let res : i32 = unsafe { vx_googletest_expect_eq_i32(self, expected) };
-    return res;
+    if self != expected {
+      print!("expect_eq failed: expected ");
+      print(expected);
+      print!(", actual ");
+      print(self);
+      print!("\n");
+      panic("expect_eq failed");
+    }
+    return 0;
   }
 }
 

@@ -137,6 +137,7 @@ impl<'a> TypeChecker<'a> {
                     new_args.extend(args.clone());
 
                     *expr = Expr::FunctionCall(FunctionCallExpr {
+                        owner_type_args: None,
                         name: call_name.into(),
                         type_args: None,
                         args: new_args,
@@ -674,6 +675,7 @@ impl<'a> TypeChecker<'a> {
         }
         match expr {
             Expr::FunctionCall(FunctionCallExpr {
+                owner_type_args: _,
                 name,
                 type_args,
                 args,
@@ -730,6 +732,20 @@ impl<'a> TypeChecker<'a> {
                 // one the return keeps alive.
                 let reborrow_plan =
                     self.prepare_reference_arg_reborrows(resolved_name.clone(), args.as_slice());
+                // A lane reduction gives a number, so the borrows of its tensors end with the
+                // call. It has no signature for the plan to read.
+                let lane_bases: Vec<(String, Option<Vec<BorrowRecord>>)> =
+                    if resolved_name.as_ref().starts_with("lanes::") && !self.speculating {
+                        args.iter()
+                            .filter_map(Self::arg_reborrow_base)
+                            .map(|(base, _)| {
+                                let snap = self.borrow.snapshot_base(&base);
+                                (base, snap)
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
                 let errors_before_args = self.errors.inner.len();
                 for arg in args.iter_mut() {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume));
@@ -762,6 +778,10 @@ impl<'a> TypeChecker<'a> {
                     self.check_views_passed_by_value(resolved_name.as_ref(), &params, args);
                 }
                 self.commit_reference_arg_reborrows(&reborrow_plan, &arg_types, span);
+                for (base, snap) in &lane_bases {
+                    self.borrow
+                        .retain_present(base, snap.as_deref().unwrap_or(&[]));
+                }
                 if resolved_name == "print".into() && args.len() == 1 {
                     Self::prepare_print_operand(&mut args[0], &arg_types[0]);
                 }
@@ -882,6 +902,7 @@ impl<'a> TypeChecker<'a> {
                             new_args.extend(args.clone());
 
                             *expr = Expr::FunctionCall(FunctionCallExpr {
+                                owner_type_args: None,
                                 name: call_name.into(),
                                 type_args: None,
                                 args: new_args,
@@ -1201,14 +1222,23 @@ impl<'a> TypeChecker<'a> {
             }
             all_bound = false;
             if !self.speculating {
-                self.errors.error_with_code(
-                    crate::diagnostic::DiagnosticCode::E3016,
+                let message = if bounds.iter().any(|b| b.trait_name.as_ref() == "Memory") {
+                    format!(
+                        "Memory parameter '{name}' of '{callee}' is not determined by this call: \
+                         only a tensor argument of type `Tensor<_, _, Memory::{name}>` gives it \
+                         a memory"
+                    )
+                } else {
                     format!(
                         "Type parameter '{}' of '{}' is not determined by this call: no argument \
                          or declared result type binds it. Spell it out as a type argument, or \
                          give the result a type.",
                         name, callee
-                    ),
+                    )
+                };
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3016,
+                    message,
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
             }
@@ -1742,11 +1772,14 @@ impl<'a> TypeChecker<'a> {
                 })
                 .collect();
 
-            let mut inst_func = self.instantiate_function(
+            let inst_func = self.instantiate_function(
                 &modified_func,
                 &found_mapping,
                 &std::collections::HashMap::new(),
             );
+            let Some(mut inst_func) = inst_func else {
+                return Type::Unknown;
+            };
             let inst_ret = inst_func.return_type.clone();
             let inst_name = inst_func.name.clone();
             let inst_params: Vec<Type> = inst_func.params.iter().map(|(_, t)| t.clone()).collect();
@@ -1876,6 +1909,18 @@ impl<'a> TypeChecker<'a> {
             })
             .collect();
         self.mono.pending_topo_bindings.clear();
+        self.mono.pending_memory_vars = generic_func
+            .generics
+            .iter()
+            .filter_map(|g| match g {
+                decl::GenericParam::Type { name, bounds }
+                    if bounds.iter().any(|b| b.trait_name.as_ref() == "Memory") =>
+                {
+                    Some(name.clone())
+                }
+                _ => None,
+            })
+            .collect();
         if args.len() != generic_func.params.len() {
             if !self.speculating {
                 self.errors.push(format!(
@@ -1934,7 +1979,18 @@ impl<'a> TypeChecker<'a> {
                 let ret_ty = generic_func.return_type.clone();
                 let _ = self.unify_types(&ret_ty, &expected, &mut mapping);
             }
+            // `on Topology::D` with no argument that binds `D` runs where it is called.
+            if let Topology::Custom(d) = &generic_func.topology {
+                if self.mono.pending_topo_vars.contains(d)
+                    && !self.mono.pending_topo_bindings.contains_key(d)
+                {
+                    self.mono
+                        .pending_topo_bindings
+                        .insert(d.clone(), self.active_topology.clone());
+                }
+            }
         }
+        self.mono.pending_memory_vars.clear();
 
         if success
             && !self.require_type_params_bound(
@@ -1956,7 +2012,11 @@ impl<'a> TypeChecker<'a> {
                 };
                 // Every bound has to hold, and every failing one is reported: told about
                 // only the first, a caller fixes it and is handed the next.
-                for bound in bounds {
+                // A memory is not a type, so `Memory` is a kind rather than a trait to check.
+                for bound in bounds
+                    .into_iter()
+                    .filter(|b| b.trait_name.as_ref() != "Memory")
+                {
                     if let Some(concrete_ty) = mapping.get(g_name).cloned() {
                         let bound = self.substitute_bound(&bound, &mapping);
                         if !self.bound_holds(&bound, &concrete_ty) {
@@ -2015,7 +2075,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
-            let mut inst_func = self.instantiate_function(generic_func, &mapping, &topo_mapping);
+            let mut inst_func = self.instantiate_function(generic_func, &mapping, &topo_mapping)?;
             let inst_ret = inst_func.return_type.clone();
             let inst_name = inst_func.name.clone();
 
@@ -2190,6 +2250,10 @@ impl<'a> TypeChecker<'a> {
         // of "Undefined static method".
         if let Some(prim) = resolved_name.strip_prefix("raw::") {
             return Some(self.check_raw_primitive(prim, args, arg_types, call_span));
+        }
+        // `lanes::` is reserved for the lane reductions, in the same way.
+        if resolved_name.starts_with("lanes::") {
+            return Some(self.check_lane_routine(resolved_name, args, arg_types, call_span));
         }
         // `Tensor<T, [..], P>::uninit()` and the run-time-extent form: the type is written, so it is
         // read off the call rather than rebuilt from the call's name and arguments. That
@@ -2680,7 +2744,7 @@ impl<'a> TypeChecker<'a> {
         mapping: &std::collections::HashMap<crate::symbol::Symbol, Type>,
         base_ty: &Type,
         ib: &decl::ImplBlock,
-    ) -> (Function, String) {
+    ) -> Option<(Function, String)> {
         // Provide generic mapping to the method itself by copying impl block generics
         let mut modified_func = generic_method.clone();
         modified_func.generics = mapping
@@ -2691,7 +2755,7 @@ impl<'a> TypeChecker<'a> {
             })
             .collect();
         let mut method_func =
-            self.instantiate_function(&modified_func, mapping, &std::collections::HashMap::new());
+            self.instantiate_function(&modified_func, mapping, &std::collections::HashMap::new())?;
 
         // The name the definition was minted under: receiver, then the trait and its arguments
         // when the method came from a trait impl. Shared with the definition site, so a call and
@@ -2725,7 +2789,7 @@ impl<'a> TypeChecker<'a> {
             self.mono.being_checked.remove(&mangled_sym);
             self.mono.functions.push((func_to_check, 0)); // 0 will fall back to caller_module_idx
         }
-        (method_func, mangled_name)
+        Some((method_func, mangled_name))
     }
 
     /// Instantiate the resolved generic method, register + type-check the monomorphized function,
@@ -2770,8 +2834,11 @@ impl<'a> TypeChecker<'a> {
             None,
         );
 
-        let (method_func, mangled_name) =
-            self.instantiate_impl_method(&generic_method, &mapping, base_ty, ib);
+        let Some((method_func, mangled_name)) =
+            self.instantiate_impl_method(&generic_method, &mapping, base_ty, ib)
+        else {
+            return (Type::Unknown, obj.clone());
+        };
 
         // Rewrite AST from MethodCall to FunctionCall
         let mut call_args = vec![];
@@ -2840,6 +2907,7 @@ impl<'a> TypeChecker<'a> {
         );
 
         let mut func_call = Expr::FunctionCall(FunctionCallExpr {
+            owner_type_args: None,
             name: crate::symbol::Symbol::from(mangled_name.as_str()),
             type_args: None,
             args: call_args,
@@ -2961,6 +3029,7 @@ impl<'a> TypeChecker<'a> {
                         let mangled_name = format!("{}_{}", prefix, _method);
                         self.record_call_edge(&mangled_name, &method_span);
                         let func_call = Expr::FunctionCall(FunctionCallExpr {
+                            owner_type_args: None,
                             name: crate::symbol::Symbol::from(mangled_name.as_str()),
                             type_args: None,
                             args: args.clone(),

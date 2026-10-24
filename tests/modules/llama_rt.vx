@@ -21,7 +21,6 @@ extern {
   fn putchar(char : i32) -> i32;
   fn vx_simd_reduce_add(v : <4 x f32>)->f32;
   fn vx_powf(x : f32, y : f32)->f32;
-  fn vx_get_rope_freq(pos : i32, i : i32, head_size : i32)->f32;
   fn vx_file_open(c_path : *const i8, mode : i32) -> *mut i8;
   fn vx_file_read(ptr : *mut i8, buffer : *mut u8, len : u64) -> u64;
   fn vx_file_drop(ptr : *mut i8) -> void;
@@ -78,4 +77,10 @@ extern {
 
   fn vx_get_env_int(name : *const i8, default_val : i32) -> i32;
   fn vx_get_llama_config() -> *mut i32;
+}
+
+/// The RoPE angle for position `pos` and the dimension pair that starts at `i`.
+fn rope_freq(pos : i32, i : i32, head_size : i32) -> f32 {
+  let base : f32 = 10000.0;
+  return (pos as f32) * base.powf(-(i as f32) / (head_size as f32));
 }

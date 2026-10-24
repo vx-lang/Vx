@@ -1,0 +1,34 @@
+//===- generic_structs_with_borrowed_tensors.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Store borrowed tensors in generic structs with and without a precomputed registry layout.
+// Read scalar fields before and after each tensor descriptor.
+// REQUIRES: flat-codegen
+// EXPECT: 5 41 7 43
+
+struct Known<T> {
+  value: T, tensor: &Tensor<f32,[4]>, tail: i64
+}
+struct Outer {
+  inner: Known<i32>
+}
+struct Local<T> {
+  value: T, tensor: &Tensor<f32,[4]>, tail: i64
+}
+
+fn main() -> i32 {
+  let tensor = Tensor<f32>([4]);
+  let known = Known<i32> {
+    value: 5, tensor: &tensor, tail: 41
+  };
+  let local = Local<i32> {
+    value: 7, tensor: &tensor, tail: 43
+  };
+  print(known.value); print(" "); print(known.tail); print(" ");
+  print(local.value); print(" "); print(local.tail);
+  return 0;
+}

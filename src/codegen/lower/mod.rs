@@ -1711,10 +1711,24 @@ pub(crate) fn lower_raw_primitive<'c>(
 
 /// The memory space a memref type's text ends with, `1` in `memref<4xf32, 1>`; `None` for host
 /// memory, which carries none.
-fn memref_space(ty: &str) -> Option<&str> {
+pub(crate) fn memref_space(ty: &str) -> Option<&str> {
     let body = ty.strip_prefix("memref<")?.strip_suffix('>')?;
     let last = body.rsplit(", ").next()?;
     (last != body && last.chars().all(|c| c.is_ascii_digit())).then_some(last)
+}
+
+/// The memref type `ty` in the memory space of `like`: `memref<4xf32, 3>` for
+/// `memref<4xf32>` and `memref<?xf32, 3>`.
+pub(crate) fn memref_in_space_of(ty: &str, like: &str) -> Option<String> {
+    let body = ty.strip_prefix("memref<")?.strip_suffix('>')?;
+    let body = match memref_space(ty) {
+        Some(space) => &body[..body.len() - space.len() - 2],
+        None => body,
+    };
+    Some(match memref_space(like) {
+        Some(space) => format!("memref<{body}, {space}>"),
+        None => format!("memref<{body}>"),
+    })
 }
 
 /// `memref.cast` from `from` to `to`, through a `memref.memory_space_cast` when the two are in
@@ -1731,18 +1745,8 @@ pub(crate) fn cast_memref<'c>(
     let mut val = val;
     let mut current = from;
     if memref_space(&from_s) != memref_space(&to_s) {
-        let body = from_s
-            .strip_prefix("memref<")
-            .and_then(|b| b.strip_suffix('>'))
+        let spaced = memref_in_space_of(&from_s, &to_s)
             .ok_or_else(|| LowerError::from(format!("not a memref: {from_s}")))?;
-        let body = match memref_space(&from_s) {
-            Some(space) => &body[..body.len() - space.len() - 2],
-            None => body,
-        };
-        let spaced = match memref_space(&to_s) {
-            Some(space) => format!("memref<{body}, {space}>"),
-            None => format!("memref<{body}>"),
-        };
         let spaced_ty = melior::ir::Type::parse(gen.context, &spaced)
             .ok_or_else(|| LowerError::ParseType(spaced.clone()))?;
         val = block

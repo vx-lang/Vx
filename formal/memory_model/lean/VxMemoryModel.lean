@@ -21,6 +21,10 @@ import VxMemoryModel.ChannelExample
 import VxMemoryModel.MutexExample
 import VxMemoryModel.Lock
 import VxMemoryModel.Fifo
+import VxMemoryModel.Recv
 import VxMemoryModel.Cancel
 import VxMemoryModel.Footprint
 import VxMemoryModel.FootprintExample
+import VxMemoryModel.ChanFootprint
+import VxMemoryModel.LockFootprint
+import VxMemoryModel.ChanFootprintExample

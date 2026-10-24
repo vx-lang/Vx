@@ -77,8 +77,8 @@ Rust `Drop` and the Rust side has no way to observe a Vx scope exit.
 
 ```rust
 #[no_mangle]
-pub extern "C" fn vx_vec_new_i32() -> *mut c_void {
-    Box::into_raw(Box::new(Vec::<i32>::new())) as *mut c_void
+pub extern "C" fn vx_hash_map_new_i32_i32() -> *mut c_void {
+    Box::into_raw(Box::new(HashMap::<i32, i32>::new())) as *mut c_void
 }
 ```
 
@@ -87,10 +87,10 @@ no `Box::from_raw`, or the buffer is freed while Vx still holds the pointer:
 
 ```rust
 #[no_mangle]
-pub extern "C" fn vx_vec_len_i32(ptr: *mut c_void) -> usize {
+pub extern "C" fn vx_hash_map_len_i32_i32(ptr: *mut c_void) -> usize {
     if ptr.is_null() { return 0; }
-    let v = unsafe { &*(ptr as *const Vec<i32>) };
-    v.len()
+    let m = unsafe { &*(ptr as *const HashMap<i32, i32>) };
+    m.len()
 }
 ```
 
@@ -98,9 +98,9 @@ pub extern "C" fn vx_vec_len_i32(ptr: *mut c_void) -> usize {
 
 ```rust
 #[no_mangle]
-pub extern "C" fn vx_vec_drop_i32(ptr: *mut c_void) {
+pub extern "C" fn vx_hash_map_drop_i32_i32(ptr: *mut c_void) {
     if ptr.is_null() { return; }
-    drop(unsafe { Box::from_raw(ptr as *mut Vec<i32>) });
+    drop(unsafe { Box::from_raw(ptr as *mut HashMap<i32, i32>) });
 }
 ```
 
@@ -112,10 +112,10 @@ neither language's checker will catch:
 1. **Null-check every pointer parameter.** Vx may pass a null for an
    uninitialised handle; Rust must not dereference it.
 1. **Monomorphise per concrete type.** Symbol names carry the instantiation
-   (`vx_vec_push_i32`, `vx_hash_map_insert_i32_f32`), because C has no generics.
+   (`vx_hash_map_insert_i32_i32`, `vx_hash_map_insert_i32_f32`), because C has no generics.
 
-The collections surface is generated from these rules by the
-`instantiate_vec_ffi!` / `instantiate_hash_map_ffi!` macros in
+The collections surface is generated from these rules by macros such as
+`instantiate_hash_map_ffi!` in
 [`stdlib/rust_core/src/ffi/macros.rs`](../../stdlib/rust_core/src/ffi/macros.rs) —
 prefer extending a macro over hand-writing a shim.
 

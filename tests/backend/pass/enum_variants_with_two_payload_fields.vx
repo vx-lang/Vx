@@ -1,0 +1,55 @@
+//===- enum_variants_with_two_payload_fields.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Read both payload fields from integer and pointer variants, and match an empty variant.
+// REQUIRES: flat-codegen
+// EXPECT: 5 17 7 25 -1
+
+struct Node {
+  value: i64
+}
+
+enum Value {
+  Numbers(i64, i64),
+  Pointers(*const Node, *const Node),
+  Empty
+}
+
+fn read(value: Value, second: bool) -> i64 {
+  match value {
+    Value::Numbers(a, b) => {
+      if second {
+        return b;
+      }
+      return a;
+    },
+    Value::Pointers(a, b) => {
+      if second {
+        return unsafe { (*b).value };
+      }
+      return unsafe { (*a).value };
+    },
+    Value::Empty => {
+      return -1;
+    }
+  }
+}
+
+fn main() -> i32 {
+  let first = Node {
+    value: 7
+  };
+  let second = Node {
+    value: 25
+  };
+  print(read(Value::Numbers(5, 17), false)); print(" ");
+  print(read(Value::Numbers(5, 17), true)); print(" ");
+  print(read(Value::Pointers(&first, &second), false)); print(" ");
+  print(read(Value::Pointers(&first, &second), true)); print(" ");
+  print(read(Value::Empty, false));
+  return 0;
+}

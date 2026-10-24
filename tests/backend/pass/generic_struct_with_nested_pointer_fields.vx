@@ -1,0 +1,46 @@
+//===- generic_struct_with_nested_pointer_fields.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Read scalar fields and pointer targets from nested generic structs.
+// REQUIRES: flat-codegen
+// EXPECT: 5 1 17 31
+
+struct Node {
+  value: i32
+}
+struct Buffer<T> {
+  data: *const T, len: i32
+}
+struct Pair<T> {
+  first: T, items: Buffer<T>, pointer: *const Node
+}
+
+fn read(buffer: Buffer<i32>) -> i32 {
+  return unsafe { buffer.data[0] };
+}
+
+fn read_node(pointer: *const Node) -> i32 {
+  return unsafe { (*pointer).value };
+}
+
+fn main() -> i32 {
+  let value: i32 = 17;
+  let node = Node {
+    value: 31
+  };
+  let pair = Pair<i32> {
+    first: 5,
+    items: Buffer<i32> {
+      data: (&value) as *const i32, len: 1
+    },
+    pointer: (&node) as *const Node
+  };
+  print(pair.first); print(" "); print(pair.items.len); print(" ");
+  print(read(pair.items)); print(" ");
+  print(read_node(pair.pointer));
+  return 0;
+}

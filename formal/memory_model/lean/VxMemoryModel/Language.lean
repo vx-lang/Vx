@@ -198,6 +198,20 @@ theorem drf_sc (P : Prog) (hsc : P.SeqCstOnly)
     · exact h
   · exact fun e => (r.seqCst hsc e).1
 
+/-- `drf_sc`, when `co` orders the writes to each place. Then only the finite interleavings in
+which `co` orders the writes to each place need to be race free. -/
+theorem drf_sc_co (P : Prog) (hsc : P.SeqCstOnly)
+    (hP : ∀ Y, P.Execs Y → Y.WellFormed → Y.SeqConsistent → Y.Finite → Y.CoOrder → Y.RaceFree)
+    {X : Execution} (hX : P.Execs X) (wf : X.WellFormed) (hfin : X.Finite) (ho : X.CoOrder)
+    (hc : X.Consistent) : X.SeqConsistent := by
+  obtain ⟨r⟩ := hX
+  refine P.toProgram.drf_sc_co hP ⟨r⟩ wf hfin ho ?_ ?_ hc
+  · intro e he
+    rcases (r.seqCst hsc e).2 with h | h
+    · exact absurd h he
+    · exact h
+  · exact fun e => (r.seqCst hsc e).1
+
 end Prog
 
 end Vx

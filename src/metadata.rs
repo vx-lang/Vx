@@ -95,7 +95,7 @@ impl<'a> VxMetadata<'a> {
 const VXLIB_MAGIC: &[u8; 4] = b"VXLB";
 /// Format tag folded into an FNV-1a stamp (`src/hash.rs`) written after the magic. A codec change
 /// bumps this string, so a stale artifact is *detected* (version mismatch on load) rather than misread.
-const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v16";
+const VXLIB_FORMAT_TAG: &str = "vxlib-interface-v17";
 
 /// Append-only little-endian byte writer for the interface codec.
 struct Writer {
@@ -1183,7 +1183,11 @@ pub fn deserialize_registry_interface(bytes: &[u8]) -> Result<ImmutableGlobalReg
     }
 
     let layout_by_base_name = LayoutNameIndex::build(&layouts);
+    let aggregate_identities = std::sync::Arc::new(
+        crate::layout::identity::AggregateIdentities::from_layouts(&layouts),
+    );
     Ok(ImmutableGlobalRegistry {
+        aggregate_identities,
         layouts,
         module_indices,
         fn_sigs,
@@ -1206,6 +1210,65 @@ mod tests {
     use super::*;
     use crate::registry::ModuleInterface;
 
+    #[rstest::rstest]
+    #[case::write(true)]
+    #[case::read(false)]
+    fn enum_payload_instruction_keeps_its_wire_fields(#[case] write: bool) {
+        let instruction = HirInstruction::new(
+            Opcode::EnumPayloadLoad,
+            Register(5),
+            Register(0),
+            TypeIdx(3),
+            0x0000_000b_0000_0007,
+        );
+        let bytes: Vec<_> = [70_u64, 5, 0, 3, 0x0000_000b_0000_0007]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect();
+        if write {
+            let mut writer = Writer::new();
+            write_hir_instruction(&mut writer, &instruction);
+            assert_eq!(
+                writer.buf, bytes,
+                "serialized enum payload fields must preserve the immediate"
+            );
+        } else {
+            assert_eq!(
+                read_hir_instruction(&mut Reader::new(&bytes)),
+                Ok(instruction),
+                "decoded enum payload fields must preserve the immediate"
+            );
+        }
+    }
+
+    #[test]
+    fn previous_enum_field_load_format_is_rejected() {
+        let registry = ImmutableGlobalRegistry::build_and_validate(vec![]).unwrap();
+        let mut bytes = serialize_registry_interface(&registry);
+        bytes[4..12].copy_from_slice(
+            &crate::hash::compute_module_hash("vxlib-interface-v15").to_le_bytes(),
+        );
+        assert_eq!(
+            deserialize_registry_interface(&bytes).err(),
+            Some("vxlib: format version mismatch (stale or incompatible artifact)".into()),
+            "old enum field-load instructions must not be interpreted as ordinary field loads"
+        );
+    }
+
+    #[test]
+    fn previous_enum_storage_format_is_rejected() {
+        let registry = ImmutableGlobalRegistry::build_and_validate(vec![]).unwrap();
+        let mut bytes = serialize_registry_interface(&registry);
+        bytes[4..12].copy_from_slice(
+            &crate::hash::compute_module_hash("vxlib-interface-v16").to_le_bytes(),
+        );
+        assert_eq!(
+            deserialize_registry_interface(&bytes).err(),
+            Some("vxlib: format version mismatch (stale or incompatible artifact)".into()),
+            "cached enum field offsets must not survive a storage-layout change"
+        );
+    }
+
     /// `usize` has a tag of its own in a `.vxlib`, and reads back as `usize`, not `u64`.
     #[test]
     fn usize_round_trips_through_its_tag() {
@@ -1227,6 +1290,43 @@ mod tests {
         let symbol_map = crate::resolver::build_symbol_map(&mods);
         mods[0].resolve_names(&symbol_map, &[]);
         mods.pop().unwrap()
+    }
+
+    #[test]
+    fn aggregate_identity_survives_interface_loading_and_merging() {
+        let module = parse_and_resolve(
+            "crate::identity",
+            "struct Node { value: i32 } struct Holder<T> { value: T }",
+        );
+        let original = crate::pipeline::build_frozen_registry(&[module]).unwrap();
+        let bytes = serialize_registry_interface(&original);
+        let loaded = deserialize_registry_interface(&bytes).unwrap();
+        let argument = crate::syntax::Type::Pointer(
+            Box::new(crate::syntax::Type::Struct("Node".into(), None)),
+            None,
+            false,
+        );
+        let key = |registry: &ImmutableGlobalRegistry| {
+            crate::hir::flatten::struct_instance_gid(
+                "Holder",
+                std::slice::from_ref(&argument),
+                registry.aggregate_identities(),
+            )
+            .expect("declarations have a generated identity")
+        };
+        let expected = key(&original);
+        assert_eq!(
+            key(&loaded),
+            expected,
+            "loaded declarations retain aggregate identity"
+        );
+        let mut merged = ImmutableGlobalRegistry::build_and_validate(vec![]).unwrap();
+        merged.merge_from(loaded);
+        assert_eq!(
+            key(&merged),
+            expected,
+            "merged declarations retain aggregate identity"
+        );
     }
 
     /// The registry interface survives a serialize -> file -> load -> deserialize round trip: the

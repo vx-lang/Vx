@@ -67,7 +67,7 @@ a contract on a small tiled matrix. This post uses two pieces of code from a tra
 more time on what the proof does not cover. Every example was compiled and run with <code>vxc</code> built from commit
 fd44f29f on <code>main</code>, with z3 installed.</p>
 
-<h2 id="example-1-an-offset-into-a-kv-cache">Example 1: an offset into a KV cache</h2>
+<h2 id="example-1-an-offset-into-a-kv-cache"><a href="#example-1-an-offset-into-a-kv-cache">Example 1: an offset into a KV cache</a></h2>
 
 <p>During generation a transformer keeps the keys and values of every token it has seen, so it does
 not recompute them. This is the KV cache. Take Llama 2 7B: 32 layers, a 4,096-token context, and 32
@@ -169,7 +169,7 @@ instead of 32, the kind of slip you make when a model config changes under you.<
 the cache, in memory that belongs to something else. In Python or C++ this compiles, runs, and
 reads whatever happens to live there.</p>
 
-<h2 id="where-the-proof-held-and-the-program-was-wrong">Where the proof held and the program was wrong</h2>
+<h2 id="where-the-proof-held-and-the-program-was-wrong"><a href="#where-the-proof-held-and-the-program-was-wrong">Where the proof held and the program was wrong</a></h2>
 
 <p>Now a larger model: Llama 3.1 70B, with the context capped at 32,768 tokens. It has 80 layers
 and 8 key-value heads of 128 numbers each. Same layout, same contract, new numbers:</p>
@@ -209,7 +209,7 @@ already stops the program with an error when it overflows
 the program at the multiplication that overflows. The prover itself still treats numbers as unbounded, so it cannot yet warn you, while it
 compiles, that a 32-bit or 64-bit value will overflow.</p>
 
-<h2 id="example-2-copying-attention-heads-into-shared-memory">Example 2: copying attention heads into shared memory</h2>
+<h2 id="example-2-copying-attention-heads-into-shared-memory"><a href="#example-2-copying-attention-heads-into-shared-memory">Example 2: copying attention heads into shared memory</a></h2>
 
 <p>An attention kernel on a GPU first copies a tile of keys from the GPU's main memory into the
 small, fast shared memory next to its cores. In Vx you can write the code that moves a tile between two memories
@@ -268,7 +268,7 @@ The error then becomes a warning that says what you did:</p>
 <pre class="diag"><code>Warning: cannot prove the index of `raw::store` stays inside `dst` (needs 0 &lt;= index &lt; 256);
 asserted, not proven (unsafe)</code></pre>
 
-<h2 id="what-a-bounds-proof-does-not-tell-you">What a bounds proof does not tell you</h2>
+<h2 id="what-a-bounds-proof-does-not-tell-you"><a href="#what-a-bounds-proof-does-not-tell-you">What a bounds proof does not tell you</a></h2>
 
 <p>Swap the layout by mistake, so the copy writes <code>d * 4 + h</code> instead of
 <code>h * 64 + d</code>. That index also runs from 0 to 255. The program compiles, because every
@@ -276,7 +276,7 @@ access is in bounds, and the heads come out interleaved. The prover answers the 
 asked, &ldquo;is this index inside the tensor?&rdquo;, and nothing more. Whether the data ends up in
 the right order is still a job for tests.</p>
 
-<h2 id="other-limits-today">Other limits today</h2>
+<h2 id="other-limits-today"><a href="#other-limits-today">Other limits today</a></h2>
 
 <ul>
 <li><strong>Callers are not checked against <code>requires</code>.</strong> The function proves its

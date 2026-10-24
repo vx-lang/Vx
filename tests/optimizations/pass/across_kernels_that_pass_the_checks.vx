@@ -16,6 +16,10 @@
 // - `zeroed`: lane 0 fills a tensor in shared memory with zeros, and then every lane reads it.
 //   The tensor is memory of the block, not a value that only lane 0 has.
 // - `one_lane`: `b + t` fixes `b`, because the lane loop has one pass.
+// - `positive_rows`: every lane gets the same result from a lane reduction, so it can be the
+//   condition of an `if` around a lane loop.
+// - `clamped`: in a plain loop around a lane loop, an `if` with no `break`, `continue` or
+//   `return` reads a value that only lane 0 has. Every lane still gets to the barrier.
 //
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --allow-empty --implicit-check-not=Error
 
@@ -97,6 +101,53 @@ pub fn one_lane(y : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
     for b in 0..n across blocks {
       for t in 0..1 across lanes {
         y[b + t] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn positive_rows(y : &mut Tensor<f32, [?, 128], Memory::HBM>, x : &Tensor<f32, [?, 128], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut part = unsafe { Tensor<f32, [128], Memory::SMEM>::uninit() };
+      for t in 0..128 across lanes {
+        part[t] = x[b][t];
+      }
+      let total = lanes::sum(&part, 128);
+      if total > 0.0 {
+        for t in 0..128 across lanes {
+          y[b][t] = x[b][t] / total;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn clamped(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, passes : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut a = unsafe { Tensor<f32, [4, 32], Memory::SMEM>::uninit() };
+      for w in 0..4 across subgroups {
+        let mut acc : f32 = 0.0;
+        for p in 0..passes {
+          for l in 0..32 across lanes {
+            a[w][l] = x[(p * 4 + w) * 32 + l];
+          }
+          let total = lanes::sum(&a[w], 32);
+          let scaled : f32 = total * 2.0;
+          let r : f32 = if scaled < 0.0 {
+            0.0
+          } else {
+            scaled
+          };
+          acc = acc + r;
+          if acc > 100.0 {
+            acc = 100.0;
+          }
+        }
+        out[w] = acc;
       }
     }
   }

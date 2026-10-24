@@ -61,6 +61,11 @@ jobs:
             exit 1
           fi
 
+      # Blog section headings need a stable id and an in-page permalink so deep links
+      # keep working. Only needs python3 and the checkout.
+      - name: Check blog headings have ids
+        run: python3 scripts/tools/check_blog_heading_ids.py
+
       # Process-global atomics are banned for the same reason as locks: a compilation must be
       # isolated, and a static a worker thread can write is shared mutable state whether or not
       # it takes a lock to do it. A cached answer also survives across compilations in a long-lived

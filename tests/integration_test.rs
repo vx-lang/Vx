@@ -44,6 +44,9 @@ mod integration_test {
     mod solver_policy_test;
     mod traffic_test;
     mod transport_test;
+    // It links with `cc -shared` and loads `.so` files.
+    #[cfg(target_os = "linux")]
+    mod two_kernel_libraries_in_one_process;
     mod wire_test;
     mod working_set_peak_test;
 }

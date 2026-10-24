@@ -54,7 +54,7 @@ generation.</blockquote>
 common mistake today is choosing, before you start, a language that cannot say where the time
 goes.</p>
 
-<h2 id="three-choices-made-before-the-first-line">Three choices made before the first line</h2>
+<h2 id="three-choices-made-before-the-first-line"><a href="#three-choices-made-before-the-first-line">Three choices made before the first line</a></h2>
 
 <p><strong>Memory is hidden.</strong> In C, C++, Rust, Go, Java and Python, memory is one flat
 array of bytes. A <code>float *</code> does not say whether the floats are in the local socket's
@@ -80,7 +80,7 @@ work out which GPU memory a generic pointer points into, after the language
 <a href="/blog/two-allocators-one-type.html">dropped that fact from the type</a>. When a guess
 fails, the optimizer has to assume the worst, and assuming the worst is slow.</p>
 
-<h2 id="all-of-them-model-a-tape">All of them model a tape</h2>
+<h2 id="all-of-them-model-a-tape"><a href="#all-of-them-model-a-tape">All of them model a tape</a></h2>
 
 <p>Put the three together and every mainstream language targets the same machine: Turing's tape.
 One line of cells, one head, every cell the same distance away and the line never ending. The
@@ -93,7 +93,7 @@ node.</p>
 de-optimization in the title, and no programmer chose it. The language chose it for every program
 at once.</p>
 
-<h2 id="the-tools-that-win-it-back">The tools that win it back</h2>
+<h2 id="the-tools-that-win-it-back"><a href="#the-tools-that-win-it-back">The tools that win it back</a></h2>
 
 <p>The information the language will not carry is recovered afterwards, by hand:</p>
 
@@ -113,7 +113,7 @@ launch script, and hope nobody changes the machine. The knowledge ends up in scr
 and people's heads. The compiler never sees it, cannot check it, and the next refactor can break
 it without a warning.</p>
 
-<h2 id="c-allocators-go-part-of-the-way">C++ allocators go part of the way</h2>
+<h2 id="c-allocators-go-part-of-the-way"><a href="#c-allocators-go-part-of-the-way">C++ allocators go part of the way</a></h2>
 
 <p>C++ is the one mainstream language that tries. <code>std::allocator</code>, and later
 <code>std::pmr</code> memory resources, let a container ask a chosen allocator for memory. You can
@@ -138,9 +138,9 @@ nowhere to put it. Kokkos shows the limit plainly: when
 the compiler has already proved the access illegal, the library can only emit a run-time
 <code>Kokkos::abort</code>. A language can do better, so Vx is one.</p>
 
-<h2 id="what-vx-does-with-each-of-the-three">What Vx does with each of the three</h2>
+<h2 id="what-vx-does-with-each-of-the-three"><a href="#what-vx-does-with-each-of-the-three">What Vx does with each of the three</a></h2>
 
-<h3 id="memory-has-a-location-and-it-is-part-of-the-type">Memory has a location, and it is part of the type</h3>
+<h3 id="memory-has-a-location-and-it-is-part-of-the-type"><a href="#memory-has-a-location-and-it-is-part-of-the-type">Memory has a location, and it is part of the type</a></h3>
 
 <p>A Vx tensor's type names the memory it lives in, and moving it is an explicit
 <code>transfer</code> that produces a value of a new type:</p>
@@ -181,7 +181,7 @@ refused on a laptop:</p>
 <pre><code>Error[E6003] at 10:9: 'a_npu' lives in CPU_DRAM but NPU[0] sees only [NPU_HBM];
   insert an explicit transfer to NPU_HBM (cost 50 on the declared path)</code></pre>
 
-<h3 id="the-machine-is-an-input-and-code-says-where-it-runs">The machine is an input, and code says where it runs</h3>
+<h3 id="the-machine-is-an-input-and-code-says-where-it-runs"><a href="#the-machine-is-an-input-and-code-says-where-it-runs">The machine is an input, and code says where it runs</a></h3>
 
 <p>Vx reads the machine from a declaration file. This is the H100 description that ships in
 <code>fleet/</code>, without its citations:</p>
@@ -229,7 +229,7 @@ model predicted a remote access at 2.26&times; a local one against 2.35&times; m
 <a href="/blog/the-numa-that-wasnt-there.html">The NUMA that wasn't there</a> has the numbers, and
 the machine that lied about them.</p>
 
-<h3 id="the-facts-survive-until-code-generation">The facts survive until code generation</h3>
+<h3 id="the-facts-survive-until-code-generation"><a href="#the-facts-survive-until-code-generation">The facts survive until code generation</a></h3>
 
 <p>Declaring placement is worth little if the code generator never sees it. The Vx front end
 lowers to a flat HIR and then to its own MLIR dialect, where placements and <code>spawn</code>
@@ -251,7 +251,7 @@ agree about which memory the host can touch.</li>
 
 <p>No pass has to guess where a value lives, because nothing ever threw that away.</p>
 
-<h2 id="what-is-not-built-yet">What is not built yet</h2>
+<h2 id="what-is-not-built-yet"><a href="#what-is-not-built-yet">What is not built yet</a></h2>
 
 <p>This post argues that hiding costs is expensive, so here is what Vx does not do yet:</p>
 
@@ -279,7 +279,7 @@ says. A tape-model language can't be patched into seeing the tree, because the f
 the source from the start; once they are, improving what the compiler does with them is ordinary
 work.</p>
 
-<h2 id="the-point">The point</h2>
+<h2 id="the-point"><a href="#the-point">The point</a></h2>
 
 <p>Premature optimization spends an afternoon on speed before you know where the time goes.
 Premature de-optimization picks a language that can never say where the time goes, and so gives up

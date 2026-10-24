@@ -65,6 +65,8 @@ impl IdentifierExpr {
 #[derive(Debug, PartialEq, Clone)]
 pub struct EnumVariantExpr {
     pub enum_name: Symbol,
+    /// Parsed type arguments, retained through checking and substitution.
+    pub type_args: Option<Vec<Type>>,
     pub variant_name: Symbol,
     pub payload: Option<Vec<Expr>>,
     pub span: Span,
@@ -78,6 +80,7 @@ impl EnumVariantExpr {
     ) -> Self {
         Self {
             enum_name,
+            type_args: None,
             variant_name,
             payload,
             span,
@@ -180,6 +183,8 @@ impl TransferExpr {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct FunctionCallExpr {
+    /// Type arguments before `::`, separate from the function's type arguments.
+    pub owner_type_args: Option<Vec<Type>>,
     pub name: Symbol,
     pub type_args: Option<Vec<Type>>,
     pub args: Vec<Expr>,
@@ -188,6 +193,7 @@ pub struct FunctionCallExpr {
 impl FunctionCallExpr {
     pub fn new(name: Symbol, type_args: Option<Vec<Type>>, args: Vec<Expr>, span: Span) -> Self {
         Self {
+            owner_type_args: None,
             name,
             type_args,
             args,
@@ -926,6 +932,8 @@ pub struct InlineMlirExpr {
     pub clobbers: Vec<Expr>,
     pub returns: Option<Type>, // None for void
     pub dialects: Vec<String>,
+    /// What the block writes, as `atomic(t)` clauses. Not evaluated, so visitors skip them.
+    pub ensures: Vec<Expr>,
     pub block_str: String,
     pub span: Span,
 }
@@ -1354,6 +1362,10 @@ impl Expr {
                     .as_ref()
                     .map(|tys| tys.iter().map(|ty| ty.substitute(mapping)).collect());
                 Expr::FunctionCall(FunctionCallExpr {
+                    owner_type_args: e
+                        .owner_type_args
+                        .as_ref()
+                        .map(|args| args.iter().map(|ty| ty.substitute(mapping)).collect()),
                     name: new_name,
                     type_args: substituted_type_args,
                     args: e.args.iter().map(|a| a.substitute(mapping)).collect(),
@@ -1545,6 +1557,10 @@ impl Expr {
                 }
                 Expr::EnumVariant(EnumVariantExpr {
                     enum_name: new_name,
+                    type_args: e
+                        .type_args
+                        .as_ref()
+                        .map(|args| args.iter().map(|ty| ty.substitute(mapping)).collect()),
                     variant_name: e.variant_name.clone(),
                     payload: e
                         .payload
@@ -1612,6 +1628,7 @@ impl Expr {
                     .as_ref()
                     .map(|t| substitute_mlir_returns(t, mapping)),
                 dialects: e.dialects.clone(),
+                ensures: e.ensures.iter().map(|ex| ex.substitute(mapping)).collect(),
                 block_str: substitute_words(&e.block_str, mapping),
                 span: e.span,
             }),

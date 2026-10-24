@@ -1,0 +1,47 @@
+//===- enum_borrows_from_separate_functions.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Construct borrowed enum payloads in two functions and read each borrowed value.
+// REQUIRES: flat-codegen
+// EXPECT: 11 23
+
+struct Node {
+  value: i32
+}
+enum Opt<T> {
+  Some(T), None
+}
+
+fn read(x: Opt<&Node>) -> i32 {
+  match x {
+    Opt::Some(node) => {
+      return node.value;
+    },
+    Opt::None => {
+      return -1;
+    }
+  }
+}
+
+fn first() -> i32 {
+  let node = Node {
+    value: 11
+  };
+  return read(Opt<&Node>::Some(&node));
+}
+
+fn second() -> i32 {
+  let node = Node {
+    value: 23
+  };
+  return read(Opt<&Node>::Some(&node));
+}
+
+fn main() -> i32 {
+  print(first()); print(" "); print(second());
+  return 0;
+}

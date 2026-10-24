@@ -28,7 +28,6 @@ import core::num;
 import std::time;
 
 extern {
-  fn vx_get_rope_freq(pos : i32, i : i32, head_size : i32)->f32;
   fn vx_advance_ptr(ptr : &mut f32, offset : i32) -> &mut f32;
 }
 
@@ -85,7 +84,8 @@ fn tensor_to_ptr_1d(t : Tensor<f32, [?, ?]>, ptr : &mut f32, d1 : i32) -> i32 {
   return 0;
 }
 fn safe_get_rope_freq(pos : i32, i : i32, head_size : i32) -> f32 {
-  return unsafe { vx_get_rope_freq(pos, i, head_size) };
+  let base : f32 = 10000.0;
+  return (pos as f32) * base.powf(-(i as f32) / (head_size as f32));
 }
 
 fn rmsnorm(o : &mut f32, x : &mut f32, weight : &Tensor<f32, [?, ?]>, l: i32, size : i32) -> i32 {

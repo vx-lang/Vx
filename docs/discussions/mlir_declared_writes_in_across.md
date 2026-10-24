@@ -1,6 +1,8 @@
 # Declared writes for `mlir!` blocks in `across` loops
 
-Status: proposed. Issue: #252. Builds on the L4 race proof (`src/hir/check/across_proof.rs`,
+Status: proposed. The `atomic` predicate and `writes_only()` with no tensors are built, for
+functions and `mlir!` blocks (D2, D4 and the checks of D6), with `f32` and `f64` beside the integer
+types (#2139). Issue: #252. Builds on the L4 race proof (`src/hir/check/across_proof.rs`,
 #2085) and on the contract clauses of `contracts_for_extern_and_unsafe_code.md` (X1, X3).
 
 The L4 proof refuses an `mlir!` block, a method call, an indirect call, and a call to any

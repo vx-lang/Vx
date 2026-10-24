@@ -1,0 +1,26 @@
+//===- element_atomics_with_a_plain_access_in_the_loop.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The passes of an `across` loop add to `count` with an atomic from `core::sync::atomic`. A plain
+// read of `count` in the same loop can race with those adds, so the loop is refused.
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: not vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E6032] at 21:32: the passes of this block loop change `count` with atomic operations, so every access to it in the loop must be one
+import core::sync::atomic;
+
+pub fn reads_the_count(count : &Tensor<u32, [?], Memory::HBM>, out : &mut Tensor<u32, [?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      for l in 0..32 across lanes {
+        let _old = atomic_fetch_add_u32(count, 0, 1u32, AtomicOrdering::Relaxed);
+        out[b * 32 + l] = count[0];
+      }
+    }
+  }
+  return;
+}

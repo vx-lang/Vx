@@ -6,11 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 // When both the array and the index are known during compilation, an index past the end
-// is reported then and there rather than read at run time.
+// is reported then and there rather than read at run time. A Tensor with a static shape
+// is covered by the type-based check, so only one E8003 is reported.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK: E8003
-// CHECK-SAME: index 5 is out of range: this array has 3 elements
+// CHECK-SAME: index 5 is out of range: this dimension has 3 elements
+// CHECK-NOT: E8003
 
 fn main() -> i32 {
   comptime {

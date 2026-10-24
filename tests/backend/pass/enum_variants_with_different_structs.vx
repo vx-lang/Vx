@@ -1,0 +1,87 @@
+//===- enum_variants_with_different_structs.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Read fields from enum variants that contain different structs or pointers to those structs.
+// One struct has a prefix field before its value.
+// REQUIRES: flat-codegen
+// EXPECT: 17 25 17 25 29
+
+struct First {
+  value : i32,
+}
+
+struct Second {
+  prefix : i32,
+  value : i32,
+}
+
+struct Holder<T> {
+  value : T,
+  pointer : *const First,
+}
+
+enum Borrowed {
+  First(*const First),
+  Second(*const Second),
+}
+
+enum Owned {
+  First(First),
+  Second(Second),
+}
+
+fn read_pointer(value : Borrowed) -> i32 {
+  match value {
+    Borrowed::First(p) => {
+      return unsafe { (*p).value };
+    }
+    Borrowed::Second(p) => {
+      return unsafe { (*p).value };
+    }
+  }
+  return -1;
+}
+
+fn read_value(value : Owned) -> i32 {
+  match value {
+    Owned::First(v) => {
+      return v.value;
+    }
+    Owned::Second(v) => {
+      return v.value;
+    }
+  }
+  return -1;
+}
+
+fn main() -> i32 {
+  let a = First {
+    value: 17
+  };
+  let b = Second {
+    prefix: 99, value: 25
+  };
+  print(read_pointer(Borrowed::First(&a)));
+  print!(" ");
+  print(read_pointer(Borrowed::Second(&b)));
+  print!(" ");
+  print(read_value(Owned::First(a)));
+  print!(" ");
+  print(read_value(Owned::Second(b)));
+  print!(" ");
+  let item = First {
+    value: 7
+  };
+  let target = First {
+    value: 29
+  };
+  let holder : Holder<First> = Holder<First> {
+    value: item, pointer: &target
+  };
+  print(unsafe { (*holder.pointer).value });
+  return 0;
+}

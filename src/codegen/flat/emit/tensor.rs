@@ -49,6 +49,21 @@ impl FnEmit<'_> {
         if src_ty == dst_ty {
             return Ok(val.to_string());
         }
+        // A plain cast cannot change the memory space, so that comes first.
+        use crate::codegen::lower::{memref_in_space_of, memref_space};
+        let spaced;
+        let (val, src_ty) = if memref_space(src_ty) != memref_space(dst_ty) {
+            let ty = memref_in_space_of(src_ty, dst_ty).ok_or(crate::emitter_gap!())?;
+            let c = format!("%{tag}_space");
+            self.body += &format!("  {c} = memref.memory_space_cast {val} : {src_ty} to {ty}\n");
+            spaced = (c, ty);
+            if spaced.1 == dst_ty {
+                return Ok(spaced.0);
+            }
+            (spaced.0.as_str(), spaced.1.as_str())
+        } else {
+            (val, src_ty)
+        };
         if !src_ty.contains("strided<") || dst_ty.contains("strided<") {
             let c = format!("%{tag}");
             self.body += &format!("  {c} = memref.cast {val} : {src_ty} to {dst_ty}\n");

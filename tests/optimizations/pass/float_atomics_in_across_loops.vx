@@ -1,0 +1,78 @@
+//===- float_atomics_in_across_loops.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Atomic adds of `f32` and `f64` into tensor elements, as a kernel that sums down columns does.
+// Block `b` is a row, and lane `l` adds `b + 1` into column `l` of `column`, so each column is
+// 1 + 2 + 3 + 4 = 10. All 128 passes also add 0.25 into `total` and 2 into `wide`, and take 0.5
+// from `left`. They keep the largest and the smallest of their numbers in `top` and `bottom`.
+// Each block sums 1.5 for each of its lanes in a shared-memory tensor, and lane 0 copies that sum
+// to `per_block`. All the values are exact in binary, so the order of the adds does not change
+// them.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// CHECK: columns 10 10 10 sum 320
+// CHECK-NEXT: total 32 wide 256 left 36
+// CHECK-NEXT: top 127 bottom 0 shared 48 48 48 48
+// CHECK-NEXT: host 2.5 3.5 3.5 7.25 7.25
+// PTX-DAG: atom.global.add.f32
+// PTX-DAG: atom.global.add.f64
+// PTX-DAG: atom.shared.add.f32
+import core::sync::atomic;
+
+fn main() -> i32 {
+  let column = transfer(Tensor<f32, [32]>::fill(0.0), Memory::HBM);
+  let total = transfer(Tensor<f32, [1]>::fill(0.0), Memory::HBM);
+  let wide = transfer(Tensor<f64, [1]>::fill(0.0), Memory::HBM);
+  let left = transfer(Tensor<f64, [1]>::fill(100.0), Memory::HBM);
+  let top = transfer(Tensor<f32, [1]>::fill(-1.0), Memory::HBM);
+  let bottom = transfer(Tensor<f64, [1]>::fill(1000.0), Memory::HBM);
+  let mut per_block = transfer(Tensor<f32, [4]>::fill(0.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..4 across blocks {
+      let sums = Tensor<f32, [1], Memory::SMEM>::fill(0.0);
+      for l in 0..32 across lanes {
+        let n = b * 32 + l;
+        let _c = atomic_fetch_add_f32(&column, l, (b + 1) as f32, AtomicOrdering::Relaxed);
+        let _t = atomic_fetch_add_f32(&total, 0, 0.25, AtomicOrdering::Relaxed);
+        let _w = atomic_fetch_add_f64(&wide, 0, 2.0, AtomicOrdering::Relaxed);
+        let _d = atomic_fetch_sub_f64(&left, 0, 0.5, AtomicOrdering::Relaxed);
+        let _m = atomic_fetch_max_f32(&top, 0, n as f32, AtomicOrdering::Relaxed);
+        let _k = atomic_fetch_min_f64(&bottom, 0, n as f64, AtomicOrdering::Relaxed);
+        let _s = atomic_fetch_add_f32(&sums, 0, 1.5, AtomicOrdering::Relaxed);
+      }
+      for l in 0..1 across lanes {
+        per_block[b + l] = sums[0];
+      }
+    }
+  }
+  let c = transfer(column, Memory::CPU_DRAM);
+  let t = transfer(total, Memory::CPU_DRAM);
+  let wd = transfer(wide, Memory::CPU_DRAM);
+  let le = transfer(left, Memory::CPU_DRAM);
+  let tp = transfer(top, Memory::CPU_DRAM);
+  let bt = transfer(bottom, Memory::CPU_DRAM);
+  let pb = transfer(per_block, Memory::CPU_DRAM);
+  let mut sum : f32 = 0.0;
+  for i in 0..32 {
+    sum = sum + c[i];
+  }
+  println!("columns {} {} {} sum {}", c[0], c[17], c[31], sum);
+  println!("total {} wide {} left {}", t[0], wd[0], le[0]);
+  println!("top {} bottom {} shared {} {} {} {}", tp[0], bt[0], pb[0], pb[1], pb[2], pb[3]);
+
+  // On the host: a store and a load, a swap that answers the old value, and an add.
+  let h = Tensor<f64, [2]>::fill(2.5);
+  atomic_store_f64(&h, 1, 3.5, AtomicOrdering::Release);
+  let loaded = atomic_load_f64(&h, 1, AtomicOrdering::Acquire);
+  let old = atomic_swap_f64(&h, 1, 4.75, AtomicOrdering::SeqCst);
+  let _a = atomic_fetch_add_f64(&h, 1, 2.5, AtomicOrdering::SeqCst);
+  println!("host {} {} {} {} {}", h[0], loaded, old, h[1], atomic_load_f64(&h, 1, AtomicOrdering::SeqCst));
+  return 0;
+}

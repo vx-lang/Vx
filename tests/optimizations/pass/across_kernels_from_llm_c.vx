@@ -12,6 +12,7 @@
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --allow-empty --implicit-check-not=Error
 
 import core::num;
+import core::sync::atomic;
 
 // out[b][t][c] = wte[ix[b][t]][c] + wpe[t][c].
 pub fn encoder_forward(out : &mut Tensor<f32, [?, ?, 768], Memory::HBM>, ix : &Tensor<i32, [?, ?], Memory::HBM>, wte : &Tensor<f32, [?, 768], Memory::HBM>, wpe : &Tensor<f32, [?, 768], Memory::HBM>, batch : i32, seq : i32) -> void {
@@ -360,6 +361,64 @@ pub fn skip_empty_rows_in_each_lane(out : &mut Tensor<f32, [?, 256], Memory::HBM
       for l in 0..256 across lanes {
         if lengths[r] > 0 {
           out[r][l] = inp[r][l] * 2.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// dwte[ix[b][t]][c] += dout[b][t][c] with an atomic add, as llm.c writes it. Two tokens with one id
+// add to one row, and the atomic add keeps both. `dwte` is flat here, `ix * 768 + c`.
+pub fn encoder_backward_atomic(dwte : &Tensor<f32, [?], Memory::HBM>, dout : &Tensor<f32, [?, ?, 768], Memory::HBM>, ix : &Tensor<i32, [?, ?], Memory::HBM>, batch : i32, seq : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..batch across blocks {
+      for t in 0..seq across blocks {
+        for c in 0..768 across lanes(256) {
+          let _old = atomic_fetch_add_f32(dwte, ix[b][t] * 768 + c, dout[b][t][c], AtomicOrdering::Relaxed);
+        }
+      }
+    }
+  }
+  return;
+}
+
+// dbias[o] += dout[r][o] for every row, with an atomic add, as llm.c adds the sums of its blocks.
+pub fn matmul_backward_bias_atomic(dbias : &Tensor<f32, [?], Memory::HBM>, dout : &Tensor<f32, [?, ?], Memory::HBM>, rows : i32, outs : i32) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      for o in 0..outs across lanes(256) {
+        let _old = atomic_fetch_add_f32(dbias, o, dout[r][o], AtomicOrdering::Relaxed);
+      }
+    }
+  }
+  return;
+}
+
+// llm.c's layernorm with its warp reductions as `lanes::sum`, which gives every lane the sum.
+pub fn layernorm_forward_lane_sums(out : &mut Tensor<f32, [?, 768], Memory::HBM>, inp : &Tensor<f32, [?, 768], Memory::HBM>, weight : &Tensor<f32, [768], Memory::HBM>, bias : &Tensor<f32, [768], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      let mut part = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for l in 0..256 across lanes {
+        part[l] = inp[r][l] + inp[r][256 + l] + inp[r][512 + l];
+      }
+      let total = lanes::sum(&part, 256);
+      let mean = total / 768.0;
+      for l in 0..256 across lanes {
+        let mut s : f32 = 0.0;
+        for k in 0..3 {
+          let d = inp[r][k * 256 + l] - mean;
+          s = s + d * d;
+        }
+        part[l] = s;
+      }
+      let var = lanes::sum(&part, 256);
+      let inv = 1.0 / (var / 768.0 + 0.00001).sqrt();
+      for l in 0..256 across lanes {
+        for k in 0..3 {
+          let c = k * 256 + l;
+          out[r][c] = (inp[r][c] - mean) * inv * weight[c] + bias[c];
         }
       }
     }
