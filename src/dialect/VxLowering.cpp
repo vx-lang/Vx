@@ -890,9 +890,17 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // `--emit-ptx` names the kernel and describes its parameters from these.
     if (parentFunc && module->hasAttr("vx.export_kernels")) {
       kernelOp->setAttr("vx.function", parentFunc.getSymNameAttr());
+      // -2 is the count of the passes of a nest of blocks, which the caller of
+      // the kernel gives.
       SmallVector<int64_t> paramOf;
       for (Value cap : captures) {
         auto arg = dyn_cast<BlockArgument>(cap);
+        auto count = cap.getDefiningOp<vx::TransferOp>();
+        if (count && count->hasAttr("vx.arrivals")) {
+          kernelOp->setAttr("vx.arrivals", count->getAttr("vx.arrivals"));
+          paramOf.push_back(-2);
+          continue;
+        }
         paramOf.push_back(arg && arg.getOwner() == &parentFunc.getBody().front()
                               ? int64_t(arg.getArgNumber())
                               : -1);
@@ -5054,6 +5062,19 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
     llvm::json::Array params;
     for (auto [i, argIndex] : llvm::enumerate(paramOf.asArrayRef())) {
       int64_t k = argIndex - offset;
+      if (argIndex == -2) {
+        // Code after a nest of blocks counts the passes that ended, one u32 for
+        // each group. The caller zeroes the count before the first launch, and
+        // the last pass of each group sets it back to 0.
+        params.push_back(
+            llvm::json::Object{{"name", "arrivals"},
+                               {"kind", "arrivals"},
+                               {"element", "i32"},
+                               {"rank", 1},
+                               {"words", 5},
+                               {"zero_before_first_launch", true}});
+        continue;
+      }
       if (argIndex < 0 || k < 0) {
         emitError(loc) << "the GPU kernel in function '" << name
                        << "' uses a value that is not a parameter of '" << name
@@ -5131,6 +5152,27 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
                           "describe. A size can come from parameters and "
                           "numbers, with + - * / and %";
         return failure();
+      }
+      // The count of a group has one element for each block of the first axis.
+      if (auto length = kernel->getAttrOfType<StringAttr>("vx.arrivals")) {
+        llvm::json::Value elements = length.getValue() == "one"
+                                         ? llvm::json::Value(1)
+                                         : llvm::json::Value(nullptr);
+        if (length.getValue() == "axis0" && !gridSizes.empty())
+          elements = gridSizes[0];
+        if (elements.kind() == llvm::json::Value::Null) {
+          emitError(loc) << "the GPU kernel in function '" << name
+                         << "' has code of a group whose outer loop of blocks "
+                            "does not go over the whole first axis. For "
+                            "--emit-ptx, write it `for h in 0..n across "
+                            "blocks`";
+          return failure();
+        }
+        if (llvm::json::Array *ps = entry.getArray("params"))
+          for (llvm::json::Value &p : *ps)
+            if (auto *o = p.getAsObject();
+                o && o->getString("kind") == "arrivals")
+              (*o)["elements"] = elements;
       }
       llvm::json::Object launch{{"grid", std::move(gridSizes)},
                                 {"block", std::move(block[0])}};

@@ -7,7 +7,9 @@
 //===----------------------------------------------------------------------===//
 // `--emit-ptx` names a kernel after its function, and gets the kernel's inputs only from the
 // function's parameters. So it refuses a kernel that uses a local variable of its function, a
-// function with two kernels, and a program with no GPU kernel. The `sed` lines make each case.
+// function with two kernels, and a program with no GPU kernel. It also refuses code of a group
+// whose outer loop of blocks does not start at 0, because then the manifest cannot give the
+// length of the count. The `sed` lines make each case.
 //
 // REQUIRES: flat-codegen
 // RUN: mkdir -p %t.d
@@ -16,12 +18,15 @@
 // RUN: not vxc %t.d/local.vx --machine %t.d/machine.vx --host default --emit-ptx -o %t.d/local.ptx 2>&1 | FileCheck %s --check-prefix=LOCAL
 // RUN: sed -n '/^pub fn two/,/^}/p' %s > %t.d/two.vx
 // RUN: not vxc %t.d/two.vx --machine %t.d/machine.vx --host default --emit-ptx -o %t.d/two.ptx 2>&1 | FileCheck %s --check-prefix=TWO
+// RUN: sed -n '/^pub fn group_from_one/,/^}/p' %s > %t.d/group.vx
+// RUN: not vxc %t.d/group.vx --machine fleet/h100-sxm.vx --host default --emit-ptx -o %t.d/group.ptx 2>&1 | FileCheck %s --check-prefix=GROUP
 // RUN: sed -n '/^fn main/,/^}/p' %s > %t.d/none.vx
 // RUN: not vxc %t.d/none.vx --host default --emit-ptx -o %t.d/none.ptx 2>&1 | FileCheck %s --check-prefix=NONE
 
 // LOCAL: the GPU kernel in function 'local' uses a value that is not a parameter of 'local'
 // TWO: function 'two' holds more than one GPU kernel
 // NONE: none.vx has no GPU kernel to write
+// GROUP: the GPU kernel in function 'group_from_one' has code of a group whose outer loop of blocks does not go over the whole first axis
 
 Memory HBM {
   capacity: 40 GiB, bandwidth: 1555 GB/s, managed: explicit, scope: device
@@ -59,4 +64,20 @@ pub fn two(out: &mut Tensor<f32, [?], Memory::HBM>, n: i32) -> void {
 
 fn main() -> i32 {
   return 0;
+}
+
+pub fn group_from_one(t : &mut Tensor<i32, [?, ?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for h in 1..n across blocks {
+      for s in 0..4 across blocks {
+        for l in 0..32 across lanes {
+          t[h][s * 32 + l] = l;
+        }
+      }
+      for d in 0..32 across lanes {
+        t[h][d] = t[h][d] + 1;
+      }
+    }
+  }
+  return;
 }

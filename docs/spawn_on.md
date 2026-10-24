@@ -221,7 +221,9 @@ spawn on(Topology::Gpu) {
   have it yet (`discussions/last_arriver_in_across_loops.md`).
 - Code in the outer loop of two axes of blocks, after the inner loop, is the code of a group. It
   runs once for each pass of the outer loop, in the block of the last inner pass of that group,
-  with a count for each group. A split attention merges each head this way.
+  with a count for each group. A split attention merges each head this way. The last pass of a
+  group sets its count back to 0, and a kernel that `--emit-ptx` writes gets the count as its
+  last parameter (`lang/abi.md` §3.5).
 - Delete each `across` and the program means the same. The CPU copy of the region runs one
   block of one lane, and a loop steps over the passes of the others.
 - A size is not a kernel argument. The launch passes each size that is not a number after the

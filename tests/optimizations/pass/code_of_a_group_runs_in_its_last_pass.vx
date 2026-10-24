@@ -20,7 +20,7 @@
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
 // CHECK: merged 896 904 8896 25144 runs 1 1 1 1
 // PTX: .entry vx_npu_kernel_0(
-// PTX-SAME: fence.acq_rel.gpu{{.*}}atom.global.add.u32{{.*}}fence.acq_rel.gpu{{.*}}st.global.b32{{.*}}bar.sync{{.*}}ld.global.b32{{.*}}setp.ne.b32
+// PTX-SAME: fence.acq_rel.gpu{{.*}}atom.global.add.u32{{.*}}fence.acq_rel.gpu{{.*}}st.shared.b32{{.*}}bar.sync{{.*}}ld.shared.b32{{.*}}setp.ne.b32
 
 fn main() -> i32 {
   let mut partial = transfer(Tensor<i32, [4, 256]>::fill(0), Memory::HBM);

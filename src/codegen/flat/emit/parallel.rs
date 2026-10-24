@@ -102,6 +102,11 @@ impl FnEmit<'_> {
             // A built-in space declares nothing, but its name still goes on the op.
             attrs += &format!(", space = \"{name}\"");
         }
+        // The count of the passes of a nest of blocks, which `--emit-ptx` names by its length.
+        if let Some(i) = (ins.operand2.0 as usize).checked_sub(1) {
+            let length = self.strings.get(i).ok_or(crate::emitter_gap!())?;
+            attrs += &format!(", vx.arrivals = \"{length}\"");
+        }
         self.body +=
             &format!("  {n} = \"vx.transfer\"({src}) {{{attrs}}} : ({srcty}) -> {dstty}\n");
         self.names[idx] = n;

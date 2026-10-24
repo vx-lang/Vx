@@ -55,15 +55,13 @@ pub(super) struct AcrossState {
     pub tail: Option<Tail>,
     /// The body of the loop of blocks whose passes end with an arrival, by its address.
     pub arrive_body: Option<usize>,
-    /// The variable of that loop, which holds the index of its pass.
-    pub pass: Option<crate::symbol::Symbol>,
 }
 
 /// The code after the passes of a nest of blocks, or of a group: each pass of the outer loop is
 /// a group of the passes of the inner one. Each pass adds 1 to the element of its group in
 /// `count` when it ends, and the pass that sees `last`, one less than the passes of a group, runs
-/// `stmts` in its block. After the `groups` counts, one element for each pass tells its lanes
-/// whether it is the last one of its group.
+/// `stmts` in its block and sets the element back to 0. `flag`, in shared memory, tells the lanes
+/// of the pass whether it was the last one of its group.
 #[derive(Clone)]
 pub(super) struct Tail {
     pub stmts: Vec<Statement>,
@@ -73,33 +71,40 @@ pub(super) struct Tail {
     pub counted: usize,
     /// The body of the outer loop of a group, which lowers only its inner loop, by its address.
     pub outer_body: Option<usize>,
-    /// The variable of the outer loop of a group, and the first value of it.
-    pub group: Option<(crate::symbol::Symbol, Val)>,
-    pub groups: Val,
+    /// The variable of the outer loop of a group, and its range.
+    pub group: Option<(crate::symbol::Symbol, crate::syntax::RangeExpr)>,
+    /// The range of the loop whose passes count. The kernel computes the last count from it, so
+    /// it reads no value of the host but the parameters.
+    pub range: crate::syntax::RangeExpr,
     pub count: Val,
-    /// The first index of the counted loop, and the number of its passes in a group.
-    pub start: Val,
-    pub passes: Val,
-    pub last: Val,
+    /// The shared memory of a block, by its dispatch id, and the flag in it.
+    pub shared: u64,
+    pub flag: Option<Val>,
 }
 
 /// One pass of a nest of blocks has ended, on lane 0: a release fence, an atomic add to the
-/// count, and an acquire fence. Each fence is for the device, so the writes of every pass are
-/// visible to the last one. The pass's own element of the count says whether it was the last.
+/// count of its group, and an acquire fence. Each fence is for the device, so the writes of every
+/// pass are visible to the last one. The last pass of a group sets the count back to 0, so the
+/// next launch can use it again, and the flag says whether this pass was the last. The flag is
+/// in address space 3, the shared memory of every GPU arch that launches `across` loops.
 const ARRIVE: &str = r#"llvm.fence syncscope("device") release
 %vx_group = arith.index_cast %group : i32 to index
 %vx_one = arith.constant 1 : i32
 %vx_old = memref.atomic_rmw addi %vx_one, %count[%vx_group] : (i32, memref<?xi32>) -> i32
 %vx_is_last = arith.cmpi eq, %vx_old, %last : i32
 llvm.fence syncscope("device") acquire
+scf.if %vx_is_last {
+  %vx_none = arith.constant 0 : i32
+  memref.store %vx_none, %count[%vx_group] : memref<?xi32>
+}
 %vx_last = arith.extui %vx_is_last : i1 to i32
-%vx_slot = arith.index_cast %slot : i32 to index
-memref.store %vx_last, %count[%vx_slot] : memref<?xi32>
+%vx_at = arith.constant 0 : index
+memref.store %vx_last, %flag[%vx_at] : memref<1xi32, 3>
 macro.yield"#;
 
-/// Whether this pass was the last to end, for every lane of its block, after the barrier.
-const IS_LAST: &str = r#"%vx_slot = arith.index_cast %slot : i32 to index
-%vx_last = memref.load %count[%vx_slot] : memref<?xi32>
+/// Whether this pass was the last of its group, for every lane of its block, after the barrier.
+const IS_LAST: &str = r#"%vx_at = arith.constant 0 : index
+%vx_last = memref.load %flag[%vx_at] : memref<1xi32, 3>
 macro.yield %vx_last : i32"#;
 
 /// The lanes of a block of a region with `across` loops: the most that a lane loop or a subgroup
@@ -285,43 +290,36 @@ impl Lowerer<'_> {
             }
         }
         if level == AcrossLevel::Block && self.across.arrive_body == Some(stmts.as_ptr() as usize) {
-            let name = self.across.pass.clone().ok_or(crate::emitter_gap!())?;
-            let id = crate::syntax::IdentifierExpr::new(name, crate::syntax::Span::default());
-            let pass = self.lower_expr(&Expr::Identifier(id))?;
-            self.arrive(pass)?;
+            self.arrive()?;
         }
         Ok(())
     }
 
-    /// The end of a pass `pass` of the nest of blocks, when code comes after the nest. Lane 0 adds
+    /// The end of a pass of the nest of blocks, when code comes after the nest. Lane 0 adds
     /// the pass to the count, and the block of the last pass runs the code. The lane loop or the
     /// lane-0 code that ends the pass ends with a barrier, so the writes of every lane come before
     /// the add. Code that every lane runs writes no memory.
-    fn arrive(&mut self, pass: Val) -> Lowered<()> {
+    fn arrive(&mut self) -> Lowered<()> {
         let tail = self.across.tail.clone().ok_or(crate::emitter_gap!())?;
         let group = match &tail.group {
-            Some((name, start)) => {
+            Some((name, range)) => {
                 let id = crate::syntax::IdentifierExpr::new(
                     name.clone(),
                     crate::syntax::Span::default(),
                 );
                 let outer = self.lower_expr(&Expr::Identifier(id))?;
+                let start = self.lower_expr(&range.start)?;
                 self.emit_value(Opcode::Sub, outer.reg, start.reg, ElementType::I32, 0)
             }
             None => self.const_i32(0),
         };
-        // The flag of this pass: after the counts, at `group * passes + pass - start`.
-        let offset = self.emit_value(Opcode::Sub, pass.reg, tail.start.reg, ElementType::I32, 0);
-        let row = self.emit_value(Opcode::Mul, group.reg, tail.passes.reg, ElementType::I32, 0);
-        let in_flags = self.emit_value(Opcode::Add, row.reg, offset.reg, ElementType::I32, 0);
-        let slot = self.emit_value(
-            Opcode::Add,
-            tail.groups.reg,
-            in_flags.reg,
-            ElementType::I32,
-            0,
-        );
+        // The last count of a group: one less than the passes of the counted loop.
+        let end = self.lower_expr(&tail.range.end)?;
+        let start = self.lower_expr(&tail.range.start)?;
+        let passes = self.emit_value(Opcode::Sub, end.reg, start.reg, ElementType::I32, 0);
         let one = self.const_i32(1);
+        let last = self.emit_value(Opcode::Sub, passes.reg, one.reg, ElementType::I32, 0);
+        let flag = tail.flag.clone().ok_or(crate::emitter_gap!())?;
         let lane = self.across_id(ACROSS_LANE, 0);
         let zero = self.const_i32(0);
         let first = self.emit_value(
@@ -337,21 +335,14 @@ impl Lowerer<'_> {
             &[
                 ("%count", "memref<?xi32>", &tail.count),
                 ("%group", "i32", &group),
-                ("%last", "i32", &tail.last),
-                ("%slot", "i32", &slot),
+                ("%last", "i32", &last),
+                ("%flag", "memref<1xi32, 3>", &flag),
             ],
             true,
         );
         self.close_guard(lane0);
         self.barrier(AcrossLevel::Block);
-        let is_last = self.inline(
-            IS_LAST,
-            &[
-                ("%count", "memref<?xi32>", &tail.count),
-                ("%slot", "i32", &slot),
-            ],
-            false,
-        );
+        let is_last = self.inline(IS_LAST, &[("%flag", "memref<1xi32, 3>", &flag)], false);
         let cond = self.emit_value(
             Opcode::Cmp,
             is_last.reg,
@@ -467,7 +458,6 @@ impl Lowerer<'_> {
                 .is_some_and(|t| t.counted == f as *const _ as usize)
             {
                 self.across.arrive_body = Some(f.body.as_ptr() as usize);
-                self.across.pass = Some(f.iter.as_str().into());
             }
             let axis = self.across.blocks;
             let first = self.across_id(ACROSS_BLOCK, axis);
