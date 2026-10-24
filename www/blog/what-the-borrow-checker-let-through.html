@@ -59,7 +59,7 @@ found in Rust's checker in the same months. Most of them are of two kinds. In th
 allowed to change where it must stay the same (a <em>variance</em> mistake). In the second, a rule
 is checked in the places a borrow is usually made and missed in one place it seldom is.</p>
 
-<h2 id="the-type-inside-a-mut-must-not-change">The type inside a <code>&amp;mut</code> must not change</h2>
+<h2 id="the-type-inside-a-mut-must-not-change"><a href="#the-type-inside-a-mut-must-not-change">The type inside a <code>&amp;mut</code> must not change</a></h2>
 
 <p>A reference to something that lives longer can be used where a reference to something that
 lives for a shorter time is expected. A function that wants a <code>&amp;str</code> valid for one
@@ -92,7 +92,7 @@ str</code>, <code>assign</code> would store a reference to <code>world</code> in
 used where another is expected, the two types inside must be the same, lifetimes included. Rust refuses the program with <code>error[E0597]:
 `world` does not live long enough</code>.</p>
 
-<h2 id="what-vx-did-instead">What Vx did instead</h2>
+<h2 id="what-vx-did-instead"><a href="#what-vx-did-instead">What Vx did instead</a></h2>
 
 <p>On 1 October <a href="/blog/can-the-borrow-checker-be-auto-vectorized.html">a post here</a>
 described how Vx compares lifetimes, and its list said the inside of <code>&amp;mut T</code> is
@@ -176,7 +176,7 @@ a reference to a <code>String</code> that had been freed
 (<a href="https://github.com/rust-lang/rust/issues/71550">rust-lang/rust#71550</a>). It was fixed
 in Rust 1.46.</p>
 
-<h2 id="eleven-programs">Eleven programs</h2>
+<h2 id="eleven-programs"><a href="#eleven-programs">Eleven programs</a></h2>
 
 <p>The variance bug turned up during a wider review, which started on 10 October from
 <a href="https://gist.github.com/FlameyosSnowy/a49a35ba006238be55d8c3e410c31061">a post about the
@@ -248,7 +248,7 @@ block its own record, and the program is refused:</p>
 
 <pre class="diag">Error[E4004] at 16:13: Cannot borrow 'v' because it is already borrowed as mutable.</pre>
 
-<h2 id="a-value-with-no-name">A value with no name</h2>
+<h2 id="a-value-with-no-name"><a href="#a-value-with-no-name">A value with no name</a></h2>
 
 <p>The last row of the table was added after this post first went up. A slice into a new
 <code>Vec</code> is kept in <code>s</code>:</p>
@@ -292,7 +292,7 @@ in <a href="https://doc.rust-lang.org/edition-guide/rust-2024/temporary-tail-exp
 block's last expression</a> is now dropped before the block's variables, where earlier editions
 dropped it after them.</p>
 
-<h2 id="a-hole-of-the-same-shape-in-rust-reported-this-week">A hole of the same shape in Rust, reported this week</h2>
+<h2 id="a-hole-of-the-same-shape-in-rust-reported-this-week"><a href="#a-hole-of-the-same-shape-in-rust-reported-this-week">A hole of the same shape in Rust, reported this week</a></h2>
 
 <p>On 13 October someone filed
 <a href="https://github.com/rust-lang/rust/issues/164250">rust-lang/rust#164250</a>,
@@ -387,7 +387,7 @@ still compiles:</p>
 
 <pre class="diag">Error[E4005] at 23:7: `q` holds a `&amp;mut` to a variable of an outer block and a reference to a variable of an inner block. A write through the `&amp;mut` can store that reference where it outlives its block. Declare both variables in the same block</pre>
 
-<h2 id="rusts-other-open-holes">Rust's other open holes</h2>
+<h2 id="rusts-other-open-holes"><a href="#rusts-other-open-holes">Rust's other open holes</a></h2>
 
 <p>Rust's borrow checker has had eleven years of heavy use, and it still has open soundness
 bugs. The ones below are of the same two kinds as above.</p>
@@ -440,7 +440,7 @@ value it should print is 1.</p>
 checker usually sees a borrow, and missing in one place it seldom does. #160598 and #160599 were
 found by a person who uses an LLM to search for soundness bugs.</p>
 
-<h2 id="how-we-look-for-the-next-one">How we look for the next one</h2>
+<h2 id="how-we-look-for-the-next-one"><a href="#how-we-look-for-the-next-one">How we look for the next one</a></h2>
 
 <p><strong>Every rule, in every kind of block.</strong> The <code>if</code> arm bug was a rule
 that worked in one kind of block and not in another, so a new set of tests

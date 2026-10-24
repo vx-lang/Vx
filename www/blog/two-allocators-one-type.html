@@ -52,7 +52,7 @@ memory.</blockquote>
 <p class="lede">An allocator knows exactly one thing better than anyone else in the program: which
 memory it just handed out. The first thing the language does with that answer is throw it away.</p>
 
-<h2 id="here-is-a-simple-example-in-c-to-demonstrate-the-problem">Here is a simple example in C to demonstrate the problem</h2>
+<h2 id="here-is-a-simple-example-in-c-to-demonstrate-the-problem"><a href="#here-is-a-simple-example-in-c-to-demonstrate-the-problem">Here is a simple example in C to demonstrate the problem</a></h2>
 
 <pre><code><span class="t">float</span> *a = (<span class="t">float</span> *)<span class="f">malloc</span>(<span class="n">16</span> * <span class="k">sizeof</span>(<span class="t">float</span>));
 <span class="t">float</span> *b;
@@ -128,7 +128,7 @@ read is a compile error.</figcaption>
 <p>The only record that the result is device memory is the function's name and the parameter name
 <code>devPtr</code>. Both are comments, as far as the compiler is concerned.</p>
 
-<h2 id="c-and-rust-agree-with-c">C++ and Rust agree with C</h2>
+<h2 id="c-and-rust-agree-with-c"><a href="#c-and-rust-agree-with-c">C++ and Rust agree with C</a></h2>
 
 <p>C++ inherits the same <code>float *</code>. CUDA's <code>__device__</code> and
 <code>__shared__</code> qualify a variable's declaration; they do not survive into a pointer's
@@ -145,7 +145,7 @@ pointer per mutability, and its foreign-function declarations come out identical
 <em>provenance</em>: which allocation the pointer was derived from. It does not track which memory
 that allocation is in, because in its abstract machine there is only one.</p>
 
-<h2 id="popular-libraries-have-made-efforts-to-address-this">Popular libraries have made efforts to address this</h2>
+<h2 id="popular-libraries-have-made-efforts-to-address-this"><a href="#popular-libraries-have-made-efforts-to-address-this">Popular libraries have made efforts to address this</a></h2>
 
 <p>People who write GPU code hit this early, so the libraries built the missing type themselves.
 Thrust has <code>thrust::device_ptr&lt;T&gt;</code>. SYCL has
@@ -166,7 +166,7 @@ fact, which space each generic pointer points into. The allocator knew. The type
 compiler pass spends its time guessing it back, and it gives up at any call it cannot see
 through.</p>
 
-<h2 id="the-bugs-highlight-the-underlying-problem">The bugs highlight the underlying problem</h2>
+<h2 id="the-bugs-highlight-the-underlying-problem"><a href="#the-bugs-highlight-the-underlying-problem">The bugs highlight the underlying problem</a></h2>
 
 <p>This is a mistake people make often enough to leave a trail. A few from public trackers:</p>
 
@@ -204,7 +204,7 @@ mode ran correctly.</td></tr>
 names, and the only place they could record it was a mode flag on a handle, because the parameter's
 type has nowhere to put it. The last row is a compiler making the same mistake a person does.</p>
 
-<h2 id="prior-art-in-programming-languages">Prior art in programming languages</h2>
+<h2 id="prior-art-in-programming-languages"><a href="#prior-art-in-programming-languages">Prior art in programming languages</a></h2>
 
 <p>Putting the space in the pointer's type is an old idea. OpenCL C writes
 <code>__global float *</code> and <code>__local float *</code> as distinct types. ISO/IEC TR 18037
@@ -222,7 +222,7 @@ time.</p>
 spaces each processor can see, how large each space is, and which links join them. The check runs
 at compile time, and the error names the transfer that fixes it.</p>
 
-<h2 id="in-vx-the-space-is-in-the-type">In Vx, the space is in the type</h2>
+<h2 id="in-vx-the-space-is-in-the-type"><a href="#in-vx-the-space-is-in-the-type">In Vx, the space is in the type</a></h2>
 
 <p>A Vx tensor's type has a slot for the memory it lives in. Here is a host function, and a caller
 that passes it device memory:</p>
@@ -268,7 +268,7 @@ pointer is refused at the same read.</p>
 <p>That compiles and runs. Nothing about it needs a GPU on the machine doing the compiling: which
 spaces a CPU can see comes from the machine description the compiler checks against.</p>
 
-<h2 id="where-the-space-goes-in-a-unified-memory-system">Where the space goes in a unified memory system</h2>
+<h2 id="where-the-space-goes-in-a-unified-memory-system"><a href="#where-the-space-goes-in-a-unified-memory-system">Where the space goes in a unified memory system</a></h2>
 
 <p>On Apple silicon the CPU and the neural engine share physical memory, and the built-in CPU
 description lists <code>NPU_HBM</code> among the spaces it can see. A host read of a tensor in
@@ -284,7 +284,7 @@ measured
 file records both facts: <code>visible:</code> says who may read a space, and the transfer edges
 say what moving data costs.</p>
 
-<h2 id="even-in-vx-raw-pointers-mean-cpu-memory">Even in Vx raw pointers mean CPU memory</h2>
+<h2 id="even-in-vx-raw-pointers-mean-cpu-memory"><a href="#even-in-vx-raw-pointers-mean-cpu-memory">Even in Vx raw pointers mean CPU memory</a></h2>
 
 <p>Vx has raw pointers too, <code>*const T</code> and <code>*mut T</code>, and they carry no space
 parameter. That is deliberate: a raw pointer points into the default CPU memory, which is what a

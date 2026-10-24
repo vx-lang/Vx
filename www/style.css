@@ -469,6 +469,15 @@ footer > p {
   position: relative;
 }
 
+/* Heading text is itself the permalink (no glyph). Inherit the accent; the global
+ * `a` rule already drops the underline and restores it on hover.
+ */
+.post h2 a,
+.post h3 a {
+  color: inherit;
+  text-underline-offset: 0.15em;
+}
+
 .post h2::before {
   content: "";
   position: absolute;
