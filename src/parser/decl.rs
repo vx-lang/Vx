@@ -102,6 +102,8 @@ impl<'a> Parser<'a> {
             TokenType::Identifier(s) => s.to_string(),
             // `<D: Topology>` -- `Topology` is a keyword, not an identifier.
             TokenType::Topology => "Topology".to_string(),
+            // `<M: Memory>` -- so is `Memory`.
+            TokenType::Memory => "Memory".to_string(),
             _ => return Err(self.error("Expected trait bound identifier")),
         };
         let mut bound = crate::syntax::TraitBound::named(&trait_name);

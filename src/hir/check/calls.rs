@@ -1204,14 +1204,23 @@ impl<'a> TypeChecker<'a> {
             }
             all_bound = false;
             if !self.speculating {
-                self.errors.error_with_code(
-                    crate::diagnostic::DiagnosticCode::E3016,
+                let message = if bounds.iter().any(|b| b.trait_name.as_ref() == "Memory") {
+                    format!(
+                        "Memory parameter '{name}' of '{callee}' is not determined by this call: \
+                         only a tensor argument of type `Tensor<_, _, Memory::{name}>` gives it \
+                         a memory"
+                    )
+                } else {
                     format!(
                         "Type parameter '{}' of '{}' is not determined by this call: no argument \
                          or declared result type binds it. Spell it out as a type argument, or \
                          give the result a type.",
                         name, callee
-                    ),
+                    )
+                };
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3016,
+                    message,
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
             }
@@ -1882,6 +1891,18 @@ impl<'a> TypeChecker<'a> {
             })
             .collect();
         self.mono.pending_topo_bindings.clear();
+        self.mono.pending_memory_vars = generic_func
+            .generics
+            .iter()
+            .filter_map(|g| match g {
+                decl::GenericParam::Type { name, bounds }
+                    if bounds.iter().any(|b| b.trait_name.as_ref() == "Memory") =>
+                {
+                    Some(name.clone())
+                }
+                _ => None,
+            })
+            .collect();
         if args.len() != generic_func.params.len() {
             if !self.speculating {
                 self.errors.push(format!(
@@ -1940,7 +1961,18 @@ impl<'a> TypeChecker<'a> {
                 let ret_ty = generic_func.return_type.clone();
                 let _ = self.unify_types(&ret_ty, &expected, &mut mapping);
             }
+            // `on Topology::D` with no argument that binds `D` runs where it is called.
+            if let Topology::Custom(d) = &generic_func.topology {
+                if self.mono.pending_topo_vars.contains(d)
+                    && !self.mono.pending_topo_bindings.contains_key(d)
+                {
+                    self.mono
+                        .pending_topo_bindings
+                        .insert(d.clone(), self.active_topology.clone());
+                }
+            }
         }
+        self.mono.pending_memory_vars.clear();
 
         if success
             && !self.require_type_params_bound(
@@ -1962,7 +1994,11 @@ impl<'a> TypeChecker<'a> {
                 };
                 // Every bound has to hold, and every failing one is reported: told about
                 // only the first, a caller fixes it and is handed the next.
-                for bound in bounds {
+                // A memory is not a type, so `Memory` is a kind rather than a trait to check.
+                for bound in bounds
+                    .into_iter()
+                    .filter(|b| b.trait_name.as_ref() != "Memory")
+                {
                     if let Some(concrete_ty) = mapping.get(g_name).cloned() {
                         let bound = self.substitute_bound(&bound, &mapping);
                         if !self.bound_holds(&bound, &concrete_ty) {

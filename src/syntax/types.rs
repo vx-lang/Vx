@@ -773,6 +773,31 @@ pub fn substitute_type_name(
     )
 }
 
+/// The memory variable that a tensor's placement names: `M` in `Tensor<f32, [4], Memory::M>`, where
+/// `M` may be a `<M : Memory>` parameter. Only a written memory can be one.
+pub fn memory_variable(p: &Placement) -> Option<&Symbol> {
+    match (&p.space, p.written()) {
+        (MemorySpace::Custom(name), Written::Space) => Some(name),
+        _ => None,
+    }
+}
+
+/// `place`, with a memory variable replaced by the memory that `mapping` binds it to.
+fn substitute_memory(
+    place: &Option<Placement>,
+    mapping: &std::collections::HashMap<Symbol, Type>,
+) -> Option<Placement> {
+    let bound = place
+        .as_ref()
+        .and_then(memory_variable)
+        .and_then(|name| mapping.get(name))
+        .and_then(Type::as_memory_argument);
+    match bound {
+        Some(memory) => memory.clone(),
+        None => place.clone(),
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Type {
     /// A shaped tensor. Its extents are part of the type, so `[2, 3]` and `[4, 5]` are
@@ -934,7 +959,7 @@ impl Type {
                     el_ty.clone()
                 };
                 let new_dims = dims.iter().map(|d| d.substitute(mapping)).collect();
-                Type::Tensor(new_el_ty, new_dims, top.clone())
+                Type::Tensor(new_el_ty, new_dims, substitute_memory(top, mapping))
             }
             Type::Ref(inner, mem) => Type::Ref(Box::new(inner.substitute(mapping)), mem.clone()),
             Type::Verified(inner) => Type::Verified(Box::new(inner.substitute(mapping))),
@@ -1059,6 +1084,20 @@ impl Type {
             | Type::Simd(..)
             | Type::Const(_)
             | Type::Unknown => false,
+        }
+    }
+
+    /// The memory that a `<M : Memory>` parameter is bound to, as the mapping of an instance holds
+    /// it: a pointer of unknown type into that memory. `None` inside is host memory.
+    pub fn memory_argument(memory: Option<Placement>) -> Type {
+        Type::Pointer(Box::new(Type::Unknown), memory, false)
+    }
+
+    /// The memory of a [`Type::memory_argument`].
+    pub fn as_memory_argument(&self) -> Option<&Option<Placement>> {
+        match self {
+            Type::Pointer(inner, memory, false) if **inner == Type::Unknown => Some(memory),
+            _ => None,
         }
     }
 

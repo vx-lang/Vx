@@ -1252,7 +1252,11 @@ impl<'a> TypeChecker<'a> {
                 // A pattern that names no place applies wherever the receiver lives; one that
                 // names a place applies only there.
                 let e1_match = Self::unify_tensor_elem(e1, e2, mapping);
-                if !e1_match || (t1.is_some() && t1 != t2) {
+                let place_match = match self.bind_memory(t1, t2, mapping) {
+                    Some(bound) => bound,
+                    None => t1.is_none() || t1 == t2,
+                };
+                if !e1_match || !place_match {
                     return false;
                 }
                 // Rank is static, so the two lists have to be the same length. Per dimension:
@@ -1377,6 +1381,29 @@ impl<'a> TypeChecker<'a> {
             }
             (t1, t2) => t1 == t2,
         }
+    }
+
+    /// When `pattern` names a `<M : Memory>` parameter of the call being deduced, binds it to the
+    /// memory of `arg` and answers whether that agrees with an earlier binding. `None` when
+    /// `pattern` names no memory parameter.
+    fn bind_memory(
+        &self,
+        pattern: &Option<crate::syntax::Placement>,
+        arg: &Option<crate::syntax::Placement>,
+        mapping: &mut std::collections::HashMap<crate::symbol::Symbol, Type>,
+    ) -> Option<bool> {
+        let name = pattern
+            .as_ref()
+            .and_then(crate::syntax::types::memory_variable)
+            .filter(|name| self.mono.pending_memory_vars.contains(*name))?;
+        let memory = Type::memory_argument(arg.clone());
+        Some(match mapping.get(name) {
+            Some(existing) => *existing == memory,
+            None => {
+                mapping.insert(name.clone(), memory);
+                true
+            }
+        })
     }
 
     /// Replace a topology variable (`Custom(name)` with `name` in `topo_mapping`) by its

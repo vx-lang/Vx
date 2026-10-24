@@ -1,0 +1,52 @@
+//===- functions_generic_over_memory.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `<M : Memory>` lets one function take a tensor in any memory, and `on Topology::D` with no
+// argument that binds `D` runs where it is called. The device region and `main` call the same
+// functions, with tensors in HBM and in host memory. Each call gets its own copy of the function,
+// and the copies that the region calls are in the GPU image.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// CHECK: device 40 7 22 host 6 7 4
+// PTX-DAG: .func {{.*}} sum_two_24ptr
+// PTX-DAG: .func {{.*}} seven_24topology
+// PTX-DAG: .func {{.*}} first_of_each_24ptr
+// PTX-DAG: .entry vx_npu_kernel_0
+
+// The sum of the first two elements, wherever the tensor is.
+fn sum_two<M : Memory, D : Topology>(t : &Tensor<i32, [?], Memory::M>) on Topology::D -> i32 {
+  let u : &Tensor<i32, [?], Memory::M> = t;
+  return u[0] + u[1];
+}
+
+fn seven<D : Topology>() on Topology::D -> i32 {
+  return 7;
+}
+
+// Both tensors must be in the same memory.
+fn first_of_each<M : Memory, D : Topology>(a : &Tensor<i32, [?], Memory::M>, b : &Tensor<i32, [?], Memory::M>) on Topology::D -> i32 {
+  return a[0] + b[0];
+}
+
+fn main() -> i32 {
+  let x = transfer(Tensor<i32, [2]>::fill(20), Memory::HBM);
+  let y = transfer(Tensor<i32, [3]>::fill(2), Memory::HBM);
+  let mut out = transfer(Tensor<i32, [3]>::fill(0), Memory::HBM);
+  spawn on(Topology::Device) {
+    out[0] = sum_two(&x);
+    out[1] = seven();
+    out[2] = first_of_each(&x, &y);
+  }
+  let o = transfer(out, Memory::CPU_DRAM);
+  let h = Tensor<i32, [2]>::fill(3);
+  let k = Tensor<i32, [4]>::fill(1);
+  println!("device {} {} {} host {} {} {}", o[0], o[1], o[2], sum_two(&h), seven(), first_of_each(&h, &k));
+  return 0;
+}
