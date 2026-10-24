@@ -8,8 +8,9 @@
 // The PTX of the lane reductions. In the code of a block, each warp adds with 5 shuffles, its
 // first lane writes the result to 32 floats of shared memory, and after a barrier each warp adds
 // the 32 results with 5 more shuffles. In the code of a subgroup, one warp does 5 shuffles, with
-// no barrier. The scratch is `.shared` storage, not a stack slot. The AST code generator
-// (`--legacy-codegen`) runs a kernel on one lane, so its kernels have loops and no shuffles.
+// no barrier, and the argmax shuffles a value and an index. The scratch is `.shared` storage,
+// not a stack slot. The AST code generator (`--legacy-codegen`) runs a kernel on one lane, so its
+// kernels have loops and no shuffles.
 //
 // RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
 // RUN: FileCheck %s < %t.ptx --implicit-check-not=local_depot
@@ -66,6 +67,29 @@ pub fn warp_max(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], 
         for t in 0..32 across lanes {
           out[(b * 4 + w) * 32 + t] = m;
         }
+      }
+    }
+  }
+  return;
+}
+
+// The router's argmax: one warp a token, with the values and the expert ids in shared memory.
+// Each step shuffles the value and the index.
+// CHECK-LABEL: .entry router_argmax(
+// CHECK-COUNT-10: shfl.sync.down.b32
+// CHECK: shfl.sync.idx.b32
+pub fn router_argmax(chosen : &mut Tensor<i32, [?], Memory::HBM>, scores : &Tensor<f32, [?], Memory::HBM>, tokens : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..tokens across blocks {
+      let mut vs = unsafe { Tensor<f32, [32], Memory::SMEM>::uninit() };
+      let mut ix = unsafe { Tensor<i32, [32], Memory::SMEM>::uninit() };
+      for w in 0..1 across subgroups {
+        for e in 0..32 across lanes {
+          vs[e] = scores[b * 32 + e];
+          ix[e] = e;
+        }
+        let best = lanes::argmax(&vs, &ix, 32);
+        chosen[b] = best;
       }
     }
   }

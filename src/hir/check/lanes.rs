@@ -6,9 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// The lane reductions: `lanes::sum(&t, n)`, `lanes::max(&t, n)` and their `_unordered`
-// versions. Each one combines `t[0]` to `t[n - 1]` of a rank-1 `f32` tensor, and every lane of
-// the block or the subgroup gets the result. docs/lane_reductions.md has the order.
+// The lane reductions: `lanes::sum(&t, n)`, `lanes::max(&t, n)`,
+// `lanes::argmax(&values, &indices, n)` and their `_unordered` versions. Each one combines the
+// first `n` elements of rank-1 tensors, and every lane of the block or the subgroup gets the
+// result. docs/lane_reductions.md has the order.
 //
 //===----------------------------------------------------------------------===//
 
@@ -22,6 +23,8 @@ use crate::syntax::{ElementType, Span};
 pub enum LaneOp {
     Sum,
     Max,
+    /// The index of the larger value, from a tensor of values and a tensor of indices.
+    ArgMax,
 }
 
 /// The routines, by the name after `lanes::`.
@@ -30,6 +33,8 @@ const ROUTINES: &[(&str, LaneOp, bool)] = &[
     ("max", LaneOp::Max, true),
     ("sum_unordered", LaneOp::Sum, false),
     ("max_unordered", LaneOp::Max, false),
+    ("argmax", LaneOp::ArgMax, true),
+    ("argmax_unordered", LaneOp::ArgMax, false),
 ];
 
 /// The most elements that a block reduces: 32 groups of 32.
@@ -69,8 +74,14 @@ impl crate::hir::TypeChecker<'_> {
         call_span: Span,
     ) -> Type {
         let f32_ty = Type::Scalar(ElementType::F32);
+        let argmax = lane_routine(name).map(|(op, _)| op) == Some(LaneOp::ArgMax);
+        let result = if argmax {
+            Type::Scalar(ElementType::I32)
+        } else {
+            f32_ty.clone()
+        };
         if self.speculating {
-            return f32_ty;
+            return result;
         }
         let span = Some(SourceSpan::from_ast_span(&call_span));
         if lane_routine(name).is_none() {
@@ -88,32 +99,39 @@ impl crate::hir::TypeChecker<'_> {
             );
             return f32_ty;
         }
-        if args.len() != 2 {
+        let wanted = if argmax { 3 } else { 2 };
+        if args.len() != wanted {
+            let what = if argmax {
+                "a borrowed tensor of values, a borrowed tensor of their indices and the number of \
+                 elements to combine"
+            } else {
+                "a borrowed tensor and the number of its elements to combine"
+            };
             self.errors.error_with_code(
                 DiagnosticCode::E3003,
                 format!(
-                    "`{name}` takes 2 arguments, a borrowed tensor and the number of its elements \
-                     to combine, but it got {}",
+                    "`{name}` takes {wanted} arguments, {what}, but it got {}",
                     args.len()
                 ),
                 span,
             );
-            return f32_ty;
+            return result;
         }
-        let tensor = match &arg_types[0] {
+        // The size of a borrowed rank-1 tensor of `elem` whose size is a number.
+        let size_of = |t: &Type, elem: ElementType| match t {
             Type::Borrow { inner, .. } => match inner.as_ref() {
-                Type::Tensor(ElementType::F32, dims, _) if dims.len() == 1 => {
-                    crate::hir::memory::static_extent(&dims[0])
+                Type::Tensor(e, dims, _) if *e == elem && dims.len() == 1 => {
+                    crate::hir::memory::static_extent(&dims[0]).filter(|n| *n >= 1)
                 }
                 _ => None,
             },
             _ => None,
         };
-        match tensor {
-            Some(n) if n >= 1 => {
+        match size_of(&arg_types[0], ElementType::F32) {
+            Some(n) => {
                 self.lane_reductions.insert(call_span, n as u64);
             }
-            _ => _ = self.errors.error_with_code(
+            None => _ = self.errors.error_with_code(
                 DiagnosticCode::E3003,
                 format!(
                     "the first argument of `{name}` must borrow a rank-1 tensor of `f32` with a \
@@ -124,17 +142,31 @@ impl crate::hir::TypeChecker<'_> {
                 span.clone(),
             ),
         }
-        if !matches!(arg_types[1], Type::Scalar(ElementType::I32)) {
+        if argmax
+            && size_of(&arg_types[1], ElementType::I32) != size_of(&arg_types[0], ElementType::F32)
+        {
             self.errors.error_with_code(
                 DiagnosticCode::E3003,
                 format!(
-                    "the second argument of `{name}` is the number of elements to combine, an \
-                     `i32`, but it is `{}`",
+                    "the second argument of `{name}` must borrow a rank-1 tensor of `i32` indices \
+                     of the same size as the values, but it is `{}`",
                     arg_types[1]
+                ),
+                span.clone(),
+            );
+        }
+        let count = &arg_types[wanted - 1];
+        if !matches!(count, Type::Scalar(ElementType::I32)) {
+            let which = if argmax { "third" } else { "second" };
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the {which} argument of `{name}` is the number of elements to combine, an \
+                     `i32`, but it is `{count}`"
                 ),
                 span,
             );
         }
-        f32_ty
+        result
     }
 }
