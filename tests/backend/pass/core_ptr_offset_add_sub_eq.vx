@@ -1,0 +1,103 @@
+//===- core_ptr_offset_add_sub_eq.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `offset`, `add`, `sub`, `eq` and `is_null` from `core::ptr`, each in its plain and `_mut` form.
+//
+// A pointer moves by whole elements. So the test uses three element sizes: `i64` (8 bytes), `i32`
+// (4 bytes) and a struct of three `i32` (12 bytes). A version that moved by bytes, or by 8 bytes
+// for every type, reads a wrong value. Each element holds a different value, so a pointer one
+// element off prints a different number. `sub` and a negative `offset` go back, so a wrong sign
+// reads a different element.
+//
+// `eq` is asked of two equal and two different pointers, and `is_null` of null and real pointers.
+import core::ptr;
+import std::alloc;
+
+struct Triple {
+  a : i32,
+  b : i32,
+  c : i32,
+}
+
+fn show(flag : bool) -> i32 {
+  if flag {
+    print(1);
+  } else {
+    print(0);
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  // i64: element k holds 10 * k.
+  let p : *mut i64 = unsafe { malloc(64) };
+  let mut i : i64 = 0;
+  while i < 8 {
+    unsafe { p[i] = i * 10; }
+    i = i + 1;
+  }
+  let p5 = add_mut(p, 5);
+  print(unsafe { p5[0] });
+  print!(" ");
+  let p3 = sub_mut(p5, 2);
+  print(unsafe { p3[0] });
+  print!(" ");
+  let p1 = offset_mut(p3, -2);
+  print(unsafe { p1[0] });
+  print!(" | ");
+
+  // i32: element k holds 100 + k. Read through `*const` pointers.
+  let q : *mut i32 = unsafe { malloc(32) };
+  let mut j : i64 = 0;
+  while j < 8 {
+    unsafe { q[j] = 100 + (j as i32); }
+    j = j + 1;
+  }
+  let qc = q as *const i32;
+  let q3 = add(qc, 3);
+  print(unsafe { q3[0] });
+  print!(" ");
+  let q6 = add(qc, 6);
+  let q2 = sub(q6, 4);
+  print(unsafe { q2[0] });
+  print!(" ");
+  let q7 = offset(qc, 7);
+  print(unsafe { q7[0] });
+  print!(" | ");
+
+  // A 12-byte struct: element k holds k, 10 * k and 100 * k.
+  let t : *mut Triple = unsafe { malloc(48) };
+  let mut k : i32 = 0;
+  while k < 4 {
+    let slot = add_mut(t, k as usize);
+    unsafe { write(slot, Triple { a : k, b : 10 * k, c : 100 * k }); }
+    k = k + 1;
+  }
+  let t2 = add_mut(t, 2);
+  let second = unsafe { t2[0] };
+  print(second.a);
+  print!(" ");
+  print(second.c);
+  print!(" | ");
+
+  // eq and is_null.
+  let q1 = add(qc, 1);
+  show(eq(qc, qc));
+  print!(" ");
+  show(eq(qc, q1));
+  print!(" ");
+  show(is_null(null<i32>()));
+  print!(" ");
+  show(is_null(qc));
+  print!(" ");
+  show(is_null_mut(null_mut<i64>()));
+  print!(" ");
+  show(is_null_mut(p));
+  return 0;
+}
+
+// EXPECT: 50 30 10 | 103 102 107 | 2 200 | 1 0 1 0 1 0
