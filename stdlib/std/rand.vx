@@ -22,8 +22,9 @@
 // arithmetic and the conversions to float are IEEE. That is what a differential test needs,
 // since it compares two execution paths on the *same* inputs.
 //
-// No `extern` here. The draws are arithmetic, the rotate comes from `core::num`, and `normal`
-// reaches the `math` dialect through `mlir!`, so this module works where there is no libc.
+// No `extern` here. The draws are arithmetic, and the rotate and `normal`'s logarithm come from
+// `core::num`, which is written in Vx. The platform's libm is not used, so `normal` also gives
+// the same values on every platform.
 import core::num;
 
 /// The square root, over the `math` dialect so this module needs no libm.
@@ -33,14 +34,6 @@ import core::num;
 fn sqrt_f64(x : f64) -> f64 {
   return mlir!( inputs : (%a = x : f64), returns : f64, dialects : ["math"]) {
     %r = math.sqrt %a : f64
-    macro.yield %r : f64
-  };
-}
-
-/// The natural logarithm, over the `math` dialect.
-fn ln_f64(x : f64) -> f64 {
-  return mlir!( inputs : (%a = x : f64), returns : f64, dialects : ["math"]) {
-    %r = math.log %a : f64
     macro.yield %r : f64
   };
 }
@@ -257,7 +250,7 @@ impl Rng {
         break;
       }
     }
-    let scale = sqrt_f64(-2.0 * ln_f64(radius_sq) / radius_sq);
+    let scale = sqrt_f64(-2.0 * radius_sq.ln() / radius_sq);
     self.spare = y * scale;
     self.has_spare = true;
     return x * scale;
