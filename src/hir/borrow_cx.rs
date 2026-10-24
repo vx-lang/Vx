@@ -377,10 +377,19 @@ impl BorrowCx {
     /// Selective revert for a non-deriving call argument: keep only the records present *before* the
     /// call (`prev`), dropping the ones this call added, and remove the entry entirely if now empty.
     /// Restoring the raw snapshot instead would resurrect borrows the argument loop legitimately
-    /// NLL-released.
-    pub(crate) fn retain_present(&mut self, base: &str, prev: &[BorrowRecord]) {
+    /// NLL-released. A record held by a variable other than `call_target`, the variable the call's
+    /// result goes to, stays: an argument such as `if c { s = &x; 0 } else { 0 }` made it for `s`.
+    pub(crate) fn retain_present(
+        &mut self,
+        base: &str,
+        prev: &[BorrowRecord],
+        call_target: Option<&str>,
+    ) {
         if let Some(list) = self.active_borrows.get_mut(base) {
-            list.retain(|r| prev.contains(r));
+            list.retain(|r| {
+                prev.contains(r)
+                    || r.borrower_name.is_some() && r.borrower_name.as_deref() != call_target
+            });
             if list.is_empty() {
                 self.active_borrows.remove(base);
             }
