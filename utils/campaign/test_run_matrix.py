@@ -1,4 +1,5 @@
-"""Unit tests for run_matrix.classify_outcome, one for each pattern of the pilot runs (#289).
+"""Unit tests for run_matrix: classify_outcome, one test for each pattern of the pilot runs
+(#289), and run_engine, with fake_vllm.py in place of vLLM.
 
     python3 -m unittest discover -s utils/campaign -p 'test_*.py'
 
@@ -6,12 +7,16 @@ The strings are the verbatim substrings that vLLM 0.31.0 printed in the pilot. T
 are the pilot's own examples.
 """
 
+import os
+import socket
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from run_matrix import classify_outcome  # noqa: E402
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from run_matrix import classify_outcome, run_engine  # noqa: E402
 
 STARTED = "GPU KV cache size: 104624 tokens"
 
@@ -81,6 +86,41 @@ class ClassifyOutcome(unittest.TestCase):
     def test_a_log_with_no_pattern_is_unclassified(self):
         self.check("Segmentation fault\n", "UNCLASSIFIED", None)
 
+
+
+class RunEngine(unittest.TestCase):
+    """run_engine launches the engine, sends the cell's requests and stops it. The log holds
+    the engine's stdout and stderr, and the classifier reads it."""
+
+    def launch(self, mode):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        log = Path(tempfile.mkdtemp()) / "cell.log"
+        os.environ["FAKE_VLLM"] = mode
+        command = [sys.executable, str(HERE / "fake_vllm.py"), "serve", "model", "--port", str(port)]
+        run = run_engine(command, log, port, "model", ctx=64, batch=2,
+                         startup_timeout=60, request_timeout=60)
+        self.assertIsNotNone(run["returncode"], "the engine must be stopped")
+        return run, log.read_text()
+
+    def test_an_engine_that_serves(self):
+        run, log = self.launch("serves")
+        self.assertTrue(run["served"])
+        self.assertIn("GPU KV cache size: 1000 tokens", log)
+        self.assertEqual(classify_outcome(log, run["served"]).label, "BOOT_OK_SERVE_OK")
+
+    def test_an_engine_that_runs_out_of_memory_at_load(self):
+        run, log = self.launch("oom_at_load")
+        self.assertIsNone(run["served"])
+        self.assertIn("Model loading took 135.43 GiB", log)
+        self.assertIn("torch.OutOfMemoryError: CUDA out of memory", log)
+        self.assertEqual(classify_outcome(log, run["served"]).label, "OOM_AT_LOAD")
+
+    def test_an_engine_that_dies_on_the_first_request(self):
+        run, log = self.launch("dies_on_request")
+        self.assertFalse(run["served"])
+        self.assertEqual(classify_outcome(log, run["served"]).label, "OOM_AT_PREFILL")
 
 if __name__ == "__main__":
     unittest.main()
