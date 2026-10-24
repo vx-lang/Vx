@@ -1,8 +1,9 @@
 # The last-arriver pattern in `across` loops
 
 Status: option C is built (#2139, item 5). The checker records the memory for the count, and the
-flat code generator writes the count, the fences and the guard. A nest with no passes runs no
-code after it, and a nest with two axes of blocks cannot have code after it yet.
+flat code generator writes the count, the fences and the guard. The block of the last pass runs
+the code after the nest, so that code may hold lane loops. A nest with no passes runs no code
+after it, and a nest with two axes of blocks cannot have code after it yet.
 
 ## The pattern
 

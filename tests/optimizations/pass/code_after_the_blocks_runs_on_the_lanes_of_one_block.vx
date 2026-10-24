@@ -1,0 +1,66 @@
+//===- code_after_the_blocks_runs_on_the_lanes_of_one_block.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Code after the `across` nest of blocks runs in the block of the last pass to end, as the body of
+// a block. So it may hold a lane loop. Each of the 8 blocks writes a row of 32 partial results.
+// After the nest, lane `d` sums column `d` over the 8 rows: 8 * d + 32 * (0 + 1 + .. + 7), which
+// is 896 + 8 * d. Then lane 0 adds the 32 column sums, 32640, and counts its runs in `runs`. A
+// second region has only the lane loop after its nest, and doubles each partial result.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefix=PTX
+// CHECK: columns 896 904 1144 total 32640 runs 1 doubled 0 2 510
+// The arrival: lane 0 adds to the count between two fences and stores whether the pass was last.
+// After a barrier, every lane loads that and the last pass runs the lane loop.
+// PTX: .entry vx_npu_kernel_0(
+// PTX-SAME: fence.acq_rel.gpu{{.*}}atom.global.add.u32{{.*}}fence.acq_rel.gpu{{.*}}st.global.b32{{.*}}bar.sync{{.*}}ld.global.b32{{.*}}setp.ne.b32
+
+fn main() -> i32 {
+  let mut partial = transfer(Tensor<i32, [256]>::fill(0), Memory::HBM);
+  let mut columns = transfer(Tensor<i32, [32]>::fill(0), Memory::HBM);
+  let mut out = transfer(Tensor<i32, [2]>::fill(0), Memory::HBM);
+  let mut doubled = transfer(Tensor<i32, [256]>::fill(0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..8 across blocks {
+      for l in 0..32 across lanes {
+        partial[b * 32 + l] = b * 32 + l;
+      }
+    }
+    for d in 0..32 across lanes {
+      let mut s = 0;
+      for b in 0..8 {
+        s = s + partial[b * 32 + d];
+      }
+      columns[d] = s;
+    }
+    let mut total = 0;
+    for d in 0..32 {
+      total = total + columns[d];
+    }
+    out[0] = total;
+    out[1] = out[1] + 1;
+  }
+  spawn on(Topology::Device) {
+    for b in 0..8 across blocks {
+      for l in 0..32 across lanes {
+        doubled[b * 32 + l] = 0;
+      }
+    }
+    for d in 0..32 across lanes {
+      for b in 0..8 {
+        doubled[b * 32 + d] = 2 * partial[b * 32 + d];
+      }
+    }
+  }
+  let c = transfer(columns, Memory::CPU_DRAM);
+  let o = transfer(out, Memory::CPU_DRAM);
+  let w = transfer(doubled, Memory::CPU_DRAM);
+  println!("columns {} {} {} total {} runs {} doubled {} {} {}", c[0], c[1], c[31], o[0], o[1], w[0], w[1], w[255]);
+  return 0;
+}
