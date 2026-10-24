@@ -1,0 +1,49 @@
+//===- two_tasks_share_one_atomic.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two tasks on two OS threads share one atomic through a shared reference, and both write it.
+// Each task adds 1 to the counter 100000 times, so the counter ends at 200000. If the adds were
+// not atomic, the two threads could lose adds, and the counter could end lower.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: two tasks run on two threads
+// CHECK-NEXT: {{^}}count 200000{{$}}
+
+import core::sync::atomic;
+
+extern "C" {
+  fn pthread_self() -> u64;
+}
+
+fn thread() -> u64 {
+  return unsafe { pthread_self() };
+}
+
+fn add_ones(counter : &AtomicI32, n : i32) -> u64 {
+  for _i in 0..n {
+    counter.fetch_add(1, AtomicOrdering::Relaxed);
+  }
+  return thread();
+}
+
+fn main() -> i32 {
+  let counter = AtomicI32::new(0);
+  let different = tasks {
+    let x = spawn {
+      add_ones(&counter, 100000)
+    };
+    let y = spawn {
+      add_ones(&counter, 100000)
+    };
+    x.join() != y.join()
+  };
+  if different {
+    println!("two tasks run on two threads");
+  }
+  println!("count {}", counter.load(AtomicOrdering::SeqCst));
+  return 0;
+}
