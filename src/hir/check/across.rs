@@ -136,14 +136,23 @@ impl crate::hir::TypeChecker<'_> {
 
 /// The integer that `e` is when it is a literal.
 /// Whether a region's statements have code after a top-level `across` loop: code that runs once,
-/// after every pass of the nest.
+/// after every pass of the nest. A second loop of the same level is a second nest, not such code.
 pub(crate) fn code_after_the_nest(stmts: &[Statement]) -> bool {
     let nest = |s: &Statement| matches!(s, Statement::ForLoop(f) if f.across.is_some());
     stmts.iter().position(nest).is_some_and(|at| {
+        let Statement::ForLoop(first) = &stmts[at] else {
+            return false;
+        };
         stmts[at + 1..]
             .iter()
-            .any(|s| !nest(s) && !matches!(s, Statement::Drop(_)))
+            .any(|s| !same_level(s, first) && !matches!(s, Statement::Drop(_)))
     })
+}
+
+/// Whether `s` is an `across` loop of the level of `nest`.
+pub(crate) fn same_level(s: &Statement, nest: &ForLoopStmt) -> bool {
+    let level = nest.across.as_ref().map(|a| &a.level);
+    matches!(s, Statement::ForLoop(f) if f.across.is_some() && f.across.as_ref().map(|a| &a.level) == level)
 }
 
 fn literal(e: &Expr) -> Option<u64> {
@@ -452,7 +461,20 @@ impl Walk<'_> {
                 {
                     self.whole_matmuls(&sp.stmts);
                 }
-                self.stmts(&sp.stmts, &region);
+                // The code after the nest runs in the last pass to end, as the body of one block.
+                let nest = sp
+                    .stmts
+                    .iter()
+                    .position(|s| matches!(s, Statement::ForLoop(f) if f.across.is_some()));
+                let after = nest.map_or(sp.stmts.len(), |at| at + 1);
+                self.stmts(&sp.stmts[..after], &region);
+                let mut last_pass = region.clone();
+                last_pass.top = false;
+                last_pass.axes.push(Axis {
+                    kind: LevelKind::Blocks,
+                    size: None,
+                });
+                self.stmts(&sp.stmts[after..], &last_pass);
                 if let Some(r) = &sp.ret {
                     self.expr(r, &Self::inner(&region));
                 }
@@ -699,8 +721,7 @@ impl Walk<'_> {
             // After the nest, the code runs once, in the last pass to end.
             let tail: Vec<&Statement> = stmts[at + 1..]
                 .iter()
-                .filter(|s| !matches!(s, Statement::Drop(_)))
-                .filter(|s| !matches!(s, Statement::ForLoop(f) if f.across.is_some()))
+                .filter(|s| !matches!(s, Statement::Drop(_)) && !same_level(s, first))
                 .collect();
             let axes = first
                 .body

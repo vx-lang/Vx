@@ -3148,11 +3148,15 @@ impl<'r> Lowerer<'r> {
         let passes = self.emit_value(Opcode::Sub, end.reg, start.reg, ElementType::I32, 0);
         let one = self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 1);
         let last = self.emit_value(Opcode::Sub, passes.reg, one.reg, ElementType::I32, 0);
+        // Element 0 counts the passes that ended, and one more element for each pass says
+        // whether that pass was the last.
+        let size = self.emit_value(Opcode::Add, passes.reg, one.reg, ElementType::I32, 0);
         let ty = LoweredTy::Tensor {
             elem: ElementType::U32,
-            shape: vec!["1".to_string()],
+            shape: vec!["?".to_string()],
         };
-        let host = self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty.clone(), 4);
+        self.emit_effect(Opcode::Arg, size.reg, Register(0), 0);
+        let host = self.emit_typed(Opcode::TensorAlloc, Register(0), Register(0), ty.clone(), 0);
         self.emit_effect(Opcode::TensorZero, host.reg, Register(0), 0);
         let mem_id = crate::arch::memory_space_dispatch_id(space) as u32 as u64;
         let count = self.emit_typed(Opcode::Transfer, host.reg, Register(0), ty, mem_id);
@@ -3160,7 +3164,7 @@ impl<'r> Lowerer<'r> {
         let after: Vec<&Statement> = stmts[at + 1..]
             .iter()
             .filter(|s| !matches!(s, Statement::Drop(_)))
-            .filter(|s| !matches!(s, Statement::ForLoop(f) if f.across.is_some()))
+            .filter(|s| !crate::hir::check::across::same_level(s, nest))
             .collect();
         Ok(across::Tail {
             stmts: after.iter().map(|s| (*s).clone()).collect(),
@@ -3169,6 +3173,7 @@ impl<'r> Lowerer<'r> {
                 .map(|s| *s as *const Statement as usize)
                 .collect(),
             count,
+            start,
             last,
         })
     }

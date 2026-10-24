@@ -55,29 +55,40 @@ pub(super) struct AcrossState {
     pub tail: Option<Tail>,
     /// The body of the loop of blocks whose passes end with an arrival, by its address.
     pub arrive_body: Option<usize>,
+    /// The variable of that loop, which holds the index of its pass.
+    pub pass: Option<crate::symbol::Symbol>,
 }
 
-/// The code after a nest of blocks. Each pass adds 1 to `count` when it ends, and the pass that
-/// sees `last`, one less than the number of passes, runs `stmts`.
+/// The code after a nest of blocks. Each pass adds 1 to element 0 of `count` when it ends, and
+/// the pass that sees `last`, one less than the number of passes, runs `stmts` in its block.
+/// Element `1 + b - start` tells the lanes of pass `b` whether it is the last one.
 #[derive(Clone)]
 pub(super) struct Tail {
     pub stmts: Vec<Statement>,
     /// The addresses of the statements in the region, which the region does not lower itself.
     pub skip: HashSet<usize>,
     pub count: Val,
+    pub start: Val,
     pub last: Val,
 }
 
-/// One pass of a nest of blocks has ended: a release fence, an atomic add to the count, and an
-/// acquire fence. The result is 1 in the last pass to end. Each fence is for the device, so the
-/// writes of every pass are visible to the last one.
+/// One pass of a nest of blocks has ended, on lane 0: a release fence, an atomic add to the
+/// count, and an acquire fence. Each fence is for the device, so the writes of every pass are
+/// visible to the last one. The pass's own element of the count says whether it was the last.
 const ARRIVE: &str = r#"llvm.fence syncscope("device") release
 %vx_zero = arith.constant 0 : index
 %vx_one = arith.constant 1 : i32
-%vx_old = memref.atomic_rmw addi %vx_one, %count[%vx_zero] : (i32, memref<1xi32>) -> i32
+%vx_old = memref.atomic_rmw addi %vx_one, %count[%vx_zero] : (i32, memref<?xi32>) -> i32
 %vx_is_last = arith.cmpi eq, %vx_old, %last : i32
 llvm.fence syncscope("device") acquire
 %vx_last = arith.extui %vx_is_last : i1 to i32
+%vx_slot = arith.index_cast %slot : i32 to index
+memref.store %vx_last, %count[%vx_slot] : memref<?xi32>
+macro.yield"#;
+
+/// Whether this pass was the last to end, for every lane of its block, after the barrier.
+const IS_LAST: &str = r#"%vx_slot = arith.index_cast %slot : i32 to index
+%vx_last = memref.load %count[%vx_slot] : memref<?xi32>
 macro.yield %vx_last : i32"#;
 
 /// The lanes of a block of a region with `across` loops: the most that a lane loop or a subgroup
@@ -255,17 +266,23 @@ impl Lowerer<'_> {
             }
         }
         if level == AcrossLevel::Block && self.across.arrive_body == Some(stmts.as_ptr() as usize) {
-            self.arrive()?;
+            let name = self.across.pass.clone().ok_or(crate::emitter_gap!())?;
+            let id = crate::syntax::IdentifierExpr::new(name, crate::syntax::Span::default());
+            let pass = self.lower_expr(&Expr::Identifier(id))?;
+            self.arrive(pass)?;
         }
         Ok(())
     }
 
-    /// The end of a pass of the nest of blocks, when code comes after the nest. Lane 0 adds the
-    /// pass to the count, and the last pass runs the code. The lane loop or the lane-0 code that
-    /// ends the pass ends with a barrier, so the writes of every lane come before the add. Code
-    /// that every lane runs writes no memory.
-    fn arrive(&mut self) -> Lowered<()> {
+    /// The end of a pass `pass` of the nest of blocks, when code comes after the nest. Lane 0 adds
+    /// the pass to the count, and the block of the last pass runs the code. The lane loop or the
+    /// lane-0 code that ends the pass ends with a barrier, so the writes of every lane come before
+    /// the add. Code that every lane runs writes no memory.
+    fn arrive(&mut self, pass: Val) -> Lowered<()> {
         let tail = self.across.tail.clone().ok_or(crate::emitter_gap!())?;
+        let offset = self.emit_value(Opcode::Sub, pass.reg, tail.start.reg, ElementType::I32, 0);
+        let one = self.const_i32(1);
+        let slot = self.emit_value(Opcode::Add, offset.reg, one.reg, ElementType::I32, 0);
         let lane = self.across_id(ACROSS_LANE, 0);
         let zero = self.const_i32(0);
         let first = self.emit_value(
@@ -275,30 +292,26 @@ impl Lowerer<'_> {
             ElementType::Bool,
             rel_code(&RelationalOp::Eq),
         );
-        let outer = self.across.level.take();
-        self.across.on_lane0 = true;
         let lane0 = self.open_guard(first);
-        self.emit_effect(Opcode::Arg, tail.count.reg, Register(0), 0);
-        self.emit_effect(Opcode::Arg, tail.last.reg, Register(0), 0);
-        let imm = self.inline_blocks.len() as u64;
-        self.inline_blocks.push(InlineBlock {
-            inputs: vec![
-                ("%count".to_string(), "memref<1xi32>".to_string()),
-                ("%last".to_string(), "i32".to_string()),
+        self.inline(
+            ARRIVE,
+            &[
+                ("%count", "memref<?xi32>", &tail.count),
+                ("%last", "i32", &tail.last),
+                ("%slot", "i32", &slot),
             ],
-            body: ARRIVE.to_string(),
-            void: false,
-            line: 0,
-            column: 0,
-        });
-        let is_last = self.emit_typed(
-            Opcode::InlineMlir,
-            Register(0),
-            Register(0),
-            LoweredTy::Scalar(ElementType::I32),
-            imm,
+            true,
         );
-        let one = self.const_i32(1);
+        self.close_guard(lane0);
+        self.barrier(AcrossLevel::Block);
+        let is_last = self.inline(
+            IS_LAST,
+            &[
+                ("%count", "memref<?xi32>", &tail.count),
+                ("%slot", "i32", &slot),
+            ],
+            false,
+        );
         let cond = self.emit_value(
             Opcode::Cmp,
             is_last.reg,
@@ -306,17 +319,41 @@ impl Lowerer<'_> {
             ElementType::Bool,
             rel_code(&RelationalOp::Eq),
         );
+        // Every lane of the last pass runs the code, as the body of its block.
         let last = self.open_guard(cond);
-        let lowered = self.scoped(|me| {
-            tail.stmts.iter().try_for_each(|s| me.lower_stmt(s))?;
-            me.run_queued_drops()
-        });
-        self.across.on_lane0 = false;
+        let blocks = std::mem::replace(&mut self.across.blocks, 1);
+        let outer = self.across.level.replace(AcrossLevel::Block);
+        let lowered = self.lower_block(&tail.stmts);
         self.across.level = outer;
+        self.across.blocks = blocks;
         lowered?;
         self.close_guard(last);
-        self.close_guard(lane0);
         Ok(())
+    }
+
+    /// An `mlir!` block that the compiler writes, with its inputs by name, type and value.
+    fn inline(&mut self, body: &str, inputs: &[(&str, &str, &Val)], void: bool) -> Val {
+        for (_, _, v) in inputs {
+            self.emit_effect(Opcode::Arg, v.reg, Register(0), 0);
+        }
+        let imm = self.inline_blocks.len() as u64;
+        self.inline_blocks.push(InlineBlock {
+            inputs: inputs
+                .iter()
+                .map(|(n, t, _)| (n.to_string(), t.to_string()))
+                .collect(),
+            body: body.to_string(),
+            void,
+            line: 0,
+            column: 0,
+        });
+        self.emit_typed(
+            Opcode::InlineMlir,
+            Register(0),
+            Register(0),
+            LoweredTy::Scalar(ElementType::I32),
+            imm,
+        )
     }
 
     /// `lanes::sum(&t, n)` and the other lane reductions. The checker allows a call only in the
@@ -385,6 +422,7 @@ impl Lowerer<'_> {
             // The outer loop of blocks is the nest whose passes count.
             if self.across.blocks == 0 && self.across.tail.is_some() {
                 self.across.arrive_body = Some(f.body.as_ptr() as usize);
+                self.across.pass = Some(f.iter.as_str().into());
             }
             let axis = self.across.blocks;
             let first = self.across_id(ACROSS_BLOCK, axis);
