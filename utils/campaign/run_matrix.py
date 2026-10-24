@@ -46,6 +46,11 @@ HOST = FLEET / "host-x86-e5-2666v3.vx"
 SKUS = ["a100-40", "a100-80", "h100-sxm", "h200", "b200", "mi300x"]
 
 
+# vLLM's default `max_num_batched_tokens`, which fleet/admit.vx gives for STEP: a step works on
+# at most this many tokens.
+MAX_NUM_BATCHED_TOKENS = 16384
+
+
 @dataclass(frozen=True)
 class Config:
     """One serving configuration: the const-generic arguments of `admit`."""
@@ -54,6 +59,8 @@ class Config:
     heads: int
     kv_heads: int
     hdim: int
+    ffn: int
+    vocab: int
     ctx: int
     batch: int
     tp: int
@@ -61,6 +68,12 @@ class Config:
     @property
     def cell_id(self) -> str:
         return self.name
+
+    @property
+    def step(self) -> int:
+        """The tokens of one step, by fleet/admit.vx's rule: the smaller of vLLM's
+        `max_num_batched_tokens` default and BATCH * CTX."""
+        return min(MAX_NUM_BATCHED_TOKENS, self.batch * self.ctx)
 
 
 # The sweep. Chosen to put cells on both sides of every SKU's ceiling rather
@@ -71,33 +84,39 @@ class Config:
 #
 # KV-head counts are the checkpoints' `num_key_value_heads` (GQA), not the query
 # head count -- see the note in fleet/admit.vx. Llama-3.1 uses 8 across all sizes.
+#
+# FFN and VOCAB are each checkpoint's `intermediate_size` and `vocab_size` in its config.json:
+# 14336, 28672 and 53248, and 128256 for all three. The meta-llama repositories are gated, so
+# they were read on 2026-10-24 from public copies of the same files (unsloth and NousResearch for
+# 8B and 70B, and four quantized copies of 405B), which all agree. `tie_word_embeddings` is false
+# in each, so VOCAB is not halved.
 CONFIGS = [
-    #        name               L    H  KVH  HD    CTX  B  TP
-    Config("8b-ctx4k",         32,  32,  8, 128,   4096, 1, 1),
-    Config("8b-ctx32k",        32,  32,  8, 128,  32768, 1, 1),
-    Config("8b-ctx128k",       32,  32,  8, 128, 131072, 1, 1),
-    Config("70b-ctx4k",        80,  64,  8, 128,   4096, 1, 1),
-    Config("70b-ctx8k",        80,  64,  8, 128,   8192, 1, 1),
-    Config("70b-ctx32k",       80,  64,  8, 128,  32768, 1, 1),
-    Config("70b-ctx128k",      80,  64,  8, 128, 131072, 1, 1),
-    Config("70b-ctx4k-tp2",    80,  64,  8, 128,   4096, 1, 2),
-    Config("70b-ctx4k-tp4",    80,  64,  8, 128,   4096, 1, 4),
-    Config("70b-ctx4k-tp8",    80,  64,  8, 128,   4096, 1, 8),
-    Config("70b-ctx32k-tp4",   80,  64,  8, 128,  32768, 1, 4),
-    Config("70b-ctx32k-tp8",   80,  64,  8, 128,  32768, 1, 8),
-    Config("70b-ctx4k-batch8", 80,  64,  8, 128,   4096, 8, 1),
-    Config("405b-ctx4k-tp8",  126, 128,  8, 128,   4096, 1, 8),
-    Config("405b-ctx32k-tp8", 126, 128,  8, 128,  32768, 1, 8),
+    #        name               L    H  KVH  HD    FFN   VOCAB     CTX  B  TP
+    Config("8b-ctx4k",         32,  32,  8, 128, 14336, 128256,   4096, 1, 1),
+    Config("8b-ctx32k",        32,  32,  8, 128, 14336, 128256,  32768, 1, 1),
+    Config("8b-ctx128k",       32,  32,  8, 128, 14336, 128256, 131072, 1, 1),
+    Config("70b-ctx4k",        80,  64,  8, 128, 28672, 128256,   4096, 1, 1),
+    Config("70b-ctx8k",        80,  64,  8, 128, 28672, 128256,   8192, 1, 1),
+    Config("70b-ctx32k",       80,  64,  8, 128, 28672, 128256,  32768, 1, 1),
+    Config("70b-ctx128k",      80,  64,  8, 128, 28672, 128256, 131072, 1, 1),
+    Config("70b-ctx4k-tp2",    80,  64,  8, 128, 28672, 128256,   4096, 1, 2),
+    Config("70b-ctx4k-tp4",    80,  64,  8, 128, 28672, 128256,   4096, 1, 4),
+    Config("70b-ctx4k-tp8",    80,  64,  8, 128, 28672, 128256,   4096, 1, 8),
+    Config("70b-ctx32k-tp4",   80,  64,  8, 128, 28672, 128256,  32768, 1, 4),
+    Config("70b-ctx32k-tp8",   80,  64,  8, 128, 28672, 128256,  32768, 1, 8),
+    Config("70b-ctx4k-batch8", 80,  64,  8, 128, 28672, 128256,   4096, 8, 1),
+    Config("405b-ctx4k-tp8",  126, 128,  8, 128, 53248, 128256,   4096, 1, 8),
+    Config("405b-ctx32k-tp8", 126, 128,  8, 128, 53248, 128256,  32768, 1, 8),
 ]
 
-# `return admit<L, H, KVH, HD, CTX, B, TP>();` -- the one line a cell rewrites.
-ADMIT_CALL = re.compile(r"admit<" + r"\s*\d+\s*,"*6 + r"\s*\d+\s*>")
+# `return admit<L, H, KVH, HD, FFN, VOCAB, CTX, B, STEP, TP>();` -- the one line a cell rewrites.
+ADMIT_CALL = re.compile(r"admit<" + r"\s*\d+\s*,"*9 + r"\s*\d+\s*>")
 
 
 def program_for(cfg: Config, template: str) -> str:
     """The reference program with this cell's constants substituted."""
-    call = (f"admit<{cfg.layers}, {cfg.heads}, {cfg.kv_heads}, {cfg.hdim}, "
-            f"{cfg.ctx}, {cfg.batch}, {cfg.tp}>")
+    call = (f"admit<{cfg.layers}, {cfg.heads}, {cfg.kv_heads}, {cfg.hdim}, {cfg.ffn}, "
+            f"{cfg.vocab}, {cfg.ctx}, {cfg.batch}, {cfg.step}, {cfg.tp}>")
     out, n = ADMIT_CALL.subn(call, template)
     if n != 1:
         sys.exit(
@@ -149,7 +168,7 @@ def predict(cfg: Config, sku: str, vxc: Path, workdir: Path) -> dict:
     return {
         "cell": cfg.cell_id,
         "sku": sku,
-        "config": asdict(cfg),
+        "config": {**asdict(cfg), "step": cfg.step},
         "verdict": rec["verdict"],
         "error_codes": codes,
         "resident_bytes": resident["total_bytes"] if resident else None,

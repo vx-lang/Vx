@@ -7,6 +7,59 @@ should be because someone meant it to. The **GQA correction** below is *not* reg
 "before" column required the buggy program — which is why it is written down rather than left to be
 re-derived.
 
+## Predicted matrix, 2026-10-24
+
+Generated at main e9b13550, with the routes back to the host of #2184. Without them the H200 and
+MI300X columns are 30 toolchain errors. This table is the baseline from this date. The 2026-08-03
+table below stays as the record of its own date.
+
+15 configurations × 6 SKUs = 90 cells. **65 admitted, 25 rejected, 0 toolchain errors.**
+
+The inputs changed since 2026-08-03:
+
+- `admit.vx` takes ten parameters (#1627). The weights are the whole checkpoint: the embedding
+  table, the output layer, and per layer the attention projections and a gated MLP of width FFN.
+  The 70B resident set at 4k context grew from 121.3 to 132.7 GiB.
+- FFN and VOCAB come from each checkpoint's config.json: 14336, 28672 and 53248, and 128256.
+- STEP, the tokens of one step, is the smaller of 16384 and BATCH × CTX, as `admit.vx` says.
+- The B200's capacity is the measured 183,359 MiB, or 179.06 GiB (#1596), not 192 GiB.
+
+| config | a100-40 | a100-80 | h100-sxm | h200 | b200 | mi300x | resident GiB |
+|---|---|---|---|---|---|---|---|
+| `8b-ctx4k` | admit | admit | admit | admit | admit | admit | 15.5 |
+| `8b-ctx32k` | admit | admit | admit | admit | admit | admit | 19.1 |
+| `8b-ctx128k` | admit | admit | admit | admit | admit | admit | 31.1 |
+| `70b-ctx4k` | reject | reject | reject | admit | admit | admit | 132.7 |
+| `70b-ctx8k` | reject | reject | reject | admit | admit | admit | 134.0 |
+| `70b-ctx32k` | reject | reject | reject | reject | admit | admit | 141.7 |
+| `70b-ctx128k` | reject | reject | reject | reject | admit | admit | 171.7 |
+| `70b-ctx4k-tp2` | reject | admit | admit | admit | admit | admit | 66.4 |
+| `70b-ctx4k-tp4` | admit | admit | admit | admit | admit | admit | 33.2 |
+| `70b-ctx4k-tp8` | admit | admit | admit | admit | admit | admit | 16.6 |
+| `70b-ctx32k-tp4` | admit | admit | admit | admit | admit | admit | 35.6 |
+| `70b-ctx32k-tp8` | admit | admit | admit | admit | admit | admit | 17.9 |
+| `70b-ctx4k-batch8` | reject | reject | reject | reject | admit | admit | 141.7 |
+| `405b-ctx4k-tp8` | reject | reject | reject | admit | admit | admit | 94.9 |
+| `405b-ctx32k-tp8` | reject | reject | reject | admit | admit | admit | 97.0 |
+
+SKU capacities for reading the table: a100-40 = 40 GiB, a100-80 / h100-sxm = 80 GiB, h200 = 141 GiB,
+b200 = 179.06 GiB, mi300x = 192 GiB.
+
+### Cells whose verdict differs from 2026-08-03
+
+**2 of 90.** Both are on the H200, and both flipped from admit to reject:
+
+| config | SKU | 2026-08-03 | 2026-10-24 | resident GiB |
+|---|---|---|---|---|
+| `70b-ctx32k` | h200 | admit | reject | 130.5 → 141.7 |
+| `70b-ctx4k-batch8` | h200 | admit | reject | 130.5 → 141.7 |
+
+The whole-checkpoint weights put both 0.7 GiB over the H200's 141 GiB, so they are marginal cells,
+inside the ~10% band that the reading notes below treat as unresolved. No B200 cell flipped with
+its smaller capacity: `70b-ctx128k` needs 171.7 of its 179.06 GiB. If the H200's 141 is decimal
+GB, as `fleet/README.md` says may be so, its capacity is 131.3 GiB, and `70b-ctx4k` and
+`70b-ctx8k` reject on it too.
+
 ## Predicted matrix (current, post-#303)
 
 15 configurations × 6 SKUs = 90 cells. **67 admitted, 23 rejected, 0 toolchain errors.**
