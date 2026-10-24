@@ -11,12 +11,13 @@ of the channels and the locks, and those never race (`chan_no_race`). So the rul
 accesses of the code `b` of `Tasks.lean` in the program.
 
 The lowered program follows the rule of `Footprint.lean` for the places below `places` that have
-no lock. So no two accesses to those places race. The places from `places` to `top` belong to the channels and the
-locks. The places from `top` up are the flags of the tasks, and they have only `sc` accesses.
+no lock. So no two accesses to those places race. The places from `places` to `top` belong to the
+channels and the locks. The failure slot and the cancel flag come next, and each access to them is
+atomic (`fail_atomic`). The flags of the tasks come last, and they have only `sc` accesses.
 
 The rule can give a place of the code a lock. The code then accesses that place only in
 `locked` blocks of the lock, and two tasks of a block can share it. `LockFootprint.lean` shows
-that such places never race. The program has no failures.
+that such places never race.
 -/
 
 namespace Vx
@@ -117,12 +118,11 @@ def CPhasesOk : List CPhase → Prop
   | [] => True
   | p :: ps => p.Ok P g ∧ (∀ u ∈ (p.lower P).ids, ∀ q ∈ ps, u ∉ (q.lower P).ids) ∧ CPhasesOk ps
 
-/-- The rule on the code: the main code is the phases `ps`, the tasks start no tasks, and the
-program has no failures. `g` gives some places of the code a lock, and the code accesses such a
-place only in a `locked` block of its lock. -/
+/-- The rule on the code: the main code is the phases `ps`, and the tasks start no tasks. `g`
+gives some places of the code a lock, and the code accesses such a place only in a `locked` block
+of its lock. -/
 structure CFootprints (ps : List CPhase) : Prop where
   ok : P.Ok
-  errors : P.errors = false
   main : P.main = cseqAll ps
   phases : P.CPhasesOk g ps
   tasks : ∀ t, (P.task t).NoTasks
@@ -151,9 +151,10 @@ theorem not_fails (he : P.errors = false) {s : CStmt} (hs : P.StmtOk s) : ¬ s.F
   | locked _ _ ih => exact ih hs.2.2
   | base | send | recv | drop => exact id
 
-theorem lowerC_below (he : P.errors = false) {s : CStmt} (hs : P.StmtOk s) :
-    (P.lowerC s).Below P.top P.count := by
-  have hpt : P.places ≤ P.top := by unfold top; omega
+theorem lowerC_below {s : CStmt} (hs : P.StmtOk s) :
+    (P.lowerC s).Below (P.flag + 1) P.count := by
+  have hpt : P.places ≤ P.flag + 1 := by unfold flag slot top; omega
+  have hf : P.top < P.flag + 1 := by unfold flag slot; omega
   induction s with
   | base => exact Stmt.Below.mono hs hpt
   | send c =>
@@ -174,10 +175,14 @@ theorem lowerC_below (he : P.errors = false) {s : CStmt} (hs : P.StmtOk s) :
   | locked m s ih =>
     have h1 := (cnt_inside (P := P) (q := .next) hs.1).2
     have h2 := (cnt_inside (P := P) (q := .serving) hs.1).2
-    exact ⟨⟨h1, h2, h2⟩, ih hs.2.2, h2⟩
+    have lt : ∀ {x}, x < P.top → x < P.flag + 1 := fun h => Nat.lt_trans h hf
+    exact ⟨⟨lt h1, lt h2, lt h2⟩, ih hs.2.2, lt h2⟩
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 hs.1, ih2 hs.2⟩
   | loop _ _ ih | tasksBlock _ ih => exact ih hs
-  | fail | checkCancel | result => simp [StmtOk, he] at hs
+  | fail | checkCancel | result =>
+    simp only [lowerC, failCode, checkCode, checkTail, raise, Stmt.Below, flag, slot] at *
+    repeat' apply And.intro
+    all_goals first | trivial | omega
 
 theorem stores_below {n tasks : Nat} : ∀ {ps : List (Nat × Int)}, (∀ q ∈ ps, q.1 < n) →
     (stores ps).Below n tasks
@@ -188,11 +193,22 @@ theorem stores_noTasks : ∀ {ps : List (Nat × Int)}, (stores ps).NoTasks
   | [] => trivial
   | _ :: _ => ⟨trivial, stores_noTasks⟩
 
-/-- A program with no failures follows the rule of `Tasks.lean` for the places of its code. -/
-theorem toTaskProg_ok (hP : P.Ok) (he : P.errors = false) : P.toTaskProg.Ok where
-  main := ⟨stores_below fun q hq => initFirst_lt hP q (by simpa [initList, he] using hq),
-    lowerC_below he hP.main⟩
-  task t := lowerC_below he (hP.task t)
+/-- The writes at the start stay below the flags of the tasks. -/
+theorem initList_lt (hP : P.Ok) : ∀ q ∈ P.initList, q.1 < P.flag + 1 := by
+  intro q hq
+  have hf : P.top < P.flag + 1 := by unfold flag slot; omega
+  simp only [initList, List.mem_append] at hq
+  rcases hq with hq | hq
+  · exact Nat.lt_trans (initFirst_lt hP q hq) hf
+  · split at hq
+    · simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
+      rcases hq with rfl | rfl <;> simp only [flag, slot] <;> omega
+    · cases hq
+
+/-- The program follows the rule of `Tasks.lean`: the code stays below the flags of the tasks. -/
+theorem toTaskProg_ok (hP : P.Ok) : P.toTaskProg.Ok where
+  main := ⟨stores_below (initList_lt hP), lowerC_below hP.main⟩
+  task t := lowerC_below (hP.task t)
 
 theorem lowerC_noTasks {s : CStmt} (h : s.NoTasks) : (P.lowerC s).NoTasks := by
   induction s with
@@ -232,7 +248,7 @@ theorem lowerC_regsBelow {s : CStmt} (h : s.RegsBelow (P.tmp + 3)) :
 
 /-- The lowered code makes the accesses of `s` below `places`. Its other accesses are to the
 places of the channels and the locks. -/
-theorem lowerC_accesses (he : P.errors = false) {q : Kind → Order → Nat → Prop} {s : CStmt}
+theorem lowerC_accesses {q : Kind → Order → Nat → Prop} {s : CStmt}
     (hs : P.StmtOk s) (h : s.Accesses q) :
     (P.lowerC s).Accesses fun k o x => x < P.places → q k o x := by
   have out : ∀ {k o x}, P.places ≤ x → x < P.places → q k o x := fun h1 h2 => by omega
@@ -261,55 +277,61 @@ theorem lowerC_accesses (he : P.errors = false) {q : Kind → Order → Nat → 
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 hs.1 h.1, ih2 hs.2 h.2⟩
   | loop _ _ ih => exact ih hs h
   | tasksBlock => trivial
-  | fail | checkCancel | result => simp [StmtOk, he] at hs
+  | fail | checkCancel | result =>
+    have hs : P.places ≤ P.slot := by unfold slot top; omega
+    have hf : P.places ≤ P.flag := by unfold flag; omega
+    first
+      | exact ⟨⟨out hs, out hs⟩, out hf, trivial⟩
+      | exact ⟨out hf, ⟨⟨out hs, out hs⟩, out hf, trivial⟩, trivial⟩
+      | exact out hs
 
 variable (P g) in
 /-- The places that the rule of `Footprint.lean` covers: the places of the code that `g` gives no
 lock. -/
 def Own (x : Nat) : Prop := x < P.places ∧ g x = none
 
-theorem apart_lower (he : P.errors = false) {s t : CStmt} (hs : P.StmtOk s) (ht : P.StmtOk t)
+theorem apart_lower {s t : CStmt} (hs : P.StmtOk s) (ht : P.StmtOk t)
     (h : s.Apart g t) : (P.lowerC s).Apart (P.Own g) (P.lowerC t) :=
-  (lowerC_accesses he hs h).mono fun _ _ x h hx =>
-    (lowerC_accesses he ht (h hx.1 hx.2)).mono fun _ _ x' h' => by
+  (lowerC_accesses hs h).mono fun _ _ x h hx =>
+    (lowerC_accesses ht (h hx.1 hx.2)).mono fun _ _ x' h' => by
       by_cases hx' : x' < P.places
       · exact h' hx'
       · exact Or.inr (Or.inr (Or.inl (by have := hx.1; omega)))
 
-theorem cphase_ok (he : P.errors = false) (htask : ∀ t, P.StmtOk (P.task t)) {p : CPhase}
+theorem cphase_ok (htask : ∀ t, P.StmtOk (P.task t)) {p : CPhase}
     (hp : p.Ok P g) (hs : P.StmtOk p.stmt) : (p.lower P).Ok P.toTaskProg (P.Own g) := by
   cases p with
   | code s => exact lowerC_noTasks hp
   | block s =>
     obtain ⟨hn, hr, hap, hpair⟩ := hp
     exact ⟨lowerC_noBlocks hn, lowerC_regsBelow hr,
-      fun u hu => apart_lower he hs (htask u) (hap u hu),
-      fun u hu v hv huv => apart_lower he (htask u) (htask v) (hpair u hu v hv huv)⟩
+      fun u hu => apart_lower hs (htask u) (hap u hu),
+      fun u hu v hv huv => apart_lower (htask u) (htask v) (hpair u hu v hv huv)⟩
 
-theorem cphasesOk_lower (he : P.errors = false) (htask : ∀ t, P.StmtOk (P.task t)) :
+theorem cphasesOk_lower (htask : ∀ t, P.StmtOk (P.task t)) :
     ∀ {ps : List CPhase}, P.CPhasesOk g ps → P.StmtOk (cseqAll ps) →
       P.toTaskProg.PhasesOk (P.Own g) (ps.map (CPhase.lower P))
   | [], _, _ => trivial
   | _ :: _, ⟨hp, hids, hrest⟩, ⟨hs, hss⟩ => by
-    refine ⟨cphase_ok he htask hp hs, fun u hu q hq => ?_, cphasesOk_lower he htask hrest hss⟩
+    refine ⟨cphase_ok htask hp hs, fun u hu q hq => ?_, cphasesOk_lower htask hrest hss⟩
     obtain ⟨q', hq', rfl⟩ := List.mem_map.1 hq
     exact hids u hu q' hq'
 
 /-- The lowered program follows the rule of `Footprint.lean` for the places of `Own`. -/
 theorem toFootprints {ps : List CPhase} (hF : P.CFootprints g ps) :
     P.toTaskProg.Footprints (P.Own g) (.code (stores P.initList) :: ps.map (CPhase.lower P)) where
-  ok := toTaskProg_ok hF.ok hF.errors
+  ok := toTaskProg_ok hF.ok
   le_flags x hx := by
-    show x < P.top
+    show x < P.flag + 1
     have := hx.1
-    unfold top
+    unfold flag slot top
     omega
   main := by
     show Stmt.seq _ (P.lowerC P.main) = _
     rw [hF.main, lowerC_cseqAll]
     rfl
   phases := ⟨stores_noTasks, fun _ hu => by simp [TaskProg.Phase.ids] at hu,
-    cphasesOk_lower hF.errors hF.ok.task hF.phases (hF.main ▸ hF.ok.main)⟩
+    cphasesOk_lower hF.ok.task hF.phases (hF.main ▸ hF.ok.main)⟩
   tasks t := lowerC_noTasks (hF.tasks t)
 
 /-! ## The executions of a program that follows the rule -/
@@ -330,9 +352,14 @@ theorem raceFree_of {ps : List CPhase} (hF : P.CFootprints g ps) {X : Execution}
     | some m => exact hg hr hga
   by_cases h2 : X.loc a < P.top
   · exact chan_no_race run hF.ok wf hcons ho hfin hr (by omega) h2
-  · obtain ⟨⟨-, ha, hb, hl, -⟩, -, -, -, hat⟩ := hr
-    exact hat ⟨TaskProg.atomic_of_flags hT run ha (by show P.top ≤ _; omega),
-      TaskProg.atomic_of_flags hT run hb (by show P.top ≤ _; omega)⟩
+  obtain ⟨⟨-, ha, hb, hl, -⟩, -, -, -, hat⟩ := hr
+  have hk {e : X.E} (he : X.IsAccess e) : X.kind e ≠ .fence := fun h => by
+    rcases he with he | he <;> rw [he] at h <;> cases h
+  by_cases h3 : X.loc a < P.flag + 1
+  · have hx : X.loc a = P.slot ∨ X.loc a = P.flag := by unfold flag slot at *; omega
+    exact hat ⟨fail_atomic run hF.ok (hk ha) hx, fail_atomic run hF.ok (hk hb) (hl ▸ hx)⟩
+  · exact hat ⟨TaskProg.atomic_of_flags hT run ha (by show P.flag + 1 ≤ _; omega),
+      TaskProg.atomic_of_flags hT run hb (by show P.flag + 1 ≤ _; omega)⟩
 
 end ChanProg
 

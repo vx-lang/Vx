@@ -1,0 +1,12 @@
+LISA cancel_flag_read_before_the_failure
+(* P0 fails: it writes the failure slot with sc, sets the cancel flag with release, and then reads
+   y. P1 writes y with sc, and then checks the cancel flag with acquire. Each thread can miss the
+   write of the other, so a program with failures is not always an interleaving.
+   Expect: sometimes, no data race. *)
+{ slot = 0; flag = 0; y = 0; }
+ P0                  | P1                   ;
+ w[sc] slot 1        | w[sc] y 1            ;
+ w[rel] flag 1       | r[acq] r1 flag       ;
+ r[sc] r0 y          |                      ;
+scopes: (system P0 P1)
+exists (0:r0 = 0 /\ 1:r1 = 0)

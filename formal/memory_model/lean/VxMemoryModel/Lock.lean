@@ -344,9 +344,9 @@ theorem hclean_body (hP : P.Ok) (t : Nat) : P.HClean m (fun _ _ _ => True) (P.bo
     split
     · refine .seq (.other ⟨Avoid.notLock hm (Or.inr (Or.inr ?_)), trivial⟩)
         (.seq (hclean_lower hm (hP.task t)) (.other ⟨Avoid.notLock hm (Or.inr (Or.inr ?_)), trivial⟩))
-      · simp only [TaskProg.start, toTaskProg]
+      · simp only [TaskProg.start, toTaskProg, flag, slot]
         omega
-      · simp only [TaskProg.done, toTaskProg]
+      · simp only [TaskProg.done, toTaskProg, flag, slot]
         omega
     · exact .other trivial
 

@@ -1,7 +1,7 @@
 import VxMemoryModel.LockFootprint
 
 /-!
-# Programs with a channel and a lock that follow the footprint rule
+# Programs with a channel, a lock and a failure that follow the footprint rule
 
 In `chanFoot`, the main code starts two tasks in a block. Task 0 sends 7 on channel 0. Task 1
 receives it into the register 4 and writes it to the place 0. After the block, the main code
@@ -11,7 +11,10 @@ In `lockFoot`, both tasks add 1 to the place 0, each in a `locked` block of lock
 gives the place 0 to lock 0, so the two tasks can share it. The main code reads the place 0 after
 the block, also under the lock.
 
-The rule holds for both programs, so no execution of them has a data race.
+In `failFoot`, task 0 writes the place 0 and then fails. Task 1 checks the cancel flag and then
+writes the place 1. After the block, the main code reads the failure slot and both places.
+
+The rule holds for the three programs, so no execution of them has a data race.
 -/
 
 namespace Vx
@@ -44,7 +47,6 @@ theorem chanFoot_footprints : chanFoot.CFootprints (fun _ => none) chanPhases wh
         | 1 => by simp [chanFoot, StmtOk, Stmt.Below]
         | _ + 2 => by simp [chanFoot, StmtOk, Stmt.Below]
       cap _ _ := by simp [chanFoot] }
-  errors := rfl
   main := rfl
   phases := by
     simp [CPhasesOk, chanPhases, CPhase.Ok, CPhase.lower, TaskProg.Phase.ids, CStmt.NoTasks,
@@ -94,7 +96,6 @@ theorem lockFoot_footprints : lockFoot.CFootprints lockGuard lockPhases where
         | 0 | 1 => by simp [lockFoot, addOne, StmtOk, Stmt.Below, CStmt.Locks]
         | _ + 2 => by simp [lockFoot, StmtOk, Stmt.Below]
       cap _ h := by simp [lockFoot] at h }
-  errors := rfl
   main := rfl
   phases := by
     simp [CPhasesOk, lockPhases, CPhase.Ok, CPhase.lower, TaskProg.Phase.ids, CStmt.NoTasks,
@@ -115,5 +116,49 @@ theorem lockFoot_footprints : lockFoot.CFootprints lockGuard lockPhases where
 theorem lockFoot_raceFree {X : Execution} (hX : lockFoot.toTaskProg.toProg.Execs X)
     (wf : X.WellFormed) (hc : X.Consistent) (ho : X.CoOrder) (hfin : X.Finite) : X.RaceFree :=
   raceFree lockFoot_footprints hX wf hc ho hfin
+
+def failPhases : List CPhase :=
+  [.block (.seq (.base (.spawn 0)) (.base (.spawn 1))),
+    .code (.seq (.result 4) (.seq (.base (.load 5 0 .plain)) (.base (.load 5 1 .plain))))]
+
+def failFoot : ChanProg where
+  main := cseqAll failPhases
+  task
+    | 0 => .seq (.base (.store 0 (.const 1) .plain)) (.fail 5)
+    | 1 => .seq .checkCancel (.base (.store 1 (.const 2) .plain))
+    | _ => .base .skip
+  count := 2
+  places := 2
+  chans := 0
+  locks := 0
+  cap _ := 1
+  senders _ := 1
+  msgs := 1
+  tmp := 6
+  errors := true
+
+theorem failFoot_footprints : failFoot.CFootprints (fun _ => none) failPhases where
+  ok :=
+    { main := by simp [failFoot, failPhases, cseqAll, CPhase.stmt, StmtOk, Stmt.Below]
+      task
+        | 0 | 1 | _ + 2 => by simp [failFoot, StmtOk, Stmt.Below]
+      cap _ h := by simp [failFoot] at h }
+  main := rfl
+  phases := by
+    simp [CPhasesOk, failPhases, CPhase.Ok, CPhase.lower, TaskProg.Phase.ids, CStmt.NoTasks,
+      CStmt.NoBlocks, CStmt.RegsBelow, Stmt.NoTasks, Stmt.NoBlocks, Stmt.RegsBelow,
+      Expr.RegsBelow, lowerC, Stmt.spawnIds, CStmt.Apart, CStmt.Accesses, Stmt.Accesses, Compat,
+      failFoot]
+  tasks
+    | 0 | 1 | _ + 2 => by simp [failFoot, CStmt.NoTasks, Stmt.NoTasks]
+  guard := nofun
+  guarded_main := by
+    simp [failFoot, failPhases, cseqAll, CPhase.stmt, CStmt.Guarded, Stmt.Accesses]
+  guarded_task
+    | 0 | 1 | _ + 2 => by simp [failFoot, CStmt.Guarded, Stmt.Accesses]
+
+theorem failFoot_raceFree {X : Execution} (hX : failFoot.toTaskProg.toProg.Execs X)
+    (wf : X.WellFormed) (hc : X.Consistent) (ho : X.CoOrder) (hfin : X.Finite) : X.RaceFree :=
+  raceFree failFoot_footprints hX wf hc ho hfin
 
 end Vx

@@ -112,8 +112,11 @@ the `send` happens before it (`data_hb`). The rule can also give a place a lock.
 accesses the place only in `locked` blocks of that lock, and two tasks of a block can share it.
 `LockFootprint.lean` shows that each such access comes after the thread entered the lock and
 before it let the lock go (`guard_access`). So `lock_excl` orders two of them (`guard_hb`).
-`ChanFootprintExample.lean` has a block where one task sends a value to the other, and a block
-where two tasks add 1 to one place under a lock. The edges of channels need a finite execution whose `co` orders the
+The code can also fail. Each access to the failure slot and the cancel flag is atomic
+(`fail_atomic`), so these places never race. `drf_sc_of_footprints` still needs code with no
+failures: `cancel_flag_read_before_the_failure.litmus` has a result that no interleaving gives.
+`ChanFootprintExample.lean` has a block where one task sends a value to the other, a block
+where two tasks add 1 to one place under a lock, and a block where a task fails. The edges of channels need a finite execution whose `co` orders the
 writes to each place. So these theorems use `drf_sc_co`, which gives the race-freedom hypothesis
 only such executions.
 
@@ -237,15 +240,17 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   own.
 - A program has one failure slot, so only one `tasks` block can fail. A task that sees the cancel
   flag does not stop: the model shows only that its CAS fails. `ChanProg.drf_sc` needs code with
-  no failures, because the flag uses release and acquire. `run_lean.py` has no read-modify-writes,
+  no failures, because the flag uses release and acquire. A program with failures has no data
+  race when it follows the footprint rule, but its executions are not always interleavings.
+  `run_lean.py` has no read-modify-writes,
   so no herd7 test has the CAS of a failure. `message_passing_release_acquire` checks the edge of
   the flag.
 - `each_error_once` follows an error by the CAS of its failure, not by a value with an owner. A
   CAS that loses still reads the error that won, but only to see that the slot is set.
-- The footprint rule does not cover failures. A place that a lock guards is accessed only under
-  that lock, even outside the blocks of tasks. A task cannot start a task, and a block cannot be
-  in a loop. The rule is stricter than needed: two blocks that run one after the
-  other can share places, but two tasks of one block cannot.
+- The code accesses a place that a lock guards only under that lock, even outside the blocks of
+  tasks. A task cannot start a task, and a block cannot be in a loop. The rule is stricter than
+  needed: two blocks that run one after the other can share places, but two tasks of one block
+  cannot.
 - `ring_fifo` speaks of each read of the values. A `recv` reads its element once, and a `send`
   writes its element once. This follows from their code, but no theorem states it yet.
   `recv_full` shows that a `recv` reads its element only after it reads `full k` as set.

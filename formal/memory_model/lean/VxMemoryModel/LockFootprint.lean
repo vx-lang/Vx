@@ -54,10 +54,10 @@ def Unguarded (k : Kind) (_ : Order) (x : Nat) : Prop := k = .fence ∨ g x ≠ 
 
 section Code
 
-variable (hm : m < P.locks) (he : P.errors = false) (hg : ∀ x m', g x = some m' → x < P.places)
-include hm he hg
+variable (hm : m < P.locks) (hg : ∀ x m', g x = some m' → x < P.places)
+include hm hg
 
-omit hm he in
+omit hm in
 theorem unguarded_of {k o x} (hx : P.places ≤ x) : Unguarded g m k o x :=
   Or.inr fun h => absurd (hg _ _ h) (by omega)
 
@@ -67,14 +67,14 @@ theorem hclean_guarded {s : CStmt} {held : List Nat} (hmh : m ∉ held) (hs : P.
     (hb : ∀ b, s.Bases b → b.NoBlocks) (hgd : s.Guarded g held) :
     P.HClean m (Unguarded g m) (P.toTaskProg.lower (P.lowerC s)) := by
   have ug : ∀ {k o x}, P.places ≤ x → Unguarded g m k o x := fun h => unguarded_of hg h
-  have hpt : P.places ≤ P.top := by unfold top; omega
+  have hpt : P.places ≤ P.toTaskProg.flags := by simp only [toTaskProg, flag, slot, top]; omega
   -- The code of a channel operation accesses only the places from `places` up.
   have chan : ∀ {s : CStmt}, P.StmtOk s → ¬ s.Locks m → s.NoTasks →
       s.Accesses (fun _ _ _ => False) →
       P.HClean m (Unguarded g m) (P.toTaskProg.lower (P.lowerC s)) := fun hs hn hnt hq => by
     refine .other ((lower_notLock hm hs hn).and ?_)
     rw [TaskProg.lower_noTasks (lowerC_noTasks hnt)]
-    exact (lowerC_accesses he hs hq).mono fun _ _ x h =>
+    exact (lowerC_accesses hs hq).mono fun _ _ x h =>
       ug (Nat.le_of_not_lt fun hx => h hx)
   induction s generalizing held with
   | base s =>
@@ -108,26 +108,26 @@ theorem hclean_guarded {s : CStmt} {held : List Nat} (hmh : m ∉ held) (hs : P.
   | tasksBlock _ ih =>
     exact .seq (.other (P.toTaskProg.clearMarks_accesses _ _))
       (.seq (ih hmh hs hb hgd) (.other (P.toTaskProg.joinMarked_accesses fun u _ =>
-        ⟨Avoid.notLock hm (Or.inr (Or.inr (by simp only [TaskProg.done, toTaskProg]; omega))),
-          ug (by simp only [TaskProg.done, toTaskProg]; omega)⟩)))
-  | fail | checkCancel | result => simp [StmtOk, he] at hs
+        ⟨Avoid.notLock hm (Or.inr (Or.inr (by simp only [TaskProg.done, toTaskProg, flag, slot, top]; omega))),
+          ug (by simp only [TaskProg.done, toTaskProg, flag, slot, top]; omega)⟩)))
+  | fail | checkCancel | result => exact chan hs nofun trivial trivial
 
 theorem hclean_guarded_body (hP : P.Ok) (hbm : ∀ b, P.main.Bases b → b.NoBlocks)
     (hbt : ∀ t b, (P.task t).Bases b → b.NoBlocks) (hgm : P.main.Guarded g [])
     (hgt : ∀ t, (P.task t).Guarded g []) (t : Nat) :
     P.HClean m (Unguarded g m) (P.body t) := by
   have ug : ∀ {k o x}, P.places ≤ x → Unguarded g m k o x := fun h => unguarded_of hg h
-  have hpt : P.places ≤ P.top := by unfold top; omega
+  have hpt : P.places ≤ P.toTaskProg.flags := by simp only [toTaskProg, flag, slot, top]; omega
   cases t with
-  | zero => exact hclean_guarded hm he hg (by simp) hP.main hbm hgm
+  | zero => exact hclean_guarded hm hg (by simp) hP.main hbm hgm
   | succ t =>
     show P.HClean m (Unguarded g m) (P.toTaskProg.taskCode t)
     unfold TaskProg.taskCode
     split
     · refine .seq (.other ⟨Avoid.notLock hm (Or.inr (Or.inr ?_)), ug ?_⟩)
-        (.seq (hclean_guarded hm he hg (by simp) (hP.task t) (hbt t) (hgt t))
+        (.seq (hclean_guarded hm hg (by simp) (hP.task t) (hbt t) (hgt t))
           (.other ⟨Avoid.notLock hm (Or.inr (Or.inr ?_)), ug ?_⟩))
-      all_goals simp only [TaskProg.start, TaskProg.done, toTaskProg]; omega
+      all_goals simp only [TaskProg.start, TaskProg.done, toTaskProg, flag, slot, top]; omega
     · exact .other trivial
 
 end Code
@@ -289,7 +289,7 @@ theorem guard_access (hF : P.CFootprints g ps) (hm : m < P.locks) {d : X.E}
     have := initList_ge hF.ok hi
     omega
   have hacc := Runs.haccepts (trace_rest (run.trace d)).2
-    (.clean (hclean_guarded_body hm hF.errors hg hF.ok (hF.main ▸ cseqAll_bases hF.phases)
+    (.clean (hclean_guarded_body hm hg hF.ok (hF.main ▸ cseqAll_bases hF.phases)
       (fun t => CStmt.NoTasks.bases (hF.tasks t)) hF.guarded_main hF.guarded_task _))
   have hget := view_get run (e := d) rfl (Nat.le_refl _) hp
   rcases hacc.guard_hist hm (fun x h => hg x m h) hget hk hd with
@@ -361,14 +361,15 @@ theorem raceFree (hF : P.CFootprints g ps) (hX : P.toTaskProg.toProg.Execs X)
   · exact hba h
 
 omit run in
-/-- DRF-SC from the rule: for a program with channels and locks that follows it, each finite
-execution that the model allows, with a `co` that orders the writes to each place, is an
-interleaving. -/
-theorem drf_sc_of_footprints (hF : P.CFootprints g ps)
+/-- DRF-SC from the rule: for a program with channels and locks that follows it and has no
+failures, each finite execution that the model allows, with a `co` that orders the writes to each
+place, is an interleaving. A failure uses release and acquire, so the program needs `errors`
+false. -/
+theorem drf_sc_of_footprints (hF : P.CFootprints g ps) (he : P.errors = false)
     (hm : ∀ b, P.main.Bases b → b.SeqCstOnly) (ht : ∀ t b, (P.task t).Bases b → b.SeqCstOnly)
     (hX : P.toTaskProg.toProg.Execs X) (wf : X.WellFormed) (hfin : X.Finite)
     (ho : X.CoOrder) (hc : X.Consistent) : X.SeqConsistent :=
-  P.drf_sc_co hm ht (not_fails hF.errors hF.ok.main) (fun t => not_fails hF.errors (hF.ok.task t))
+  P.drf_sc_co hm ht (not_fails he hF.ok.main) (fun t => not_fails he (hF.ok.task t))
     (fun _ hY wfY hsc hfinY hoY =>
       raceFree hF hY wfY (Execution.consistent_of_seqConsistent wfY hsc) hoY hfinY)
     hX wf hfin ho hc

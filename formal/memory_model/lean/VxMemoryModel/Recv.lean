@@ -336,9 +336,9 @@ theorem rclean_body (hP : P.Ok) (t : Nat) : P.RClean c j (P.body t) := by
     split
     · refine .seq (.other (Avoid.notRecv hc hj (Or.inr (Or.inr ?_))))
         (.seq (rclean_lower hc hj (hP.task t)) (.other (Avoid.notRecv hc hj (Or.inr (Or.inr ?_)))))
-      · simp only [TaskProg.start, toTaskProg]
+      · simp only [TaskProg.start, toTaskProg, flag, slot]
         omega
-      · simp only [TaskProg.done, toTaskProg]
+      · simp only [TaskProg.done, toTaskProg, flag, slot]
         omega
     · exact .other trivial
 

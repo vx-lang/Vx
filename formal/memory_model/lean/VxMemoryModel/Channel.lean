@@ -29,7 +29,8 @@ same time.
 has one writer. Then `send_hb_recv`, `recv_hb_send_capacity`, `drop_hb_closed` and
 `unlock_hb_lock` give the edges of M4 in `docs/discussions/waiting_tasks_channels_and_task_errors.md`.
 
-A program with errors also has a failure slot and a cancel flag, after the flags of the tasks.
+A program with errors also has a failure slot and a cancel flag, after the channels and before
+the flags of the tasks.
 `fail`, `checkCancel` and `result` use them. They use release and acquire, so `drf_sc` asks for
 code with no failures. `Cancel.lean` has their theorems.
 
@@ -177,13 +178,13 @@ def size : Nat := 3 + 4 * P.msgs
 /-- The first place of the channel `c`. The two counters of each lock come before the channels. -/
 def chan (c : Nat) : Nat := P.places + 2 * P.locks + c * P.size
 
-/-- The place after the channels. The flags of the tasks start here. -/
+/-- The place after the channels. -/
 def top : Nat := P.places + 2 * P.locks + P.chans * P.size
 
-/-- The failure slot comes after the flags of the tasks. 0 means that no failure came. -/
-def slot : Nat := P.top + 2 * P.count
+/-- The failure slot comes after the channels. 0 means that no failure came. -/
+def slot : Nat := P.top
 
-/-- The cancel flag. -/
+/-- The cancel flag. The flags of the tasks start after it. -/
 def flag : Nat := P.slot + 1
 
 /-- The counter `q` of the channel or the lock `c`. -/
@@ -343,7 +344,7 @@ def toTaskProg : TaskProg where
   main := .seq (stores P.initList) (P.lowerC P.main)
   task t := P.lowerC (P.task t)
   count := P.count
-  flags := P.top
+  flags := P.flag + 1
   marks := P.tmp + 3
 
 /-- The rules for the code of the program: it uses the places below `places`, its channels and
@@ -499,9 +500,7 @@ theorem data_inside {c j : Nat} (hc : c < P.chans) (hj : j < P.msgs) :
   rw [size_eq] at *
   omega
 
-theorem top_le_slot : P.top ≤ P.slot := by
-  unfold slot
-  omega
+theorem top_le_slot : P.top ≤ P.slot := Nat.le_refl _
 
 /-! ## The states of lowered code -/
 
@@ -1159,7 +1158,7 @@ theorem joinMarked_avoid (ids : List Nat) : (P.toTaskProg.joinMarked ids).Access
   | nil => trivial
   | cons t _ ih =>
     refine ⟨⟨fun j hj => Or.inr (Or.inr ?_), trivial⟩, ih⟩
-    simp only [TaskProg.done, toTaskProg]
+    simp only [TaskProg.done, toTaskProg, flag, slot]
     omega
 
 theorem slot_avoid {k o} : P.Avoid k o P.slot :=
@@ -1179,12 +1178,12 @@ theorem lower_avoid {s : Stmt} (h : s.Below P.places P.count) :
   induction s with
   | spawnAt base =>
     refine ⟨trivial, fun j hj => Or.inr (Or.inr ?_)⟩
-    simp only [TaskProg.start, toTaskProg]
+    simp only [TaskProg.start, toTaskProg, flag, slot]
     omega
   | tasksBlock _ ih => exact ⟨clearMarks_avoid _, ih h, joinMarked_avoid _⟩
   | joinAt base =>
     refine fun j hj => Or.inr (Or.inr ?_)
-    simp only [TaskProg.done, toTaskProg]
+    simp only [TaskProg.done, toTaskProg, flag, slot]
     omega
   | load | store | rmwStore | wait => exact Or.inr (Or.inl h)
   | fetchAdd | cas => exact ⟨Or.inr (Or.inl h), Or.inr (Or.inl h)⟩
@@ -1222,9 +1221,9 @@ theorem clean_task (hP : P.Ok) (t : Nat) : P.Clean (P.toTaskProg.toProg.code (t 
   unfold TaskProg.taskCode
   split
   · refine .seq (.other (Or.inr (Or.inr ?_))) (.seq (clean_lower (hP.task t)) (.other (Or.inr (Or.inr ?_))))
-    · simp only [TaskProg.start, toTaskProg]
+    · simp only [TaskProg.start, toTaskProg, flag, slot]
       omega
-    · simp only [TaskProg.done, toTaskProg]
+    · simp only [TaskProg.done, toTaskProg, flag, slot]
       omega
   · exact .other trivial
 
