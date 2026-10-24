@@ -661,8 +661,8 @@ pub enum DiagnosticCode {
     E8005,
     /// A call does not meet the called function's precondition (`requires`)
     E8006,
-    /// An `atomic(t)` clause that does not name a tensor, or a body that uses that tensor without
-    /// an atomic operation
+    /// An access clause that does not hold: an `atomic(t)` whose body uses `t` without an atomic
+    /// operation, or a `writes_only()` whose body may write memory
     E8007,
 }
 

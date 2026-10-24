@@ -20,9 +20,41 @@ use crate::syntax::stmt::Statement;
 use crate::syntax::{ElementType, Expr, Span, Type};
 use std::collections::{HashMap, HashSet};
 
-/// Whether `e` is an atomic clause, well formed or not. The prover does not read these.
-pub(crate) fn is_atomic_clause(e: &Expr) -> bool {
-    matches!(e, Expr::FunctionCall(fc) if fc.name.as_ref() == "atomic")
+/// Whether `e` is a clause about memory access, `atomic(t)` or `writes_only()`, well formed or
+/// not. The prover does not read these.
+pub(crate) fn is_access_clause(e: &Expr) -> bool {
+    matches!(e, Expr::FunctionCall(fc) if matches!(fc.name.as_ref(), "atomic" | "writes_only"))
+}
+
+/// Whether `e` is a `writes_only` clause, with or without arguments.
+fn is_writes_only(e: &Expr) -> bool {
+    matches!(e, Expr::FunctionCall(fc) if fc.name.as_ref() == "writes_only")
+}
+
+/// Whether `e` is `writes_only()`: the code writes no memory, as a fence does.
+fn is_writes_nothing(e: &Expr) -> bool {
+    matches!(e, Expr::FunctionCall(fc) if fc.name.as_ref() == "writes_only" && fc.args.is_empty())
+}
+
+/// Whether `f` says `ensures writes_only()`.
+pub(crate) fn writes_nothing(f: &Function) -> bool {
+    f.ensures.iter().any(is_writes_nothing)
+}
+
+/// Whether a parameter of type `ty` can reach memory of the caller: a tensor, a reference, a
+/// pointer, or a function or closure that may hold one.
+fn reaches_memory(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Tensor(..)
+            | Type::Borrow { .. }
+            | Type::Pointer(..)
+            | Type::Ref(..)
+            | Type::Pinned(..)
+            | Type::Function(..)
+            | Type::Closure(..)
+            | Type::GenericInstance(..)
+    )
 }
 
 /// The tensor that the clause `atomic(t)` names.
@@ -138,8 +170,7 @@ impl crate::hir::TypeChecker<'_> {
     /// uses that tensor only in atomic operations. An atomic operation is an `mlir!` block whose
     /// clauses name the tensor, or a call whose callee has a clause for that argument.
     pub(crate) fn check_atomic_contract(&mut self, f: &Function) {
-        let clauses: Vec<&Expr> = f.ensures.iter().filter(|e| is_atomic_clause(e)).collect();
-        if clauses.is_empty() || self.speculating {
+        if self.speculating || !f.ensures.iter().any(is_access_clause) {
             return;
         }
         // An instance of a generic function is named by its template in a message.
@@ -147,6 +178,27 @@ impl crate::hir::TypeChecker<'_> {
             Some((template, _)) if self.env.generic_functions.contains_key(template) => template,
             _ => f.name.as_ref(),
         };
+        for clause in f.ensures.iter().filter(|e| is_writes_only(e)) {
+            if is_writes_nothing(clause) {
+                self.check_writes_nothing(f, shown, clause.span());
+            } else {
+                self.atomic_error(
+                    format!(
+                        "`writes_only` takes no arguments here: `writes_only()` says that \
+                         `{shown}` writes no memory"
+                    ),
+                    clause.span(),
+                );
+            }
+        }
+        let clauses: Vec<&Expr> = f
+            .ensures
+            .iter()
+            .filter(|e| is_access_clause(e) && !is_writes_only(e))
+            .collect();
+        if clauses.is_empty() {
+            return;
+        }
         let mut names = HashSet::new();
         for clause in clauses {
             let Some(name) = atomic_name(clause) else {
@@ -203,6 +255,29 @@ impl crate::hir::TypeChecker<'_> {
         }
         let mut named = HashSet::new();
         for clause in &m.ensures {
+            if is_writes_only(clause) {
+                let memory = m
+                    .inputs
+                    .iter()
+                    .find(|(_, _, ty)| ty.starts_with("memref") || ty.contains("!llvm.ptr"));
+                if !is_writes_nothing(clause) {
+                    self.atomic_error(
+                        "`writes_only` takes no arguments here: `writes_only()` says that the \
+                         block writes no memory"
+                            .to_string(),
+                        clause.span(),
+                    );
+                } else if let Some((sym, _, ty)) = memory {
+                    self.atomic_error(
+                        format!(
+                            "a block that says `writes_only()` may take no memref or pointer \
+                             input, but `{sym}` is `{ty}`"
+                        ),
+                        m.span,
+                    );
+                }
+                continue;
+            }
             let input = atomic_name(clause).and_then(|name| {
                 m.inputs
                     .iter()
@@ -255,18 +330,76 @@ impl crate::hir::TypeChecker<'_> {
     /// The parameters with an atomic clause, for each function that has one. A call to a generic
     /// function names the template before its body is checked and the instance after, so both
     /// are here.
+    /// A function that says `writes_only()` is here too, with no parameters.
     pub(crate) fn atomic_contracts(&self) -> HashMap<String, Vec<usize>> {
+        self.known_functions()
+            .filter_map(|(name, f)| {
+                let params = atomic_params(f);
+                (!params.is_empty() || writes_nothing(f))
+                    .then(|| (name.as_ref().to_string(), params))
+            })
+            .collect()
+    }
+
+    /// Every function the checker knows by name: the plain ones, the generic templates and the
+    /// instances made so far.
+    fn known_functions(&self) -> impl Iterator<Item = (&crate::symbol::Symbol, &Function)> {
         let syntax = self.env.syntax_functions.iter().map(|(n, f)| (n, *f));
         let templates = self.env.generic_functions.iter().map(|(n, (f, _))| (n, *f));
         let instances = self.mono.functions.iter().map(|(f, _)| (&f.name, f));
-        syntax
-            .chain(templates)
-            .chain(instances)
-            .filter_map(|(name, f)| {
-                let params = atomic_params(f);
-                (!params.is_empty()).then(|| (name.as_ref().to_string(), params))
-            })
-            .collect()
+        syntax.chain(templates).chain(instances)
+    }
+
+    /// E8007 for a function `f` that says `writes_only()`. It takes nothing that reaches the
+    /// caller's memory, each `mlir!` block in it says `writes_only()`, and each call in it is to a
+    /// function that says it too. With no globals in the language, it then writes no memory that
+    /// another pass can see.
+    fn check_writes_nothing(&mut self, f: &Function, shown: &str, at: Span) {
+        for (p, ty) in f.params.iter().filter(|(_, ty)| reaches_memory(ty)) {
+            self.atomic_error(
+                format!(
+                    "`{shown}` says `writes_only()`, so it may take no tensor, reference or \
+                     pointer, but `{p}` is `{ty}`"
+                ),
+                at,
+            );
+        }
+        let callees: HashSet<String> = self
+            .known_functions()
+            .filter(|(_, g)| writes_nothing(g))
+            .map(|(n, _)| n.as_ref().to_string())
+            .collect();
+        let mut bad: Vec<(String, Span)> = Vec::new();
+        crate::syntax::visit_exprs(&f.body, &mut |e| match e {
+            Expr::InlineMlir(m) if !m.ensures.iter().any(is_writes_nothing) => bad.push((
+                format!(
+                    "`{shown}` says `writes_only()`, so each `mlir!` block in it must say \
+                     `ensures : [writes_only()]`"
+                ),
+                m.span,
+            )),
+            Expr::FunctionCall(fc)
+                if !callees.contains(fc.name.as_ref())
+                    && !crate::hir::check::parallel::parallel_pure_call(&fc.name) =>
+            {
+                bad.push((
+                    format!(
+                        "`{shown}` says `writes_only()`, so it may call only a function that says \
+                         it too, but `{}` does not",
+                        fc.name
+                    ),
+                    fc.span,
+                ))
+            }
+            Expr::MethodCall(mc) => bad.push((
+                format!("`{shown}` says `writes_only()`, so it may call no method"),
+                mc.span,
+            )),
+            _ => {}
+        });
+        for (message, span) in bad {
+            self.atomic_error(message, span);
+        }
     }
 }
 

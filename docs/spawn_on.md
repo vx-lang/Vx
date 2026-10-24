@@ -208,6 +208,8 @@ spawn on(Topology::Gpu) {
   the loop must then be atomic (#2139, `discussions/mlir_declared_writes_in_across.md`).
   `core::sync::atomic` has these functions for an integer or float element of a tensor in any
   memory, such as `atomic_fetch_add_u32(&counts, i, 1u32, AtomicOrdering::Relaxed)`.
+- A call to a function that says `ensures writes_only()` accesses no memory, so it races with
+  nothing. `scoped_fence(order, FenceScope::Device)` is one.
 - Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
   memory.
 - Delete each `across` and the program means the same. The CPU copy of the region runs one

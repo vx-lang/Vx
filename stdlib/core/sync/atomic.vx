@@ -90,8 +90,10 @@ fn core_atomic_store_order_ok<D : Topology>(o : AtomicOrdering) on Topology::D -
   }
 }
 
-/// Whether a fence may use `o`. Rust panics on `Relaxed`.
-fn core_atomic_fence_order_ok(o : AtomicOrdering) -> bool {
+/// Whether a fence may use `o`. Rust panics on `Relaxed`. It runs where its caller runs.
+fn core_atomic_fence_order_ok<D : Topology>(o : AtomicOrdering) on Topology::D -> bool
+ensures writes_only()
+{
   match o {
     AtomicOrdering::Relaxed => {
       return false;
@@ -566,6 +568,117 @@ fn fence(order : AtomicOrdering) -> void {
       };
     }
     AtomicOrdering::Relaxed => {}
+  }
+  return;
+}
+
+/// Which threads a `scoped_fence` orders memory for. A smaller scope is a cheaper fence.
+enum FenceScope {
+  // The passes of one block of an `across` loop.
+  Block,
+  // Every thread on the device, which is what a kernel usually needs.
+  Device,
+  // Every thread in the system, the host too. This is what `fence` does.
+  System,
+}
+
+impl Copy for FenceScope {}
+
+/// `fence`, for the threads of `scope` only. It runs where its caller runs, and it writes no
+/// memory, so the passes of an `across` loop may call it. `order` cannot be `Relaxed`. On a CPU,
+/// LLVM gives every scope the fence for the whole system, which is stronger.
+fn scoped_fence<D : Topology>(order : AtomicOrdering, scope : FenceScope) on Topology::D -> void
+ensures writes_only()
+{
+  assert(core_atomic_fence_order_ok(order), "scoped_fence: the ordering cannot be Relaxed");
+  match scope {
+    FenceScope::Block => {
+      match order {
+        AtomicOrdering::Release => {
+          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+            llvm.fence syncscope("block") release
+            macro.yield
+          };
+        }
+        AtomicOrdering::Acquire => {
+          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+            llvm.fence syncscope("block") acquire
+            macro.yield
+          };
+        }
+        AtomicOrdering::AcqRel => {
+          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+            llvm.fence syncscope("block") acq_rel
+            macro.yield
+          };
+        }
+        AtomicOrdering::SeqCst => {
+          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+            llvm.fence syncscope("block") seq_cst
+            macro.yield
+          };
+        }
+        AtomicOrdering::Relaxed => {}
+      }
+    }
+    FenceScope::Device => {
+      match order {
+        AtomicOrdering::Release => {
+          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+            llvm.fence syncscope("device") release
+            macro.yield
+          };
+        }
+        AtomicOrdering::Acquire => {
+          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+            llvm.fence syncscope("device") acquire
+            macro.yield
+          };
+        }
+        AtomicOrdering::AcqRel => {
+          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+            llvm.fence syncscope("device") acq_rel
+            macro.yield
+          };
+        }
+        AtomicOrdering::SeqCst => {
+          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+            llvm.fence syncscope("device") seq_cst
+            macro.yield
+          };
+        }
+        AtomicOrdering::Relaxed => {}
+      }
+    }
+    FenceScope::System => {
+      match order {
+        AtomicOrdering::Release => {
+          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+            llvm.fence release
+            macro.yield
+          };
+        }
+        AtomicOrdering::Acquire => {
+          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+            llvm.fence acquire
+            macro.yield
+          };
+        }
+        AtomicOrdering::AcqRel => {
+          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+            llvm.fence acq_rel
+            macro.yield
+          };
+        }
+        AtomicOrdering::SeqCst => {
+          mlir!( inputs : (), dialects : ["llvm"], ensures : [writes_only()]) {
+            llvm.fence seq_cst
+            macro.yield
+          };
+        }
+        AtomicOrdering::Relaxed => {}
+      }
+    }
   }
   return;
 }
