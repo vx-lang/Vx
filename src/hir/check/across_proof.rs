@@ -308,8 +308,11 @@ impl Proof {
             }
             Expr::FunctionCall(fc) => {
                 // Making a tensor writes only the new tensor.
+                // A lane reduction reads its tensor and writes nothing. The type checker
+                // refuses a name after `lanes::` that is not one.
                 let pure = crate::hir::check::parallel::parallel_pure_call(&fc.name)
-                    || is_tensor_alloc_call(fc);
+                    || is_tensor_alloc_call(fc)
+                    || fc.name.as_ref().starts_with("lanes::");
                 if !pure {
                     let why = if fc.name.as_ref() == "barrier" {
                         "`barrier()` may not be in an `across` loop: the end of a lane loop is \

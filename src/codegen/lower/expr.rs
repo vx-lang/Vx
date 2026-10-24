@@ -2878,6 +2878,9 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         if let Some(prim) = name.as_ref().strip_prefix("raw::") {
             return lower_raw_primitive(gen, block, prim, args);
         }
+        if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(name) {
+            return lower_lane_reduce(gen, block, op, ordered, args);
+        }
         // `tensor_view_2d(ptr, rows, cols)` -- a rank-2 tensor over memory it
         // does not own, with no copy (#336).
         //
@@ -5342,4 +5345,70 @@ fn lower_tensor_negate<'c>(
 fn function_type<'c>(gen: &MeliorGenerator<'c>, args: &[Type<'c>], ret: Type<'c>) -> Type<'c> {
     let results: &[Type<'c>] = if ret == gen.none_ty { &[] } else { &[ret] };
     melior::ir::r#type::FunctionType::new(gen.context, args, results).into()
+}
+
+/// `lanes::sum(&t, n)` and the other lane reductions, as `vx.lane_reduce`. This code generator
+/// runs `across` loops as plain loops, on one lane, so the op is `serial`: both copies of the
+/// kernel expand it into the loops of the CPU.
+fn lower_lane_reduce<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    op: crate::hir::check::lanes::LaneOp,
+    ordered: bool,
+    args: &[Expr],
+) -> Result<
+    (
+        Value<'c, 'c>,
+        melior::ir::Type<'c>,
+        melior::ir::BlockRef<'c, 'c>,
+    ),
+    LowerError,
+> {
+    let [tensor, n] = args else {
+        return Err(LowerError::ParseType(
+            "a lane reduction takes two arguments".to_string(),
+        ));
+    };
+    let (mut t, mut t_ty, block) = gen.generate_expr(tensor, block)?;
+    // A tensor that the code generator keeps behind a pointer.
+    if let Ok(outer) = melior::ir::r#type::MemRefType::try_from(t_ty) {
+        use melior::ir::r#type::ShapedTypeLike;
+        let inner = outer.element();
+        if melior::ir::r#type::MemRefType::try_from(inner).is_ok() {
+            let load = OperationBuilder::new("memref.load", gen.loc())
+                .add_operands(&[t])
+                .add_results(&[inner])
+                .build()?;
+            t = block.append_operation(load).result(0)?.into();
+            t_ty = inner;
+        }
+    }
+    let (count, count_ty, block) = gen.generate_expr(n, block)?;
+    let count = gen.coerce_type(&block, count, count_ty, gen.i32_ty)?;
+    let _ = t_ty;
+    let kind = match op {
+        crate::hir::check::lanes::LaneOp::Sum => "sum",
+        crate::hir::check::lanes::LaneOp::Max => "max",
+    };
+    let unit = melior::ir::attribute::Attribute::unit(gen.context);
+    let mut attrs = vec![
+        (
+            Identifier::new(gen.context, "kind"),
+            StringAttribute::new(gen.context, kind).into(),
+        ),
+        (Identifier::new(gen.context, "serial"), unit),
+    ];
+    if ordered {
+        attrs.push((Identifier::new(gen.context, "ordered"), unit));
+    }
+    if gen.across_kinds.last() == Some(&crate::arch::LevelKind::Subgroups) {
+        attrs.push((Identifier::new(gen.context, "subgroup"), unit));
+    }
+    let reduce = OperationBuilder::new("vx.lane_reduce", gen.loc())
+        .add_operands(&[t, count])
+        .add_attributes(&attrs)
+        .add_results(&[gen.f32_ty])
+        .build()?;
+    let v = block.append_operation(reduce).result(0)?.into();
+    Ok((v, gen.f32_ty, block))
 }

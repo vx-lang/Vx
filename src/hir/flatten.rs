@@ -1389,6 +1389,9 @@ impl<'r> Lowerer<'r> {
                 // `barrier()` (Vx#379): an effect, not a call -- there is no callee anywhere.
                 // The checker typed it i32, so hand back a constant for the value position
                 // nobody should be using it in.
+                if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(&fc.name) {
+                    return self.lower_lane_reduce(fc, op, ordered);
+                }
                 if fc.name.as_ref() == "barrier" {
                     self.emit_effect(Opcode::Barrier, Register(0), Register(0), 0);
                     return Ok(self.emit_value(
@@ -2626,12 +2629,16 @@ impl<'r> Lowerer<'r> {
     /// The loop variable is a binding of its own: an outer variable of the same name is out of
     /// sight in the body and means what it did before once the loop ends, as in Rust.
     fn lower_for(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
-        if self.across.lanes > 0 {
-            if let Some(kind) = f.across.as_ref().and_then(|a| a.kind) {
-                return self.lower_across_for(f, kind);
-            }
+        let kind = f.across.as_ref().and_then(|a| a.kind);
+        self.across.kinds.extend(kind);
+        let lowered = match kind {
+            Some(kind) if self.across.lanes > 0 => self.lower_across_for(f, kind),
+            _ => self.lower_plain_for(f),
+        };
+        if kind.is_some() {
+            self.across.kinds.pop();
         }
-        self.lower_plain_for(f)
+        lowered
     }
 
     fn lower_plain_for(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
@@ -6789,7 +6796,7 @@ pub const SPAWN_TWO_LEVEL: u64 = 1 << 62;
 /// runtime must refuse to run it on the host rather than compute confidently wrong numbers.
 pub const SPAWN_COOP: u64 = 1 << 61;
 
-mod across;
+pub(crate) mod across;
 mod affine;
 use across::{across_block_lanes, blocks_loop, AcrossState};
 

@@ -26,6 +26,7 @@ pub mod control;
 pub mod drops;
 pub mod escape;
 pub mod imported_errors;
+pub mod lanes;
 pub mod literals;
 pub mod operators;
 pub mod parallel;

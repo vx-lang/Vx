@@ -1619,6 +1619,229 @@ static void fillToDeviceLoops(linalg::FillOp fill) {
   fill.erase();
 }
 
+//===----------------------------------------------------------------------===//
+// Lane reductions (`vx.lane_reduce`)
+//===----------------------------------------------------------------------===//
+//
+// docs/lane_reductions.md gives the order. A group of 32 combines `a[i]` and
+// `a[i + offset]` for each offset in 16, 8, 4, 2, 1, and keeps `a[0]`. A block
+// combines its groups of 32, and then a group of the results.
+
+/// The sum, or the larger value. `a` stays when `b` is not larger, so a NaN in
+/// `b` is dropped, as in the CUDA kernels.
+static Value laneCombine(OpBuilder &b, Location loc, bool max, Value a,
+                         Value other) {
+  if (!max)
+    return b.create<arith::AddFOp>(loc, a, other);
+  Value larger =
+      b.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OGT, other, a);
+  return b.create<arith::SelectOp>(loc, larger, other, a);
+}
+
+static Value f32Constant(OpBuilder &b, Location loc, float v) {
+  return b.create<arith::ConstantOp>(loc, b.getF32FloatAttr(v));
+}
+
+/// The count, at least 0 and at most the size of the input, as an index.
+static Value laneCount(OpBuilder &b, Location loc, vx::LaneReduceOp op) {
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value size = b.create<memref::DimOp>(loc, op.getInput(), zero);
+  Value n = b.create<arith::IndexCastOp>(loc, b.getIndexType(), op.getCount());
+  n = b.create<arith::MaxSIOp>(loc, n, zero);
+  return b.create<arith::MinSIOp>(loc, n, size);
+}
+
+/// The value past the count: 0 for a sum. For the larger value, the first
+/// element, or negative infinity when the count is 0.
+static Value lanePad(OpBuilder &b, Location loc, vx::LaneReduceOp op, Value n,
+                     bool max) {
+  if (!max)
+    return f32Constant(b, loc, 0.0f);
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value first = b.create<memref::LoadOp>(loc, op.getInput(), ValueRange{zero});
+  Value any = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sgt, n, zero);
+  return b.create<arith::SelectOp>(
+      loc, any, first,
+      f32Constant(b, loc, -std::numeric_limits<float>::infinity()));
+}
+
+/// `input[i]` when `i` is below `n`, and `pad` otherwise. The load is in a
+/// branch, so that it never reads past the input.
+static Value laneElement(OpBuilder &b, Location loc, Value input, Value i,
+                         Value n, Value pad) {
+  Value inRange = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt, i, n);
+  auto pick = b.create<scf::IfOp>(loc, TypeRange{b.getF32Type()}, inRange,
+                                  /*withElseRegion=*/true);
+  {
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPointToStart(&pick.getThenRegion().front());
+    Value v = b.create<memref::LoadOp>(loc, input, ValueRange{i});
+    b.create<scf::YieldOp>(loc, v);
+    b.setInsertionPointToStart(&pick.getElseRegion().front());
+    b.create<scf::YieldOp>(loc, pad);
+  }
+  return pick.getResult(0);
+}
+
+/// On the CPU: the group of 32 in `a`, in place. The result is `a[0]`.
+static Value hostTree(OpBuilder &b, Location loc, Value a, bool max) {
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  for (int64_t offset : {16, 8, 4, 2, 1}) {
+    Value off = b.create<arith::ConstantIndexOp>(loc, offset);
+    b.create<scf::ForOp>(
+        loc, zero, off, one, ValueRange{},
+        [&](OpBuilder &nb, Location l, Value i, ValueRange) {
+          Value j = nb.create<arith::AddIOp>(l, i, off);
+          Value x = nb.create<memref::LoadOp>(l, a, ValueRange{i});
+          Value y = nb.create<memref::LoadOp>(l, a, ValueRange{j});
+          nb.create<memref::StoreOp>(l, laneCombine(nb, l, max, x, y), a,
+                                     ValueRange{i});
+          nb.create<scf::YieldOp>(l);
+        });
+  }
+  return b.create<memref::LoadOp>(loc, a, ValueRange{zero});
+}
+
+/// On the CPU: the group of 32 elements from `base`, with `scratch` to work in.
+static Value hostGroup(OpBuilder &b, Location loc, Value input, Value base,
+                       Value n, Value pad, Value scratch, bool max) {
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  Value c32 = b.create<arith::ConstantIndexOp>(loc, 32);
+  b.create<scf::ForOp>(loc, zero, c32, one, ValueRange{},
+                       [&](OpBuilder &nb, Location l, Value i, ValueRange) {
+                         Value at = nb.create<arith::AddIOp>(l, base, i);
+                         nb.create<memref::StoreOp>(
+                             l, laneElement(nb, l, input, at, n, pad), scratch,
+                             ValueRange{i});
+                         nb.create<scf::YieldOp>(l);
+                       });
+  return hostTree(b, loc, scratch, max);
+}
+
+/// The CPU half of `vx.lane_reduce`: loops that give the same bits as the
+/// shuffles of the device half.
+static Value expandLaneReduceOnHost(OpBuilder &b, vx::LaneReduceOp op) {
+  Location loc = op.getLoc();
+  bool max = op.getKind() == "max";
+  Value input = op.getInput();
+  Value n = laneCount(b, loc, op);
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  if (!op.getOrdered()) {
+    Value init =
+        max ? f32Constant(b, loc, -std::numeric_limits<float>::infinity())
+            : f32Constant(b, loc, 0.0f);
+    auto loop = b.create<scf::ForOp>(
+        loc, zero, n, one, ValueRange{init},
+        [&](OpBuilder &nb, Location l, Value i, ValueRange acc) {
+          Value v = nb.create<memref::LoadOp>(l, input, ValueRange{i});
+          nb.create<scf::YieldOp>(l, laneCombine(nb, l, max, acc[0], v));
+        });
+    return loop.getResult(0);
+  }
+  Value pad = lanePad(b, loc, op, n, max);
+  auto groupTy = MemRefType::get({32}, b.getF32Type());
+  Value scratch = b.create<memref::AllocaOp>(loc, groupTy);
+  if (op.getSubgroup())
+    return hostGroup(b, loc, input, zero, n, pad, scratch, max);
+  // The result of each group of 32, then the group of those results.
+  Value c31 = b.create<arith::ConstantIndexOp>(loc, 31);
+  Value c32 = b.create<arith::ConstantIndexOp>(loc, 32);
+  Value groups =
+      b.create<arith::DivUIOp>(loc, b.create<arith::AddIOp>(loc, n, c31), c32);
+  Value results = b.create<memref::AllocaOp>(loc, groupTy);
+  Value first = hostGroup(b, loc, input, zero, n, pad, scratch, max);
+  b.create<memref::StoreOp>(loc, first, results, ValueRange{zero});
+  Value pad2 = max ? first : f32Constant(b, loc, 0.0f);
+  b.create<scf::ForOp>(
+      loc, one, c32, one, ValueRange{},
+      [&](OpBuilder &nb, Location l, Value g, ValueRange) {
+        Value has =
+            nb.create<arith::CmpIOp>(l, arith::CmpIPredicate::ult, g, groups);
+        auto pick = nb.create<scf::IfOp>(l, TypeRange{nb.getF32Type()}, has,
+                                         /*withElseRegion=*/true);
+        {
+          OpBuilder::InsertionGuard guard(nb);
+          nb.setInsertionPointToStart(&pick.getThenRegion().front());
+          Value base = nb.create<arith::MulIOp>(l, g, c32);
+          nb.create<scf::YieldOp>(
+              l, hostGroup(nb, l, input, base, n, pad, scratch, max));
+          nb.setInsertionPointToStart(&pick.getElseRegion().front());
+          nb.create<scf::YieldOp>(l, pad2);
+        }
+        nb.create<memref::StoreOp>(l, pick.getResult(0), results,
+                                   ValueRange{g});
+        nb.create<scf::YieldOp>(l);
+      });
+  return hostTree(b, loc, results, max);
+}
+
+/// On the GPU: the group of 32 lanes of a warp, with `shfl.sync.down`. Lane 0
+/// of the warp has the result. With `broadcast`, every lane gets it.
+static Value deviceTree(OpBuilder &b, Location loc, Value v, bool max,
+                        bool broadcast) {
+  for (int32_t offset : {16, 8, 4, 2, 1}) {
+    Value other =
+        b.create<gpu::ShuffleOp>(loc, v, offset, 32, gpu::ShuffleMode::DOWN)
+            .getShuffleResult();
+    v = laneCombine(b, loc, max, v, other);
+  }
+  if (!broadcast)
+    return v;
+  return b.create<gpu::ShuffleOp>(loc, v, 0, 32, gpu::ShuffleMode::IDX)
+      .getShuffleResult();
+}
+
+/// The GPU half of `vx.lane_reduce`. The checker made sure that every lane of
+/// the block or the subgroup gets here, and that the lanes of a block are a
+/// multiple of 32 and at least the elements of the input.
+static Value expandLaneReduceOnDevice(OpBuilder &b, vx::LaneReduceOp op) {
+  Location loc = op.getLoc();
+  bool max = op.getKind() == "max";
+  Value n = laneCount(b, loc, op);
+  Value pad = lanePad(b, loc, op, n, max);
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value c32 = b.create<arith::ConstantIndexOp>(loc, 32);
+  Value inWarp = b.create<arith::RemUIOp>(loc, tid, c32);
+  Value lane = op.getSubgroup() ? inWarp : tid;
+  Value v = laneElement(b, loc, op.getInput(), lane, n, pad);
+  v = deviceTree(b, loc, v, max, /*broadcast=*/op.getSubgroup());
+  if (op.getSubgroup())
+    return v;
+  // The result of each warp goes to shared memory. Then each warp combines
+  // the results, so that every lane has the total.
+  auto sharedTy =
+      MemRefType::get({32}, b.getF32Type(), MemRefLayoutAttrInterface{},
+                      b.getI64IntegerAttr(3));
+  Value shared =
+      b.create<memref::AllocaOp>(loc, sharedTy, b.getI64IntegerAttr(16));
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value warp = b.create<arith::DivUIOp>(loc, tid, c32);
+  Value leader =
+      b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, inWarp, zero);
+  auto store = b.create<scf::IfOp>(loc, leader, /*withElseRegion=*/false);
+  {
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPointToStart(&store.getThenRegion().front());
+    b.create<memref::StoreOp>(loc, v, shared, ValueRange{warp});
+  }
+  b.create<gpu::BarrierOp>(loc);
+  Value c31 = b.create<arith::ConstantIndexOp>(loc, 31);
+  Value groups =
+      b.create<arith::DivUIOp>(loc, b.create<arith::AddIOp>(loc, n, c31), c32);
+  Value pad2 =
+      max ? b.create<memref::LoadOp>(loc, shared, ValueRange{zero}).getResult()
+          : f32Constant(b, loc, 0.0f);
+  Value q = laneElement(b, loc, shared, inWarp, groups, pad2);
+  Value total = deviceTree(b, loc, q, max, /*broadcast=*/true);
+  // A later reduction in a loop writes the shared memory again.
+  b.create<gpu::BarrierOp>(loc);
+  return total;
+}
+
 static bool isDeviceLowerableDialect(StringRef ns) {
   // `vector` entered the list with Vx#378 R1: the flat path's slice ops
   // (`o[i] = o[i] + v[j] * p`) emit vector.load / elementwise vector arith,
@@ -1796,7 +2019,8 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
                          DeviceCallees &callees) {
   // Rewritten to `gpu.return` and `gpu.barrier` in the device clone (Vx#379).
   // A `vx.launch_dim` leaves the region when it is outlined.
-  if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp>(op))
+  if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp,
+          vx::LaneReduceOp>(op))
     return true;
   // A DYNAMIC shared-memory tile cannot become a `.shared` global (those
   // need a static shape), and leaving the alloca as-is ships a kernel that
@@ -3039,6 +3263,20 @@ struct ConvertVxToStandardPass
       gpuEntry.getOperations().splice(gpuEntry.end(),
                                       clonedEntry->getOperations());
       clonedEntry->erase();
+
+      // The device half of `vx.lane_reduce`: shuffles and shared memory. Before
+      // the steps below, which make its shared scratch `.shared` storage.
+      {
+        SmallVector<vx::LaneReduceOp> reductions;
+        gpuFunc.walk([&](vx::LaneReduceOp r) { reductions.push_back(r); });
+        for (vx::LaneReduceOp r : reductions) {
+          OpBuilder b(r);
+          r.getResult().replaceAllUsesWith(
+              r.getSerial() ? expandLaneReduceOnHost(b, r)
+                            : expandLaneReduceOnDevice(b, r));
+          r.erase();
+        }
+      }
 
       // Shared-memory STORAGE. A space-3 `memref.alloca` is correct on the
       // host path (it lowers to a stack slot and the host runs the region
@@ -4306,6 +4544,17 @@ struct BarrierOpLowering : public OpRewritePattern<vx::BarrierOp> {
   }
 };
 
+/// The host half of `vx.lane_reduce`: the loops of the same order.
+struct LaneReduceOpLowering : public OpRewritePattern<vx::LaneReduceOp> {
+  using OpRewritePattern<vx::LaneReduceOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vx::LaneReduceOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.replaceOp(op, expandLaneReduceOnHost(rewriter, op));
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Device images
 //===----------------------------------------------------------------------===//
@@ -5123,6 +5372,7 @@ struct ConvertVxToLLVMPass
     // pattern rather than letting the op leak to mlir-translate, which does
     // not know the vx dialect (Vx#379).
     target.addIllegalOp<vx::BarrierOp>();
+    target.addIllegalOp<vx::LaneReduceOp>();
 
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
@@ -5134,6 +5384,7 @@ struct ConvertVxToLLVMPass
     patterns.add<KernelOpLowering>(&getContext());
     patterns.add<ReturnOpLowering>(&getContext());
     patterns.add<BarrierOpLowering>(&getContext());
+    patterns.add<LaneReduceOpLowering>(&getContext());
 
     adoptDeclaredRuntimeFns(getOperation());
     if (failed(applyPartialConversion(getOperation(), target,

@@ -554,6 +554,8 @@ pub struct TypeChecker<'a> {
     pub seam: crate::hir::check_state::SeamState,
     /// Traffic and capacity accounting. See [`crate::hir::check_state::TrafficState`].
     pub traffic: crate::hir::check_state::TrafficState,
+    /// The size of the tensor of each lane reduction, by the position of its call.
+    pub(crate) lane_reductions: HashMap<crate::syntax::Span, u64>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -614,6 +616,7 @@ impl<'a> TypeChecker<'a> {
             mono: Default::default(),
             seam: Default::default(),
             traffic: Default::default(),
+            lane_reductions: HashMap::new(),
         }
     }
 

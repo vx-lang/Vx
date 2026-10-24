@@ -309,7 +309,17 @@ pub enum Opcode {
     /// plain loop: `imm` is the kind of its `across` level, one of `LOOP_HINT_*`. The code
     /// generator puts the level on that `Br` as metadata.
     LoopHint = 69,
+    /// A lane reduction (`lanes::sum` and the others) of the tensor `operand1` over its first
+    /// `operand2` elements, an `f32` that every lane gets. `imm` holds `LANE_REDUCE_*`.
+    LaneReduce = 70,
 }
+
+/// `Opcode::LaneReduce`: the larger value, not the sum.
+pub const LANE_REDUCE_MAX: u64 = 1;
+/// `Opcode::LaneReduce`: in the order that docs/lane_reductions.md gives.
+pub const LANE_REDUCE_ORDERED: u64 = 2;
+/// `Opcode::LaneReduce`: over the lanes of a subgroup, not of a block.
+pub const LANE_REDUCE_SUBGROUP: u64 = 4;
 
 /// `Opcode::LoopHint`: the loop was `across` a level of blocks.
 pub const LOOP_HINT_BLOCKS: u64 = 0;
@@ -381,6 +391,7 @@ impl Opcode {
             67 => AffineFor,
             68 => AffineForEnd,
             69 => LoopHint,
+            70 => LaneReduce,
             8 => Call,
             9 => Ret,
             10 => Matmul,

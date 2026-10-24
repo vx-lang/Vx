@@ -13,7 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 use crate::arch::{Level, LevelKind};
-use crate::hir::check::across_lanes;
+use crate::hir::check::{across_lanes, lanes};
 use crate::syntax::stmt::{ForLoopStmt, Statement};
 use crate::syntax::{Expr, Span};
 use std::collections::{HashMap, HashSet};
@@ -30,6 +30,8 @@ struct Region {
     /// The names that the region declares. A `blocks` bound may not read them: the host
     /// computes it before the region starts.
     locals: HashSet<String>,
+    /// The position of the region, which names it.
+    span: Span,
 }
 
 /// One enclosing `across` loop.
@@ -71,6 +73,19 @@ struct Walk<'g> {
     auto_schedule: bool,
     /// The memories with `scope: cta` or `scope: sm`, whose tensors the lanes of a block share.
     shared: HashSet<String>,
+    /// The size of the tensor of each lane reduction, from the type checker.
+    lane_sizes: HashMap<Span, u64>,
+    /// The lane reductions in a place that allows them.
+    lane_calls: Vec<LaneCall>,
+}
+
+/// A lane reduction in the code of a level.
+struct LaneCall {
+    at: Span,
+    name: String,
+    /// `Blocks` in the code of a block, `Subgroups` in the code of a subgroup.
+    scope: LevelKind,
+    region: Region,
 }
 
 impl crate::hir::TypeChecker<'_> {
@@ -95,9 +110,12 @@ impl crate::hir::TypeChecker<'_> {
             found: HashMap::new(),
             auto_schedule: self.worker.global.auto_schedule_levels,
             shared,
+            lane_sizes: self.lane_reductions.clone(),
+            lane_calls: Vec::new(),
         };
         walk.stmts(body, &Ctx::default());
         mark_stmts(body, &walk.found);
+        walk.lane_reductions(body);
         // The proof of an outer loop also walks the inner loops, so one place can come twice.
         let mut seen = HashSet::new();
         walk.errors
@@ -276,10 +294,10 @@ impl Walk<'_> {
             };
             self.error(
                 format!(
-                    "{what} decides whether the lanes reach the end of a lane loop, so it must be \
-                     the same for every lane of the {scope}. It may read only the indices of \
-                     blocks and subgroups, values from the host, and names computed from them, \
-                     but {why}"
+                    "{what} decides whether the lanes reach the end of a lane loop or a lane \
+                     reduction, so it must be the same for every lane of the {scope}. It may read \
+                     only the indices of blocks and subgroups, values from the host, and names \
+                     computed from them, but {why}"
                 ),
                 at,
             );
@@ -354,6 +372,21 @@ impl Walk<'_> {
                 if Self::stretch_level(ctx) {
                     self.block_tensor(l, ctx);
                 }
+                if let Some(fc) = lanes::bare_lanes_call(&l.expr) {
+                    if let (true, false, Some(region), Some(axis)) = (
+                        Self::stretch_level(ctx),
+                        ctx.in_closure,
+                        ctx.region.clone(),
+                        ctx.axes.last(),
+                    ) {
+                        self.lane_calls.push(LaneCall {
+                            at: fc.span,
+                            name: fc.name.as_ref().to_string(),
+                            scope: axis.kind,
+                            region,
+                        });
+                    }
+                }
                 self.expr(&l.expr, ctx)
             }
             Statement::ExprStmt(e) => self.expr(&e.expr, ctx),
@@ -387,6 +420,7 @@ impl Walk<'_> {
                         arch: desc.and_then(|d| d.arch.as_ref()).map(|a| a.to_string()),
                         launches: desc.is_some_and(|d| d.launches_levels(&kind)),
                         locals: HashSet::new(),
+                        span: sp.span,
                     }),
                     top: true,
                     ..Ctx::default()
@@ -476,6 +510,105 @@ impl Walk<'_> {
                 }
                 for s in &seen {
                     self.expr(s, ctx);
+                }
+            }
+        }
+    }
+
+    /// The checks of each lane reduction, after the loops have their levels. A reduction in the
+    /// code of a block combines at most 32 groups of 32, and one in the code of a subgroup one
+    /// group. To launch it, the lanes of a block are a multiple of 32, and they hold the tensor.
+    fn lane_reductions(&mut self, body: &[Statement]) {
+        let mut block_lanes: HashMap<Span, Option<u64>> = HashMap::new();
+        crate::syntax::visit_exprs(body, &mut |e| {
+            if let Expr::SpawnOn(sp) = e {
+                block_lanes.insert(
+                    sp.span,
+                    crate::hir::flatten::across::across_block_lanes(&sp.stmts),
+                );
+            }
+        });
+        let legal: HashSet<Span> = self.lane_calls.iter().map(|c| c.at).collect();
+        let mut elsewhere = Vec::new();
+        crate::syntax::visit_exprs(body, &mut |e| {
+            if let Expr::FunctionCall(fc) = e {
+                if lanes::lane_routine(&fc.name).is_some() && !legal.contains(&fc.span) {
+                    elsewhere.push((fc.name.as_ref().to_string(), fc.span));
+                }
+            }
+        });
+        for (name, at) in elsewhere {
+            self.error(
+                format!(
+                    "`{name}` must be the whole value of a `let` in the code of a loop of blocks \
+                     or subgroups, outside its lane loops. Every lane of the block or the \
+                     subgroup must get to it"
+                ),
+                at,
+            );
+        }
+        let calls = std::mem::take(&mut self.lane_calls);
+        for c in &calls {
+            let Some(&n) = self.lane_sizes.get(&c.at) else {
+                continue;
+            };
+            let (most, scope) = match c.scope {
+                LevelKind::Subgroups => (32, "subgroup"),
+                _ => (lanes::MAX_BLOCK_ELEMENTS, "block"),
+            };
+            if n > most {
+                self.error(
+                    format!(
+                        "`{}` in the code of a {scope} combines at most {most} elements, but its \
+                         tensor has {n}",
+                        c.name
+                    ),
+                    c.at,
+                );
+                continue;
+            }
+            if !c.region.launches {
+                continue;
+            }
+            match c.scope {
+                LevelKind::Subgroups => {
+                    let sub = c
+                        .region
+                        .levels
+                        .iter()
+                        .flatten()
+                        .find(|l| l.kind == LevelKind::Subgroups)
+                        .and_then(|l| l.lanes);
+                    if sub != Some(32) {
+                        self.error(
+                            format!(
+                                "`{}` in the code of a subgroup needs subgroups of 32 lanes, but \
+                                 the topology `{}` gives {}",
+                                c.name,
+                                c.region.name,
+                                sub.map_or("no size".to_string(), |s| s.to_string())
+                            ),
+                            c.at,
+                        );
+                    }
+                }
+                _ => {
+                    let lanes = block_lanes
+                        .get(&c.region.span)
+                        .copied()
+                        .flatten()
+                        .unwrap_or(1);
+                    if lanes % 32 != 0 || n > lanes {
+                        self.error(
+                            format!(
+                                "`{}` in the code of a block needs a block whose lanes are a \
+                                 multiple of 32 and at least the {n} elements of its tensor, but \
+                                 the lane loops of this region give {lanes} lanes",
+                                c.name
+                            ),
+                            c.at,
+                        );
+                    }
                 }
             }
         }

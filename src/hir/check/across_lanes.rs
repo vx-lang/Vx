@@ -16,11 +16,16 @@ use crate::syntax::stmt::Statement;
 use crate::syntax::{Expr, Span};
 use std::collections::HashSet;
 
-/// Whether `s` holds an `across` loop at any depth.
+/// Whether `s` holds an `across` loop or a lane reduction at any depth. Every lane of the block
+/// or the subgroup must get to each of them.
 pub(crate) fn holds_across(s: &Statement) -> bool {
     let mut found = false;
     visit_stmts(std::slice::from_ref(s), &mut |s| {
-        found |= matches!(s, Statement::ForLoop(f) if f.across.is_some());
+        found |= match s {
+            Statement::ForLoop(f) => f.across.is_some(),
+            Statement::LetDecl(l) => crate::hir::check::lanes::bare_lanes_call(&l.expr).is_some(),
+            _ => false,
+        };
     });
     found
 }
@@ -152,6 +157,7 @@ pub(crate) fn stretch(stmts: &[&Statement]) -> Stretch {
         Expr::FunctionCall(fc) => {
             writes |= !crate::hir::check::parallel::parallel_pure_call(&fc.name)
                 && !is_tensor_alloc_call(fc)
+                && !fc.name.as_ref().starts_with("lanes::")
         }
         Expr::Print(_)
         | Expr::Println(_)
@@ -193,6 +199,10 @@ fn note_target(lhs: &Expr, writes: &mut bool, assigned: &mut HashSet<String>) {
 
 /// Why `e` may not be the same for every lane, or `None`. `uniform` says which names are.
 pub(crate) fn not_uniform(e: &Expr, uniform: &dyn Fn(&str) -> bool) -> Option<(String, Span)> {
+    // Every lane gets the same result from a lane reduction.
+    if crate::hir::check::lanes::bare_lanes_call(e).is_some() {
+        return None;
+    }
     let mut why = None;
     crate::syntax::visit_expr(e, &mut |e| {
         if why.is_some() {
