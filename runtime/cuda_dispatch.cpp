@@ -60,6 +60,7 @@
 #include "vx_remote_routing.h"
 #include "vx_stream_policy.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -385,18 +386,22 @@ const DriverApi &driver() {
 }
 
 /// Declared ids the program said are local devices (VX_CTRL_LOCAL_DEVICE),
-/// each with the built-in id it stands for. Filled before `main`, read after.
+/// each with the built-in id it stands for. A program fills it at the start of
+/// `main`, and a library at the start of each `pub fn`, so two threads can add
+/// at the same time. A thread writes an entry before the count that shows it.
 struct LocalDevice {
   int32_t declared;
   int32_t builtin;
 };
 LocalDevice local_devices[64];
-size_t local_device_count = 0;
+std::atomic<size_t> local_device_count{0};
+std::mutex local_devices_mutex;
 
 /// The GPU ordinal a topology id names, or -1 when it names no GPU. A declared
 /// id is looked up in `local_devices` first.
 int gpu_index(int32_t topology_id) {
-  for (size_t i = 0; i < local_device_count; ++i) {
+  const size_t count = local_device_count.load(std::memory_order_acquire);
+  for (size_t i = 0; i < count; ++i) {
     if (local_devices[i].declared == topology_id) {
       topology_id = local_devices[i].builtin;
       break;
@@ -1610,13 +1615,29 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload) {
     if (!pair) {
       return 0;
     }
-    if (local_device_count ==
-        sizeof(local_devices) / sizeof(local_devices[0])) {
+    // Each call of a `pub fn` tells the same pairs again.
+    std::lock_guard<std::mutex> lock(local_devices_mutex);
+    const size_t count = local_device_count.load(std::memory_order_relaxed);
+    for (size_t i = 0; i < count; ++i) {
+      if (local_devices[i].declared != pair[0]) {
+        continue;
+      }
+      if (local_devices[i].builtin != pair[1]) {
+        fprintf(stderr,
+                "[Vx CUDA] FATAL: the topology %d is declared as two local "
+                "devices, %d and %d\n",
+                pair[0], local_devices[i].builtin, pair[1]);
+        abort();
+      }
+      return 1;
+    }
+    if (count == sizeof(local_devices) / sizeof(local_devices[0])) {
       fprintf(stderr, "[Vx CUDA] FATAL: more than %zu declared local devices\n",
-              local_device_count);
+              count);
       abort();
     }
-    local_devices[local_device_count++] = {pair[0], pair[1]};
+    local_devices[count] = {pair[0], pair[1]};
+    local_device_count.store(count + 1, std::memory_order_release);
     return 1;
   }
   default:

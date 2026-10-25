@@ -1,0 +1,39 @@
+//===- a_library_tells_the_backend_its_gpus.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The id of a GPU topology in a machine file is a hash of its name. So the program tells the CUDA
+// backend which local GPU each id is, with `vx_plugin_control`. A program does that at the start
+// of `main`. A library from `--action emit-obj` has no `main`, so each `pub fn` does it at its
+// start. Without it, the backend gives host memory for the count that `merge` makes, and the
+// kernel faults on the GPU.
+//
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --action emit-llvm -o - 2>&1 | FileCheck %s
+// CHECK: llvm.func @merge(
+// CHECK-NOT: llvm.func
+// CHECK: llvm.call @vx_plugin_control(
+// CHECK-NOT: llvm.func
+// CHECK: llvm.call @vx_plugin_arrivals_take(
+
+pub fn merge(partial : &mut Tensor<i32, [?, ?], Memory::HBM>, merged : &mut Tensor<i32, [?, ?], Memory::HBM>, heads : i32) -> void {
+  spawn on(Topology::Device) {
+    for h in 0..heads across blocks {
+      for s in 0..8 across blocks {
+        for l in 0..32 across lanes {
+          partial[h][s * 32 + l] = h * 1000 + s * 32 + l;
+        }
+      }
+      for d in 0..32 across lanes {
+        let mut sum = 0;
+        for s in 0..8 {
+          sum = sum + partial[h][s * 32 + d];
+        }
+        merged[h][d] = sum;
+      }
+    }
+  }
+  return;
+}

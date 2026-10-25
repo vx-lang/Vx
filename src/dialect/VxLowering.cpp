@@ -5176,51 +5176,63 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
 // `VX_CTRL_LOCAL_DEVICE` in include/vx_hardware_runtime.h.
 constexpr int32_t kCtrlLocalDevice = 0x04;
 
-// Tell the backend, at the start of `main`, which local device each declared
-// GPU topology and its memory is. Their ids are hashes of their names, so the
-// backend cannot work it out from an id. The pairs (declared id, built-in id)
-// come from the front end in the `vx.local_devices` module attribute.
+// Tell the backend which local device each declared GPU topology and its
+// memory is. Their ids are hashes of their names, so the backend cannot work it
+// out from an id. The pairs (declared id, built-in id) come from the front end
+// in the `vx.local_devices` module attribute. A program tells it at the start
+// of `main`. A library has no `main`, so each `pub fn` tells it at its start,
+// and the backend keeps each pair once. Without the pairs, the backend gives
+// host memory for a GPU topology. A static constructor does not work here: the
+// object that `--action emit-obj` writes has no constructors.
 static void declareLocalDevices(ModuleOp module) {
   auto pairs = module->getAttrOfType<DenseI32ArrayAttr>("vx.local_devices");
   if (!pairs || pairs.empty())
     return;
   assert(pairs.size() % 2 == 0 && "vx.local_devices holds pairs");
-  auto main = module.lookupSymbol<func::FuncOp>("main");
-  if (!main || main.isExternal())
-    return;
+  SmallVector<func::FuncOp> entries;
+  if (auto main = module.lookupSymbol<func::FuncOp>("main"))
+    entries.push_back(main);
+  else
+    for (auto f : module.getOps<func::FuncOp>())
+      if (f->hasAttr("vx.pub"))
+        entries.push_back(f);
   MLIRContext *ctx = module.getContext();
-  OpBuilder b = OpBuilder::atBlockBegin(&main.front());
-  auto i32Type = b.getI32Type();
-  auto ptrType = LLVM::LLVMPointerType::get(ctx);
-  StringRef controlName = "vx_plugin_control";
-  // Not `main`'s location: on the AST path it carries `main`'s debug info, and
-  // LLVM refuses a declaration with that attached.
-  getOrDeclareRuntimeFn(b, module, UnknownLoc::get(ctx), controlName, i32Type,
-                        {i32Type, ptrType});
-  Location loc =
-      main.front().empty() ? main.getLoc() : main.front().front().getLoc();
+  for (func::FuncOp entry : entries) {
+    if (entry.isExternal())
+      continue;
+    OpBuilder b = OpBuilder::atBlockBegin(&entry.front());
+    auto i32Type = b.getI32Type();
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+    StringRef controlName = "vx_plugin_control";
+    // Not the function's location: on the AST path it carries the function's
+    // debug info, and LLVM refuses a declaration with that attached.
+    getOrDeclareRuntimeFn(b, module, UnknownLoc::get(ctx), controlName, i32Type,
+                          {i32Type, ptrType});
+    Location loc =
+        entry.front().empty() ? entry.getLoc() : entry.front().front().getLoc();
 
-  Value one =
-      b.create<LLVM::ConstantOp>(loc, b.getI64Type(), b.getI64IntegerAttr(1));
-  Value pair = b.create<LLVM::AllocaOp>(
-      loc, ptrType, LLVM::LLVMArrayType::get(i32Type, 2), one);
-  Value second = b.create<LLVM::GEPOp>(loc, ptrType, i32Type, pair,
-                                       ArrayRef<LLVM::GEPArg>{1});
-  Value opcode = b.create<LLVM::ConstantOp>(
-      loc, i32Type, b.getI32IntegerAttr(kCtrlLocalDevice));
-  for (size_t i = 0; i < pairs.size(); i += 2) {
-    b.create<LLVM::StoreOp>(
-        loc,
-        b.create<LLVM::ConstantOp>(loc, i32Type, b.getI32IntegerAttr(pairs[i])),
-        pair);
-    b.create<LLVM::StoreOp>(
-        loc,
-        b.create<LLVM::ConstantOp>(loc, i32Type,
-                                   b.getI32IntegerAttr(pairs[i + 1])),
-        second);
-    b.create<LLVM::CallOp>(loc, TypeRange{i32Type},
-                           SymbolRefAttr::get(ctx, controlName),
-                           ValueRange{opcode, pair});
+    Value one =
+        b.create<LLVM::ConstantOp>(loc, b.getI64Type(), b.getI64IntegerAttr(1));
+    Value pair = b.create<LLVM::AllocaOp>(
+        loc, ptrType, LLVM::LLVMArrayType::get(i32Type, 2), one);
+    Value second = b.create<LLVM::GEPOp>(loc, ptrType, i32Type, pair,
+                                         ArrayRef<LLVM::GEPArg>{1});
+    Value opcode = b.create<LLVM::ConstantOp>(
+        loc, i32Type, b.getI32IntegerAttr(kCtrlLocalDevice));
+    for (size_t i = 0; i < pairs.size(); i += 2) {
+      b.create<LLVM::StoreOp>(loc,
+                              b.create<LLVM::ConstantOp>(
+                                  loc, i32Type, b.getI32IntegerAttr(pairs[i])),
+                              pair);
+      b.create<LLVM::StoreOp>(
+          loc,
+          b.create<LLVM::ConstantOp>(loc, i32Type,
+                                     b.getI32IntegerAttr(pairs[i + 1])),
+          second);
+      b.create<LLVM::CallOp>(loc, TypeRange{i32Type},
+                             SymbolRefAttr::get(ctx, controlName),
+                             ValueRange{opcode, pair});
+    }
   }
 }
 
