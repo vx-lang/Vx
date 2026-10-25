@@ -264,30 +264,32 @@ theorem phase_ok_of_mem : ∀ {ps : List CPhase}, P.CPhasesOk g tps ps → ∀ {
     (phase_ok_of_mem hrest)
 
 theorem stmtOk_of_mem : ∀ {ps : List CPhase}, P.StmtOk (cseqAll ps) →
-    ∀ {B}, CPhase.block B ∈ ps → P.StmtOk B
-  | p :: _, ⟨hs, hrest⟩, _, hm => by
+    ∀ {B rep}, CPhase.block B rep ∈ ps → P.StmtOk B
+  | p :: _, ⟨hs, hrest⟩, _, rep, hm => by
     rcases List.mem_cons.1 hm with rfl | hm
-    · exact hs
+    · cases rep <;> exact hs
     · exact stmtOk_of_mem hrest hm
 
 /-- A block of the lowered main code is the lowering of a block of `ps`. -/
-theorem block_of_mem {s : Stmt} {ps : List CPhase} {B : Stmt}
-    (h : TaskProg.Phase.block B ∈ TaskProg.Phase.code s :: ps.map (CPhase.lower P)) :
-    ∃ B0, CPhase.block B0 ∈ ps ∧ B = P.lowerC B0 := by
+theorem block_of_mem {s : Stmt} {ps : List CPhase} {B : Stmt} {rep : Option Expr}
+    (h : TaskProg.Phase.block B rep ∈ TaskProg.Phase.code s :: ps.map (CPhase.lower P)) :
+    ∃ B0, CPhase.block B0 rep ∈ ps ∧ B = P.lowerC B0 := by
   rcases List.mem_cons.1 h with h | h
   · cases h
   · obtain ⟨p, hp, he⟩ := List.mem_map.1 h
     cases p with
     | code => cases he
     | block B0 =>
-      cases he
+      simp only [CPhase.lower, TaskProg.Phase.block.injEq] at he
+      obtain ⟨rfl, rfl⟩ := he
       exact ⟨B0, hp, rfl⟩
 
 theorem cseqAll_bases : ∀ {ps : List CPhase}, P.CPhasesOk g tps ps →
     ∀ b, (cseqAll ps).Bases b → b.NoBlocks
   | [], _, b, hb => by cases hb; trivial
   | .code _ :: _, ⟨hp, _, hrest⟩, b, hb => hb.elim (CStmt.NoTasks.bases hp b) (cseqAll_bases hrest b)
-  | .block _ :: _, ⟨hp, _, hrest⟩, b, hb =>
+  | .block _ none :: _, ⟨hp, _, hrest⟩, b, hb
+  | .block _ (some _) :: _, ⟨hp, _, hrest⟩, b, hb =>
     hb.elim (CStmt.NoBlocks.bases hp.1 b) (cseqAll_bases hrest b)
 
 variable {ps : List CPhase} {X : Execution} (run : P.toTaskProg.toProg.Run X)
@@ -363,7 +365,7 @@ theorem guard_access (hF : P.CFootprints g tps ps) (hm : m < P.locks) {d : X.E}
 has a `Guard`. -/
 theorem guard_block (hF : P.CFootprints g tps ps) (hm : m < P.locks) {d : X.E}
     (hk : X.kind d ≠ .fence) (hd : g (X.loc d) = some m) {B0 : CStmt}
-    (hB0 : CPhase.block B0 ∈ ps) {n : Nat} {regs : Nat → Int} {L : List Label}
+    {rep : Option Expr} (hB0 : CPhase.block B0 rep ∈ ps) {n : Nat} {regs : Nat → Int} {L : List Label}
     (hs : Runs (P.toTaskProg.lower (.tasksBlock (P.lowerC B0))) regs L)
     (hL : ∀ i (hi : i < L.length), run.lab (X.thread d) (n + i) = L[i]) (h1 : n ≤ run.idx d)
     (h2 : run.idx d < n + L.length) : Guard m run d := by
@@ -371,7 +373,7 @@ theorem guard_block (hF : P.CFootprints g tps ps) (hm : m < P.locks) {d : X.E}
   have hok := stmtOk_of_mem (hF.main ▸ hF.ok.main) hB0
   have hacc := Runs.haccepts hs (.clean (hclean_guarded (s := .tasksBlock B0) hm hg (by simp) hok
     (fun b h => CStmt.NoBlocks.bases (phase_ok_of_mem hF.phases hB0).1 b h)
-    (hF.guarded_blocks B0 hB0)))
+    (hF.guarded_blocks B0 rep hB0)))
   have hget : L[run.idx d - n]? = some ⟨X.kind d, X.order d, X.loc d, run.val d, run.isRmw d⟩ := by
     rw [List.getElem?_eq_getElem (by omega), ← hL _ (by omega), Nat.add_sub_cancel' h1,
       run.lab_eq d]
@@ -417,7 +419,7 @@ theorem lock_hb (hF : P.CFootprints g tps ps) (wf : X.WellFormed) (hcons : X.Con
     intro a b hka hkb ha hb ha0 hb0
     obtain ⟨t, htb⟩ := Nat.exists_eq_succ_of_ne_zero hb0
     rcases TaskProg.main_task hT run ha0 htb (hpf ha) with h | h |
-        ⟨B, hmem, -, n, L, regs, hs, hL, h1, h2⟩
+        ⟨B, ⟨rep, hmem⟩, -, n, L, regs, hs, hL, h1, h2⟩
     · exact Or.inl h
     · exact Or.inr h
     obtain ⟨B0, hB0, rfl⟩ := block_of_mem hmem

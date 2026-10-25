@@ -26,7 +26,7 @@ namespace Vx
 open ChanProg
 
 def chanPhases : List CPhase :=
-  [.block (.seq (.base (.spawn 0)) (.base (.spawn 1))), .code (.base (.load 4 0 .plain))]
+  [.block (.seq (.base (.spawn 0)) (.base (.spawn 1))) none, .code (.base (.load 4 0 .plain))]
 
 def chanFoot : ChanProg where
   main := cseqAll chanPhases
@@ -63,10 +63,10 @@ theorem chanFoot_footprints : chanFoot.CFootprints (fun _ => none) (fun _ => [])
   one_parent := one_parent_nil _
   order _ _ := nofun
   guard := nofun
-  guarded_blocks B hB := by
+  guarded_blocks B rep hB := by
     simp only [chanPhases, List.mem_cons, CPhase.block.injEq, reduceCtorEq, List.not_mem_nil,
       or_false] at hB
-    subst hB
+    obtain ⟨rfl, rfl⟩ := hB
     simp [CStmt.Guarded, Stmt.Accesses]
   guarded_task
     | 0 | 1 | _ + 2 => by simp [chanFoot, CStmt.Guarded, Stmt.Accesses]
@@ -80,7 +80,7 @@ def addOne : CStmt :=
   .locked 0 (.seq (.base (.load 4 0 .plain)) (.base (.store 0 (.add (.reg 4) (.const 1)) .plain)))
 
 def lockPhases : List CPhase :=
-  [.block (.seq (.base (.spawn 0)) (.base (.spawn 1))), .code (.base (.load 4 0 .plain))]
+  [.block (.seq (.base (.spawn 0)) (.base (.spawn 1))) none, .code (.base (.load 4 0 .plain))]
 
 def lockFoot : ChanProg where
   main := cseqAll lockPhases
@@ -120,10 +120,10 @@ theorem lockFoot_footprints : lockFoot.CFootprints lockGuard (fun _ => []) lockP
   guard x m h := by
     simp only [lockGuard] at h
     split at h <;> simp_all [lockFoot]
-  guarded_blocks B hB := by
+  guarded_blocks B rep hB := by
     simp only [lockPhases, List.mem_cons, CPhase.block.injEq, reduceCtorEq, List.not_mem_nil,
       or_false] at hB
-    subst hB
+    obtain ⟨rfl, rfl⟩ := hB
     simp [CStmt.Guarded, Stmt.Accesses]
   guarded_task
     | 0 | 1 => by simp [lockFoot, addOne, CStmt.Guarded, Stmt.Accesses, lockGuard]
@@ -134,7 +134,7 @@ theorem lockFoot_raceFree {X : Execution} (hX : lockFoot.toTaskProg.toProg.Execs
   raceFree lockFoot_footprints hX wf hc ho hfin
 
 def failPhases : List CPhase :=
-  [.block (.seq (.base (.spawn 0)) (.base (.spawn 1))),
+  [.block (.seq (.base (.spawn 0)) (.base (.spawn 1))) none,
     .code (.seq (.result 4) (.seq (.base (.load 5 0 .plain)) (.base (.load 5 1 .plain))))]
 
 def failFoot : ChanProg where
@@ -171,10 +171,10 @@ theorem failFoot_footprints : failFoot.CFootprints (fun _ => none) (fun _ => [])
   one_parent := one_parent_nil _
   order _ _ := nofun
   guard := nofun
-  guarded_blocks B hB := by
+  guarded_blocks B rep hB := by
     simp only [failPhases, List.mem_cons, CPhase.block.injEq, reduceCtorEq, List.not_mem_nil,
       or_false] at hB
-    subst hB
+    obtain ⟨rfl, rfl⟩ := hB
     simp [CStmt.Guarded, Stmt.Accesses]
   guarded_task
     | 0 | 1 | _ + 2 => by simp [failFoot, CStmt.Guarded, Stmt.Accesses]
@@ -184,10 +184,10 @@ theorem failFoot_raceFree {X : Execution} (hX : failFoot.toTaskProg.toProg.Execs
   raceFree failFoot_footprints hX wf hc ho hfin
 
 def nestChanMain : List CPhase :=
-  [.block (.seq (.base (.spawn 0)) (.base (.load 4 1 .plain))), .code (.base (.load 4 0 .plain))]
+  [.block (.seq (.base (.spawn 0)) (.base (.load 4 1 .plain))) none, .code (.base (.load 4 0 .plain))]
 
 def nestChanTask0 : List CPhase :=
-  [.block (.seq (.base (.spawn 1)) (.base (.spawn 2))), .code (.base (.load 4 0 .plain))]
+  [.block (.seq (.base (.spawn 1)) (.base (.spawn 2))) none, .code (.base (.load 4 0 .plain))]
 
 def nestChanPhases : Nat → List CPhase
   | 0 => nestChanTask0
@@ -289,10 +289,10 @@ theorem nestChanFoot_footprints :
   order t v h := by
     rcases nestChan_starts (q := t + 1) h with ⟨h, -⟩ | ⟨h, h' | h'⟩ <;> omega
   guard := nofun
-  guarded_blocks B hB := by
+  guarded_blocks B rep hB := by
     simp only [nestChanMain, List.mem_cons, CPhase.block.injEq, reduceCtorEq, List.not_mem_nil,
       or_false] at hB
-    subst hB
+    obtain ⟨rfl, rfl⟩ := hB
     simp [CStmt.Guarded, Stmt.Accesses]
   guarded_task
     | 0 => by simp [nestChanFoot, nestChanTask0, cseqAll, CPhase.stmt, CStmt.Guarded,

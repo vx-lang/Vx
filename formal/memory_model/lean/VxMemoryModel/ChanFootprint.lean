@@ -82,14 +82,16 @@ theorem Stmt.Below.mono {n n' tasks : Nat} {s : Stmt} (h : s.Below n tasks) (hn 
 
 namespace ChanProg
 
-/-- A part of the code of a thread: code that starts no task, or a `tasks` block. -/
+/-- A part of the code of a thread: code that starts no task, or a `tasks` block. With `some e`,
+the block runs again in a loop while `e` holds. -/
 inductive CPhase where
   | code (s : CStmt)
-  | block (s : CStmt)
+  | block (s : CStmt) (rep : Option Expr)
 
 def CPhase.stmt : CPhase → CStmt
   | .code s => s
-  | .block s => .tasksBlock s
+  | .block s none => .tasksBlock s
+  | .block s (some e) => .loop e (.tasksBlock s)
 
 /-- The phases, one after the other. -/
 def cseqAll : List CPhase → CStmt
@@ -106,7 +108,7 @@ variable (P : ChanProg) (g : Nat → Option Nat) (tps : Nat → List CPhase)
 /-- The phase of the lowered program. -/
 def CPhase.lower : CPhase → TaskProg.Phase
   | .code s => .code (P.lowerC s)
-  | .block s => .block (P.lowerC s)
+  | .block s rep => .block (P.lowerC s) rep
 
 /-- The phases of each task, lowered. -/
 def lowerPhases (t : Nat) : List TaskProg.Phase := (tps t).map (CPhase.lower P)
@@ -117,7 +119,7 @@ count as the task. The code of a block uses only the registers below `tmp + 3`, 
 keeps its marks from there. -/
 def CPhase.Ok : CPhase → Prop
   | .code s => s.NoTasks
-  | .block s => s.NoBlocks ∧ s.RegsBelow (P.tmp + 3) ∧
+  | .block s _ => s.NoBlocks ∧ s.RegsBelow (P.tmp + 3) ∧
       (∀ u ∈ (P.lowerC s).spawnIds, ∀ w, TaskProg.Desc (P.lowerPhases tps) u w →
         s.Apart g (P.task w)) ∧
       ∀ u ∈ (P.lowerC s).spawnIds, ∀ v ∈ (P.lowerC s).spawnIds, u ≠ v → ∀ w w',
@@ -145,7 +147,7 @@ structure CFootprints (ps : List CPhase) : Prop where
     (∃ p ∈ cthr ps tps q', v ∈ (p.lower P).ids) → q = q'
   order : ∀ t v, (∃ p ∈ tps t, v ∈ (p.lower P).ids) → t < v
   guard : ∀ x m, g x = some m → x < P.places ∧ m < P.locks
-  guarded_blocks : ∀ B, CPhase.block B ∈ ps → B.Guarded g []
+  guarded_blocks : ∀ B rep, CPhase.block B rep ∈ ps → B.Guarded g []
   guarded_task : ∀ t, (P.task t).Guarded g []
 
 variable {P g tps}
@@ -166,8 +168,8 @@ theorem lowerC_cseqAll (ps : List CPhase) :
   induction ps with
   | nil => rfl
   | cons p ps ih =>
-    cases p <;> simp [cseqAll, CPhase.stmt, lowerC, CPhase.lower, TaskProg.seqAll,
-      TaskProg.Phase.stmt, ih]
+    rcases p with _ | ⟨_, _ | _⟩ <;> simp [cseqAll, CPhase.stmt, lowerC, CPhase.lower,
+      TaskProg.seqAll, TaskProg.Phase.stmt, ih]
 
 theorem not_fails (he : P.errors = false) {s : CStmt} (hs : P.StmtOk s) : ¬ s.Fails := by
   induction s with
@@ -330,8 +332,9 @@ theorem cphase_ok (htask : ∀ t, P.StmtOk (P.task t)) {p : CPhase}
     (p.lower P).Ok P.toTaskProg (P.Own g) (P.lowerPhases tps) := by
   cases p with
   | code s => exact lowerC_noTasks hp
-  | block s =>
+  | block s rep =>
     obtain ⟨hn, hr, hap, hpair⟩ := hp
+    replace hs : P.StmtOk s := by cases rep <;> exact hs
     exact ⟨lowerC_noBlocks hn, lowerC_regsBelow hr,
       fun u hu w hw => apart_lower hs (htask w) (hap u hu w hw),
       fun u hu v hv huv w w' hw hw' =>

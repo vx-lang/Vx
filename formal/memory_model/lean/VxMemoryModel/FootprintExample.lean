@@ -8,13 +8,16 @@ import VxMemoryModel.LanguageExample
 both tasks in a block, and reads `out1` and `out2` after the block. Each task reads `input` and
 writes its own output.
 
+`loopFoot` has the same tasks, with a block in a loop. Each pass of the loop starts one task:
+task 0 in the first pass, and task 1 in the second.
+
 In `nestFoot`, a task starts tasks. The main code writes the place 3 and starts task 0 in a block.
 The code of that block reads the place 3. Task 0 writes the place 2, and then starts tasks 1 and 2
 in its own block. Task 1 reads the places 2 and 3 and writes the place 0. Task 2 reads the place 3
 and writes the place 1. After its block, task 0 reads the places 0 and 1. After the main block,
 the main code writes them.
 
-The rule holds for both programs, so no execution of them has a data race.
+The rule holds for the three programs, so no execution of them has a data race.
 -/
 
 namespace Vx
@@ -22,7 +25,7 @@ namespace Vx
 open TaskProg
 
 def blockPhases : List Phase :=
-  [.code (.store input (.const 5) .plain), .block (.seq (.spawn 0) (.spawn 1)),
+  [.code (.store input (.const 5) .plain), .block (.seq (.spawn 0) (.spawn 1)) none,
     .code (.seq (.load 1 out1 .plain) (.load 2 out2 .plain))]
 
 def blockFoot : TaskProg := { forkJoin with main := seqAll blockPhases }
@@ -36,7 +39,7 @@ theorem blockFoot_footprints :
   le_flags _ h := h
   main := rfl
   phases := by
-    simp [PhasesOk, blockPhases, Phase.Ok, Phase.ids, Stmt.NoTasks, Stmt.NoBlocks, Stmt.RegsBelow,
+    simp [PhasesOk, blockPhases, Phase.Ok, BlockOk, Phase.ids, Stmt.NoTasks, Stmt.NoBlocks, Stmt.RegsBelow,
       Expr.RegsBelow, Stmt.spawnIds, Stmt.Apart, Stmt.Accesses, Compat, blockFoot, forkJoin, input,
       out1, out2]
   tasks
@@ -48,12 +51,48 @@ theorem blockFoot_footprints :
 theorem blockFoot_raceFree {X : Execution} (hX : blockFoot.toProg.Execs X) : X.RaceFree :=
   raceFree blockFoot_footprints hX
 
+/-- Register 0 counts the passes. A pass starts task `regs 0` and adds 1 to the register, and the
+loop runs while the register is not 2. -/
+def loopPhases : List Phase :=
+  [.code (.seq (.store input (.const 5) .plain) (.assign 0 (.const 0))),
+    .block (.seq (.spawnAt 0 2 (.reg 0)) (.assign 0 (.add (.reg 0) (.const 1))))
+      (some (.sub (.const 2) (.reg 0))),
+    .code (.seq (.load 1 out1 .plain) (.load 2 out2 .plain))]
+
+def loopFoot : TaskProg := { forkJoin with main := seqAll loopPhases }
+
+theorem loopFoot_footprints :
+    loopFoot.Footprints (· < loopFoot.flags) (fun _ => []) loopPhases where
+  ok :=
+    { main := by
+        simp [loopFoot, loopPhases, seqAll, Phase.stmt, Stmt.Below, forkJoin, input, out1, out2]
+      task := forkJoin_ok.task }
+  le_flags _ h := h
+  main := rfl
+  phases := by
+    simp [PhasesOk, loopPhases, Phase.Ok, BlockOk, Phase.ids, Stmt.NoTasks, Stmt.NoBlocks,
+      Stmt.RegsBelow, Expr.RegsBelow, Stmt.spawnIds, Stmt.Apart, Stmt.Accesses, loopFoot,
+      forkJoin, input, out1, out2]
+    -- The two tasks of the block, one for each pass.
+    intro u hu v hv huv
+    obtain rfl | rfl : u = 0 ∨ u = 1 := by omega
+    all_goals obtain rfl | rfl : v = 0 ∨ v = 1 := by omega
+    all_goals simp_all [Stmt.Accesses, Compat]
+  tasks
+    | 0 | 1 | _ + 2 => by simp [loopFoot, forkJoin, Stmt.NoTasks]
+  task_phases _ := trivial
+  one_parent := one_parent_nil _
+  order _ _ := nofun
+
+theorem loopFoot_raceFree {X : Execution} (hX : loopFoot.toProg.Execs X) : X.RaceFree :=
+  raceFree loopFoot_footprints hX
+
 def nestMain : List Phase :=
-  [.code (.store 3 (.const 1) .plain), .block (.seq (.spawn 0) (.load 0 3 .plain)),
+  [.code (.store 3 (.const 1) .plain), .block (.seq (.spawn 0) (.load 0 3 .plain)) none,
     .code (.seq (.store 0 (.const 3) .plain) (.store 1 (.const 4) .plain))]
 
 def nestTask0 : List Phase :=
-  [.code (.store 2 (.const 5) .plain), .block (.seq (.spawn 1) (.spawn 2)),
+  [.code (.store 2 (.const 5) .plain), .block (.seq (.spawn 1) (.spawn 2)) none,
     .code (.seq (.load 0 0 .plain) (.load 1 1 .plain))]
 
 def nestPhases : Nat → List Phase
@@ -109,7 +148,7 @@ theorem nestFoot_footprints : nestFoot.Footprints (· < nestFoot.flags) nestPhas
   le_flags _ h := h
   main := rfl
   phases := by
-    simp only [PhasesOk, nestMain, Phase.Ok, Phase.ids, Stmt.spawnIds]
+    simp only [PhasesOk, nestMain, Phase.Ok, BlockOk, Phase.ids, Stmt.spawnIds]
     refine ⟨by simp [Stmt.NoTasks], by simp, ⟨by simp [Stmt.NoBlocks],
       by simp [Stmt.RegsBelow, Expr.RegsBelow, nestFoot], fun u hu w hw => ?_, by simp⟩,
       by simp, by simp [Stmt.NoTasks], by simp, trivial⟩
@@ -122,7 +161,7 @@ theorem nestFoot_footprints : nestFoot.Footprints (· < nestFoot.flags) nestPhas
     | 1 | 2 | _ + 3 => Or.inr ⟨by simp [nestFoot, Stmt.NoTasks], rfl⟩
   task_phases
     | 0 => by
-      simp only [PhasesOk, nestPhases, nestTask0, Phase.Ok, Phase.ids, Stmt.spawnIds]
+      simp only [PhasesOk, nestPhases, nestTask0, Phase.Ok, BlockOk, Phase.ids, Stmt.spawnIds]
       refine ⟨by simp [Stmt.NoTasks], by simp, ⟨by simp [Stmt.NoBlocks],
         by simp [Stmt.RegsBelow, Expr.RegsBelow], fun u _ w _ => by simp [Stmt.Apart, Stmt.Accesses],
         fun u hu v hv huv w w' hw hw' => ?_⟩, by simp, by simp [Stmt.NoTasks], by simp, trivial⟩
