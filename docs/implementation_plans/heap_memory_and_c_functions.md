@@ -34,6 +34,8 @@ The decisions this document makes:
 program share one namespace. When `std::vec` called `malloc` through `std::alloc`, the checker
 checked that call against the program's own declaration:
 
+<!-- vx-doctest: skip: this program shows the error E3003 -->
+
 ```vx
 import std::vec;
 
@@ -97,6 +99,8 @@ Each choice has a reason:
 
 `std::alloc`:
 
+<!-- vx-doctest: skip: the signatures only, without the bodies -->
+
 ```vx
 fn alloc(bytes : i64, align : i64) -> *mut i8
 fn grow(p : *mut i8, old_bytes : i64, new_bytes : i64, align : i64) -> *mut i8
@@ -156,6 +160,8 @@ A program may declare `malloc` itself, or define a function with that name.
 ## 5. C's functions in `std::libc`
 
 Code written in C's style gets the functions as the C standard writes them:
+
+<!-- vx-doctest: skip: Vx has no `*mut void` yet -->
 
 ```vx
 extern {
