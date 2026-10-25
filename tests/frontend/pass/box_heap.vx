@@ -8,4 +8,5 @@ fn main() -> i32 {
 }
 
 // CHECK: func.func @"Box::new
-// CHECK: call @malloc
+// CHECK: call @alloc(
+// CHECK: vx.heap_alloc

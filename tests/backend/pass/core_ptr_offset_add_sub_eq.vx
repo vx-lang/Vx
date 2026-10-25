@@ -34,7 +34,7 @@ fn show(flag : bool) -> i32 {
 
 fn main() -> i32 {
   // i64: element k holds 10 * k.
-  let p : *mut i64 = unsafe { malloc(64) };
+  let p : *mut i64 = alloc(64, 16);
   let mut i : i64 = 0;
   while i < 8 {
     unsafe { p[i] = i * 10; }
@@ -51,7 +51,7 @@ fn main() -> i32 {
   print!(" | ");
 
   // i32: element k holds 100 + k. Read through `*const` pointers.
-  let q : *mut i32 = unsafe { malloc(32) };
+  let q : *mut i32 = alloc(32, 16);
   let mut j : i64 = 0;
   while j < 8 {
     unsafe { q[j] = 100 + (j as i32); }
@@ -70,7 +70,7 @@ fn main() -> i32 {
   print!(" | ");
 
   // A 12-byte struct: element k holds k, 10 * k and 100 * k.
-  let t : *mut Triple = unsafe { malloc(48) };
+  let t : *mut Triple = alloc(48, 16);
   let mut k : i32 = 0;
   while k < 4 {
     let slot = add_mut(t, k as usize);

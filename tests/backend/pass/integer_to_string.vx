@@ -85,7 +85,7 @@ fn main() -> i32 {
   print!("; ");
 
   // Written three bytes in, after "ab:", with the terminating NUL added by hand.
-  let buf : *mut i8 = unsafe { malloc(32i64) };
+  let buf : *mut i8 = alloc(32, 16);
   let n = unsafe {
     buf[0i64] = 97i8;
     buf[1i64] = 98i8;
@@ -99,7 +99,7 @@ fn main() -> i32 {
   print!("/");
   print(n);
   print!(";");
-  unsafe { free(buf); }
+  dealloc(buf, 16);
   return 0;
 }
 

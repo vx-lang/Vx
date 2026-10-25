@@ -35,6 +35,10 @@ pub enum Rename {
 /// The renames each module needs, by module name. A module missing here is parsed as written.
 pub type Plan = HashMap<Symbol, HashMap<Symbol, Rename>>;
 
+/// C functions that the lowering calls for a heap block or a task. A Vx function with one of
+/// these names is renamed, as if an `extern` block declared the name.
+const C_FUNCTIONS_THE_COMPILER_CALLS: &[&str] = &["malloc", "realloc", "aligned_alloc", "free"];
+
 /// Names the compiler looks up by spelling, so the stdlib's declaration cannot be renamed.
 const NAMES_THE_COMPILER_USES: &[&str] = &[
     "Option", "Result", "Vec", "String", "Copy", "Closure0", "Closure1", "Closure2", "Closure3",
@@ -86,6 +90,12 @@ pub fn plan(programs: &[Program], roots: &[Symbol]) -> Result<Plan, String> {
     let c_functions: BTreeSet<&Symbol> = programs
         .iter()
         .flat_map(|p| p.externs.iter().map(|e| &e.name))
+        .chain(
+            programs
+                .iter()
+                .flat_map(|p| p.functions.iter().map(|f| &f.name))
+                .filter(|name| C_FUNCTIONS_THE_COMPILER_CALLS.contains(&name.as_ref())),
+        )
         .filter(|name| {
             programs
                 .iter()
