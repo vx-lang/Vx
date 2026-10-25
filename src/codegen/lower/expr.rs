@@ -4488,6 +4488,24 @@ impl<'c> LowerToMelior<'c> for ClosureExpr {
     }
 }
 
+/// Switches the `print_*` helpers to standard error, or back, around an `eprint!` or a `panic`.
+fn switch_print_stream<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    to_stderr: bool,
+) -> Result<(), LowerError> {
+    let on = OperationBuilder::new("llvm.mlir.constant", gen.loc())
+        .add_results(&[gen.i32_ty])
+        .add_attributes(&[(
+            Identifier::new(gen.context, "value"),
+            IntegerAttribute::new(gen.i32_ty, i64::from(to_stderr)).into(),
+        )])
+        .build()?;
+    let on = block.append_operation(on).result(0)?.into();
+    super::call_runtime_fn(gen, block, "vx_print_to_stderr", &[(on, "i32")], "i32")?;
+    Ok(())
+}
+
 impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
@@ -4497,6 +4515,9 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
     ) -> Self::Output {
         // An argument such as `a && b` ends in a new block, and the next argument goes there.
         let mut block = block;
+        if self.to_stderr {
+            switch_print_stream(gen, block, true)?;
+        }
         for arg in &self.args {
             let (arg_val, arg_ty, next) = gen.generate_expr(arg, block)?;
             block = next;
@@ -4547,6 +4568,9 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintExpr {
             }
             super::call_runtime_fn(gen, block, "print_str", &[(arg_val, "!llvm.ptr")], "i32")?;
         }
+        if self.to_stderr {
+            switch_print_stream(gen, block, false)?;
+        }
 
         let dummy_op = OperationBuilder::new("llvm.mlir.constant", gen.loc())
             .add_results(&[gen.i32_ty])
@@ -4573,10 +4597,14 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintlnExpr {
     ) -> Self::Output {
         // First, reuse PrintExpr logic for arguments
         let mut block = block;
+        if self.to_stderr {
+            switch_print_stream(gen, block, true)?;
+        }
         if !self.args.is_empty() {
             let print_expr = syntax::expr::PrintExpr {
                 args: self.args.clone(),
                 span: self.span,
+                to_stderr: false,
             };
             block = print_expr.lower(gen, block)?.2;
         }
@@ -4613,12 +4641,12 @@ impl<'c> LowerToMelior<'c> for syntax::expr::PrintlnExpr {
             .add_results(&[gen.i32_ty])
             .add_attributes(&[(Identifier::new(gen.context, "callee"), name_attr.into())])
             .build()?;
+        let status = block.append_operation(call_op).result(0)?.into();
+        if self.to_stderr {
+            switch_print_stream(gen, block, false)?;
+        }
 
-        Ok((
-            block.append_operation(call_op).result(0)?.into(),
-            gen.i32_ty,
-            block,
-        ))
+        Ok((status, gen.i32_ty, block))
     }
 }
 

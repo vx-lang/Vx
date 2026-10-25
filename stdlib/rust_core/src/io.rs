@@ -31,6 +31,12 @@ pub(crate) mod lines {
 
     thread_local! {
         static LINE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+        /// Set between the two `vx_print_to_stderr` calls around an `eprint!` or a `panic`.
+        static TO_STDERR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    pub(crate) fn set_stderr(on: bool) {
+        TO_STDERR.with(|flag| flag.set(on));
     }
 
     pub(crate) fn task_started() {
@@ -57,6 +63,11 @@ pub(crate) mod lines {
     }
 
     pub(crate) fn print(text: &str) {
+        // Standard error is not buffered, and a task's line on it is not kept apart.
+        if TO_STDERR.with(|flag| flag.get()) {
+            let _ = std::io::stderr().lock().write_all(text.as_bytes());
+            return;
+        }
         LINE.with(|line| {
             let mut line = line.borrow_mut();
             if RUNNING_TASKS.load(Ordering::SeqCst) == 0 && line.is_empty() {
@@ -149,5 +160,13 @@ pub extern "C" fn print_str(piece: *const libc::c_char) -> i32 {
 #[no_mangle]
 pub extern "C" fn println() -> i32 {
     lines::print("\n");
+    0
+}
+
+/// With `on` non-zero, the `print_*` functions write to standard error on this thread until the
+/// next call with zero. The code generators put an `eprint!` and a `panic` between two calls.
+#[no_mangle]
+pub extern "C" fn vx_print_to_stderr(on: i32) -> i32 {
+    lines::set_stderr(on != 0);
     0
 }

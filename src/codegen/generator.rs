@@ -1740,25 +1740,26 @@ impl<'c> MeliorGenerator<'c> {
             // has no Vx-level definition to resolve -- it is a primitive, like `print`. Safe to
             // call; ending a process breaks no memory-safety property.
             //
-            // `panic(msg)` prints `panic: <msg>` first, through `print!`, and then aborts with an
-            // empty message: `cf.assert` prints it with `puts`, which ends the line. A kernel cannot
-            // print, so there it only aborts.
+            // `panic(msg)` prints `panic: <msg>` and a newline to standard error first, as
+            // `eprintln!`, and then aborts with an empty message, which prints nothing. A kernel
+            // cannot print, so there it only aborts.
             Expr::FunctionCall(e) if syntax::is_abort_or_panic(e) => {
                 let mut block = block;
                 let mut abort_msg = "abort() called";
                 if e.name.as_ref() == "panic" {
                     abort_msg = "panic";
                     if !self.in_spawn {
-                        let print = Expr::Print(syntax::PrintExpr::new(
-                            vec![
+                        let print = Expr::Println(syntax::PrintlnExpr {
+                            args: vec![
                                 Expr::StringLiteral(syntax::StringLiteralExpr::new(
                                     "panic: ".to_string(),
                                     e.span,
                                 )),
                                 e.args[0].clone(),
                             ],
-                            e.span,
-                        ));
+                            span: e.span,
+                            to_stderr: true,
+                        });
                         block = self.generate_expr(&print, block)?.2;
                         abort_msg = "";
                     }

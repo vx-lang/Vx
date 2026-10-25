@@ -905,10 +905,16 @@ impl MacroCallExpr {
 pub struct PrintExpr {
     pub args: Vec<Expr>,
     pub span: Span,
+    /// `eprint!`: the arguments go to standard error.
+    pub to_stderr: bool,
 }
 impl PrintExpr {
     pub fn new(args: Vec<Expr>, span: Span) -> Self {
-        Self { args, span }
+        Self {
+            args,
+            span,
+            to_stderr: false,
+        }
     }
 }
 
@@ -916,10 +922,16 @@ impl PrintExpr {
 pub struct PrintlnExpr {
     pub args: Vec<Expr>,
     pub span: Span,
+    /// `eprintln!`: the arguments and the newline go to standard error.
+    pub to_stderr: bool,
 }
 impl PrintlnExpr {
     pub fn new(args: Vec<Expr>, span: Span) -> Self {
-        Self { args, span }
+        Self {
+            args,
+            span,
+            to_stderr: false,
+        }
     }
 }
 
@@ -1606,10 +1618,12 @@ impl Expr {
             Expr::Print(e) => Expr::Print(PrintExpr {
                 args: e.args.iter().map(|ex| ex.substitute(mapping)).collect(),
                 span: e.span,
+                to_stderr: e.to_stderr,
             }),
             Expr::Println(e) => Expr::Println(PrintlnExpr {
                 args: e.args.iter().map(|ex| ex.substitute(mapping)).collect(),
                 span: e.span,
+                to_stderr: e.to_stderr,
             }),
             Expr::SizeOf(e) => Expr::SizeOf(SizeOfExpr {
                 target_ty: e.target_ty.substitute(mapping),

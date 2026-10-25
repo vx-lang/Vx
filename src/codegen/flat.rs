@@ -1046,7 +1046,7 @@ pub struct SubspaceInfo {
 /// `func.func private` declaration prepended. Order is load-bearing — the emit records which of
 /// these a function called as a bitmask over this array's indices, so inserting in the middle
 /// renumbers existing entries.
-const RUNTIME_HELPERS: [(&str, &str); 22] = [
+const RUNTIME_HELPERS: [(&str, &str); 23] = [
     ("printMemrefF32", "(memref<*xf32>)"),
     ("printMemrefF64", "(memref<*xf64>)"),
     ("printMemrefI32", "(memref<*xi32>)"),
@@ -1061,6 +1061,7 @@ const RUNTIME_HELPERS: [(&str, &str); 22] = [
     ("print_u32", "(i32) -> i32"),
     ("print_u64", "(i64) -> i32"),
     ("print_str", "(!llvm.ptr) -> i32"),
+    ("vx_print_to_stderr", "(i32) -> i32"),
     ("vx_init_signals", "()"),
     ("print_bool", "(i32) -> i32"),
     ("printMemrefU32", "(memref<*xi32>)"),
@@ -2439,6 +2440,7 @@ impl<'a> FnEmit<'a> {
             Opcode::TensorDrop => self.op_tensor_drop(idx, ins),
             Opcode::Abort => self.op_abort(idx, ins),
             Opcode::PrintStr => self.op_print_str(idx, ins),
+            Opcode::PrintStream => self.op_print_stream(idx, ins),
             // A string literal in value position (#231): take the address of the module-level global
             // (`@".str.<n>"`, `n = str_base + imm`, the same numbering as `PrintStr`) as a first-class
             // `!llvm.ptr` value — what a `let s = "…"` binds or a string argument passes. The global's

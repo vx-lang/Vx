@@ -132,6 +132,15 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    /// The prints that follow go to standard error (`imm` 1) or back to standard output (0).
+    pub(crate) fn op_print_stream(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let on = format!("%pstreamc{idx}");
+        let r = format!("%pstream{idx}");
+        self.body += &format!("  {on} = arith.constant {} : i32\n", ins.imm);
+        self.body += &format!("  {r} = func.call @vx_print_to_stderr({on}) : (i32) -> i32\n");
+        Ok(())
+    }
+
     pub(crate) fn op_print_str(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let n = self.str_base + ins.imm as usize;
         let p = format!("%pstrp{idx}");

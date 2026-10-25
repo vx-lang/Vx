@@ -318,6 +318,9 @@ pub enum Opcode {
     /// A lane reduction (`lanes::sum` and the others) of the tensor `operand1` over its first
     /// `operand2` elements, an `f32` that every lane gets. `imm` holds `LANE_REDUCE_*`.
     LaneReduce = 71,
+    /// The stream that `Print` and `PrintStr` write to, from here on in this thread: standard error
+    /// when `imm` is 1, standard output when it is 0. An `eprint!` and a `panic` are between two.
+    PrintStream = 72,
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.

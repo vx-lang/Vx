@@ -6290,6 +6290,75 @@ struct LibcExternsToLLVMPass
   }
 };
 
+// A failed `cf.assert` in host code writes its message and a newline to
+// standard error, and then aborts. `convert-cf-to-llvm` would print it with
+// `puts`, to standard output, where it mixes with what the program prints, and
+// an empty message printed a newline there. An empty message prints nothing. A
+// `cf.assert` in a `gpu.module` is left for `convert-gpu-to-nvvm`, which makes
+// it
+// `__assertfail`.
+struct LowerHostAssertsPass
+    : public PassWrapper<LowerHostAssertsPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LowerHostAssertsPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-lower-host-asserts";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Lowers a host cf.assert to a message on standard error and abort";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<LLVM::LLVMDialect, cf::ControlFlowDialect>();
+  }
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    SmallVector<cf::AssertOp> asserts;
+    module.walk([&](cf::AssertOp op) {
+      if (!op->getParentOfType<gpu::GPUModuleOp>())
+        asserts.push_back(op);
+    });
+    if (asserts.empty()) {
+      markAllAnalysesPreserved();
+      return;
+    }
+    MLIRContext *ctx = module.getContext();
+    Type ptr = LLVM::LLVMPointerType::get(ctx);
+    Type i64 = IntegerType::get(ctx, 64);
+    Type none = LLVM::LLVMVoidType::get(ctx);
+    unsigned count = 0;
+    for (cf::AssertOp op : asserts) {
+      Location loc = op.getLoc();
+      Block *before = op->getBlock();
+      Block *after = before->splitBlock(op->getNextNode());
+      OpBuilder b(ctx);
+      Block *fail = b.createBlock(after);
+      std::string message = op.getMsg().str();
+      if (!message.empty()) {
+        message += "\n";
+        Value text = LLVM::createGlobalString(
+            loc, b, ("__vx_assert_msg_" + llvm::Twine(count++)).str(), message,
+            LLVM::Linkage::Internal);
+        auto write = LLVM::lookupOrCreateFn(b, module, "vx_stderr_write",
+                                            {ptr, i64}, i64);
+        assert(succeeded(write) && "the runtime function has one declaration");
+        Value size = LLVM::ConstantOp::create(
+            b, loc, i64, b.getI64IntegerAttr(message.size()));
+        LLVM::CallOp::create(b, loc, *write, ValueRange{text, size});
+      }
+      auto abortFn = LLVM::lookupOrCreateFn(b, module, "abort", {}, none);
+      assert(succeeded(abortFn) && "C's abort has one declaration");
+      LLVM::CallOp::create(b, loc, *abortFn, ValueRange{});
+      LLVM::UnreachableOp::create(b, loc);
+      b.setInsertionPointToEnd(before);
+      cf::CondBranchOp::create(b, loc, op.getArg(), after, fail);
+      op.erase();
+    }
+  }
+};
+
 // A function the program defines is hidden and dso_local: the linked
 // executable does not export it. An exported `write` replaced libc's for the
 // shared runtime library too, so `print`, which calls `write`, called the
@@ -6426,6 +6495,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<LibcExternsToLLVMPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<LowerHostAssertsPass>();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<BoundedInlinerPass>();

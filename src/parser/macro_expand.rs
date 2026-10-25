@@ -607,11 +607,11 @@ impl<'a> MacroExpander<'a> {
         if name == "vec" {
             return self.expand_vec_macro(tt);
         }
-        if name == "print" {
-            return self.expand_print_macro(tt);
+        if name == "print" || name == "eprint" {
+            return self.expand_print_macro(tt, name == "eprint");
         }
-        if name == "println" {
-            return self.expand_println_macro(tt);
+        if name == "println" || name == "eprintln" {
+            return self.expand_println_macro(tt, name == "eprintln");
         }
 
         let rules = self
@@ -883,7 +883,7 @@ impl<'a> MacroExpander<'a> {
         }))
     }
 
-    fn expand_print_macro(&self, tt: &TokenTree) -> Result<expr::Expr, String> {
+    fn expand_print_macro(&self, tt: &TokenTree, to_stderr: bool) -> Result<expr::Expr, String> {
         let elements = match tt {
             TokenTree::Delimited(_, inner) => inner,
             _ => return Err("Expected delimited token tree for print!".to_string()),
@@ -900,13 +900,15 @@ impl<'a> MacroExpander<'a> {
             expansion: 0,
         });
         let exprs = self.parse_expanded_exprs(&tokens)?;
+        let name = if to_stderr { "eprint!" } else { "print!" };
         Ok(expr::Expr::Print(expr::PrintExpr {
-            args: interleave_format_args(exprs, "print!")?,
+            args: interleave_format_args(exprs, name)?,
             span: Span::default(),
+            to_stderr,
         }))
     }
 
-    fn expand_println_macro(&self, tt: &TokenTree) -> Result<expr::Expr, String> {
+    fn expand_println_macro(&self, tt: &TokenTree, to_stderr: bool) -> Result<expr::Expr, String> {
         let elements = match tt {
             TokenTree::Delimited(_, inner) => inner,
             _ => return Err("Expected delimited token tree for println!".to_string()),
@@ -923,9 +925,11 @@ impl<'a> MacroExpander<'a> {
             expansion: 0,
         });
         let exprs = self.parse_expanded_exprs(&tokens)?;
+        let name = if to_stderr { "eprintln!" } else { "println!" };
         Ok(expr::Expr::Println(expr::PrintlnExpr {
-            args: interleave_format_args(exprs, "println!")?,
+            args: interleave_format_args(exprs, name)?,
             span: Span::default(),
+            to_stderr,
         }))
     }
 

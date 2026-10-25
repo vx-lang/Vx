@@ -631,15 +631,15 @@ pub fn execute_mlir_streams(
                 exe_out.status.code().unwrap_or(-1)
             ),
         }
-        if !out_str.is_empty() {
-            println!("{}", out_str);
-        }
+        // As the program wrote it, with no newline added, so that an error that follows it comes
+        // where it would on a terminal.
+        print!("{}", out_str);
+        // The program's standard error goes to ours, as it does when the program succeeds. A
+        // panic and a failed assert write there.
         if !err_str.is_empty() {
-            println!(
-                "[JIT] Error output:
-{}",
-                err_str
-            );
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            eprint!("{}", err_str);
         }
         return Err(match killed {
             Some(how) => format!("Program {how}"),

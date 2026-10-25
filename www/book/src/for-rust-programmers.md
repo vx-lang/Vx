@@ -44,7 +44,7 @@ lists what to change. Each item shows the Rust form and the Vx form.
 
 - `print(x)` prints one value with no newline.
 - `print!("text")` prints text. `println!("{} and {}", a, b)` puts each value in place of a `{}`
-  and ends the line.
+  and ends the line. `eprint!` and `eprintln!` do the same on standard error.
 - There is no function called `println`: `println(x)` is an error. Write `println!("{}", x)`.
 
 ## What Rust does not have

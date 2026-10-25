@@ -64,7 +64,9 @@ when writing Vx with Rust habits.
 
 - `print(x)` prints one value. `print!("text")` prints text. `println!("{} and {}", a, b)` puts
   each value in place of a `{}` and ends the line.
-- `panic("message")` stops the program with a message, and `abort()` without one.
+- `eprint!` and `eprintln!` do the same on standard error.
+- `panic("message")` stops the program with a message on standard error, and `abort()` without
+  one.
 
 ## Memory and devices
 

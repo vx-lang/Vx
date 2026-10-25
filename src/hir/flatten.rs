@@ -721,6 +721,17 @@ impl<'r> Lowerer<'r> {
         self.emit_effect(Opcode::PrintStr, Register(0), Register(0), imm);
     }
 
+    /// Emit a `PrintStream` (no result): the following prints go to standard error, or back to
+    /// standard output.
+    fn emit_print_stream(&mut self, to_stderr: bool) {
+        self.emit_effect(
+            Opcode::PrintStream,
+            Register(0),
+            Register(0),
+            u64::from(to_stderr),
+        );
+    }
+
     /// Emit a `StringConst` for a string literal in *value* position: record the bytes in the string
     /// side table and carry that entry's index in `imm`. The result is an `!llvm.ptr` value (codegen
     /// emits the global + `addressof`), which a `let`/argument can carry — matching the AST path's
@@ -735,6 +746,24 @@ impl<'r> Lowerer<'r> {
             LoweredTy::Ptr,
             imm,
         )
+    }
+
+    /// Lower a `print!` or a `println!`, and an `eprint!` or an `eprintln!` between two
+    /// `PrintStream`s.
+    fn lower_print(&mut self, args: &[Expr], newline: bool, to_stderr: bool) -> Lowered<()> {
+        if to_stderr {
+            self.emit_print_stream(true);
+        }
+        for arg in args {
+            self.lower_print_arg(arg)?;
+        }
+        if newline {
+            self.emit_print_str("\n");
+        }
+        if to_stderr {
+            self.emit_print_stream(false);
+        }
+        Ok(())
     }
 
     /// Lower one `print!`/`println!` argument: a string literal emits a `PrintStr`; any other argument
@@ -1736,16 +1765,11 @@ impl<'r> Lowerer<'r> {
             // value is a placeholder `i32`; the status the AST path's helper returns is never
             // read.
             Expr::Print(p) => {
-                for arg in &p.args {
-                    self.lower_print_arg(arg)?;
-                }
+                self.lower_print(&p.args, false, p.to_stderr)?;
                 Ok(self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0))
             }
             Expr::Println(p) => {
-                for arg in &p.args {
-                    self.lower_print_arg(arg)?;
-                }
-                self.emit_print_str("\n");
+                self.lower_print(&p.args, true, p.to_stderr)?;
                 Ok(self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0))
             }
             Expr::MethodCall(mc) if matches!(mc.method_name.as_ref(), "reshape" | "transpose") => {
@@ -5768,15 +5792,19 @@ impl<'r> Lowerer<'r> {
                 // `__assertfail`. Safe to call; ending a process violates no memory-safety
                 // property.
                 //
-                // `panic(msg)` prints `panic: <msg>` first and then aborts with an empty message, as
-                // the AST code generator does.
+                // `panic(msg)` prints `panic: <msg>` and a newline to standard error first, and then
+                // aborts with an empty message, as the AST code generator does.
                 Expr::FunctionCall(fc) if crate::syntax::is_abort_or_panic(fc) => {
                     let mut abort_msg = "abort() called";
                     if fc.name.as_ref() == "panic" {
                         abort_msg = "panic";
                         if self.spawn_depth == 0 {
-                            self.emit_print_str("panic: ");
-                            self.lower_print_arg(&fc.args[0])?;
+                            let panic_label =
+                                Expr::StringLiteral(crate::syntax::StringLiteralExpr::new(
+                                    "panic: ".to_string(),
+                                    fc.span,
+                                ));
+                            self.lower_print(&[panic_label, fc.args[0].clone()], true, true)?;
                             abort_msg = "";
                         }
                     }
@@ -5802,22 +5830,11 @@ impl<'r> Lowerer<'r> {
                 // The `print!` macro form (`Expr::Print`): prints each argument in sequence via the same
                 // `print_*` / `print_str` helpers, no separators — matching the AST codegen. A
                 // `StringLiteral` arg emits a `PrintStr`; any other arg is lowered and `print`ed.
-                Expr::Print(p) => {
-                    for arg in &p.args {
-                        self.lower_print_arg(arg)?;
-                    }
-                    Ok(())
-                }
+                Expr::Print(p) => self.lower_print(&p.args, false, p.to_stderr),
                 // The `println!` macro form (`Expr::Println`): print each argument (as `print!`), then a
                 // trailing newline. The AST path calls a `println()` runtime helper for the newline;
                 // printing a `"\n"` string is byte-identical, so reuse `PrintStr` and add no new helper.
-                Expr::Println(p) => {
-                    for arg in &p.args {
-                        self.lower_print_arg(arg)?;
-                    }
-                    self.emit_print_str("\n");
-                    Ok(())
-                }
+                Expr::Println(p) => self.lower_print(&p.args, true, p.to_stderr),
                 other => {
                     self.lower_expr(other)?;
                     Ok(())

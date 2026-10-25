@@ -2069,6 +2069,8 @@ fn get_optimization_pipeline(
         // math passes ahead of the first one instead changed how the deallocation helper's
         // arguments were lowered, and a program freed a buffer twice.
         passes.push("convert-func-to-llvm".to_string());
+        // Before `convert-cf-to-llvm`, which would print a failed assert to standard output.
+        passes.push("vx-lower-host-asserts".to_string());
         passes.push("convert-cf-to-llvm".to_string());
         passes.push("convert-arith-to-llvm".to_string());
         // `lift-cf-to-scf` leaves `ub.poison` placeholders behind; nothing else lowers them.
