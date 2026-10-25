@@ -1,0 +1,58 @@
+//===- code_of_a_group_in_a_kernel_launched_again.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A kernel with code of a group needs a count of the passes that ended, one for each group. The
+// program makes the count at the first launch and gives it again to each later launch. This
+// works because the last pass of each group sets its count back to 0.
+//
+// `merge` runs with 2 heads, then 4, then 4 again. So the second launch needs a larger count,
+// and the third launch gets the count that the second gave back. Each launch merges each head
+// once.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o - 2>&1 | FileCheck %s --check-prefix=IR
+// CHECK: heads 2 merged 896 8896 0 runs 1 1 0 0
+// CHECK-NEXT: heads 4 merged 896 8896 25144 runs 1 1 1 1
+// CHECK-NEXT: heads 4 merged 896 8896 25144 runs 1 1 1 1
+// IR: %[[SITE:.*]] = llvm.mlir.addressof @vx_arrivals_site_0
+// IR: %[[COUNT:.*]] = llvm.call @vx_plugin_arrivals_take(%[[SITE]],
+// IR: llvm.call @vx_plugin_arrivals_give(%[[SITE]], %[[COUNT]],
+
+fn merge(heads : i32) -> void {
+  let mut partial = transfer(Tensor<i32, [4, 256]>::fill(0), Memory::HBM);
+  let mut merged = transfer(Tensor<i32, [4, 32]>::fill(0), Memory::HBM);
+  let mut runs = transfer(Tensor<i32, [4]>::fill(0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for h in 0..heads across blocks {
+      for s in 0..8 across blocks {
+        for l in 0..32 across lanes {
+          partial[h][s * 32 + l] = h * 1000 + s * 32 + l;
+        }
+      }
+      for d in 0..32 across lanes {
+        let mut sum = 0;
+        for s in 0..8 {
+          sum = sum + partial[h][s * 32 + d];
+        }
+        merged[h][d] = sum;
+      }
+      runs[h] = runs[h] + 1;
+    }
+  }
+  let m = transfer(merged, Memory::CPU_DRAM);
+  let r = transfer(runs, Memory::CPU_DRAM);
+  println!("heads {} merged {} {} {} runs {} {} {} {}", heads, m[0][0], m[1][0], m[3][31], r[0], r[1], r[2], r[3]);
+  return;
+}
+
+fn main() -> i32 {
+  merge(2);
+  merge(4);
+  merge(4);
+  return 0;
+}

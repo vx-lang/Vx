@@ -3940,6 +3940,42 @@ static LLVM::LLVMFuncOp getOrDeclareRuntimeFn(OpBuilder &builder,
       loc, name, LLVM::LLVMFunctionType::get(result, params, false));
 }
 
+// Give each count of the passes that ended a site: an address that names its
+// `spawn`, so the plugin can keep the count for the next launch of that spawn.
+// The transfer that makes the count and each free of it carry the site.
+static void markArrivalCounts(ModuleOp module) {
+  SmallVector<vx::TransferOp> counts;
+  module.walk([&](vx::TransferOp t) {
+    if (t->hasAttr("vx.arrivals") && isDeviceTransfer(t) &&
+        sourceTopologyOf(t) == 0)
+      counts.push_back(t);
+  });
+  OpBuilder builder(module.getBodyRegion());
+  auto i8Type = IntegerType::get(module.getContext(), 8);
+  unsigned n = 0;
+  for (vx::TransferOp t : counts) {
+    std::string name = "vx_arrivals_site_" + std::to_string(n++);
+    while (module.lookupSymbol(name))
+      name = "vx_arrivals_site_" + std::to_string(n++);
+    builder.setInsertionPointToStart(module.getBody());
+    LLVM::GlobalOp::create(builder, t.getLoc(), i8Type, /*isConstant=*/false,
+                           LLVM::Linkage::Internal, name,
+                           builder.getI8IntegerAttr(0));
+    auto site = FlatSymbolRefAttr::get(module.getContext(), name);
+    t->setAttr("vx.arrivals_site", site);
+    SmallVector<Value> work{t.getResult()};
+    while (!work.empty()) {
+      Value v = work.pop_back_val();
+      for (Operation *user : v.getUsers()) {
+        if (isa<vx::FreeOp>(user))
+          user->setAttr("vx.arrivals_site", site);
+        else if (isa<memref::MemorySpaceCastOp, memref::CastOp>(user))
+          work.push_back(user->getResult(0));
+      }
+    }
+  }
+}
+
 // A program may declare a runtime function itself, as an `extern` it calls
 // directly, and a `transfer` then calls the same function. The program's
 // declaration is still a `func.func` here, so the lowering would declare an
@@ -4143,6 +4179,23 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
                           SymbolRefAttr::get(rewriter.getContext(), peerName),
                           ValueRange{alignedPtr, srcTopoVal, topoVal, bytes})
                       .getResult();
+    } else if (auto site =
+                   op->getAttrOfType<FlatSymbolRefAttr>("vx.arrivals_site")) {
+      // The count of the passes that ended: the one the last launch gave back,
+      // or a new zeroed one.
+      StringRef takeName = "vx_plugin_arrivals_take";
+      getOrDeclareRuntimeFn(
+          rewriter, module, loc, takeName, llvmPtrType,
+          {llvmPtrType, llvmI64Type, llvmPtrType, llvmI32Type, llvmI32Type});
+      Value siteAddr =
+          rewriter.create<LLVM::AddressOfOp>(loc, llvmPtrType, site);
+      devicePtr =
+          rewriter
+              .create<LLVM::CallOp>(
+                  loc, TypeRange{llvmPtrType},
+                  SymbolRefAttr::get(rewriter.getContext(), takeName),
+                  ValueRange{siteAddr, bytes, alignedPtr, topoVal, spaceAccess})
+              .getResult();
     } else {
       devicePtr = rewriter
                       .create<LLVM::CallOp>(
@@ -4296,6 +4349,31 @@ struct FreeOpLowering : public OpRewritePattern<vx::FreeOp> {
         loc, llvmI32Type, rewriter.getI32IntegerAttr(op.getTopology()));
 
     ModuleOp module = op->getParentOfType<ModuleOp>();
+    // A count of the passes that ended goes back to the plugin, which keeps it
+    // for the next launch.
+    if (auto site = op->getAttrOfType<FlatSymbolRefAttr>("vx.arrivals_site")) {
+      auto llvmI64Type = IntegerType::get(getContext(), 64);
+      unsigned elemBits = type.getElementType().getIntOrFloatBitWidth();
+      Value bytes = rewriter.create<LLVM::ConstantOp>(
+          loc, llvmI64Type, rewriter.getI64IntegerAttr((elemBits + 7) / 8));
+      for (int64_t d = 0; d < type.getRank(); ++d) {
+        Value dim = rewriter.create<LLVM::ExtractValueOp>(
+            loc, llvmI64Type, desc, ArrayRef<int64_t>{3, d});
+        bytes = rewriter.create<LLVM::MulOp>(loc, bytes, dim);
+      }
+      StringRef giveName = "vx_plugin_arrivals_give";
+      getOrDeclareRuntimeFn(
+          rewriter, module, loc, giveName,
+          LLVM::LLVMVoidType::get(getContext()),
+          {llvmPtrType, llvmPtrType, llvmI64Type, llvmI32Type});
+      Value siteAddr =
+          rewriter.create<LLVM::AddressOfOp>(loc, llvmPtrType, site);
+      rewriter.create<LLVM::CallOp>(
+          loc, TypeRange{}, SymbolRefAttr::get(rewriter.getContext(), giveName),
+          ValueRange{siteAddr, ptr, bytes, topology});
+      rewriter.eraseOp(op);
+      return success();
+    }
     StringRef freeName = "vx_plugin_free";
     getOrDeclareRuntimeFn(rewriter, module, loc, freeName,
                           LLVM::LLVMVoidType::get(getContext()),
@@ -5697,6 +5775,7 @@ struct ConvertVxToLLVMPass
                  LaneReductionLowering<vx::LaneArgmaxOp>>(&getContext());
 
     adoptDeclaredRuntimeFns(getOperation());
+    markArrivalCounts(getOperation());
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
       signalPassFailure();

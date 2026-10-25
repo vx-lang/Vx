@@ -363,6 +363,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/if_values_that_read_a_tensor.vx",                 // needs --machine
             "optimizations/pass/code_after_the_blocks_runs_on_the_lanes_of_one_block.vx", // needs --machine
             "optimizations/pass/code_of_a_group_runs_in_its_last_pass.vx", // needs --machine
+            "optimizations/pass/code_of_a_group_in_a_kernel_launched_again.vx", // needs --machine
             "optimizations/pass/code_after_the_blocks_in_a_kernel_for_emit_ptx.vx", // needs --machine
             "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
             "frontend/pass/packages/import_from_a_package.vx", // needs --package

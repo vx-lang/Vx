@@ -331,6 +331,11 @@ CUDA backend (`runtime/cuda_dispatch.cpp`). These rules hold for such a call:
   `VX_CUDA_SYNC=1` and `VX_TIME_KERNEL`. The first call of a function loads its kernel image, and
   the first GEMM on a GPU creates a cuBLAS handle with a workspace of its own. Vx stops when
   either happens in a recording, so call the function once before the recording.
+- **Counts of the passes that ended.** A region with code after its nest of blocks needs a
+  count in device memory (§3.5). The function makes the count at the first launch and keeps it
+  for the next launch of that region on the same stream, with no new allocation or copy. Each
+  stream gets its own count, so calls on two streams can run at the same time. The first launch
+  copies zeros from host memory, so call the function once before a recording.
 - **Launch shape.** The function computes the sizes that its `across` loops give and launches
   that shape (§3.5 and `docs/spawn_on.md` §8).
 - **No GPU.** When no GPU takes a launch, the region runs on the CPU. A function that only GPU

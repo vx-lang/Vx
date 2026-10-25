@@ -52,6 +52,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "vx_arrival_counts.h"
 #include "vx_device_pool.h"
 #include "vx_dispatch_plan.h"
 #include "vx_host_call.h"
@@ -1561,6 +1562,32 @@ void vx_cuda_set_stream(void *stream) {
 
 /// The stream that `vx_cuda_set_stream` set on the calling thread, or null.
 void *vx_cuda_get_stream(void) { return caller_stream; }
+
+static vx::ArrivalCounts &arrival_counts() {
+  static vx::ArrivalCounts counts;
+  return counts;
+}
+
+void *vx_plugin_arrivals_take(const void *site, size_t bytes, void *zeros,
+                              uint32_t topology_id, uint32_t space_access) {
+  if (void *kept =
+          arrival_counts().take(site, topology_id, caller_stream, bytes)) {
+    return kept;
+  }
+  return vx_plugin_alloc_and_transfer(bytes, zeros, topology_id, space_access);
+}
+
+void vx_plugin_arrivals_give(const void *site, void *count, size_t bytes,
+                             uint32_t topology_id) {
+  // Keep only a count in this process. Free a count on a worker of the fleet.
+  void *spare = vx_routing_worker((int32_t)topology_id)
+                    ? count
+                    : arrival_counts().give(site, topology_id, caller_stream,
+                                            count, bytes);
+  if (spare) {
+    vx_plugin_free(spare, topology_id);
+  }
+}
 
 int32_t vx_plugin_control(uint32_t opcode, void *payload) {
   switch (opcode) {

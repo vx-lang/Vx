@@ -529,6 +529,19 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
 /// Frees memory allocated on the device.
 void vx_plugin_free(void *device_ptr, uint32_t topology_id);
 
+/// The count of the passes that ended, for a kernel with code after a nest of
+/// blocks. `site` names the `spawn`. Gives the count that the last launch of
+/// `site` on this stream gave back, if it has at least `bytes`. Otherwise
+/// allocates `bytes` and copies `zeros` into them. Each launch sets the count
+/// back to 0, so a kept count is 0 too.
+void *vx_plugin_arrivals_take(const void *site, size_t bytes, void *zeros,
+                              uint32_t topology_id, uint32_t space_access);
+
+/// Gives back a count from `vx_plugin_arrivals_take` after the launch, to keep
+/// for the next launch of `site`.
+void vx_plugin_arrivals_give(const void *site, void *count, size_t bytes,
+                             uint32_t topology_id);
+
 /// Frees the future/event ID after await completes.
 void vx_plugin_release_future(uint64_t future_id);
 

@@ -5,6 +5,7 @@ mod integration_test {
     #[cfg(target_os = "macos")]
     mod ane_device_test;
     mod architecture_test;
+    mod arrival_counts_test;
     mod assert_codegen_test;
     mod basic_integration;
     mod benchmarks_report_metrics;
