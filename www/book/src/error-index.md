@@ -17,7 +17,7 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1034` (25 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3058` (57 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3059` (58 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4014` (14 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6034` (34 codes)
@@ -153,6 +153,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3056`](/errors/E3056/) | `spawn { .. }` outside a `tasks { .. }` block. The end of the `tasks` block waits for each task, so a task cannot outlive the variables it uses. A `spawn` in a closure, or directly in another task, is outside the block too. Put the `spawn` in a `tasks` block of its own. |
 | [`E3057`](/errors/E3057/) | A task handle used in a way other than `h.join()`, or a `spawn` that is not the value of a `let` or a statement of its own. A task must not leave its `tasks` block, so the program cannot return a handle, store it, or pass it to a function. Write `let h = spawn { .. };` and later `h.join()`. |
 | [`E3058`](/errors/E3058/) | A `return`, `break` or `continue` that leaves a task, or a task that joins another task. The last expression of a task body is its result. A task cannot join another task yet. Join both tasks in the `tasks` block. |
+| [`E3059`](/errors/E3059/) | An `extern` declaration of `malloc`, `calloc`, `realloc`, `aligned_alloc` or `free` whose type is not C's. The compiler calls these functions too, and it can share only a declaration of C's type. A size is a 64-bit integer: `usize`, `i64` or `u64`. A pointer is a raw pointer to host memory. `free` returns nothing. |
 
 ## Borrow/Ownership Errors
 
@@ -252,4 +253,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-163 diagnostics.
+164 diagnostics.
