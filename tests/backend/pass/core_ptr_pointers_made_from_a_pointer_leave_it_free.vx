@@ -13,7 +13,10 @@
 // Element k holds 10 * k. A pointer one element off reads a different number, and a write through
 // one pointer is read back through another.
 import core::ptr;
-import std::alloc;
+
+extern "C" {
+  fn malloc(size : i64) -> *mut i8;
+}
 
 struct Weights {
   base : *mut i64,
