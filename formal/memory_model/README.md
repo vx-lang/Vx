@@ -156,7 +156,8 @@ each event of the block of ticket `k` happens before each event of the block of 
 `Fifo.lean` shows that each `recv` gets the value of one `send`, in order (`ring_fifo`). The
 `recv` with the number `k` reads element `k` of the values, and only the `send` with the number
 `k` writes it. By `ring_once`, two reads of the same write belong to the same `recv`, so no value
-arrives twice.
+arrives twice. `ring_move_once` shows that each operation accesses its element once. Right after
+the access, the operation sets its flag, and its number is used only once.
 `Cancel.lean` gives a program a failure slot and a cancel flag. `fail v` writes the error `v` to
 the slot with a CAS from 0. If the CAS wrote the slot, it sets the flag with a release write.
 `checkCancel` reads the flag with acquire, and fails with `cancelled` if the flag is set.
@@ -258,6 +259,3 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   be in a loop. The rule is stricter than needed: two blocks that run one after the other can
   share places, but two tasks of one block cannot.
 - In both rules, one thread starts each task, and a task starts only tasks with larger ids.
-- `ring_fifo` speaks of each read of the values. A `recv` reads its element once, and a `send`
-  writes its element once. This follows from their code, but no theorem states it yet.
-  `recv_full` shows that a `recv` reads its element only after it reads `full k` as set.

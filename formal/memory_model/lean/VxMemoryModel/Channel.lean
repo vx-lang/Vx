@@ -520,12 +520,15 @@ inductive Phase where
   | counted (o : Op) (c : Nat) (k : Int)
   /-- It read the flag that it waits for at least once. -/
   | waited (o : Op) (c : Nat) (k : Int)
+  /-- It accessed its element of the values, and did not set its flag yet. -/
+  | moved (o : Op) (c : Nat) (k : Int)
 
 /-- The accesses that lowered code can make in each phase. -/
 inductive Trans : Phase → Option Label → Phase → Prop
   | idle : Trans .idle none .idle
   | counted_silent {o c k} : Trans (.counted o c k) none (.counted o c k)
   | waited_silent {o c k} : Trans (.waited o c k) none (.waited o c k)
+  | moved_silent {o c k} : Trans (.moved o c k) none (.moved o c k)
   | other {l : Label} : P.Avoid l.kind l.order l.loc → Trans .idle (some l) .idle
   | take {q c k} : P.Has q c → Trans .idle (some ⟨.read, .sc, P.cnt q c, k, false⟩) (.took q c k)
   | count {o c k} :
@@ -541,9 +544,10 @@ inductive Trans : Phase → Option Label → Phase → Prop
     j < P.sigLen o.other →
     Trans ph (some ⟨.read, .sc, P.sig o.other c + j, v, false⟩) (.waited o c k)
   | move {o c k v} {j : Nat} : (j : Int) = k → j < P.msgs →
-    Trans (.waited o c k) (some ⟨o.moveKind, .plain, P.data c + j, v, false⟩) (.waited o c k)
-  | set {o c k} {j : Nat} : (j : Int) = k + P.off o c → j < P.sigLen o →
-    Trans (.waited o c k) (some ⟨.write, .sc, P.sig o c + j, 1, false⟩) .idle
+    Trans (.waited o c k) (some ⟨o.moveKind, .plain, P.data c + j, v, false⟩) (.moved o c k)
+  | set {o c k ph} {j : Nat} : ph = .waited o c k ∨ ph = .moved o c k →
+    (j : Int) = k + P.off o c → j < P.sigLen o →
+    Trans ph (some ⟨.write, .sc, P.sig o c + j, 1, false⟩) .idle
 
 /-- The step of a `send` that writes its value. -/
 inductive Mid : Op → Nat → Stmt → Prop
@@ -575,8 +579,10 @@ inductive Good (regs : Nat → Int) : Phase → Stmt → Prop
     Good regs (.waited o c k) (.seq .skip (.seq d (P.fin o c)))
   | moving {o c d k} : P.Mid o c d → regs P.tmp = k →
     Good regs (.waited o c k) (.seq d (P.fin o c))
-  | moved {o c k} : regs P.tmp = k → Good regs (.waited o c k) (.seq .skip (P.fin o c))
-  | setting {o c k} : regs P.tmp = k → Good regs (.waited o c k) (P.fin o c)
+  | moved {o c k ph} : ph = .waited o c k ∨ ph = .moved o c k → regs P.tmp = k →
+    Good regs ph (.seq .skip (P.fin o c))
+  | setting {o c k ph} : ph = .waited o c k ∨ ph = .moved o c k → regs P.tmp = k →
+    Good regs ph (P.fin o c)
   | bumping {q c k} : q.Bump → P.Has q c → Good regs (.took q c k) (.rmwStore (P.cnt q c) (k + 1) .sc)
   | rtook {c r s k} : r ≠ P.tmp → s ≠ P.tmp → regs P.tmp = k →
     Good regs (.took (.op .recv) c k)
@@ -602,9 +608,9 @@ inductive Good (regs : Nat → Int) : Phase → Stmt → Prop
       (.seq (.seq (.loadAt r (P.data c) P.msgs (.reg P.tmp) .plain) (.assign s (.const 1)))
         (P.fin .recv c))
   | readDone {c s k} : s ≠ P.tmp → regs P.tmp = k →
-    Good regs (.waited .recv c k) (.seq (.seq .skip (.assign s (.const 1))) (P.fin .recv c))
-  | status {c s k e} : s ≠ P.tmp → regs P.tmp = k →
-    Good regs (.waited .recv c k) (.seq (.assign s e) (P.fin .recv c))
+    Good regs (.moved .recv c k) (.seq (.seq .skip (.assign s (.const 1))) (P.fin .recv c))
+  | status {c s k e ph} : ph = .waited .recv c k ∨ ph = .moved .recv c k → s ≠ P.tmp →
+    regs P.tmp = k → Good regs ph (.seq (.assign s e) (P.fin .recv c))
 
 variable {P}
 
@@ -621,6 +627,12 @@ theorem Trans.silent {o c k ph} (h : ph = .counted o c k ∨ ph = .waited o c k)
   rcases h with rfl | rfl
   · exact .counted_silent
   · exact .waited_silent
+
+theorem Trans.late_silent {o c k ph} (h : ph = .waited o c k ∨ ph = .moved o c k) :
+    P.Trans ph none ph := by
+  rcases h with rfl | rfl
+  · exact .waited_silent
+  · exact .moved_silent
 
 theorem update_tmp {regs : Nat → Int} {r : Nat} {v k : Int} (hr : r ≠ P.tmp)
     (hk : regs P.tmp = k) : update regs r v P.tmp = k := by
@@ -717,17 +729,17 @@ theorem Good.step {ph s regs} (hg : P.Good regs ph s) :
       cases hm with
       | send =>
         cases h with
-        | storeAt j hi hj => exact ⟨_, .moved hk, .move (hi.symm.trans hk) hj⟩
-  | moved hk =>
+        | storeAt j hi hj => exact ⟨_, .moved (Or.inr rfl) hk, .move (hi.symm.trans hk) hj⟩
+  | moved hph hk =>
     intro a s' regs' h
     cases h with
-    | seq_skip => exact ⟨_, .setting hk, .waited_silent⟩
+    | seq_skip => exact ⟨_, .setting hph hk, .late_silent hph⟩
     | seq h => cases h
-  | setting hk =>
+  | setting hph hk =>
     intro a s' regs' h
     cases h with
     | storeAt j hi hj =>
-      refine ⟨_, .clean (.other trivial), .set ?_ hj⟩
+      refine ⟨_, .clean (.other trivial), .set hph ?_ hj⟩
       simp only [Expr.eval] at hi
       omega
   | bumping hb hc =>
@@ -803,7 +815,7 @@ theorem Good.step {ph s regs} (hg : P.Good regs ph s) :
     | seq h =>
       cases h with
       | ite_true => exact ⟨_, .reading hr hs hk, .waited_silent⟩
-      | ite_false => exact ⟨_, .status hs hk, .waited_silent⟩
+      | ite_false => exact ⟨_, .status (Or.inl rfl) hs hk, .waited_silent⟩
   | reading hr hs hk =>
     intro a s' regs' h
     cases h with
@@ -818,14 +830,14 @@ theorem Good.step {ph s regs} (hg : P.Good regs ph s) :
     cases h with
     | seq h =>
       cases h with
-      | seq_skip => exact ⟨_, .status hs hk, .waited_silent⟩
+      | seq_skip => exact ⟨_, .status (Or.inr rfl) hs hk, .moved_silent⟩
       | seq h => cases h
-  | status hs hk =>
+  | status hph hs hk =>
     intro a s' regs' h
     cases h with
     | seq h =>
       cases h with
-      | assign => exact ⟨_, .moved (update_tmp hs hk), .waited_silent⟩
+      | assign => exact ⟨_, .moved hph (update_tmp hs hk), .late_silent hph⟩
 
 variable (P) in
 /-- The lists of accesses that `Trans` allows from a phase. -/
@@ -876,7 +888,7 @@ theorem Accepts.cnt_rmw {ph L} (h : P.Accepts ph L) {q c} (hc : P.Has q c) :
       | take | wait | poll | peek => cases hk
       | count | bumped => rfl
       | move _ hj => exact (data_ne_cnt hc.lockOk hj hx).elim
-      | set _ hj => exact (cnt_ne_sig hc.lockOk hj hx.symm).elim
+      | set _ _ hj => exact (cnt_ne_sig hc.lockOk hj hx.symm).elim
 
 /-- Each access of a counter is `sc`. -/
 theorem Accepts.cnt_sc {ph L} (h : P.Accepts ph L) {q c} (hc : P.Has q c) :
@@ -922,7 +934,7 @@ theorem Accepts.take_count {ph L} (h : P.Accepts ph L) {o c} (hc : c < P.chans) 
           subst hl'
           cases htr' with
           | count => rfl
-          | wait hph | poll hph => rcases hph with h | h <;> cases h
+          | wait hph | poll hph | set hph => rcases hph with h | h <;> cases h
           | bumped hb => exact hb.elim
       | count | set | bumped => cases hk
       | poll => exact absurd (cnt_inj (q := .drop) (q' := .op o) hx trivial trivial).1 nofun
@@ -998,6 +1010,7 @@ def Pre (ph : Phase) (o : Op) (c : Nat) (t : Int) (L : List Label) (i : Nat) : P
   | .took q c' k => q = .op o ∧ c' = c ∧ k = t ∧ P.NoSet o c L 0 i ∧ P.Waits o c t L 0 i
   | .counted o' c' k => o' = o ∧ c' = c ∧ k = t ∧ P.NoSet o c L 0 i ∧ P.Waits o c t L 0 i
   | .waited o' c' k => o' = o ∧ c' = c ∧ k = t ∧ P.NoSet o c L 0 i
+  | .moved o' c' k => o' = o ∧ c' = c ∧ k = t ∧ P.NoSet o c L 0 i
 
 theorem NoSet.cons {o c L i0 i1} {a : Label} (h : P.NoSet o c L i0 i1) :
     P.NoSet o c (a :: L) (i0 + 1) (i1 + 1) := by
@@ -1048,9 +1061,10 @@ theorem Accepts.set_hist {ph L} (h : P.Accepts ph L) {o c j} (hc : c < P.chans)
       | count => exact (cnt_ne_sig (q := .op _) trivial hj hx).elim
       | bumped _ hq => exact (cnt_ne_sig hq.lockOk hj hx).elim
       | move _ hj' => exact (data_ne_sig hj' hj hx).elim
-      | set hk' hj' =>
+      | set hph hk' hj' =>
         obtain ⟨rfl, rfl, rfl⟩ := sig_inj hj' hj hx
-        exact Or.inl ⟨rfl, rfl, by omega, fun m _ _ h1 _ => absurd h1 (Nat.not_lt_zero m)⟩
+        rcases hph with rfl | rfl <;>
+          exact Or.inl ⟨rfl, rfl, by omega, fun m _ _ h1 _ => absurd h1 (Nat.not_lt_zero m)⟩
     | succ i =>
       have notSet {b : Label} (hb : b.kind ≠ .write ∨ b.loc = P.ctr o c ∨
           ∃ j' < P.msgs, b.loc = P.data c + j') :
@@ -1085,9 +1099,13 @@ theorem Accepts.set_hist {ph L} (h : P.Accepts ph L) {o c j} (hc : c < P.chans)
             · exact Or.inl ⟨rfl, rfl, rfl, hno.cons_zero (notSet (Or.inl nofun)),
                 0, _, _, Nat.le_refl 0, by omega, hj', rfl⟩
             · exact Or.inl ⟨rfl, rfl, rfl, hno.cons_zero (notSet (Or.inl nofun))⟩
+          | poll => exact Or.inl ⟨rfl, rfl, rfl, hno.cons_zero (notSet (Or.inl nofun))⟩
+        | moved o' c' k =>
+          obtain ⟨rfl, rfl, rfl, hno⟩ := hpre
+          cases htr with
           | move hj' hjl =>
             exact Or.inl ⟨rfl, rfl, rfl, hno.cons_zero (notSet (Or.inr (Or.inr ⟨_, hjl, rfl⟩)))⟩
-          | poll => exact Or.inl ⟨rfl, rfl, rfl, hno.cons_zero (notSet (Or.inl nofun))⟩
+          | poll hph => rcases hph with h | h <;> cases h
       · exact Or.inr ⟨i' + 1, by omega, by simpa using hread, hno.cons, hw.cons⟩
 
 

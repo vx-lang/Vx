@@ -133,6 +133,7 @@ the library. `ChanProg.drf_sc` is the DRF-SC theorem. Step 4 adds the two theore
   reads one. Each access of element `k` comes after the `fetchAdd` that gave its thread the number
   `k`. So the `recv` with the number `k` gets a value that the `send` with the number `k` wrote.
   `ring_once` shows that two reads of the same write belong to the same `recv`.
+  `ring_move_once` shows that each operation accesses its element once.
 
 DRF-SC for a client holds only with this `sc` library. A later step can make an access release or
 acquire. Each such access then needs its own edge proof and a litmus test.

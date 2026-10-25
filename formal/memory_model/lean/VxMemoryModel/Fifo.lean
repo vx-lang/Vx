@@ -8,7 +8,8 @@ Element `k` of the values of a channel belongs to the operations with the number
 `k` comes after a `fetchAdd` that gave its thread the number `k`. So `ring_fifo` follows: the
 `recv` with the number `k` gets a value that the `send` with the number `k` wrote, before it set
 its flag `full`. `ring_once` shows that two reads of the same write belong to the same `recv`, so
-no value arrives twice.
+no value arrives twice. `ring_move_once` shows that each operation accesses its element once:
+right after the access, it sets its flag (`Accepts.after_move`).
 
 `ring_fifo` needs no rule of the memory model. A read gets its value from a write to its place,
 and only one `send` writes that place.
@@ -29,6 +30,7 @@ def DPre (ph : Phase) (o : Op) (c : Nat) (t : Int) (L : List Label) (i : Nat) : 
   | .took q c' k => q = .op o ∧ c' = c ∧ k = t ∧ P.NoSet o c L 0 i
   | .counted o' c' k => o' = o ∧ c' = c ∧ k = t ∧ P.NoSet o c L 0 i
   | .waited o' c' k => o' = o ∧ c' = c ∧ k = t ∧ P.NoSet o c L 0 i
+  | .moved o' c' k => o' = o ∧ c' = c ∧ k = t ∧ P.NoSet o c L 0 i
 
 theorem data_inj {c c' j j' : Nat} (hj : j < P.msgs) (hj' : j' < P.msgs)
     (h : P.data c + j = P.data c' + j') : c = c' ∧ j = j' := by
@@ -60,7 +62,7 @@ theorem Accepts.data_hist {ph L} (h : P.Accepts ph L) {c j} (hc : c < P.chans)
       | peek hm => exact (data_ne_cnt (q := .serving) hm hj hx.symm).elim
       | poll => exact (data_ne_cnt (q := .drop) trivial hj hx.symm).elim
       | wait _ _ hj' => exact (data_ne_sig hj hj' hx.symm).elim
-      | set _ hj' => exact (data_ne_sig hj hj' hx.symm).elim
+      | set _ _ hj' => exact (data_ne_sig hj hj' hx.symm).elim
       | @move o c' k v j' hk' hj' =>
         obtain ⟨rfl, rfl⟩ := data_inj hj' hj hx
         exact ⟨o, rfl, Or.inl ⟨rfl, rfl, hk'.symm, fun m _ _ h1 _ => absurd h1 (Nat.not_lt_zero m)⟩⟩
@@ -93,10 +95,52 @@ theorem Accepts.data_hist {ph L} (h : P.Accepts ph L) {c j} (hc : c < P.chans)
           | wait hph =>
             rcases hph with rfl | rfl <;>
               exact Or.inl ⟨rfl, rfl, rfl, hno.cons_zero (notSet (Or.inl nofun))⟩
+          | poll => exact Or.inl ⟨rfl, rfl, rfl, hno.cons_zero (notSet (Or.inl nofun))⟩
+        | moved o' c' k =>
+          obtain ⟨rfl, rfl, rfl, hno⟩ := hpre
+          cases htr with
           | move _ hjl =>
             exact Or.inl ⟨rfl, rfl, rfl, hno.cons_zero (notSet (Or.inr (Or.inr ⟨_, hjl, rfl⟩)))⟩
-          | poll => exact Or.inl ⟨rfl, rfl, rfl, hno.cons_zero (notSet (Or.inl nofun))⟩
+          | poll hph => rcases hph with h | h <;> cases h
       · exact ⟨o, hko, Or.inr ⟨i' + 1, by omega, by simpa using hread, hno.cons⟩⟩
+
+/-- Right after an operation accesses its element of the values, it sets its flag. -/
+theorem Accepts.after_move {ph L} (h : P.Accepts ph L) {c j} (hc : c < P.chans)
+    (hj : j < P.msgs) :
+    ∀ {i : Nat} {l l' : Label}, L[i]? = some l → l.kind ≠ .fence → l.loc = P.data c + j →
+      L[i + 1]? = some l' →
+      ∃ o, l.kind = o.moveKind ∧ l'.kind = .write ∧ ∃ j' < P.sigLen o, l'.loc = P.sig o c + j' := by
+  induction h with
+  | nil => intro i l l' h; simp at h
+  | @cons ph ph' a L htr hacc ih =>
+    intro i l l' hl hk hx hl'
+    cases i with
+    | succ i => exact ih (by simpa using hl) hk hx (by simpa using hl')
+    | zero =>
+      simp only [List.getElem?_cons_zero, Option.some.injEq] at hl
+      simp only [Nat.zero_add, List.getElem?_cons_succ] at hl'
+      subst hl
+      cases htr with
+      | other hav => exact (hav.not_inside hk (hx ▸ (data_inside hc hj).1)
+          (hx ▸ (data_inside hc hj).2)).elim
+      | take hq => exact (data_ne_cnt hq.lockOk hj hx.symm).elim
+      | count => exact (data_ne_cnt (q := .op _) trivial hj hx.symm).elim
+      | bumped _ hq => exact (data_ne_cnt hq.lockOk hj hx.symm).elim
+      | peek hm => exact (data_ne_cnt (q := .serving) hm hj hx.symm).elim
+      | poll => exact (data_ne_cnt (q := .drop) trivial hj hx.symm).elim
+      | wait _ _ hj' => exact (data_ne_sig hj hj' hx.symm).elim
+      | set _ _ hj' => exact (data_ne_sig hj hj' hx.symm).elim
+      | @move o c' k v j' hk' hj' =>
+        obtain ⟨rfl, rfl⟩ := data_inj hj' hj hx
+        cases hacc with
+        | nil => simp at hl'
+        | cons htr' _ =>
+          simp only [List.getElem?_cons_zero, Option.some.injEq] at hl'
+          subst hl'
+          cases htr' with
+          | set hph _ hj'' =>
+            rcases hph with h | h <;> cases h <;> exact ⟨o, rfl, rfl, _, hj'', rfl⟩
+          | wait hph | poll hph => rcases hph with h | h <;> cases h
 
 variable {X : Execution} (run : P.toTaskProg.toProg.Run X)
 include run
@@ -204,6 +248,51 @@ theorem ring_once (hP : P.Ok) (wf : X.WellFormed) (hcons : X.Consistent) (ho : X
     (hrv1.trans hrv2.symm)
   subst this
   exact ⟨r1, r1', hrw1, hrl1, hrv1, hrt1, hrt2, hri1, hri2⟩
+
+/-- Each operation accesses its element of the values once. Two reads of element `j` of a channel
+are the same read, and two writes of it are the same write. -/
+theorem ring_move_once (hP : P.Ok) (wf : X.WellFormed) (hcons : X.Consistent) (ho : X.CoOrder)
+    (hfin : X.Finite) {c j} (hc : c < P.chans) (hj : j < P.msgs) {d1 d2 : X.E}
+    (hk : X.kind d1 = X.kind d2) (hk1 : X.kind d1 ≠ .fence) (hl1 : X.loc d1 = P.data c + j)
+    (hl2 : X.loc d2 = P.data c + j) : d1 = d2 := by
+  obtain ⟨o, r, r', hko, hrw, hrl, hrv, hrt, hri, hno1⟩ := data_op run hP hc hj hk1 hl1
+  obtain ⟨o', s, s', hko', hsw, hsl, hsv, hst, hsi, hno2⟩ := data_op run hP hc hj (hk ▸ hk1) hl2
+  have hoo : o' = o := by
+    cases o <;> cases o' <;> first | rfl | (rw [← hk, hko] at hko'; simp [Op.moveKind] at hko')
+  subst hoo
+  have hrs := (counter run hP wf (q := .op o') hc).tickets wf hcons ho hfin hrw hrl hsw hsl
+    (hrv.trans hsv.symm)
+  subst hrs
+  have ht : X.thread d1 = X.thread d2 := hrt.symm.trans hst
+  -- The access right after `a` in its thread sets a flag, so `b` cannot follow `a`.
+  have key {a b : X.E} (ht : X.thread a = X.thread b) (hab : run.idx a < run.idx b)
+      (hka : X.kind a = o'.moveKind) (hla : X.loc a = P.data c + j)
+      (hlb : X.loc b = P.data c + j) (hra : run.idx r < run.idx a)
+      (hno : ∀ d', X.thread d' = X.thread b → run.idx r < run.idx d' → run.idx d' < run.idx b →
+        ¬ (X.IsWrite d' ∧ ∃ j' < P.sigLen o', X.loc d' = P.sig o' c + j')) : False := by
+    obtain ⟨e, het, hei⟩ : ∃ e, X.thread e = X.thread b ∧ run.idx e = run.idx a + 1 := by
+      rcases Nat.lt_or_ge (run.idx a + 1) (run.idx b) with h | h
+      · exact run.idx_down b _ h
+      · exact ⟨b, rfl, by omega⟩
+    have hp := data_not_init run hP hc hj hla
+    rw [ht] at hp
+    have ga := view_get run (e := b) ht (Nat.le_of_lt hab) hp
+    have ge := view_get run (e := b) het (by omega) (by omega)
+    rw [show run.idx e - P.pre (X.thread b) = run.idx a - P.pre (X.thread b) + 1 by omega] at ge
+    obtain ⟨o'', hko'', hwe, j', hj', hle⟩ :=
+      (view run hP b).2.after_move hc hj ga (by rw [hka]; cases o' <;> nofun) hla ge
+    have : o'' = o' := by
+      cases o' <;> cases o'' <;> first | rfl | (rw [hka] at hko''; simp [Op.moveKind] at hko'')
+    subst this
+    rcases Nat.lt_or_ge (run.idx e) (run.idx b) with h | h
+    · exact hno e het (by omega) h ⟨hwe, j', hj', hle⟩
+    · have : e = b := run.idx_inj _ _ het (by omega)
+      subst this
+      exact data_ne_sig hj hj' (hlb.symm.trans hle)
+  rcases Nat.lt_trichotomy (run.idx d1) (run.idx d2) with h | h | h
+  · exact (key ht h hko hl1 hl2 hri hno2).elim
+  · exact run.idx_inj _ _ ht h
+  · exact (key ht.symm h (hk ▸ hko) hl2 hl1 hsi hno1).elim
 
 end ChanProg
 
