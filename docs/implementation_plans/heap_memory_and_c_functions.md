@@ -34,8 +34,6 @@ The decisions this document makes:
 program share one namespace. When `std::vec` called `malloc` through `std::alloc`, the checker
 checked that call against the program's own declaration:
 
-<!-- vx-doctest: skip: this program shows the error E3003 -->
-
 ```vx
 import std::vec;
 
@@ -161,8 +159,6 @@ A program may declare `malloc` itself, or define a function with that name.
 
 Code written in C's style gets the functions as the C standard writes them:
 
-<!-- vx-doctest: skip: Vx has no `*mut void` yet -->
-
 ```vx
 extern {
   fn malloc(size : usize) -> *mut void;
@@ -239,8 +235,8 @@ The same gap shows for tensors: Vx#2200 asks for a placement parameter there too
 | `std::alloc`, `std::box` and `std::libc` | done | Vx#2212 |
 | A task's environment through the ops | done | Vx#2212 |
 | Rename a definition named like a C allocator | done | Vx#2212 |
-| `eprint!`, a panic and a failed check on standard error | in review | Vx#2215 |
-| `std::vec` over `std::alloc`, the bounds message on standard error | in review | Vx#2216 |
+| `eprint!`, a panic and a failed check on standard error | done | Vx#2215 |
+| `std::vec` over `std::alloc`, the bounds message on standard error | done | Vx#2216 |
 | A host `memref.alloc` through the ops | open | |
 | Device topologies, pinned host memory, Windows, bare metal | open | |
 | An `extern` declaration that belongs to its module | open | |
