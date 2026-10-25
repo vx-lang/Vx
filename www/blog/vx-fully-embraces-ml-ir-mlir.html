@@ -287,10 +287,37 @@ kernel. The kernel has the name of the function. The middle of it:</p>
 <h2 id="mlir-inside-vx-source"><a href="#mlir-inside-vx-source">MLIR inside Vx source</a></h2>
 
 <p>The traffic also goes the other way. A Vx function can contain MLIR, in an
-<code>mlir!</code> block. The block names its inputs, its result type and its dialects. The
-<code>core</code> library declares no <code>extern</code> function. About 130 <code>mlir!</code>
-blocks write its integer methods, its math functions, its pointers and its atomics. So
-<code>core</code> also works in a GPU kernel, which has no C library.</p>
+<code>mlir!</code> block. Here is <code>pow</code> as one MLIR operation:</p>
+
+<pre><code><span class="k">fn</span> <span class="f">pow</span>(x : <span class="t">f64</span>, n : <span class="t">i32</span>) -&gt; <span class="t">f64</span> {
+  <span class="k">return</span> mlir!( inputs : (%x = x : <span class="t">f64</span>, %n = n : <span class="t">i32</span>), returns : <span class="t">f64</span>, dialects : ["math"]) {
+    %r = math.fpowi %x, %n : <span class="t">f64</span>, <span class="t">i32</span>
+    macro.yield %r : <span class="t">f64</span>
+  };
+}
+
+<span class="k">fn</span> <span class="f">main</span>() -&gt; <span class="t">i32</span> {
+  <span class="f">print</span>(<span class="f">pow</span>(<span class="n">2.0</span>, <span class="n">10</span>));
+  <span class="f">print</span>(" ");
+  <span class="f">print</span>(<span class="f">pow</span>(<span class="n">1.5</span>, -<span class="n">2</span>));
+  <span class="f">print</span>("\n");
+  <span class="k">return</span> <span class="n">0</span>;
+}</code></pre>
+
+<p>It prints <code>1024 0.4444444444444444</code>. <code>inputs</code> binds each Vx value to an
+MLIR name, <code>returns</code> gives the result type, and <code>dialects</code> lists the
+dialects that the block uses. <code>macro.yield</code> gives the result back to Vx. The block
+becomes a small function, and <code>math.fpowi</code> becomes an LLVM intrinsic
+(<code>vxc pow.vx --action emit-llvm</code>, trimmed):</p>
+
+<pre><code>llvm.func hidden @vx_flat_mlir_0(%arg0: f64, %arg1: i32) -&gt; f64 {
+  %0 = llvm.intr.powi(%arg0, %arg1) : (f64, i32) -&gt; f64
+  llvm.return %0 : f64
+}</code></pre>
+
+<p>The <code>core</code> library declares no <code>extern</code> function. About 130
+<code>mlir!</code> blocks write its integer methods, its math functions, its pointers and its
+atomics. So <code>core</code> also works in a GPU kernel, which has no C library.</p>
 
 <h3 id="one-block-for-the-cpu-and-the-gpu"><a href="#one-block-for-the-cpu-and-the-gpu">One block for the CPU and the GPU</a></h3>
 
