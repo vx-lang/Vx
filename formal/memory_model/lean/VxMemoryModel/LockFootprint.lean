@@ -43,7 +43,7 @@ theorem TaskProg.lower_keeps {P : TaskProg} {q : Kind → Order → Nat → Prop
 
 namespace ChanProg
 
-variable {P : ChanProg} {g : Nat → Option Nat} {m : Nat}
+variable {P : ChanProg} {g : Nat → Option Nat} {tps : Nat → List CPhase} {m : Nat}
 
 variable (g m) in
 /-- An access that a thread can make while it does not hold the lock `m`: not to a place that
@@ -262,7 +262,7 @@ theorem CStmt.NoTasks.bases {s : CStmt} (h : s.NoTasks) : ∀ b, s.Bases b → b
   | tasksBlock => exact h.elim
   | _ => exact fun _ => nofun
 
-theorem cseqAll_bases : ∀ {ps : List CPhase}, P.CPhasesOk g ps →
+theorem cseqAll_bases : ∀ {ps : List CPhase}, P.CPhasesOk g tps ps →
     ∀ b, (cseqAll ps).Bases b → b.NoBlocks
   | [], _, b, hb => by cases hb; trivial
   | .code _ :: _, ⟨hp, _, hrest⟩, b, hb => hb.elim (CStmt.NoTasks.bases hp b) (cseqAll_bases hrest b)
@@ -274,7 +274,7 @@ include run
 
 /-- Before each access to a place of the lock `m`, its thread took a ticket `t` of `m`, then read
 `serving` as the ticket in `e`, and wrote `serving` nowhere from the ticket to the access. -/
-theorem guard_access (hF : P.CFootprints g ps) (hm : m < P.locks) {d : X.E}
+theorem guard_access (hF : P.CFootprints g tps ps) (hm : m < P.locks) {d : X.E}
     (hk : X.kind d ≠ .fence) (hd : g (X.loc d) = some m) :
     ∃ t t' e, X.rmw t t' ∧ X.loc t' = P.cnt .next m ∧ X.thread t = X.thread d ∧
       X.IsRead e ∧ X.loc e = P.cnt .serving m ∧ run.val e = run.val t ∧
@@ -290,7 +290,8 @@ theorem guard_access (hF : P.CFootprints g ps) (hm : m < P.locks) {d : X.E}
     omega
   have hacc := Runs.haccepts (trace_rest (run.trace d)).2
     (.clean (hclean_guarded_body hm hg hF.ok (hF.main ▸ cseqAll_bases hF.phases)
-      (fun t => CStmt.NoTasks.bases (hF.tasks t)) hF.guarded_main hF.guarded_task _))
+      (fun t => (hF.tasks t).elim (fun h => h ▸ cseqAll_bases (hF.task_phases t))
+        fun h => CStmt.NoTasks.bases h.1) hF.guarded_main hF.guarded_task _))
   have hget := view_get run (e := d) rfl (Nat.le_refl _) hp
   rcases hacc.guard_hist hm (fun x h => hg x m h) hget hk hd with
     h | ⟨t, iT, iE, h1, h2, hT, hC, hE, hno⟩
@@ -322,7 +323,7 @@ theorem guard_access (hF : P.CFootprints g ps) (hm : m < P.locks) {d : X.E}
 
 /-- Two accesses to a place of the lock `m`, in two threads, are in two blocks of `m`. The block
 with the smaller ticket happens before the other. -/
-theorem guard_hb (hF : P.CFootprints g ps) (wf : X.WellFormed) (hcons : X.Consistent)
+theorem guard_hb (hF : P.CFootprints g tps ps) (wf : X.WellFormed) (hcons : X.Consistent)
     (ho : X.CoOrder) (hfin : X.Finite) {a b : X.E} (hka : X.kind a ≠ .fence)
     (hkb : X.kind b ≠ .fence) (ha : g (X.loc a) = some m) (hb : g (X.loc b) = some m)
     (ht : X.thread a ≠ X.thread b) : X.hb a b ∨ X.hb b a := by
@@ -346,7 +347,7 @@ theorem guard_hb (hF : P.CFootprints g ps) (wf : X.WellFormed) (hcons : X.Consis
 omit run in
 /-- A program with channels and locks that follows the rule has no data race, in each execution
 whose `co` orders the writes to each place. -/
-theorem raceFree (hF : P.CFootprints g ps) (hX : P.toTaskProg.toProg.Execs X)
+theorem raceFree (hF : P.CFootprints g tps ps) (hX : P.toTaskProg.toProg.Execs X)
     (wf : X.WellFormed) (hcons : X.Consistent) (ho : X.CoOrder) (hfin : X.Finite) :
     X.RaceFree := by
   obtain ⟨run⟩ := hX
@@ -365,7 +366,7 @@ omit run in
 failures, each finite execution that the model allows, with a `co` that orders the writes to each
 place, is an interleaving. A failure uses release and acquire, so the program needs `errors`
 false. -/
-theorem drf_sc_of_footprints (hF : P.CFootprints g ps) (he : P.errors = false)
+theorem drf_sc_of_footprints (hF : P.CFootprints g tps ps) (he : P.errors = false)
     (hm : ∀ b, P.main.Bases b → b.SeqCstOnly) (ht : ∀ t b, (P.task t).Bases b → b.SeqCstOnly)
     (hX : P.toTaskProg.toProg.Execs X) (wf : X.WellFormed) (hfin : X.Finite)
     (ho : X.CoOrder) (hc : X.Consistent) : X.SeqConsistent :=

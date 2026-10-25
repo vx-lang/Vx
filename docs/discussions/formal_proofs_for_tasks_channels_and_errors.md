@@ -210,8 +210,9 @@ an interleaving would show it (`cancel_flag_read_before_the_failure.litmus`). So
 tasks. The code of each task is a list of phases too, and the rule counts the accesses of the
 descendants of a task as its own (`Desc`). One thread starts each task, and a task starts only
 tasks with larger ids. The proof finds where two threads are in the tree of tasks: one starts the
-other at some depth (`anc`), or two tasks of one block start them (`sib`). `ChanFootprint.lean`
-does not let a task start tasks yet.
+other at some depth (`anc`), or two tasks of one block start them (`sib`). The sixth part gives
+the same tree of tasks to `ChanFootprint.lean`, so a task with channels, locks or failures can
+also start tasks.
 
 ## Later
 
