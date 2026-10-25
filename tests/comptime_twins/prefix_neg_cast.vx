@@ -9,7 +9,9 @@
 // `-(1i32 as u8)` had no value for the negation of 1u8.
 
 fn main() -> i32 {
-  let d : u8 = comptime { -1i32 as u8 };
+  let d : u8 = comptime {
+    -1i32 as u8
+  };
   println!("{}", d);
   return 0;
 }
