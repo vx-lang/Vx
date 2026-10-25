@@ -90,7 +90,7 @@ fn table_hash(inverse : bool, count : i64) -> u64 {
 }
 
 fn main() -> i32 {
-  let buf : *mut i8 = unsafe { malloc(400i64) };
+  let buf : *mut i8 = alloc(400, 16);
   show_f64("zero", f64::from_bits(0u64), buf);
   show_f64("negative_zero", f64::from_bits(9223372036854775808u64), buf);
   show_f64("one", f64::from_bits(4607182418800017408u64), buf);
@@ -166,7 +166,7 @@ fn main() -> i32 {
   }
   print!("
 ");
-  unsafe { free(buf); }
+  dealloc(buf, 16);
   return 0;
 }
 

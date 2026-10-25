@@ -63,6 +63,42 @@ def Vx_FreeOp : Vx_Op<"free"> {
     let assemblyFormat = "$buffer attr-dict `:` type($buffer)";
 }
 
+// Heap memory as a raw pointer, for library code such as `std::alloc`. One
+// function in convert-vx-to-standard lowers the three ops and picks the call for
+// the target and the topology, so a library names no C function. The alignment
+// is an operand, so that it can be a run-time value.
+
+// `bytes` of uninitialised memory at `align`, a power of two, or null when there
+// is none.
+def Vx_HeapAllocOp : Vx_Op<"heap_alloc"> {
+    let summary = "Allocates heap memory and gives a raw pointer to it.";
+    let arguments = (ins I64:$bytes, I64:$align, I32Attr:$topology);
+    let results = (outs Res<AnyType, "the new block", [MemAlloc]>:$ptr);
+    let assemblyFormat = "$bytes `,` $align attr-dict `:` type($ptr)";
+}
+
+// The block at `ptr`, of `old_bytes`, resized to `new_bytes`, with its contents
+// and its alignment. Null when there is no memory, and then `ptr` is still valid.
+// A null `ptr` makes a new block.
+def Vx_HeapGrowOp : Vx_Op<"heap_grow", [AllTypesMatch<["ptr", "result"]>]> {
+    let summary = "Resizes a heap block and keeps its contents.";
+    let arguments = (ins Arg<AnyType, "the block to resize", [MemRead, MemFree]>:$ptr,
+                         I64:$old_bytes, I64:$new_bytes, I64:$align,
+                         I32Attr:$topology);
+    let results = (outs Res<AnyType, "the resized block", [MemAlloc]>:$result);
+    let assemblyFormat =
+        "$ptr `,` $old_bytes `,` $new_bytes `,` $align attr-dict `:` type($result)";
+}
+
+// Gives back a block from `vx.heap_alloc` or `vx.heap_grow`, with the alignment
+// and the topology it was made with. Null is a no-op.
+def Vx_HeapFreeOp : Vx_Op<"heap_free"> {
+    let summary = "Frees a heap block.";
+    let arguments = (ins Arg<AnyType, "the block to free", [MemFree]>:$ptr,
+                         I64:$align, I32Attr:$topology);
+    let assemblyFormat = "$ptr `,` $align attr-dict `:` type($ptr)";
+}
+
 // The point where a tensor's owner gives it up, written by the checker.
 // convert-vx-to-standard frees the buffer when it is a heap buffer this
 // function owns, and erases the drop otherwise. With `unless`,

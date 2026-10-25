@@ -8,6 +8,7 @@
 
 import core::mem;
 import core::ops;
+import core::ptr;
 import std::alloc;
 
 /// A single-owner heap allocation, which is what makes a recursive type possible.
@@ -23,13 +24,12 @@ unsafe impl<T : Sync> Sync for Box<T> {}
 
 impl<T>
 Box<T> {
-  /// Move a value to the heap.
-  ///
-  /// The allocation is not checked: `malloc` answering null gives a `Box` that writes through
-  /// a null pointer, and Vx cannot test one (Vx#714).
+  /// Move a value to the heap. Stops the program when there is no memory.
   fn new (val : T)->Box<T> {
-    let size_bytes : i64 = sizeof<T>();
-    let p : *mut T = unsafe { malloc(size_bytes) };
+    let p : *mut T = alloc(sizeof<T>(), 16);
+    if is_null_mut(p) {
+      panic("Box: out of memory");
+    }
     unsafe { *p = val; }
     return Box<T> {
       ptr : p
@@ -41,6 +41,7 @@ impl<T> Drop for Box<T> {
   fn drop(self : &mut Box<T>) -> void {
     let value : T = unsafe { *self.ptr };
     drop(value);
-    unsafe { let ptr_i8 : *mut i8 = self.ptr; free(ptr_i8); }
+    let ptr_i8 : *mut i8 = self.ptr;
+    dealloc(ptr_i8, 16);
   }
 }

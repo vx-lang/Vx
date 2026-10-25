@@ -2698,6 +2698,134 @@ static void lowerHostAllocs(ModuleOp module) {
   }
 }
 
+// `malloc` gives memory aligned for every scalar type: 16 bytes on the 64-bit
+// targets Vx builds for.
+static constexpr int64_t kMallocAlign = 16;
+
+static Value callCFunction(OpBuilder &b, Location loc,
+                           FailureOr<LLVM::LLVMFuncOp> fn, ValueRange args) {
+  assert(succeeded(fn) && "a C allocation function has one declaration of "
+                          "C's type, which the checker makes sure of (E3059)");
+  auto call = LLVM::CallOp::create(b, loc, *fn, args);
+  return call.getNumResults() ? call.getResult() : Value();
+}
+
+// A host block of `bytes` at `align`. C11's `aligned_alloc` wants a size that
+// is a multiple of the alignment, so the size is rounded up for it.
+static Value allocateHostBlock(OpBuilder &b, Location loc, ModuleOp module,
+                               Value bytes, Value align) {
+  Type i64 = b.getI64Type();
+  auto withMalloc = [&](OpBuilder &b, Location loc) -> Value {
+    return callCFunction(b, loc, LLVM::lookupOrCreateMallocFn(b, module, i64),
+                         {bytes});
+  };
+  auto withAlignedAlloc = [&](OpBuilder &b, Location loc) -> Value {
+    Value one = b.create<arith::ConstantIntOp>(loc, i64, 1);
+    Value allOnes = b.create<arith::ConstantIntOp>(loc, i64, -1);
+    Value mask = b.create<arith::SubIOp>(loc, align, one);
+    Value rounded =
+        b.create<arith::AndIOp>(loc, b.create<arith::AddIOp>(loc, bytes, mask),
+                                b.create<arith::XOrIOp>(loc, mask, allOnes));
+    return callCFunction(b, loc,
+                         LLVM::lookupOrCreateAlignedAllocFn(b, module, i64),
+                         {align, rounded});
+  };
+  APInt known;
+  if (matchPattern(align, m_ConstantInt(&known)))
+    return known.getSExtValue() <= kMallocAlign ? withMalloc(b, loc)
+                                                : withAlignedAlloc(b, loc);
+  Value limit = b.create<arith::ConstantIntOp>(loc, i64, kMallocAlign);
+  Value small =
+      b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ule, align, limit);
+  auto choice = b.create<scf::IfOp>(
+      loc, small,
+      [&](OpBuilder &b, Location loc) {
+        b.create<scf::YieldOp>(loc, withMalloc(b, loc));
+      },
+      [&](OpBuilder &b, Location loc) {
+        b.create<scf::YieldOp>(loc, withAlignedAlloc(b, loc));
+      });
+  return choice.getResult(0);
+}
+
+// Lowers `vx.heap_alloc`, `vx.heap_grow` and `vx.heap_free`: the one place
+// that picks the C function for a heap block. On the host, an alignment that
+// `malloc` gives anyway uses `malloc` and `realloc`. A larger one uses
+// `aligned_alloc`, and a resize copies into a new block, since `realloc` keeps
+// only `malloc`'s alignment. C11 frees both kinds with `free`.
+static LogicalResult lowerHeapOps(ModuleOp module) {
+  SmallVector<Operation *> ops;
+  module.walk([&](Operation *op) {
+    if (isa<vx::HeapAllocOp, vx::HeapGrowOp, vx::HeapFreeOp>(op))
+      ops.push_back(op);
+  });
+  for (Operation *op : ops) {
+    if (op->getAttrOfType<IntegerAttr>("topology").getInt() != 0)
+      return op->emitError(
+          "a heap block in a device's memory is not lowered yet");
+    OpBuilder b(op);
+    Location loc = op->getLoc();
+    Type ptr = LLVM::LLVMPointerType::get(module.getContext());
+    Type i64 = b.getI64Type();
+    if (auto alloc = dyn_cast<vx::HeapAllocOp>(op)) {
+      alloc.replaceAllUsesWith(allocateHostBlock(
+          b, loc, module, alloc.getBytes(), alloc.getAlign()));
+    } else if (auto grow = dyn_cast<vx::HeapGrowOp>(op)) {
+      auto withRealloc = [&](OpBuilder &b, Location loc) -> Value {
+        return callCFunction(
+            b, loc,
+            LLVM::lookupOrCreateFn(b, module, "realloc", {ptr, i64}, ptr),
+            {grow.getPtr(), grow.getNewBytes()});
+      };
+      // A new block, the old contents copied into it, and the old block freed.
+      // On failure the old block is kept, as `realloc` keeps it.
+      auto withCopy = [&](OpBuilder &b, Location loc) -> Value {
+        Value fresh = allocateHostBlock(b, loc, module, grow.getNewBytes(),
+                                        grow.getAlign());
+        Value null = LLVM::ZeroOp::create(b, loc, ptr);
+        Value made =
+            LLVM::ICmpOp::create(b, loc, LLVM::ICmpPredicate::ne, fresh, null);
+        scf::IfOp::create(b, loc, made, [&](OpBuilder &b, Location loc) {
+          Value kept = b.create<arith::MinUIOp>(loc, grow.getOldBytes(),
+                                                grow.getNewBytes());
+          LLVM::MemcpyOp::create(b, loc, fresh, grow.getPtr(), kept,
+                                 /*isVolatile=*/false);
+          callCFunction(b, loc, LLVM::lookupOrCreateFreeFn(b, module),
+                        {grow.getPtr()});
+          b.create<scf::YieldOp>(loc);
+        });
+        return fresh;
+      };
+      APInt known;
+      Value result;
+      if (matchPattern(grow.getAlign(), m_ConstantInt(&known))) {
+        result = known.getSExtValue() <= kMallocAlign ? withRealloc(b, loc)
+                                                      : withCopy(b, loc);
+      } else {
+        Value limit = b.create<arith::ConstantIntOp>(loc, i64, kMallocAlign);
+        Value small = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ule,
+                                              grow.getAlign(), limit);
+        result = b.create<scf::IfOp>(
+                      loc, small,
+                      [&](OpBuilder &b, Location loc) {
+                        b.create<scf::YieldOp>(loc, withRealloc(b, loc));
+                      },
+                      [&](OpBuilder &b, Location loc) {
+                        b.create<scf::YieldOp>(loc, withCopy(b, loc));
+                      })
+                     .getResult(0);
+      }
+      grow.replaceAllUsesWith(result);
+    } else {
+      auto heapFree = cast<vx::HeapFreeOp>(op);
+      callCFunction(b, loc, LLVM::lookupOrCreateFreeFn(b, module),
+                    {heapFree.getPtr()});
+    }
+    op->erase();
+  }
+  return success();
+}
+
 static LogicalResult placeDrops(ModuleOp module) {
   if (!module->hasAttr("vx.drops"))
     return success();
@@ -3001,17 +3129,19 @@ static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
       if (user != slotStore && !fn->isProperAncestor(user))
         slotUsers.push_back(user);
   b.setInsertionPoint(task);
-  auto malloc = LLVM::lookupOrCreateMallocFn(b, module, i64Ty);
   auto start = LLVM::lookupOrCreateFn(b, module, "vx_task_start",
                                       {ptrTy, ptrTy, ptrTy}, i64Ty);
-  assert(succeeded(malloc) && succeeded(start) &&
-         "the runtime functions have one declaration each");
+  assert(succeeded(start) && "the runtime function has one declaration");
   Value null = LLVM::ZeroOp::create(b, loc, ptrTy);
   Value end = LLVM::GEPOp::create(b, loc, ptrTy, envType, null,
                                   ArrayRef<LLVM::GEPArg>{1});
   Value size = LLVM::PtrToIntOp::create(b, loc, i64Ty, end);
-  Value newEnv =
-      LLVM::CallOp::create(b, loc, *malloc, ValueRange{size}).getResult();
+  // A host block, which the runtime gives back with C's `free`.
+  Value align = LLVM::ConstantOp::create(b, loc, i64Ty,
+                                         b.getI64IntegerAttr(kMallocAlign));
+  Value newEnv = vx::HeapAllocOp::create(b, loc, ptrTy, size, align,
+                                         b.getI32IntegerAttr(0))
+                     .getResult();
   for (auto [i, capture] : llvm::enumerate(captures)) {
     Value v = capture;
     if (copied[i] && isa<MemRefType>(capture.getType()))
@@ -3736,6 +3866,10 @@ struct ConvertVxToStandardPass
     }
 
     lowerHostAllocs(getOperation());
+    if (failed(lowerHeapOps(getOperation()))) {
+      signalPassFailure();
+      return;
+    }
     placeTransferFrees(getOperation());
     readCellsBeforeSpawns(getOperation());
     promoteBufferCells(getOperation());
@@ -6075,7 +6209,8 @@ struct CheckIntegerDivisionPass
 };
 
 // A program can declare a C function that a lowering also calls: `malloc` and
-// `free` for a heap buffer or a task, `aligned_alloc` for an aligned buffer.
+// `free` for a heap buffer or a task, `aligned_alloc` for an aligned buffer,
+// `realloc` for `vx.heap_grow`.
 // The lowerings look for an `llvm.func`, but the program's declaration is a
 // `func.func` until convert-func-to-llvm, so they made a second one. This pass
 // turns the program's declaration, and the calls to it, into that `llvm.func`.
@@ -6108,6 +6243,7 @@ struct LibcExternsToLLVMPass
     const std::pair<llvm::StringRef, LLVM::LLVMFunctionType> wanted[] = {
         {"malloc", LLVM::LLVMFunctionType::get(ptr, {i64})},
         {"free", LLVM::LLVMFunctionType::get(none, {ptr})},
+        {"realloc", LLVM::LLVMFunctionType::get(ptr, {ptr, i64})},
         {"aligned_alloc", LLVM::LLVMFunctionType::get(ptr, {i64, i64})},
     };
     bool changed = false;

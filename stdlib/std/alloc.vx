@@ -5,18 +5,40 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// Centralized unsafe memory allocation bindings.
+// Heap memory for Vx code. Each function is one `vx` op, and the compiler picks the C function
+// for the target. So this module names no C function, and a program can declare C's `malloc`
+// itself and still use the library. C's own functions are in `std::libc`.
 //===----------------------------------------------------------------------===//
 
-extern "C" {
-  /// C's `malloc`: `size` bytes of uninitialised heap, or null when it cannot.
-  ///
-  /// Vx cannot test the result against null (Vx#714), so a failed allocation is found by
-  /// writing through it.
-  fn malloc(size : i64) -> *mut i8;
-  /// C's `realloc`: the block resized, moving it if need be. The old pointer is invalid
-  /// afterwards whether or not it moved.
-  fn realloc(ptr : *mut i8, size : i64) -> *mut i8;
-  /// C's `free`. Freeing twice, or freeing what `malloc` did not return, is undefined.
-  fn free(ptr : *mut i8) -> void;
+/// `bytes` of uninitialised host memory at `align`, a power of two, or null when there is none.
+fn alloc(bytes : i64, align : i64) -> *mut i8 {
+  return mlir!( inputs : (%n = bytes : i64, %a = align : i64), returns : *mut i8, dialects : ["vx"]) {
+    %p = vx.heap_alloc %n, %a {
+      topology = 0 : i32
+    } : !llvm.ptr
+    macro.yield %p : !llvm.ptr
+  };
+}
+
+/// The block at `p`, of `old_bytes`, resized to `new_bytes`, with its contents and its
+/// alignment. Null when there is no memory, and then `p` is still valid. A null `p` makes a new
+/// block.
+fn grow(p : *mut i8, old_bytes : i64, new_bytes : i64, align : i64) -> *mut i8 {
+  return mlir!( inputs : (%p = p : !llvm.ptr, %o = old_bytes : i64, %n = new_bytes : i64, %a = align : i64), returns : *mut i8, dialects : ["vx"]) {
+    %q = vx.heap_grow %p, %o, %n, %a {
+      topology = 0 : i32
+    } : !llvm.ptr
+    macro.yield %q : !llvm.ptr
+  };
+}
+
+/// Gives back a block from `alloc` or `grow`, with the alignment it was made with. Null is a
+/// no-op.
+fn dealloc(p : *mut i8, align : i64) -> void {
+  mlir!( inputs : (%p = p : !llvm.ptr, %a = align : i64), dialects : ["vx"]) {
+    vx.heap_free %p, %a {
+      topology = 0 : i32
+    } : !llvm.ptr
+    macro.yield
+  };
 }

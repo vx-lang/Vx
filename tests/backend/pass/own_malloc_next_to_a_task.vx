@@ -8,7 +8,7 @@
 // A program that calls `malloc` itself can also start a task. The task code calls `malloc`
 // too, and both calls use one declaration. A second declaration stopped the compile with
 // "redefinition of symbol named 'malloc'".
-import std::alloc;
+import std::libc;
 
 fn main() -> i32 {
   let p : *mut i32 = unsafe { malloc(4) };

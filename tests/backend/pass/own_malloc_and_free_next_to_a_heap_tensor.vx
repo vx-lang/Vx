@@ -8,7 +8,7 @@
 // A program that calls `malloc` and `free` itself can also put a tensor on the heap. The
 // tensor's buffer comes from `malloc` and goes back with `free` too, and each name has one
 // declaration. A second declaration was renamed to `malloc_0` or `free_1`, and the link failed.
-import std::alloc;
+import std::libc;
 
 fn sum(n : i64) -> f32 {
   let mut t = Tensor<f32>([n]);

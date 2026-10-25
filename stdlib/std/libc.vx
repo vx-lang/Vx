@@ -6,4 +6,17 @@ extern {
   /// C's `lseek`: the new offset, or -1. `whence` is 0 from the start, 1 from the current
   /// position, 2 from the end.
   fn lseek(fd: i32, offset: i64, whence: i32) -> i64;
+  /// C's `malloc`: `size` bytes of uninitialised memory, or null.
+  fn malloc(size : usize) -> *mut i8;
+  /// C's `calloc`: `count * size` bytes set to zero, or null.
+  fn calloc(count : usize, size : usize) -> *mut i8;
+  /// C's `realloc`: the block resized, and moved if need be. Null when there is no memory, and
+  /// then `ptr` is still valid. The result has `malloc`'s alignment, not the one that
+  /// `aligned_alloc` gave.
+  fn realloc(ptr : *mut i8, size : usize) -> *mut i8;
+  /// C's `free`: gives back a block from any of these, `aligned_alloc` included. Null is a no-op.
+  fn free(ptr : *mut i8) -> void;
+  /// C11's `aligned_alloc`: `size` bytes at `alignment`, or null. `size` must be a multiple of
+  /// `alignment`. Microsoft's C runtime does not have it.
+  fn aligned_alloc(alignment : usize, size : usize) -> *mut i8;
 }
