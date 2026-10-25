@@ -8,7 +8,7 @@
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 
 extern "C" {
-  fn malloc(size : i32)->*mut f32;
+  fn malloc(size : i64)->*mut f32;
 }
 
 fn main() -> i32 {
@@ -16,10 +16,10 @@ fn main() -> i32 {
   return 0;
 }
 
-// A size is a count and malloc hands back storage, so the signature is i32 -> ptr. It used to
+// A size is a count and malloc hands back storage, so the signature is i64 -> ptr. It used to
 // read memref<?x?xi32> -> memref<memref<?x?xf32>>, which is what spelling a scalar as a
 // dims-less tensor bought (Vx#399).
-// CHECK: func.func private @malloc(i32) -> !llvm.ptr
+// CHECK: func.func private @malloc(i64) -> !llvm.ptr
 // CHECK-LABEL: func.func @main() -> i32 {
-// CHECK: %[[N:.*]] = arith.constant 1024 : i32
-// CHECK: call @malloc(%[[N]]) : (i32) -> !llvm.ptr
+// CHECK: %[[N:.*]] = arith.constant 1024 : i64
+// CHECK: call @malloc(%[[N]]) : (i64) -> !llvm.ptr

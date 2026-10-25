@@ -6079,7 +6079,8 @@ struct CheckIntegerDivisionPass
 // The lowerings look for an `llvm.func`, but the program's declaration is a
 // `func.func` until convert-func-to-llvm, so they made a second one. This pass
 // turns the program's declaration, and the calls to it, into that `llvm.func`.
-// A declaration of another type is left as it is.
+// The checker refuses a declaration of another type (E3059), and the pass
+// leaves one alone.
 struct LibcExternsToLLVMPass
     : public PassWrapper<LibcExternsToLLVMPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LibcExternsToLLVMPass)

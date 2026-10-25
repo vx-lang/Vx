@@ -410,6 +410,11 @@ pub enum DiagnosticCode {
     /// The last expression of a task body is its result. A task cannot join another task yet.
     /// Join both tasks in the `tasks` block.
     E3058,
+    /// An `extern` declaration of `malloc`, `calloc`, `realloc`, `aligned_alloc` or `free` whose
+    /// type is not C's. The compiler calls these functions too, and it can share only a
+    /// declaration of C's type. A size is a 64-bit integer: `usize`, `i64` or `u64`. A pointer is
+    /// a raw pointer to host memory. `free` returns nothing.
+    E3059,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

@@ -101,11 +101,72 @@ impl TypeChecker<'_> {
                         ext.name,
                         Self::short_type_name(found)
                     ),
+                    Some(span.clone()),
+                );
+            }
+            if let Some(c_type) = c_allocator_mismatch(ext) {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3059,
+                    format!(
+                        "extern fn `{}` does not have the type of C's `{}`. Declare it as \
+                         `{}`. A size can also be `i64` or `u64`, and a pointer can be any raw \
+                         pointer to host memory.",
+                        ext.name, ext.name, c_type
+                    ),
                     Some(span),
                 );
             }
         }
     }
+}
+
+/// For a declaration of a C allocation function whose type is not C's, the declaration to write.
+/// The compiler calls these functions itself, with C's type, and LLVM has one declaration of each.
+fn c_allocator_mismatch(ext: &crate::syntax::ExternDecl) -> Option<&'static str> {
+    use crate::syntax::{ElementType, Type};
+    // Each parameter is a size (`true`) or a pointer (`false`); the bool after is whether the
+    // function returns a pointer.
+    let (params, returns_pointer, c_type): (&[bool], bool, &'static str) = match ext.name.as_ref() {
+        "malloc" => (&[true], true, "fn malloc(size : usize) -> *mut i8"),
+        "calloc" => (
+            &[true, true],
+            true,
+            "fn calloc(count : usize, size : usize) -> *mut i8",
+        ),
+        "realloc" => (
+            &[false, true],
+            true,
+            "fn realloc(ptr : *mut i8, size : usize) -> *mut i8",
+        ),
+        "aligned_alloc" => (
+            &[true, true],
+            true,
+            "fn aligned_alloc(alignment : usize, size : usize) -> *mut i8",
+        ),
+        "free" => (&[false], false, "fn free(ptr : *mut i8) -> void"),
+        _ => return None,
+    };
+    let is_size = |ty: &Type| {
+        matches!(
+            ty,
+            Type::Scalar(ElementType::I64 | ElementType::U64 | ElementType::USize)
+        )
+    };
+    let is_host_pointer = |ty: &Type| matches!(ty, Type::Pointer(_, None, _));
+    let params_match = ext.params.len() == params.len()
+        && ext.params.iter().zip(params).all(|((_, ty), size)| {
+            if *size {
+                is_size(ty)
+            } else {
+                is_host_pointer(ty)
+            }
+        });
+    let result_matches = if returns_pointer {
+        is_host_pointer(&ext.return_type)
+    } else {
+        crate::syntax::types::is_void_ty(&ext.return_type)
+    };
+    (!(params_match && result_matches)).then_some(c_type)
 }
 
 /// The tensor inside a type, through the wrappers that restate where a value lives, and through

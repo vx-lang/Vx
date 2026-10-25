@@ -1,0 +1,42 @@
+//===- c_allocator_declared_with_another_type.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program that declares one of C's allocation functions must give it C's type, because the
+// compiler calls these functions too. A size is a 64-bit integer, and `free` returns nothing.
+// Each declaration below is wrong in one place, and gets the error at its own position. With a
+// task in the program, the error used to come from MLIR, with no position.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E3059] at 23:3: extern fn `malloc` does not have the type of C's `malloc`. Declare it as `fn malloc(size : usize) -> *mut i8`.
+// CHECK: Error[E3059] at 24:3: extern fn `calloc` does not have the type of C's `calloc`. Declare it as `fn calloc(count : usize, size : usize) -> *mut i8`.
+// CHECK: Error[E3059] at 25:3: extern fn `realloc` does not have the type of C's `realloc`. Declare it as `fn realloc(ptr : *mut i8, size : usize) -> *mut i8`.
+// CHECK: Error[E3059] at 26:3: extern fn `aligned_alloc` does not have the type of C's `aligned_alloc`. Declare it as `fn aligned_alloc(alignment : usize, size : usize) -> *mut i8`.
+// CHECK: Error[E3059] at 27:3: extern fn `free` does not have the type of C's `free`. Declare it as `fn free(ptr : *mut i8) -> void`.
+
+// A 32-bit size, a 32-bit second size, a 32-bit unsigned size, a result that is not a pointer,
+// and a result where C's `free` has none.
+extern "C" {
+  fn malloc(size : i32) -> *mut i32;
+  fn calloc(count : usize, size : i32) -> *mut i8;
+  fn realloc(ptr : *mut i8, size : u32) -> *mut i8;
+  fn aligned_alloc(alignment : usize, size : usize) -> i64;
+  fn free(ptr : *mut i8) -> i32;
+}
+
+fn main() -> i32 {
+  let p : *mut i32 = unsafe { malloc(4) };
+  unsafe { p[0] = 5; }
+  let mut total : i32 = 0;
+  tasks {
+    let a = spawn {
+      2
+    };
+    total = a.join();
+  }
+  print(total + unsafe { p[0] });
+  return 0;
+}
