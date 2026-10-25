@@ -1,0 +1,25 @@
+//===- a_failed_check_in_a_library_needs_only_libc.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A host program that is not Vx can load an object from `--action emit-obj` as a shared library.
+// A division in `divide` has a check for a division by zero. A failed check writes its message to
+// standard error with libc's `write`, and then calls libc's `abort`. So the check needs no Vx
+// runtime library. `main` uses the runtime, but a library has no `main`.
+//
+// RUN: vxc %s --action emit-obj -o %t.o
+// RUN: llvm-nm --undefined-only %t.o | FileCheck %s --implicit-check-not=vx_stderr_write
+// CHECK: U abort
+// CHECK: U write
+
+pub fn divide(a : i32, b : i32) -> i32 {
+  return a / b;
+}
+
+fn main() -> i32 {
+  println!("{}", divide(10, 3));
+  return 0;
+}

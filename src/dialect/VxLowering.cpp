@@ -6374,8 +6374,8 @@ struct LibcExternsToLLVMPass
 // `puts`, to standard output, where it mixes with what the program prints, and
 // an empty message printed a newline there. An empty message prints nothing. A
 // `cf.assert` in a `gpu.module` is left for `convert-gpu-to-nvvm`, which makes
-// it
-// `__assertfail`.
+// it `__assertfail`. The message goes through libc's `write`, so an object that
+// `--action emit-obj` builds needs no Vx runtime library for it.
 struct LowerHostAssertsPass
     : public PassWrapper<LowerHostAssertsPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LowerHostAssertsPass)
@@ -6405,8 +6405,17 @@ struct LowerHostAssertsPass
     }
     MLIRContext *ctx = module.getContext();
     Type ptr = LLVM::LLVMPointerType::get(ctx);
+    Type i32 = IntegerType::get(ctx, 32);
     Type i64 = IntegerType::get(ctx, 64);
     Type none = LLVM::LLVMVoidType::get(ctx);
+    // A program can define its own `write`. Then the message goes through the
+    // runtime's `vx_stderr_write`.
+    Operation *named = module.lookupSymbol("write");
+    auto declared = dyn_cast_or_null<LLVM::LLVMFuncOp>(named);
+    const bool libc =
+        !named || (declared && declared.isExternal() &&
+                   declared.getFunctionType() ==
+                       LLVM::LLVMFunctionType::get(i64, {i32, ptr, i64}));
     unsigned count = 0;
     for (cf::AssertOp op : asserts) {
       Location loc = op.getLoc();
@@ -6420,12 +6429,23 @@ struct LowerHostAssertsPass
         Value text = LLVM::createGlobalString(
             loc, b, ("__vx_assert_msg_" + llvm::Twine(count++)).str(), message,
             LLVM::Linkage::Internal);
-        auto write = LLVM::lookupOrCreateFn(b, module, "vx_stderr_write",
-                                            {ptr, i64}, i64);
-        assert(succeeded(write) && "the runtime function has one declaration");
         Value size = LLVM::ConstantOp::create(
             b, loc, i64, b.getI64IntegerAttr(message.size()));
-        LLVM::CallOp::create(b, loc, *write, ValueRange{text, size});
+        if (libc) {
+          auto write =
+              LLVM::lookupOrCreateFn(b, module, "write", {i32, ptr, i64}, i64);
+          assert(succeeded(write) && "libc's write has one declaration");
+          Value stderrFd =
+              LLVM::ConstantOp::create(b, loc, i32, b.getI32IntegerAttr(2));
+          LLVM::CallOp::create(b, loc, *write,
+                               ValueRange{stderrFd, text, size});
+        } else {
+          auto write = LLVM::lookupOrCreateFn(b, module, "vx_stderr_write",
+                                              {ptr, i64}, i64);
+          assert(succeeded(write) &&
+                 "the runtime function has one declaration");
+          LLVM::CallOp::create(b, loc, *write, ValueRange{text, size});
+        }
       }
       auto abortFn = LLVM::lookupOrCreateFn(b, module, "abort", {}, none);
       assert(succeeded(abortFn) && "C's abort has one declaration");
