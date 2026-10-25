@@ -1,0 +1,30 @@
+//===- own_malloc_next_to_a_vec.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program that declares C's `malloc` itself can use `Vec`. Here the result is `*mut f32`, as
+// `llama2_math.vx` declares it. `std::vec` gets its memory from `std::alloc`, which names no C
+// function, so its calls are not checked against this declaration.
+import std::vec;
+
+extern "C" {
+  fn malloc(size : i64) -> *mut f32;
+}
+
+fn main() -> i32 {
+  let p : *mut f32 = unsafe { malloc(16) };
+  unsafe { p[0] = 1.5; }
+  let mut v = Vec<i32>::new();
+  v.push(1);
+  v.push(2);
+  v.push(3);
+  print(v.get(2));
+  print!(" ");
+  print(unsafe { p[0] });
+  return 0;
+}
+
+// EXPECT: 3 1.5

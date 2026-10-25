@@ -590,8 +590,8 @@ Needs A16–A18 where noted; mostly needs nothing new.
 - **`core::alloc`**: `Layout` (`from_size_align`, `new<T>`, `array<T>(n)`, `size`, `align`,
   `pad_to_align`, `extend`, `repeat`), `LayoutError`, `trait Allocator { fn allocate(self : &Self, l : Layout) -> Result<*mut u8, AllocError>; fn deallocate(..); fn grow(..); fn shrink(..) }`,
   `GlobalAlloc` (excluded: no `#[global_allocator]`; `std` provides the one `Global` allocator over
-  `vx_vec_alloc`/`grow`/`free`). `Vec<T>` in `alloc` is rewritten against this, which retires the
-  byte math in `vx_vec_grow` back into Vx once A5 lets Vx check the overflow itself.
+  `malloc`/`realloc`/`free`). `Vec<T>` in `alloc` is rewritten against this. `std::vec` already
+  does its byte math and overflow check in Vx.
 - **`core::ffi`**: `c_void` (an empty enum), `CStr` (a `Str`-like over NUL-terminated `*const i8`
   with `from_ptr`, `to_bytes`, `to_str`, `count_bytes`), `c_char`/`c_int`/... **excluded** until
   the language has type aliases (there is no `type` keyword).
