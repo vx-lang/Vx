@@ -132,8 +132,9 @@ def CPhasesOk : List CPhase → Prop
 
 /-- The rule on the code. The main code is the phases `ps`. Task `t` is the phases `tps t`, or
 code that starts no task. One thread starts each task, and a task starts only tasks with larger
-ids. `g` gives some places of the code a lock, and the code accesses such a place only in a
-`locked` block of its lock. -/
+ids. `g` gives some places of the code a lock. The code of the tasks and of the blocks of the main
+code accesses such a place only in a `locked` block of its lock. The other main code runs while
+no task runs, so it needs no lock. -/
 structure CFootprints (ps : List CPhase) : Prop where
   ok : P.Ok
   main : P.main = cseqAll ps
@@ -144,7 +145,7 @@ structure CFootprints (ps : List CPhase) : Prop where
     (∃ p ∈ cthr ps tps q', v ∈ (p.lower P).ids) → q = q'
   order : ∀ t v, (∃ p ∈ tps t, v ∈ (p.lower P).ids) → t < v
   guard : ∀ x m, g x = some m → x < P.places ∧ m < P.locks
-  guarded_main : P.main.Guarded g []
+  guarded_blocks : ∀ B, CPhase.block B ∈ ps → B.Guarded g []
   guarded_task : ∀ t, (P.task t).Guarded g []
 
 variable {P g tps}

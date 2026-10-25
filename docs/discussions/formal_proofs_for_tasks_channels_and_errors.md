@@ -212,7 +212,8 @@ descendants of a task as its own (`Desc`). One thread starts each task, and a ta
 tasks with larger ids. The proof finds where two threads are in the tree of tasks: one starts the
 other at some depth (`anc`), or two tasks of one block start them (`sib`). The sixth part gives
 the same tree of tasks to `ChanFootprint.lean`, so a task with channels, locks or failures can
-also start tasks.
+also start tasks. The seventh part makes the lock rule less strict. The main code outside its
+blocks accesses a place of a lock without the lock, because no task runs then (`main_task`).
 
 ## Later
 

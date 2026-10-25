@@ -204,13 +204,15 @@ def PhasePred : Phase → Kind → Order → Nat → Prop
 /-- The label writes the flag `start u`. -/
 def StartW (u : Nat) (l : Label) : Prop := l.kind = .write ∧ l.loc = P.start u
 
-/-- Where the position `m` of a run `L` of the phases is, for the task `u`. It comes before each
-write of `start u`, or it is in the block of `u`, or it comes after a run of that block that
-wrote `start u`. -/
-def Status (u : Nat) (L : List Label) (m : Nat) : Prop :=
+/-- Where the position `m` of a run `L` of the phases `ps` is, for the task `u`. It comes before
+each write of `start u`, or it is in a run of the block of `u`, or it comes after a run of that
+block that wrote `start u`. -/
+def Status (ps : List Phase) (u : Nat) (L : List Label) (m : Nat) : Prop :=
   (∀ m' l, L[m']? = some l → P.StartW u l → m < m') ∨
-  (∃ B, u ∈ B.spawnIds ∧ (Phase.block B).Ok P own tps ∧
-    ∀ l, L[m]? = some l → P.InBlock own tps B l.kind l.order l.loc) ∨
+  (∃ B, u ∈ B.spawnIds ∧ Phase.block B ∈ ps ∧ (Phase.block B).Ok P own tps ∧
+    (∀ l, L[m]? = some l → P.InBlock own tps B l.kind l.order l.loc) ∧
+    ∃ n L' regs, Runs (P.lower (.tasksBlock B)) regs L' ∧
+      (∀ i (hi : i < L'.length), L[n + i]? = some L'[i]) ∧ n ≤ m ∧ m < n + L'.length) ∨
   (∃ B n L' regs regs', (Phase.block B).Ok P own tps ∧ B.Below P.flags P.count ∧
     Steps (P.lower (.tasksBlock B)) regs L' .skip regs' ∧
     (∀ i (hi : i < L'.length), L[n + i]? = some L'[i]) ∧ n + L'.length ≤ m ∧
@@ -359,7 +361,7 @@ theorem seqAll_accesses (hlim : ∀ x, own x → x < P.flags) {ps : List Phase}
 /-- Each position of a run of the phases has a `Status` for each task. -/
 theorem status (hlim : ∀ x, own x → x < P.flags) {ps : List Phase} (hok : P.PhasesOk own tps ps)
     (hb : (seqAll ps).Below P.flags P.count) {regs L} (hr : Runs (P.lower (seqAll ps)) regs L)
-    (u : Nat) {m : Nat} (hm : m < L.length) : P.Status own tps u L m := by
+    (u : Nat) {m : Nat} (hm : m < L.length) : P.Status own tps ps u L m := by
   induction ps generalizing regs L m with
   | nil =>
     have := Runs.skip_nil (regs := regs) hr
@@ -374,7 +376,10 @@ theorem status (hlim : ∀ x, own x → x < P.flags) {ps : List Phase} (hok : P.
       · cases p with
         | code s => simp [Phase.ids] at hu
         | block B =>
-          exact Or.inr (Or.inl ⟨B, hu, hok.1, fun l hl' => hl l (List.mem_of_getElem? hl')⟩)
+          refine Or.inr (Or.inl ⟨B, hu, List.mem_cons_self, hok.1,
+            fun l hl' => hl l (List.mem_of_getElem? hl'), 0, L, regs, hp, fun i hi => ?_,
+            Nat.zero_le _, by omega⟩)
+          rw [Nat.zero_add, List.getElem?_eq_getElem hi]
       · exact Or.inl fun _ l hl' hs =>
           (hu ((hl l (List.mem_of_getElem? hl')).ids_of_start hs.1 hs.2)).elim
     · have hl1 := (accessRule _).runs h1.runs hacc
@@ -387,9 +392,11 @@ theorem status (hlim : ∀ x, own x → x < P.flags) {ps : List Phase} (hok : P.
         | code s => simp [Phase.ids] at hu
         | block B =>
           by_cases hm1 : m < L1.length
-          · refine Or.inr (Or.inl ⟨B, hu, hok.1, fun l hl' => ?_⟩)
-            rw [List.getElem?_append_left hm1] at hl'
-            exact hl1 l (List.mem_of_getElem? hl')
+          · refine Or.inr (Or.inl ⟨B, hu, List.mem_cons_self, hok.1, fun l hl' => ?_, 0, L1, regs,
+              h1.runs, fun i hi => ?_, Nat.zero_le _, by omega⟩)
+            · rw [List.getElem?_append_left hm1] at hl'
+              exact hl1 l (List.mem_of_getElem? hl')
+            · rw [Nat.zero_add, List.getElem?_append_left hi, List.getElem?_eq_getElem hi]
           · by_cases hw : ∃ i, ∃ hi : i < L1.length, P.StartW u L1[i]
             · refine Or.inr (Or.inr ⟨B, 0, L1, regs, regs', hok.1, hb.1, h1, fun i hi => ?_,
                 by omega, hw⟩)
@@ -414,14 +421,19 @@ theorem status (hlim : ∀ x, own x → x < P.flags) {ps : List Phase} (hok : P.
             omega
         · simp only [List.length_append] at hm
           rcases ih hok.2.2 hb.2 h2 (m := m - L1.length) (by omega) with
-            hbef | ⟨B, hu', hB, hin⟩ | ⟨B, n, L', r1, r2, hB, hBb, hs, hlab, hn, hw⟩
+            hbef | ⟨B, hu', hmem, hB, hin, n, L', r1, hs, hlab, hn1, hn2⟩ |
+              ⟨B, n, L', r1, r2, hB, hBb, hs, hlab, hn, hw⟩
           · refine Or.inl fun m' l hl' hs => ?_
             have hle := hbefore m' l hl' hs
             rw [List.getElem?_append_right hle] at hl'
             have := hbef _ l hl' hs
             omega
-          · refine Or.inr (Or.inl ⟨B, hu', hB, fun l hl' => hin l ?_⟩)
-            rwa [List.getElem?_append_right (by omega)] at hl'
+          · refine Or.inr (Or.inl ⟨B, hu', List.mem_cons_of_mem _ hmem, hB, fun l hl' => hin l ?_,
+              L1.length + n, L', r1, hs, fun i hi => ?_, by omega, by omega⟩)
+            · rwa [List.getElem?_append_right (by omega)] at hl'
+            · rw [List.getElem?_append_right (by omega),
+                show L1.length + n + i - L1.length = n + i by omega]
+              exact hlab i hi
           · refine Or.inr (Or.inr ⟨B, L1.length + n, L', r1, r2, hB, hBb, hs, fun i hi => ?_,
               by omega, hw⟩)
             rw [List.getElem?_append_right (by omega),
@@ -525,7 +537,7 @@ theorem src_starts (hF : P.Footprints own tps ps) (q : Nat) :
 /-- Each position of a run of the lowered code of thread `q` has a `Status` for each task. -/
 theorem src_status (hF : P.Footprints own tps ps) (q : Nat) {regs L}
     (hr : Runs (P.lower (P.src q)) regs L) (u : Nat) {m : Nat} (hm : m < L.length) :
-    P.Status own tps u L m := by
+    P.Status own tps (thr ps tps q) u L m := by
   rcases src_cases hF q with h | ⟨hn, -⟩
   · rw [h] at hr
     exact status hF.le_flags (thr_ok hF q) (thr_below hF h) hr u hm
@@ -958,7 +970,7 @@ theorem anc (hF : P.Footprints own tps ps) (r : P.toProg.Run X) {q c d : Nat}
   rw [ha] at hr hlab hrd
   have hga := getElem_of_lab r hlab ha hna (by omega)
   rcases src_status hF q hr c (m := r.idx a - n) (by omega) with
-    hbef | ⟨B, hcB, -, hin⟩ | ⟨B, n', L', r1, r2, hB, hBb, hs, hlab', hn', i, hi, hw⟩
+    hbef | ⟨B, hcB, -, -, hin, -⟩ | ⟨B, n', L', r1, r2, hB, hBb, hs, hlab', hn', i, hi, hw⟩
   · -- `a` comes before each write of `start c`.
     refine Or.inl (fork_down hF r hd (fun w hww hwl => ?_) hb)
     have hwq : X.thread w = q := hF.one_parent _ _ _ (start_thread hF r hww hwl hcc) hqc
@@ -1013,11 +1025,11 @@ theorem sib (hF : P.Footprints own tps ps) (r : P.toProg.Run X) {q c1 c2 d1 d2 :
   have hsu : P.StartW c1 ⟨X.kind wu, X.order wu, X.loc wu, r.val wu, r.isRmw wu⟩ := ⟨hwuw, hwul⟩
   have hsv : P.StartW c2 ⟨X.kind wv, X.order wv, X.loc wv, r.val wv, r.isRmw wv⟩ := ⟨hwvw, hwvl⟩
   rcases src_status hF q hr c1 (m := r.idx wv - n) (by omega) with
-    hbef | ⟨B, hc1, hB, hin⟩ | ⟨B, n', L', r1, r2, hB, hBb, hs, hlab', hn', i, hi, hw⟩
+    hbef | ⟨B, hc1, -, hB, hin, -⟩ | ⟨B, n', L', r1, r2, hB, hBb, hs, hlab', hn', i, hi, hw⟩
   · -- The write for `c2` comes before each write for `c1`.
     have hlt := hbef _ _ hgu hsu
     rcases src_status hF q hr c2 (m := r.idx wu - n) (by omega) with
-      hbef' | ⟨B, hc2, hB, hin⟩ | ⟨B, n', L', r1, r2, hB, hBb, hs, hlab', hn', i, hi, hw⟩
+      hbef' | ⟨B, hc2, -, hB, hin, -⟩ | ⟨B, n', L', r1, r2, hB, hBb, hs, hlab', hn', i, hi, hw⟩
     · have := hbef' _ _ hgv hsv
       omega
     · have hc1 := (hin _ hgu).2 hsu.1 c1 hsu.2
@@ -1093,6 +1105,40 @@ theorem lca (hF : P.Footprints own tps ps) (r : P.toProg.Run X) {c dA : Nat}
       · subst h
         exact ih hv2 hne ha hb hxa hxb
       · exact sib hF r (q := u + 1) hs1 hs2 h hv1 hv2 ha hb hxa hxb
+
+/-- An access `a` of the main code, below `flags`, and an access `b` of a task: happens-before
+orders them, or `a` is in a run of a block of the main code. -/
+theorem main_task (hF : P.Footprints own tps ps) (r : P.toProg.Run X) {a b : X.E} {t : Nat}
+    (ha : X.thread a = 0) (hb : X.thread b = t + 1) (hxa : X.loc a < P.flags) :
+    X.hb a b ∨ X.hb b a ∨ ∃ B, Phase.block B ∈ ps ∧ (Phase.block B).Ok P own tps ∧
+      ∃ n L' regs, Runs (P.lower (.tasksBlock B)) regs L' ∧
+        (∀ i (hi : i < L'.length), r.lab 0 (n + i) = L'[i]) ∧ n ≤ r.idx a ∧
+        r.idx a < n + L'.length := by
+  obtain ⟨c, hqc, hd⟩ := under_main hF r t hb
+  have hcc := starts_lt hF (q := 0) hqc
+  obtain ⟨n, regs, L, hr, hlen, hlab, hrd, hna⟩ := thread_split r (e := a) (Or.inl hxa)
+  rw [ha] at hr hlab hrd
+  rcases src_status hF 0 hr c (m := r.idx a - n) (by omega) with
+    hbef | ⟨B, -, hmem, hB, -, n', L', r1, hs, hlab', hn1, hn2⟩ |
+      ⟨B, n', L', r1, r2, hB, hBb, hs, hlab', hn', i, hi, hw⟩
+  · -- `a` comes before each write of `start c`.
+    refine Or.inl (fork_down hF r hd (fun w hww hwl => ?_) hb)
+    have hwq : X.thread w = 0 := hF.one_parent _ _ _ (start_thread hF r hww hwl hcc) hqc
+    refine Relation.TransGen.single (Or.inl ((r.po_iff a w).2 ⟨ha.trans hwq.symm, ?_⟩))
+    refine Nat.lt_of_not_le fun hle => ?_
+    have hnw : n ≤ r.idx w := Nat.le_of_not_lt fun h => by
+      have := (hrd _ h).1
+      rw [lab_of r w hwq, show X.kind w = .write from hww] at this
+      cases this
+    have := hbef _ _ (getElem_of_lab r hlab hwq hnw (by omega)) ⟨hww, hwl⟩
+    omega
+  · -- `a` is in a run of the block of `c`.
+    refine Or.inr (Or.inr ⟨B, hmem, hB, n + n', L', r1, hs, fun i hi => ?_, by omega, by omega⟩)
+    obtain ⟨hlt, heq⟩ := List.getElem?_eq_some_iff.1 (hlab' i hi)
+    rw [Nat.add_assoc, hlab _ hlt, heq]
+  · -- `a` comes after the block of `c`.
+    exact Or.inr (Or.inl (after_of_status hF r hlab ha hna (by omega) hB hBb hs hlab' hn' hi hw
+      hd hb))
 
 /-! ## The executions of a program that follows the rule -/
 

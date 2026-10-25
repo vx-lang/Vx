@@ -8,8 +8,8 @@ receives it into the register 4 and writes it to the place 0. After the block, t
 reads the place 0. The two tasks share no place of the code.
 
 In `lockFoot`, both tasks add 1 to the place 0, each in a `locked` block of lock 0. The rule
-gives the place 0 to lock 0, so the two tasks can share it. The main code reads the place 0 after
-the block, also under the lock.
+gives the place 0 to lock 0, so the two tasks can share it. After the block, the main code reads the
+place 0 without the lock, because no task runs then.
 
 In `failFoot`, task 0 writes the place 0 and then fails. Task 1 checks the cancel flag and then
 writes the place 1. After the block, the main code reads the failure slot and both places.
@@ -63,8 +63,11 @@ theorem chanFoot_footprints : chanFoot.CFootprints (fun _ => none) (fun _ => [])
   one_parent := one_parent_nil _
   order _ _ := nofun
   guard := nofun
-  guarded_main := by
-    simp [chanFoot, chanPhases, cseqAll, CPhase.stmt, CStmt.Guarded, Stmt.Accesses]
+  guarded_blocks B hB := by
+    simp only [chanPhases, List.mem_cons, CPhase.block.injEq, reduceCtorEq, List.not_mem_nil,
+      or_false] at hB
+    subst hB
+    simp [CStmt.Guarded, Stmt.Accesses]
   guarded_task
     | 0 | 1 | _ + 2 => by simp [chanFoot, CStmt.Guarded, Stmt.Accesses]
 
@@ -77,7 +80,7 @@ def addOne : CStmt :=
   .locked 0 (.seq (.base (.load 4 0 .plain)) (.base (.store 0 (.add (.reg 4) (.const 1)) .plain)))
 
 def lockPhases : List CPhase :=
-  [.block (.seq (.base (.spawn 0)) (.base (.spawn 1))), .code (.locked 0 (.base (.load 4 0 .plain)))]
+  [.block (.seq (.base (.spawn 0)) (.base (.spawn 1))), .code (.base (.load 4 0 .plain))]
 
 def lockFoot : ChanProg where
   main := cseqAll lockPhases
@@ -98,7 +101,7 @@ def lockGuard (x : Nat) : Option Nat := if x = 0 then some 0 else none
 
 theorem lockFoot_footprints : lockFoot.CFootprints lockGuard (fun _ => []) lockPhases where
   ok :=
-    { main := by simp [lockFoot, lockPhases, cseqAll, CPhase.stmt, StmtOk, Stmt.Below, CStmt.Locks]
+    { main := by simp [lockFoot, lockPhases, cseqAll, CPhase.stmt, StmtOk, Stmt.Below]
       task
         | 0 | 1 => by simp [lockFoot, addOne, StmtOk, Stmt.Below, CStmt.Locks]
         | _ + 2 => by simp [lockFoot, StmtOk, Stmt.Below]
@@ -117,8 +120,11 @@ theorem lockFoot_footprints : lockFoot.CFootprints lockGuard (fun _ => []) lockP
   guard x m h := by
     simp only [lockGuard] at h
     split at h <;> simp_all [lockFoot]
-  guarded_main := by
-    simp [lockFoot, lockPhases, cseqAll, CPhase.stmt, CStmt.Guarded, Stmt.Accesses, lockGuard]
+  guarded_blocks B hB := by
+    simp only [lockPhases, List.mem_cons, CPhase.block.injEq, reduceCtorEq, List.not_mem_nil,
+      or_false] at hB
+    subst hB
+    simp [CStmt.Guarded, Stmt.Accesses]
   guarded_task
     | 0 | 1 => by simp [lockFoot, addOne, CStmt.Guarded, Stmt.Accesses, lockGuard]
     | _ + 2 => by simp [lockFoot, CStmt.Guarded, Stmt.Accesses]
@@ -165,8 +171,11 @@ theorem failFoot_footprints : failFoot.CFootprints (fun _ => none) (fun _ => [])
   one_parent := one_parent_nil _
   order _ _ := nofun
   guard := nofun
-  guarded_main := by
-    simp [failFoot, failPhases, cseqAll, CPhase.stmt, CStmt.Guarded, Stmt.Accesses]
+  guarded_blocks B hB := by
+    simp only [failPhases, List.mem_cons, CPhase.block.injEq, reduceCtorEq, List.not_mem_nil,
+      or_false] at hB
+    subst hB
+    simp [CStmt.Guarded, Stmt.Accesses]
   guarded_task
     | 0 | 1 | _ + 2 => by simp [failFoot, CStmt.Guarded, Stmt.Accesses]
 
@@ -280,8 +289,11 @@ theorem nestChanFoot_footprints :
   order t v h := by
     rcases nestChan_starts (q := t + 1) h with ⟨h, -⟩ | ⟨h, h' | h'⟩ <;> omega
   guard := nofun
-  guarded_main := by
-    simp [nestChanFoot, nestChanMain, cseqAll, CPhase.stmt, CStmt.Guarded, Stmt.Accesses]
+  guarded_blocks B hB := by
+    simp only [nestChanMain, List.mem_cons, CPhase.block.injEq, reduceCtorEq, List.not_mem_nil,
+      or_false] at hB
+    subst hB
+    simp [CStmt.Guarded, Stmt.Accesses]
   guarded_task
     | 0 => by simp [nestChanFoot, nestChanTask0, cseqAll, CPhase.stmt, CStmt.Guarded,
         Stmt.Accesses]

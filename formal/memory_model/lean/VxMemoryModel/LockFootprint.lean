@@ -112,23 +112,19 @@ theorem hclean_guarded {s : CStmt} {held : List Nat} (hmh : m ∉ held) (hs : P.
           ug (by simp only [TaskProg.done, toTaskProg, flag, slot, top]; omega)⟩)))
   | fail | checkCancel | result => exact chan hs nofun trivial trivial
 
-theorem hclean_guarded_body (hP : P.Ok) (hbm : ∀ b, P.main.Bases b → b.NoBlocks)
-    (hbt : ∀ t b, (P.task t).Bases b → b.NoBlocks) (hgm : P.main.Guarded g [])
+/-- The lowered code of a task follows `HClean` with `Unguarded`. -/
+theorem hclean_task_body (hP : P.Ok) (hbt : ∀ t b, (P.task t).Bases b → b.NoBlocks)
     (hgt : ∀ t, (P.task t).Guarded g []) (t : Nat) :
-    P.HClean m (Unguarded g m) (P.body t) := by
+    P.HClean m (Unguarded g m) (P.body (t + 1)) := by
   have ug : ∀ {k o x}, P.places ≤ x → Unguarded g m k o x := fun h => unguarded_of hg h
-  have hpt : P.places ≤ P.toTaskProg.flags := by simp only [toTaskProg, flag, slot, top]; omega
-  cases t with
-  | zero => exact hclean_guarded hm hg (by simp) hP.main hbm hgm
-  | succ t =>
-    show P.HClean m (Unguarded g m) (P.toTaskProg.taskCode t)
-    unfold TaskProg.taskCode
-    split
-    · refine .seq (.other ⟨Avoid.notLock hm (Or.inr (Or.inr ?_)), ug ?_⟩)
-        (.seq (hclean_guarded hm hg (by simp) (hP.task t) (hbt t) (hgt t))
-          (.other ⟨Avoid.notLock hm (Or.inr (Or.inr ?_)), ug ?_⟩))
-      all_goals simp only [TaskProg.start, TaskProg.done, toTaskProg, flag, slot, top]; omega
-    · exact .other trivial
+  show P.HClean m (Unguarded g m) (P.toTaskProg.taskCode t)
+  unfold TaskProg.taskCode
+  split
+  · refine .seq (.other ⟨Avoid.notLock hm (Or.inr (Or.inr ?_)), ug ?_⟩)
+      (.seq (hclean_guarded hm hg (by simp) (hP.task t) (hbt t) (hgt t))
+        (.other ⟨Avoid.notLock hm (Or.inr (Or.inr ?_)), ug ?_⟩))
+    all_goals simp only [TaskProg.start, TaskProg.done, toTaskProg, flag, slot, top]; omega
+  · exact .other trivial
 
 end Code
 
@@ -262,6 +258,31 @@ theorem CStmt.NoTasks.bases {s : CStmt} (h : s.NoTasks) : ∀ b, s.Bases b → b
   | tasksBlock => exact h.elim
   | _ => exact fun _ => nofun
 
+/-- Each phase in `ps` follows its rule. -/
+theorem phase_ok_of_mem : ∀ {ps : List CPhase}, P.CPhasesOk g tps ps → ∀ {p}, p ∈ ps → p.Ok P g tps
+  | _ :: _, ⟨hp, _, hrest⟩, _, hm => (List.mem_cons.1 hm).elim (fun h => h ▸ hp)
+    (phase_ok_of_mem hrest)
+
+theorem stmtOk_of_mem : ∀ {ps : List CPhase}, P.StmtOk (cseqAll ps) →
+    ∀ {B}, CPhase.block B ∈ ps → P.StmtOk B
+  | p :: _, ⟨hs, hrest⟩, _, hm => by
+    rcases List.mem_cons.1 hm with rfl | hm
+    · exact hs
+    · exact stmtOk_of_mem hrest hm
+
+/-- A block of the lowered main code is the lowering of a block of `ps`. -/
+theorem block_of_mem {s : Stmt} {ps : List CPhase} {B : Stmt}
+    (h : TaskProg.Phase.block B ∈ TaskProg.Phase.code s :: ps.map (CPhase.lower P)) :
+    ∃ B0, CPhase.block B0 ∈ ps ∧ B = P.lowerC B0 := by
+  rcases List.mem_cons.1 h with h | h
+  · cases h
+  · obtain ⟨p, hp, he⟩ := List.mem_map.1 h
+    cases p with
+    | code => cases he
+    | block B0 =>
+      cases he
+      exact ⟨B0, hp, rfl⟩
+
 theorem cseqAll_bases : ∀ {ps : List CPhase}, P.CPhasesOk g tps ps →
     ∀ b, (cseqAll ps).Bases b → b.NoBlocks
   | [], _, b, hb => by cases hb; trivial
@@ -272,39 +293,37 @@ theorem cseqAll_bases : ∀ {ps : List CPhase}, P.CPhasesOk g tps ps →
 variable {ps : List CPhase} {X : Execution} (run : P.toTaskProg.toProg.Run X)
 include run
 
-/-- Before each access to a place of the lock `m`, its thread took a ticket `t` of `m`, then read
-`serving` as the ticket in `e`, and wrote `serving` nowhere from the ticket to the access. -/
-theorem guard_access (hF : P.CFootprints g tps ps) (hm : m < P.locks) {d : X.E}
-    (hk : X.kind d ≠ .fence) (hd : g (X.loc d) = some m) :
-    ∃ t t' e, X.rmw t t' ∧ X.loc t' = P.cnt .next m ∧ X.thread t = X.thread d ∧
-      X.IsRead e ∧ X.loc e = P.cnt .serving m ∧ run.val e = run.val t ∧
-      X.thread e = X.thread d ∧ run.idx t < run.idx e ∧ run.idx e < run.idx d ∧
-      ∀ w, X.thread w = X.thread d → run.idx t < run.idx w → run.idx w ≤ run.idx d →
-        ¬ (X.IsWrite w ∧ X.loc w = P.cnt .serving m) := by
-  have hg : ∀ x m', g x = some m' → x < P.places := fun x m' h => (hF.guard x m' h).1
-  have hlt := hg _ _ hd
-  have hp : P.pre (X.thread d) ≤ run.idx d := by
-    refine Nat.le_of_not_lt fun hp => ?_
-    obtain ⟨-, p, hi, -, -, hl, -⟩ := init_of run hF.ok hp
-    have := initList_ge hF.ok hi
-    omega
-  have hacc := Runs.haccepts (trace_rest (run.trace d)).2
-    (.clean (hclean_guarded_body hm hg hF.ok (hF.main ▸ cseqAll_bases hF.phases)
-      (fun t => (hF.tasks t).elim (fun h => h ▸ cseqAll_bases (hF.task_phases t))
-        fun h => CStmt.NoTasks.bases h.1) hF.guarded_main hF.guarded_task _))
-  have hget := view_get run (e := d) rfl (Nat.le_refl _) hp
-  rcases hacc.guard_hist hm (fun x h => hg x m h) hget hk hd with
-    h | ⟨t, iT, iE, h1, h2, hT, hC, hE, hno⟩
-  · exact h.elim
-  obtain ⟨d1, hd1t, hd1i⟩ := run.idx_down d (P.pre (X.thread d) + iT) (by omega)
-  obtain ⟨d2, hd2t, hd2i⟩ := run.idx_down d (P.pre (X.thread d) + iT + 1) (by omega)
-  obtain ⟨e, het, hei⟩ := run.idx_down d (P.pre (X.thread d) + iE) (by omega)
-  have g1 := view_get run (e := d) hd1t (by omega) (by omega)
-  rw [show run.idx d1 - P.pre (X.thread d) = iT by omega, hT] at g1
-  have g2 := view_get run (e := d) hd2t (by omega) (by omega)
-  rw [show run.idx d2 - P.pre (X.thread d) = iT + 1 by omega, hC] at g2
-  have g3 := view_get run (e := d) het (by omega) (by omega)
-  rw [show run.idx e - P.pre (X.thread d) = iE by omega, hE] at g3
+variable (m) in
+/-- Before the access `d`, its thread took a ticket `t` of `m`, then read `serving` as the ticket
+in `e`, and wrote `serving` nowhere from the ticket to the access. -/
+def Guard (d : X.E) : Prop :=
+  ∃ t t' e, X.rmw t t' ∧ X.loc t' = P.cnt .next m ∧ X.thread t = X.thread d ∧
+    X.IsRead e ∧ X.loc e = P.cnt .serving m ∧ run.val e = run.val t ∧
+    X.thread e = X.thread d ∧ run.idx t < run.idx e ∧ run.idx e < run.idx d ∧
+    ∀ w, X.thread w = X.thread d → run.idx t < run.idx w → run.idx w ≤ run.idx d →
+      ¬ (X.IsWrite w ∧ X.loc w = P.cnt .serving m)
+
+/-- A `GuardHist` in a part `L` of the accesses of the thread of `d`, at the position of `d`, gives
+a `Guard`. -/
+theorem guard_of_hist (hm : m < P.locks) {d : X.E} {base j : Nat} {L : List Label}
+    (hL : ∀ i (hi : i < L.length), run.lab (X.thread d) (base + i) = L[i]) (hj : j < L.length)
+    (hd : base + j = run.idx d) (hlt : X.loc d < P.places) (hh : P.GuardHist m L j) :
+    Guard m run d := by
+  obtain ⟨t, iT, iE, h1, h2, hT, hC, hE, hno⟩ := hh
+  have get : ∀ {e : X.E}, X.thread e = X.thread d → base ≤ run.idx e → run.idx e ≤ run.idx d →
+      L[run.idx e - base]? = some ⟨X.kind e, X.order e, X.loc e, run.val e, run.isRmw e⟩ := by
+    intro e he h1 h2
+    rw [List.getElem?_eq_getElem (by omega), ← hL (run.idx e - base) (by omega),
+      Nat.add_sub_cancel' h1, ← he, run.lab_eq e]
+  obtain ⟨d1, hd1t, hd1i⟩ := run.idx_down d (base + iT) (by omega)
+  obtain ⟨d2, hd2t, hd2i⟩ := run.idx_down d (base + iT + 1) (by omega)
+  obtain ⟨e, het, hei⟩ := run.idx_down d (base + iE) (by omega)
+  have g1 := get hd1t (by omega) (by omega)
+  rw [show run.idx d1 - base = iT by omega, hT] at g1
+  have g2 := get hd2t (by omega) (by omega)
+  rw [show run.idx d2 - base = iT + 1 by omega, hC] at g2
+  have g3 := get het (by omega) (by omega)
+  rw [show run.idx e - base = iE by omega, hE] at g3
   simp only [Option.some.injEq, Label.mk.injEq] at g1 g2 g3
   obtain ⟨-, -, -, hv1, -⟩ := g1
   obtain ⟨-, -, hl2, -, hr2⟩ := g2
@@ -313,25 +332,60 @@ theorem guard_access (hF : P.CFootprints g tps ps) (hm : m < P.locks) {d : X.E}
     hd1t, hk3.symm, hl3.symm, by rw [← hv3, ← hv1], het, by omega, by omega, ?_⟩
   intro w hwt hw1 hw2 hww
   rcases Nat.lt_or_eq_of_le hw2 with hw2 | hw2
-  · exact hno (run.idx w - P.pre (X.thread d)) _ (by omega) (by omega)
-      (view_get run hwt (by omega) (by omega)) hww
+  · exact hno (run.idx w - base) _ (by omega) (by omega) (get hwt (by omega) (by omega)) hww
   · have := run.idx_inj w d hwt hw2
     subst this
     have := (cnt_inside (P := P) (q := .serving) hm).1
     rw [hww.2] at hlt
     omega
 
-/-- Two accesses to a place of the lock `m`, in two threads, are in two blocks of `m`. The block
-with the smaller ticket happens before the other. -/
+/-- Each access of a task to a place of the lock `m` has a `Guard`. -/
+theorem guard_access (hF : P.CFootprints g tps ps) (hm : m < P.locks) {d : X.E}
+    (hk : X.kind d ≠ .fence) (hd : g (X.loc d) = some m) (hd0 : X.thread d ≠ 0) :
+    Guard m run d := by
+  have hg : ∀ x m', g x = some m' → x < P.places := fun x m' h => (hF.guard x m' h).1
+  obtain ⟨t0, ht0⟩ := Nat.exists_eq_succ_of_ne_zero hd0
+  have hp : P.pre (X.thread d) = 0 := by simp [pre, ht0]
+  have hacc := Runs.haccepts (trace_rest (run.trace d)).2
+    (.clean (by
+      rw [ht0]
+      exact hclean_task_body hm hg hF.ok
+        (fun t => (hF.tasks t).elim (fun h => h ▸ cseqAll_bases (hF.task_phases t))
+          fun h => CStmt.NoTasks.bases h.1) hF.guarded_task t0))
+  have hget := view_get run (e := d) rfl (Nat.le_refl _) (by omega)
+  rcases hacc.guard_hist hm (fun x h => hg x m h) hget hk hd with h | hh
+  · exact h.elim
+  refine guard_of_hist run hm (base := P.pre (X.thread d)) (j := run.idx d - P.pre (X.thread d))
+    (fun i hi => ?_) (by simp; omega) (by omega) (hg _ _ hd) hh
+  simp
+
+/-- An access of the main code to a place of the lock `m`, in a run of a block of the main code,
+has a `Guard`. -/
+theorem guard_block (hF : P.CFootprints g tps ps) (hm : m < P.locks) {d : X.E}
+    (hk : X.kind d ≠ .fence) (hd : g (X.loc d) = some m) {B0 : CStmt}
+    (hB0 : CPhase.block B0 ∈ ps) {n : Nat} {regs : Nat → Int} {L : List Label}
+    (hs : Runs (P.toTaskProg.lower (.tasksBlock (P.lowerC B0))) regs L)
+    (hL : ∀ i (hi : i < L.length), run.lab (X.thread d) (n + i) = L[i]) (h1 : n ≤ run.idx d)
+    (h2 : run.idx d < n + L.length) : Guard m run d := by
+  have hg : ∀ x m', g x = some m' → x < P.places := fun x m' h => (hF.guard x m' h).1
+  have hok := stmtOk_of_mem (hF.main ▸ hF.ok.main) hB0
+  have hacc := Runs.haccepts hs (.clean (hclean_guarded (s := .tasksBlock B0) hm hg (by simp) hok
+    (fun b h => CStmt.NoBlocks.bases (phase_ok_of_mem hF.phases hB0).1 b h)
+    (hF.guarded_blocks B0 hB0)))
+  have hget : L[run.idx d - n]? = some ⟨X.kind d, X.order d, X.loc d, run.val d, run.isRmw d⟩ := by
+    rw [List.getElem?_eq_getElem (by omega), ← hL _ (by omega), Nat.add_sub_cancel' h1,
+      run.lab_eq d]
+  rcases hacc.guard_hist hm (fun x h => hg x m h) hget hk hd with h | hh
+  · exact h.elim
+  exact guard_of_hist run hm hL (by omega) (by omega) (hg _ _ hd) hh
+
+/-- Two accesses with a `Guard` of `m`, in two threads: the one with the smaller ticket happens
+before the other. -/
 theorem guard_hb (hF : P.CFootprints g tps ps) (wf : X.WellFormed) (hcons : X.Consistent)
-    (ho : X.CoOrder) (hfin : X.Finite) {a b : X.E} (hka : X.kind a ≠ .fence)
-    (hkb : X.kind b ≠ .fence) (ha : g (X.loc a) = some m) (hb : g (X.loc b) = some m)
-    (ht : X.thread a ≠ X.thread b) : X.hb a b ∨ X.hb b a := by
-  have hm := (hF.guard _ _ ha).2
-  obtain ⟨ta, ta', ea, hra, hral, htat, hear, heal, heav, heat, hia, hea, hnoa⟩ :=
-    guard_access run hF hm hka ha
-  obtain ⟨tb, tb', eb, hrb, hrbl, htbt, hebr, hebl, hebv, hebt, hib, heb, hnob⟩ :=
-    guard_access run hF hm hkb hb
+    (ho : X.CoOrder) (hfin : X.Finite) (hm : m < P.locks) {a b : X.E} (ga : Guard m run a)
+    (gb : Guard m run b) (ht : X.thread a ≠ X.thread b) : X.hb a b ∨ X.hb b a := by
+  obtain ⟨ta, ta', ea, hra, hral, htat, hear, heal, heav, heat, hia, hea, hnoa⟩ := ga
+  obtain ⟨tb, tb', eb, hrb, hrbl, htbt, hebr, hebl, hebv, hebt, hib, heb, hnob⟩ := gb
   have hN := counter run hF.ok wf (q := .next) hm
   rcases Int.lt_trichotomy (run.val ta) (run.val tb) with h | h | h
   · exact Or.inl (lock_excl run hF.ok wf hcons ho hfin hm hra hral htat.symm
@@ -343,6 +397,39 @@ theorem guard_hb (hF : P.CFootprints g tps ps) (wf : X.WellFormed) (hcons : X.Co
   · exact Or.inr (lock_excl run hF.ok wf hcons ho hfin hm hrb hrbl htbt.symm
       (fun w hw => hnob w (hw.trans htbt)) hear heal (by rw [heav]; exact h)
       (Or.inr ((run.po_iff ea a).2 ⟨heat, hea⟩)))
+
+/-- Two accesses to a place of the lock `m`, in two threads: happens-before orders them. Two
+accesses in `locked` blocks are ordered by `guard_hb`. An access of the main code outside its
+blocks is ordered with each task by the spawns and the joins (`main_task`). -/
+theorem lock_hb (hF : P.CFootprints g tps ps) (wf : X.WellFormed) (hcons : X.Consistent)
+    (ho : X.CoOrder) (hfin : X.Finite) {a b : X.E} (hka : X.kind a ≠ .fence)
+    (hkb : X.kind b ≠ .fence) (ha : g (X.loc a) = some m) (hb : g (X.loc b) = some m)
+    (ht : X.thread a ≠ X.thread b) : X.hb a b ∨ X.hb b a := by
+  have hm := (hF.guard _ _ ha).2
+  have hT := toFootprints hF
+  have hpf : ∀ {e : X.E}, g (X.loc e) = some m → X.loc e < P.toTaskProg.flags := fun h => by
+    have := (hF.guard _ _ h).1
+    simp only [toTaskProg, flag, slot, top]
+    omega
+  -- An access of the main code, and an access of a task.
+  have main : ∀ {a b : X.E}, X.kind a ≠ .fence → X.kind b ≠ .fence → g (X.loc a) = some m →
+      g (X.loc b) = some m → X.thread a = 0 → X.thread b ≠ 0 → X.hb a b ∨ X.hb b a := by
+    intro a b hka hkb ha hb ha0 hb0
+    obtain ⟨t, htb⟩ := Nat.exists_eq_succ_of_ne_zero hb0
+    rcases TaskProg.main_task hT run ha0 htb (hpf ha) with h | h |
+        ⟨B, hmem, -, n, L, regs, hs, hL, h1, h2⟩
+    · exact Or.inl h
+    · exact Or.inr h
+    obtain ⟨B0, hB0, rfl⟩ := block_of_mem hmem
+    exact guard_hb run hF wf hcons ho hfin hm
+      (guard_block run hF hm hka ha hB0 hs (by rw [ha0]; exact hL) h1 h2)
+      (guard_access run hF hm hkb hb hb0) (by rw [ha0]; exact Ne.symm hb0)
+  by_cases ha0 : X.thread a = 0
+  · exact main hka hkb ha hb ha0 (fun h => ht (ha0.trans h.symm))
+  by_cases hb0 : X.thread b = 0
+  · exact (main hkb hka hb ha hb0 ha0).symm
+  exact guard_hb run hF wf hcons ho hfin hm (guard_access run hF hm hka ha ha0)
+    (guard_access run hF hm hkb hb hb0) ht
 
 omit run in
 /-- A program with channels and locks that follows the rule has no data race, in each execution
@@ -357,7 +444,7 @@ theorem raceFree (hF : P.CFootprints g tps ps) (hX : P.toTaskProg.toProg.Execs X
     rintro e (h | h) hf
     · simp [Execution.IsRead, hf] at h
     · simp [Execution.IsWrite, hf] at h
-  rcases guard_hb run hF wf hcons ho hfin (nf hacca) (nf haccb) ha (hl ▸ ha) ht with h | h
+  rcases lock_hb run hF wf hcons ho hfin (nf hacca) (nf haccb) ha (hl ▸ ha) ht with h | h
   · exact hab h
   · exact hba h
 

@@ -112,10 +112,12 @@ own block (`nestFoot`).
 of the places of the code of the program, below `places`. `Recv.lean` shows that the places of the
 channels and the locks never race (`chan_no_race`). Their counters and flags have only `sc`
 accesses. A `recv` reads its value only after it reads the flag `full k` as set (`recv_full`), so
-the `send` happens before it (`data_hb`). The rule can also give a place a lock. The code then
-accesses the place only in `locked` blocks of that lock, and two tasks of a block can share it.
-`LockFootprint.lean` shows that each such access comes after the thread entered the lock and
-before it let the lock go (`guard_access`). So `lock_excl` orders two of them (`guard_hb`).
+the `send` happens before it (`data_hb`). The rule can also give a place a lock. The tasks and the
+blocks of the main code then access the place only in `locked` blocks of that lock, and two tasks
+of a block can share it. `LockFootprint.lean` shows that each such access comes after the thread
+entered the lock and before it let the lock go (`guard_access`, `guard_block`). So `lock_excl`
+orders two of them (`guard_hb`). The main code outside its blocks needs no lock: no task runs
+then, so the spawns and the joins order its accesses with each task (`main_task`).
 The code can also fail. Each access to the failure slot and the cancel flag is atomic
 (`fail_atomic`), so these places never race. `drf_sc_of_footprints` still needs code with no
 failures: `cancel_flag_read_before_the_failure.litmus` has a result that no interleaving gives.
@@ -253,10 +255,10 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   the flag.
 - `each_error_once` follows an error by the CAS of its failure, not by a value with an owner. A
   CAS that loses still reads the error that won, but only to see that the slot is set.
-- The code accesses a place that a lock guards only under that lock, even outside the blocks of
-  tasks. In both rules, a block cannot
-  be in a loop. The rule is stricter than needed: two blocks that run one after the other can
-  share places, but two tasks of one block cannot.
+- A task accesses a place that a lock guards only under that lock, even outside its own blocks,
+  because its sibling tasks can run then. Only the main code outside its blocks needs no lock.
+- In both rules, a block cannot be in a loop. The rule is stricter than needed: two blocks that
+  run one after the other can share places, but two tasks of one block cannot.
 - In both rules, one thread starts each task, and a task starts only tasks with larger ids.
 - `ring_fifo` speaks of each read of the values. A `recv` reads its element once, and a `send`
   writes its element once. This follows from their code, but no theorem states it yet.
