@@ -28,7 +28,7 @@ fn body_has_a_value() -> i32 {
   }
   return 0;
 }
-// CHECK: Error[E3007] at 25:3: If expression branches have incompatible types
+// CHECK: Error[E3007] at {{.*}}while_condition_and_body_types.vx:25:3: If expression branches have incompatible types
 
 fn main() -> i32 {
   return 0;

@@ -10,11 +10,11 @@ fn main() -> i32 {
 }
 
 // `total` has no errors, but it calls `wrong_field`, which has one. The compiler reports that
-// error, naming the function and the module it is in. It used to crash instead, while
-// generating code for `wrong_field`.
+// error, naming the file, the function and the module it is in. It used to crash instead,
+// while generating code for `wrong_field`.
 //
 // A parallel compile (`-j`) reports the error directly, instead of falling back to a normal
 // compile.
 // JOBS-NOT: using the sequential driver
-// CHECK: in `wrong_field`, imported from `tests::modules::library_that_uses_its_type_error` and used by this program: Struct 'Point' has no field 'y'
+// CHECK: in {{.*}}library_that_uses_its_type_error.vx: in `wrong_field`, imported from `tests::modules::library_that_uses_its_type_error` and used by this program: Struct 'Point' has no field 'y'
 // JOBS: Semantic check failed on '{{.*}}using_an_imported_function_with_a_type_error.vx': 1 error(s) emitted

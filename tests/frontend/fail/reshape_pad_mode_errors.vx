@@ -10,10 +10,10 @@
 // supported yet.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error[E3047] at 23:14: PadMode::Trim keeps the first elements, so it cannot make a larger tensor: Tensor<f32, [2, 2]> has 4, the new shape has 8
-// CHECK: Error[E3047] at 29:14: PadMode::Pad cannot make a smaller tensor: Tensor<f32, [4, 4]> has 16, the new shape has 8; use PadMode::Trim to keep the first elements
+// CHECK: Error[E3047] at {{.*}}reshape_pad_mode_errors.vx:23:14: PadMode::Trim keeps the first elements, so it cannot make a larger tensor: Tensor<f32, [2, 2]> has 4, the new shape has 8
+// CHECK: Error[E3047] at {{.*}}reshape_pad_mode_errors.vx:29:14: PadMode::Pad cannot make a smaller tensor: Tensor<f32, [4, 4]> has 16, the new shape has 8; use PadMode::Trim to keep the first elements
 // CHECK-NOT: Error
-// CHECK: Error[E3047] at 48:21: PadMode::Pad of a tensor placed in a memory space is not supported yet: Tensor<f32, [2, 2]
+// CHECK: Error[E3047] at {{.*}}reshape_pad_mode_errors.vx:48:21: PadMode::Pad of a tensor placed in a memory space is not supported yet: Tensor<f32, [2, 2]
 // CHECK: 3 error(s) emitted
 
 import std::tensor;

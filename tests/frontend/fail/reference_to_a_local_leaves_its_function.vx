@@ -13,10 +13,10 @@
 // `return &local` on its own was already refused. These are the ways round it: inside a
 // struct, stored through a `&mut` parameter, through a reference variable that was pointed
 // at a parameter first, and read back out of a struct variable's field.
-// CHECK-DAG: Error[E4005] at 26:3: this returns a value that points into this function's stack frame
-// CHECK-DAG: Error[E4005] at 33:7: this stores a value that points into this function's stack frame through a reference
-// CHECK-DAG: Error[E4005] at 41:3: this returns a value that points into this function's stack frame
-// CHECK-DAG: Error[E4005] at 49:3: this returns a value that points into this function's stack frame
+// CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_local_leaves_its_function.vx:26:3: this returns a value that points into this function's stack frame
+// CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_local_leaves_its_function.vx:33:7: this stores a value that points into this function's stack frame through a reference
+// CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_local_leaves_its_function.vx:41:3: this returns a value that points into this function's stack frame
+// CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_local_leaves_its_function.vx:49:3: this returns a value that points into this function's stack frame
 struct View {
   r : &i32,
 }

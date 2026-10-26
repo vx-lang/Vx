@@ -1,6 +1,6 @@
 //===- parser_unclosed_paren.vx - Vx Compiler ----------------------*- Vx
 //-*-===//
-// CHECK: Error at 13:18: {{.*}}Expected ')' after expression
+// CHECK: Error at {{.*}}parser_unclosed_paren.vx:13:18: {{.*}}Expected ')' after expression
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.

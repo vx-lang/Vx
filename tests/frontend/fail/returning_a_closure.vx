@@ -10,7 +10,7 @@ fn make() -> ||->i32 {
   let c = || n;
   return c as ||->i32;
 }
-// CHECK: E4005] at 11:3: this returns a value that points into this function's stack frame
+// CHECK: E4005] at {{.*}}returning_a_closure.vx:11:3: this returns a value that points into this function's stack frame
 
 fn main() -> i32 {
   return 0;

@@ -13,11 +13,11 @@
 // about the one body, so it is given once, however many types use the function. The same holds
 // for a method of a generic struct, called on a value or on the type.
 
-// FUNCTION: Warning[W1001] at 24:3: Unused variable 'in_function'
+// FUNCTION: Warning[W1001] at {{.*}}warnings_in_generic_code_are_given_once.vx:24:3: Unused variable 'in_function'
 // FUNCTION-NOT: Unused variable 'in_function'
-// METHOD: Warning[W1001] at 34:5: Unused variable 'in_method'
+// METHOD: Warning[W1001] at {{.*}}warnings_in_generic_code_are_given_once.vx:34:5: Unused variable 'in_method'
 // METHOD-NOT: Unused variable 'in_method'
-// STATIC: Warning[W1001] at 39:5: Unused variable 'in_static'
+// STATIC: Warning[W1001] at {{.*}}warnings_in_generic_code_are_given_once.vx:39:5: Unused variable 'in_static'
 // STATIC-NOT: Unused variable 'in_static'
 
 fn same<T>(v : T) -> T {

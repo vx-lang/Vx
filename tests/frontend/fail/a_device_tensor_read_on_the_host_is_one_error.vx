@@ -8,7 +8,7 @@
 // The host reads `c[0][0]` from device memory it cannot see. That is one
 // mistake, so it is one error, not one more for each `[ ]`.
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error[E6003] at 27:9: 'c' lives in Extra but CPU sees only
+// CHECK: Error[E6003] at {{.*}}a_device_tensor_read_on_the_host_is_one_error.vx:27:9: 'c' lives in Extra but CPU sees only
 // CHECK: 1 error(s) emitted
 
 Memory Extra {

@@ -39,11 +39,14 @@ pub enum ParserError<'a> {
 }
 
 impl<'a> ParserError<'a> {
-    pub fn format(&self, source: &str) -> String {
+    /// Render the error with the source line it points at. `file` is the file the source came
+    /// from, printed before the line and column; `None` for source that has no file.
+    pub fn format(&self, source: &str, file: Option<&str>) -> String {
         match self {
             ParserError::UnexpectedToken { expected, found } => {
                 crate::error::format_compiler_error(
                     source,
+                    file,
                     found.line,
                     found.column,
                     found.length.max(1),
@@ -54,14 +57,16 @@ impl<'a> ParserError<'a> {
             }
             ParserError::Custom { message, token } => crate::error::format_compiler_error(
                 source,
+                file,
                 token.line,
                 token.column,
                 token.length.max(1),
                 message,
             ),
-            ParserError::EndOfFile { expected } => {
-                format!("Unexpected end of file. {}", expected)
-            }
+            ParserError::EndOfFile { expected } => match file {
+                Some(file) => format!("Unexpected end of file in {}. {}", file, expected),
+                None => format!("Unexpected end of file. {}", expected),
+            },
         }
     }
 }
@@ -105,7 +110,7 @@ impl<'a> Parser<'a> {
         let mut parser = Parser::new(&tokens, cleaned_source);
         parser
             .parse_function()
-            .map_err(|e| e.format(cleaned_source))
+            .map_err(|e| e.format(cleaned_source, None))
             .expect("Failed to parse function source")
     }
     pub fn new(tokens: &'a [Token<'a>], source: &'a str) -> Self {
@@ -290,7 +295,7 @@ mod tests {
             _ => panic!("Expected UnexpectedToken error, got {:?}", err),
         }
 
-        let formatted = err.format(input);
+        let formatted = err.format(input, None);
         assert!(formatted.contains("("));
         assert!(formatted.contains("fn foo +"));
     }
@@ -312,7 +317,7 @@ mod tests {
             _ => panic!("Expected EndOfFile error, got {:?}", err),
         }
 
-        let formatted = err.format(input);
+        let formatted = err.format(input, None);
         assert!(formatted.contains("Unexpected end of file"));
         assert!(formatted.contains("("));
     }
@@ -702,7 +707,7 @@ mod tests {
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, input);
         let err = parser.parse_topology().unwrap_err();
-        let msg = err.format(input);
+        let msg = err.format(input, None);
         assert!(msg.contains("Expected index for NPU"), "Got: {}", msg);
     }
 

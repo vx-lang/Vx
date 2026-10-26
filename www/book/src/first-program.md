@@ -87,10 +87,11 @@ fn main() -> i32 {
 }
 ```
 
-Diagnostics carry a code and a source span. Forget a `return` and the compiler says so directly:
+Diagnostics carry a code and a `file:line:column` position. Forget a `return` and the compiler
+says so directly:
 
 ```
-Error[E3028] at 2:3: 'add' returns i32 but its body can finish without returning a value
+Error[E3028] at hello.vx:2:3: 'add' returns i32 but its body can finish without returning a value
 ```
 
 Every code the compiler can emit is listed in the [diagnostic index](error-index.md), grouped by

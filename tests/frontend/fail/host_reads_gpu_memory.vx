@@ -19,7 +19,7 @@
 // catch. A discrete GPU's memory is not in that list, so this one is.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error[E6003] at 29:9: 'on_gpu' lives in GPU_HBM but CPU sees only
+// CHECK: Error[E6003] at {{.*}}host_reads_gpu_memory.vx:29:9: 'on_gpu' lives in GPU_HBM but CPU sees only
 // CHECK: 1 error(s) emitted
 
 fn main() -> i32 {

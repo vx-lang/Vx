@@ -12,7 +12,7 @@
 
 // Warnings are printed before errors, so this is where W1002 would be.
 // CHECK-NOT: Warning[W1002]
-// CHECK: Error[E3001] at 22:3: 'count' is declared i32 but its initializer is *const i8
+// CHECK: Error[E3001] at {{.*}}no_unused_function_warning_when_the_program_has_errors.vx:22:3: 'count' is declared i32 but its initializer is *const i8
 
 fn never_called(x : i32) -> i32 {
   return x * 3;

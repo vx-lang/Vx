@@ -27,7 +27,7 @@ fn function_body(k : i32) -> i32 {
   let mut x = 1;
   let mut y = 0;
   let a = &x;
-  // CHECK: Error[E4009] at [[@LINE+1]]:
+  // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
   x = 2;
   y = *a;
   return x + y;
@@ -38,7 +38,7 @@ fn if_arm(k : i32) -> i32 {
   let mut y = 0;
   if k > 0 {
     let a = &x;
-    // CHECK: Error[E4009] at [[@LINE+1]]:
+    // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
     x = 2;
     y = *a;
   }
@@ -51,7 +51,7 @@ fn if_arm_borrowed_outside(k : i32) -> i32 {
   let mut y = 0;
   let a = &x;
   if k > 0 {
-    // CHECK: Error[E4009] at [[@LINE+1]]:
+    // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
     x = 2;
   }
   y = *a;
@@ -65,7 +65,7 @@ fn else_arm(k : i32) -> i32 {
     y = 1;
   } else {
     let a = &x;
-    // CHECK: Error[E4009] at [[@LINE+1]]:
+    // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
     x = 2;
     y = *a;
   }
@@ -80,7 +80,7 @@ fn else_arm_borrowed_outside(k : i32) -> i32 {
   if k > 0 {
     y = 1;
   } else {
-    // CHECK: Error[E4009] at [[@LINE+1]]:
+    // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
     x = 2;
   }
   y = *a;
@@ -93,7 +93,7 @@ fn match_arm(k : i32) -> i32 {
   match k {
     0 => {
       let a = &x;
-      // CHECK: Error[E4009] at [[@LINE+1]]:
+      // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
       x = 2;
       y = *a;
     }
@@ -111,7 +111,7 @@ fn match_arm_borrowed_outside(k : i32) -> i32 {
   let a = &x;
   match k {
     0 => {
-      // CHECK: Error[E4009] at [[@LINE+1]]:
+      // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
       x = 2;
     }
     _ => {
@@ -128,7 +128,7 @@ fn while_body(k : i32) -> i32 {
   let mut i = 0;
   while i < k {
     let a = &x;
-    // CHECK: Error[E4009] at [[@LINE+1]]:
+    // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
     x = 2;
     y = *a;
     i = i + 1;
@@ -143,7 +143,7 @@ fn while_body_borrowed_outside(k : i32) -> i32 {
   let a = &x;
   let mut i = 0;
   while i < k {
-    // CHECK: Error[E4009] at [[@LINE+1]]:
+    // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
     x = 2;
     i = i + 1;
   }
@@ -156,7 +156,7 @@ fn for_body(k : i32) -> i32 {
   let mut y = 0;
   for _i in 0..k {
     let a = &x;
-    // CHECK: Error[E4009] at [[@LINE+1]]:
+    // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
     x = 2;
     y = *a;
   }
@@ -169,7 +169,7 @@ fn for_body_borrowed_outside(k : i32) -> i32 {
   let mut y = 0;
   let a = &x;
   for _i in 0..k {
-    // CHECK: Error[E4009] at [[@LINE+1]]:
+    // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
     x = 2;
   }
   y = *a;
@@ -181,7 +181,7 @@ fn loop_body(k : i32) -> i32 {
   let mut y = 0;
   loop {
     let a = &x;
-    // CHECK: Error[E4009] at [[@LINE+1]]:
+    // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
     x = 2;
     y = *a;
     break;
@@ -195,7 +195,7 @@ fn loop_body_borrowed_outside(k : i32) -> i32 {
   let mut y = 0;
   let a = &x;
   loop {
-    // CHECK: Error[E4009] at [[@LINE+1]]:
+    // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
     x = 2;
     break;
   }
@@ -206,7 +206,7 @@ fn loop_body_borrowed_outside(k : i32) -> i32 {
 fn unsafe_block(k : i32) -> i32 {
   let mut x = 1;
   let mut y = 0;
-  // CHECK: Error[E4009] at [[@LINE+1]]:
+  // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
   unsafe { let a = &x; x = 2; y = *a; }
   return x + y;
 }
@@ -216,7 +216,7 @@ fn unsafe_block_borrowed_outside(k : i32) -> i32 {
   let mut x = 1;
   let mut y = 0;
   let a = &x;
-  // CHECK: Error[E4009] at [[@LINE+1]]:
+  // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
   unsafe { x = 2; }
   y = *a;
   return x + y;
@@ -229,7 +229,7 @@ fn closure_body(k : i32) -> i32 {
     let mut x = n;
     let mut y = 0;
     let a = &x;
-    // CHECK: Error[E4009] at [[@LINE+1]]:
+    // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
     x = 2;
     y = *a;
     x + y
@@ -243,7 +243,7 @@ fn closure_body_borrowed_outside(k : i32) -> i32 {
   let mut x = 1;
   let mut y = 0;
   let a = &x;
-  // CHECK: Error[E4009] at [[@LINE+1]]:
+  // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
   let f = |n : i32| unsafe { x = 2; n };
   y = y + f(k);
   y = *a;
@@ -256,7 +256,7 @@ fn if_inside_a_loop(k : i32) -> i32 {
   for i in 0..k {
     if i > 0 {
       let a = &x;
-      // CHECK: Error[E4009] at [[@LINE+1]]:
+      // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
       x = 2;
       y = *a;
     }
@@ -271,7 +271,7 @@ fn if_inside_a_loop_borrowed_outside(k : i32) -> i32 {
   let a = &x;
   for i in 0..k {
     if i > 0 {
-      // CHECK: Error[E4009] at [[@LINE+1]]:
+      // CHECK: Error[E4009] at {{.*}}borrow_rule_assign_while_shared_borrow_in_every_block.vx:[[@LINE+1]]:
       x = 2;
     }
   }

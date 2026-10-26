@@ -784,6 +784,7 @@ impl CompilerDriver {
     fn native_host_program() -> crate::syntax::Program {
         crate::syntax::Program {
             module_path: crate::symbol::Symbol::from(NATIVE_HOST_MODULE),
+            file: None,
             item_macros: Vec::new(),
             memories: vec![crate::syntax::MemoryDecl {
                 name: crate::symbol::Symbol::from("CPU_DRAM"),
@@ -1007,6 +1008,7 @@ impl CompilerDriver {
         Some(crate::syntax::Program {
             item_macros: Vec::new(),
             module_path: "<interfaces>".into(),
+            file: None,
             imports: Vec::new(),
             macros: Vec::new(),
             externs: Vec::new(),
@@ -1035,6 +1037,15 @@ impl CompilerDriver {
         let global_session =
             Self::session_with_interfaces(interfaces, self.options.auto_schedule_levels())?;
 
+        // Every function names its file, so a diagnostic found while checking it names the
+        // file too, wherever the check runs from. Before the env takes its clones, since a
+        // generic instance is built from the env's copy of the function. After macro
+        // expansion, which adds functions.
+        ast.name_file_on_functions();
+        for p in other_asts.values_mut() {
+            p.name_file_on_functions();
+        }
+
         // Build the resolution env from *owned* clones: full bodies for the imported modules (so
         // their methods/generics can be instantiated) plus the entry module's signature. Owning the
         // clones leaves `ast` and `other_asts` free to be type-checked *in place* below — which #203
@@ -1059,8 +1070,17 @@ impl CompilerDriver {
         let mut checker = TypeChecker::new(&env, &mut worker);
         checker.seam.verify = self.options.verify_seams;
 
+        // The checks that look at the whole program's declarations at once can only name a
+        // file when the program is one file; a `--host default` module was read from none.
+        let whole_program_file = if other_asts.values().all(|p| p.file.is_none()) {
+            ast.file.clone()
+        } else {
+            None
+        };
+
         // Everything that is about the program as a whole rather than one function, before any
         // body is checked. Shared with the parallel pipeline so the two frontends cannot drift.
+        checker.errors.file = whole_program_file;
         checker.check_whole_program_declarations();
         // Found before the checks rename calls to generic instances, reported after them.
         let mut unused_functions = crate::diagnostic::DiagnosticsVec::new();
@@ -1886,6 +1906,8 @@ impl CompilerDriver {
                 where_transfers: vec![],
                 body: vec![],
                 doc_comment: None,
+                span: crate::syntax::Span::default(),
+                file: None,
             };
             imported_entries.push((synth, body.hir.clone(), body.types.clone()));
         }

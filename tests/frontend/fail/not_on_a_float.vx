@@ -9,5 +9,5 @@ fn main() -> i32 {
 
 // A float has no bitwise complement, and Rust has no `!` on one. It used to type as a `bool`.
 // CHECK: E3030
-// CHECK-SAME: at 6:17
+// CHECK-SAME: at {{.*}}not_on_a_float.vx:6:17
 // CHECK-SAME: `!` takes a bool or an integer, got f32

@@ -1,6 +1,6 @@
 //===- parser_invalid_operator.vx - Vx Compiler -------------------*- Vx
 //-*-===//
-// CHECK: Error at 13:16: {{.*}}Expected expression, found Unknown('~')
+// CHECK: Error at {{.*}}parser_invalid_operator.vx:13:16: {{.*}}Expected expression, found Unknown('~')
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.

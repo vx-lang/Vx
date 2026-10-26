@@ -75,13 +75,17 @@ pub fn warn_functions_nothing_calls(program: &Program, errors: &mut DiagnosticsV
     for f in &program.functions {
         let name: &str = f.name.as_ref();
         if !used.contains(name) && !name.starts_with('_') {
+            // The warning names the function's file and points at its name.
+            errors.file = f.file.clone();
+            let at =
+                (f.span.line > 0).then(|| crate::diagnostic::SourceSpan::from_ast_span(&f.span));
             errors.warn(
                 DiagnosticCode::W1002,
                 format!(
                     "function `{name}` is never called, directly or through other functions, \
                      from `main`; remove it, or start its name with `_` to keep it"
                 ),
-                None,
+                at,
             );
         }
     }

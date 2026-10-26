@@ -110,11 +110,11 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: Error[E4001] at 29:3: `a` is moved inside this loop and not given a new value before the loop goes round again
-// CHECK-DAG: Error[E4001] at 41:3: `a` is moved inside this loop
-// CHECK-DAG: Error[E4001] at 55:3: `a` is moved inside this loop
-// CHECK-DAG: Error[E4001] at 73:15: Use of moved or consumed linear variable: a
-// CHECK-DAG: Error[E4001] at 88:15: Use of moved or consumed linear variable: a
-// CHECK-DAG: Error[E4007] at 96:11: `a` is moved while it is borrowed, and the borrow is used after the move
-// CHECK-DAG: Error[E4008] at 105:11: this moves a value of type `S` out from behind a reference
+// CHECK-DAG: Error[E4001] at {{.*}}moves_in_loops_and_under_borrows.vx:29:3: `a` is moved inside this loop and not given a new value before the loop goes round again
+// CHECK-DAG: Error[E4001] at {{.*}}moves_in_loops_and_under_borrows.vx:41:3: `a` is moved inside this loop
+// CHECK-DAG: Error[E4001] at {{.*}}moves_in_loops_and_under_borrows.vx:55:3: `a` is moved inside this loop
+// CHECK-DAG: Error[E4001] at {{.*}}moves_in_loops_and_under_borrows.vx:73:15: Use of moved or consumed linear variable: a
+// CHECK-DAG: Error[E4001] at {{.*}}moves_in_loops_and_under_borrows.vx:88:15: Use of moved or consumed linear variable: a
+// CHECK-DAG: Error[E4007] at {{.*}}moves_in_loops_and_under_borrows.vx:96:11: `a` is moved while it is borrowed, and the borrow is used after the move
+// CHECK-DAG: Error[E4008] at {{.*}}moves_in_loops_and_under_borrows.vx:105:11: this moves a value of type `S` out from behind a reference
 // CHECK: 7 error(s) emitted

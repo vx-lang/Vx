@@ -12,8 +12,8 @@
 // earlier in its own block. An `if`, loop or `match` arm body may reuse an outer name, its loop
 // variable or a pattern's name; `_` names never warn, and neither does a lone tuple `let`.
 
-// CHECK: Warning[W1005] at 21:3: `x` is already a parameter of this function
-// CHECK: Warning[W1005] at 27:3: `total` is already declared in this block
+// CHECK: Warning[W1005] at {{.*}}warning_for_a_name_declared_twice_in_one_block.vx:21:3: `x` is already a parameter of this function
+// CHECK: Warning[W1005] at {{.*}}warning_for_a_name_declared_twice_in_one_block.vx:27:3: `total` is already declared in this block
 // COUNT-COUNT-2: Warning[W1005]
 // COUNT-NOT: Warning[W1005]
 

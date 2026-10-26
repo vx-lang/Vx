@@ -22,8 +22,11 @@ impl std::fmt::Display for Error {
     }
 }
 
+/// Render an error with the source line it points at and a caret under the place. `file` is
+/// printed before the line and column, as `file:line:column`, when the source came from one.
 pub fn format_compiler_error(
     source: &str,
+    file: Option<&str>,
     line: usize,
     col: usize,
     len: usize,
@@ -33,7 +36,14 @@ pub fn format_compiler_error(
         if let Some(src_line) = source.lines().nth(line - 1) {
             let mut out = String::with_capacity(msg.len() + src_line.len() * 2 + 64);
             use std::fmt::Write;
-            let _ = writeln!(out, "Error at {}:{}: {}", line, col, msg);
+            match file {
+                Some(file) => {
+                    let _ = writeln!(out, "Error at {}:{}:{}: {}", file, line, col, msg);
+                }
+                None => {
+                    let _ = writeln!(out, "Error at {}:{}: {}", line, col, msg);
+                }
+            }
 
             out.push_str(src_line);
             out.push('\n');
@@ -72,7 +82,10 @@ pub fn format_compiler_error(
     }
 
     // Fallback if line is out of bounds
-    format!("Error at {}:{}: {}\n", line, col, msg)
+    match file {
+        Some(file) => format!("Error at {}:{}:{}: {}\n", file, line, col, msg),
+        None => format!("Error at {}:{}: {}\n", line, col, msg),
+    }
 }
 
 pub fn format_compiler_warning(
@@ -142,7 +155,7 @@ mod tests {
     fn test_format_compiler_error_len_1_with_padding() {
         // "    + " (col = 5)
         let source = "    + ";
-        let formatted = format_compiler_error(source, 1, 5, 1, "Expected operand");
+        let formatted = format_compiler_error(source, None, 1, 5, 1, "Expected operand");
 
         // Should produce:
         // Error at 1:5: Expected operand
@@ -156,7 +169,7 @@ mod tests {
     fn test_format_compiler_error_len_1_no_padding() {
         // "+ " (col = 1)
         let source = "+ ";
-        let formatted = format_compiler_error(source, 1, 1, 1, "Unexpected");
+        let formatted = format_compiler_error(source, None, 1, 1, 1, "Unexpected");
 
         // Should produce:
         // Error at 1:1: Unexpected
@@ -170,7 +183,7 @@ mod tests {
     fn test_format_compiler_error_len_4() {
         // "asdf" (col = 1)
         let source = "asdf";
-        let formatted = format_compiler_error(source, 1, 1, 4, "Unknown identifier");
+        let formatted = format_compiler_error(source, None, 1, 1, 4, "Unknown identifier");
 
         // Should produce:
         // Error at 1:1: Unknown identifier
@@ -184,7 +197,7 @@ mod tests {
     fn test_format_compiler_error_len_4_with_padding() {
         // "    asdf" (col = 5) - full 4 spaces of padding
         let source = "    asdf";
-        let formatted = format_compiler_error(source, 1, 5, 4, "Unknown identifier");
+        let formatted = format_compiler_error(source, None, 1, 5, 4, "Unknown identifier");
 
         // Should produce:
         // Error at 1:5: Unknown identifier
@@ -198,7 +211,7 @@ mod tests {
     fn test_format_compiler_error_len_4_with_partial_padding() {
         // "  asdf" (col = 3) - only 2 spaces of padding available to replace
         let source = "  asdf";
-        let formatted = format_compiler_error(source, 1, 3, 4, "Unknown identifier");
+        let formatted = format_compiler_error(source, None, 1, 3, 4, "Unknown identifier");
 
         // Should produce:
         // Error at 1:3: Unknown identifier

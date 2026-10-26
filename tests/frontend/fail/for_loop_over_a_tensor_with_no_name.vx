@@ -9,8 +9,8 @@
 // literal. A tensor a function returns, and a nested array literal, get E3046.
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK-DAG: Error[E3046] at 22:12: a `for` loop over a tensor reads it by index
-// CHECK-DAG: Error[E3046] at 25:3: a `for` loop cannot go over a nested array literal
+// CHECK-DAG: Error[E3046] at {{.*}}for_loop_over_a_tensor_with_no_name.vx:22:12: a `for` loop over a tensor reads it by index
+// CHECK-DAG: Error[E3046] at {{.*}}for_loop_over_a_tensor_with_no_name.vx:25:3: a `for` loop cannot go over a nested array literal
 
 fn make() -> Tensor<i32, [3]> {
   let t = Tensor<i32, [3]>::new();

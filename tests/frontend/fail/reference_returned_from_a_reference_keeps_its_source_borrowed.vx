@@ -70,8 +70,8 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: Error[E4002] at 35:3: Cannot access 'x' because it is mutably borrowed.
-// CHECK-DAG: Error[E4002] at 44:14: Cannot access 'x' because it is mutably borrowed.
-// CHECK-DAG: Error[E4002] at 54:14: Cannot access 'x' because it is mutably borrowed.
-// CHECK-DAG: Error[E4002] at 64:5: Cannot access 's' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at {{.*}}reference_returned_from_a_reference_keeps_its_source_borrowed.vx:35:3: Cannot access 'x' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at {{.*}}reference_returned_from_a_reference_keeps_its_source_borrowed.vx:44:14: Cannot access 'x' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at {{.*}}reference_returned_from_a_reference_keeps_its_source_borrowed.vx:54:14: Cannot access 'x' because it is mutably borrowed.
+// CHECK-DAG: Error[E4002] at {{.*}}reference_returned_from_a_reference_keeps_its_source_borrowed.vx:64:5: Cannot access 's' because it is mutably borrowed.
 // CHECK: 4 error(s) emitted

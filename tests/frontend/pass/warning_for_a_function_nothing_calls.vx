@@ -12,16 +12,16 @@
 // through `grad` or in a closure, for one a method calls, or for one whose name starts with `_`.
 
 // CHECK-NOT: Warning[W1002]
-// CHECK: Warning[W1002]: function `never_called` is never called, directly or through other functions, from `main`; remove it, or start its name with `_` to keep it
-// CHECK-NEXT: Warning[W1002]: function `ping` is never called
-// CHECK-NEXT: Warning[W1002]: function `pong` is never called
-// CHECK-NOT: Warning[W1002]: function `_kept`
-// CHECK-NOT: Warning[W1002]: function `add_one`
-// CHECK-NOT: Warning[W1002]: function `square`
-// CHECK-NOT: Warning[W1002]: function `negate`
-// CHECK-NOT: Warning[W1002]: function `half_square`
-// CHECK-NOT: Warning[W1002]: function `called_in_a_closure`
-// CHECK-NOT: Warning[W1002]: function `called_by_a_method`
+// CHECK: Warning[W1002] at {{.*}}warning_for_a_function_nothing_calls.vx:{{[0-9]+:[0-9]+}}: function `never_called` is never called, directly or through other functions, from `main`; remove it, or start its name with `_` to keep it
+// CHECK-NEXT: Warning[W1002] at {{.*}}warning_for_a_function_nothing_calls.vx:{{[0-9]+:[0-9]+}}: function `ping` is never called
+// CHECK-NEXT: Warning[W1002] at {{.*}}warning_for_a_function_nothing_calls.vx:{{[0-9]+:[0-9]+}}: function `pong` is never called
+// CHECK-NOT: function `_kept`
+// CHECK-NOT: function `add_one`
+// CHECK-NOT: function `square`
+// CHECK-NOT: function `negate`
+// CHECK-NOT: function `half_square`
+// CHECK-NOT: function `called_in_a_closure`
+// CHECK-NOT: function `called_by_a_method`
 // CHECK-NOT: Warning[W1002]
 
 fn never_called(x : i32) -> i32 {

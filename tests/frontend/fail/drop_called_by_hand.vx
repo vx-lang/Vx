@@ -10,8 +10,8 @@
 // A `drop` method runs when its value is dropped, so calling it by hand would run it a second
 // time. As in Rust, the call is refused, for a type of the program and for a `Vec`.
 
-// CHECK-DAG: Error[E4012] at 31:5: `drop` is called for you when a value is dropped
-// CHECK-DAG: Error[E4012] at 36:5: `drop` is called for you when a value is dropped
+// CHECK-DAG: Error[E4012] at {{.*}}drop_called_by_hand.vx:31:5: `drop` is called for you when a value is dropped
+// CHECK-DAG: Error[E4012] at {{.*}}drop_called_by_hand.vx:36:5: `drop` is called for you when a value is dropped
 // CHECK: 2 error(s) emitted
 
 import core::ops;

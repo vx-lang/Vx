@@ -10,7 +10,7 @@
 // `*&x` borrows `x` and dereferences the borrow at once, which is just `x` (W1020).
 // Dereferencing a reference kept in a variable, `*r`, is ordinary and gets no warning.
 
-// CHECK: Warning[W1020] at 18:11: this dereferences a borrow made in the same place
+// CHECK: Warning[W1020] at {{.*}}warning_for_deref_of_a_fresh_borrow.vx:18:11: this dereferences a borrow made in the same place
 // CHECK-NOT: Warning[W1020]
 
 fn main() -> i32 {

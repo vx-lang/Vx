@@ -10,7 +10,7 @@
 // `x as i32` when `x` is already an `i32` does nothing (W1013). A widening cast, a cast of a
 // literal, and `v as T` in a generic function used with `T = i32` get no warning.
 
-// CHECK: Warning[W1013] at 22:16: this value is already i32, so the cast does nothing
+// CHECK: Warning[W1013] at {{.*}}warning_for_a_cast_to_the_same_type.vx:22:16: this value is already i32, so the cast does nothing
 // CHECK-NOT: Warning[W1013]
 
 fn convert<T>(v : i32) -> T {

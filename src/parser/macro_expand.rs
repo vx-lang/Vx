@@ -978,13 +978,13 @@ impl<'a> MacroExpander<'a> {
             };
             parser
                 .consume(&crate::lexer::TokenType::Colon, "Expected ':'")
-                .map_err(|e| e.format(""))?;
+                .map_err(|e| e.format("", None))?;
 
             match field_name.as_ref() {
                 "inputs" => {
                     parser
                         .consume(&crate::lexer::TokenType::LeftParen, "Expected '('")
-                        .map_err(|e| e.format(""))?;
+                        .map_err(|e| e.format("", None))?;
                     if !parser.check(&crate::lexer::TokenType::RightParen) {
                         loop {
                             // An MLIR value name: `%arg`. Until `%` was the remainder
@@ -1009,11 +1009,11 @@ impl<'a> MacroExpander<'a> {
                             };
                             parser
                                 .consume(&crate::lexer::TokenType::Equals, "Expected '='")
-                                .map_err(|e| e.format(""))?;
-                            let expr = parser.parse_expr().map_err(|e| e.format(""))?;
+                                .map_err(|e| e.format("", None))?;
+                            let expr = parser.parse_expr().map_err(|e| e.format("", None))?;
                             parser
                                 .consume(&crate::lexer::TokenType::Colon, "Expected ':'")
-                                .map_err(|e| e.format(""))?;
+                                .map_err(|e| e.format("", None))?;
 
                             let mut ty_str = String::new();
                             let mut angle_depth = 0;
@@ -1049,15 +1049,15 @@ impl<'a> MacroExpander<'a> {
                     }
                     parser
                         .consume(&crate::lexer::TokenType::RightParen, "Expected ')'")
-                        .map_err(|e| e.format(""))?;
+                        .map_err(|e| e.format("", None))?;
                 }
                 "clobbers" => {
                     parser
                         .consume(&crate::lexer::TokenType::LeftBracket, "Expected '['")
-                        .map_err(|e| e.format(""))?;
+                        .map_err(|e| e.format("", None))?;
                     if !parser.check(&crate::lexer::TokenType::RightBracket) {
                         loop {
-                            clobbers.push(parser.parse_expr().map_err(|e| e.format(""))?);
+                            clobbers.push(parser.parse_expr().map_err(|e| e.format("", None))?);
                             if !parser.match_token(&crate::lexer::TokenType::Comma) {
                                 break;
                             }
@@ -1065,17 +1065,17 @@ impl<'a> MacroExpander<'a> {
                     }
                     parser
                         .consume(&crate::lexer::TokenType::RightBracket, "Expected ']'")
-                        .map_err(|e| e.format(""))?;
+                        .map_err(|e| e.format("", None))?;
                 }
                 // What the block writes, as `atomic(t)` clauses. The race proof of an `across`
                 // loop reads them in place of the MLIR.
                 "ensures" => {
                     parser
                         .consume(&crate::lexer::TokenType::LeftBracket, "Expected '['")
-                        .map_err(|e| e.format(""))?;
+                        .map_err(|e| e.format("", None))?;
                     if !parser.check(&crate::lexer::TokenType::RightBracket) {
                         loop {
-                            ensures.push(parser.parse_expr().map_err(|e| e.format(""))?);
+                            ensures.push(parser.parse_expr().map_err(|e| e.format("", None))?);
                             if !parser.match_token(&crate::lexer::TokenType::Comma) {
                                 break;
                             }
@@ -1083,19 +1083,19 @@ impl<'a> MacroExpander<'a> {
                     }
                     parser
                         .consume(&crate::lexer::TokenType::RightBracket, "Expected ']'")
-                        .map_err(|e| e.format(""))?;
+                        .map_err(|e| e.format("", None))?;
                 }
                 "returns" => {
                     if parser.match_token(&crate::lexer::TokenType::Identifier("void")) {
                         returns = None;
                     } else {
-                        returns = Some(parser.parse_type().map_err(|e| e.format(""))?);
+                        returns = Some(parser.parse_type().map_err(|e| e.format("", None))?);
                     }
                 }
                 "dialects" => {
                     parser
                         .consume(&crate::lexer::TokenType::LeftBracket, "Expected '['")
-                        .map_err(|e| e.format(""))?;
+                        .map_err(|e| e.format("", None))?;
                     if !parser.check(&crate::lexer::TokenType::RightBracket) {
                         loop {
                             match &parser.advance().kind {
@@ -1111,7 +1111,7 @@ impl<'a> MacroExpander<'a> {
                     }
                     parser
                         .consume(&crate::lexer::TokenType::RightBracket, "Expected ']'")
-                        .map_err(|e| e.format(""))?;
+                        .map_err(|e| e.format("", None))?;
                 }
                 _ => return Err(format!("Unknown field '{}' in mlir! macro", field_name)),
             }

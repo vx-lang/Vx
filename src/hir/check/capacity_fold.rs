@@ -42,6 +42,8 @@ pub struct CallEdge {
 #[derive(Debug, Clone)]
 pub struct FnCapacitySummary {
     pub name: String,
+    /// The file the function is written in, for the diagnostics the fold reports about it.
+    pub file: Option<crate::symbol::Symbol>,
     /// Peak resident bytes per space over this function's own placements.
     pub self_peak: BTreeMap<String, u64>,
     pub calls: Vec<CallEdge>,
@@ -240,6 +242,7 @@ fn report_overflow(
         available_bytes: budget.cap,
         tiles: None,
     };
+    errors.file = nodes[n].file.clone();
     if budget.overcommit {
         errors
             .warn(
@@ -325,6 +328,8 @@ fn fold_cycle(
             available_bytes: budget.cap,
             tiles: None,
         };
+        // The cycle is reported once; it is named from its first function's file.
+        errors.file = scc.first().and_then(|&i| nodes[i].file.clone());
         if budget.overcommit {
             errors
                 .warn(
@@ -418,6 +423,7 @@ mod tests {
     ) -> FnCapacitySummary {
         FnCapacitySummary {
             name: name.to_string(),
+            file: None,
             self_peak: peaks.iter().map(|(s, b)| (s.to_string(), *b)).collect(),
             calls: calls
                 .iter()

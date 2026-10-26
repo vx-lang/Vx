@@ -34,6 +34,7 @@ use crate::report::{ResidentSet, SpawnRegionTraffic, StagingRoute};
 ///       "level": "error" | "warning",
 ///       "code": "E6009",                // null for an uncoded diagnostic
 ///       "message": "...",
+///       "file": "lib.vx",               // the file the diagnostic is about; omitted when unknown
 ///       "line": 12, "column": 5,        // omitted when the diagnostic carries no span
 ///       "capacity": {                   // present on E6009 / E6010 / W1028
 ///         "space": "SMEM",
@@ -175,6 +176,9 @@ fn diagnostic_json(d: &Diagnostic) -> String {
         format!("\"code\": {}", opt_str(code.as_deref())),
         format!("\"message\": \"{}\"", esc(&d.message)),
     ];
+    if let Some(file) = &d.file {
+        fields.push(format!("\"file\": \"{}\"", esc(file)));
+    }
     if let Some(sp) = &d.source_span {
         fields.push(format!("\"line\": {}", sp.line));
         fields.push(format!("\"column\": {}", sp.column));

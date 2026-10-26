@@ -9,7 +9,7 @@
 // enum with that name.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error at 14:6: `void` is a built-in type and cannot be declared
+// CHECK: Error at {{.*}}enum_named_void.vx:14:6: `void` is a built-in type and cannot be declared
 
 enum void {
   A,

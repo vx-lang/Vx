@@ -152,6 +152,11 @@ fn run_frontend_on(
     timed("macro_expand", || {
         macro_expansion_phase(&mut modules, sched)
     })?;
+    // Every function names its file, so a diagnostic found while checking it names the file
+    // too, wherever the check runs from. After expansion, which adds functions.
+    for m in &mut modules {
+        m.name_file_on_functions();
+    }
     // `name_resolution_phase` hands back the symbol map so the freeze point can reuse it instead of
     // rebuilding it (c4c35e31); the timing wrapper carries the value through.
     let symbol_map = timed("name_resolution", || {
@@ -204,7 +209,18 @@ fn run_frontend_on(
 
     // Before any body: a body checked against an ambiguous declaration table has been checked
     // against a coin flip.
-    let mut warnings = timed("decl_check", || declaration_check_phase(&session, &env))?;
+    // One file among the modules: a module read from none, such as the native host, does not
+    // make the program several files.
+    let whole_program_file = {
+        let mut files = modules.iter().filter_map(|m| m.file.as_deref());
+        match (files.next(), files.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
+    };
+    let mut warnings = timed("decl_check", || {
+        declaration_check_phase(&session, &env, whole_program_file)
+    })?;
     // Found before the checks rename calls to generic instances, and reported after them only if
     // they found no error, as in the driver.
     let mut unused_functions = crate::diagnostic::DiagnosticsVec::new();
@@ -490,10 +506,12 @@ fn parse_phase(file_paths: &[String], sched: Schedule) -> Result<Vec<VxModule>, 
         let mut lexer = Lexer::new(&source);
         let tokens = lexer.tokenize();
         let mut parser = Parser::new(&tokens, &source);
-        let mut program = parser.parse().map_err(|e| {
-            PipelineError::Parse(format!("Failed to parse {}:\n{}", path, e.format(&source)))
-        })?;
+        // The error names the file itself, so nothing is added around it.
+        let mut program = parser
+            .parse()
+            .map_err(|e| PipelineError::Parse(e.format(&source, Some(path))))?;
         program.module_path = module_path_of(path).into();
+        program.file = Some(path.as_str().into());
         Ok(program)
     };
     let parsed_modules: Vec<VxModule> = if sched.is_seq() {
@@ -1316,12 +1334,17 @@ fn check_one_function(
 /// are the one part of the frontend this path used to skip entirely: a corpus whose declared
 /// spaces collided onto shared dispatch ids compiled here without a diagnostic while the driver
 /// refused it.
+///
+/// `file` is the one file of a one-file program. These checks look at every module at once, so
+/// a position in one of them can only be named when there is only one.
 fn declaration_check_phase(
     global_session: &std::sync::Arc<GlobalSession>,
     global_env: &GlobalAstEnv,
+    file: Option<&str>,
 ) -> Result<Vec<crate::diagnostic::Diagnostic>, PipelineError> {
     let mut worker = LocalWorkerState::new(global_session.clone());
     let mut checker = TypeChecker::new(global_env, &mut worker);
+    checker.errors.file = file.map(Into::into);
     checker.check_whole_program_declarations();
 
     let found: Vec<&crate::diagnostic::Diagnostic> = checker.errors.iter().collect();
@@ -3053,6 +3076,22 @@ fn main() -> i32 { return 0; }
                 path.to_string_lossy().to_string()
             })
             .collect()
+    }
+
+    /// A parse error names its file once, in the `Error at FILE:LINE:COL:` header.
+    #[test]
+    fn a_parse_error_names_its_file_once() {
+        let bad = scratch_modules(
+            "parse_error_once",
+            &[("bad.vx", "fn main() -> i32 { let x = 10 return x; }\n")],
+        );
+        let err = compile_pipeline_mlir(&bad).expect_err("a missing `;` must be refused");
+        let text = err.to_string();
+        assert!(
+            text.contains("Error at ") && text.contains("bad.vx:1:"),
+            "{text}"
+        );
+        assert_eq!(text.matches("bad.vx").count(), 1, "{text}");
     }
 
     /// The pipeline refuses a machine model whose declarations contradict each other.

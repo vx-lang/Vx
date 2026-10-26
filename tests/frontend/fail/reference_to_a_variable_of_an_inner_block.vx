@@ -11,12 +11,12 @@
 // variable declared inside it: by `=`, by a field store, by `push`, as the value of an
 // `if`, and as a closure that uses the inner variable. The inner variable is gone once
 // its block ends, and the outer one is still there.
-// CHECK-DAG: Error[E4005] at 32:5: `r` is given a value that points at a variable of an inner block
-// CHECK-DAG: Error[E4005] at 43:5: `r` is given a value that points at a variable of an inner block
-// CHECK-DAG: Error[E4005] at 56:7: `v` is given a value that points at a variable of an inner block
-// CHECK-DAG: Error[E4005] at 65:7: `v` is given a value that points at a variable of an inner block
-// CHECK-DAG: Error[E4005] at 72:3: `r` is given a value that points at a variable of an inner block
-// CHECK-DAG: Error[E4005] at 91:7: `h` is given a value that points at a variable of an inner block
+// CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_variable_of_an_inner_block.vx:32:5: `r` is given a value that points at a variable of an inner block
+// CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_variable_of_an_inner_block.vx:43:5: `r` is given a value that points at a variable of an inner block
+// CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_variable_of_an_inner_block.vx:56:7: `v` is given a value that points at a variable of an inner block
+// CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_variable_of_an_inner_block.vx:65:7: `v` is given a value that points at a variable of an inner block
+// CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_variable_of_an_inner_block.vx:72:3: `r` is given a value that points at a variable of an inner block
+// CHECK-DAG: Error[E4005] at {{.*}}reference_to_a_variable_of_an_inner_block.vx:91:7: `h` is given a value that points at a variable of an inner block
 import core::ops;
 import std::vec;
 

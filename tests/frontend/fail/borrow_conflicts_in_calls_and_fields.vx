@@ -65,8 +65,8 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK-DAG: Error[E4004] at 32:16: Cannot borrow 'x' because it is already borrowed as mutable.
-// CHECK-DAG: Error[E4004] at 38:15: Cannot borrow 'x' because it is already borrowed as mutable.
-// CHECK-DAG: Error[E4004] at 47:11: Cannot borrow 'p' because it is already borrowed as mutable.
-// CHECK-DAG: Error[E4004] at 58:11: Cannot borrow 'p' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at {{.*}}borrow_conflicts_in_calls_and_fields.vx:32:16: Cannot borrow 'x' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at {{.*}}borrow_conflicts_in_calls_and_fields.vx:38:15: Cannot borrow 'x' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at {{.*}}borrow_conflicts_in_calls_and_fields.vx:47:11: Cannot borrow 'p' because it is already borrowed as mutable.
+// CHECK-DAG: Error[E4004] at {{.*}}borrow_conflicts_in_calls_and_fields.vx:58:11: Cannot borrow 'p' because it is already borrowed as mutable.
 // CHECK: 4 error(s) emitted

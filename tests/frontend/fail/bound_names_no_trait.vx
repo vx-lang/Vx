@@ -58,11 +58,11 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: Error[E3042]: the bound `T : NoSuchB` on `enum Pick` names no trait
-// CHECK-NEXT: Error[E3042]: the bound `T : NoSuchD` on `fn mixed` names no trait
-// CHECK-NEXT: Error[E3042]: the bound `T : NoSuchC` on `fn never_called` names no trait
-// CHECK-NEXT: Error[E3042]: the bound `T : NoSuchF` on `impl Size for Twice<T>` names no trait
-// CHECK-NEXT: Error[E3042]: the bound `T : NoSuchE` on `method Shape::area` names no trait
-// CHECK-NEXT: Error[E3042]: the bound `U : NoSuchG` on `method Twice<T>::scaled` names no trait
-// CHECK-NEXT: Error[E3042]: the bound `T : NoSuchA` on `struct Holder` names no trait
+// CHECK: Error[E3042] in {{.*}}bound_names_no_trait.vx: the bound `T : NoSuchB` on `enum Pick` names no trait
+// CHECK-NEXT: Error[E3042] in {{.*}}bound_names_no_trait.vx: the bound `T : NoSuchD` on `fn mixed` names no trait
+// CHECK-NEXT: Error[E3042] in {{.*}}bound_names_no_trait.vx: the bound `T : NoSuchC` on `fn never_called` names no trait
+// CHECK-NEXT: Error[E3042] in {{.*}}bound_names_no_trait.vx: the bound `T : NoSuchF` on `impl Size for Twice<T>` names no trait
+// CHECK-NEXT: Error[E3042] in {{.*}}bound_names_no_trait.vx: the bound `T : NoSuchE` on `method Shape::area` names no trait
+// CHECK-NEXT: Error[E3042] in {{.*}}bound_names_no_trait.vx: the bound `U : NoSuchG` on `method Twice<T>::scaled` names no trait
+// CHECK-NEXT: Error[E3042] in {{.*}}bound_names_no_trait.vx: the bound `T : NoSuchA` on `struct Holder` names no trait
 // CHECK-NEXT: 7 error(s) emitted

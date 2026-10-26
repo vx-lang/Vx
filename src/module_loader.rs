@@ -25,7 +25,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug)]
 pub enum ModuleError {
     IO(String, std::io::Error),
-    Parse(String, crate::error::Error),
+    /// The error names its file and position itself.
+    Parse(crate::error::Error),
     Resolution(String),
 }
 
@@ -33,7 +34,7 @@ impl std::fmt::Display for ModuleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ModuleError::IO(file, err) => write!(f, "Failed to open file '{}': {}", file, err),
-            ModuleError::Parse(file, err) => write!(f, "Parse failed in '{}': {}", file, err),
+            ModuleError::Parse(err) => write!(f, "{}", err),
             ModuleError::Resolution(err) => write!(f, "Resolution error: {}", err),
         }
     }
@@ -290,8 +291,9 @@ impl ModuleLoader {
 
         let mut program = parser
             .parse()
-            .map_err(|e| ModuleError::Parse(name, crate::error::Error(e.format(&source))))?;
+            .map_err(|e| ModuleError::Parse(crate::error::Error(e.format(&source, Some(&name)))))?;
         program.module_path = module_path;
+        program.file = Some(name.as_str().into());
         Ok(program)
     }
 

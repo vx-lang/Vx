@@ -9,7 +9,7 @@
 // trait with that name.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Error at 14:7: `void` is a built-in type and cannot be declared
+// CHECK: Error at {{.*}}trait_named_void.vx:14:7: `void` is a built-in type and cannot be declared
 
 trait void {
   fn f(self : &Self) -> i32;

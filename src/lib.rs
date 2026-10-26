@@ -58,5 +58,5 @@ pub fn parse_module(source: &str) -> Result<syntax::VxModule, crate::error::Erro
     let mut parser = parser::Parser::new(&tokens, source);
     parser
         .parse()
-        .map_err(|e| crate::error::Error(e.format(source)))
+        .map_err(|e| crate::error::Error(e.format(source, None)))
 }

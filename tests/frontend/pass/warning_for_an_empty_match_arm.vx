@@ -14,7 +14,7 @@
 // yet, so the empty arm in `blue_one` gets no warning either.
 
 // CHECK-NOT: Warning[W1008]
-// CHECK: Warning[W1008] at 30:5: this match arm's body is empty, so this case does nothing
+// CHECK: Warning[W1008] at {{.*}}warning_for_an_empty_match_arm.vx:30:5: this match arm's body is empty, so this case does nothing
 // CHECK-NOT: Warning[W1008]
 
 enum Color {

@@ -10,12 +10,12 @@
 // A method's arguments are checked against its parameters, as a function's are: on a
 // struct, on a generic struct, through a trait, in a `for` loop header, and by count.
 // Each is reported once, at the call. So is a `for` over a struct with no `next`.
-// CHECK: Error[E3003] at 50:13: Type mismatch in argument 1 for function 'S::add'. Expected i64, got bool
-// CHECK-NEXT: Error[E3003] at 54:13: Type mismatch in argument 1 for function 'G<i64>::add'. Expected i64, got bool
-// CHECK-NEXT: Error[E3003] at 55:13: Type mismatch in argument 1 for function 'S::pick'. Expected i64, got bool
-// CHECK-NEXT: Error[E3010] at 56:13: Function 'S::add' expects 1 arguments, got 2
-// CHECK-NEXT: Error[E3003] at 57:30: Type mismatch in argument 1 for function 'Range::skip'. Expected i64, got bool
-// CHECK-NEXT: Error: Method 'next' not found on type S
+// CHECK: Error[E3003] at {{.*}}method_argument_of_the_wrong_type.vx:50:13: Type mismatch in argument 1 for function 'S::add'. Expected i64, got bool
+// CHECK-NEXT: Error[E3003] at {{.*}}method_argument_of_the_wrong_type.vx:54:13: Type mismatch in argument 1 for function 'G<i64>::add'. Expected i64, got bool
+// CHECK-NEXT: Error[E3003] at {{.*}}method_argument_of_the_wrong_type.vx:55:13: Type mismatch in argument 1 for function 'S::pick'. Expected i64, got bool
+// CHECK-NEXT: Error[E3010] at {{.*}}method_argument_of_the_wrong_type.vx:56:13: Function 'S::add' expects 1 arguments, got 2
+// CHECK-NEXT: Error[E3003] at {{.*}}method_argument_of_the_wrong_type.vx:57:30: Type mismatch in argument 1 for function 'Range::skip'. Expected i64, got bool
+// CHECK-NEXT: Error in {{.*}}method_argument_of_the_wrong_type.vx: Method 'next' not found on type S
 // CHECK-NEXT: Semantic check failed
 import core::iter;
 

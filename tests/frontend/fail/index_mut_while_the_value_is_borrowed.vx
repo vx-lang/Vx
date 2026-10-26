@@ -14,8 +14,8 @@
 // - `let n = names[0]`: `index` returns a reference to a `Name`, which is not `Copy`, so it
 //   cannot be moved out.
 
-// CHECK-DAG: Error[E4003] at 72:15: Cannot borrow 'p' as mutable because it is also borrowed as immutable.
-// CHECK-DAG: Error[E4008] at 78:16: this moves a value of type `Name` out from behind a reference
+// CHECK-DAG: Error[E4003] at {{.*}}index_mut_while_the_value_is_borrowed.vx:72:15: Cannot borrow 'p' as mutable because it is also borrowed as immutable.
+// CHECK-DAG: Error[E4008] at {{.*}}index_mut_while_the_value_is_borrowed.vx:78:16: this moves a value of type `Name` out from behind a reference
 // CHECK: 2 error(s) emitted
 
 import core::ops;

@@ -12,7 +12,7 @@
 // check as own footprint + recursive requires within the declared bound.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: E6028
+// CHECK: Error[E6028] in {{.*}}recursion_with_residency_is_refused.vx:
 // CHECK-SAME: 'deep' calls itself and places up to 3145728 bytes in memory space 'W' per activation
 // CHECK-SAME: unbounded
 

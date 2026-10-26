@@ -161,6 +161,13 @@ impl<'a> Parser<'a> {
         let is_unsafe = self.match_token(&TokenType::Unsafe);
         self.consume(&TokenType::Fn, "Expected 'fn'")?;
 
+        let name_token = self.peek();
+        let span = crate::syntax::Span {
+            line: name_token.line,
+            column: name_token.column,
+            length: name_token.length,
+            expansion: self.expansion(),
+        };
         let name = self.expect_identifier("Expected function name")?;
 
         let generics = self.parse_generic_params()?;
@@ -280,6 +287,8 @@ impl<'a> Parser<'a> {
             where_transfers,
             body,
             doc_comment: None,
+            span,
+            file: None,
         })
     }
 
@@ -1732,6 +1741,7 @@ impl<'a> Parser<'a> {
         }
         Ok(Program {
             module_path: self.source.to_string().into(), // Default fallback, should be overridden by pipeline
+            file: None,
             item_macros,
             imports,
             macros,
@@ -2149,7 +2159,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
             let err = parser
                 .parse_function()
                 .expect_err("transfer as a binding name should fail");
-            let msg = err.format(input);
+            let msg = err.format(input, None);
             assert!(
                 msg.contains("`transfer` is a keyword and cannot be used as a name"),
                 "message was: {msg}"
@@ -2163,7 +2173,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         let let_input = cases[0];
         let tokens = crate::lexer::Lexer::new(let_input).tokenize();
         let mut parser = Parser::new(&tokens, let_input);
-        let msg = parser.parse_function().unwrap_err().format(let_input);
+        let msg = parser.parse_function().unwrap_err().format(let_input, None);
         assert!(
             msg.contains("Error at 1:24:"),
             "expected span on transfer, got: {msg}"
@@ -2180,7 +2190,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         let msg = parser
             .parse_function()
             .expect_err("for across should fail")
-            .format(for_input);
+            .format(for_input, None);
         assert!(
             msg.contains("`across` is a keyword and cannot be used as a name"),
             "message was: {msg}"
@@ -2192,7 +2202,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         let msg = parser
             .parse_function()
             .expect_err("fn across should fail")
-            .format(fn_input);
+            .format(fn_input, None);
         assert!(
             msg.contains("`across` is a keyword and cannot be used as a name"),
             "message was: {msg}"
@@ -2212,7 +2222,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         let msg = parser
             .parse_impl_block()
             .expect_err("bare self should fail")
-            .format(input);
+            .format(input, None);
         assert!(
             msg.contains(
                 "`self` needs a type. Write `self : &Self`, `self : &mut Self` or `self : Self`."
@@ -2235,7 +2245,7 @@ fn distributed_matmul(a: Ref<Tensor<f32, [?, ?]>, Memory::CPU_DRAM>, b: Ref<Tens
         let msg = parser
             .parse_trait_decl()
             .expect_err("bare self in a trait should fail")
-            .format(input);
+            .format(input, None);
         assert!(
             msg.contains(
                 "`self` needs a type. Write `self : &Self`, `self : &mut Self` or `self : Self`."

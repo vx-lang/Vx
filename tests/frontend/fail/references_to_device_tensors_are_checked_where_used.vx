@@ -27,25 +27,25 @@ Topology Device {
   transfer Memory::HBM -> Memory::CPU_DRAM : 10 GB/s
 }
 
-// CHECK: Error[E6003] at 32:3: `print` reads its argument on CPU, which sees only [CPU_DRAM, NPU_HBM], but the value lives in HBM
+// CHECK: Error[E6003] at {{.*}}references_to_device_tensors_are_checked_where_used.vx:32:3: `print` reads its argument on CPU, which sees only [CPU_DRAM, NPU_HBM], but the value lives in HBM
 fn print_through_a_reference(o : &Tensor<f32, [4, 1], Memory::HBM>) -> void {
   print(o);
   return;
 }
 
-// CHECK: Error[E6003] at 38:13: 'o[0]' lives in HBM but CPU sees only
+// CHECK: Error[E6003] at {{.*}}references_to_device_tensors_are_checked_where_used.vx:38:13: 'o[0]' lives in HBM but CPU sees only
 fn read_on_the_host(o : &Tensor<f32, [4, 1], Memory::HBM>) -> void {
   print(o[0][0]);
   return;
 }
 
-// CHECK: Error[E6003] at 44:7: 'o[0]' lives in HBM but CPU sees only
+// CHECK: Error[E6003] at {{.*}}references_to_device_tensors_are_checked_where_used.vx:44:7: 'o[0]' lives in HBM but CPU sees only
 fn write_on_the_host(o : &mut Tensor<f32, [4, 1], Memory::HBM>) -> void {
   o[0][0] = 1.0;
   return;
 }
 
-// CHECK: Error[E6003] at 51:21: 'a[0]' lives in CPU_DRAM but Device sees only
+// CHECK: Error[E6003] at {{.*}}references_to_device_tensors_are_checked_where_used.vx:51:21: 'a[0]' lives in CPU_DRAM but Device sees only
 fn host_memory_read_on_the_gpu(out : &mut Tensor<f32, [4, 1], Memory::HBM>, a : &Tensor<f32, [4, 1], Memory::CPU_DRAM>) -> void {
   spawn on(Topology::Device) {
     out[0][0] = a[0][0];
@@ -53,7 +53,7 @@ fn host_memory_read_on_the_gpu(out : &mut Tensor<f32, [4, 1], Memory::HBM>, a : 
   return;
 }
 
-// CHECK: Error[E6003] at 60:14: 'x' lives in CPU_DRAM but Device sees only
+// CHECK: Error[E6003] at {{.*}}references_to_device_tensors_are_checked_where_used.vx:60:14: 'x' lives in CPU_DRAM but Device sees only
 fn host_scalar_borrowed_on_the_gpu(out : &mut Tensor<f32, [4, 1], Memory::HBM>) -> void {
   let x : f32 = 1.5;
   spawn on(Topology::Device) {

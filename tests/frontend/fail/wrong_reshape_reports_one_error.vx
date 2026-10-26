@@ -11,11 +11,11 @@
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK-NOT: E3001
-// CHECK: Error[E3047] at 23:37: reshape cannot change the number of elements: Tensor<f32, [4, 4]> has 16, the new shape has 15
+// CHECK: Error[E3047] at {{.*}}wrong_reshape_reports_one_error.vx:23:37: reshape cannot change the number of elements: Tensor<f32, [4, 4]> has 16, the new shape has 15
 // CHECK-NOT: E3001
-// CHECK: Error[E3047] at 29:14: reshape takes the new shape, and optionally PadMode::Pad or PadMode::Trim
-// CHECK: Error[E3047] at 35:14: reshape takes the new shape as an array of sizes, such as [4, 4]
-// CHECK: Error[E3047] at 41:14: reshape needs a new shape whose sizes are known while compiling
+// CHECK: Error[E3047] at {{.*}}wrong_reshape_reports_one_error.vx:29:14: reshape takes the new shape, and optionally PadMode::Pad or PadMode::Trim
+// CHECK: Error[E3047] at {{.*}}wrong_reshape_reports_one_error.vx:35:14: reshape takes the new shape as an array of sizes, such as [4, 4]
+// CHECK: Error[E3047] at {{.*}}wrong_reshape_reports_one_error.vx:41:14: reshape needs a new shape whose sizes are known while compiling
 // CHECK: 4 error(s) emitted
 
 fn wrong_count() -> i32 {

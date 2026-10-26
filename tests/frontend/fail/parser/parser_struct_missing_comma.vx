@@ -1,6 +1,6 @@
 //===- parser_struct_missing_comma.vx - Vx Compiler -------------------*- Vx
 //-*-===//
-// CHECK: Error at 13:11: {{.*}}Expected '}'
+// CHECK: Error at {{.*}}parser_struct_missing_comma.vx:13:11: {{.*}}Expected '}'
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
