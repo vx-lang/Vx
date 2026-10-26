@@ -5,15 +5,17 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// The lane loops fix the block size of a kernel, and the PTX says it with `.maxntid`. ptxas then
-// uses few enough registers for a block of that size. Without it, a kernel with many registers
-// can get a thread limit below its block, and the launch fails.
+// The lane loops fix the block size of a kernel. For a block of more than 256 threads, the PTX
+// says it with `.maxntid`, and ptxas then uses few enough registers for that block. Without it,
+// a kernel with many registers can get a thread limit below its block, and the launch fails. A
+// block of 256 threads fits at any register count, so its kernel gets no `.maxntid`.
 //
 // RUN: vxc %s --host default --machine fleet/a100-80.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
 // CHECK: .entry vx_npu_kernel_0(
-// CHECK: .maxntid 1024, 1, 1
-// CHECK: .entry vx_npu_kernel_1(
-// CHECK: .maxntid 128, 1, 1
+// CHECK-SAME: .maxntid 1024, 1, 1
+// CHECK-SAME: .entry vx_npu_kernel_1(
+// CHECK-NOT: .maxntid
+// CHECK-SAME: \00")
 
 pub fn scale(y : &mut Tensor<f32, [?, 1024], Memory::HBM>, n : i32) -> void {
   spawn on(Topology::Device) {
@@ -26,10 +28,10 @@ pub fn scale(y : &mut Tensor<f32, [?, 1024], Memory::HBM>, n : i32) -> void {
   return;
 }
 
-pub fn scale_by_subgroups(y : &mut Tensor<f32, [?, 4, 32], Memory::HBM>, n : i32) -> void {
+pub fn scale_by_subgroups(y : &mut Tensor<f32, [?, 8, 32], Memory::HBM>, n : i32) -> void {
   spawn on(Topology::Device) {
     for b in 0..n across blocks {
-      for w in 0..4 across subgroups {
+      for w in 0..8 across subgroups {
         for l in 0..32 across lanes {
           y[b][w][l] = y[b][w][l] * 2.0;
         }

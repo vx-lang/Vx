@@ -3493,10 +3493,13 @@ struct ConvertVxToStandardPass
                        inner.getUnitAttr());
       // A block size that is a number is the block of every launch. ptxas
       // then uses few enough registers for a block of that size. Without it,
-      // a large kernel can get a thread limit below its block.
+      // a large kernel can get a thread limit below its block. A block of at
+      // most 256 threads fits at 255 registers each, the most ptxas gives.
+      // The limit also changes how ptxas picks registers, so a smaller block
+      // gets none.
       if (auto block = kernel->getAttrOfType<StringAttr>("vx.launch_block")) {
         int32_t threads = 0;
-        if (!block.getValue().getAsInteger(10, threads) && threads > 0)
+        if (!block.getValue().getAsInteger(10, threads) && threads > 256)
           gpuFunc->setAttr("nvvm.maxntid",
                            inner.getDenseI32ArrayAttr({threads, 1, 1}));
       }
