@@ -203,6 +203,36 @@ theorem Stmt.NestOk.mono {o1 o2 : List Nat} (h12 : ∀ u ∈ o1, u ∈ o2) {s : 
   | loop _ _ ih => exact ih h12 h
   | _ => trivial
 
+/-- The tasks that `s` can start, also in the `tasks` blocks inside `s`, at any depth. -/
+def Stmt.allIds : Stmt → List Nat
+  | spawnAt base len _ => (List.range len).map (base + ·)
+  | seq s t | ite _ s t => s.allIds ++ t.allIds
+  | loop _ s | tasksBlock s => s.allIds
+  | _ => []
+
+theorem Stmt.allIds_of_noBlocks {s : Stmt} (h : s.NoBlocks) : s.allIds = s.spawnIds := by
+  induction s with
+  | tasksBlock => exact h.elim
+  | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => simp only [Stmt.allIds, Stmt.spawnIds, ih1 h.1, ih2 h.2]
+  | loop _ _ ih => exact ih h
+  | _ => rfl
+
+theorem allIds_lt {n tasks} {s : Stmt} (h : s.Below n tasks) : ∀ u ∈ s.allIds, u < tasks := by
+  induction s with
+  | spawnAt =>
+    intro u hu
+    simp only [Stmt.allIds, List.mem_map, List.mem_range] at hu
+    obtain ⟨j, hj, rfl⟩ := hu
+    simp only [Stmt.Below] at h
+    omega
+  | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 =>
+    intro u hu
+    rcases List.mem_append.1 hu with hu | hu
+    · exact ih1 h.1 u hu
+    · exact ih2 h.2 u hu
+  | loop _ _ ih | tasksBlock _ ih => exact ih h
+  | _ => nofun
+
 namespace TaskProg
 
 variable {P : TaskProg}
@@ -725,22 +755,20 @@ theorem block_hb (hP : P.Ok) {X : Execution} (r : P.toProg.Run X) {s : Stmt}
   obtain ⟨j, -, hjr, hjl, hjb, -⟩ := block_join r hb hr hn hrun hlab hw hww hwl hwn hwL hbp hbL
   exact join_hb hP r ha hjr hjl (Or.inr hjb)
 
-/-- `block_hb` for a block whose code holds other `tasks` blocks. Each inner block starts only
+/-- `block_join` for a block whose code holds other `tasks` blocks. Each inner block starts only
 tasks that the blocks around it do not start (`NestOk`). The block joins each of its own tasks
 at its end. A task of an inner block is in a run of that inner block, which joined it. -/
-theorem block_hb_nested (hP : P.Ok) {X : Execution} (r : P.toProg.Run X) {s : Stmt}
+theorem block_join_nested {X : Execution} (r : P.toProg.Run X) {s : Stmt}
     (hb : s.Below P.flags P.count) (hr : s.RegsBelow P.marks) (hn : s.NestOk s.spawnIds)
     {p n : Nat} {regs regs' : Nat → Int} {L : List Label}
     (hrun : Steps (P.lower (.tasksBlock s)) regs L .skip regs')
     (hlab : ∀ m (hm : m < L.length), r.lab p (n + m) = L[m])
-    {t : Nat} {w a b : X.E} (hw : X.thread w = p) (hww : X.IsWrite w)
+    {t : Nat} {w b : X.E} (hw : X.thread w = p) (hww : X.IsWrite w)
     (hwl : X.loc w = P.start t) (hwn : n ≤ r.idx w) (hwL : r.idx w < n + L.length)
-    (ha : X.thread a = t + 1) (hbp : X.thread b = p) (hbL : n + L.length ≤ r.idx b) :
-    X.hb a b := by
+    (hbp : X.thread b = p) (hbL : n + L.length ≤ r.idx b) :
+    ∃ j, X.thread j = p ∧ X.IsRead j ∧ X.loc j = P.done t ∧ X.po j b := by
   by_cases ht : t ∈ s.spawnIds
-  · obtain ⟨j, -, hjr, hjl, hjb⟩ :=
-      block_join_of r hb hr hn hrun hlab hw hww hwl hwn hwL hbp hbL ht
-    exact join_hb hP r ha hjr hjl (Or.inr hjb)
+  · exact block_join_of r hb hr hn hrun hlab hw hww hwl hwn hwL hbp hbL ht
   · obtain ⟨Lb, Le, ⟨ra, rb, hbody, -⟩, rfl, hin, hwlab⟩ := block_body hrun hlab hw hww hwn hwL
     obtain ⟨c, n0, L0, r1, r2, hsz, hcb, hcr, hcn, hc, hl0, h1, h2, h3⟩ :=
       nested_seg hb hr hn (fun _ h => h) hbody (i := r.idx w - n) hin
@@ -751,9 +779,23 @@ theorem block_hb_nested (hP : P.Ok) {X : Execution} (r : P.toProg.Run X) {s : St
       rw [Nat.add_assoc, hlab _ (by simp only [List.length_append]; omega),
         List.getElem_append_left (by omega)]
       exact Option.some.inj h0
-    exact block_hb_nested hP r hcb hcr hcn hc hlab0 hw hww hwl (by omega) (by omega) ha hbp
+    exact block_join_nested r hcb hcr hcn hc hlab0 hw hww hwl (by omega) (by omega) hbp
       (by simp only [List.length_append] at hbL; omega)
 termination_by sizeOf s
+
+/-- `block_hb` for a block whose code holds other `tasks` blocks. -/
+theorem block_hb_nested (hP : P.Ok) {X : Execution} (r : P.toProg.Run X) {s : Stmt}
+    (hb : s.Below P.flags P.count) (hr : s.RegsBelow P.marks) (hn : s.NestOk s.spawnIds)
+    {p n : Nat} {regs regs' : Nat → Int} {L : List Label}
+    (hrun : Steps (P.lower (.tasksBlock s)) regs L .skip regs')
+    (hlab : ∀ m (hm : m < L.length), r.lab p (n + m) = L[m])
+    {t : Nat} {w a b : X.E} (hw : X.thread w = p) (hww : X.IsWrite w)
+    (hwl : X.loc w = P.start t) (hwn : n ≤ r.idx w) (hwL : r.idx w < n + L.length)
+    (ha : X.thread a = t + 1) (hbp : X.thread b = p) (hbL : n + L.length ≤ r.idx b) :
+    X.hb a b := by
+  obtain ⟨j, -, hjr, hjl, hjb⟩ :=
+    block_join_nested r hb hr hn hrun hlab hw hww hwl hwn hwL hbp hbL
+  exact join_hb hP r ha hjr hjl (Or.inr hjb)
 
 end TaskProg
 

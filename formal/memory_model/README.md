@@ -118,6 +118,12 @@ tasks of `forkJoin` in a block follow the rule, also when the block runs in a lo
 one task in each pass and reads the output of the task after the block (`loopFoot`). In
 `passFoot`, the two tasks of a block in a loop write one place. It also has a task that starts two tasks in its own block
 (`nestFoot`).
+The code of a block can hold other blocks, when each inner block starts only tasks that the blocks
+around it do not start (`NestOk`). The tasks of an inner block count as tasks of the outer block
+(`allIds`). So the rule compares them with the other tasks of the outer block and with all its
+code, also the code after the inner block. `desc_after` uses `block_join_nested`, so the outer
+block or the inner block joins them before the code after the outer block. In `innerFoot`, the
+code of a block starts task 0 and then starts task 1 in an inner block.
 
 `ChanFootprint.lean` gives the same rule to programs with channels and locks. The rule speaks only
 of the places of the code of the program, below `places`. `Recv.lean` shows that the places of the
@@ -261,8 +267,9 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - herd7 checks each test completely, but only the tests. memalloy checks every execution up to 5
   or 6 events.
 - The core language has no functions and no references.
-- The footprint rules need a block whose body holds no other `tasks` block. A task can hold its
-  own blocks. `block_hb_nested` already gives the edge for a block that holds blocks.
+- The rule of `Footprint.lean` compares each task of an inner block with all the code of the outer
+  block, also the code after the inner block joined it. The rules for channels and locks need a
+  block whose body holds no other `tasks` block (#2286).
 - The Lean model has no scopes and no barriers.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.

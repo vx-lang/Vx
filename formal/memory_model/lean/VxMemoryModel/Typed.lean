@@ -607,15 +607,16 @@ theorem compileItems_below (hw : T.WellTyped) {is : List Item} {perm : Nat → P
 theorem blockOk (hw : T.WellTyped) {is : List Item} (hp : T.PhaseOk (.block is)) :
     T.toTaskProg.BlockOk (· < T.toTaskProg.flags) (fun _ => []) (compileItems T.place is) := by
   have hacc := compileItems_accesses (tp := T.blockPerm is) (fun p => via_le _ _) hp.1
-  refine ⟨compileItems_noBlocks _ _, compileItems_regs hp.1, ?_, ?_⟩
+  have hall := Stmt.allIds_of_noBlocks (compileItems_noBlocks T.place is)
+  refine ⟨.of_noBlocks (compileItems_noBlocks _ _), compileItems_regs hp.1, ?_, ?_⟩
   · intro u hu w hd
-    rw [compileItems_spawnIds] at hu
+    rw [hall, compileItems_spawnIds] at hu
     rw [TaskProg.desc_nil] at hd
     subst w
     exact apart_of_fit hw hacc ((hw.bodies u).accesses (pathPerm_le u))
       (fun x l hl => fit_block hw hu x l hl) _
   · intro u hu v hv huv _ w w' hd hd'
-    rw [compileItems_spawnIds] at hu hv
+    rw [hall, compileItems_spawnIds] at hu hv
     rw [TaskProg.desc_nil] at hd hd'
     subst w w'
     exact apart_of_fit hw ((hw.bodies u).accesses (pathPerm_le u))
@@ -625,7 +626,8 @@ theorem blockOk (hw : T.WellTyped) {is : List Item} (hp : T.PhaseOk (.block is))
 theorem phase_ids (pl : Nat → Nat → Nat) (p : SPhase) : (p.compile pl).ids = p.spawns := by
   cases p with
   | code => rfl
-  | block is => exact compileItems_spawnIds pl is
+  | block is =>
+    exact (Stmt.allIds_of_noBlocks (compileItems_noBlocks pl is)).trans (compileItems_spawnIds pl is)
 
 theorem phasesOk (hw : T.WellTyped) :
     ∀ ps : List SPhase, (∀ p ∈ ps, T.PhaseOk p) → (ps.flatMap SPhase.spawns).Nodup →

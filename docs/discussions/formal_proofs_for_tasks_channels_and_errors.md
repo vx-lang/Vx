@@ -219,7 +219,9 @@ blocks accesses a place of a lock without the lock, because no task runs then (`
 eighth part lets a block run in a loop. Each pass joins its tasks, so the rule of the block holds
 for each pass (`Runs.loop_pass`). In `Footprint.lean` the loop can also run code that starts no
 task before and after the block (#2241). Two tasks that one `spawn` of the block starts need not
-be apart, because one pass starts at most one of them (#2242).
+be apart, because one pass starts at most one of them (#2242). The ninth part lets the code of a
+block in `Footprint.lean` hold other blocks (#2285). The tasks of an inner block count as tasks of
+the outer block. `ChanFootprint.lean` and `LockFootprint.lean` do not allow this yet (#2286).
 
 ## Later
 

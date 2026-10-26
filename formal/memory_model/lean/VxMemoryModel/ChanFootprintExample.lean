@@ -55,7 +55,7 @@ theorem chanFoot_footprints : chanFoot.CFootprints (fun _ => none) (fun _ => [])
   phases := by
     simp [CPhasesOk, chanPhases, CPhase.Ok, CPhase.lower, TaskProg.Phase.ids, CStmt.NoTasks,
       CStmt.NoBlocks, CStmt.RegsBelow, Stmt.NoTasks, Stmt.NoBlocks, Stmt.RegsBelow,
-      Expr.RegsBelow, lowerC, Stmt.spawnIds, CStmt.Apart, CStmt.Accesses, Stmt.Accesses, Compat,
+      Expr.RegsBelow, lowerC, Stmt.spawnIds, Stmt.allIds, CStmt.Apart, CStmt.Accesses, Stmt.Accesses, Compat,
       chanFoot]
   tasks
     | 0 | 1 | _ + 2 => Or.inr ⟨by simp [chanFoot, CStmt.NoTasks, Stmt.NoTasks], rfl⟩
@@ -110,7 +110,7 @@ theorem lockFoot_footprints : lockFoot.CFootprints lockGuard (fun _ => []) lockP
   phases := by
     simp [CPhasesOk, lockPhases, CPhase.Ok, CPhase.lower, TaskProg.Phase.ids, CStmt.NoTasks,
       CStmt.NoBlocks, CStmt.RegsBelow, Stmt.NoTasks, Stmt.NoBlocks, Stmt.RegsBelow,
-      Expr.RegsBelow, lowerC, Stmt.spawnIds, CStmt.Apart, CStmt.Accesses, Stmt.Accesses, Compat,
+      Expr.RegsBelow, lowerC, Stmt.spawnIds, Stmt.allIds, CStmt.Apart, CStmt.Accesses, Stmt.Accesses, Compat,
       lockFoot, addOne, lockGuard]
   tasks
     | 0 | 1 | _ + 2 => Or.inr ⟨by simp [lockFoot, addOne, CStmt.NoTasks, Stmt.NoTasks], rfl⟩
@@ -163,7 +163,7 @@ theorem failFoot_footprints : failFoot.CFootprints (fun _ => none) (fun _ => [])
   phases := by
     simp [CPhasesOk, failPhases, CPhase.Ok, CPhase.lower, TaskProg.Phase.ids, CStmt.NoTasks,
       CStmt.NoBlocks, CStmt.RegsBelow, Stmt.NoTasks, Stmt.NoBlocks, Stmt.RegsBelow,
-      Expr.RegsBelow, lowerC, Stmt.spawnIds, CStmt.Apart, CStmt.Accesses, Stmt.Accesses, Compat,
+      Expr.RegsBelow, lowerC, Stmt.spawnIds, Stmt.allIds, CStmt.Apart, CStmt.Accesses, Stmt.Accesses, Compat,
       failFoot]
   tasks
     | 0 | 1 | _ + 2 => Or.inr ⟨by simp [failFoot, CStmt.NoTasks, Stmt.NoTasks], rfl⟩
@@ -222,7 +222,7 @@ theorem nestChan_desc {u w : Nat} (h : TaskProg.Desc (nestChanFoot.lowerPhases n
       simp only [lowerPhases, nestChanPhases, nestChanTask0, List.map, List.mem_cons,
         List.not_mem_nil, or_false] at hp
       rcases hp with rfl | rfl <;>
-        simp [CPhase.lower, lowerC, TaskProg.Phase.ids, Stmt.spawnIds] at hv
+        simp [CPhase.lower, lowerC, TaskProg.Phase.ids, Stmt.allIds] at hv
       rcases hv with rfl | rfl
       · exact Or.inr ⟨rfl, Or.inl ((TaskProg.desc_of_nil rfl).1 hd)⟩
       · exact Or.inr ⟨rfl, Or.inr ((TaskProg.desc_of_nil rfl).1 hd)⟩
@@ -235,12 +235,12 @@ theorem nestChan_starts {q v : Nat}
   rcases q with _ | _ | q
   · simp only [cthr, nestChanMain, List.mem_cons, List.not_mem_nil, or_false] at hp
     rcases hp with rfl | rfl <;>
-      simp [CPhase.lower, lowerC, TaskProg.Phase.ids, Stmt.spawnIds] at hv
+      simp [CPhase.lower, lowerC, TaskProg.Phase.ids, Stmt.allIds] at hv
     exact Or.inl ⟨rfl, hv⟩
   · simp only [cthr, nestChanPhases, nestChanTask0, List.mem_cons, List.not_mem_nil,
       or_false] at hp
     rcases hp with rfl | rfl <;>
-      simp [CPhase.lower, lowerC, TaskProg.Phase.ids, Stmt.spawnIds] at hv
+      simp [CPhase.lower, lowerC, TaskProg.Phase.ids, Stmt.allIds] at hv
     exact Or.inr ⟨rfl, hv⟩
   · simp [cthr, nestChanPhases] at hp
 
@@ -256,7 +256,7 @@ theorem nestChanFoot_footprints :
   main := rfl
   phases := by
     simp only [CPhasesOk, nestChanMain, CPhase.Ok, CPhase.lower, TaskProg.Phase.ids, lowerC,
-      Stmt.spawnIds]
+      Stmt.spawnIds, Stmt.allIds]
     refine ⟨⟨by simp [CStmt.NoBlocks, Stmt.NoBlocks],
       by simp [CStmt.RegsBelow, Stmt.RegsBelow, Expr.RegsBelow, nestChanFoot],
       fun u hu w hw => ?_, by simp⟩, by simp, by simp [CStmt.NoTasks, Stmt.NoTasks], by simp,
@@ -272,7 +272,7 @@ theorem nestChanFoot_footprints :
   task_phases
     | 0 => by
       simp only [CPhasesOk, nestChanPhases, nestChanTask0, CPhase.Ok, CPhase.lower,
-        TaskProg.Phase.ids, lowerC, Stmt.spawnIds]
+        TaskProg.Phase.ids, lowerC, Stmt.spawnIds, Stmt.allIds]
       refine ⟨⟨by simp [CStmt.NoBlocks, Stmt.NoBlocks],
         by simp [CStmt.RegsBelow, Stmt.RegsBelow, Expr.RegsBelow],
         fun u _ w _ => by simp [CStmt.Apart, CStmt.Accesses, Stmt.Accesses],

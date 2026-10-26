@@ -341,10 +341,11 @@ theorem cphase_ok (htask : ∀ t, P.StmtOk (P.task t)) {p : CPhase}
       cases rep with
       | none => exact hs
       | some _ => exact hs.2.1
-    exact ⟨lowerC_noBlocks hn, lowerC_regsBelow hr,
-      fun u hu w hw => apart_lower hs (htask w) (hap u hu w hw),
+    have hall := Stmt.allIds_of_noBlocks (lowerC_noBlocks (P := P) hn)
+    exact ⟨.of_noBlocks (lowerC_noBlocks hn), lowerC_regsBelow hr,
+      fun u hu w hw => apart_lower hs (htask w) (hap u (hall ▸ hu) w hw),
       fun u hu v hv huv _ w w' hw hw' =>
-        apart_lower (htask w) (htask w') (hpair u hu v hv huv w w' hw hw')⟩
+        apart_lower (htask w) (htask w') (hpair u (hall ▸ hu) v (hall ▸ hv) huv w w' hw hw')⟩
 
 theorem cphasesOk_lower (htask : ∀ t, P.StmtOk (P.task t)) :
     ∀ {ps : List CPhase}, P.CPhasesOk g tps ps → P.StmtOk (cseqAll ps) →

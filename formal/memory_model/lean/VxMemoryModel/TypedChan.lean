@@ -552,11 +552,19 @@ theorem cblockOk (hw : T.WellTyped) {is : List CItem} (hp : T.PhaseOk (.block is
     exact capart hw ((hw.bodies u).accesses (TProg.pathPerm_le u))
       ((hw.bodies v).accesses (TProg.pathPerm_le v)) fun x hg l hl => fit_tasks hw hp hu hv huv x hg l hl
 
+theorem ccompileItems_noBlocks (pl : Nat → Nat → Nat) (is : List CItem) :
+    (ccompileItems pl is).NoBlocks := by
+  induction is with
+  | nil => trivial
+  | cons it is ih => cases it <;> exact ⟨by first | exact ccompile_noBlocks pl _ | trivial, ih⟩
+
 theorem phase_ids (P : ChanProg) (pl : Nat → Nat → Nat) (p : CPh) :
     ((p.compile pl).lower P).ids = p.spawns := by
   cases p with
   | code => rfl
-  | block is => exact ccompileItems_spawnIds P pl is
+  | block is =>
+    exact (Stmt.allIds_of_noBlocks (ChanProg.lowerC_noBlocks (P := P) (ccompileItems_noBlocks pl is))).trans
+      (ccompileItems_spawnIds P pl is)
 
 theorem cphasesOk (hw : T.WellTyped) :
     ∀ ps : List CPh, (∀ p ∈ ps, T.PhaseOk p) → (ps.flatMap CPh.spawns).Nodup →

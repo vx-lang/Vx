@@ -20,6 +20,12 @@ that it starts, at each depth (`Desc`). Code outside the block can access any pl
 before the block happens before its tasks, and its tasks happen before the code after it. Two
 accesses can race only when they touch one place, one of them writes, and one of them is plain.
 
+The code of a block can hold other blocks, at any depth. Each inner block starts only tasks that
+the blocks around it do not start (`NestOk`). The tasks of an inner block count as tasks of the
+outer block (`allIds`). So the rule compares them with each other task of the outer block, and
+with all the code of the outer block. The outer block or the inner block joins each of them
+before the code after the outer block (`block_join_nested`).
+
 The tasks make a tree: one thread starts each task, and a task starts only tasks with larger ids.
 The proof takes two accesses and looks at where their threads are in the tree. One thread can
 start the other, at some depth (`anc`). Or two tasks of one block can start them (`sib`).
@@ -191,10 +197,10 @@ def Phase.stmt : Phase → Stmt
   | .block s none => .tasksBlock s
   | .block s (some l) => .loop l.cond (.seq l.pre (.seq (.tasksBlock s) l.post))
 
-/-- The tasks that a phase can start. -/
+/-- The tasks that a phase can start, also in the blocks inside its block. -/
 def Phase.ids : Phase → List Nat
   | .code _ => []
-  | .block s _ => s.spawnIds
+  | .block s _ => s.allIds
 
 /-- The phases, one after the other. -/
 def seqAll : List Phase → Stmt
@@ -243,18 +249,19 @@ def _root_.Vx.Stmt.SameSite (u v : Nat) : Stmt → Prop
   | _ => False
 
 /-- One run of `s` starts at most one of `u` and `v`. They come from one `spawn` of `s` that is not
-in a loop of `s`, and no other `spawn` of `s` starts them. -/
-def _root_.Vx.Stmt.OneSite (s : Stmt) (u v : Nat) : Prop := s.spawnIds.Nodup ∧ s.SameSite u v
+in a loop of `s` or in a block inside `s`, and no other `spawn` of `s` starts them. -/
+def _root_.Vx.Stmt.OneSite (s : Stmt) (u v : Nat) : Prop := s.allIds.Nodup ∧ s.SameSite u v
 
 variable (P : TaskProg) (own : Nat → Prop) (tps : Nat → List Phase)
 
 /-- The rule for a block, for the places of `own`. The code of the block and each task of the
 block are apart. Two tasks of the block are apart, unless one pass of the block starts at most
-one of them (`OneSite`). The descendants of a task count as the task. -/
+one of them (`OneSite`). The descendants of a task count as the task. The code of the block can
+hold other blocks (`NestOk`), and their tasks count as tasks of the block. -/
 def BlockOk (s : Stmt) : Prop :=
-  s.NoBlocks ∧ s.RegsBelow P.marks ∧
-    (∀ u ∈ s.spawnIds, ∀ w, Desc tps u w → s.Apart own (P.task w)) ∧
-    ∀ u ∈ s.spawnIds, ∀ v ∈ s.spawnIds, u ≠ v → ¬ s.OneSite u v → ∀ w w', Desc tps u w →
+  s.NestOk s.spawnIds ∧ s.RegsBelow P.marks ∧
+    (∀ u ∈ s.allIds, ∀ w, Desc tps u w → s.Apart own (P.task w)) ∧
+    ∀ u ∈ s.allIds, ∀ v ∈ s.allIds, u ≠ v → ¬ s.OneSite u v → ∀ w w', Desc tps u w →
       Desc tps v w' → (P.task w).Apart own (P.task w')
 
 /-- The rule for one phase. A block in a loop has the rule of one block: the passes run one after
@@ -294,8 +301,8 @@ theorem one_parent_nil (ps : List Phase) :
 with a task of the block, or with a descendant of one. It writes `start v` only for a task `v` of
 the block. -/
 def InBlock (B : Stmt) (k : Kind) (o : Order) (x : Nat) : Prop :=
-  (own x → ∀ v ∈ B.spawnIds, ∀ w, Desc tps v w → (P.task w).Accesses (Compat k o x)) ∧
-    (k = .write → ∀ v, x = P.start v → v ∈ B.spawnIds)
+  (own x → ∀ v ∈ B.allIds, ∀ w, Desc tps v w → (P.task w).Accesses (Compat k o x)) ∧
+    (k = .write → ∀ v, x = P.start v → v ∈ B.allIds)
 
 /-- What a phase allows for an access in its lowered code. -/
 def PhasePred : Phase → Kind → Order → Nat → Prop
@@ -320,7 +327,7 @@ block that wrote `start u`. In the second case, each write of `start u` before t
 earlier run of the block. -/
 def Status (ps : List Phase) (u : Nat) (L : List Label) (m : Nat) : Prop :=
   (∀ m' l, L[m']? = some l → P.StartW u l → m < m') ∨
-  (∃ B, u ∈ B.spawnIds ∧ (∃ rep, Phase.block B rep ∈ ps) ∧ P.BlockOk own tps B ∧
+  (∃ B, u ∈ B.allIds ∧ (∃ rep, Phase.block B rep ∈ ps) ∧ P.BlockOk own tps B ∧
     (∀ l, L[m]? = some l → P.InBlock own tps B l.kind l.order l.loc) ∧
     ∃ n L' regs, Runs (P.lower (.tasksBlock B)) regs L' ∧
       (∀ i (hi : i < L'.length), L[n + i]? = some L'[i]) ∧ n ≤ m ∧ m < n + L'.length ∧
@@ -379,9 +386,9 @@ theorem lower_below {q : Kind → Order → Nat → Prop} {s : Stmt} (hb : s.Bel
   | skip | assign | assignAt => trivial
 
 /-- The lowered body of a block keeps the accesses of the body below `flags`, and writes
-`start v` only for a task `v` that the body starts. -/
+`start v` only for a task `v` that the body starts, also in a block inside it. -/
 theorem lower_inBlock {q : Kind → Order → Nat → Prop} {ids : List Nat} {s : Stmt}
-    (hb : s.Below P.flags P.count) (hn : s.NoBlocks) (hsub : ∀ u ∈ s.spawnIds, u ∈ ids)
+    (hb : s.Below P.flags P.count) (hsub : ∀ u ∈ s.allIds, u ∈ ids)
     (hq : s.Accesses q) :
     (P.lower s).Accesses fun k o x => (x < P.flags → q k o x) ∧
       (k = .write → ∀ v, x = P.start v → v ∈ ids) := by
@@ -399,7 +406,10 @@ theorem lower_inBlock {q : Kind → Order → Nat → Prop} {ids : List Nat} {s 
     refine fun j hj => ⟨fun hx => ?_, nofun⟩
     simp only [done] at hx
     omega
-  | tasksBlock => simp only [Stmt.NoBlocks] at hn
+  | tasksBlock _ ih =>
+    refine ⟨P.clearMarks_accesses _ _, ih hb hsub hq, P.joinMarked_accesses fun u _ => ⟨fun hx => ?_, nofun⟩⟩
+    simp only [done] at hx
+    omega
   | load | fence | wait => exact ⟨fun _ => hq, nofun⟩
   | store | rmwStore =>
     refine ⟨fun _ => hq, fun _ v hv => ?_⟩
@@ -418,9 +428,9 @@ theorem lower_inBlock {q : Kind → Order → Nat → Prop} {ids : List Nat} {s 
     simp only [start] at hv
     omega
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 =>
-    exact ⟨ih1 hb.1 hn.1 (fun u hu => hsub u (List.mem_append_left _ hu)) hq.1,
-      ih2 hb.2 hn.2 (fun u hu => hsub u (List.mem_append_right _ hu)) hq.2⟩
-  | loop _ _ ih => exact ih hb hn hsub hq
+    exact ⟨ih1 hb.1 (fun u hu => hsub u (List.mem_append_left _ hu)) hq.1,
+      ih2 hb.2 (fun u hu => hsub u (List.mem_append_right _ hu)) hq.2⟩
+  | loop _ _ ih => exact ih hb hsub hq
   | skip | assign | assignAt => trivial
 
 omit own tps in
@@ -582,12 +592,12 @@ theorem block_pass_done {B : Stmt} {rep : Option Loop}
 /-- Each access of the lowered code of a block follows `InBlock`. -/
 theorem block_accesses (hlim : ∀ x, own x → x < P.flags) {B : Stmt} (hp : P.BlockOk own tps B)
     (hb : B.Below P.flags P.count) : (P.lower (.tasksBlock B)).Accesses (P.InBlock own tps B) := by
-  obtain ⟨hn, -, hap, -⟩ := hp
+  obtain ⟨-, -, hap, -⟩ := hp
   have hq := Stmt.Accesses.of_forall (s := B)
-    (C := fun vw : Nat × Nat => vw.1 ∈ B.spawnIds ∧ Desc tps vw.1 vw.2)
+    (C := fun vw : Nat × Nat => vw.1 ∈ B.allIds ∧ Desc tps vw.1 vw.2)
     (q := fun vw k o x => own x → (P.task vw.2).Accesses (Compat k o x))
     fun vw h => hap vw.1 h.1 vw.2 h.2
-  refine ⟨P.clearMarks_accesses _ _, (lower_inBlock (s := B) (ids := B.spawnIds) hb hn
+  refine ⟨P.clearMarks_accesses _ _, (lower_inBlock (s := B) (ids := B.allIds) hb
     (fun _ h => h) hq).mono fun _ _ _ h => ⟨fun hx v hv w hw => h.1 (hlim _ hx) (v, w) ⟨hv, hw⟩ hx,
     h.2⟩, P.joinMarked_accesses fun u _ => ⟨fun hx => ?_, nofun⟩⟩
   have := hlim _ hx
@@ -653,7 +663,7 @@ phase. -/
 theorem block_status (hlim : ∀ x, own x → x < P.flags) {ps : List Phase} {B : Stmt}
     {rep : Option Loop} (hok : P.BlockOk own tps B)
     (hb : (Phase.block B rep).stmt.Below P.flags P.count) (hmem : Phase.block B rep ∈ ps) {u : Nat}
-    (hu : u ∈ B.spawnIds) {regs L1} (L2 : List Label)
+    (hu : u ∈ B.allIds) {regs L1} (L2 : List Label)
     (h1 : Runs (P.lower (Phase.block B rep).stmt) regs L1) {m : Nat} (hm : m < L1.length) :
     P.Status own tps ps u (L1 ++ L2) m := by
   have lift : ∀ {n : Nat} {L' : List Label}, (∀ i (hi : i < L'.length), L1[n + i]? = some L'[i]) →
@@ -687,14 +697,14 @@ theorem block_status (hlim : ∀ x, own x → x < P.flags) {ps : List Phase} {B 
 
 omit own tps in
 theorem _root_.Vx.Stmt.SameSite.mem {u v : Nat} {s : Stmt} (h : s.SameSite u v) :
-    u ∈ s.spawnIds ∧ v ∈ s.spawnIds := by
+    u ∈ s.allIds ∧ v ∈ s.allIds := by
   induction s with
   | spawnAt base len i =>
     obtain ⟨h1, h2, h3, h4⟩ := h
-    simp only [Stmt.spawnIds, List.mem_map, List.mem_range]
+    simp only [Stmt.allIds, List.mem_map, List.mem_range]
     exact ⟨⟨u - base, by omega, by omega⟩, ⟨v - base, by omega, by omega⟩⟩
   | seq s t ih1 ih2 | ite _ s t ih1 ih2 =>
-    simp only [Stmt.spawnIds, List.mem_append]
+    simp only [Stmt.allIds, List.mem_append]
     rcases h with h | h
     · exact ⟨Or.inl (ih1 h).1, Or.inl (ih1 h).2⟩
     · exact ⟨Or.inr (ih2 h).1, Or.inr (ih2 h).2⟩
@@ -710,11 +720,12 @@ theorem accesses_true (s : Stmt) : s.Accesses fun _ _ _ => True := by
   | _ => trivial
 
 omit own tps in
-/-- The lowered code of `s` writes `start u` only for a task `u` that `s` starts. -/
-theorem start_mem {s : Stmt} (hb : s.Below P.flags P.count) (hn : s.NoBlocks) {regs L}
+/-- The lowered code of `s` writes `start u` only for a task `u` that `s` starts, also in a block
+inside `s`. -/
+theorem start_mem {s : Stmt} (hb : s.Below P.flags P.count) {regs L}
     (h : Runs (P.lower s) regs L) {u : Nat} {l : Label} (hl : l ∈ L) (hw : P.StartW u l) :
-    u ∈ s.spawnIds :=
-  ((accessRule _).runs h (lower_inBlock (q := fun _ _ _ => True) (ids := s.spawnIds) hb hn
+    u ∈ s.allIds :=
+  ((accessRule _).runs h (lower_inBlock (q := fun _ _ _ => True) (ids := s.allIds) hb
     (fun _ h => h) (accesses_true s)) l hl).2 hw.1 u hw.2
 
 theorem no_labels {s : Stmt} (hs : s.Accesses fun _ _ _ => False) {regs L} (h : Runs s regs L) :
@@ -739,14 +750,14 @@ theorem spawn_run_le {base len : Nat} {i : Expr} {regs L}
 
 omit own tps in
 /-- One run of the lowered code of `s` does not write both `start u` and `start v`, when one
-`spawn` of `s` outside its loops starts them, and no other `spawn` of `s` does. -/
-theorem once_run {u v : Nat} (huv : u ≠ v) : ∀ {s : Stmt}, s.Below P.flags P.count → s.NoBlocks →
-    s.spawnIds.Nodup → s.SameSite u v → ∀ {regs L}, Runs (P.lower s) regs L →
+`spawn` of `s` outside its loops and its blocks starts them, and no other `spawn` of `s` does. -/
+theorem once_run {u v : Nat} (huv : u ≠ v) : ∀ {s : Stmt}, s.Below P.flags P.count →
+    s.allIds.Nodup → s.SameSite u v → ∀ {regs L}, Runs (P.lower s) regs L →
     (∃ l ∈ L, P.StartW u l) → (∃ l ∈ L, P.StartW v l) → False := by
   intro s
   induction s with
   | spawnAt base len i =>
-    intro _ _ _ _ regs L h ⟨l1, hl1, hw1⟩ ⟨l2, hl2, hw2⟩
+    intro _ _ _ regs L h ⟨l1, hl1, hw1⟩ ⟨l2, hl2, hw2⟩
     have hlen := spawn_run_le h
     match L, hlen, hl1, hl2 with
     | [x], _, hl1, hl2 =>
@@ -756,35 +767,35 @@ theorem once_run {u v : Nat} (huv : u ≠ v) : ∀ {s : Stmt}, s.Below P.flags P
       simp only [start] at this
       omega
   | seq s t ih1 ih2 =>
-    intro hb hn hnd hss regs L h hu hv
+    intro hb hnd hss regs L h hu hv
     change Runs (.seq (P.lower s) (P.lower t)) regs L at h
-    simp only [Stmt.spawnIds] at hnd
+    simp only [Stmt.allIds] at hnd
     rw [List.nodup_append] at hnd
-    have hdis : ∀ x, x ∈ s.spawnIds → x ∈ t.spawnIds → False := fun x h1 h2 => hnd.2.2 x h1 x h2 rfl
+    have hdis : ∀ x, x ∈ s.allIds → x ∈ t.allIds → False := fun x h1 h2 => hnd.2.2 x h1 x h2 rfl
     rcases Runs.seq_split h with h1 | ⟨L1, L2, r', h1, h2, rfl⟩
     · rcases hss with hss | hss
-      · exact ih1 hb.1 hn.1 hnd.1 hss h1 hu hv
+      · exact ih1 hb.1 hnd.1 hss h1 hu hv
       · obtain ⟨l, hl, hw⟩ := hu
-        exact hdis u (start_mem hb.1 hn.1 h1 hl hw) hss.mem.1
+        exact hdis u (start_mem hb.1 h1 hl hw) hss.mem.1
     · rcases hss with hss | hss
-      · have inL1 : ∀ {x}, x ∈ s.spawnIds → (∃ l ∈ L1 ++ L2, P.StartW x l) → ∃ l ∈ L1, P.StartW x l :=
+      · have inL1 : ∀ {x}, x ∈ s.allIds → (∃ l ∈ L1 ++ L2, P.StartW x l) → ∃ l ∈ L1, P.StartW x l :=
           fun hx ⟨l, hl, hw⟩ => by
             rcases List.mem_append.1 hl with hl | hl
             · exact ⟨l, hl, hw⟩
-            · exact (hdis _ hx (start_mem hb.2 hn.2 h2 hl hw)).elim
-        exact ih1 hb.1 hn.1 hnd.1 hss h1.runs (inL1 hss.mem.1 hu) (inL1 hss.mem.2 hv)
-      · have inL2 : ∀ {x}, x ∈ t.spawnIds → (∃ l ∈ L1 ++ L2, P.StartW x l) → ∃ l ∈ L2, P.StartW x l :=
+            · exact (hdis _ hx (start_mem hb.2 h2 hl hw)).elim
+        exact ih1 hb.1 hnd.1 hss h1.runs (inL1 hss.mem.1 hu) (inL1 hss.mem.2 hv)
+      · have inL2 : ∀ {x}, x ∈ t.allIds → (∃ l ∈ L1 ++ L2, P.StartW x l) → ∃ l ∈ L2, P.StartW x l :=
           fun hx ⟨l, hl, hw⟩ => by
             rcases List.mem_append.1 hl with hl | hl
-            · exact (hdis _ (start_mem hb.1 hn.1 h1.runs hl hw) hx).elim
+            · exact (hdis _ (start_mem hb.1 h1.runs hl hw) hx).elim
             · exact ⟨l, hl, hw⟩
-        exact ih2 hb.2 hn.2 hnd.2.1 hss h2 (inL2 hss.mem.1 hu) (inL2 hss.mem.2 hv)
+        exact ih2 hb.2 hnd.2.1 hss h2 (inL2 hss.mem.1 hu) (inL2 hss.mem.2 hv)
   | ite c s t ih1 ih2 =>
-    intro hb hn hnd hss regs L h hu hv
+    intro hb hnd hss regs L h hu hv
     change Runs (.ite c (P.lower s) (P.lower t)) regs L at h
-    simp only [Stmt.spawnIds] at hnd
+    simp only [Stmt.allIds] at hnd
     rw [List.nodup_append] at hnd
-    have hdis : ∀ x, x ∈ s.spawnIds → x ∈ t.spawnIds → False := fun x h1 h2 => hnd.2.2 x h1 x h2 rfl
+    have hdis : ∀ x, x ∈ s.allIds → x ∈ t.allIds → False := fun x h1 h2 => hnd.2.2 x h1 x h2 rfl
     cases h with
     | stop =>
       obtain ⟨_, hl, _⟩ := hu
@@ -793,21 +804,21 @@ theorem once_run {u v : Nat} (huv : u ≠ v) : ∀ {s : Stmt}, s.Below P.flags P
       cases hs with
       | ite_true =>
         rcases hss with hss | hss
-        · exact ih1 hb.1 hn.1 hnd.1 hss h' hu hv
+        · exact ih1 hb.1 hnd.1 hss h' hu hv
         · obtain ⟨l, hl, hw⟩ := hu
-          exact hdis u (start_mem hb.1 hn.1 h' hl hw) hss.mem.1
+          exact hdis u (start_mem hb.1 h' hl hw) hss.mem.1
       | ite_false =>
         rcases hss with hss | hss
         · obtain ⟨l, hl, hw⟩ := hu
-          exact hdis u hss.mem.1 (start_mem hb.2 hn.2 h' hl hw)
-        · exact ih2 hb.2 hn.2 hnd.2.1 hss h' hu hv
+          exact hdis u hss.mem.1 (start_mem hb.2 h' hl hw)
+        · exact ih2 hb.2 hnd.2.1 hss h' hu hv
     | visible hs => cases hs
-  | _ => intro _ _ _ hss; exact hss.elim
+  | _ => intro _ _ hss; exact hss.elim
 
 omit own tps in
 /-- One pass of a block does not write both `start u` and `start v`, when `OneSite` holds for
 them. -/
-theorem once_pass {B : Stmt} (hBb : B.Below P.flags P.count) (hBn : B.NoBlocks) {u v : Nat}
+theorem once_pass {B : Stmt} (hBb : B.Below P.flags P.count) {u v : Nat}
     (hone : B.OneSite u v) (huv : u ≠ v) {regs L} (h : Runs (P.lower (.tasksBlock B)) regs L)
     (hu : ∃ l ∈ L, P.StartW u l) (hv : ∃ l ∈ L, P.StartW v l) : False := by
   change Runs (.seq (P.clearMarks B.spawnIds) (.seq (P.lower B) (P.joinMarked B.spawnIds))) regs L
@@ -821,13 +832,13 @@ theorem once_pass {B : Stmt} (hBb : B.Below P.flags P.count) (hBn : B.NoBlocks) 
     cases hl
   rw [no_labels (P.clearMarks_accesses _ _) h1.runs, List.nil_append] at hu hv
   rcases Runs.seq_split h2 with h3 | ⟨L3, L4, r2, h3, h4, rfl⟩
-  · exact once_run huv hBb hBn hone.1 hone.2 h3 hu hv
+  · exact once_run huv hBb hone.1 hone.2 h3 hu hv
   · have inL3 : ∀ {x}, (∃ l ∈ L3 ++ L4, P.StartW x l) → ∃ l ∈ L3, P.StartW x l :=
       fun ⟨l, hl, hw⟩ => by
         rcases List.mem_append.1 hl with hl | hl
         · exact ⟨l, hl, hw⟩
         · exact (hjr h4 l hl (flagW_of_start hw)).elim
-    exact once_run huv hBb hBn hone.1 hone.2 h3.runs (inL3 hu) (inL3 hv)
+    exact once_run huv hBb hone.1 hone.2 h3.runs (inL3 hu) (inL3 hv)
 
 /-- Each position of a run of the phases has a `Status` for each task. -/
 theorem status (hlim : ∀ x, own x → x < P.flags) {ps : List Phase} (hok : P.PhasesOk own tps ps)
@@ -970,7 +981,7 @@ theorem seqAll_ids_lt {ps : List Phase} (hb : (seqAll ps).Below P.flags P.count)
     rcases List.mem_cons.1 hp' with rfl | hp'
     · cases p' with
       | code => simp [Phase.ids] at hv
-      | block B _ => exact spawnIds_lt (s := B) (block_below hb.1) v hv
+      | block B _ => exact allIds_lt (s := B) (block_below hb.1) v hv
     · exact ih hb.2 p' hp' v hv
 
 /-! ## The threads of a program that follows the rule -/
@@ -1351,7 +1362,7 @@ theorem desc_after (hF : P.Footprints own tps ps) (r : P.toProg.Run X) {c d : Na
     (hd : Desc tps c d) :
     ∀ {e : X.E}, X.thread e = d + 1 →
     ∀ {q n : Nat} {B : Stmt} {L' : List Label} {regs regs' : Nat → Int},
-      B.Below P.flags P.count → B.RegsBelow P.marks → B.NoBlocks →
+      B.Below P.flags P.count → B.RegsBelow P.marks → B.NestOk B.spawnIds →
       Steps (P.lower (.tasksBlock B)) regs L' .skip regs' →
       (∀ m (hm : m < L'.length), r.lab q (n + m) = L'[m]) →
       ∀ {w b : X.E}, X.thread w = q → X.IsWrite w → X.loc w = P.start c → n ≤ r.idx w →
@@ -1359,13 +1370,13 @@ theorem desc_after (hF : P.Footprints own tps ps) (r : P.toProg.Run X) {c d : Na
   induction hd with
   | refl =>
     intro e he q n B L' regs regs' hBb hBr hBn hs hlab w b hw hww hwl hwn hwL hbq hbL
-    exact block_hb hF.ok r hBb hBr hBn hs hlab hw hww hwl hwn hwL he hbq hbL
+    exact block_hb_nested hF.ok r hBb hBr hBn hs hlab hw hww hwl hwn hwL he hbq hbL
   | @step u v _ hs hvd ih =>
     intro e he q n B L' regs regs' hBb hBr hBn hrun hlab w b hw hww hwl hwn hwL hbq hbL
-    -- The block joins `u`, so the write of `done u` happens before `b`.
-    obtain ⟨j, -, hjr, hjl, hjb, hu⟩ :=
-      block_join r hBb hBr hBn hrun hlab hw hww hwl hwn hwL hbq hbL
-    have huc : u < P.count := spawnIds_lt hBb u hu
+    -- The block, or a block inside it, joins `u`. So the write of `done u` happens before `b`.
+    obtain ⟨j, -, hjr, hjl, hjb⟩ :=
+      block_join_nested r hBb hBr hBn hrun hlab hw hww hwl hwn hwL hbq hbL
+    have huc : u < P.count := Nat.lt_trans (hF.order u v hs) (starts_lt hF (q := u + 1) hs)
     obtain ⟨dw, hdt, hdw, hdl, hdb⟩ := done_signal hF.ok r hjr hjl huc (Or.inr hjb)
     -- Task `u` ran to its end before it wrote `done u`.
     obtain ⟨n0, r0, r0', L0, hs0, hlen0, hlab0, hrd0, hend0⟩ := done_split hF.ok r hdt hdw hdl
@@ -1494,7 +1505,7 @@ theorem pass_pair (hF : P.Footprints own tps ps) (r : P.toProg.Run X) {q n : Nat
       ?_ hd hb
     rw [← eq_of_off hl0 hi h3 h4]
     exact hwi
-  · exact (once_pass hBb hB.1 hone hne hr ⟨_, mem_of_off hlab' hi (by omega) (by omega), hwi⟩
+  · exact (once_pass hBb hone hne hr ⟨_, mem_of_off hlab' hi (by omega) (by omega), hwi⟩
       ⟨_, mem_of_off hlab' (by omega) hm1 hm2, hwa⟩).elim
 
 /-- `sib` when thread `q` wrote `start c1` before `start c2`. -/
