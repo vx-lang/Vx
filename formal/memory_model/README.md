@@ -94,6 +94,9 @@ starts a task, and one with a `spawn` and a `join` in each pass of a loop.
 `Blocks.lean` adds `tasks { .. }`. Each `spawn` sets a register, the mark of its task. At its end,
 the block joins each task that has its mark set, so it waits only for the tasks that it started.
 `block_hb` shows that each task that a block started happens before the code after the block.
+`block_hb_nested` shows the same for a block whose code holds other blocks, when each inner block
+starts only tasks that the blocks around it do not start (`NestOk`). The inner block joined each
+of its tasks before the outer block ends.
 `BlocksExample.lean` applies `block_hb` to a run, and shows a block that starts no task and does
 not wait.
 
@@ -247,8 +250,8 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - herd7 checks each test completely, but only the tests. memalloy checks every execution up to 5
   or 6 events.
 - The core language has no functions and no references.
-- `block_hb` needs a block whose body holds no other `tasks` block. A task can hold its own
-  blocks.
+- The footprint rules need a block whose body holds no other `tasks` block. A task can hold its
+  own blocks. `block_hb_nested` already gives the edge for a block that holds blocks.
 - The Lean model has no scopes and no barriers.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.

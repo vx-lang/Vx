@@ -62,7 +62,8 @@ Step 1b:
 - The marks are registers, not places in memory. The model has no initial values and no total
   `co`, so a thread can read an old write of its own to a place.
 - `block_hb` (`Blocks.lean`): each access of each task that a block started happens before the
-  code after the block. The body must not hold another `tasks` block.
+  code after the block. `block_hb_nested` allows a body that holds other `tasks` blocks, when each
+  inner block starts only tasks that the blocks around it do not start (#2243).
 - `TaskProg.Ok` allows `tasksBlock`, and `fork_hb`, `join_hb` and `drf_sc` cover its lowering. So
   `addJoins_ok` is not a separate theorem.
 

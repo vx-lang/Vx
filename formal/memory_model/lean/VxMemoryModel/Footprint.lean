@@ -100,27 +100,6 @@ theorem lab_of_split {f : Nat → Label} {N : Nat} {L1 L2 : List Label}
       Nat.add_sub_cancel_left, List.getElem?_eq_getElem hj] at this
     exact Option.some.inj this
 
-theorem Steps.snoc_none {s r0 L0 s' regs s'' regs'} (h : Steps s r0 L0 s' regs)
-    (hs : Step s' regs none s'' regs') : Steps s r0 L0 s'' regs' := by
-  induction h with
-  | refl => exact .silent hs .refl
-  | silent h1 _ ih => exact .silent h1 (ih hs)
-  | visible h1 _ ih => exact .visible h1 (ih hs)
-
-theorem Steps.snoc_some {s r0 L0 s' regs a s'' regs'} (h : Steps s r0 L0 s' regs)
-    (hs : Step s' regs (some a) s'' regs') : Steps s r0 (L0 ++ [a]) s'' regs' := by
-  induction h with
-  | refl => exact .visible hs .refl
-  | silent h1 _ ih => exact .silent h1 (ih hs)
-  | visible h1 _ ih => exact .visible h1 (ih hs)
-
-/-- Where a run of `loop e s` is: at the loop, at its test, after its end, or in a pass of `s`
-that made the accesses `L0` so far. -/
-def LoopAt (e : Expr) (s : Stmt) (L0 : List Label) (r0 : Nat → Int) (x : Stmt)
-    (regs : Nat → Int) : Prop :=
-  (x = .loop e s ∧ L0 = []) ∨ (x = .ite e (.seq s (.loop e s)) .skip ∧ L0 = []) ∨
-    (x = .skip ∧ L0 = []) ∨ ∃ s', x = .seq s' (.loop e s) ∧ Steps s r0 L0 s' regs
-
 /-- Each position before `n` of `L` is in a run of `s` to its end that ends by `n`. -/
 def PassesBefore (s : Stmt) (L : List Label) (n : Nat) : Prop :=
   ∀ i < n, ∃ n0 L0 r1 r2, Steps s r1 L0 .skip r2 ∧
@@ -189,64 +168,6 @@ theorem Runs.loop_pass {e : Expr} {s : Stmt} {regs L} (h : Runs (.loop e s) regs
     ∃ n L' regs', Runs s regs' L' ∧ (∀ i (hi : i < L'.length), L[n + i]? = some L'[i]) ∧
       n ≤ m ∧ m < n + L'.length ∧ PassesBefore s L n := by
   simpa using h.loop_aux [] regs (Or.inl ⟨rfl, rfl⟩) m (by simpa using hm)
-
-theorem Steps.loop_aux {e : Expr} {s x y : Stmt} {regs L regs''} (h : Steps x regs L y regs'')
-    (hy : y = .skip) :
-    ∀ L0 r0, LoopAt e s L0 r0 x regs → ∀ m < L0.length + L.length, ∃ n L' r1 r2,
-      Steps s r1 L' .skip r2 ∧ (∀ i (hi : i < L'.length), (L0 ++ L)[n + i]? = some L'[i]) ∧
-      n ≤ m ∧ m < n + L'.length ∧ n + L'.length ≤ L0.length + L.length := by
-  induction h with
-  | refl =>
-    intro L0 r0 hx m hm
-    subst hy
-    rcases hx with ⟨h, -⟩ | ⟨h, -⟩ | ⟨-, rfl⟩ | ⟨s', h, -⟩
-    · cases h
-    · cases h
-    · simp at hm
-    · cases h
-  | silent hs _ ih =>
-    intro L0 r0 hx m hm
-    rcases hx with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨s', rfl, hst⟩
-    · cases hs
-      exact ih hy [] r0 (Or.inr (Or.inl ⟨rfl, rfl⟩)) m hm
-    · cases hs with
-      | ite_true => exact ih hy [] _ (Or.inr (Or.inr (Or.inr ⟨s, rfl, .refl⟩))) m hm
-      | ite_false => exact ih hy [] r0 (Or.inr (Or.inr (Or.inl ⟨rfl, rfl⟩))) m hm
-    · cases hs
-    · cases hs with
-      | seq_skip =>
-        by_cases hm0 : m < L0.length
-        · refine ⟨0, L0, r0, _, hst, fun i hi => ?_, Nat.zero_le _, by omega, by omega⟩
-          rw [Nat.zero_add, List.getElem?_append_left hi, List.getElem?_eq_getElem hi]
-        · obtain ⟨n, L', r1, r2, hr, hlab, h1, h2, h3⟩ :=
-            ih hy [] r0 (Or.inl ⟨rfl, rfl⟩) (m - L0.length) (by simp only [List.length_nil]; omega)
-          simp only [List.length_nil, Nat.zero_add] at h3
-          refine ⟨L0.length + n, L', r1, r2, hr, fun i hi => ?_, by omega, by omega, by omega⟩
-          rw [List.getElem?_append_right (by omega),
-            show L0.length + n + i - L0.length = n + i by omega]
-          simpa using hlab i hi
-      | seq h1 => exact ih hy L0 r0 (Or.inr (Or.inr (Or.inr ⟨_, rfl, hst.snoc_none h1⟩))) m hm
-  | visible hs _ ih =>
-    intro L0 r0 hx m hm
-    rcases hx with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨s', rfl, hst⟩
-    · cases hs
-    · cases hs
-    · cases hs
-    · cases hs with
-      | seq h1 =>
-        have := ih hy (L0 ++ [_]) r0 (Or.inr (Or.inr (Or.inr ⟨_, rfl, hst.snoc_some h1⟩))) m
-          (by simp only [List.length_append, List.length_cons, List.length_nil] at hm ⊢; omega)
-        simp only [List.append_assoc, List.cons_append, List.nil_append, List.length_append,
-          List.length_cons, List.length_nil] at this ⊢
-        obtain ⟨n, L', r1, r2, hr, hlab, h1, h2, h3⟩ := this
-        exact ⟨n, L', r1, r2, hr, hlab, h1, h2, by omega⟩
-
-/-- Each position of a run of `loop e s` to its end is in a run of one pass of `s` to its end. -/
-theorem Steps.loop_pass {e : Expr} {s : Stmt} {regs L regs''} (h : Steps (.loop e s) regs L .skip regs'')
-    {m : Nat} (hm : m < L.length) :
-    ∃ n L' r1 r2, Steps s r1 L' .skip r2 ∧ (∀ i (hi : i < L'.length), L[n + i]? = some L'[i]) ∧
-      n ≤ m ∧ m < n + L'.length ∧ n + L'.length ≤ L.length := by
-  simpa using h.loop_aux rfl [] regs (Or.inl ⟨rfl, rfl⟩) m (by simpa using hm)
 
 namespace TaskProg
 
@@ -523,39 +444,6 @@ theorem code_noFlag {s : Stmt} (hb : s.Below P.flags P.count) (hn : s.NoTasks) {
   · rw [hk] at h'
     cases h'
   · omega
-
-theorem eq_of_off {L L0 : List Label} {n0 : Nat}
-    (h : ∀ j (hj : j < L0.length), L[n0 + j]? = some L0[j]) {i : Nat} (hi : i < L.length)
-    (h1 : n0 ≤ i) (h2 : i < n0 + L0.length) : L[i] = L0[i - n0] := by
-  have := h (i - n0) (by omega)
-  rw [show n0 + (i - n0) = i by omega, List.getElem?_eq_getElem hi] at this
-  exact Option.some.inj this
-
-theorem mem_of_off {L L0 : List Label} {n0 : Nat}
-    (h : ∀ j (hj : j < L0.length), L[n0 + j]? = some L0[j]) {i : Nat} (hi : i < L.length)
-    (h1 : n0 ≤ i) (h2 : i < n0 + L0.length) : L[i] ∈ L0 := by
-  rw [eq_of_off h hi h1 h2]
-  exact List.getElem_mem _
-
-theorem off_left {L A B : List Label} {n : Nat}
-    (h : ∀ i (hi : i < (A ++ B).length), L[n + i]? = some (A ++ B)[i]) :
-    ∀ i (hi : i < A.length), L[n + i]? = some A[i] := fun i hi => by
-  have := h i (by simp only [List.length_append]; omega)
-  rwa [List.getElem_append_left hi] at this
-
-theorem off_right {L A B : List Label} {n : Nat}
-    (h : ∀ i (hi : i < (A ++ B).length), L[n + i]? = some (A ++ B)[i]) :
-    ∀ i (hi : i < B.length), L[n + A.length + i]? = some B[i] := fun i hi => by
-  have := h (A.length + i) (by simp only [List.length_append]; omega)
-  rw [List.getElem_append_right (by omega)] at this
-  simpa [Nat.add_assoc] using this
-
-/-- A run within a run at offset `n0`, at offset `n1`, is a run at offset `n0 + n1`. -/
-theorem off_trans {L L0 L1 : List Label} {n0 n1 : Nat}
-    (h0 : ∀ j (hj : j < L0.length), L[n0 + j]? = some L0[j])
-    (h1 : ∀ j (hj : j < L1.length), L0[n1 + j]? = some L1[j]) (hl : n1 + L1.length ≤ L0.length) :
-    ∀ j (hj : j < L1.length), L[n0 + n1 + j]? = some L1[j] := fun j hj => by
-  rw [Nat.add_assoc, h0 (n1 + j) (by omega), ← List.getElem?_eq_getElem, h1 j hj]
 
 omit own tps in
 /-- In a pass of the loop to its end, each write of a flag is in the run of the block to its
