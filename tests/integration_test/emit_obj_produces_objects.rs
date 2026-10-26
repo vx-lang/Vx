@@ -56,6 +56,8 @@ fn the_backend_corpus_emits_object_files() {
 
     let mut no_object = Vec::new();
     let mut unexpectedly_fine = Vec::new();
+    // Some fixtures import other test files from the package `tests`.
+    let tests_package = format!("tests={}", root.join("tests").display());
 
     for f in &files {
         let name = f.file_name().unwrap().to_string_lossy().into_owned();
@@ -63,7 +65,8 @@ fn the_backend_corpus_emits_object_files() {
         let _ = std::fs::remove_file(&obj);
         let status = Command::new(env!("CARGO_BIN_EXE_vxc"))
             .current_dir(&root)
-            .args([f.to_str().unwrap(), "--action", "emit-obj", "-o"])
+            .args([f.to_str().unwrap(), "--package", &tests_package])
+            .args(["--action", "emit-obj", "-o"])
             .arg(&obj)
             .output()
             .expect("failed to run vxc");

@@ -30,3 +30,5 @@ import VxMemoryModel.LockFootprint
 import VxMemoryModel.ChanFootprintExample
 import VxMemoryModel.Typed
 import VxMemoryModel.TypedExample
+import VxMemoryModel.TypedChan
+import VxMemoryModel.TypedChanExample

@@ -38,6 +38,18 @@ fields rather than as prose you would have to parse out of a message.
 Note that with `--verify-seams` and no solver on `PATH`, the compile *fails* rather than certifying
 seams it could not check. `VX_ALLOW_UNVERIFIED=1` downgrades that to a warning.
 
+## Where imports come from
+
+An import that starts with a package name reads only that package (see below). `vxc` looks for any
+other import in two places, in this order:
+
+1. The standard library. An installed toolchain keeps it in `stdlib/` beside `bin/`, and a
+   development build uses the `stdlib/` of the source tree it was built from. `--std-path DIR`
+   replaces it. Give the flag once for each directory.
+1. The directory of the file you compile, so `import helper;` reads the `helper.vx` beside it.
+
+`vxc` never searches the current directory, so a command gives the same result wherever you run it.
+
 ## Packages
 
 `--package name=dir` makes a library in another directory importable by name. With
@@ -116,7 +128,6 @@ empty placeholders — do not plan around them yet.
 
 | Variable | Effect |
 | --- | --- |
-| `VX_STD_PATH` | Library search path. A `PATH`-style list, not a single directory |
 | `VX_RUNTIME_LIB_DIR` | Where to find the Vx runtime library |
 | `LLVM_CONFIG_PATH`, `MLIR_TRANSLATE_PATH`, `OPT_PATH`, `LLC_PATH`, `CLANG_PATH` | Absolute paths to the LLVM tools, if they are not on `PATH` |
 | `VX_DISPATCH_LIB` | The accelerator dispatch backend to load |

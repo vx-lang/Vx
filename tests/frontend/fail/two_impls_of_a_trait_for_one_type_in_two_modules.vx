@@ -5,8 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: not vxc %s 2>&1 | FileCheck %s
-// RUN: not vxc %s -j 4 2>&1 | FileCheck %s
+// RUN: not vxc --package tests=tests %s 2>&1 | FileCheck %s
+// RUN: not vxc --package tests=tests %s -j 4 2>&1 | FileCheck %s
 //
 // Two imported modules each implement `Describe` for `Point`. The error names both modules,
 // and comes even though the program calls neither impl.

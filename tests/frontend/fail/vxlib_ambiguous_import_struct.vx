@@ -16,7 +16,7 @@
 // RUN: printf 'struct Val { a : i32, b : i32 }\nfn getb() -> i32 { return 2; }\n' > %t.d/sb.vx
 // RUN: vxc %t.d/sb.vx --action emit-interface -o %t.d/sb.vxlib
 // RUN: rm %t.d/sa.vx %t.d/sb.vx
-// RUN: VX_STD_PATH=%t.d not vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
+// RUN: not vxc %s --std-path %t.d --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
 
 import sa;
 import sb;

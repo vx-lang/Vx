@@ -12,8 +12,9 @@
 //
 // RUN: vxc %s --action emit-obj -o %t.o
 // RUN: llvm-nm --undefined-only %t.o | FileCheck %s --implicit-check-not=vx_stderr_write
-// CHECK: U abort
-// CHECK: U write
+// On Linux, `llvm-nm` prints `U abort`. On macOS, it prints `_abort`.
+// CHECK: {{(U |^_)}}abort
+// CHECK: {{(U |^_)}}write
 
 pub fn divide(a : i32, b : i32) -> i32 {
   return a / b;

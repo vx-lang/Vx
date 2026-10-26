@@ -72,6 +72,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/closure_literal_as_closure_value.vx",
     // "A store to a nested nominal field": `out.f = f` puts a closure into a struct's field.
     "backend/pass/closure_using_a_local_stays_in_its_function.vx",
+    // "A store to a nested nominal field": `r[0].name = x` puts a struct into a struct's field.
+    "backend/pass/assign_to_a_field_through_index_mut_drops_the_old_field.vx",
     // `Option::take` writes through `&mut Option<T>`, which the flat path declines as "a
     // pointer element type that is not modelled". The answers come from the AST path.
     "backend/pass/core_option.vx",
@@ -250,6 +252,15 @@ fn decline_keys(log: &str) -> Vec<String> {
         .collect()
 }
 
+/// `--package tests=<repository>/tests`: some fixtures import other test files from `tests`.
+fn tests_package() -> [String; 2] {
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    [
+        "--package".to_string(),
+        format!("tests={}", tests.display()),
+    ]
+}
+
 /// Compile one program and report the path it took. `--action emit-mlir` stops at
 /// MLIR, so no accelerator or JIT is needed and the answer is the same everywhere.
 ///
@@ -258,6 +269,7 @@ fn decline_keys(log: &str) -> Vec<String> {
 fn path_taken(program: &Path) -> Result<CodegenPath, String> {
     let output = Command::new(env!("CARGO_BIN_EXE_vxc"))
         .arg(program)
+        .args(tests_package())
         .args(["--action", "emit-mlir"])
         .env("VX_FLAT_DBG", "1")
         .output()
@@ -577,6 +589,7 @@ fn flat_path_answers_match_the_backend_expectations() {
 
         let output = match Command::new(env!("CARGO_BIN_EXE_vxc"))
             .arg(&program)
+            .args(tests_package())
             .env("PATH", &path_var)
             .env("VX_FLAT_DBG", "1")
             .output()

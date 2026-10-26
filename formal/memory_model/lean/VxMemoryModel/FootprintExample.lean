@@ -51,12 +51,15 @@ theorem blockFoot_footprints :
 theorem blockFoot_raceFree {X : Execution} (hX : blockFoot.toProg.Execs X) : X.RaceFree :=
   raceFree blockFoot_footprints hX
 
-/-- Register 0 counts the passes. A pass starts task `regs 0` and adds 1 to the register, and the
-loop runs while the register is not 2. -/
+/-- Register 0 counts the passes, and the loop runs while the register is not 2. A pass starts
+task `regs 0` in its block. After the block, it reads `out1` and adds 1 to the register. Task 0
+writes `out1`, but the block joined it before the read. -/
 def loopPhases : List Phase :=
   [.code (.seq (.store input (.const 5) .plain) (.assign 0 (.const 0))),
-    .block (.seq (.spawnAt 0 2 (.reg 0)) (.assign 0 (.add (.reg 0) (.const 1))))
-      (some (.sub (.const 2) (.reg 0))),
+    .block (.spawnAt 0 2 (.reg 0))
+      (some ⟨.sub (.const 2) (.reg 0), .skip,
+        .seq (.load 3 out1 .plain) (.assign 0 (.add (.reg 0) (.const 1))), trivial,
+        ⟨trivial, trivial⟩⟩),
     .code (.seq (.load 1 out1 .plain) (.load 2 out2 .plain))]
 
 def loopFoot : TaskProg := { forkJoin with main := seqAll loopPhases }
@@ -86,6 +89,51 @@ theorem loopFoot_footprints :
 
 theorem loopFoot_raceFree {X : Execution} (hX : loopFoot.toProg.Execs X) : X.RaceFree :=
   raceFree loopFoot_footprints hX
+
+/-- Each pass of the loop starts one task with `spawnAt 0 2 (.reg 0)`, and both tasks write
+place 0. One pass starts only one of them, and it joins that task before the next pass. So the two
+tasks need not be apart. -/
+def passPhases : List Phase :=
+  [.code (.assign 0 (.const 0)),
+    .block (.spawnAt 0 2 (.reg 0))
+      (some ⟨.sub (.const 2) (.reg 0), .skip, .assign 0 (.add (.reg 0) (.const 1)), trivial,
+        trivial⟩),
+    .code (.load 1 0 .plain)]
+
+def passFoot : TaskProg where
+  main := seqAll passPhases
+  task
+    | 0 => .store 0 (.const 1) .plain
+    | 1 => .store 0 (.const 2) .plain
+    | _ => .skip
+  count := 2
+  flags := 1
+  marks := 2
+
+theorem passFoot_footprints :
+    passFoot.Footprints (· < passFoot.flags) (fun _ => []) passPhases where
+  ok :=
+    { main := by simp [passFoot, passPhases, seqAll, Phase.stmt, Stmt.Below]
+      task
+        | 0 | 1 | _ + 2 => by simp [passFoot, Stmt.Below] }
+  le_flags _ h := h
+  main := rfl
+  phases := by
+    simp [PhasesOk, passPhases, Phase.Ok, BlockOk, Phase.ids, Stmt.NoTasks, Stmt.NoBlocks,
+      Stmt.RegsBelow, Expr.RegsBelow, Stmt.spawnIds, Stmt.Apart, Stmt.Accesses, Stmt.OneSite,
+      Stmt.SameSite, passFoot, List.nodup_range]
+    -- Tasks 0 and 1 come from one `spawn`, so the rule does not compare them.
+    intro u hu v hv _ h
+    have := h hu
+    omega
+  tasks
+    | 0 | 1 | _ + 2 => by simp [passFoot, Stmt.NoTasks]
+  task_phases _ := trivial
+  one_parent := one_parent_nil _
+  order _ _ := nofun
+
+theorem passFoot_raceFree {X : Execution} (hX : passFoot.toProg.Execs X) : X.RaceFree :=
+  raceFree passFoot_footprints hX
 
 def nestMain : List Phase :=
   [.code (.store 3 (.const 1) .plain), .block (.seq (.spawn 0) (.load 0 3 .plain)) none,
@@ -164,7 +212,7 @@ theorem nestFoot_footprints : nestFoot.Footprints (· < nestFoot.flags) nestPhas
       simp only [PhasesOk, nestPhases, nestTask0, Phase.Ok, BlockOk, Phase.ids, Stmt.spawnIds]
       refine ⟨by simp [Stmt.NoTasks], by simp, ⟨by simp [Stmt.NoBlocks],
         by simp [Stmt.RegsBelow, Expr.RegsBelow], fun u _ w _ => by simp [Stmt.Apart, Stmt.Accesses],
-        fun u hu v hv huv w w' hw hw' => ?_⟩, by simp, by simp [Stmt.NoTasks], by simp, trivial⟩
+        fun u hu v hv huv _ w w' hw hw' => ?_⟩, by simp, by simp [Stmt.NoTasks], by simp, trivial⟩
       simp at hu hv
       rcases hu with rfl | rfl <;> rcases hv with rfl | rfl <;> simp at huv <;>
         rw [(desc_of_nil rfl).1 hw, (desc_of_nil rfl).1 hw'] <;>

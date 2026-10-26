@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc --package tests=tests %s --action emit-mlir 2>&1 | FileCheck %s
 // This module imports `plus`, which has a function `abs`, and declares C's `abs`. Its own
 // declaration comes first, so `abs` here is the C function.
 // CHECK: func.func private @abs(i32) -> i32

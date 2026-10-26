@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: vxc --package tests=tests %s 2>&1 | FileCheck %s
 // This program imports `plus` and `cside`. It sees only `plus`'s `abs`, while `cside` calls C's
 // `abs`. It prints 101 (from `plus`) and 3 (from C).
 // CHECK: 101 3

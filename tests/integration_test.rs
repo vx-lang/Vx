@@ -12,6 +12,7 @@ mod integration_test {
     mod borrow_test;
     mod codegen_determinism;
     mod compile_test;
+    mod compile_time_of_vec_calls;
     mod comptime_twins;
     mod cross_call_capacity_test;
     mod device_image_test;
@@ -35,6 +36,7 @@ mod integration_test {
     mod missing_solver_test;
     mod mlir_diagnostic_test;
     mod module_api_test;
+    mod output_does_not_depend_on_the_current_directory;
     mod payload_test;
     mod pipeline_scale_test;
     mod registry_test;

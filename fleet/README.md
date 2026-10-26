@@ -128,7 +128,7 @@ error rather than a silently ignored word.
 | SKU | Source |
 |---|---|
 | a100-40, a100-80 | NVIDIA A100 Tensor Core GPU Architecture whitepaper v1.0 — "A100 Tensor Cores Support All DL Data Types" (p.26), Table 2 (p.23), Figure 7 (p.22) |
-| h100-sxm, h200 | NVIDIA, "NVIDIA Hopper Architecture In-Depth" — "The FP8, FP16, BF16, TF32, FP64, and INT8 MMA data types are supported." |
+| h100-sxm, h100-pcie, h200 | NVIDIA, "NVIDIA Hopper Architecture In-Depth" — "The FP8, FP16, BF16, TF32, FP64, and INT8 MMA data types are supported." |
 | b200 | NVIDIA RTX Blackwell PRO GPU Architecture whitepaper v1.0 — "Blackwell 5th Generation Tensor Cores" |
 | mi300x | AMD ROCm documentation, "AMD Instinct MI300 series microarchitecture" — per-datatype table |
 | m4-uma | Apple, Metal Shading Language Specification — "Scalar Data Types", Table 2.1 |
@@ -192,6 +192,7 @@ matrix, but enough to flip a marginal cell.
 | Figure class | Status |
 |---|---|
 | `HBM` capacity and bandwidth (A100 40/80, H100, H200, MI300X) | **verified 2026-08-03** — quoted from per-GPU vendor spec tables |
+| `HBM` capacity and bandwidth, SM clock and host link (**H100 PCIe**) | **verified 2026-10-26** — quoted from NVIDIA's "NVIDIA H100 PCIe GPU Product Brief", PB-11133-001_v02. The SM count (114) is a vendor figure, not yet measured |
 | `HBM` capacity (**B200**) | **measured on hardware** — `nvidia-smi` reports 183,359 MiB (192.3 GB, 179.06 GiB), #1204. Vendor materials say 180 GB, most likely a usable-after-reservation figure |
 | `HBM` bandwidth (**B200**) | **contested** — 7.7 TB/s (Lenovo per-GPU table) vs 8.0 TB/s (NVIDIA DGX aggregate ÷ 8). 7.7 used; see `b200.vx` |
 | `L2` capacity and bandwidth | **unverified** — transcribed from architecture whitepapers from memory |

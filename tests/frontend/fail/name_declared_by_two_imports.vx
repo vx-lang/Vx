@@ -1,5 +1,5 @@
 //===- name_declared_by_two_imports.vx - Vx Compiler ------------*- Vx -*-===//
-// RUN: not vxc %s --action print-ast 2>&1 | FileCheck %s
+// RUN: not vxc --package tests=tests %s --action print-ast 2>&1 | FileCheck %s
 import tests::modules::clash_left;
 import tests::modules::clash_right;
 

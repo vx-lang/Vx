@@ -171,6 +171,9 @@ struct Edits {
     /// `t = e`: the drops of the old value, if it was not moved, and the flag to clear once
     /// everything else at the statement has run.
     assign: HashMap<usize, (Vec<Statement>, Option<String>)>,
+    /// `*call() = e`: the reference the call returned and the new value, held in the
+    /// temporaries the statement now reads in place of the call and `e`.
+    reroot: HashMap<usize, (String, String)>,
 }
 
 #[derive(Clone)]
@@ -270,6 +273,24 @@ fn drop_stmt(name: &str, flag: Option<&str>) -> Statement {
         after_value: false,
         span: Span::default(),
     })
+}
+
+/// `*call() = ..` becomes `*reference = ..`, and `(*call()).f = ..` becomes `reference.f = ..`.
+fn reroot_place(place: &mut Expr, reference: &str) {
+    match place {
+        Expr::MemberAccess(m) if matches!(*m.base, Expr::Dereference(_)) => {
+            *m.base = ident(reference)
+        }
+        Expr::MemberAccess(m) => reroot_place(&mut m.base, reference),
+        Expr::Dereference(d) => {
+            assert!(
+                matches!(*d.expr, Expr::FunctionCall(_)),
+                "not a write through a call"
+            );
+            *d.expr = ident(reference);
+        }
+        _ => unreachable!("not a write through a call"),
+    }
 }
 
 /// A drop that runs once the statement it precedes has computed its value.
@@ -1119,6 +1140,7 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn drops_note_place_assign(
         &mut self,
         place: &Expr,
+        rhs: &Expr,
         ty: &Type,
         line: usize,
         moved_before: &[MovedField],
@@ -1133,16 +1155,29 @@ impl<'a> TypeChecker<'a> {
             root = &m.base;
         }
         fields.reverse();
+        // `*f() = v`, and `p[i] = v` through `IndexMut`, which is `*p.index_mut(i) = v`. The old
+        // value is dropped through the reference the call returns, so the call runs once.
+        let call = match root {
+            Expr::Dereference(d) if matches!(*d.expr, Expr::FunctionCall(_)) => Some(&*d.expr),
+            _ => None,
+        };
         let (name, through_reference) = match root {
             Expr::Identifier(id) => (id.name.to_string(), false),
             Expr::Dereference(d) => match &*d.expr {
                 Expr::Identifier(id) => (id.name.to_string(), true),
+                Expr::FunctionCall(f) => (format!("{}(..)", f.name), true),
                 _ => return,
             },
             _ => return,
         };
-        let root_ty = self.lookup(&name).map(|(t, _)| t.clone());
+        let root_ty = match call {
+            Some(call) => Some(self.check_expr_type_probe(call)),
+            None => self.lookup(&name).map(|(t, _)| t.clone()),
+        };
         let is_mut_borrow = matches!(root_ty, Some(Type::Borrow { is_mut: true, .. }));
+        if call.is_some() && !is_mut_borrow {
+            return;
+        }
         // The old value lives in a variable this function owns, or behind a `&mut`, which
         // always points at a value.
         let flag = if is_mut_borrow {
@@ -1188,15 +1223,34 @@ impl<'a> TypeChecker<'a> {
         if !self.drops_rewriting() {
             return;
         }
+        let mut place = place.clone();
+        let mut lets = Vec::new();
+        let mut reroot = None;
+        if let (Some(call), Some(ref_ty)) = (call, root_ty) {
+            let (reference, value) = (self.drops_fresh("element"), self.drops_fresh("value"));
+            lets.push(let_stmt(&value, false, ty.clone(), rhs.clone()));
+            lets.push(let_stmt(&reference, false, ref_ty, call.clone()));
+            reroot_place(&mut place, &reference);
+            reroot = Some((reference, value));
+        }
         let drop_old: Vec<Statement> = parts
             .iter()
             .flat_map(|(part, f)| {
-                glue_drops_at(&name, Some(place), std::slice::from_ref(part), f.as_deref())
+                glue_drops_at(
+                    &name,
+                    Some(&place),
+                    std::slice::from_ref(part),
+                    f.as_deref(),
+                )
             })
             .map(after_value)
             .collect();
         if let Some(FrameKind::Block { stmt, edits, .. }) = self.borrow.drops.frames.last_mut() {
             edits.assign.insert(*stmt, (drop_old, None));
+            if let Some(r) = reroot {
+                edits.lets.entry(*stmt).or_default().extend(lets);
+                edits.reroot.insert(*stmt, r);
+            }
         }
     }
 
@@ -1608,6 +1662,13 @@ impl<'a> TypeChecker<'a> {
                     let assign = edits.assign.remove(&i);
                     if let Some((drop_old, _)) = &assign {
                         out.extend(drop_old.iter().cloned());
+                    }
+                    if let Some((reference, value)) = edits.reroot.remove(&i) {
+                        let Statement::Assign(a) = &mut body[i] else {
+                            unreachable!("only an assignment writes through a call")
+                        };
+                        reroot_place(&mut a.lhs, &reference);
+                        a.rhs = ident(&value);
                     }
                     out.push(body[i].clone());
                     out.extend(after);

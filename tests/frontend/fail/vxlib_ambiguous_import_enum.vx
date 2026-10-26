@@ -14,7 +14,7 @@
 // RUN: printf 'enum Color { Cyan, Green }\nfn getb() -> i32 { return 2; }\n' > %t.d/cb.vx
 // RUN: vxc %t.d/cb.vx --action emit-interface -o %t.d/cb.vxlib
 // RUN: rm %t.d/ca.vx %t.d/cb.vx
-// RUN: VX_STD_PATH=%t.d not vxc %s --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
+// RUN: not vxc %s --std-path %t.d --action emit-mlir -o /dev/null 2>&1 | FileCheck %s
 
 import ca;
 import cb;

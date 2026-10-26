@@ -8,7 +8,10 @@ start. Then `s` runs, and each `spawn` in it sets the mark of its task. At the e
 joins each task that has its mark set. So the block waits only for the tasks that it started.
 
 `block_hb` shows that each task that a block started happens before the code after the block.
-The body of the block must not hold another `tasks` block. A task can hold its own blocks.
+`block_hb_nested` allows a body that holds other `tasks` blocks. Each inner block, at any depth,
+starts only tasks that the blocks around it do not start (`NestOk`). So an inner block clears only
+the marks of its own tasks, and the outer block still joins each task that it started. A task of
+an inner block is in a run of that inner block, which joined it (`nested_seg`).
 -/
 
 namespace Vx
@@ -57,6 +60,85 @@ theorem Steps.seq_done {s t regs L regs''} (h : Steps (.seq s t) regs L .skip re
       obtain ⟨L1, L2, r', h1, h2, rfl⟩ := ih rfl rfl
       exact ⟨_ :: L1, L2, r', .visible hs1 h1, h2, rfl⟩
 
+theorem Steps.snoc_none {s r0 L0 s' regs s'' regs'} (h : Steps s r0 L0 s' regs)
+    (hs : Step s' regs none s'' regs') : Steps s r0 L0 s'' regs' := by
+  induction h with
+  | refl => exact .silent hs .refl
+  | silent h1 _ ih => exact .silent h1 (ih hs)
+  | visible h1 _ ih => exact .visible h1 (ih hs)
+
+theorem Steps.snoc_some {s r0 L0 s' regs a s'' regs'} (h : Steps s r0 L0 s' regs)
+    (hs : Step s' regs (some a) s'' regs') : Steps s r0 (L0 ++ [a]) s'' regs' := by
+  induction h with
+  | refl => exact .visible hs .refl
+  | silent h1 _ ih => exact .silent h1 (ih hs)
+  | visible h1 _ ih => exact .visible h1 (ih hs)
+
+/-- Where a run of `loop e s` is: at the loop, at its test, after its end, or in a pass of `s`
+that made the accesses `L0` so far. -/
+def LoopAt (e : Expr) (s : Stmt) (L0 : List Label) (r0 : Nat → Int) (x : Stmt)
+    (regs : Nat → Int) : Prop :=
+  (x = .loop e s ∧ L0 = []) ∨ (x = .ite e (.seq s (.loop e s)) .skip ∧ L0 = []) ∨
+    (x = .skip ∧ L0 = []) ∨ ∃ s', x = .seq s' (.loop e s) ∧ Steps s r0 L0 s' regs
+
+theorem Steps.loop_aux {e : Expr} {s x y : Stmt} {regs L regs''} (h : Steps x regs L y regs'')
+    (hy : y = .skip) :
+    ∀ L0 r0, LoopAt e s L0 r0 x regs → ∀ m < L0.length + L.length, ∃ n L' r1 r2,
+      Steps s r1 L' .skip r2 ∧ (∀ i (hi : i < L'.length), (L0 ++ L)[n + i]? = some L'[i]) ∧
+      n ≤ m ∧ m < n + L'.length ∧ n + L'.length ≤ L0.length + L.length := by
+  induction h with
+  | refl =>
+    intro L0 r0 hx m hm
+    subst hy
+    rcases hx with ⟨h, -⟩ | ⟨h, -⟩ | ⟨-, rfl⟩ | ⟨s', h, -⟩
+    · cases h
+    · cases h
+    · simp at hm
+    · cases h
+  | silent hs _ ih =>
+    intro L0 r0 hx m hm
+    rcases hx with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨s', rfl, hst⟩
+    · cases hs
+      exact ih hy [] r0 (Or.inr (Or.inl ⟨rfl, rfl⟩)) m hm
+    · cases hs with
+      | ite_true => exact ih hy [] _ (Or.inr (Or.inr (Or.inr ⟨s, rfl, .refl⟩))) m hm
+      | ite_false => exact ih hy [] r0 (Or.inr (Or.inr (Or.inl ⟨rfl, rfl⟩))) m hm
+    · cases hs
+    · cases hs with
+      | seq_skip =>
+        by_cases hm0 : m < L0.length
+        · refine ⟨0, L0, r0, _, hst, fun i hi => ?_, Nat.zero_le _, by omega, by omega⟩
+          rw [Nat.zero_add, List.getElem?_append_left hi, List.getElem?_eq_getElem hi]
+        · obtain ⟨n, L', r1, r2, hr, hlab, h1, h2, h3⟩ :=
+            ih hy [] r0 (Or.inl ⟨rfl, rfl⟩) (m - L0.length) (by simp only [List.length_nil]; omega)
+          simp only [List.length_nil, Nat.zero_add] at h3
+          refine ⟨L0.length + n, L', r1, r2, hr, fun i hi => ?_, by omega, by omega, by omega⟩
+          rw [List.getElem?_append_right (by omega),
+            show L0.length + n + i - L0.length = n + i by omega]
+          simpa using hlab i hi
+      | seq h1 => exact ih hy L0 r0 (Or.inr (Or.inr (Or.inr ⟨_, rfl, hst.snoc_none h1⟩))) m hm
+  | visible hs _ ih =>
+    intro L0 r0 hx m hm
+    rcases hx with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | ⟨s', rfl, hst⟩
+    · cases hs
+    · cases hs
+    · cases hs
+    · cases hs with
+      | seq h1 =>
+        have := ih hy (L0 ++ [_]) r0 (Or.inr (Or.inr (Or.inr ⟨_, rfl, hst.snoc_some h1⟩))) m
+          (by simp only [List.length_append, List.length_cons, List.length_nil] at hm ⊢; omega)
+        simp only [List.append_assoc, List.cons_append, List.nil_append, List.length_append,
+          List.length_cons, List.length_nil] at this ⊢
+        obtain ⟨n, L', r1, r2, hr, hlab, h1, h2, h3⟩ := this
+        exact ⟨n, L', r1, r2, hr, hlab, h1, h2, by omega⟩
+
+/-- Each position of a run of `loop e s` to its end is in a run of one pass of `s` to its end. -/
+theorem Steps.loop_pass {e : Expr} {s : Stmt} {regs L regs''} (h : Steps (.loop e s) regs L .skip regs'')
+    {m : Nat} (hm : m < L.length) :
+    ∃ n L' r1 r2, Steps s r1 L' .skip r2 ∧ (∀ i (hi : i < L'.length), L[n + i]? = some L'[i]) ∧
+      n ≤ m ∧ m < n + L'.length ∧ n + L'.length ≤ L.length := by
+  simpa using h.loop_aux rfl [] regs (Or.inl ⟨rfl, rfl⟩) m (by simpa using hm)
+
 def Expr.RegsBelow (m : Nat) : Expr → Prop
   | .const _ => True
   | .reg r => r < m
@@ -94,61 +176,129 @@ def Stmt.NoBlocks : Stmt → Prop
   | loop _ s => s.NoBlocks
   | _ => True
 
+/-- Each `tasks` block in `s`, at any depth, starts no task of `outer` and no task of a block
+around it. -/
+def Stmt.NestOk (outer : List Nat) : Stmt → Prop
+  | tasksBlock s => (∀ u ∈ s.spawnIds, u ∉ outer) ∧ s.NestOk (outer ++ s.spawnIds)
+  | seq s t | ite _ s t => s.NestOk outer ∧ t.NestOk outer
+  | loop _ s => s.NestOk outer
+  | _ => True
+
+theorem Stmt.NestOk.of_noBlocks {outer : List Nat} {s : Stmt} (h : s.NoBlocks) : s.NestOk outer := by
+  induction s with
+  | tasksBlock => exact h.elim
+  | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 h.1, ih2 h.2⟩
+  | loop _ _ ih => exact ih h
+  | _ => trivial
+
+theorem Stmt.NestOk.mono {o1 o2 : List Nat} (h12 : ∀ u ∈ o1, u ∈ o2) {s : Stmt}
+    (h : s.NestOk o2) : s.NestOk o1 := by
+  induction s generalizing o1 o2 with
+  | tasksBlock _ ih =>
+    refine ⟨fun u hu h1 => h.1 u hu (h12 u h1), ih (fun u hu => ?_) h.2⟩
+    rcases List.mem_append.1 hu with hu | hu
+    · exact List.mem_append_left _ (h12 u hu)
+    · exact List.mem_append_right _ hu
+  | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1 h12 h.1, ih2 h12 h.2⟩
+  | loop _ _ ih => exact ih h12 h
+  | _ => trivial
+
 namespace TaskProg
 
 variable {P : TaskProg}
 
-/-- Code that comes from the lowering of the body of a block: it uses the places below `flags`,
-and only a `spawn` writes a mark. -/
-inductive Clean (P : TaskProg) : Stmt → Prop
-  | skip : Clean P .skip
-  | load {r x o} : r < P.marks → x < P.flags → Clean P (.load r x o)
-  | store {x e o} : x < P.flags → Clean P (.store x e o)
-  | fetchAdd {r x e o} : r < P.marks → x < P.flags → Clean P (.fetchAdd r x e o)
-  | cas {r x e n o} : r < P.marks → x < P.flags → Clean P (.cas r x e n o)
-  | rmwStore {x v o} : x < P.flags → Clean P (.rmwStore x v o)
-  | fence {o} : Clean P (.fence o)
-  | assign {r e} : r < P.marks → Clean P (.assign r e)
-  | wait {x} : Clean P (.wait x)
-  | loadAt {r base len i o} : r < P.marks → base + len ≤ P.flags → Clean P (.loadAt r base len i o)
-  | storeAt {base len i e o} : base + len ≤ P.flags → Clean P (.storeAt base len i e o)
-  | waitAt {base len i} : Clean P (.waitAt base len i)
-  | assignAt {base len i e} : base + len ≤ P.marks → Clean P (.assignAt base len i e)
-  | seq {s t} : Clean P s → Clean P t → Clean P (.seq s t)
-  | ite {c s t} : Clean P s → Clean P t → Clean P (.ite c s t)
-  | loop {c s} : Clean P s → Clean P (.loop c s)
+theorem eq_of_off {L L0 : List Label} {n0 : Nat}
+    (h : ∀ j (hj : j < L0.length), L[n0 + j]? = some L0[j]) {i : Nat} (hi : i < L.length)
+    (h1 : n0 ≤ i) (h2 : i < n0 + L0.length) : L[i] = L0[i - n0] := by
+  have := h (i - n0) (by omega)
+  rw [show n0 + (i - n0) = i by omega, List.getElem?_eq_getElem hi] at this
+  exact Option.some.inj this
+
+theorem mem_of_off {L L0 : List Label} {n0 : Nat}
+    (h : ∀ j (hj : j < L0.length), L[n0 + j]? = some L0[j]) {i : Nat} (hi : i < L.length)
+    (h1 : n0 ≤ i) (h2 : i < n0 + L0.length) : L[i] ∈ L0 := by
+  rw [eq_of_off h hi h1 h2]
+  exact List.getElem_mem _
+
+theorem off_left {L A B : List Label} {n : Nat}
+    (h : ∀ i (hi : i < (A ++ B).length), L[n + i]? = some (A ++ B)[i]) :
+    ∀ i (hi : i < A.length), L[n + i]? = some A[i] := fun i hi => by
+  have := h i (by simp only [List.length_append]; omega)
+  rwa [List.getElem_append_left hi] at this
+
+theorem off_right {L A B : List Label} {n : Nat}
+    (h : ∀ i (hi : i < (A ++ B).length), L[n + i]? = some (A ++ B)[i]) :
+    ∀ i (hi : i < B.length), L[n + A.length + i]? = some B[i] := fun i hi => by
+  have := h (A.length + i) (by simp only [List.length_append]; omega)
+  rw [List.getElem_append_right (by omega)] at this
+  simpa [Nat.add_assoc] using this
+
+/-- A run within a run at offset `n0`, at offset `n1`, is a run at offset `n0 + n1`. -/
+theorem off_trans {L L0 L1 : List Label} {n0 n1 : Nat}
+    (h0 : ∀ j (hj : j < L0.length), L[n0 + j]? = some L0[j])
+    (h1 : ∀ j (hj : j < L1.length), L0[n1 + j]? = some L1[j]) (hl : n1 + L1.length ≤ L0.length) :
+    ∀ j (hj : j < L1.length), L[n0 + n1 + j]? = some L1[j] := fun j hj => by
+  rw [Nat.add_assoc, h0 (n1 + j) (by omega), ← List.getElem?_eq_getElem, h1 j hj]
+
+/-- Code that comes from the lowering of the body of a block: it uses the places below `flags`.
+Only a `spawn` sets a mark, and only an inner block clears one, of a task that is not in `keep`. -/
+inductive Clean (P : TaskProg) (keep : List Nat) : Stmt → Prop
+  | skip : Clean P keep .skip
+  | load {r x o} : r < P.marks → x < P.flags → Clean P keep (.load r x o)
+  | store {x e o} : x < P.flags → Clean P keep (.store x e o)
+  | fetchAdd {r x e o} : r < P.marks → x < P.flags → Clean P keep (.fetchAdd r x e o)
+  | cas {r x e n o} : r < P.marks → x < P.flags → Clean P keep (.cas r x e n o)
+  | rmwStore {x v o} : x < P.flags → Clean P keep (.rmwStore x v o)
+  | fence {o} : Clean P keep (.fence o)
+  | assign {r e} : r < P.marks → Clean P keep (.assign r e)
+  | wait {x} : Clean P keep (.wait x)
+  | loadAt {r base len i o} : r < P.marks → base + len ≤ P.flags → Clean P keep (.loadAt r base len i o)
+  | storeAt {base len i e o} : base + len ≤ P.flags → Clean P keep (.storeAt base len i e o)
+  | waitAt {base len i} : Clean P keep (.waitAt base len i)
+  | assignAt {base len i e} : base + len ≤ P.marks → Clean P keep (.assignAt base len i e)
+  | seq {s t} : Clean P keep s → Clean P keep t → Clean P keep (.seq s t)
+  | ite {c s t} : Clean P keep s → Clean P keep t → Clean P keep (.ite c s t)
+  | loop {c s} : Clean P keep s → Clean P keep (.loop c s)
   | spawn {base len i} : i.RegsBelow P.marks →
-    Clean P (.seq (.assignAt (P.marks + base) len i (.const 1))
+    Clean P keep (.seq (.assignAt (P.marks + base) len i (.const 1))
       (.storeAt (P.start base) len i (.const 1) .sc))
+  | clear {t e} : t ∉ keep → Clean P keep (.assign (P.marks + t) e)
 
 /-- The task `base + i` has its mark set. -/
 def Marked (P : TaskProg) (regs : Nat → Int) (base len : Nat) (i : Expr) : Prop :=
   ∀ j : Nat, i.eval regs = (j : Int) → j < len → regs (P.marks + base + j) = 1
 
 /-- The states of lowered code: the next write of a `start` flag comes after its mark. -/
-inductive Good (P : TaskProg) (regs : Nat → Int) : Stmt → Prop
-  | clean {s} : Clean P s → Good P regs s
-  | seq {s t} : Good P regs s → Clean P t → Good P regs (.seq s t)
+inductive Good (P : TaskProg) (keep : List Nat) (regs : Nat → Int) : Stmt → Prop
+  | clean {s} : Clean P keep s → Good P keep regs s
+  | seq {s t} : Good P keep regs s → Clean P keep t → Good P keep regs (.seq s t)
   | marked {base len i} : Marked P regs base len i →
-    Good P regs (.seq .skip (.storeAt (P.start base) len i (.const 1) .sc))
+    Good P keep regs (.seq .skip (.storeAt (P.start base) len i (.const 1) .sc))
   | marked' {base len i} : Marked P regs base len i →
-    Good P regs (.storeAt (P.start base) len i (.const 1) .sc)
+    Good P keep regs (.storeAt (P.start base) len i (.const 1) .sc)
 
-theorem update_keeps {regs : Nat → Int} {r : Nat} {v : Int} (hr : r < P.marks) :
-    ∀ x, P.marks ≤ x → regs x = 1 → update regs r v x = 1 := by
-  intro x hx h1
-  have : x ≠ r := by omega
+theorem update_keeps {keep : List Nat} {regs : Nat → Int} {r : Nat} {v : Int} (hr : r < P.marks) :
+    ∀ u ∈ keep, regs (P.marks + u) = 1 → update regs r v (P.marks + u) = 1 := by
+  intro u _ h1
+  have : P.marks + u ≠ r := by omega
   simp [update, this, h1]
 
-theorem update_one_keeps {regs : Nat → Int} {r : Nat} :
-    ∀ x, P.marks ≤ x → regs x = 1 → update regs r 1 x = 1 := by
-  intro x _ h1
-  by_cases h : x = r <;> simp [update, h, h1]
+theorem update_one_keeps {keep : List Nat} {regs : Nat → Int} {r : Nat} :
+    ∀ u ∈ keep, regs (P.marks + u) = 1 → update regs r 1 (P.marks + u) = 1 := by
+  intro u _ h1
+  by_cases h : P.marks + u = r <;> simp [update, h, h1]
 
-/-- One step keeps `Good`, never clears a mark, and writes a `start` flag only when its mark is
-set. -/
-theorem Good.step {regs s a s' regs'} (h : Step s regs a s' regs') (hg : Good P regs s) :
-    Good P regs' s' ∧ (∀ x, P.marks ≤ x → regs x = 1 → regs' x = 1) ∧
+theorem update_clear_keeps {keep : List Nat} {regs : Nat → Int} {t : Nat} {v : Int} (ht : t ∉ keep) :
+    ∀ u ∈ keep, regs (P.marks + u) = 1 → update regs (P.marks + t) v (P.marks + u) = 1 := by
+  intro u hu h1
+  have : u ≠ t := fun h => ht (h ▸ hu)
+  simp [update, this, h1]
+
+/-- One step keeps `Good`, never clears the mark of a task of `keep`, and writes a `start` flag
+only when its mark is set. -/
+theorem Good.step {keep regs s a s' regs'} (h : Step s regs a s' regs') (hg : Good P keep regs s) :
+    Good P keep regs' s' ∧
+      (∀ u ∈ keep, regs (P.marks + u) = 1 → regs' (P.marks + u) = 1) ∧
       ∀ l, a = some l → l.kind = .write → ∀ u, l.loc = P.start u → regs' (P.marks + u) = 1 := by
   induction h with
   | load =>
@@ -183,9 +333,11 @@ theorem Good.step {regs s a s' regs'} (h : Step s regs a s' regs') (hg : Good P 
     omega
   | fence => exact ⟨.clean .skip, fun _ _ h => h, fun l hl hk => by cases hl; cases hk⟩
   | assign =>
-    rcases hg with ⟨⟨⟩⟩
-    rename_i hr
-    exact ⟨.clean .skip, update_keeps hr, nofun⟩
+    cases hg with
+    | clean hc =>
+      cases hc with
+      | assign hr => exact ⟨.clean .skip, update_keeps hr, nofun⟩
+      | clear ht => exact ⟨.clean .skip, update_clear_keeps ht, nofun⟩
   | seq_skip =>
     rcases hg with ⟨⟨⟩⟩ | ⟨_, ht⟩ | ⟨hm⟩
     · rename_i ht
@@ -250,26 +402,39 @@ theorem Good.step {regs s a s' regs'} (h : Step s regs a s' regs') (hg : Good P 
     rename_i hb
     exact ⟨.clean .skip, update_keeps (by omega), nofun⟩
 
-theorem Good.steps {regs s L s' regs'} (h : Steps s regs L s' regs') (hg : Good P regs s) :
-    Good P regs' s' ∧ (∀ x, P.marks ≤ x → regs x = 1 → regs' x = 1) ∧
-      ∀ l ∈ L, l.kind = .write → ∀ u, l.loc = P.start u → regs' (P.marks + u) = 1 := by
+theorem Good.steps {keep regs s L s' regs'} (h : Steps s regs L s' regs')
+    (hg : Good P keep regs s) :
+    Good P keep regs' s' ∧ (∀ u ∈ keep, regs (P.marks + u) = 1 → regs' (P.marks + u) = 1) ∧
+      ∀ l ∈ L, l.kind = .write → ∀ u ∈ keep, l.loc = P.start u → regs' (P.marks + u) = 1 := by
   induction h with
   | refl => exact ⟨hg, fun _ _ h => h, nofun⟩
   | silent hs _ ih =>
     obtain ⟨g1, k1, -⟩ := hg.step hs
     obtain ⟨g2, k2, w2⟩ := ih g1
-    exact ⟨g2, fun x hx h => k2 x hx (k1 x hx h), w2⟩
+    exact ⟨g2, fun u hu h => k2 u hu (k1 u hu h), w2⟩
   | visible hs _ ih =>
     obtain ⟨g1, k1, w1⟩ := hg.step hs
     obtain ⟨g2, k2, w2⟩ := ih g1
-    refine ⟨g2, fun x hx h => k2 x hx (k1 x hx h), fun l hl hk u hu => ?_⟩
+    refine ⟨g2, fun u hu h => k2 u hu (k1 u hu h), fun l hl hk u hu hlu => ?_⟩
     rcases List.mem_cons.1 hl with rfl | hl
-    · exact k2 _ (by omega) (w1 l rfl hk u hu)
-    · exact w2 l hl hk u hu
+    · exact k2 u hu (w1 l rfl hk u hlu)
+    · exact w2 l hl hk u hu hlu
 
-theorem clean_lower {s : Stmt} (hb : s.Below P.flags P.count) (hr : s.RegsBelow P.marks)
-    (hn : s.NoBlocks) : Clean P (P.lower s) := by
-  induction s with
+theorem clearMarks_clean {keep ids : List Nat} (h : ∀ u ∈ ids, u ∉ keep) :
+    Clean P keep (P.clearMarks ids) := by
+  induction ids with
+  | nil => exact .skip
+  | cons u _ ih =>
+    exact .seq (.clear (h u List.mem_cons_self)) (ih fun v hv => h v (List.mem_cons_of_mem _ hv))
+
+theorem joinMarked_clean {keep ids : List Nat} : Clean P keep (P.joinMarked ids) := by
+  induction ids with
+  | nil => exact .skip
+  | cons _ _ ih => exact .seq (.ite .waitAt .skip) ih
+
+theorem clean_lower {keep : List Nat} {s : Stmt} (hb : s.Below P.flags P.count)
+    (hr : s.RegsBelow P.marks) (hn : s.NestOk keep) : Clean P keep (P.lower s) := by
+  induction s generalizing keep with
   | skip => exact .skip
   | load => exact .load hr hb
   | store => exact .store hb
@@ -288,7 +453,9 @@ theorem clean_lower {s : Stmt} (hb : s.Below P.flags P.count) (hr : s.RegsBelow 
   | spawnAt => exact .spawn hr
   | joinAt => exact .waitAt
   | assignAt => exact .assignAt hr.1
-  | tasksBlock => exact hn.elim
+  | tasksBlock _ ih =>
+    exact .seq (clearMarks_clean hn.1)
+      (.seq (ih hb hr (hn.2.mono fun u hu => List.mem_append_left _ hu)) joinMarked_clean)
 
 /-- The lowered code writes a `start` flag only for a task that it can start. -/
 theorem lower_spawnIds {s : Stmt} (hb : s.Below P.flags P.count) (hn : s.NoBlocks) :
@@ -375,24 +542,22 @@ theorem joinMarked_reads {ids : List Nat} {regs L regs'}
     · obtain ⟨l, hl, hl'⟩ := ih h2 t ht hm
       exact ⟨l, List.mem_append_right _ hl, hl'⟩
 
-/-- The end of a block joins each task that the block started.
-
-The labels of thread `p` from the position `n` on are a run `L` of the block to its end. The
-event `w` is a `spawn` of task `t` in that run, and `b` comes after the run. Then thread `p` reads
-`done t` before `b`, and `t` is a task that the body can start. -/
-theorem block_join {X : Execution} (r : P.toProg.Run X) {s : Stmt}
-    (hb : s.Below P.flags P.count) (hr : s.RegsBelow P.marks) (hn : s.NoBlocks)
-    {p n : Nat} {regs regs' : Nat → Int} {L : List Label}
+/-- A run of a block to its end: it clears its marks with no access, its body runs to its end,
+and its end only reads. The access `w` of the run is in the body. -/
+theorem block_body {X : Execution} {r : P.toProg.Run X} {s : Stmt} {p n : Nat}
+    {regs regs' : Nat → Int} {L : List Label}
     (hrun : Steps (P.lower (.tasksBlock s)) regs L .skip regs')
     (hlab : ∀ m (hm : m < L.length), r.lab p (n + m) = L[m])
-    {t : Nat} {w b : X.E} (hw : X.thread w = p) (hww : X.IsWrite w)
-    (hwl : X.loc w = P.start t) (hwn : n ≤ r.idx w) (hwL : r.idx w < n + L.length)
-    (hbp : X.thread b = p) (hbL : n + L.length ≤ r.idx b) :
-    ∃ j, X.thread j = p ∧ X.IsRead j ∧ X.loc j = P.done t ∧ X.po j b ∧ t ∈ s.spawnIds := by
+    {w : X.E} (hw : X.thread w = p) (hww : X.IsWrite w) (hwn : n ≤ r.idx w)
+    (hwL : r.idx w < n + L.length) :
+    ∃ Lb Le, (∃ ra rb, Steps (P.lower s) ra Lb .skip rb ∧
+      Steps (P.joinMarked s.spawnIds) rb Le .skip regs') ∧
+      L = Lb ++ Le ∧ ∃ hin : r.idx w - n < Lb.length,
+        Lb[r.idx w - n] = ⟨X.kind w, X.order w, X.loc w, r.val w, r.isRmw w⟩ := by
   obtain ⟨L0, Lrest, ra, h0, hrest, rfl⟩ := Steps.seq_done hrun
   obtain rfl := clearMarks_silent h0
   obtain ⟨Lb, Le, rb, hbody, hend, rfl⟩ := Steps.seq_done hrest
-  simp only [List.nil_append] at hlab hwL hbL
+  simp only [List.nil_append] at hlab hwL ⊢
   -- The label of the `spawn`.
   have hwlab : (Lb ++ Le)[r.idx w - n]'(by simp only [List.length_append] at hwL ⊢; omega) =
       ⟨X.kind w, X.order w, X.loc w, r.val w, r.isRmw w⟩ := by
@@ -409,18 +574,29 @@ theorem block_join {X : Execution} (r : P.toProg.Run X) {s : Stmt}
       (joinMarked_accesses fun _ _ => rfl) _ hmem
     rw [hwlab] at hread
     exact absurd (hww.symm.trans hread) nofun
-  have hmem : (Lb ++ Le)[r.idx w - n]'(by simp only [List.length_append] at hwL ⊢; omega) ∈ Lb := by
-    rw [List.getElem_append_left hin]
-    exact List.getElem_mem _
+  refine ⟨Lb, Le, ⟨ra, rb, hbody, hend⟩, rfl, hin, ?_⟩
+  rw [← List.getElem_append_left hin]
+  exact hwlab
+
+/-- The end of a block joins each task of the block that the block started.
+
+The labels of thread `p` from the position `n` on are a run `L` of the block to its end. The
+event `w` is a `spawn` of task `t` in that run, and `b` comes after the run. Then thread `p` reads
+`done t` before `b`. -/
+theorem block_join_of {X : Execution} (r : P.toProg.Run X) {s : Stmt}
+    (hb : s.Below P.flags P.count) (hr : s.RegsBelow P.marks) (hn : s.NestOk s.spawnIds)
+    {p n : Nat} {regs regs' : Nat → Int} {L : List Label}
+    (hrun : Steps (P.lower (.tasksBlock s)) regs L .skip regs')
+    (hlab : ∀ m (hm : m < L.length), r.lab p (n + m) = L[m])
+    {t : Nat} {w b : X.E} (hw : X.thread w = p) (hww : X.IsWrite w)
+    (hwl : X.loc w = P.start t) (hwn : n ≤ r.idx w) (hwL : r.idx w < n + L.length)
+    (hbp : X.thread b = p) (hbL : n + L.length ≤ r.idx b) (hu : t ∈ s.spawnIds) :
+    ∃ j, X.thread j = p ∧ X.IsRead j ∧ X.loc j = P.done t ∧ X.po j b := by
+  obtain ⟨Lb, Le, ⟨ra, rb, hbody, hend⟩, rfl, hin, hwlab⟩ := block_body hrun hlab hw hww hwn hwL
+  have hmem : Lb[r.idx w - n] ∈ Lb := List.getElem_mem _
   rw [hwlab] at hmem
-  -- The `spawn` set the mark of task `t`, and `t` is a task that the body can start.
-  have hmark := (Good.steps hbody (.clean (clean_lower hb hr hn))).2.2 _ hmem hww t hwl
-  obtain ⟨u, hu, hut⟩ := (accessRule _).runs hbody.runs (lower_spawnIds hb hn) _ hmem hww
-    (by simp only [hwl, start]; omega)
-  have htu : t = u := by
-    simp only [hwl, start] at hut
-    omega
-  subst htu
+  -- The `spawn` set the mark of task `t`, and no inner block clears it.
+  have hmark := (Good.steps hbody (.clean (clean_lower hb hr hn))).2.2 _ hmem hww t hu hwl
   -- So the end of the block reads `done t`, before `b`.
   obtain ⟨l, hl, hlk, hll⟩ := joinMarked_reads hend t hu (by rw [hmark]; decide)
   obtain ⟨q, hq, rfl⟩ := List.mem_iff_getElem.1 hl
@@ -433,7 +609,107 @@ theorem block_join {X : Execution} (r : P.toProg.Run X) {s : Stmt}
   have hjk : X.kind j = .read := by rw [← hlk, hjlab]
   have hjl : X.loc j = P.done t := by rw [← hll, hjlab]
   have hjb : X.po j b := (r.po_iff j b).2 ⟨hjt, by simp only [List.length_append] at hbL; omega⟩
-  exact ⟨j, hjt.trans hbp, hjk, hjl, hjb, hu⟩
+  exact ⟨j, hjt.trans hbp, hjk, hjl, hjb⟩
+
+/-- The end of a block joins each task that the block started.
+
+The labels of thread `p` from the position `n` on are a run `L` of the block to its end. The
+event `w` is a `spawn` of task `t` in that run, and `b` comes after the run. Then thread `p` reads
+`done t` before `b`, and `t` is a task that the body can start. -/
+theorem block_join {X : Execution} (r : P.toProg.Run X) {s : Stmt}
+    (hb : s.Below P.flags P.count) (hr : s.RegsBelow P.marks) (hn : s.NoBlocks)
+    {p n : Nat} {regs regs' : Nat → Int} {L : List Label}
+    (hrun : Steps (P.lower (.tasksBlock s)) regs L .skip regs')
+    (hlab : ∀ m (hm : m < L.length), r.lab p (n + m) = L[m])
+    {t : Nat} {w b : X.E} (hw : X.thread w = p) (hww : X.IsWrite w)
+    (hwl : X.loc w = P.start t) (hwn : n ≤ r.idx w) (hwL : r.idx w < n + L.length)
+    (hbp : X.thread b = p) (hbL : n + L.length ≤ r.idx b) :
+    ∃ j, X.thread j = p ∧ X.IsRead j ∧ X.loc j = P.done t ∧ X.po j b ∧ t ∈ s.spawnIds := by
+  obtain ⟨Lb, Le, ⟨ra, rb, hbody, -⟩, rfl, hin, hwlab⟩ := block_body hrun hlab hw hww hwn hwL
+  have hmem : Lb[r.idx w - n] ∈ Lb := List.getElem_mem _
+  rw [hwlab] at hmem
+  -- A body with no inner block starts only its own tasks.
+  obtain ⟨u, hu, hut⟩ := (accessRule _).runs hbody.runs (lower_spawnIds hb hn) _ hmem hww
+    (by simp only [hwl, start]; omega)
+  have htu : t = u := by
+    simp only [hwl, start] at hut
+    omega
+  subst htu
+  obtain ⟨j, h1, h2, h3, h4⟩ := block_join_of r hb hr (.of_noBlocks hn) hrun hlab hw hww hwl hwn
+    hwL hbp hbL hu
+  exact ⟨j, h1, h2, h3, h4, hu⟩
+
+/-- A write of `start t` in a run of the lowered code `c` to its end, for a task `t` that is not
+in `O`, is in a run of an inner block to its end. Each `spawn` of `c` outside its inner blocks
+starts a task of `O`. -/
+theorem nested_seg {O : List Nat} : ∀ {c : Stmt}, c.Below P.flags P.count → c.RegsBelow P.marks →
+    c.NestOk O → (∀ u ∈ c.spawnIds, u ∈ O) → ∀ {regs L regs'}, Steps (P.lower c) regs L .skip regs' →
+    ∀ {i : Nat} (hi : i < L.length) {t : Nat}, L[i].kind = .write ∧ L[i].loc = P.start t → t ∉ O →
+    ∃ b n0 L0 r1 r2, sizeOf b < sizeOf c ∧ b.Below P.flags P.count ∧ b.RegsBelow P.marks ∧
+      b.NestOk b.spawnIds ∧ Steps (P.lower (.tasksBlock b)) r1 L0 .skip r2 ∧
+      (∀ j (hj : j < L0.length), L[n0 + j]? = some L0[j]) ∧ n0 ≤ i ∧ i < n0 + L0.length ∧
+      n0 + L0.length ≤ L.length := by
+  intro c
+  induction c with
+  | tasksBlock b _ =>
+    intro hb hr hn _ regs L regs' h i hi t _ _
+    refine ⟨b, 0, L, regs, regs', by simp, hb, hr,
+      hn.2.mono fun u hu => List.mem_append_right _ hu, h, fun j hj => ?_, Nat.zero_le _,
+      by omega, by omega⟩
+    rw [Nat.zero_add, List.getElem?_eq_getElem hj]
+  | seq s1 s2 ih1 ih2 =>
+    intro hb hr hn hO regs L regs' h i hi t hw ht
+    obtain ⟨L1, L2, ra, h1, h2, rfl⟩ := Steps.seq_done h
+    have hO1 : ∀ u ∈ s1.spawnIds, u ∈ O := fun u hu => hO u (List.mem_append_left _ hu)
+    have hO2 : ∀ u ∈ s2.spawnIds, u ∈ O := fun u hu => hO u (List.mem_append_right _ hu)
+    simp only [List.length_append] at hi
+    by_cases hi1 : i < L1.length
+    · rw [List.getElem_append_left hi1] at hw
+      obtain ⟨b, n0, L0, r1, r2, hsz, hb', hr', hn', hs, hl, h3, h4, h5⟩ :=
+        ih1 hb.1 hr.1 hn.1 hO1 h1 hi1 hw ht
+      refine ⟨b, n0, L0, r1, r2, by simp; omega, hb', hr', hn', hs, fun j hj => ?_, h3, h4,
+        by simp only [List.length_append]; omega⟩
+      rw [List.getElem?_append_left (by omega)]
+      exact hl j hj
+    · rw [List.getElem_append_right (by omega)] at hw
+      obtain ⟨b, n0, L0, r1, r2, hsz, hb', hr', hn', hs, hl, h3, h4, h5⟩ :=
+        ih2 hb.2 hr.2 hn.2 hO2 h2 (i := i - L1.length) (by omega) hw ht
+      refine ⟨b, L1.length + n0, L0, r1, r2, by simp; omega, hb', hr', hn', hs, fun j hj => ?_,
+        by omega, by omega, by simp only [List.length_append]; omega⟩
+      rw [List.getElem?_append_right (by omega), show L1.length + n0 + j - L1.length = n0 + j by omega]
+      exact hl j hj
+  | ite c s1 s2 ih1 ih2 =>
+    intro hb hr hn hO regs L regs' h i hi t hw ht
+    have hO1 : ∀ u ∈ s1.spawnIds, u ∈ O := fun u hu => hO u (List.mem_append_left _ hu)
+    have hO2 : ∀ u ∈ s2.spawnIds, u ∈ O := fun u hu => hO u (List.mem_append_right _ hu)
+    change Steps (.ite c (P.lower s1) (P.lower s2)) regs L .skip regs' at h
+    cases h with
+    | silent hs h' =>
+      cases hs with
+      | ite_true =>
+        obtain ⟨b, n0, L0, r1, r2, hsz, rest⟩ := ih1 hb.1 hr.2.1 hn.1 hO1 h' hi hw ht
+        exact ⟨b, n0, L0, r1, r2, by simp; omega, rest⟩
+      | ite_false =>
+        obtain ⟨b, n0, L0, r1, r2, hsz, rest⟩ := ih2 hb.2 hr.2.2 hn.2 hO2 h' hi hw ht
+        exact ⟨b, n0, L0, r1, r2, by simp; omega, rest⟩
+    | visible hs => cases hs
+  | loop c s1 ih =>
+    intro hb hr hn hO regs L regs' h i hi t hw ht
+    change Steps (.loop c (P.lower s1)) regs L .skip regs' at h
+    obtain ⟨n, L', r1, r2, hs, hl, h1, h2, h3⟩ := Steps.loop_pass h hi
+    rw [eq_of_off hl hi h1 h2] at hw
+    obtain ⟨b, n0, L0, r3, r4, hsz, hb', hr', hn', hs', hl0, h4, h5, h6⟩ :=
+      ih hb hr.2 hn hO hs (i := i - n) (by omega) hw ht
+    exact ⟨b, n + n0, L0, r3, r4, by simp; omega, hb', hr', hn', hs', off_trans hl hl0 h6,
+      by omega, by omega, by omega⟩
+  | _ =>
+    -- Code with no inner block starts only the tasks of its own `spawn`s.
+    intro hb _ _ hO regs L regs' h i hi t hw ht
+    obtain ⟨u, hu, hut⟩ := (accessRule _).runs h.runs (lower_spawnIds hb (by trivial)) _
+      (List.getElem_mem hi) hw.1 (by rw [hw.2]; simp only [start]; omega)
+    rw [hw.2] at hut
+    simp only [start] at hut
+    exact absurd (show t = u by omega ▸ hO u hu) ht
 
 /-- A task that a block started happens before the code after the block: each access `a` of
 task `t` happens before `b`. -/
@@ -448,6 +724,36 @@ theorem block_hb (hP : P.Ok) {X : Execution} (r : P.toProg.Run X) {s : Stmt}
     X.hb a b := by
   obtain ⟨j, -, hjr, hjl, hjb, -⟩ := block_join r hb hr hn hrun hlab hw hww hwl hwn hwL hbp hbL
   exact join_hb hP r ha hjr hjl (Or.inr hjb)
+
+/-- `block_hb` for a block whose code holds other `tasks` blocks. Each inner block starts only
+tasks that the blocks around it do not start (`NestOk`). The block joins each of its own tasks
+at its end. A task of an inner block is in a run of that inner block, which joined it. -/
+theorem block_hb_nested (hP : P.Ok) {X : Execution} (r : P.toProg.Run X) {s : Stmt}
+    (hb : s.Below P.flags P.count) (hr : s.RegsBelow P.marks) (hn : s.NestOk s.spawnIds)
+    {p n : Nat} {regs regs' : Nat → Int} {L : List Label}
+    (hrun : Steps (P.lower (.tasksBlock s)) regs L .skip regs')
+    (hlab : ∀ m (hm : m < L.length), r.lab p (n + m) = L[m])
+    {t : Nat} {w a b : X.E} (hw : X.thread w = p) (hww : X.IsWrite w)
+    (hwl : X.loc w = P.start t) (hwn : n ≤ r.idx w) (hwL : r.idx w < n + L.length)
+    (ha : X.thread a = t + 1) (hbp : X.thread b = p) (hbL : n + L.length ≤ r.idx b) :
+    X.hb a b := by
+  by_cases ht : t ∈ s.spawnIds
+  · obtain ⟨j, -, hjr, hjl, hjb⟩ :=
+      block_join_of r hb hr hn hrun hlab hw hww hwl hwn hwL hbp hbL ht
+    exact join_hb hP r ha hjr hjl (Or.inr hjb)
+  · obtain ⟨Lb, Le, ⟨ra, rb, hbody, -⟩, rfl, hin, hwlab⟩ := block_body hrun hlab hw hww hwn hwL
+    obtain ⟨c, n0, L0, r1, r2, hsz, hcb, hcr, hcn, hc, hl0, h1, h2, h3⟩ :=
+      nested_seg hb hr hn (fun _ h => h) hbody (i := r.idx w - n) hin
+        ⟨by rw [hwlab]; exact hww, by rw [hwlab]; exact hwl⟩ ht
+    have hlab0 : ∀ m (hm : m < L0.length), r.lab p (n + n0 + m) = L0[m] := fun m hm => by
+      have h0 := hl0 m hm
+      rw [List.getElem?_eq_getElem (by omega)] at h0
+      rw [Nat.add_assoc, hlab _ (by simp only [List.length_append]; omega),
+        List.getElem_append_left (by omega)]
+      exact Option.some.inj h0
+    exact block_hb_nested hP r hcb hcr hcn hc hlab0 hw hww hwl (by omega) (by omega) ha hbp
+      (by simp only [List.length_append] at hbL; omega)
+termination_by sizeOf s
 
 end TaskProg
 

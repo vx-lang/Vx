@@ -3023,7 +3023,6 @@ fn driver_import_runs_cross_module_scalar_references() {
 
     let run = Command::new(vxc)
         .args([app.to_str().unwrap(), "--run"])
-        .env("VX_STD_PATH", dir.to_str().unwrap())
         .env("RUST_BACKTRACE", "1")
         .output()
         .expect("run");
@@ -3075,10 +3074,9 @@ fn driver_import_auto_resolves_a_vxlib_artifact() {
     // Delete the library source: the import must resolve *purely* to the artifact.
     std::fs::remove_file(&lib).unwrap();
 
-    // No --link-interface flag; VX_STD_PATH makes `import mathlib;` resolve to `<dir>/mathlib.vxlib`.
+    // No --link-interface flag: `import mathlib;` resolves to the `mathlib.vxlib` beside the program.
     let run = Command::new(vxc)
         .args([app.to_str().unwrap(), "--run"])
-        .env("VX_STD_PATH", dir.to_str().unwrap())
         .env("RUST_BACKTRACE", "1")
         .output()
         .expect("run");
@@ -3137,7 +3135,6 @@ fn driver_import_uses_a_struct_from_a_vxlib() {
 
     let run = Command::new(vxc)
         .args([app.to_str().unwrap(), "--run"])
-        .env("VX_STD_PATH", dir.to_str().unwrap())
         .env("RUST_BACKTRACE", "1")
         .output()
         .expect("run");
@@ -3191,7 +3188,6 @@ fn driver_import_constructs_a_struct_from_a_vxlib() {
 
     let run = Command::new(vxc)
         .args([app.to_str().unwrap(), "--run"])
-        .env("VX_STD_PATH", dir.to_str().unwrap())
         .env("RUST_BACKTRACE", "1")
         .output()
         .expect("run");

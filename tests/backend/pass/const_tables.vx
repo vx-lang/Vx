@@ -11,10 +11,10 @@
 // `f64` entry; two `f32` entries, one negative; a table read inside another function; a local named like a table; and a table
 // from an imported module, read directly and through that module's own function.
 //
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=NO-HEAP
-// RUN: vxc %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s --check-prefix=NO-HEAP
+// RUN: vxc --package tests=tests %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc --package tests=tests %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc --package tests=tests %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=NO-HEAP
+// RUN: vxc --package tests=tests %s --legacy-codegen --action emit-mlir 2>&1 | FileCheck %s --check-prefix=NO-HEAP
 // CHECK-DAG: memref.global "private" constant @__vx_const_POWERS : memref<4xi64> = dense<[1, 10, 100, -1000]>
 // CHECK-DAG: memref.global "private" constant @__vx_const_BIG : memref<2xi64> = dense<[-1, 7]>
 // CHECK-DAG: memref.global "private" constant @__vx_const_HALVES : memref<3xf64> = dense<[5.000000e-01, -2.500000e-01, 1.000000e-01]>

@@ -1,0 +1,58 @@
+//===- assign_to_a_field_through_index_mut_drops_the_old_field.vx - Vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `r[i].name = x` on a type that implements `IndexMut` drops the old field, as in Rust.
+// `index_mut` runs once.
+// The trace is on one line, so the check also covers the order.
+//
+// EXPECT: index_mut, drop 1, replaced, drop 2,
+
+import core::ops;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("drop ");
+    print!(self.id);
+    print!(", ");
+  }
+}
+
+struct Named {
+  name : Noisy,
+  n : i32,
+}
+
+struct Rows {
+  only : Named,
+}
+
+impl IndexMut for Rows {
+  type Output = Named;
+  fn index_mut(self : &mut Rows, _i : i32) -> &mut Named {
+    print!("index_mut, ");
+    return &mut self.only;
+  }
+}
+
+fn main() -> i32 {
+  let mut r = Rows {
+    only : Named {
+      name : Noisy {
+        id : 1
+      }, n : 0
+    }
+  };
+  r[0].name = Noisy {
+    id : 2
+  };
+  print!("replaced, ");
+  return 0;
+}

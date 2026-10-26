@@ -67,11 +67,16 @@ fn vx_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// Compile one file as far as MLIR. Returns the combined output when it failed.
+///
+/// The llama programs import `tests::modules::llama_rt`, so `tests` is passed as a package.
 fn compile_failure(root: &Path, file: &Path) -> Option<String> {
+    let tests_package = format!("tests={}", root.join("tests").display());
     let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
         .current_dir(root)
         .args([
             file.to_str().unwrap(),
+            "--package",
+            &tests_package,
             "--action",
             "emit-mlir",
             "-o",
