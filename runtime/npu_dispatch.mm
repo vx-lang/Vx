@@ -559,6 +559,7 @@ extern "C" int vx_dispatch_ane_affine(float *out, float *x, float alpha,
 }
 
 #include "../include/vx_hardware_runtime.h"
+#include "vx_arrival_counts.h"
 #include "vx_dispatch_plan.h"
 #include "vx_host_call.h"
 #include "vx_remote_routing.h"
@@ -820,6 +821,32 @@ void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
   }
   vx_routing_refuse_handle("a free", device_ptr, topology_id);
   free(device_ptr);
+}
+
+// The same as in host_dispatch_common.h, which this backend does not include.
+static vx::ArrivalCounts &arrival_counts() {
+  static vx::ArrivalCounts counts;
+  return counts;
+}
+
+void *vx_plugin_arrivals_take(const void *site, size_t bytes, void *zeros,
+                              uint32_t topology_id, uint32_t space_access) {
+  if (void *kept = arrival_counts().take(site, topology_id, nullptr, bytes)) {
+    return kept;
+  }
+  return vx_plugin_alloc_and_transfer(bytes, zeros, topology_id, space_access);
+}
+
+void vx_plugin_arrivals_give(const void *site, void *count, size_t bytes,
+                             uint32_t topology_id) {
+  // Keep only a count in this process. Free a count on a worker of the fleet.
+  void *spare =
+      vx_routing_worker((int32_t)topology_id)
+          ? count
+          : arrival_counts().give(site, topology_id, nullptr, count, bytes);
+  if (spare) {
+    vx_plugin_free(spare, topology_id);
+  }
 }
 
 void vx_plugin_release_future(uint64_t future_id) {
