@@ -2927,7 +2927,23 @@ impl<'a> TypeChecker<'a> {
             let saved_edge = self.seam.lowering_edge.take();
             // The body's own `let`s overwrite it, and the caller's `let` still needs it.
             let saved_target = self.current_assignment_target.take();
-            self.check_instance(generic_method, &mut func_to_check);
+            // A non-generic inherent (or trait) method with no substitution was already
+            // checked as an impl method. Re-check here so the body is rewritten for
+            // emission, but drop the diagnostics: keeping them would report each error
+            // twice whenever something calls the method. Copied trait defaults are not
+            // checked until a call creates an instance, so they still keep what this
+            // check reports.
+            let already_checked_as_impl_method = generic_method.generics.is_empty()
+                && ib.generics.is_empty()
+                && mapping.is_empty()
+                && !ib.copied_defaults.contains(&generic_method.name);
+            let start = self.errors.len();
+            if already_checked_as_impl_method {
+                self.check_function(&mut func_to_check);
+                self.errors.discard_since(start);
+            } else {
+                self.check_instance(generic_method, &mut func_to_check);
+            }
             self.current_assignment_target = saved_target;
             self.seam.lowering_edge = saved_edge;
             self.mono.being_checked.remove(&mangled_sym);
