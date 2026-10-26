@@ -343,7 +343,7 @@ theorem cphase_ok (htask : ∀ t, P.StmtOk (P.task t)) {p : CPhase}
       | some _ => exact hs.2.1
     exact ⟨lowerC_noBlocks hn, lowerC_regsBelow hr,
       fun u hu w hw => apart_lower hs (htask w) (hap u hu w hw),
-      fun u hu v hv huv w w' hw hw' =>
+      fun u hu v hv huv _ w w' hw hw' =>
         apart_lower (htask w) (htask w') (hpair u hu v hv huv w w' hw hw')⟩
 
 theorem cphasesOk_lower (htask : ∀ t, P.StmtOk (P.task t)) :

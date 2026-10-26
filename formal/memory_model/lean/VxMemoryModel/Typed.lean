@@ -464,7 +464,7 @@ theorem blockOk (hw : T.WellTyped) {is : List Item} (hp : T.PhaseOk (.block is))
     rw [TaskProg.desc_nil] at hd
     subst w
     exact apart_of_fit hw hacc (hw.bodies u).accesses (fun x l hl => fit_block hw hu x l hl) _
-  · intro u hu v hv huv w w' hd hd'
+  · intro u hu v hv huv _ w w' hd hd'
     rw [compileItems_spawnIds] at hu hv
     rw [TaskProg.desc_nil] at hd hd'
     subst w w'

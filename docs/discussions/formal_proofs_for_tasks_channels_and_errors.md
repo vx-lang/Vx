@@ -217,7 +217,8 @@ also start tasks. The seventh part makes the lock rule less strict. The main cod
 blocks accesses a place of a lock without the lock, because no task runs then (`main_task`). The
 eighth part lets a block run in a loop. Each pass joins its tasks, so the rule of the block holds
 for each pass (`Runs.loop_pass`). In `Footprint.lean` the loop can also run code that starts no
-task before and after the block (#2241).
+task before and after the block (#2241). Two tasks that one `spawn` of the block starts need not
+be apart, because one pass starts at most one of them (#2242).
 
 ## Later
 
