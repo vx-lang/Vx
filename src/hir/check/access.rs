@@ -1019,6 +1019,64 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `v[i] = x` on a user container such as `Vec<T>` is `v.set(i, x)`, as a read `v[i]` is
+    /// `v.get(i)`. `set` drops the element it replaces. `v[i] += x` is
+    /// `v.set(i, v.get(i) + x)`, when `v` and `i` call nothing, so naming them twice is safe.
+    /// `None` when the type has no `set`, or when it has `IndexMut`, which the write goes through.
+    pub(crate) fn container_store(
+        &mut self,
+        lhs: &Expr,
+        op: Option<&crate::syntax::BinaryOp>,
+        rhs: &Expr,
+        span: crate::syntax::Span,
+    ) -> Option<Expr> {
+        let Expr::IndexAccess(ix) = lhs else {
+            return None;
+        };
+        if self.speculating {
+            return None;
+        }
+        let mut ty = self.operand_type(&ix.base);
+        if let Type::Borrow { inner, .. } = ty {
+            ty = *inner;
+        }
+        let elem = self.container_element_type(&ty)?;
+        let mut mapping = HashMap::new();
+        let has = |s: &mut Self, m: &str, mapping: &mut HashMap<_, _>| {
+            s.resolve_method_in_impls(&ty, &m.into(), mapping).is_some()
+        };
+        if has(self, "index_mut", &mut mapping) || !has(self, "set", &mut mapping) {
+            return None;
+        }
+        let call = |name: &str, args: Vec<Expr>| {
+            Expr::MethodCall(crate::syntax::MethodCallExpr {
+                base: ix.base.clone(),
+                method_name: name.into(),
+                type_args: None,
+                args,
+                span,
+            })
+        };
+        let value = match op {
+            None => rhs.clone(),
+            Some(op) => {
+                let pure = crate::hir::check::across_lanes::may_write(&ix.base).is_none()
+                    && crate::hir::check::across_lanes::may_write(&ix.index).is_none();
+                if !pure || !(elem.has_generic_params() || self.is_copy(&elem)) {
+                    return None;
+                }
+                Expr::BinaryOp(crate::syntax::BinaryOpExpr {
+                    lhs: Box::new(call("get", vec![(*ix.index).clone()])),
+                    op: op.clone(),
+                    rhs: Box::new(rhs.clone()),
+                    span,
+                    operand_ty: None,
+                })
+            }
+        };
+        Some(call("set", vec![(*ix.index).clone(), value]))
+    }
+
     /// The element type produced by indexing a user container such as `Vec<T>`: resolved from the
     /// container struct's backing `data : *mut T` field, with the struct's generic parameters
     /// substituted by the instance's type arguments. So `v[i]` on a `Vec<i32>` is `i32` — not the

@@ -366,18 +366,30 @@ impl<'a> TypeChecker<'a> {
                 self.check_task_exit(&Statement::Continue(c.clone()));
                 self.drops_exit("continue", c.span.line, true)
             }
-            Statement::Assign(AssignStmt { lhs, rhs, span: _ }) => {
-                self.check_assign_stmt(lhs, None, rhs, consume, None)
+            Statement::Assign(AssignStmt { lhs, rhs, span }) => {
+                let span = *span;
+                if let Some(call) = self.container_store(lhs, None, rhs, span) {
+                    *stmt = Statement::ExprStmt(ExprStmtStmt::new(call, true, span));
+                    self.check_statement(stmt, return_type, consume);
+                } else {
+                    self.check_assign_stmt(lhs, None, rhs, consume, None)
+                }
             }
             Statement::CompoundAssign(CompoundAssignStmt {
                 lhs,
                 op,
                 rhs,
-                span: _,
+                span,
                 operand_ty,
             }) => {
                 let op = op.clone();
-                self.check_assign_stmt(lhs, Some(&op), rhs, consume, Some(operand_ty))
+                let span = *span;
+                if let Some(call) = self.container_store(lhs, Some(&op), rhs, span) {
+                    *stmt = Statement::ExprStmt(ExprStmtStmt::new(call, true, span));
+                    self.check_statement(stmt, return_type, consume);
+                } else {
+                    self.check_assign_stmt(lhs, Some(&op), rhs, consume, Some(operand_ty))
+                }
             }
             Statement::Return(ret) => {
                 self.check_task_exit(&Statement::Return(ret.clone()));

@@ -1,0 +1,68 @@
+//===- assign_to_an_element_of_a_vec.vx - Vx Compiler -------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `v[i] = x` on a `Vec` is `v.set(i, x)`, as a read `v[i]` is `v.get(i)`. `v[i] += x` is
+// `v.set(i, v.get(i) + x)`. `set` drops the element that it replaces, so `v[0] = Noisy { id: 3 }`
+// drops the `Noisy` with id 1 at once. `fill` writes through a `&mut Vec`.
+//
+// EXPECT: 10 11 36 7
+// EXPECT: drop 1
+// EXPECT: replaced
+// EXPECT: drop 3
+// EXPECT: drop 2
+
+import std::vec;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("drop ");
+    print!(self.id);
+    print!("\n");
+  }
+}
+
+fn fill(v : &mut Vec<i32>, x : i32) -> void {
+  for i in 0..v.len() {
+    v[i] = x + i;
+  }
+  return;
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i32>::with_capacity(4);
+  for _i in 0..4 {
+    v.push(0);
+  }
+  fill(&mut v, 10);
+  let k = 2;
+  v[k] *= 3;
+  v[3] = v[3] - 6;
+  print!(v[0]);
+  print!(" ");
+  print!(v[1]);
+  print!(" ");
+  print!(v[2]);
+  print!(" ");
+  print!(v[3]);
+  print!("\n");
+  let mut n = Vec<Noisy>::with_capacity(2);
+  n.push(Noisy {
+    id : 1
+  });
+  n.push(Noisy {
+    id : 2
+  });
+  n[0] = Noisy {
+    id : 3
+  };
+  print!("replaced\n");
+  return 0;
+}
