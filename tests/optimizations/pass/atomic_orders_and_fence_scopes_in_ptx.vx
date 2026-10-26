@@ -1,0 +1,52 @@
+//===- atomic_orders_and_fence_scopes_in_ptx.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The PTX for each atomic order and fence scope of `core::sync::atomic`. The memory model in
+// formal/memory_model/ relies on this mapping, which is the one the PTX memory model gives:
+//
+// - A load or a store becomes `ld` or `st` with the same order: relaxed, acquire or release.
+// - A `SeqCst` load or store is a `fence.sc` and then an acquire load or a release store.
+// - A fence of block scope becomes `fence.acq_rel.cta`, and one of device scope `.gpu`.
+// - A `SeqCst` fence becomes `fence.sc`.
+//
+// The kernel does each one once, in this order. The PTX is one line of the output, with `\0A`
+// for each line break and `\09` for each tab.
+//
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// CHECK: .entry vx_npu_kernel_0(
+// CHECK-SAME: st.relaxed.sys.global.b32 \09[%rd{{[0-9]+}}], 1;
+// CHECK-SAME: st.release.sys.global.b32 \09[%rd{{[0-9]+}}+4], 2;
+// CHECK-SAME: fence.sc.sys;\0A\09st.release.sys.global.b32 \09[%rd{{[0-9]+}}+8], 3;
+// CHECK-SAME: ld.relaxed.sys.global.b32 \09%r{{[0-9]+}}, [%rd{{[0-9]+}}];
+// CHECK-SAME: ld.acquire.sys.global.b32 \09%r{{[0-9]+}}, [%rd{{[0-9]+}}+4];
+// CHECK-SAME: fence.sc.sys;\0A\09ld.acquire.sys.global.b32 \09%r{{[0-9]+}}, [%rd{{[0-9]+}}+8];
+// CHECK-SAME: fence.acq_rel.cta;\0A\09fence.acq_rel.gpu;\0A\09fence.sc.sys;
+
+import core::sync::atomic;
+
+fn main() -> i32 {
+  let x = transfer(Tensor<i32, [3]>::fill(0), Memory::HBM);
+  let mut out = transfer(Tensor<i32, [3]>::fill(0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      for l in 0..1 across lanes {
+        atomic_store_i32(&x, 0, 1, AtomicOrdering::Relaxed);
+        atomic_store_i32(&x, 1, 2, AtomicOrdering::Release);
+        atomic_store_i32(&x, 2, 3, AtomicOrdering::SeqCst);
+        out[b + l] = atomic_load_i32(&x, 0, AtomicOrdering::Relaxed);
+        out[b + l + 1] = atomic_load_i32(&x, 1, AtomicOrdering::Acquire);
+        out[b + l + 2] = atomic_load_i32(&x, 2, AtomicOrdering::SeqCst);
+        scoped_fence(AtomicOrdering::Release, FenceScope::Block);
+        scoped_fence(AtomicOrdering::Acquire, FenceScope::Device);
+        scoped_fence(AtomicOrdering::SeqCst, FenceScope::System);
+      }
+    }
+  }
+  let o = transfer(out, Memory::CPU_DRAM);
+  println!("{} {} {}", o[0], o[1], o[2]);
+  return 0;
+}

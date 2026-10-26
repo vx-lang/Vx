@@ -1,0 +1,67 @@
+//===- sb_rel_acq_blocks_stress.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Store buffering between two blocks: litmus test store_buffering_release_acquire. In each
+// round k, block 0 writes x[k] and reads y[k], and block 1 writes y[k] and reads x[k]. The
+// model allows a round where both read 0, so this test is a control. `go` starts each round
+// in both blocks at about the same time.
+// Blocks 2 to 15 add memory stress, which makes weak results more likely.
+import core::sync::atomic;
+
+fn main() -> i32 {
+  let x = transfer(Tensor<i32, [100000]>::fill(0), Memory::HBM);
+  let y = transfer(Tensor<i32, [100000]>::fill(0), Memory::HBM);
+  let go = transfer(Tensor<i32, [2]>::fill(0), Memory::HBM);
+  let mut seen = transfer(Tensor<i32, [200000]>::fill(-1), Memory::HBM);
+  let scratch = transfer(Tensor<i32, [65536]>::fill(0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..16 across blocks {
+      for l in 0..1 across lanes {
+        if b < 2 {
+          for k in 0..100000 {
+            // Both blocks arrive at round k before either one starts it.
+            let _a = atomic_fetch_add_i32(&go, b, 1, AtomicOrdering::Relaxed);
+            loop {
+              if atomic_load_i32(&go, 1 - b, AtomicOrdering::Relaxed) > k {
+                break;
+              }
+            }
+            if b == 0 {
+              atomic_store_i32(&x, k, 1, AtomicOrdering::Release);
+              seen[b * 100000 + k + l] = atomic_load_i32(&y, k, AtomicOrdering::Acquire);
+            } else {
+              atomic_store_i32(&y, k, 1, AtomicOrdering::Release);
+              seen[b * 100000 + k + l] = atomic_load_i32(&x, k, AtomicOrdering::Acquire);
+            }
+          }
+        } else {
+          // Memory stress: each of these blocks writes and reads its own part of `scratch` until
+          // block 0 has started its last round.
+          let mut j = 0;
+          loop {
+            if atomic_load_i32(&go, 0, AtomicOrdering::Relaxed) >= 100000 {
+              break;
+            }
+            let at = b * 4096 + (j * 97) % 4096 + l;
+            atomic_store_i32(&scratch, at, j, AtomicOrdering::Relaxed);
+            let _r = atomic_load_i32(&scratch, at, AtomicOrdering::Relaxed);
+            j = j + 1;
+          }
+        }
+      }
+    }
+  }
+  let s = transfer(seen, Memory::CPU_DRAM);
+  let mut both = 0;
+  for k in 0..100000 {
+    if s[k] == 0 && s[100000 + k] == 0 {
+      both = both + 1;
+    }
+  }
+  println!("sb_rel_acq_blocks_stress: {} of 100000 rounds read 0 in both blocks", both);
+  return 0;
+}

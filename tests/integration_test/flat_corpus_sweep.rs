@@ -375,6 +375,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/a_library_tells_the_backend_its_gpus.vx",  // needs --machine
             "optimizations/pass/splits_read_from_gpu_memory.vx",           // needs --machine
             "optimizations/pass/a_kernel_tells_ptxas_its_block_size.vx",   // needs --machine
+            "optimizations/pass/atomic_orders_and_fence_scopes_in_ptx.vx", // needs --machine
             "optimizations/pass/code_after_the_blocks_in_a_kernel_for_emit_ptx.vx", // needs --machine
             "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
             "frontend/pass/packages/import_from_a_package.vx", // needs --package
