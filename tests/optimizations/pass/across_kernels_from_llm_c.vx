@@ -368,6 +368,36 @@ pub fn skip_empty_rows_in_each_lane(out : &mut Tensor<f32, [?, 256], Memory::HBM
   return;
 }
 
+// The kernel skips rows with no tokens, with the condition around the lane loop, as llm.c writes
+// it. `lengths` is a `&` tensor, so every lane reads the same value.
+pub fn skip_empty_rows(out : &mut Tensor<f32, [?, 256], Memory::HBM>, inp : &Tensor<f32, [?, 256], Memory::HBM>, lengths : &Tensor<i32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      if lengths[r] > 0 {
+        for l in 0..256 across lanes {
+          out[r][l] = inp[r][l] * 2.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// The same condition through a `let`.
+pub fn skip_empty_rows_through_a_let(out : &mut Tensor<f32, [?, 256], Memory::HBM>, inp : &Tensor<f32, [?, 256], Memory::HBM>, lengths : &Tensor<i32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for r in 0..rows across blocks {
+      let n = lengths[r];
+      if n > 0 {
+        for l in 0..256 across lanes {
+          out[r][l] = inp[r][l] * 2.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
 // dwte[ix[b][t]][c] += dout[b][t][c] with an atomic add, as llm.c writes it. Two tokens with one id
 // add to one row, and the atomic add keeps both. `dwte` is flat here, `ix * 768 + c`.
 pub fn encoder_backward_atomic(dwte : &Tensor<f32, [?], Memory::HBM>, dout : &Tensor<f32, [?, ?, 768], Memory::HBM>, ix : &Tensor<i32, [?, ?], Memory::HBM>, batch : i32, seq : i32) -> void {

@@ -12,17 +12,19 @@
 // values that it does not write (L10). Each function below breaks one of these rules.
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
-// CHECK: Error[E6032] at 30:{{.*}}this condition decides whether the lanes reach the end of a lane loop or a lane reduction, so it must be the same for every lane of the block. {{.*}} but it reads memory
-// CHECK: Error[E6032] at 44:{{.*}}this condition {{.*}} but `m` is not one of these
-// CHECK: Error[E6032] at 58:{{.*}}the bound of this loop decides whether the lanes reach {{.*}} but `m` is not one of these
-// CHECK: Error[E6032] at 73:{{.*}}this condition {{.*}} every lane of the subgroup. {{.*}} but `m` is not one of these
-// CHECK: Error[E6032] at 88:{{.*}}this condition {{.*}} but it reads memory
-// CHECK: Error[E6032] at 111:{{.*}}this lane loop reads `total`, which only lane 0 has
-// CHECK: Error[E6032] at 120:{{.*}}before the `across` nest of blocks, a region may only declare values with `let`
-// CHECK: Error[E6032] at 134:{{.*}}before the `across` nest of blocks, every lane runs the code, so a `let` there may only compute a value
-// CHECK: Error[E6032] at 144:{{.*}}before the `across` nest of blocks, this reads `y`, which the blocks write
-// CHECK: Error[E6032] at 162:{{.*}}this lane loop reads `m`, which only lane 0 has
-// CHECK: Error[E6032] at 177:{{.*}}this condition decides whether the lanes reach {{.*}} but it reads memory
+// CHECK: Error[E6032] at 32:{{.*}}this condition decides whether the lanes reach the end of a lane loop or a lane reduction, so it must be the same for every lane of the block. {{.*}} but it reads memory
+// CHECK: Error[E6032] at 46:{{.*}}this condition {{.*}} but `m` is not one of these
+// CHECK: Error[E6032] at 60:{{.*}}the bound of this loop decides whether the lanes reach {{.*}} but `m` is not one of these
+// CHECK: Error[E6032] at 75:{{.*}}this condition {{.*}} every lane of the subgroup. {{.*}} but `m` is not one of these
+// CHECK: Error[E6032] at 90:{{.*}}this condition {{.*}} but it reads memory
+// CHECK: Error[E6032] at 113:{{.*}}this lane loop reads `total`, which only lane 0 has
+// CHECK: Error[E6032] at 122:{{.*}}before the `across` nest of blocks, a region may only declare values with `let`
+// CHECK: Error[E6032] at 136:{{.*}}before the `across` nest of blocks, every lane runs the code, so a `let` there may only compute a value
+// CHECK: Error[E6032] at 146:{{.*}}before the `across` nest of blocks, this reads `y`, which the blocks write
+// CHECK: Error[E6032] at 164:{{.*}}this lane loop reads `m`, which only lane 0 has
+// CHECK: Error[E6032] at 179:{{.*}}this condition decides whether the lanes reach {{.*}} but it reads memory
+// CHECK: Error[E6032] at 196:{{.*}}the passes of this block loop change `c` with atomic operations
+// CHECK: Error[E6032] at 213:{{.*}}this condition {{.*}} but `m` is not one of these
 
 pub fn if_on_memory(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
   spawn on(Topology::Device) {
@@ -176,6 +178,41 @@ pub fn breaks_on_memory(y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> 
         }
         if y[b][0] > 2.0 {
           break;
+        }
+      }
+    }
+  }
+  return;
+}
+
+import core::sync::atomic;
+
+// An element of a `&` tensor is the same for every lane, unless an atomic operation changes it.
+// Here the code of group `g` adds to `c` while the blocks of another group read it.
+pub fn if_on_a_shared_tensor_with_an_atomic_add(c : &Tensor<u32, [4], Memory::HBM>, y : &mut Tensor<f32, [?, 4, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..n across blocks {
+      for b in 0..4 across blocks {
+        if c[0] > 0u32 {
+          for t in 0..32 across lanes {
+            y[g][b][t] = 1.0;
+          }
+        }
+      }
+      let _old = atomic_fetch_add_u32(c, 0, 1u32, AtomicOrdering::Relaxed);
+    }
+  }
+  return;
+}
+
+// An element of a `&` tensor is the same for every lane only when its index is.
+pub fn if_on_a_shared_tensor_at_a_mutable_index(c : &Tensor<i32, [4], Memory::HBM>, y : &mut Tensor<f32, [?, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      let mut m = 0;
+      if c[m] > 0 {
+        for t in 0..32 across lanes {
+          y[b][t] = 1.0;
         }
       }
     }

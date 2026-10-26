@@ -212,6 +212,9 @@ spawn on(Topology::Gpu) {
   nothing. `scoped_fence(order, FenceScope::Device)` is one.
 - Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
   memory.
+- A condition or a bound around a lane loop may read an element of a `&` tensor parameter. Only
+  an atomic operation can change one, and then every access must be atomic. So every lane reads
+  the same value. A replayed CUDA graph gets a value such as the number of splits this way.
 - `lanes::sum`, `lanes::max` and their `_unordered` versions combine a tensor over the lanes of
   a block or a subgroup, and every lane gets the result (`docs/lane_reductions.md`).
 - Code after the nest of blocks runs once, after every pass, in the same kernel. Each pass ends

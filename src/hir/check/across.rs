@@ -31,6 +31,10 @@ struct Region {
     /// The names that the region declares. A `blocks` bound may not read them: the host
     /// computes it before the region starts.
     locals: HashSet<String>,
+    /// The `&` tensor parameters. Only an atomic operation can change one while the region runs,
+    /// and the race proof then makes every access to it atomic. So a plain read gets the same
+    /// value in every lane.
+    fixed: HashSet<String>,
     /// The position of the region, which names it.
     span: Span,
 }
@@ -80,6 +84,8 @@ struct Walk<'g> {
     lane_sizes: HashMap<Span, u64>,
     /// The lane reductions in a place that allows them.
     lane_calls: Vec<LaneCall>,
+    /// The parameters of the function that are `&` tensors, not `&mut`.
+    read_only: HashSet<String>,
 }
 
 /// A lane reduction in the code of a level.
@@ -94,7 +100,19 @@ struct LaneCall {
 impl crate::hir::TypeChecker<'_> {
     /// E6032 for each `across` loop in `body` that its place or its size does not allow. Each
     /// loop gets the kind of its level, for the code generator.
-    pub(crate) fn check_across_loops(&mut self, body: &mut [Statement]) {
+    pub(crate) fn check_across_loops(
+        &mut self,
+        params: &[(crate::symbol::Symbol, crate::syntax::Type)],
+        body: &mut [Statement],
+    ) {
+        let read_only = params
+            .iter()
+            .filter(|(_, ty)| {
+                matches!(ty, crate::syntax::Type::Borrow { inner, is_mut: false, .. }
+                    if matches!(**inner, crate::syntax::Type::Tensor(..)))
+            })
+            .map(|(name, _)| name.as_ref().to_string())
+            .collect();
         let shared = self
             .env
             .memories
@@ -116,6 +134,7 @@ impl crate::hir::TypeChecker<'_> {
             contracts: self.atomic_contracts(),
             lane_sizes: self.lane_reductions.clone(),
             lane_calls: Vec::new(),
+            read_only,
         };
         walk.stmts(body, &Ctx::default());
         mark_stmts(body, &walk.found);
@@ -208,7 +227,10 @@ impl Walk<'_> {
                     && if at_top {
                         across_lanes::may_write(&l.expr).is_none()
                     } else {
-                        across_lanes::not_uniform(&l.expr, &|n| Self::is_uniform(&ctx, n)).is_none()
+                        across_lanes::not_uniform(&l.expr, &|n| Self::is_uniform(&ctx, n), &|n| {
+                            Self::is_fixed(&ctx, n)
+                        })
+                        .is_none()
                     };
                 if uniform {
                     ctx.uniform.insert(name.clone());
@@ -230,6 +252,13 @@ impl Walk<'_> {
                 ctx.axes.last().map(|a| a.kind),
                 Some(LevelKind::Blocks | LevelKind::Subgroups)
             )
+    }
+
+    /// Whether `name` is a tensor that no one writes while the region runs.
+    fn is_fixed(ctx: &Ctx, name: &str) -> bool {
+        ctx.region
+            .as_ref()
+            .is_some_and(|r| r.fixed.contains(name) && !r.locals.contains(name))
     }
 
     fn is_uniform(ctx: &Ctx, name: &str) -> bool {
@@ -321,7 +350,9 @@ impl Walk<'_> {
 
     /// L8: a condition or a bound around a lane or subgroup loop is the same for every lane.
     fn uniform_around(&mut self, e: &Expr, what: &str, ctx: &Ctx) {
-        if let Some((why, at)) = across_lanes::not_uniform(e, &|n| Self::is_uniform(ctx, n)) {
+        if let Some((why, at)) = across_lanes::not_uniform(e, &|n| Self::is_uniform(ctx, n), &|n| {
+            Self::is_fixed(ctx, n)
+        }) {
             let scope = if ctx.axes.last().map(|a| a.kind) == Some(LevelKind::Subgroups) {
                 "subgroup"
             } else {
@@ -331,8 +362,8 @@ impl Walk<'_> {
                 format!(
                     "{what} decides whether the lanes reach the end of a lane loop or a lane \
                      reduction, so it must be the same for every lane of the {scope}. It may read \
-                     only the indices of blocks and subgroups, values from the host, and names \
-                     computed from them, but {why}"
+                     only the indices of blocks and subgroups, values from the host, elements of \
+                     a `&` tensor parameter, and names computed from them, but {why}"
                 ),
                 at,
             );
@@ -359,8 +390,12 @@ impl Walk<'_> {
                     if Self::stretch_level(ctx) && across_lanes::holds_across(s) {
                         self.uniform_around(&f.iterable, "the bound of this loop", ctx);
                         body.strict_ifs = true;
-                        if across_lanes::not_uniform(&f.iterable, &|n| Self::is_uniform(ctx, n))
-                            .is_none()
+                        if across_lanes::not_uniform(
+                            &f.iterable,
+                            &|n| Self::is_uniform(ctx, n),
+                            &|n| Self::is_fixed(ctx, n),
+                        )
+                        .is_none()
                         {
                             body.uniform.insert(f.iter.clone());
                         }
@@ -455,6 +490,7 @@ impl Walk<'_> {
                         arch: desc.and_then(|d| d.arch.as_ref()).map(|a| a.to_string()),
                         launches: desc.is_some_and(|d| d.launches_levels(&kind)),
                         locals: HashSet::new(),
+                        fixed: self.read_only.clone(),
                         span: sp.span,
                     }),
                     top: true,

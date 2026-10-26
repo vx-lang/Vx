@@ -197,8 +197,14 @@ fn note_target(lhs: &Expr, writes: &mut bool, assigned: &mut HashSet<String>) {
     }
 }
 
-/// Why `e` may not be the same for every lane, or `None`. `uniform` says which names are.
-pub(crate) fn not_uniform(e: &Expr, uniform: &dyn Fn(&str) -> bool) -> Option<(String, Span)> {
+/// Why `e` may not be the same for every lane, or `None`. `uniform` says which names are, and
+/// `fixed` says which tensors no plain write changes while the region runs. An element of such a
+/// tensor is the same for every lane when its index is.
+pub(crate) fn not_uniform(
+    e: &Expr,
+    uniform: &dyn Fn(&str) -> bool,
+    fixed: &dyn Fn(&str) -> bool,
+) -> Option<(String, Span)> {
     // Every lane gets the same result from a lane reduction.
     if crate::hir::check::lanes::bare_lanes_call(e).is_some() {
         return None;
@@ -212,7 +218,7 @@ pub(crate) fn not_uniform(e: &Expr, uniform: &dyn Fn(&str) -> bool) -> Option<(S
             Expr::Identifier(id) if !uniform(id.name.as_ref()) => {
                 why = Some((format!("`{}` is not one of these", id.name), id.span));
             }
-            Expr::IndexAccess(ix) => {
+            Expr::IndexAccess(ix) if !element_of(ix).is_some_and(fixed) => {
                 why = Some((
                     "it reads memory, which a lane may see at another time".to_string(),
                     ix.span,
@@ -230,6 +236,15 @@ pub(crate) fn not_uniform(e: &Expr, uniform: &dyn Fn(&str) -> bool) -> Option<(S
         }
     });
     why
+}
+
+/// The tensor that `ix` reads an element of, when its base is a name or an element of one.
+fn element_of(ix: &crate::syntax::IndexAccessExpr) -> Option<&str> {
+    match &*ix.base {
+        Expr::Identifier(id) => Some(id.name.as_ref()),
+        Expr::IndexAccess(inner) => element_of(inner),
+        _ => None,
+    }
 }
 
 /// The names of the tensors that `stmts` write an element of.

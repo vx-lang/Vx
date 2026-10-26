@@ -6,17 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 // Kernels from llm.c's CUDA training code, written with `across` loops, that the checker refuses
-// (E6032), and two forms that a CUDA programmer would write for llm.c's layernorm and for padded
-// rows. Each has a passing form in across_kernels_from_llm_c.vx. Two need an atomic add, as in
-// llm.c, because the data decides where they write.
+// (E6032), and a form that a CUDA programmer would write for llm.c's layernorm. Each has a passing
+// form in across_kernels_from_llm_c.vx. Two need an atomic add, as in llm.c, because the data
+// decides where they write.
 //
 // RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=E6032
-// CHECK: Error[E6032] at 29:{{.*}}two passes of this block loop may write the same element of `dwte`: an index of the write
-// CHECK: Error[E6032] at 68:{{.*}}the call to `f32$rsqrt` may write through an argument, and the checker does not read its
-// CHECK: Error[E6032] at 88:{{.*}}two passes of this block loop may write the same element of `dbias`: an index of the
-// CHECK: Error[E6032] at 107:{{.*}}this lane loop reads `mean`, which only lane 0 has: lane 0 alone runs the code that sets
-// CHECK: Error[E6032] at 119:{{.*}}this condition decides whether the lanes reach the end of a lane loop
-// CHECK: Error[E6032] at 134:{{.*}}this condition decides whether the lanes reach the end of a lane loop
+// CHECK: Error[E6032] at 27:{{.*}}two passes of this block loop may write the same element of `dwte`: an index of the write
+// CHECK: Error[E6032] at 66:{{.*}}the call to `f32$rsqrt` may write through an argument, and the checker does not read its
+// CHECK: Error[E6032] at 86:{{.*}}two passes of this block loop may write the same element of `dbias`: an index of the
+// CHECK: Error[E6032] at 105:{{.*}}this lane loop reads `mean`, which only lane 0 has: lane 0 alone runs the code that sets
 
 import core::num;
 
@@ -105,36 +103,6 @@ pub fn layernorm_mean_from_lane_0(out : &mut Tensor<f32, [?, 256], Memory::HBM>,
       means[r] = mean;
       for l in 0..256 across lanes {
         out[r][l] = inp[r][l] - mean;
-      }
-    }
-  }
-  return;
-}
-
-// The kernel skips rows with no tokens, with the condition around the lane loop. The condition
-// reads memory, so the lanes may not agree on it. The checker accepts it in each lane.
-pub fn skip_empty_rows(out : &mut Tensor<f32, [?, 256], Memory::HBM>, inp : &Tensor<f32, [?, 256], Memory::HBM>, lengths : &Tensor<i32, [?], Memory::HBM>, rows : i32) -> void {
-  spawn on(Topology::Device) {
-    for r in 0..rows across blocks {
-      if lengths[r] > 0 {
-        for l in 0..256 across lanes {
-          out[r][l] = inp[r][l] * 2.0;
-        }
-      }
-    }
-  }
-  return;
-}
-
-// The same condition through a `let`: the name holds a value read from memory.
-pub fn skip_empty_rows_from_shared(out : &mut Tensor<f32, [?, 256], Memory::HBM>, inp : &Tensor<f32, [?, 256], Memory::HBM>, lengths : &Tensor<i32, [?], Memory::HBM>, rows : i32) -> void {
-  spawn on(Topology::Device) {
-    for r in 0..rows across blocks {
-      let n = lengths[r];
-      if n > 0 {
-        for l in 0..256 across lanes {
-          out[r][l] = inp[r][l] * 2.0;
-        }
       }
     }
   }
