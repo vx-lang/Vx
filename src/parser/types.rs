@@ -273,9 +273,12 @@ impl<'a> Parser<'a> {
             Ok(Type::Scalar(ElementType::I32))
         } else if self.match_token(&TokenType::LeftAngle) {
             let n = match &self.advance().kind {
-                TokenType::Number(s) => s
-                    .parse::<usize>()
-                    .map_err(|_| self.error("Expected integer for SIMD size"))?,
+                // The spellings of any other literal: `<0x4 x f32>`, but no type suffix.
+                TokenType::Number(s) => match crate::parser::expr::infer_number_literal(s) {
+                    Ok((text, None)) => text.parse::<usize>().ok(),
+                    _ => None,
+                }
+                .ok_or_else(|| self.error("Expected integer for SIMD size"))?,
                 _ => return Err(self.error("Expected number after '<' in SIMD type")),
             };
             match &self.advance().kind {

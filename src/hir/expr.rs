@@ -17,6 +17,7 @@ use super::*;
 pub(crate) fn int_dim_expr(n: usize) -> Expr {
     Expr::Number(NumberExpr {
         value: n.to_string().into(),
+        text: None,
         ty: Some(ElementType::I32),
         span: Span::default(),
     })
@@ -52,6 +53,18 @@ pub(crate) fn numeric_literal_mut(e: &mut Expr) -> Option<&mut NumberExpr> {
             ..
         }) => numeric_literal_mut(inner),
         _ => None,
+    }
+}
+
+/// Whether the numeric literal an expression is has an odd number of minus signs in front.
+pub(crate) fn literal_is_negated(e: &Expr) -> bool {
+    match e {
+        Expr::UnaryOp(UnaryOpExpr {
+            op: UnaryOp::Neg,
+            expr: inner,
+            ..
+        }) => !literal_is_negated(inner),
+        _ => false,
     }
 }
 

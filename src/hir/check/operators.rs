@@ -1138,6 +1138,14 @@ impl<'a> TypeChecker<'a> {
                 expr: inner,
                 span,
             }) => {
+                // The outermost minus of a chain decides the sign: `--128i8` is 128. An inner
+                // minus finds the flag already set and leaves it.
+                if matches!(op, UnaryOp::Neg)
+                    && self.literal_negated.is_none()
+                    && crate::hir::expr::numeric_literal_mut(inner).is_some()
+                {
+                    self.literal_negated = Some(!crate::hir::expr::literal_is_negated(inner));
+                }
                 let inner_ty = self.check_expr_type(inner);
                 if let (UnaryOp::Neg, Expr::Number(n)) = (&*op, &**inner) {
                     if Self::scalar_elem(&inner_ty).is_some_and(|e| e.is_narrow_float()) {

@@ -1,0 +1,37 @@
+//===- integer_literals_at_the_edge_of_their_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The smallest and largest value of a type can be written as a literal. `-128` is a minus in
+// front of `128`, which an `i8` cannot hold by itself, so the two are checked as one number.
+// `0bf16` is zero as a `bf16`, not a binary literal.
+//
+// EXPECT: -128 -128 127 -9223372036854775808 18446744073709551615 0 -128
+
+fn main() -> i32 {
+  let typed : i8 = -128;
+  let suffixed = -128i8;
+  let top : i8 = 0x7F;
+  let lowest : i64 = -9223372036854775808;
+  let highest : u64 = 0xFFFF_FFFF_FFFF_FFFF;
+  let zero = 0bf16;
+  // Three minuses leave the sign negative, so this is -128 and fits.
+  let thrice : i8 = ---128;
+  print(typed);
+  print!(" ");
+  print(suffixed);
+  print!(" ");
+  print(top);
+  print!(" ");
+  print(lowest);
+  print!(" ");
+  print(highest);
+  print!(" ");
+  print(zero);
+  print!(" ");
+  print(thrice);
+  return 0;
+}

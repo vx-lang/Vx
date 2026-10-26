@@ -16,11 +16,11 @@ fn take(n : usize) -> usize {
 }
 
 fn main() -> i32 {
-  // CHECK: Error[E3045]: 9223372036854775808 does not fit `usize`, which holds 0 up to 9223372036854775807
+  // CHECK: Error[E3045] at [[@LINE+1]]:3: 9223372036854775808 does not fit `usize`, which holds 0 up to 9223372036854775807
   let typed : usize = 9223372036854775808;
-  // CHECK: Error[E3045]: 9223372036854775809 does not fit `usize`
+  // CHECK: Error[E3045] at [[@LINE+1]]:3: 9223372036854775809 does not fit `usize`
   let suffixed = 9223372036854775809usize;
-  // CHECK: Error[E3045]: 18446744073709551615 does not fit `usize`
+  // CHECK: Error[E3045] at [[@LINE+1]]:3: 18446744073709551615 does not fit `usize`
   let passed = take(18446744073709551615);
   let a : usize = 3;
   let b : i64 = 4;

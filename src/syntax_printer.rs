@@ -215,6 +215,7 @@ impl AstPrinter {
             }
             Expr::Number(NumberExpr {
                 value: val,
+                text: _,
                 ty: el_ty,
                 span: _,
             }) => {

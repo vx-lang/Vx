@@ -17,6 +17,34 @@ use super::super::*;
 use crate::hir::expr::expected_numeric_elem;
 use std::collections::HashMap;
 
+/// An integer literal past the largest `i64` that nothing gave a type when it was checked.
+#[derive(Debug, Clone)]
+pub struct WideLiteral {
+    value: crate::symbol::Symbol,
+    /// The literal as the program wrote it, with its minus.
+    written: String,
+    negated: bool,
+    at: Option<crate::diagnostic::SourceSpan>,
+}
+
+/// The smallest and largest value an integer type holds, as text for an error message.
+fn integer_range(elem: &ElementType) -> Option<(String, String)> {
+    if *elem == ElementType::USize {
+        return Some(("0".to_string(), i64::MAX.to_string()));
+    }
+    let bits = elem.bits()?;
+    let signed = elem.accepts_integer_literal("-1")?;
+    Some(match (signed, bits) {
+        (true, 128) => (i128::MIN.to_string(), i128::MAX.to_string()),
+        (false, 128) => ("0".to_string(), u128::MAX.to_string()),
+        (true, _) => (
+            (-(1i128 << (bits - 1))).to_string(),
+            ((1i128 << (bits - 1)) - 1).to_string(),
+        ),
+        (false, _) => ("0".to_string(), ((1u128 << bits) - 1).to_string()),
+    })
+}
+
 impl<'a> TypeChecker<'a> {
     /// Recover arguments for compiler-generated enum expressions that carry only a name.
     /// Parsed enum expressions retain structural arguments instead.
@@ -226,19 +254,91 @@ impl<'a> TypeChecker<'a> {
     /// every downstream consumer — the flat lowerer and the AST codegen alike — sees the concrete
     /// type. A suffixed literal already carries its type and is returned unchanged.
     pub(crate) fn check_number_literal(&mut self, n: &mut NumberExpr) -> Type {
+        let negated = self.literal_negated.take().unwrap_or(false);
         if let Some(el) = &n.ty {
             let el = el.clone();
-            self.check_usize_literal(n, &el);
+            self.check_literal_fits(n, &el, negated);
             return Type::Scalar(el);
         }
-        let elem = self
+        let expected = self
             .expected_type
             .as_ref()
-            .and_then(|t| expected_numeric_elem(t, &n.value))
-            .unwrap_or_else(|| crate::parser::expr::default_number_elem(&n.value));
+            .and_then(|t| expected_numeric_elem(t, &n.value));
+        let elem = match expected {
+            // A literal checked again against a type, as `Tensor::fill` does, has one now.
+            Some(elem) => {
+                self.settle_wide_literal(&n.value);
+                elem
+            }
+            None => self.default_literal_elem(n, negated),
+        };
         n.ty = Some(elem.clone());
-        self.check_usize_literal(n, &elem);
+        self.check_literal_fits(n, &elem, negated);
         Type::Scalar(elem)
+    }
+
+    /// The type of an integer literal that nothing around it gives a type: an `i32`, or an
+    /// `i64` when it does not fit an `i32`. Past the largest `i64` it is an `i128`, which no code
+    /// generator supports. Such a literal is noted, and refused at the end of its statement
+    /// unless a call or a second check gives it a type first.
+    fn default_literal_elem(&mut self, n: &NumberExpr, negated: bool) -> ElementType {
+        let elem = crate::parser::expr::default_number_elem(&n.value);
+        // A literal that needs more than 64 bits is refused by `check_literal_fits`.
+        if elem != ElementType::I128 || n.value.parse::<u64>().is_err() {
+            return elem;
+        }
+        // `-9223372036854775808` is the smallest `i64`, though 9223372036854775808 is not one.
+        if negated && format!("-{}", n.value).parse::<i64>().is_ok() {
+            return ElementType::I64;
+        }
+        if !self.speculating {
+            let sign = if negated { "-" } else { "" };
+            self.wide_literals.push(WideLiteral {
+                value: n.value.clone(),
+                written: format!("{sign}{}", n.text.as_deref().unwrap_or(&n.value)),
+                negated,
+                at: self.literal_position(),
+            });
+        }
+        elem
+    }
+
+    /// The code around the literal `value` gave it a type, so it is not refused at the end of
+    /// its statement.
+    pub(crate) fn settle_wide_literal(&mut self, value: &str) {
+        self.wide_literals.retain(|w| w.value.as_ref() != value);
+    }
+
+    /// Refuse each literal of the statement that ends here that is past the largest `i64` and
+    /// still has no type, then take back the list of the statement around it.
+    pub(crate) fn report_wide_literals(&mut self, outer: Vec<WideLiteral>) {
+        let mut wide = std::mem::replace(&mut self.wide_literals, outer);
+        // A literal that is checked twice is noted twice.
+        wide.dedup_by(|a, b| a.value == b.value && a.negated == b.negated && a.at == b.at);
+        for w in wide {
+            let diagnostic = self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3045,
+                format!(
+                    "{} does not fit `i64`, which holds {} up to {}",
+                    w.written,
+                    i64::MIN,
+                    i64::MAX
+                ),
+                w.at,
+            );
+            diagnostic.notes.push(crate::diagnostic::Note {
+                message: "an integer literal with no suffix is at most an `i64`, unless the code \
+                          around it gives it a type"
+                    .into(),
+                span: None,
+            });
+            if !w.negated {
+                diagnostic.notes.push(crate::diagnostic::Note {
+                    message: format!("write `{}u64` for a `u64`", w.written).into(),
+                    span: None,
+                });
+            }
+        }
     }
 
     /// A note for a type error on a variable whose `let` has no type and starts from a bare
@@ -268,26 +368,44 @@ impl<'a> TypeChecker<'a> {
         })
     }
 
-    /// A `usize` never has its top bit set, which is what lets its arithmetic be marked as
-    /// never wrapping, so a literal past the largest `i64` is refused rather than stored.
-    pub(crate) fn check_usize_literal(&mut self, n: &NumberExpr, elem: &ElementType) {
-        if *elem != ElementType::USize
-            || self.speculating
-            || elem.accepts_integer_literal(n.value.as_ref()) != Some(false)
-        {
+    /// Refuse an integer literal that its type cannot hold, such as `0x1FFu8`, rather than
+    /// store its low bits. `negated` says the literal sits under a unary minus, so `-128i8` is
+    /// checked as -128 and not as 128.
+    pub(crate) fn check_literal_fits(&mut self, n: &NumberExpr, elem: &ElementType, negated: bool) {
+        if self.speculating {
             return;
         }
-        self.errors.error_with_code(
-            crate::diagnostic::DiagnosticCode::E3045,
-            format!(
-                "{} does not fit `usize`, which holds 0 up to {}",
-                n.value,
-                i64::MAX
+        // A `usize` under a minus is refused as a negation, so only its size is checked here.
+        let negated = negated && *elem != ElementType::USize;
+        let sign = if negated { "-" } else { "" };
+        let value = format!("{sign}{}", n.value);
+        // The message shows the number as written, `0x1FF`, not the 511 it stands for.
+        let text = format!("{sign}{}", n.text.as_deref().unwrap_or(&n.value));
+        let message = match elem.accepts_integer_literal(&value) {
+            Some(false) => match integer_range(elem) {
+                Some((low, high)) => {
+                    format!("{text} does not fit `{elem}`, which holds {low} up to {high}")
+                }
+                None => format!("{text} does not fit `{elem}`"),
+            },
+            // Both code generators hold an integer constant in 64 bits.
+            Some(true) if n.value.parse::<u64>().is_err() => format!(
+                "{text} needs more than 64 bits, and an integer literal that wide is not \
+                 supported yet"
             ),
-            // A number literal has no span of its own: spans take part in comparing types,
-            // and a literal is also a tensor dimension.
-            None,
-        );
+            _ => return,
+        };
+        let at = self.literal_position();
+        self.errors
+            .error_with_code(crate::diagnostic::DiagnosticCode::E3045, message, at);
+    }
+
+    /// Where to report a number literal. A literal has no span of its own, because spans take
+    /// part in comparing types and a literal is also a tensor dimension. So point at the
+    /// statement that holds it.
+    fn literal_position(&self) -> Option<crate::diagnostic::SourceSpan> {
+        let statement = self.current_statement_span;
+        (statement.line != 0).then(|| crate::diagnostic::SourceSpan::from_ast_span(&statement))
     }
 
     /// The tensor an operand denotes, seen through the wrappers that do not

@@ -24,6 +24,23 @@ fn main() -> i32 {
 > [!NOTE]
 > **Implicit Returns**: Vx supports Rust-style implicit returns. The final expression in a block (such as a function body, `comptime` block, or `unsafe` block) can omit the trailing semicolon, causing the block to evaluate to the value of that expression. This avoids boilerplate `return` statements.
 
+### 1.1 Number Literals
+
+An integer can be written in decimal (`42`), hex (`0x2A`), octal (`0o52`) or binary (`0b101010`).
+`_` can separate groups of digits in any of them: `1_000_000`, `0xDEAD_BEEF`, `0b1111_0000`. The
+spelling does not change the value or the type. A literal takes the type its context asks for, or
+the type its suffix names: `0xFFu8` is the `u8` 255. A prefixed literal is an integer, so it has no
+fraction (`0x1.5` is an error) and cannot take a float suffix.
+
+```rust
+fn main() -> i32 {
+    let mask : i32 = 0b1111_0000;   // 240
+    let page : i32 = 0x1000;        // 4096
+    let mode : i32 = 0o755;         // 493
+    return mask + page + mode - 4829;
+}
+```
+
 ## 2. Spatial Execution Scopes: `spawn on`
 
 To explicitly route computation to a specific physical topology, Vx uses the `spawn on` block. This overrides the compiler's default cost-model inferred routing.

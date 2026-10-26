@@ -600,6 +600,7 @@ fn number(value: i128, span: Span, typed: bool) -> Expr {
         ty: typed.then(|| crate::parser::expr::default_number_elem(&value)),
         value: value.into(),
         span,
+        text: None,
     })
 }
 

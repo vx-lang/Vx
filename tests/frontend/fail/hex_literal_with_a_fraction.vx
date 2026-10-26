@@ -1,0 +1,16 @@
+//===- hex_literal_with_a_fraction.vx - Vx Compiler ---------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A hex, octal or binary literal is an integer. Write a fraction in decimal.
+
+fn main() -> i32 {
+  // CHECK: a hex literal cannot have a fraction: '0x1.5'
+  let a : f32 = 0x1.5;
+  return 0;
+}

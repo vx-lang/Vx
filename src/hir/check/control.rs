@@ -296,11 +296,13 @@ impl<'a> TypeChecker<'a> {
         match value {
             Value::Int(i) => Some(Expr::Number(NumberExpr {
                 value: i.to_string().into(),
+                text: None,
                 ty: None,
                 span: *span,
             })),
             Value::Number(n) => Some(Expr::Number(NumberExpr {
                 value: n.to_string().into(),
+                text: None,
                 ty: None,
                 span: *span,
             })),

@@ -1222,6 +1222,18 @@ mod tests {
     }
 
     #[test]
+    fn a_prefixed_or_underscored_number_is_one_token() {
+        // The lexer keeps the spelling. The parser is what turns `0x2A` into 42, so the
+        // formatter, which prints tokens, leaves the file as it was written.
+        assert_eq!(lex_first("0x2A"), TokenTypeBase::Number("0x2A"));
+        assert_eq!(
+            lex_first("0b1010_1010u8"),
+            TokenTypeBase::Number("0b1010_1010u8")
+        );
+        assert_eq!(lex_first("1_000_000"), TokenTypeBase::Number("1_000_000"));
+    }
+
+    #[test]
     fn test_lex_string_literal() {
         let kind = lex_first("\"hello\"");
         if let TokenTypeBase::StringLiteral(s) = kind {

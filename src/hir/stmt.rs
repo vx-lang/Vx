@@ -351,6 +351,7 @@ impl<'a> TypeChecker<'a> {
         consume: bool,
     ) {
         let prev_statement_span = std::mem::replace(&mut self.current_statement_span, stmt.span());
+        let outer_wide_literals = std::mem::take(&mut self.wide_literals);
         match stmt {
             Statement::LetDecl(decl) if crate::hir::check::tasks::is_spawn(&decl.expr) => {
                 self.check_spawn_let(decl, consume)
@@ -431,6 +432,7 @@ impl<'a> TypeChecker<'a> {
             Statement::Drop(_) | Statement::Error(_) => {}
         }
         self.check_frame_escape(stmt);
+        self.report_wide_literals(outer_wide_literals);
         self.current_statement_span = prev_statement_span;
     }
 
@@ -2007,6 +2009,7 @@ impl<'a> TypeChecker<'a> {
         match expr {
             Expr::Number(NumberExpr {
                 value: n_str,
+                text: _,
                 ty,
                 span: _,
             }) => {

@@ -512,6 +512,13 @@ pub struct TypeChecker<'a> {
     pub(crate) closure_copies: Vec<crate::hir::check::closure_copies::ClosureCopy>,
     /// The `let` being checked, when its value is a closure.
     pub(crate) let_closure: Option<crate::syntax::Span>,
+    /// Set by the outermost minus in front of a number literal: whether the literal is negated
+    /// once the minuses cancel, so that its range check sees `-128` and not `128`. The
+    /// literal's check takes it back to `None`.
+    pub(crate) literal_negated: Option<bool>,
+    /// The literals of the statement being checked that are past the largest `i64` and have no
+    /// type yet. They are refused at the end of the statement.
+    pub(crate) wide_literals: Vec<crate::hir::check::literals::WideLiteral>,
     /// Set while checking the left-hand side of an assignment (plain or compound): a container
     /// index there is a *store* place, so the `v[i]` -> `v.get(i)` read rewrite must not fire.
     pub(crate) checking_assign_lhs: bool,
@@ -598,6 +605,8 @@ impl<'a> TypeChecker<'a> {
             value_unused: false,
             closure_copies: Vec::new(),
             let_closure: None,
+            literal_negated: None,
+            wide_literals: Vec::new(),
             checking_assign_lhs: false,
             borrowed_name: None,
             checking_field_base: false,
