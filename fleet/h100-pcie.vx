@@ -1,0 +1,69 @@
+//===- h100-pcie.vx - NVIDIA H100 PCIe (80 GB) machine model -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// One SKU's memory hierarchy, for `vxc --machine fleet/h100-pcie.vx prog.vx`.
+// See fleet/README.md for the shared space vocabulary and provenance policy.
+//
+// The same GH100 die as h100-sxm, with fewer SMs enabled, a lower clock and HBM2e
+// in place of HBM3. HBM, clock and host link figures verified 2026-10-26 against
+// NVIDIA's "NVIDIA H100 PCIe GPU Product Brief", PB-11133-001_v02 (November 2022).
+// On-die figures (L2, SMEM) remain unverified -- see fleet/README.md.
+
+// spec: PB-11133-001_v02, Table 2 -- Memory type "HBM2e", Memory size "80 GB",
+// Peak memory bandwidth "2,000 GB/s".
+Memory HBM {
+  capacity: 80 GiB, bandwidth: 2000 GB/s, managed: explicit, scope: device
+}
+
+// spec: NVIDIA Hopper Architecture Whitepaper -- 50 MB L2 cache, as on h100-sxm.
+// bandwidth: UNVERIFIED: h100-sxm's 12 TB/s scaled by SMs (114/132) and clock (1.755/1.98).
+Memory L2 {
+  within: Memory::HBM, capacity: 50 MiB, bandwidth: 9 TB/s, managed: cached, scope: device
+}
+
+// spec: NVIDIA Hopper Architecture Whitepaper / CUDA C Programming Guide --
+// 228 KB configurable shared memory per SM, as on h100-sxm.
+Memory SMEM {
+  // alignment: the 16-byte vector accesses (ld.shared.v4) that LLVM makes need it.
+  // replicas: UNVERIFIED: H100 PCIe SM count, vendor figure; probe_edges reports it on a pod
+  // clock: spec: PB-11133-001_v02, Table 1 -- GPU clocks Boost "1,755 MHz"
+  within: Memory::L2, capacity: 228 KiB, bandwidth: 128 B/cyc, clock: 1.755 GHz, granule: 1 KiB, managed: explicit, alignment: 16 B, scope: sm, replicas: 114
+}
+
+// spec: CUDA C Programming Guide, technical specifications per compute capability -- at most
+// 255 32-bit registers per thread. A tensor here stays in registers, so each index must be
+// known when compiling (E6033).
+Memory REG {
+  within: Memory::SMEM, capacity: 1020 B, managed: explicit, scope: thread
+}
+
+// The on-die hops declare no cost: their `bandwidth:` figures derive it (E6013). The host
+// hop declares the link's bandwidth, because CPU_DRAM and HBM do not nest.
+//
+// spec: PB-11133-001_v02, Table 1 -- PCI Express interface "PCI Express Gen5 x16". Gen5 x16 is
+// 63.0 GB/s per direction (32 GT/s x 16 lanes x 128b/130b encoding). The card also runs at
+// Gen5 x8 and Gen4 x16, so a rented pod may have half this. The achieved figure is measured
+// with utils/memalg.
+Topology Device {
+  // spec: NVIDIA Hopper GH100; LLVM's NVPTX target.
+  arch: nvptx64,
+  // spec: CUDA: at most 1024 threads in a block, and 32 lanes in a warp.
+  levels: [blocks(max_lanes: 1024, memory: cta), subgroups(lanes: 32), lanes(memory: thread)],
+  // The `a` chip adds wgmma. Its code loads only on Hopper.
+  chip: sm_90a,
+  memory: Memory::HBM,
+  visible: [Memory::HBM, Memory::L2, Memory::SMEM, Memory::REG],
+  // spec: NVIDIA "NVIDIA Hopper Architecture In-Depth" (developer.nvidia.com/blog):
+  // "The FP8, FP16, BF16, TF32, FP64, and INT8 MMA data types are supported."
+  // The same GH100 die as h100-sxm, so the same list. No INT4 and no FP4.
+  dtypes: [f64, f32, bf16, f16, f8e4m3, f8e5m2, i8, u8, i16, u16, i32, u32, i64, u64, bool],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 63 GB/s,
+  transfer Memory::HBM -> Memory::CPU_DRAM : 63 GB/s,
+  transfer Memory::HBM -> Memory::L2,
+  // spec: Hopper keeps Ampere's cp.async and adds the TMA (PTX ISA 8.3 section 9.7.8.25).
+  transfer Memory::L2 -> Memory::SMEM copy_engine
+}
