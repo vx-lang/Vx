@@ -91,7 +91,7 @@ inductive CPhase where
 def CPhase.stmt : CPhase → CStmt
   | .code s => s
   | .block s none => .tasksBlock s
-  | .block s (some e) => .loop e (.tasksBlock s)
+  | .block s (some e) => .loop e (.seq (.base .skip) (.seq (.tasksBlock s) (.base .skip)))
 
 /-- The phases, one after the other. -/
 def cseqAll : List CPhase → CStmt
@@ -105,10 +105,13 @@ def cthr (ps : List CPhase) (tps : Nat → List CPhase) : Nat → List CPhase
 
 variable (P : ChanProg) (g : Nat → Option Nat) (tps : Nat → List CPhase)
 
+/-- A loop around a block with no code around the block. -/
+def skipLoop (e : Expr) : TaskProg.Loop := ⟨e, .skip, .skip, trivial, trivial⟩
+
 /-- The phase of the lowered program. -/
 def CPhase.lower : CPhase → TaskProg.Phase
   | .code s => .code (P.lowerC s)
-  | .block s rep => .block (P.lowerC s) rep
+  | .block s rep => .block (P.lowerC s) (rep.map skipLoop)
 
 /-- The phases of each task, lowered. -/
 def lowerPhases (t : Nat) : List TaskProg.Phase := (tps t).map (CPhase.lower P)
@@ -169,7 +172,7 @@ theorem lowerC_cseqAll (ps : List CPhase) :
   | nil => rfl
   | cons p ps ih =>
     rcases p with _ | ⟨_, _ | _⟩ <;> simp [cseqAll, CPhase.stmt, lowerC, CPhase.lower,
-      TaskProg.seqAll, TaskProg.Phase.stmt, ih]
+      TaskProg.seqAll, TaskProg.Phase.stmt, skipLoop, ih]
 
 theorem not_fails (he : P.errors = false) {s : CStmt} (hs : P.StmtOk s) : ¬ s.Fails := by
   induction s with
@@ -334,7 +337,10 @@ theorem cphase_ok (htask : ∀ t, P.StmtOk (P.task t)) {p : CPhase}
   | code s => exact lowerC_noTasks hp
   | block s rep =>
     obtain ⟨hn, hr, hap, hpair⟩ := hp
-    replace hs : P.StmtOk s := by cases rep <;> exact hs
+    replace hs : P.StmtOk s := by
+      cases rep with
+      | none => exact hs
+      | some _ => exact hs.2.1
     exact ⟨lowerC_noBlocks hn, lowerC_regsBelow hr,
       fun u hu w hw => apart_lower hs (htask w) (hap u hu w hw),
       fun u hu v hv huv w w' hw hw' =>

@@ -51,12 +51,15 @@ theorem blockFoot_footprints :
 theorem blockFoot_raceFree {X : Execution} (hX : blockFoot.toProg.Execs X) : X.RaceFree :=
   raceFree blockFoot_footprints hX
 
-/-- Register 0 counts the passes. A pass starts task `regs 0` and adds 1 to the register, and the
-loop runs while the register is not 2. -/
+/-- Register 0 counts the passes, and the loop runs while the register is not 2. A pass starts
+task `regs 0` in its block. After the block, it reads `out1` and adds 1 to the register. Task 0
+writes `out1`, but the block joined it before the read. -/
 def loopPhases : List Phase :=
   [.code (.seq (.store input (.const 5) .plain) (.assign 0 (.const 0))),
-    .block (.seq (.spawnAt 0 2 (.reg 0)) (.assign 0 (.add (.reg 0) (.const 1))))
-      (some (.sub (.const 2) (.reg 0))),
+    .block (.spawnAt 0 2 (.reg 0))
+      (some ⟨.sub (.const 2) (.reg 0), .skip,
+        .seq (.load 3 out1 .plain) (.assign 0 (.add (.reg 0) (.const 1))), trivial,
+        ⟨trivial, trivial⟩⟩),
     .code (.seq (.load 1 out1 .plain) (.load 2 out2 .plain))]
 
 def loopFoot : TaskProg := { forkJoin with main := seqAll loopPhases }

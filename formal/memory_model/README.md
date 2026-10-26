@@ -98,8 +98,10 @@ the block joins each task that has its mark set, so it waits only for the tasks 
 not wait.
 
 `Footprint.lean` proves race freedom from a rule on the code. The code of each thread is a list
-of phases: code that starts no task, or a `tasks` block. A block can also run again in a loop.
-Each pass joins its tasks, so the rule of one block holds for each pass (`Runs.loop_pass`). In a
+of phases: code that starts no task, or a `tasks` block. A block can also run again in a loop,
+with code that starts no task before and after it. Each pass joins its tasks, so the rule of one
+block holds for each pass (`Runs.loop_pass`). The code around the block can access any place
+(`block_pos`). In a
 block, two tasks make no accesses
 that can race, and the code of the block makes no access that can race with a task of the block.
 The accesses of a task include the accesses of the tasks that it starts, at each depth (`Desc`).
@@ -108,7 +110,7 @@ program has no data race, so `drf_sc_of_footprints` needs no hypothesis on its e
 proof finds where two threads are in the tree of tasks. One thread starts the other at some depth
 (`anc`), or two tasks of one block start them (`sib`). `FootprintExample.lean` shows that the
 tasks of `forkJoin` in a block follow the rule, also when the block runs in a loop and starts
-one task in each pass (`loopFoot`). It also has a task that starts two tasks in its own block
+one task in each pass and reads the output of the task after the block (`loopFoot`). It also has a task that starts two tasks in its own block
 (`nestFoot`).
 
 `ChanFootprint.lean` gives the same rule to programs with channels and locks. The rule speaks only
@@ -272,7 +274,8 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   CAS that loses still reads the error that won, but only to see that the slot is set.
 - A task accesses a place that a lock guards only under that lock, even outside its own blocks,
   because its sibling tasks can run then. Only the main code outside its blocks needs no lock.
-- In both rules, a block in a loop is the whole body of the loop. Two tasks of such a block must
-  be apart, also when they run in two passes. The rule is stricter than needed: two blocks that
+- In `Footprint.lean`, the body of a loop is one block with code around it. In
+  `ChanFootprint.lean`, it is only the block. Two tasks of a block in a loop must be apart, also
+  when they run in two passes. The rule is stricter than needed: two blocks that
   run one after the other can share places, but two tasks of one block cannot.
 - In both rules, one thread starts each task, and a task starts only tasks with larger ids.
