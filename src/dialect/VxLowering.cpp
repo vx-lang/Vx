@@ -3491,6 +3491,15 @@ struct ConvertVxToStandardPass
           kernel.getLoc(), kernel.getSymName(), funcType);
       gpuFunc->setAttr(gpu::GPUDialect::getKernelFuncAttrName(),
                        inner.getUnitAttr());
+      // A block size that is a number is the block of every launch. ptxas
+      // then uses few enough registers for a block of that size. Without it,
+      // a large kernel can get a thread limit below its block.
+      if (auto block = kernel->getAttrOfType<StringAttr>("vx.launch_block")) {
+        int32_t threads = 0;
+        if (!block.getValue().getAsInteger(10, threads) && threads > 0)
+          gpuFunc->setAttr("nvvm.maxntid",
+                           inner.getDenseI32ArrayAttr({threads, 1, 1}));
+      }
 
       // The whole region, not its entry block. What the outliner produces is
       // raw CFG -- `cf.br` and `cf.cond_br` over a dozen blocks, every

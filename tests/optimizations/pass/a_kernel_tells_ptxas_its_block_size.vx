@@ -1,0 +1,44 @@
+//===- a_kernel_tells_ptxas_its_block_size.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The lane loops fix the block size of a kernel, and the PTX says it with `.maxntid`. ptxas then
+// uses few enough registers for a block of that size. Without it, a kernel with many registers
+// can get a thread limit below its block, and the launch fails.
+//
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// CHECK: .entry vx_npu_kernel_0(
+// CHECK: .maxntid 1024, 1, 1
+// CHECK: .entry vx_npu_kernel_1(
+// CHECK: .maxntid 128, 1, 1
+
+pub fn scale(y : &mut Tensor<f32, [?, 1024], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for t in 0..1024 across lanes {
+        y[b][t] = y[b][t] * 2.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn scale_by_subgroups(y : &mut Tensor<f32, [?, 4, 32], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for w in 0..4 across subgroups {
+        for l in 0..32 across lanes {
+          y[b][w][l] = y[b][w][l] * 2.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
