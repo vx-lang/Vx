@@ -12,6 +12,7 @@ mod integration_test {
     mod borrow_test;
     mod codegen_determinism;
     mod compile_test;
+    mod compile_time_of_vec_calls;
     mod comptime_twins;
     mod cross_call_capacity_test;
     mod device_image_test;

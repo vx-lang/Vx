@@ -204,19 +204,18 @@ impl<'a> TypeChecker<'a> {
         ty: &Type,
     ) -> Result<Vec<(crate::symbol::Symbol, Type)>, String> {
         // By trait name, so a report naming two of them does not change from run to run.
-        let mut keyed: Vec<(&crate::symbol::Symbol, &&decl::ImplBlock)> = self
-            .env
+        let env = self.env;
+        let mut keyed: Vec<(&crate::symbol::Symbol, &'a decl::ImplBlock)> = env
             .impls
             .iter()
-            .flat_map(|(t, blocks)| blocks.iter().map(move |ib| (t, ib)))
+            .flat_map(|(t, blocks)| blocks.iter().map(move |ib| (t, *ib)))
             .filter(|(_, ib)| !ib.assoc_bindings.is_empty())
             .collect();
         keyed.sort_by(|a, b| a.0.cmp(b.0));
-        let blocks: Vec<decl::ImplBlock> = keyed.into_iter().map(|(_, ib)| (*ib).clone()).collect();
         let mut out: Vec<(crate::symbol::Symbol, Type)> = Vec::new();
-        for ib in blocks {
+        for (_, ib) in keyed {
             let mut m = HashMap::new();
-            if !self.impl_applies(&ib, ty, &mut m) {
+            if !self.impl_applies(ib, ty, &mut m) {
                 continue;
             }
             for (assoc, bound) in &ib.assoc_bindings {
