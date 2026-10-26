@@ -86,7 +86,7 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE"/{bin,libexec,lib,etc}
 
 echo "==> Staging binaries"
-for tool in vxc vx-format vx-opt vx-analyzer; do
+for tool in vxc vx-format vx-opt vx-analyzer vx-api; do
     if [ -x "$TARGET_DIR/$tool" ]; then
         cp "$TARGET_DIR/$tool" "$STAGE/libexec/$tool"
     else
@@ -272,7 +272,7 @@ fi
 # "Failed to run mlir-translate: No such file or directory" -- naming a binary the user has never
 # heard of rather than the toolchain they are missing.
 echo "==> Writing wrappers"
-for tool in vxc vx-format vx-opt vx-analyzer; do
+for tool in vxc vx-format vx-opt vx-analyzer vx-api; do
     [ -f "$STAGE/libexec/$tool" ] || continue
     cat > "$STAGE/bin/$tool" <<WRAPPER
 #!/bin/sh

@@ -63,6 +63,20 @@ vxc --link-interface lib.vxlib main.vx -o main
 The `.vxlib` format carries a version tag, and a compiler rejects artifacts written by a different
 one. Regenerate them when you upgrade the toolchain rather than keeping them in a cache.
 
+## Version numbers
+
+`vx-api diff` compares the interfaces of two versions of a library and prints the smallest safe
+version bump. An added item needs a minor release. A removed item, or a change that breaks a caller,
+needs a major one. Anything else is a patch.
+
+```bash
+vx-api diff old/lib.vxlib new/lib.vxlib
+```
+
+Every item in a `.vxlib` counts as public, because a program can call any of them. The tool cannot
+see traits, data-carrying enums, constants or the bounds of generic parameters, because a `.vxlib`
+does not hold them.
+
 ## The other tools
 
 | Tool | Purpose |
@@ -70,6 +84,7 @@ one. Regenerate them when you upgrade the toolchain rather than keeping them in 
 | `vx-format` | The canonical source formatter |
 | `vx-opt` | MLIR pass driver for the Vx dialect |
 | `vx-analyzer` | Language server |
+| `vx-api` | Compares the interfaces of two versions of a library and reports the version bump |
 | `cargo vx-bench` | Runs the programs in `benchmarks/manifest.txt` and collects the times they report; `cargo vx-bench compare` runs the Vx-against-C++ suite in `benchmarks/stdlib` |
 
 `vx-format` has no options worth learning: there is one canonical style, and it applies it.
