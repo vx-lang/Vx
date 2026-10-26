@@ -72,6 +72,8 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/closure_literal_as_closure_value.vx",
     // "A store to a nested nominal field": `out.f = f` puts a closure into a struct's field.
     "backend/pass/closure_using_a_local_stays_in_its_function.vx",
+    // "A store to a nested nominal field": `r[0].name = x` puts a struct into a struct's field.
+    "backend/pass/assign_to_a_field_through_index_mut_drops_the_old_field.vx",
     // `Option::take` writes through `&mut Option<T>`, which the flat path declines as "a
     // pointer element type that is not modelled". The answers come from the AST path.
     "backend/pass/core_option.vx",

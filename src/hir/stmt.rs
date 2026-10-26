@@ -1414,7 +1414,13 @@ impl<'a> TypeChecker<'a> {
                 if let Some((root, path)) = Self::extract_base_and_path(lhs) {
                     self.unconsume_field(&root, &path);
                 }
-                self.drops_note_place_assign(lhs, &lhs_ty, lhs.span().line, &moved_fields_before);
+                self.drops_note_place_assign(
+                    lhs,
+                    rhs,
+                    &lhs_ty,
+                    lhs.span().line,
+                    &moved_fields_before,
+                );
             }
         }
         if let Some(op) = op {
