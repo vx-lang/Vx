@@ -10,12 +10,15 @@ data race (`WellTyped.raceFree`), and DRF-SC holds for it (`WellTyped.drf_sc`).
 
 A type is a tree of leaves: a number, a cell (a `SharedCell` of a number with a safe wrapper, so
 a shared borrow can write it), or an atomic. `Send` and `Sync` come from the leaves. A cell is
-not `Sync`. Each leaf is `Send`, so `Send` checks nothing yet.
+not `Sync`. A local can also be a reference `&x` or `&mut x` to another local `x`. The checker
+knows which local a reference borrows, so an access through it goes to the places of `x`. `&x`
+is `Send` only when `x` is `Sync`, because two tasks can then read `x` at the same time.
 
 A `spawn` starts a task with an id. The task lists its captures, each with a mode: `move`, `ref`
 or `mut`. The checker gives the task and the code of each block a permission for each local:
-none, `ref` or own. Two permissions for one local fit when one of them is none, or both are `ref`
-and the type is `Sync`. Then two accesses to one place cannot race (`compat_of_fit`).
+none, `ref` or own. A task gets the permission through each capture that reaches the local
+(`taskPerm`). A shared reference gives at most `ref` (`via`). Two permissions for one local
+fit when one of them is none, or both are `ref` and the type is `Sync`. Then two accesses to one place cannot race (`compat_of_fit`).
 
 Each task joins at the end of its block. A task starts no task, and a block does not run in a
 loop.
@@ -72,6 +75,13 @@ theorem Ty.Sync.leaf {τ : Ty} (h : τ.Sync) {l : Leaf} (hl : l ∈ τ.leaves) :
     · exact iha h.1 hl
     · exact ihb h.2 hl
 
+/-- The type of a local: a value, a shared reference `&x` or a mutable reference `&mut x` to
+local `x`. The checker knows which local each reference borrows. -/
+inductive LTy where
+  | val (τ : Ty)
+  | ref (x : Nat)
+  | mutRef (x : Nat)
+
 /-- How a task captures a local. -/
 inductive Mode where
   | move
@@ -96,6 +106,25 @@ def Allowed : Perm → Leaf → Kind → Order → Prop
   | .ref, .cell, _, _ => True
   | .ref, .atomic, _, o => o ≠ .plain
   | .none, _, _, _ => False
+
+/-- `a` allows no more than `b`. -/
+def Perm.Le : Perm → Perm → Prop
+  | .none, _ => True
+  | .ref, b => b ≠ .none
+  | .own, b => b = .own
+
+theorem Allowed.mono {a b : Perm} {l : Leaf} {k : Kind} {o : Order} (h : Allowed a l k o)
+    (hab : a.Le b) : Allowed b l k o := by
+  cases a <;> cases b <;> cases l <;> simp_all [Allowed, Perm.Le]
+
+/-- The permission through a local of type `t`, for code with permission `q` for that local. A
+shared reference gives at most `ref`. -/
+def via : LTy → Perm → Perm
+  | .ref _, .own => .ref
+  | _, q => q
+
+theorem via_le (t : LTy) (q : Perm) : (via t q).Le q := by
+  cases t <;> cases q <;> simp [via, Perm.Le]
 
 /-- Two permissions for one leaf fit: one is none, or both are `ref` and the leaf is `Sync`. -/
 def Fit (a b : Perm) (l : Leaf) : Prop :=
@@ -149,28 +178,29 @@ def SPhase.spawns : SPhase → List Nat
 
 /-! ## The compiler -/
 
-def compile (W : Nat) : Src → Stmt
+def compile (pl : Nat → Nat → Nat) : Src → Stmt
   | .skip => .skip
   | .assign r e => .assign r e
-  | .read r x i => .load r (W * x + i) .plain
-  | .write x i e => .store (W * x + i) e .plain
-  | .fetchAdd r x i e => .fetchAdd r (W * x + i) e .sc
-  | .seq s t => .seq (compile W s) (compile W t)
-  | .ite c s t => .ite c (compile W s) (compile W t)
-  | .loop c s => .loop c (compile W s)
+  | .read r x i => .load r (pl x i) .plain
+  | .write x i e => .store (pl x i) e .plain
+  | .fetchAdd r x i e => .fetchAdd r (pl x i) e .sc
+  | .seq s t => .seq (compile pl s) (compile pl t)
+  | .ite c s t => .ite c (compile pl s) (compile pl t)
+  | .loop c s => .loop c (compile pl s)
 
-def compileItems (W : Nat) : List Item → Stmt
+def compileItems (pl : Nat → Nat → Nat) : List Item → Stmt
   | [] => .skip
-  | .code c :: is => .seq (compile W c) (compileItems W is)
-  | .spawn u :: is => .seq (.spawnAt u 1 (.const 0)) (compileItems W is)
+  | .code c :: is => .seq (compile pl c) (compileItems pl is)
+  | .spawn u :: is => .seq (.spawnAt u 1 (.const 0)) (compileItems pl is)
 
-def SPhase.compile (W : Nat) : SPhase → TaskProg.Phase
-  | .code c => .code (Typed.compile W c)
-  | .block is => .block (compileItems W is) none
+def SPhase.compile (pl : Nat → Nat → Nat) : SPhase → TaskProg.Phase
+  | .code c => .code (Typed.compile pl c)
+  | .block is => .block (compileItems pl is) none
 
-/-- A typed program. Leaf `i` of local `x` is the place `width * x + i`. -/
+/-- A typed program. Leaf `i` of local `x` is the place `width * x + i`. A reference has no
+place of its own: an access through it goes to the local that it borrows. -/
 structure TProg where
-  ty : Nat → Ty
+  ty : Nat → LTy
   /-- The locals are below `locals`. -/
   locals : Nat
   /-- Each type has at most `width` leaves. -/
@@ -194,56 +224,100 @@ def capPerm (u x : Nat) : Perm :=
   if (x, Mode.move) ∈ T.caps u ∨ (x, Mode.mut) ∈ T.caps u then .own
   else if (x, Mode.ref) ∈ T.caps u then .ref else .none
 
+/-- The value type of local `x`. -/
+def vty (x : Nat) : Ty :=
+  match T.ty x with
+  | .val τ => τ
+  | _ => .leaf .int
+
+/-- The local that an access through `x` reaches: `x` itself, or the local that it borrows. -/
+def target (x : Nat) : Nat :=
+  match T.ty x with
+  | .val _ => x
+  | .ref y | .mutRef y => y
+
+/-- The place of leaf `i` through local `x`. -/
+def place (x i : Nat) : Nat := T.width * T.target x + i
+
+/-- `&y` is `Send` when `y` is `Sync`, and `&mut y` is `Send` when `y` is `Send`. -/
+def SendL (x : Nat) : Prop :=
+  match T.ty x with
+  | .val τ => τ.Send
+  | .ref y => (T.vty y).Sync
+  | .mutRef y => (T.vty y).Send
+
+/-- `&y` and `&mut y` are `Sync` when `y` is `Sync`. -/
+def SyncL (x : Nat) : Prop :=
+  match T.ty x with
+  | .val τ => τ.Sync
+  | .ref y | .mutRef y => (T.vty y).Sync
+
+/-- The permission of task `u` for an access through local `p`. -/
+def pathPerm (u p : Nat) : Perm := via (T.ty p) (T.capPerm u p)
+
+/-- The permission of task `u` for local `x`: the largest one through its captures that reach
+`x`. -/
+def taskPerm (u x : Nat) : Perm :=
+  if ∃ c ∈ T.caps u, T.target c.1 = x ∧ T.pathPerm u c.1 = .own then .own
+  else if ∃ c ∈ T.caps u, T.target c.1 = x ∧ T.pathPerm u c.1 = .ref then .ref else .none
+
 /-- The permission of the code of a block for local `x`. It has none when a task of the block
 owns `x`, and `ref` when a task of the block borrows `x`. -/
 def blockPerm (is : List Item) (x : Nat) : Perm :=
-  if ∃ u ∈ spawnsOf is, T.capPerm u x = .own then .none
-  else if ∃ u ∈ spawnsOf is, T.capPerm u x = .ref then .ref else .own
+  if ∃ u ∈ spawnsOf is, T.taskPerm u x = .own then .none
+  else if ∃ u ∈ spawnsOf is, T.taskPerm u x = .ref then .ref else .own
 
 /-- `x` is a local, `i` is one of its leaves, and `P` holds for that leaf. -/
 def At (x i : Nat) (P : Leaf → Prop) : Prop :=
-  x < T.locals ∧ ∃ l, (T.ty x).leaves[i]? = some l ∧ P l
+  x < T.locals ∧ ∃ l, (T.vty x).leaves[i]? = some l ∧ P l
 
-/-- The code follows the permissions `perm` and uses only the registers below `regs`. -/
+/-- The code follows the permissions `perm` and uses only the registers below `regs`. Here
+`perm p` is the permission for an access through local `p`. -/
 def Fits (perm : Nat → Perm) : Src → Prop
   | .skip => True
   | .assign r e => r < T.regs ∧ e.RegsBelow T.regs
-  | .read r x i => r < T.regs ∧ T.At x i fun l => Allowed (perm x) l .read .plain
-  | .write x i e => e.RegsBelow T.regs ∧ T.At x i fun l => Allowed (perm x) l .write .plain
+  | .read r x i => r < T.regs ∧ T.At (T.target x) i fun l => Allowed (perm x) l .read .plain
+  | .write x i e => e.RegsBelow T.regs ∧
+      T.At (T.target x) i fun l => Allowed (perm x) l .write .plain
   | .fetchAdd r x i e => r < T.regs ∧ e.RegsBelow T.regs ∧
-      T.At x i fun l => Allowed (perm x) l .read .sc ∧ Allowed (perm x) l .write .sc
+      T.At (T.target x) i fun l => Allowed (perm x) l .read .sc ∧ Allowed (perm x) l .write .sc
   | .seq s t => Fits perm s ∧ Fits perm t
   | .ite c s t => c.RegsBelow T.regs ∧ Fits perm s ∧ Fits perm t
   | .loop c s => c.RegsBelow T.regs ∧ Fits perm s
 
+/-- The permission of the code of a block for an access through local `p`. -/
+def blockFits (is : List Item) (p : Nat) : Perm := via (T.ty p) (T.blockPerm is (T.target p))
+
 /-- The rules of a phase. The code of a block follows `blockPerm`. A task that owns a local
 excludes each other task of the block from it. -/
 def PhaseOk : SPhase → Prop
-  | .code c => T.Fits (fun _ => .own) c
-  | .block is => (∀ c, Item.code c ∈ is → T.Fits (T.blockPerm is) c) ∧
-      ∀ u ∈ spawnsOf is, ∀ v ∈ spawnsOf is, u ≠ v → ∀ x, T.capPerm u x = .own →
-        T.capPerm v x = .none
+  | .code c => T.Fits (fun p => via (T.ty p) .own) c
+  | .block is => (∀ c, Item.code c ∈ is → T.Fits (T.blockFits is) c) ∧
+      ∀ u ∈ spawnsOf is, ∀ v ∈ spawnsOf is, u ≠ v → ∀ x, T.taskPerm u x = .own →
+        T.taskPerm v x = .none
 
 /-- The tasks that the main code starts. -/
 def spawns : List Nat := T.main.flatMap SPhase.spawns
 
 /-- The rules of the type checker. -/
 structure WellTyped : Prop where
-  width : ∀ x, (T.ty x).leaves.length ≤ T.width
+  width : ∀ x, (T.vty x).leaves.length ≤ T.width
+  /-- A reference borrows a local that is a value. -/
+  targets : ∀ x y, T.ty x = .ref y ∨ T.ty x = .mutRef y → ∃ τ, T.ty y = .val τ
   /-- A task moves or borrows `mut` only a `Send` local, and borrows `ref` only a `Sync` one. -/
-  caps : ∀ u x m, (x, m) ∈ T.caps u → (m = .ref → (T.ty x).Sync) ∧ (m ≠ .ref → (T.ty x).Send)
+  caps : ∀ u x m, (x, m) ∈ T.caps u → (m = .ref → T.SyncL x) ∧ (m ≠ .ref → T.SendL x)
   /-- The code of each task uses only its captures. -/
-  bodies : ∀ u, T.Fits (T.capPerm u) (T.body u)
+  bodies : ∀ u, T.Fits (T.pathPerm u) (T.body u)
   phases : ∀ p ∈ T.main, T.PhaseOk p
   /-- One place in the code starts each task. -/
   nodup : T.spawns.Nodup
   spawn_lt : ∀ u ∈ T.spawns, u < T.count
 
-def phases : List TaskProg.Phase := T.main.map (SPhase.compile T.width)
+def phases : List TaskProg.Phase := T.main.map (SPhase.compile T.place)
 
 def toTaskProg : TaskProg where
   main := TaskProg.seqAll T.phases
-  task u := compile T.width (T.body u)
+  task u := compile T.place (T.body u)
   count := T.count
   flags := T.width * T.locals
   marks := T.regs
@@ -256,21 +330,24 @@ variable {T}
 def Legal (perm : Nat → Perm) (k : Kind) (o : Order) (p : Nat) : Prop :=
   ∃ x i, p = T.width * x + i ∧ T.At x i fun l => Allowed (perm x) l k o
 
-theorem Fits.accesses {perm : Nat → Perm} {c : Src} (h : T.Fits perm c) :
-    (compile T.width c).Accesses (T.Legal perm) := by
+/-- The accesses of code with the permissions `perm` through each local. Each one is legal for
+`tp` at the local that it reaches, when `tp` allows at least `perm` there. -/
+theorem Fits.accesses {perm tp : Nat → Perm} (hle : ∀ p, (perm p).Le (tp (T.target p))) {c : Src}
+    (h : T.Fits perm c) : (compile T.place c).Accesses (T.Legal tp) := by
   induction c with
   | skip | assign => trivial
-  | read _ x i => exact ⟨x, i, rfl, h.2⟩
-  | write x i => exact ⟨x, i, rfl, h.2⟩
+  | read _ x i | write x i =>
+    obtain ⟨-, hx, l, hl, ha⟩ := h
+    exact ⟨_, i, rfl, hx, l, hl, ha.mono (hle x)⟩
   | fetchAdd _ x i =>
     obtain ⟨-, -, hx, l, hl, h1, h2⟩ := h
-    exact ⟨⟨x, i, rfl, hx, l, hl, h1⟩, ⟨x, i, rfl, hx, l, hl, h2⟩⟩
+    exact ⟨⟨_, i, rfl, hx, l, hl, h1.mono (hle x)⟩, ⟨_, i, rfl, hx, l, hl, h2.mono (hle x)⟩⟩
   | seq _ _ ih1 ih2 => exact ⟨ih1 h.1, ih2 h.2⟩
   | ite _ _ _ ih1 ih2 => exact ⟨ih1 h.2.1, ih2 h.2.2⟩
   | loop _ _ ih => exact ih h.2
 
 theorem Fits.regs {perm : Nat → Perm} {c : Src} (h : T.Fits perm c) :
-    (compile T.width c).RegsBelow T.regs := by
+    (compile T.place c).RegsBelow T.regs := by
   induction c with
   | skip => trivial
   | assign | write | ite _ _ _ ih1 ih2 => first
@@ -292,7 +369,7 @@ theorem At.lt (hw : T.WellTyped) {x i : Nat} {P : Leaf → Prop} (h : T.At x i P
     _ ≤ T.width * T.locals := Nat.mul_le_mul_left _ hx
 
 theorem Fits.below (hw : T.WellTyped) {perm : Nat → Perm} {c : Src} (h : T.Fits perm c) (n : Nat) :
-    (compile T.width c).Below (T.width * T.locals) n := by
+    (compile T.place c).Below (T.width * T.locals) n := by
   induction c with
   | skip | assign => trivial
   | read | write => exact At.lt hw h.2
@@ -301,19 +378,19 @@ theorem Fits.below (hw : T.WellTyped) {perm : Nat → Perm} {c : Src} (h : T.Fit
   | ite _ _ _ ih1 ih2 => exact ⟨ih1 h.2.1, ih2 h.2.2⟩
   | loop _ _ ih => exact ih h.2
 
-theorem compile_noTasks (W : Nat) (c : Src) : (compile W c).NoTasks := by
+theorem compile_noTasks (pl : Nat → Nat → Nat) (c : Src) : (compile pl c).NoTasks := by
   induction c with
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1, ih2⟩
   | loop _ _ ih => exact ih
   | _ => trivial
 
-theorem compile_noBlocks (W : Nat) (c : Src) : (compile W c).NoBlocks := by
+theorem compile_noBlocks (pl : Nat → Nat → Nat) (c : Src) : (compile pl c).NoBlocks := by
   induction c with
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => exact ⟨ih1, ih2⟩
   | loop _ _ ih => exact ih
   | _ => trivial
 
-theorem compile_seqCst (W : Nat) (c : Src) : (compile W c).SeqCstOnly := by
+theorem compile_seqCst (pl : Nat → Nat → Nat) (c : Src) : (compile pl c).SeqCstOnly := by
   induction c with
   | read | write => exact Or.inl rfl
   | fetchAdd => exact Or.inr rfl
@@ -321,14 +398,14 @@ theorem compile_seqCst (W : Nat) (c : Src) : (compile W c).SeqCstOnly := by
   | loop _ _ ih => exact ih
   | _ => trivial
 
-theorem compile_spawnIds (W : Nat) (c : Src) : (compile W c).spawnIds = [] := by
+theorem compile_spawnIds (pl : Nat → Nat → Nat) (c : Src) : (compile pl c).spawnIds = [] := by
   induction c with
   | seq _ _ ih1 ih2 | ite _ _ _ ih1 ih2 => simp [compile, Stmt.spawnIds, ih1, ih2]
   | loop _ _ ih => simp [compile, Stmt.spawnIds, ih]
   | _ => rfl
 
-theorem compileItems_spawnIds (W : Nat) (is : List Item) :
-    (compileItems W is).spawnIds = spawnsOf is := by
+theorem compileItems_spawnIds (pl : Nat → Nat → Nat) (is : List Item) :
+    (compileItems pl is).spawnIds = spawnsOf is := by
   induction is with
   | nil => rfl
   | cons it is ih =>
@@ -337,7 +414,7 @@ theorem compileItems_spawnIds (W : Nat) (is : List Item) :
 /-- Two pieces of code whose permissions fit for each local are apart. -/
 theorem apart_of_fit (hw : T.WellTyped) {a b : Nat → Perm} {s t : Stmt} (hs : s.Accesses (T.Legal a))
     (ht : t.Accesses (T.Legal b))
-    (hfit : ∀ x l, l ∈ (T.ty x).leaves → Fit (a x) (b x) l) (own : Nat → Prop) :
+    (hfit : ∀ x l, l ∈ (T.vty x).leaves → Fit (a x) (b x) l) (own : Nat → Prop) :
     s.Apart own t := by
   refine Stmt.Accesses.mono ?_ hs
   rintro k o _ ⟨x, i, rfl, hx, l, hl, ha⟩ -
@@ -370,58 +447,131 @@ theorem capPerm_ref {u x : Nat} (h : T.capPerm u x = .ref) : (x, Mode.ref) ∈ T
     · assumption
     · cases h
 
-theorem sync_of_ref (hw : T.WellTyped) {u x : Nat} (h : T.capPerm u x = .ref) {l : Leaf}
-    (hl : l ∈ (T.ty x).leaves) : l.Sync :=
-  ((hw.caps u x .ref (capPerm_ref h)).1 rfl).leaf hl
+theorem capPerm_own {u x : Nat} (h : T.capPerm u x = .own) :
+    ∃ m, (x, m) ∈ T.caps u ∧ m ≠ .ref := by
+  unfold capPerm at h
+  split at h
+  · rename_i hm
+    rcases hm with hm | hm
+    · exact ⟨_, hm, nofun⟩
+    · exact ⟨_, hm, nofun⟩
+  · split at h <;> cases h
+
+theorem capPerm_mem {u x : Nat} (h : T.capPerm u x ≠ .none) : ∃ m, (x, m) ∈ T.caps u := by
+  cases hc : T.capPerm u x with
+  | none => exact absurd hc h
+  | ref => exact ⟨_, capPerm_ref hc⟩
+  | own => obtain ⟨m, hm, -⟩ := capPerm_own hc; exact ⟨m, hm⟩
+
+/-- An access of task `u` through local `p` needs no more than the permission of the task for the
+local that it reaches. -/
+theorem pathPerm_le (u p : Nat) : (T.pathPerm u p).Le (T.taskPerm u (T.target p)) := by
+  have hmem : T.pathPerm u p ≠ .none → ∃ c ∈ T.caps u, c.1 = p := fun h => by
+    have : T.capPerm u p ≠ .none := fun hc => h (by rw [pathPerm, hc]; cases T.ty p <;> rfl)
+    obtain ⟨m, hm⟩ := capPerm_mem this
+    exact ⟨_, hm, rfl⟩
+  unfold taskPerm
+  cases h : T.pathPerm u p with
+  | none => trivial
+  | own =>
+    obtain ⟨c, hc, rfl⟩ := hmem (by rw [h]; nofun)
+    split
+    · rfl
+    · rename_i hn
+      exact absurd ⟨c, hc, rfl, h⟩ hn
+  | ref =>
+    obtain ⟨c, hc, rfl⟩ := hmem (by rw [h]; nofun)
+    split
+    · nofun
+    · split
+      · nofun
+      · rename_i _ hn
+        exact absurd ⟨c, hc, rfl, h⟩ hn
+
+/-- A task borrows a local with `ref` only when the local is `Sync`. The task can capture it with
+`ref`, or capture a reference to it. -/
+theorem sync_of_ref (hw : T.WellTyped) {u x : Nat} (h : T.taskPerm u x = .ref) : (T.vty x).Sync := by
+  unfold taskPerm at h
+  split at h
+  · cases h
+  · split at h
+    · rename_i _ hex
+      obtain ⟨⟨p, m⟩, -, rfl, hp⟩ := hex
+      simp only [pathPerm] at hp ⊢
+      cases ht : T.ty p with
+      | val τ =>
+        rw [ht] at hp
+        simp only [via] at hp
+        have := (hw.caps u p .ref (capPerm_ref hp)).1 rfl
+        simp only [SyncL, ht] at this
+        simpa [target, vty, ht] using this
+      | ref y =>
+        rw [ht] at hp
+        have hy : (T.vty y).Sync := by
+          cases hc : T.capPerm u p with
+          | none => rw [hc] at hp; cases hp
+          | ref =>
+            have := (hw.caps u p .ref (capPerm_ref hc)).1 rfl
+            simpa [SyncL, ht] using this
+          | own =>
+            obtain ⟨m, hm, hne⟩ := capPerm_own hc
+            have := (hw.caps u p m hm).2 hne
+            simpa [SendL, ht] using this
+        simpa [target, ht] using hy
+      | mutRef y =>
+        rw [ht] at hp
+        simp only [via] at hp
+        have := (hw.caps u p .ref (capPerm_ref hp)).1 rfl
+        simpa [SyncL, target, ht] using this
+    · cases h
 
 /-- Two tasks of a block fit. -/
 theorem fit_tasks (hw : T.WellTyped) {is : List Item} (hp : T.PhaseOk (.block is)) {u v : Nat}
     (hu : u ∈ spawnsOf is) (hv : v ∈ spawnsOf is) (huv : u ≠ v) (x : Nat) (l : Leaf)
-    (hl : l ∈ (T.ty x).leaves) : Fit (T.capPerm u x) (T.capPerm v x) l := by
+    (hl : l ∈ (T.vty x).leaves) : Fit (T.taskPerm u x) (T.taskPerm v x) l := by
   have excl := hp.2
-  cases h1 : T.capPerm u x with
+  cases h1 : T.taskPerm u x with
   | none => exact Or.inl rfl
   | own => exact Or.inr (Or.inl (excl u hu v hv huv x h1))
   | ref =>
-    cases h2 : T.capPerm v x with
+    cases h2 : T.taskPerm v x with
     | none => exact Or.inr (Or.inl rfl)
     | own =>
       have := excl v hv u hu (Ne.symm huv) x h2
       rw [h1] at this
       cases this
-    | ref => exact Or.inr (Or.inr ⟨rfl, rfl, sync_of_ref hw h1 hl⟩)
+    | ref => exact Or.inr (Or.inr ⟨rfl, rfl, (sync_of_ref hw h1).leaf hl⟩)
 
 /-- The code of a block and a task of the block fit. -/
 theorem fit_block (hw : T.WellTyped) {is : List Item} {u : Nat} (hu : u ∈ spawnsOf is)
-    (x : Nat) (l : Leaf) (hl : l ∈ (T.ty x).leaves) : Fit (T.blockPerm is x) (T.capPerm u x) l := by
+    (x : Nat) (l : Leaf) (hl : l ∈ (T.vty x).leaves) : Fit (T.blockPerm is x) (T.taskPerm u x) l := by
   unfold blockPerm
   split
   · exact Or.inl rfl
   · rename_i h1
     split
-    · cases h : T.capPerm u x with
+    · cases h : T.taskPerm u x with
       | none => exact Or.inr (Or.inl rfl)
       | own => exact absurd ⟨u, hu, h⟩ h1
-      | ref => exact Or.inr (Or.inr ⟨rfl, rfl, sync_of_ref hw h hl⟩)
+      | ref => exact Or.inr (Or.inr ⟨rfl, rfl, (sync_of_ref hw h).leaf hl⟩)
     · rename_i h2
-      cases h : T.capPerm u x with
+      cases h : T.taskPerm u x with
       | none => exact Or.inr (Or.inl rfl)
       | own => exact absurd ⟨u, hu, h⟩ h1
       | ref => exact absurd ⟨u, hu, h⟩ h2
 
-theorem compileItems_accesses {is : List Item} (h : ∀ c, Item.code c ∈ is → T.Fits (T.blockPerm is) c) :
-    (compileItems T.width is).Accesses (T.Legal (T.blockPerm is)) := by
-  generalize T.blockPerm is = perm at h
+theorem compileItems_accesses {is : List Item} {perm tp : Nat → Perm}
+    (hle : ∀ p, (perm p).Le (tp (T.target p))) (h : ∀ c, Item.code c ∈ is → T.Fits perm c) :
+    (compileItems T.place is).Accesses (T.Legal tp) := by
   induction is with
   | nil => trivial
   | cons it is ih =>
     cases it with
-    | code c => exact ⟨(h c (List.mem_cons_self ..)).accesses, ih fun c' hc => h c' (List.mem_cons_of_mem _ hc)⟩
+    | code c => exact ⟨(h c (List.mem_cons_self ..)).accesses hle, ih fun c' hc => h c' (List.mem_cons_of_mem _ hc)⟩
     | spawn => exact ⟨trivial, ih fun c' hc => h c' (List.mem_cons_of_mem _ hc)⟩
 
-theorem compileItems_regs {is : List Item} (h : ∀ c, Item.code c ∈ is → T.Fits (T.blockPerm is) c) :
-    (compileItems T.width is).RegsBelow T.regs := by
-  generalize T.blockPerm is = perm at h
+theorem compileItems_regs {is : List Item} {perm : Nat → Perm}
+    (h : ∀ c, Item.code c ∈ is → T.Fits perm c) : (compileItems T.place is).RegsBelow T.regs := by
   induction is with
   | nil => trivial
   | cons it is ih =>
@@ -429,56 +579,57 @@ theorem compileItems_regs {is : List Item} (h : ∀ c, Item.code c ∈ is → T.
     | code c => exact ⟨(h c (List.mem_cons_self ..)).regs, ih fun c' hc => h c' (List.mem_cons_of_mem _ hc)⟩
     | spawn => exact ⟨trivial, ih fun c' hc => h c' (List.mem_cons_of_mem _ hc)⟩
 
-theorem compileItems_noBlocks (W : Nat) (is : List Item) : (compileItems W is).NoBlocks := by
+theorem compileItems_noBlocks (pl : Nat → Nat → Nat) (is : List Item) : (compileItems pl is).NoBlocks := by
   induction is with
   | nil => trivial
-  | cons it is ih => cases it <;> exact ⟨by first | exact compile_noBlocks W _ | trivial, ih⟩
+  | cons it is ih => cases it <;> exact ⟨by first | exact compile_noBlocks pl _ | trivial, ih⟩
 
-theorem compileItems_seqCst (W : Nat) (is : List Item) : (compileItems W is).SeqCstOnly := by
+theorem compileItems_seqCst (pl : Nat → Nat → Nat) (is : List Item) : (compileItems pl is).SeqCstOnly := by
   induction is with
   | nil => trivial
-  | cons it is ih => cases it <;> exact ⟨by first | exact compile_seqCst W _ | trivial, ih⟩
+  | cons it is ih => cases it <;> exact ⟨by first | exact compile_seqCst pl _ | trivial, ih⟩
 
-theorem compileItems_below (hw : T.WellTyped) {is : List Item}
-    (h : ∀ c, Item.code c ∈ is → T.Fits (T.blockPerm is) c) (hs : ∀ u ∈ spawnsOf is, u < T.count) :
-    (compileItems T.width is).Below (T.width * T.locals) T.count := by
-  generalize T.blockPerm is = perm at h
+theorem compileItems_below (hw : T.WellTyped) {is : List Item} {perm : Nat → Perm}
+    (h : ∀ c, Item.code c ∈ is → T.Fits perm c) (hs : ∀ u ∈ spawnsOf is, u < T.count) :
+    (compileItems T.place is).Below (T.width * T.locals) T.count := by
   induction is with
   | nil => trivial
   | cons it is ih =>
     cases it with
     | code c =>
       exact ⟨(h c (List.mem_cons_self ..)).below hw _,
-        ih (fun u hu => hs u hu) (fun c' hc => h c' (List.mem_cons_of_mem _ hc))⟩
+        ih (fun c' hc => h c' (List.mem_cons_of_mem _ hc)) (fun u hu => hs u hu)⟩
     | spawn u =>
       exact ⟨hs u (List.mem_cons_self ..),
-        ih (fun v hv => hs v (List.mem_cons_of_mem _ hv)) fun c' hc => h c' (List.mem_cons_of_mem _ hc)⟩
+        ih (fun c' hc => h c' (List.mem_cons_of_mem _ hc)) fun v hv => hs v (List.mem_cons_of_mem _ hv)⟩
 
 /-- The rule of a block holds for the compiled block. -/
 theorem blockOk (hw : T.WellTyped) {is : List Item} (hp : T.PhaseOk (.block is)) :
-    T.toTaskProg.BlockOk (· < T.toTaskProg.flags) (fun _ => []) (compileItems T.width is) := by
-  have hacc := compileItems_accesses hp.1
+    T.toTaskProg.BlockOk (· < T.toTaskProg.flags) (fun _ => []) (compileItems T.place is) := by
+  have hacc := compileItems_accesses (tp := T.blockPerm is) (fun p => via_le _ _) hp.1
   refine ⟨compileItems_noBlocks _ _, compileItems_regs hp.1, ?_, ?_⟩
   · intro u hu w hd
     rw [compileItems_spawnIds] at hu
     rw [TaskProg.desc_nil] at hd
     subst w
-    exact apart_of_fit hw hacc (hw.bodies u).accesses (fun x l hl => fit_block hw hu x l hl) _
+    exact apart_of_fit hw hacc ((hw.bodies u).accesses (pathPerm_le u))
+      (fun x l hl => fit_block hw hu x l hl) _
   · intro u hu v hv huv w w' hd hd'
     rw [compileItems_spawnIds] at hu hv
     rw [TaskProg.desc_nil] at hd hd'
     subst w w'
-    exact apart_of_fit hw (hw.bodies u).accesses (hw.bodies v).accesses
+    exact apart_of_fit hw ((hw.bodies u).accesses (pathPerm_le u))
+      ((hw.bodies v).accesses (pathPerm_le v))
       (fun x l hl => fit_tasks hw hp hu hv huv x l hl) _
 
-theorem phase_ids (W : Nat) (p : SPhase) : (p.compile W).ids = p.spawns := by
+theorem phase_ids (pl : Nat → Nat → Nat) (p : SPhase) : (p.compile pl).ids = p.spawns := by
   cases p with
   | code => rfl
-  | block is => exact compileItems_spawnIds W is
+  | block is => exact compileItems_spawnIds pl is
 
 theorem phasesOk (hw : T.WellTyped) :
     ∀ ps : List SPhase, (∀ p ∈ ps, T.PhaseOk p) → (ps.flatMap SPhase.spawns).Nodup →
-      T.toTaskProg.PhasesOk (· < T.toTaskProg.flags) (fun _ => []) (ps.map (SPhase.compile T.width))
+      T.toTaskProg.PhasesOk (· < T.toTaskProg.flags) (fun _ => []) (ps.map (SPhase.compile T.place))
   | [], _, _ => trivial
   | p :: ps, hp, hn => by
     rw [List.flatMap_cons, List.nodup_append] at hn
@@ -494,7 +645,7 @@ theorem phasesOk (hw : T.WellTyped) :
 
 theorem seqAll_below (hw : T.WellTyped) :
     ∀ ps : List SPhase, (∀ p ∈ ps, T.PhaseOk p) → (∀ u ∈ ps.flatMap SPhase.spawns, u < T.count) →
-      (TaskProg.seqAll (ps.map (SPhase.compile T.width))).Below (T.width * T.locals) T.count
+      (TaskProg.seqAll (ps.map (SPhase.compile T.place))).Below (T.width * T.locals) T.count
   | [], _, _ => trivial
   | p :: ps, hp, hs => by
     refine ⟨?_, seqAll_below hw ps (fun q hq => hp q (List.mem_cons_of_mem _ hq))
@@ -505,12 +656,12 @@ theorem seqAll_below (hw : T.WellTyped) :
     | code c => exact (hp _ (List.mem_cons_self ..)).below hw _
     | block is => exact compileItems_below hw (hp _ (List.mem_cons_self ..)).1 hs'
 
-theorem seqAll_seqCst (W : Nat) :
-    ∀ ps : List SPhase, (TaskProg.seqAll (ps.map (SPhase.compile W))).SeqCstOnly
+theorem seqAll_seqCst (pl : Nat → Nat → Nat) :
+    ∀ ps : List SPhase, (TaskProg.seqAll (ps.map (SPhase.compile pl))).SeqCstOnly
   | [] => trivial
   | p :: ps => ⟨by cases p with
-      | code c => exact compile_seqCst W c
-      | block is => exact compileItems_seqCst W is, seqAll_seqCst W ps⟩
+      | code c => exact compile_seqCst pl c
+      | block is => exact compileItems_seqCst pl is, seqAll_seqCst pl ps⟩
 
 /-- The code of a well-typed program follows the footprint rule. -/
 theorem WellTyped.footprints (hw : T.WellTyped) :
