@@ -233,7 +233,7 @@ for each pass (`Runs.loop_pass`).
   step 6. It is a syntactic proof, not a semantic model as in RustBelt.
   #2244 has the design. `Typed.lean` has the first part: locals, structs, cells, atomics, and
   captures by `move`, `ref` and `mut`. The second part adds references `&x` and `&mut x` as
-  locals.
+  locals. `TypedChan.lean` has the third part: channels, and locals in a mutex.
 - **Release and acquire in the library**, one access at a time (step 4).
 
 ## What Lean does not cover

@@ -142,6 +142,15 @@ Two permissions fit when one of them is none, or both are `ref` and the type is 
 struct. It also shows that the checker rejects a task that borrows a cell with `ref`, and a task that
 moves `&cell` into itself.
 
+`TypedChan.lean` adds channels and locks, and compiles to `ChanProg`. A local can be the value
+of a mutex with a lock. An access to it needs the lock held, so the guard map of `LockFootprint.lean`
+gives its places that lock. A mutex is `Sync` when its value is `Send`, so two tasks can share a
+cell in a mutex with `ref`. `WellTyped.cfootprints` shows that the compiled program follows
+`CFootprints`, so it has no data race. `send` and `recv` use only the places of the channels.
+`TypedChanExample.lean` has two tasks that add 1 to a cell in a mutex and send a value on a
+channel. The checker rejects a write to the cell without the lock, and the same tasks with no
+mutex.
+
 ```bash
 lake -d formal/memory_model/lean build    # Lean 4.35, no other libraries
 ```
