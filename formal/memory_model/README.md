@@ -131,6 +131,15 @@ where two tasks add 1 to one place under a lock, and a block where a task fails.
 channels need a finite execution whose `co` orders the writes to each place. So these theorems use `drf_sc_co`, which gives the race-freedom hypothesis
 only such executions.
 
+`Typed.lean` proves the footprint rule from types. A small typed language has locals whose types
+are trees of leaves: a number, a cell or an atomic. A cell is not `Sync`. A task captures each
+local by `move`, `ref` or `mut`. The checker gives the task and the code of its block a
+permission for each local. Two permissions fit when one of them is none, or both are `ref` and
+the type is `Sync`. `WellTyped.footprints` shows that the compiled program follows the rule of
+`Footprint.lean`. So a well-typed program has no data race (`WellTyped.raceFree`).
+`TypedExample.lean` checks a block where two tasks add to one atomic and one task writes a
+struct. It also shows that the checker rejects a task that borrows a cell with `ref`.
+
 ```bash
 lake -d formal/memory_model/lean build    # Lean 4.35, no other libraries
 ```

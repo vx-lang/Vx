@@ -231,6 +231,8 @@ for each pass (`Runs.loop_pass`).
 - **A typed layer.** References, `&` and `&mut`, structs, raw pointers, `SharedCell`, `Send` and
   `Sync` (S1 to S4), M5 and T3. The theorem: a well-typed program follows the footprint rule of
   step 6. It is a syntactic proof, not a semantic model as in RustBelt.
+  #2244 has the design. `Typed.lean` has the first part: locals, structs, cells, atomics, and
+  captures by `move`, `ref` and `mut`.
 - **Release and acquire in the library**, one access at a time (step 4).
 
 ## What Lean does not cover
