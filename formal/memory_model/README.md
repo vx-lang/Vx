@@ -156,6 +156,13 @@ Two permissions fit when one of them is none, or both are `ref` and the type is 
 struct. It also shows that the checker rejects a task that borrows a cell with `ref`, and a task that
 moves `&cell` into itself.
 
+A local of `Typed.lean` lives in the whole function, or only in one main phase. Two locals whose
+phases differ can share a slot, the storage of a local. The code of a phase and the tasks of a
+block use only the locals that are live there, and no reference outlives its local. The end of a
+block joins its tasks (T3), so a later phase can use the slot. In `TypedExample.lean`, two blocks
+write two locals in one slot (`scopedProg`). The checker rejects that program with no scopes. It
+also rejects code that reads through a reference after its local ended (`danglingProg`).
+
 `TypedChan.lean` adds channels and locks, and compiles to `ChanProg`. A local can be the value
 of a mutex with a lock. An access to it needs the lock held, so the guard map of `LockFootprint.lean`
 gives its places that lock. A mutex is `Sync` when its value is `Send`, so two tasks can share a

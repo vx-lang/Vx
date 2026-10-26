@@ -238,7 +238,9 @@ the outer block. `ChanFootprint.lean` and `LockFootprint.lean` do not allow this
   step 6. It is a syntactic proof, not a semantic model as in RustBelt.
   #2244 has the design. `Typed.lean` has the first part: locals, structs, cells, atomics, and
   captures by `move`, `ref` and `mut`. The second part adds references `&x` and `&mut x` as
-  locals. `TypedChan.lean` has the third part: channels, and locals in a mutex.
+  locals. `TypedChan.lean` has the third part: channels, and locals in a mutex. T3 is in
+  `Typed.lean`: a local can live in one phase only, and locals of different phases share a slot.
+  `TypedChan.lean` does not have scopes.
 - **Release and acquire in the library**, one access at a time (step 4).
 
 ## What Lean does not cover
