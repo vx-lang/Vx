@@ -267,13 +267,15 @@ theorem stmtOk_of_mem : ∀ {ps : List CPhase}, P.StmtOk (cseqAll ps) →
     ∀ {B rep}, CPhase.block B rep ∈ ps → P.StmtOk B
   | p :: _, ⟨hs, hrest⟩, _, rep, hm => by
     rcases List.mem_cons.1 hm with rfl | hm
-    · cases rep <;> exact hs
+    · cases rep with
+      | none => exact hs
+      | some _ => exact hs.2.1
     · exact stmtOk_of_mem hrest hm
 
 /-- A block of the lowered main code is the lowering of a block of `ps`. -/
-theorem block_of_mem {s : Stmt} {ps : List CPhase} {B : Stmt} {rep : Option Expr}
+theorem block_of_mem {s : Stmt} {ps : List CPhase} {B : Stmt} {rep : Option TaskProg.Loop}
     (h : TaskProg.Phase.block B rep ∈ TaskProg.Phase.code s :: ps.map (CPhase.lower P)) :
-    ∃ B0, CPhase.block B0 rep ∈ ps ∧ B = P.lowerC B0 := by
+    ∃ B0 rep0, CPhase.block B0 rep0 ∈ ps ∧ B = P.lowerC B0 := by
   rcases List.mem_cons.1 h with h | h
   · cases h
   · obtain ⟨p, hp, he⟩ := List.mem_map.1 h
@@ -281,16 +283,21 @@ theorem block_of_mem {s : Stmt} {ps : List CPhase} {B : Stmt} {rep : Option Expr
     | code => cases he
     | block B0 =>
       simp only [CPhase.lower, TaskProg.Phase.block.injEq] at he
-      obtain ⟨rfl, rfl⟩ := he
-      exact ⟨B0, hp, rfl⟩
+      obtain ⟨rfl, -⟩ := he
+      exact ⟨B0, _, hp, rfl⟩
 
 theorem cseqAll_bases : ∀ {ps : List CPhase}, P.CPhasesOk g tps ps →
     ∀ b, (cseqAll ps).Bases b → b.NoBlocks
   | [], _, b, hb => by cases hb; trivial
   | .code _ :: _, ⟨hp, _, hrest⟩, b, hb => hb.elim (CStmt.NoTasks.bases hp b) (cseqAll_bases hrest b)
-  | .block _ none :: _, ⟨hp, _, hrest⟩, b, hb
-  | .block _ (some _) :: _, ⟨hp, _, hrest⟩, b, hb =>
+  | .block _ none :: _, ⟨hp, _, hrest⟩, b, hb =>
     hb.elim (CStmt.NoBlocks.bases hp.1 b) (cseqAll_bases hrest b)
+  | .block _ (some _) :: _, ⟨hp, _, hrest⟩, b, hb => by
+    rcases hb with (rfl | hb | rfl) | hb
+    · trivial
+    · exact CStmt.NoBlocks.bases hp.1 b hb
+    · trivial
+    · exact cseqAll_bases hrest b hb
 
 variable {ps : List CPhase} {X : Execution} (run : P.toTaskProg.toProg.Run X)
 include run
@@ -422,7 +429,7 @@ theorem lock_hb (hF : P.CFootprints g tps ps) (wf : X.WellFormed) (hcons : X.Con
         ⟨B, ⟨rep, hmem⟩, -, n, L, regs, hs, hL, h1, h2⟩
     · exact Or.inl h
     · exact Or.inr h
-    obtain ⟨B0, hB0, rfl⟩ := block_of_mem hmem
+    obtain ⟨B0, _, hB0, rfl⟩ := block_of_mem hmem
     exact guard_hb run hF wf hcons ho hfin hm
       (guard_block run hF hm hka ha hB0 hs (by rw [ha0]; exact hL) h1 h2)
       (guard_access run hF hm hkb hb hb0) (by rw [ha0]; exact Ne.symm hb0)

@@ -216,7 +216,8 @@ the same tree of tasks to `ChanFootprint.lean`, so a task with channels, locks o
 also start tasks. The seventh part makes the lock rule less strict. The main code outside its
 blocks accesses a place of a lock without the lock, because no task runs then (`main_task`). The
 eighth part lets a block run in a loop. Each pass joins its tasks, so the rule of the block holds
-for each pass (`Runs.loop_pass`).
+for each pass (`Runs.loop_pass`). In `Footprint.lean` the loop can also run code that starts no
+task before and after the block (#2241).
 
 ## Later
 

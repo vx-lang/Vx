@@ -7,9 +7,11 @@ import VxMemoryModel.Blocks
 `raceFree` proves that each execution has no data race, from a rule on the code.
 
 The code of each thread is a list of phases. A phase is code that starts no task, or a `tasks`
-block. A block can also run again in a loop. Each pass of the loop joins its tasks, so the rule
-of one block holds for each pass (`Runs.loop_pass`). A task that starts no task can also be plain
-code. The rule for a block has two parts.
+block. A block can also run again in a loop, with code that starts no task before and after it
+(`Loop`). Each pass of the loop joins its tasks, so the rule of one block holds for each pass
+(`Runs.loop_pass`). The code around the block runs while no task of the block runs: each write
+of a `start` flag before it is in a pass of the block that ended (`block_pos`). A task that starts
+no task can also be plain code. The rule for a block has two parts.
 Two tasks of the block make no accesses that can race. The code of the block makes no access that
 can race with a task of the block. Here the accesses of a task include the accesses of each task
 that it starts, at each depth (`Desc`). Code outside the block can access any place: the code
@@ -117,9 +119,16 @@ def LoopAt (e : Expr) (s : Stmt) (L0 : List Label) (r0 : Nat → Int) (x : Stmt)
   (x = .loop e s ∧ L0 = []) ∨ (x = .ite e (.seq s (.loop e s)) .skip ∧ L0 = []) ∨
     (x = .skip ∧ L0 = []) ∨ ∃ s', x = .seq s' (.loop e s) ∧ Steps s r0 L0 s' regs
 
+/-- Each position before `n` of `L` is in a run of `s` to its end that ends by `n`. -/
+def PassesBefore (s : Stmt) (L : List Label) (n : Nat) : Prop :=
+  ∀ i < n, ∃ n0 L0 r1 r2, Steps s r1 L0 .skip r2 ∧
+    (∀ j (hj : j < L0.length), L[n0 + j]? = some L0[j]) ∧ n0 ≤ i ∧ i < n0 + L0.length ∧
+      n0 + L0.length ≤ n
+
 theorem Runs.loop_aux {e : Expr} {s x : Stmt} {regs L} (h : Runs x regs L) :
     ∀ L0 r0, LoopAt e s L0 r0 x regs → ∀ m < L0.length + L.length, ∃ n L' regs', Runs s regs' L' ∧
-      (∀ i (hi : i < L'.length), (L0 ++ L)[n + i]? = some L'[i]) ∧ n ≤ m ∧ m < n + L'.length := by
+      (∀ i (hi : i < L'.length), (L0 ++ L)[n + i]? = some L'[i]) ∧ n ≤ m ∧ m < n + L'.length ∧
+      PassesBefore s (L0 ++ L) n := by
   induction h with
   | stop =>
     intro L0 r0 hx m hm
@@ -127,7 +136,7 @@ theorem Runs.loop_aux {e : Expr} {s x : Stmt} {regs L} (h : Runs x regs L) :
     · simp at hm
     · simp at hm
     · simp at hm
-    · refine ⟨0, L0, r0, hst.runs, fun i hi => ?_, Nat.zero_le _, by simpa using hm⟩
+    · refine ⟨0, L0, r0, hst.runs, fun i hi => ?_, Nat.zero_le _, by simpa using hm, nofun⟩
       simp [List.getElem?_eq_getElem hi]
   | silent hs _ ih =>
     intro L0 r0 hx m hm
@@ -141,14 +150,23 @@ theorem Runs.loop_aux {e : Expr} {s x : Stmt} {regs L} (h : Runs x regs L) :
     · cases hs with
       | seq_skip =>
         by_cases hm0 : m < L0.length
-        · refine ⟨0, L0, r0, hst.runs, fun i hi => ?_, Nat.zero_le _, by omega⟩
+        · refine ⟨0, L0, r0, hst.runs, fun i hi => ?_, Nat.zero_le _, by omega, nofun⟩
           rw [Nat.zero_add, List.getElem?_append_left hi, List.getElem?_eq_getElem hi]
-        · obtain ⟨n, L', r', hr, hlab, h1, h2⟩ :=
+        · obtain ⟨n, L', r', hr, hlab, h1, h2, hpb⟩ :=
             ih [] r0 (Or.inl ⟨rfl, rfl⟩) (m - L0.length) (by simp only [List.length_nil]; omega)
-          refine ⟨L0.length + n, L', r', hr, fun i hi => ?_, by omega, by omega⟩
-          rw [List.getElem?_append_right (by omega),
-            show L0.length + n + i - L0.length = n + i by omega]
-          simpa using hlab i hi
+          refine ⟨L0.length + n, L', r', hr, fun i hi => ?_, by omega, by omega, fun i hi => ?_⟩
+          · rw [List.getElem?_append_right (by omega),
+              show L0.length + n + i - L0.length = n + i by omega]
+            simpa using hlab i hi
+          · by_cases hi0 : i < L0.length
+            · -- The pass that just ended.
+              refine ⟨0, L0, r0, _, hst, fun j hj => ?_, Nat.zero_le _, by omega, by omega⟩
+              rw [Nat.zero_add, List.getElem?_append_left hj, List.getElem?_eq_getElem hj]
+            · obtain ⟨n0, L1, r1, r2, hs1, hl1, h3, h4, h5⟩ := hpb (i - L0.length) (by omega)
+              refine ⟨L0.length + n0, L1, r1, r2, hs1, fun j hj => ?_, by omega, by omega, by omega⟩
+              rw [List.getElem?_append_right (by omega),
+                show L0.length + n0 + j - L0.length = n0 + j by omega]
+              simpa using hl1 j hj
       | seq h1 => exact ih L0 r0 (Or.inr (Or.inr (Or.inr ⟨_, rfl, hst.snoc_none h1⟩))) m hm
   | visible hs _ ih =>
     intro L0 r0 hx m hm
@@ -162,11 +180,12 @@ theorem Runs.loop_aux {e : Expr} {s x : Stmt} {regs L} (h : Runs x regs L) :
           (by simp only [List.length_append, List.length_cons, List.length_nil] at hm ⊢; omega)
         simpa using this
 
-/-- Each position of a run of `loop e s` is in a run of one pass of `s`. -/
+/-- Each position of a run of `loop e s` is in a run of one pass of `s`. The passes before it
+ended. -/
 theorem Runs.loop_pass {e : Expr} {s : Stmt} {regs L} (h : Runs (.loop e s) regs L) {m : Nat}
     (hm : m < L.length) :
     ∃ n L' regs', Runs s regs' L' ∧ (∀ i (hi : i < L'.length), L[n + i]? = some L'[i]) ∧
-      n ≤ m ∧ m < n + L'.length := by
+      n ≤ m ∧ m < n + L'.length ∧ PassesBefore s L n := by
   simpa using h.loop_aux [] regs (Or.inl ⟨rfl, rfl⟩) m (by simpa using hm)
 
 theorem Steps.loop_aux {e : Expr} {s x y : Stmt} {regs L regs''} (h : Steps x regs L y regs'')
@@ -229,16 +248,25 @@ theorem Steps.loop_pass {e : Expr} {s : Stmt} {regs L regs''} (h : Steps (.loop 
 
 namespace TaskProg
 
+/-- A loop around a block: while `cond` holds, it runs `pre`, the block and `post`. The code
+around the block starts no task. -/
+structure Loop where
+  cond : Expr
+  pre : Stmt
+  post : Stmt
+  pre_ok : pre.NoTasks
+  post_ok : post.NoTasks
+
 /-- A part of the code of a thread: code that starts no task, or a `tasks` block. With
-`some e`, the block runs again in a loop while `e` holds. -/
+`some l`, the block runs in the loop `l`. -/
 inductive Phase where
   | code (s : Stmt)
-  | block (s : Stmt) (rep : Option Expr)
+  | block (s : Stmt) (rep : Option Loop)
 
 def Phase.stmt : Phase → Stmt
   | .code s => s
   | .block s none => .tasksBlock s
-  | .block s (some e) => .loop e (.tasksBlock s)
+  | .block s (some l) => .loop l.cond (.seq l.pre (.seq (.tasksBlock s) l.post))
 
 /-- The tasks that a phase can start. -/
 def Phase.ids : Phase → List Nat
@@ -339,10 +367,13 @@ def InBlock (B : Stmt) (k : Kind) (o : Order) (x : Nat) : Prop :=
 /-- What a phase allows for an access in its lowered code. -/
 def PhasePred : Phase → Kind → Order → Nat → Prop
   | .code _ => fun k _ x => k = .fence ∨ x < P.flags
-  | .block B _ => P.InBlock own tps B
+  | .block B _ => fun k o x => P.InBlock own tps B k o x ∨ k = .fence ∨ x < P.flags
 
 /-- The label writes the flag `start u`. -/
 def StartW (u : Nat) (l : Label) : Prop := l.kind = .write ∧ l.loc = P.start u
+
+/-- The label writes a flag. -/
+def FlagW (l : Label) : Prop := l.kind = .write ∧ P.flags ≤ l.loc
 
 /-- Where the position `m` of a run `L` of the phases `ps` is, for the task `u`. It comes before
 each write of `start u`, or it is in a run of the block of `u`, or it comes after a run of that
@@ -451,29 +482,167 @@ theorem lower_inBlock {q : Kind → Order → Nat → Prop} {ids : List Nat} {s 
   | skip | assign | assignAt => trivial
 
 omit own tps in
-theorem block_below {B : Stmt} {rep : Option Expr} {n c : Nat}
+theorem block_below {B : Stmt} {rep : Option Loop} {n c : Nat}
     (h : (Phase.block B rep).stmt.Below n c) : B.Below n c := by
   cases rep with
   | none => exact h
-  | some e => exact h
+  | some l => exact h.2.1
 
 omit own tps in
-/-- Each position of a run of a block phase is in a run of one pass of the block. -/
-theorem block_pass {B : Stmt} {rep : Option Expr} {regs L}
-    (h : Runs (P.lower (Phase.block B rep).stmt) regs L) {m : Nat} (hm : m < L.length) :
-    ∃ n L' regs', Runs (P.lower (.tasksBlock B)) regs' L' ∧
-      (∀ i (hi : i < L'.length), L[n + i]? = some L'[i]) ∧ n ≤ m ∧ m < n + L'.length := by
+theorem lower_loop (B : Stmt) (l : Loop) : P.lower (Phase.block B (some l)).stmt =
+    .loop l.cond (.seq l.pre (.seq (P.lower (.tasksBlock B)) l.post)) := by
+  show Stmt.loop _ (.seq (P.lower l.pre) (.seq _ (P.lower l.post))) = _
+  rw [lower_noTasks l.pre_ok, lower_noTasks l.post_ok]
+
+omit own tps in
+/-- Code that starts no task writes no flag. -/
+theorem code_noFlag {s : Stmt} (hb : s.Below P.flags P.count) (hn : s.NoTasks) {regs L}
+    (h : Runs s regs L) : ∀ l ∈ L, ¬ P.FlagW l := fun l hl ⟨hk, hx⟩ => by
+  rcases (accessRule _).runs h (code_accesses hb hn) l hl with h' | h'
+  · rw [hk] at h'
+    cases h'
+  · omega
+
+theorem eq_of_off {L L0 : List Label} {n0 : Nat}
+    (h : ∀ j (hj : j < L0.length), L[n0 + j]? = some L0[j]) {i : Nat} (hi : i < L.length)
+    (h1 : n0 ≤ i) (h2 : i < n0 + L0.length) : L[i] = L0[i - n0] := by
+  have := h (i - n0) (by omega)
+  rw [show n0 + (i - n0) = i by omega, List.getElem?_eq_getElem hi] at this
+  exact Option.some.inj this
+
+theorem mem_of_off {L L0 : List Label} {n0 : Nat}
+    (h : ∀ j (hj : j < L0.length), L[n0 + j]? = some L0[j]) {i : Nat} (hi : i < L.length)
+    (h1 : n0 ≤ i) (h2 : i < n0 + L0.length) : L[i] ∈ L0 := by
+  rw [eq_of_off h hi h1 h2]
+  exact List.getElem_mem _
+
+theorem off_left {L A B : List Label} {n : Nat}
+    (h : ∀ i (hi : i < (A ++ B).length), L[n + i]? = some (A ++ B)[i]) :
+    ∀ i (hi : i < A.length), L[n + i]? = some A[i] := fun i hi => by
+  have := h i (by simp only [List.length_append]; omega)
+  rwa [List.getElem_append_left hi] at this
+
+theorem off_right {L A B : List Label} {n : Nat}
+    (h : ∀ i (hi : i < (A ++ B).length), L[n + i]? = some (A ++ B)[i]) :
+    ∀ i (hi : i < B.length), L[n + A.length + i]? = some B[i] := fun i hi => by
+  have := h (A.length + i) (by simp only [List.length_append]; omega)
+  rw [List.getElem_append_right (by omega)] at this
+  simpa [Nat.add_assoc] using this
+
+/-- A run within a run at offset `n0`, at offset `n1`, is a run at offset `n0 + n1`. -/
+theorem off_trans {L L0 L1 : List Label} {n0 n1 : Nat}
+    (h0 : ∀ j (hj : j < L0.length), L[n0 + j]? = some L0[j])
+    (h1 : ∀ j (hj : j < L1.length), L0[n1 + j]? = some L1[j]) (hl : n1 + L1.length ≤ L0.length) :
+    ∀ j (hj : j < L1.length), L[n0 + n1 + j]? = some L1[j] := fun j hj => by
+  rw [Nat.add_assoc, h0 (n1 + j) (by omega), ← List.getElem?_eq_getElem, h1 j hj]
+
+omit own tps in
+/-- In a pass of the loop to its end, each write of a flag is in the run of the block to its
+end. -/
+theorem body_done {pre blk post : Stmt} (hpre : pre.Below P.flags P.count) (hpn : pre.NoTasks)
+    (hpost : post.Below P.flags P.count) (hqn : post.NoTasks) {r L r'}
+    (h : Steps (.seq pre (.seq blk post)) r L .skip r') :
+    ∀ i (hi : i < L.length), P.FlagW L[i] → ∃ n0 L0 r1 r2, Steps blk r1 L0 .skip r2 ∧
+      (∀ j (hj : j < L0.length), L[n0 + j]? = some L0[j]) ∧ n0 ≤ i ∧ i < n0 + L0.length ∧
+        n0 + L0.length ≤ L.length := by
+  obtain ⟨L1, L2, ra, h1, h2, rfl⟩ := Steps.seq_done h
+  obtain ⟨L21, L22, rb, h21, h22, rfl⟩ := Steps.seq_done h2
+  have hoff : ∀ i (hi : i < (L1 ++ (L21 ++ L22)).length),
+      (L1 ++ (L21 ++ L22))[0 + i]? = some (L1 ++ (L21 ++ L22))[i] := fun i hi => by
+    rw [Nat.zero_add, List.getElem?_eq_getElem hi]
+  intro i hi hw
+  simp only [List.length_append] at hi
+  by_cases hi1 : i < L1.length
+  · exact absurd hw (code_noFlag hpre hpn h1.runs _ (mem_of_off (off_left hoff) _ (by omega)
+      (by omega)))
+  by_cases hi2 : i < L1.length + L21.length
+  · refine ⟨L1.length, L21, ra, rb, h21, fun j hj => ?_, by omega, by omega,
+      by simp only [List.length_append]; omega⟩
+    simpa using off_left (off_right hoff) j hj
+  · exact absurd hw (code_noFlag hpost hqn h22.runs _
+      (mem_of_off (off_right (off_right hoff)) _ (by omega)
+        (by omega)))
+
+omit own tps in
+/-- Each position of a run of a block phase is in a run of one pass of the block. Or it writes
+no flag, and each write of a flag before it is in a run of the block that ended before it. -/
+theorem block_pos {B : Stmt} {rep : Option Loop} (hb : (Phase.block B rep).stmt.Below P.flags P.count)
+    {regs L} (h : Runs (P.lower (Phase.block B rep).stmt) regs L) {m : Nat} (hm : m < L.length) :
+    (∃ n L' regs', Runs (P.lower (.tasksBlock B)) regs' L' ∧
+      (∀ i (hi : i < L'.length), L[n + i]? = some L'[i]) ∧ n ≤ m ∧ m < n + L'.length) ∨
+    ¬ P.FlagW L[m] ∧ ∀ i (hi : i < L.length), i < m → P.FlagW L[i] → ∃ n0 L0 r1 r2,
+      Steps (P.lower (.tasksBlock B)) r1 L0 .skip r2 ∧
+        (∀ j (hj : j < L0.length), L[n0 + j]? = some L0[j]) ∧ n0 ≤ i ∧ i < n0 + L0.length ∧
+          n0 + L0.length ≤ m := by
   cases rep with
   | none =>
-    exact ⟨0, L, regs, h, fun i hi => by rw [Nat.zero_add, List.getElem?_eq_getElem hi],
+    exact Or.inl ⟨0, L, regs, h, fun i hi => by rw [Nat.zero_add, List.getElem?_eq_getElem hi],
       Nat.zero_le _, by omega⟩
-  | some e => exact Runs.loop_pass (e := e) h hm
+  | some l =>
+    obtain ⟨hpb, -, hqb⟩ := hb
+    rw [lower_loop] at h
+    obtain ⟨n, L', r', hr, hlab, h1, h2, hpass⟩ := Runs.loop_pass h hm
+    -- A write of a flag in an earlier pass is in a run of the block that ended by `n`.
+    have early : ∀ i (hi : i < L.length), i < n → P.FlagW L[i] → ∃ n0 L0 r1 r2,
+        Steps (P.lower (.tasksBlock B)) r1 L0 .skip r2 ∧
+          (∀ j (hj : j < L0.length), L[n0 + j]? = some L0[j]) ∧ n0 ≤ i ∧ i < n0 + L0.length ∧
+            n0 + L0.length ≤ n := fun i hi hin hw => by
+      obtain ⟨n0, L0, r1, r2, hs, hl0, h3, h4, h5⟩ := hpass i hin
+      rw [eq_of_off hl0 hi h3 h4] at hw
+      obtain ⟨n1, L1, r3, r4, hs1, hl1, h6, h7, h8⟩ :=
+        body_done hpb l.pre_ok hqb l.post_ok hs (i - n0) (by omega) hw
+      exact ⟨n0 + n1, L1, r3, r4, hs1, off_trans hl0 hl1 h8, by omega, by omega, by omega⟩
+    -- A position of the current pass in the code around the block.
+    have around : ∀ {A : List Label} {n1 : Nat} (hA : ∀ j (hj : j < A.length), L[n1 + j]? = some A[j]),
+        (∀ l ∈ A, ¬ P.FlagW l) → n1 ≤ m → m < n1 + A.length →
+        (∀ i (hi : i < L.length), i < m → n ≤ i → P.FlagW L[i] → ∃ n0 L0 r1 r2,
+          Steps (P.lower (.tasksBlock B)) r1 L0 .skip r2 ∧
+            (∀ j (hj : j < L0.length), L[n0 + j]? = some L0[j]) ∧ n0 ≤ i ∧ i < n0 + L0.length ∧
+              n0 + L0.length ≤ m) →
+        ¬ P.FlagW L[m] ∧ ∀ i (hi : i < L.length), i < m → P.FlagW L[i] → ∃ n0 L0 r1 r2,
+          Steps (P.lower (.tasksBlock B)) r1 L0 .skip r2 ∧
+            (∀ j (hj : j < L0.length), L[n0 + j]? = some L0[j]) ∧ n0 ≤ i ∧ i < n0 + L0.length ∧
+              n0 + L0.length ≤ m := fun hA hno hm1 hm2 hcur =>
+        ⟨hno _ (mem_of_off hA hm hm1 hm2), fun i hi him hw => by
+          by_cases hin : i < n
+          · obtain ⟨n0, L0, r1, r2, hs, hl0, h3, h4, h5⟩ := early i hi hin hw
+            exact ⟨n0, L0, r1, r2, hs, hl0, h3, h4, by omega⟩
+          · exact hcur i hi him (by omega) hw⟩
+    rcases Runs.seq_split hr with hp | ⟨L1, L2, ra, hs1, hr2, rfl⟩
+    · -- The pass stops in `pre`.
+      exact Or.inr <| around hlab (code_noFlag hpb l.pre_ok hp) h1 h2 fun i hi him hin hw =>
+        absurd hw (code_noFlag hpb l.pre_ok hp _ (mem_of_off hlab hi hin (by omega)))
+    have hno1 := code_noFlag hpb l.pre_ok hs1.runs
+    have hpre : ∀ i (hi : i < L.length), n ≤ i → i < n + L1.length → ¬ P.FlagW L[i] :=
+      fun i hi h3 h4 => hno1 _ (mem_of_off (off_left hlab) hi h3 h4)
+    simp only [List.length_append] at h2
+    rcases Runs.seq_split hr2 with hp2 | ⟨L21, L22, rb, hs21, hr22, rfl⟩
+    · by_cases hm1 : m < n + L1.length
+      · exact Or.inr <| around (off_left hlab) hno1 h1 hm1 fun i hi him hin hw =>
+          absurd hw (hpre i hi hin (by omega))
+      · exact Or.inl ⟨n + L1.length, L2, ra, hp2, off_right hlab, by omega, by omega⟩
+    · simp only [List.length_append] at h2
+      by_cases hm1 : m < n + L1.length
+      · exact Or.inr <| around (off_left hlab) hno1 h1 hm1 fun i hi him hin hw =>
+          absurd hw (hpre i hi hin (by omega))
+      by_cases hm2 : m < n + L1.length + L21.length
+      · exact Or.inl ⟨n + L1.length, L21, ra, hs21.runs, off_left (off_right hlab), by omega, by omega⟩
+      · have hno3 := code_noFlag hqb l.post_ok hr22
+        exact Or.inr <| around (off_right (off_right hlab)) hno3 (by omega) (by omega) fun i hi him hin hw => by
+          by_cases hi1 : i < n + L1.length
+          · exact absurd hw (hpre i hi hin hi1)
+          by_cases hi2 : i < n + L1.length + L21.length
+          · exact ⟨n + L1.length, L21, ra, rb, hs21, off_left (off_right hlab), by omega, by omega,
+              by omega⟩
+          · exact absurd hw (hno3 _ (mem_of_off (off_right (off_right hlab)) hi (by omega) (by omega)))
 
 omit own tps in
-/-- Each position of a run of a block phase to its end is in a run of one pass to its end. -/
-theorem block_pass_done {B : Stmt} {rep : Option Expr} {regs L regs''}
+/-- Each write of a flag in a run of a block phase to its end is in a run of one pass of the
+block to its end. -/
+theorem block_pass_done {B : Stmt} {rep : Option Loop}
+    (hb : (Phase.block B rep).stmt.Below P.flags P.count) {regs L regs''}
     (h : Steps (P.lower (Phase.block B rep).stmt) regs L .skip regs'') {m : Nat}
-    (hm : m < L.length) :
+    (hm : m < L.length) (hw : P.FlagW L[m]) :
     ∃ n L' r1 r2, Steps (P.lower (.tasksBlock B)) r1 L' .skip r2 ∧
       (∀ i (hi : i < L'.length), L[n + i]? = some L'[i]) ∧ n ≤ m ∧ m < n + L'.length ∧
       n + L'.length ≤ L.length := by
@@ -481,7 +650,29 @@ theorem block_pass_done {B : Stmt} {rep : Option Expr} {regs L regs''}
   | none =>
     exact ⟨0, L, regs, regs'', h, fun i hi => by rw [Nat.zero_add, List.getElem?_eq_getElem hi],
       Nat.zero_le _, by omega, by omega⟩
-  | some e => exact Steps.loop_pass (e := e) h hm
+  | some l =>
+    obtain ⟨hpb, -, hqb⟩ := hb
+    rw [lower_loop] at h
+    obtain ⟨n, L', r1, r2, hs, hl, h1, h2, h3⟩ := Steps.loop_pass h hm
+    rw [eq_of_off hl hm h1 h2] at hw
+    obtain ⟨n1, L1, r3, r4, hs1, hl1, h4, h5, h6⟩ :=
+      body_done hpb l.pre_ok hqb l.post_ok hs (m - n) (by omega) hw
+    exact ⟨n + n1, L1, r3, r4, hs1, off_trans hl hl1 h6, by omega, by omega, by omega⟩
+
+/-- Each access of the lowered code of a block follows `InBlock`. -/
+theorem block_accesses (hlim : ∀ x, own x → x < P.flags) {B : Stmt} (hp : P.BlockOk own tps B)
+    (hb : B.Below P.flags P.count) : (P.lower (.tasksBlock B)).Accesses (P.InBlock own tps B) := by
+  obtain ⟨hn, -, hap, -⟩ := hp
+  have hq := Stmt.Accesses.of_forall (s := B)
+    (C := fun vw : Nat × Nat => vw.1 ∈ B.spawnIds ∧ Desc tps vw.1 vw.2)
+    (q := fun vw k o x => own x → (P.task vw.2).Accesses (Compat k o x))
+    fun vw h => hap vw.1 h.1 vw.2 h.2
+  refine ⟨P.clearMarks_accesses _ _, (lower_inBlock (s := B) (ids := B.spawnIds) hb hn
+    (fun _ h => h) hq).mono fun _ _ _ h => ⟨fun hx v hv w hw => h.1 (hlim _ hx) (v, w) ⟨hv, hw⟩ hx,
+    h.2⟩, P.joinMarked_accesses fun u _ => ⟨fun hx => ?_, nofun⟩⟩
+  have := hlim _ hx
+  simp only [done] at this
+  omega
 
 /-- Each access of the lowered code of a phase follows `PhasePred`. -/
 theorem phase_accesses (hlim : ∀ x, own x → x < P.flags) {p : Phase} (hp : p.Ok P own tps)
@@ -492,22 +683,14 @@ theorem phase_accesses (hlim : ∀ x, own x → x < P.flags) {p : Phase} (hp : p
     rw [lower_noTasks hp]
     exact code_accesses hb hp
   | block B rep =>
-    obtain ⟨hn, -, hap, -⟩ := hp
-    replace hb : B.Below P.flags P.count := block_below hb
-    suffices h : (P.lower (.tasksBlock B)).Accesses (P.InBlock own tps B) by
-      cases rep with
-      | none => exact h
-      | some e => exact h
-    have hq := Stmt.Accesses.of_forall (s := B)
-      (C := fun vw : Nat × Nat => vw.1 ∈ B.spawnIds ∧ Desc tps vw.1 vw.2)
-      (q := fun vw k o x => own x → (P.task vw.2).Accesses (Compat k o x))
-      fun vw h => hap vw.1 h.1 vw.2 h.2
-    refine ⟨P.clearMarks_accesses _ _, (lower_inBlock (s := B) (ids := B.spawnIds) hb hn
-      (fun _ h => h) hq).mono fun _ _ _ h => ⟨fun hx v hv w hw => h.1 (hlim _ hx) (v, w) ⟨hv, hw⟩ hx,
-      h.2⟩, P.joinMarked_accesses fun u _ => ⟨fun hx => ?_, nofun⟩⟩
-    have := hlim _ hx
-    simp only [done] at this
-    omega
+    have hblk := block_accesses hlim hp (block_below hb)
+    cases rep with
+    | none => exact hblk.mono fun _ _ _ h => Or.inl h
+    | some l =>
+      obtain ⟨hpb, -, hqb⟩ := hb
+      rw [lower_loop]
+      exact ⟨(code_accesses hpb l.pre_ok).mono fun _ _ _ h => Or.inr h,
+        hblk.mono fun _ _ _ h => Or.inl h, (code_accesses hqb l.post_ok).mono fun _ _ _ h => Or.inr h⟩
 
 theorem PhasePred.ids_of_start {p : Phase} {k o x} (h : P.PhasePred own tps p k o x)
     (hk : k = .write) {u} (hx : x = P.start u) : u ∈ p.ids := by
@@ -519,7 +702,13 @@ theorem PhasePred.ids_of_start {p : Phase} {k o x} (h : P.PhasePred own tps p k 
       cases h
     · simp only [start] at hx
       omega
-  | block B _ => exact h.2 hk u hx
+  | block B _ =>
+    rcases h with h | h | h
+    · exact h.2 hk u hx
+    · rw [hk] at h
+      cases h
+    · simp only [start] at hx
+      omega
 
 /-- The phases write `start u` only for a task `u` of one of their blocks. -/
 theorem seqAll_accesses (hlim : ∀ x, own x → x < P.flags) {ps : List Phase}
@@ -534,6 +723,43 @@ theorem seqAll_accesses (hlim : ∀ x, own x → x < P.flags) {ps : List Phase}
       (ih hok.2.2 hb.2).mono fun _ _ _ h hk u hx => ?_⟩
     obtain ⟨q, hq, hu⟩ := h hk u hx
     exact ⟨q, List.mem_cons_of_mem _ hq, hu⟩
+
+omit own tps in
+theorem flagW_of_start {u : Nat} {l : Label} (h : P.StartW u l) : P.FlagW l :=
+  ⟨h.1, by rw [h.2]; simp only [start]; omega⟩
+
+/-- A position of a run of a block phase of `u` has a `Status` for `u`, whatever comes after the
+phase. -/
+theorem block_status (hlim : ∀ x, own x → x < P.flags) {ps : List Phase} {B : Stmt}
+    {rep : Option Loop} (hok : P.BlockOk own tps B)
+    (hb : (Phase.block B rep).stmt.Below P.flags P.count) (hmem : Phase.block B rep ∈ ps) {u : Nat}
+    (hu : u ∈ B.spawnIds) {regs L1} (L2 : List Label)
+    (h1 : Runs (P.lower (Phase.block B rep).stmt) regs L1) {m : Nat} (hm : m < L1.length) :
+    P.Status own tps ps u (L1 ++ L2) m := by
+  have lift : ∀ {n : Nat} {L' : List Label}, (∀ i (hi : i < L'.length), L1[n + i]? = some L'[i]) →
+      ∀ i (hi : i < L'.length), (L1 ++ L2)[n + i]? = some L'[i] := fun h i hi => by
+    rw [List.getElem?_append_left (List.getElem?_eq_some_iff.1 (h i hi)).1]
+    exact h i hi
+  rcases block_pos hb h1 hm with ⟨n, L', r', hr', hlab', hn1, hn2⟩ | ⟨hnf, hpre⟩
+  · refine Or.inr (Or.inl ⟨B, hu, ⟨rep, hmem⟩, hok, fun l hl' => ?_, n, L', r', hr', lift hlab',
+      hn1, hn2⟩)
+    rw [List.getElem?_append_left hm, List.getElem?_eq_getElem hm] at hl'
+    cases hl'
+    exact (accessRule _).runs hr' (block_accesses hlim hok (block_below hb)) _
+      (mem_of_off hlab' hm hn1 hn2)
+  · by_cases hex : ∃ i, ∃ hi : i < L1.length, i < m ∧ P.StartW u L1[i]
+    · obtain ⟨i, hi, him, hw⟩ := hex
+      obtain ⟨n0, L0, r1, r2, hs, hl0, h3, h4, h5⟩ := hpre i hi him (flagW_of_start hw)
+      refine Or.inr (Or.inr ⟨B, n0, L0, r1, r2, hok, block_below hb, hs, lift hl0, h5, i - n0,
+        by omega, ?_⟩)
+      rw [← eq_of_off hl0 hi h3 h4]
+      exact hw
+    · refine Or.inl fun m' l hl' hs => Nat.lt_of_not_le fun hle => ?_
+      rw [List.getElem?_append_left (by omega), List.getElem?_eq_some_iff] at hl'
+      obtain ⟨hlt, rfl⟩ := hl'
+      rcases Nat.lt_or_eq_of_le hle with h | rfl
+      · exact hex ⟨m', hlt, h, hs⟩
+      · exact hnf (flagW_of_start hs)
 
 /-- Each position of a run of the phases has a `Status` for each task. -/
 theorem status (hlim : ∀ x, own x → x < P.flags) {ps : List Phase} (hok : P.PhasesOk own tps ps)
@@ -553,9 +779,8 @@ theorem status (hlim : ∀ x, own x → x < P.flags) {ps : List Phase} (hok : P.
       · cases p with
         | code s => simp [Phase.ids] at hu
         | block B rep =>
-          obtain ⟨n, L', r', hr', hlab', hn1, hn2⟩ := block_pass hp hm
-          exact Or.inr (Or.inl ⟨B, hu, ⟨rep, List.mem_cons_self⟩, hok.1,
-            fun l hl' => hl l (List.mem_of_getElem? hl'), n, L', r', hr', hlab', hn1, hn2⟩)
+          have := block_status hlim hok.1 hb.1 (List.mem_cons_self (l := ps)) hu [] hp hm
+          simpa only [List.append_nil] using this
       · exact Or.inl fun _ l hl' hs =>
           (hu ((hl l (List.mem_of_getElem? hl')).ids_of_start hs.1 hs.2)).elim
     · have hl1 := (accessRule _).runs h1.runs hacc
@@ -568,16 +793,11 @@ theorem status (hlim : ∀ x, own x → x < P.flags) {ps : List Phase} (hok : P.
         | code s => simp [Phase.ids] at hu
         | block B rep =>
           by_cases hm1 : m < L1.length
-          · obtain ⟨n, L', r', hr', hlab', hn1, hn2⟩ := block_pass h1.runs hm1
-            refine Or.inr (Or.inl ⟨B, hu, ⟨rep, List.mem_cons_self⟩, hok.1, fun l hl' => ?_, n, L',
-              r', hr', fun i hi => ?_, hn1, hn2⟩)
-            · rw [List.getElem?_append_left hm1] at hl'
-              exact hl1 l (List.mem_of_getElem? hl')
-            · rw [List.getElem?_append_left (List.getElem?_eq_some_iff.1 (hlab' i hi)).1]
-              exact hlab' i hi
+          · exact block_status hlim hok.1 hb.1 (List.mem_cons_self (l := ps)) hu L2 h1.runs hm1
           · by_cases hw : ∃ i, ∃ hi : i < L1.length, P.StartW u L1[i]
             · obtain ⟨i, hi, hwi⟩ := hw
-              obtain ⟨n, L', r1, r2, hs', hlab', hn1, hn2, hn3⟩ := block_pass_done h1 hi
+              obtain ⟨n, L', r1, r2, hs', hlab', hn1, hn2, hn3⟩ :=
+                block_pass_done hb.1 h1 hi (flagW_of_start hwi)
               have hli : L1[i] = L'[i - n]'(by omega) := by
                 have := hlab' (i - n) (by omega)
                 rw [show n + (i - n) = i by omega, List.getElem?_eq_getElem hi] at this
@@ -649,7 +869,8 @@ theorem start_in_block (hlim : ∀ x, own x → x < P.flags) {ps : List Phase}
       cases p with
       | code s => simp [Phase.ids] at hu
       | block B rep =>
-        obtain ⟨n, L', r1, r2, hs', hlab', hn1, hn2, hn3⟩ := block_pass_done h1 hi1
+        obtain ⟨n, L', r1, r2, hs', hlab', hn1, hn2, hn3⟩ :=
+          block_pass_done hb.1 h1 hi1 (flagW_of_start hw)
         refine ⟨B, n, L', r1, r2, hok.1, block_below hb.1, hs', fun j hj => ?_, hn1, hn2,
           by simp only [List.length_append]; omega⟩
         rw [List.getElem?_append_left (by omega)]
