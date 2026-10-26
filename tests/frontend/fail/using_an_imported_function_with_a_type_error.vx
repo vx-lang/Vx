@@ -1,7 +1,7 @@
 //===- using_an_imported_function_with_a_type_error.vx - Vx Compiler *- Vx -*-===//
-// RUN: not vxc --emit-mlir %s 2>&1 | FileCheck %s
-// RUN: not vxc --legacy-codegen --emit-mlir %s 2>&1 | FileCheck %s
-// RUN: not vxc -j 4 --emit-mlir %s 2>&1 | FileCheck %s --check-prefixes=CHECK,JOBS
+// RUN: not vxc --package tests=tests --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: not vxc --package tests=tests --legacy-codegen --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: not vxc --package tests=tests -j 4 --emit-mlir %s 2>&1 | FileCheck %s --check-prefixes=CHECK,JOBS
 import tests::modules::library_that_uses_its_type_error;
 
 fn main() -> i32 {

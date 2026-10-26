@@ -1,5 +1,5 @@
 //===- using_an_imported_function_with_a_type_error_from_a_closure.vx - Vx Compiler *- Vx -*-===//
-// RUN: not vxc --emit-mlir %s 2>&1 | FileCheck %s
+// RUN: not vxc --package tests=tests --emit-mlir %s 2>&1 | FileCheck %s
 import core::iter;
 import tests::modules::library_with_type_errors;
 

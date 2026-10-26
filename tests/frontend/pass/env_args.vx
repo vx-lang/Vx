@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc --package tests=tests %s --action emit-mlir 2>&1 | FileCheck %s
 // The command line binding, and the iterator that hands the arguments out one at a time. The
 // enum `Option<*mut i8>` uses an integer field to preserve the payload bits.
 // Its `Some` arm still stores the argument as a pointer.

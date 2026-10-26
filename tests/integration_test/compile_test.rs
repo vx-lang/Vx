@@ -46,6 +46,17 @@ fn ane_models_available() -> bool {
         .exists()
 }
 
+// A module loader for a fixture compiled in this process. Fixtures import other test files from
+// the package `tests`, so the loader is told where it is, as `vxc --package tests=tests` is.
+fn fixture_loader() -> vxc::module_loader::ModuleLoader {
+    let mut loader = vxc::module_loader::ModuleLoader::new();
+    loader.add_package(
+        "tests",
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"),
+    );
+    loader
+}
+
 // Minimal FileCheck-style match for an EXPECT line: a `{{...}}` hole matches any text, so
 // the literal segments around the holes must appear in order in `out`. Without a hole this
 // is a plain substring check. (Lets tests use `{{[0-9]+}}` for non-deterministic values like
@@ -89,7 +100,7 @@ fn run_frontend_test(path: &Path, expect_pass: bool) -> Result<(), String> {
     // runner below reports the day it starts passing, which is the other half of the claim.
     let xfail = source.contains("// XFAIL: *");
 
-    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut loader = fixture_loader();
     if let Err(e) = loader.load_main(path.to_str().unwrap()) {
         if !expect_pass || xfail {
             return Ok(());
@@ -235,7 +246,7 @@ fn run_middle_end_test(path: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut loader = fixture_loader();
     loader
         .load_main(path.to_str().unwrap())
         .expect("Failed to parse");
@@ -409,7 +420,7 @@ fn run_warning_test(path: &Path) -> Result<(), String> {
         .map(|l| l.split_once("NO-WARN:").unwrap().1.trim().to_string())
         .collect();
 
-    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut loader = fixture_loader();
     loader
         .load_main(path.to_str().unwrap())
         .map_err(|e| format!("Parse failed on {:?}: {}", path, e))?;
@@ -519,7 +530,7 @@ fn run_expect_lines_on_the_ast_code_generator(path: &Path) -> Result<(), String>
         .map(|line| line.split_once("EXPECT:").unwrap().1.trim().to_string())
         .collect();
 
-    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut loader = fixture_loader();
     if let Err(e) = loader.load_main(path.to_str().unwrap()) {
         return Err(format!(
             "Frontend failed to parse '{}': {}",
@@ -1210,7 +1221,7 @@ fn run_backend_autodiff_test(path: &Path) -> Result<(), String> {
         .map(|line| line.split_once("EXPECT:").unwrap().1.trim().to_string())
         .collect();
 
-    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut loader = fixture_loader();
     if let Err(e) = loader.load_main(path.to_str().unwrap()) {
         return Err(format!(
             "Frontend failed to parse '{}': {}",
@@ -1486,7 +1497,7 @@ fn run_shell_tests(path: &Path) -> Result<(), String> {
 #[test]
 fn test_melior_matmul() -> Result<(), String> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/middle_end/pass/matmul.vx");
-    let mut loader = vxc::module_loader::ModuleLoader::new();
+    let mut loader = fixture_loader();
     loader
         .load_main(path.to_str().unwrap())
         .expect("Failed to parse");

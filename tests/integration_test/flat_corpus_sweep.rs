@@ -254,6 +254,15 @@ fn decline_keys(log: &str) -> Vec<String> {
         .collect()
 }
 
+/// `--package tests=<repository>/tests`: some fixtures import other test files from `tests`.
+fn tests_package() -> [String; 2] {
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    [
+        "--package".to_string(),
+        format!("tests={}", tests.display()),
+    ]
+}
+
 /// Compile one program and report the path it took. `--action emit-mlir` stops at
 /// MLIR, so no accelerator or JIT is needed and the answer is the same everywhere.
 ///
@@ -262,6 +271,7 @@ fn decline_keys(log: &str) -> Vec<String> {
 fn path_taken(program: &Path) -> Result<CodegenPath, String> {
     let output = Command::new(env!("CARGO_BIN_EXE_vxc"))
         .arg(program)
+        .args(tests_package())
         .args(["--action", "emit-mlir"])
         .env("VX_FLAT_DBG", "1")
         .output()
@@ -581,6 +591,7 @@ fn flat_path_answers_match_the_backend_expectations() {
 
         let output = match Command::new(env!("CARGO_BIN_EXE_vxc"))
             .arg(&program)
+            .args(tests_package())
             .env("PATH", &path_var)
             .env("VX_FLAT_DBG", "1")
             .output()

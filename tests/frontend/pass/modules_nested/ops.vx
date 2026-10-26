@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc --package tests=tests %s --action emit-mlir 2>&1 | FileCheck %s
 // A module that itself imports one: both levels are emitted into this module, and the calls
 // here resolve to them.
 // CHECK-LABEL: func.func @do_ops(%arg0: f32, %arg1: f32) -> f32

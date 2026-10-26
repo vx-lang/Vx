@@ -117,6 +117,11 @@ pub struct DriverOptions {
     #[arg(long = "package", value_name = "NAME=DIR", value_parser = parse_package)]
     pub packages: Vec<(String, PathBuf)>,
 
+    /// Read the standard library from DIR instead of from beside the compiler. Can be given more
+    /// than once; the directories are searched in order.
+    #[arg(long = "std-path", value_name = "DIR")]
+    pub std_paths: Vec<PathBuf>,
+
     /// The host the program runs on: a file declaring `Memory::CPU_DRAM`, or
     /// `default` for the machine compiling it.
     ///
@@ -692,9 +697,13 @@ impl CompilerDriver {
         )
     }
 
-    /// A loader that reads the `--package` directories.
+    /// A loader that reads the `--std-path` and `--package` directories.
     fn module_loader(&self) -> ModuleLoader {
-        let mut loader = ModuleLoader::new();
+        let mut loader = if self.options.std_paths.is_empty() {
+            ModuleLoader::new()
+        } else {
+            ModuleLoader::with_std_paths(self.options.std_paths.clone())
+        };
         for (name, dir) in &self.options.packages {
             loader.add_package(name, dir);
         }

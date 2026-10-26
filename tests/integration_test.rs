@@ -35,6 +35,7 @@ mod integration_test {
     mod missing_solver_test;
     mod mlir_diagnostic_test;
     mod module_api_test;
+    mod output_does_not_depend_on_the_current_directory;
     mod payload_test;
     mod pipeline_scale_test;
     mod registry_test;

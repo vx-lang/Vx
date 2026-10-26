@@ -328,7 +328,6 @@ if [ -n "\${VX_LLVM_BIN:-}" ] && [ -d "\$VX_LLVM_BIN" ]; then
 fi
 
 export VX_RUNTIME_LIB_DIR="\${VX_RUNTIME_LIB_DIR:-\$PREFIX/lib}"
-export VX_STD_PATH="\${VX_STD_PATH:-\$PREFIX/stdlib/std:\$PREFIX/stdlib}"
 
 # The dispatch backend and the print shims, as shipped in this toolchain rather than wherever they
 # sat on the machine that built it. Each is set only if the file is actually present, so a
