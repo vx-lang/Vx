@@ -51,11 +51,11 @@ theorem counterProg_wellTyped : counterProg.WellTyped where
       simp [counterProg, TProg.SyncL, TProg.SendL, TProg.vty, Ty.Sync, Ty.Send, Leaf.Sync]
   bodies u := by
     rcases u with _ | _ | u <;>
-      simp [counterProg, TProg.Fits, TProg.At, TProg.pathPerm, TProg.capPerm, TProg.target,
+      simp [counterProg, TProg.Fits, TProg.PtrOk, TProg.IsPtr, TProg.At, TProg.pathPerm, TProg.capPerm, TProg.target,
         TProg.vty, via, Allowed, Expr.RegsBelow, Ty.leaves]
   phases k p hp := by
     rcases k with _ | _ | _ | k <;> simp [counterProg] at hp <;> subst hp <;>
-      simp [TProg.PhaseOk, TProg.Fits, TProg.At, TProg.blockFits, TProg.blockPerm, TProg.taskPerm,
+      simp [TProg.PhaseOk, TProg.Fits, TProg.PtrOk, TProg.IsPtr, TProg.At, TProg.blockFits, TProg.blockPerm, TProg.taskPerm,
         TProg.pathPerm, TProg.capPerm, TProg.target, TProg.vty, TProg.Live, spawnsOf, via, Allowed,
         Expr.RegsBelow, Ty.leaves, counterProg]
     exact ⟨fun x => by rcases x with _ | _ | _ | x <;> simp,
@@ -69,7 +69,8 @@ theorem counterProg_wellTyped : counterProg.WellTyped where
 /-- No execution of `counterProg` has a data race. -/
 theorem counterProg_raceFree {X : Execution} (hX : counterProg.toTaskProg.toProg.Execs X) :
     X.RaceFree :=
-  counterProg_wellTyped.raceFree hX
+  counterProg_wellTyped.raceFree
+    (.of_noPtrs fun x k => by rcases x with _ | _ | _ | _ | _ | x <;> simp [counterProg]) hX
 
 /-- A task borrows a cell with `ref`. Two such tasks could write the cell at the same time. -/
 def cellProg : TProg where
@@ -132,7 +133,7 @@ theorem scopedProg_wellTyped : scopedProg.WellTyped where
     rcases u with _ | _ | u <;> simp [scopedProg] at h <;> obtain ⟨rfl, rfl⟩ := h <;>
       simp [scopedProg, TProg.SendL, Ty.Send]
   bodies u := by
-    rcases u with _ | _ | u <;> simp [scopedProg, TProg.Fits, TProg.At, TProg.pathPerm, TProg.capPerm, TProg.target, TProg.vty,
+    rcases u with _ | _ | u <;> simp [scopedProg, TProg.Fits, TProg.PtrOk, TProg.IsPtr, TProg.At, TProg.pathPerm, TProg.capPerm, TProg.target, TProg.vty,
       via, Allowed, Expr.RegsBelow, Ty.leaves]
   phases k p hp := by
     rcases k with _ | _ | k <;> simp [scopedProg] at hp <;> subst hp <;>
@@ -149,7 +150,7 @@ theorem scopedProg_wellTyped : scopedProg.WellTyped where
 and the block joins it before the second block starts. -/
 theorem scopedProg_raceFree {X : Execution} (hX : scopedProg.toTaskProg.toProg.Execs X) :
     X.RaceFree :=
-  scopedProg_wellTyped.raceFree hX
+  scopedProg_wellTyped.raceFree (.of_noPtrs fun x k => by simp [scopedProg]) hX
 
 /-- The checker rejects `scopedProg` with no scopes: both locals then live in each phase, and they
 share a slot. -/

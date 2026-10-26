@@ -240,7 +240,10 @@ the outer block. `ChanFootprint.lean` and `LockFootprint.lean` do not allow this
   captures by `move`, `ref` and `mut`. The second part adds references `&x` and `&mut x` as
   locals. `TypedChan.lean` has the third part: channels, and locals in a mutex. T3 is in
   `Typed.lean`: a local can live in one phase only, and locals of different phases share a slot.
-  `TypedChan.lean` does not have scopes.
+  `TypedChan.lean` does not have scopes. The fourth part adds raw pointers and `unsafe impl Send`
+  and `Sync` (S3) to `Typed.lean`. The claims of the `unsafe` code and of each `unsafe impl` are
+  a hypothesis of the theorems. A task is a closure, so S4 is the rule for `spawn`.
+  `TypedChan.lean` has no raw pointers.
 - **Release and acquire in the library**, one access at a time (step 4).
 
 ## What Lean does not cover

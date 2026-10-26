@@ -163,6 +163,25 @@ block joins its tasks (T3), so a later phase can use the slot. In `TypedExample.
 write two locals in one slot (`scopedProg`). The checker rejects that program with no scopes. It
 also rejects code that reads through a reference after its local ended (`danglingProg`).
 
+A local of `Typed.lean` can also be a raw pointer. The checker does not know where it points, so
+an access through it needs `unsafe`. A raw pointer is not `Send` or `Sync`. Its type can opt in
+with `unsafe impl Send` or `unsafe impl Sync`. The checker cannot check these claims, so the
+theorems take them as a hypothesis (`Claims`):
+
+- Each raw pointer points to a slot.
+- A raw pointer whose type has an `unsafe impl` owns its slot. No other live local uses it.
+- For `unsafe impl Sync`, the value that the pointer points to is `Sync`.
+
+The code of a block runs while its tasks run. So it accesses only through raw pointers whose type
+has an `unsafe impl`. A task is a closure, and the rule for `spawn` is the rule for a closure, so
+closures add nothing.
+
+`TypedUnsafeExample.lean` moves a raw pointer into a task, as with a `Vec` (`bufProg`). The checker
+rejects that program if its pointer type has no `unsafe impl Send`, or if it accesses through the
+pointer outside `unsafe`. It also rejects block code that writes through a pointer with no
+`unsafe impl` while a task writes the same slot (`aliasProg`). The checker accepts a false
+`unsafe impl Sync` for a pointer to a cell (`syncCellProg`), but its claims do not hold.
+
 `TypedChan.lean` adds channels and locks, and compiles to `ChanProg`. A local can be the value
 of a mutex with a lock. An access to it needs the lock held, so the guard map of `LockFootprint.lean`
 gives its places that lock. A mutex is `Sync` when its value is `Send`, so two tasks can share a

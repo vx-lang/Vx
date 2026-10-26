@@ -21,7 +21,7 @@ channel is a number. A reference is not a value in this model, so no reference c
 channel.
 
 Each task joins at the end of its block, a task starts no task, and a block does not run in a
-loop. The code has no failures.
+loop. The code has no failures. This file has no raw pointers and no `unsafe` code.
 -/
 
 namespace Vx
@@ -134,6 +134,7 @@ def SFits (held : List Nat) (perm : Nat → Perm) : Src → Prop
   | .seq s t => SFits held perm s ∧ SFits held perm t
   | .ite c s t => c.RegsBelow T.env.regs ∧ SFits held perm s ∧ SFits held perm t
   | .loop c s => c.RegsBelow T.env.regs ∧ SFits held perm s
+  | .unsafeCode _ => False
 
 /-- The code follows the permissions `perm` while it holds the locks `held`. A `locked m` block
 takes a lock that the code does not hold yet. -/
@@ -166,6 +167,8 @@ structure WellTyped : Prop where
   guard_lt : ∀ x m, T.guard x = some m → m < T.locks
   /-- A mutex holds a value, not a reference. -/
   guard_val : ∀ x m, T.guard x = some m → ∃ τ, T.env.ty x = .val τ
+  /-- No local is a raw pointer. -/
+  noPtrs : ∀ x k, T.env.ty x ≠ .ptr k
   /-- The rules of `Typed.lean` for a local with no lock. A mutex is `Send` and `Sync` when its
   value is `Send`. -/
   caps : ∀ u x m, (x, m) ∈ T.env.caps u →
@@ -249,6 +252,7 @@ theorem SFits.accesses {held : List Nat} {perm tp : Nat → Perm}
   | seq _ _ ih1 ih2 => exact ⟨ih1 h.1, ih2 h.2⟩
   | ite _ _ _ ih1 ih2 => exact ⟨ih1 h.2.1, ih2 h.2.2⟩
   | loop _ _ ih => exact ih h.2
+  | unsafeCode => exact h.elim
 
 theorem CFits.accesses {held : List Nat} {perm tp : Nat → Perm}
     (hle : ∀ p, (perm p).Le (tp (T.env.target p))) {c : CSrc} (h : T.CFits held perm c) :
@@ -278,6 +282,7 @@ theorem SFits.guarded (hw : T.WellTyped) {held : List Nat} {perm : Nat → Perm}
   | seq _ _ ih1 ih2 => exact ⟨ih1 h.1, ih2 h.2⟩
   | ite _ _ _ ih1 ih2 => exact ⟨ih1 h.2.1, ih2 h.2.2⟩
   | loop _ _ ih => exact ih h.2
+  | unsafeCode => exact h.elim
 
 theorem CFits.guarded (hw : T.WellTyped) {held : List Nat} {perm : Nat → Perm} {c : CSrc}
     (h : T.CFits held perm c) : (ccompile T.env.place c).Guarded T.g held := by
@@ -316,6 +321,7 @@ theorem SFits.below (hw : T.WellTyped) {held : List Nat} {perm : Nat → Perm} {
   | seq _ _ ih1 ih2 => exact ⟨ih1 h.1, ih2 h.2⟩
   | ite _ _ _ ih1 ih2 => exact ⟨ih1 h.2.1, ih2 h.2.2⟩
   | loop _ _ ih => exact ih h.2
+  | unsafeCode => exact h.elim
 
 theorem CFits.stmtOk (hw : T.WellTyped) {held : List Nat} {perm : Nat → Perm} {c : CSrc}
     (h : T.CFits held perm c) : T.toChanProg.StmtOk (ccompile T.env.place c) := by
@@ -340,6 +346,7 @@ theorem SFits.regs {held : List Nat} {perm : Nat → Perm} {c : Src} (h : T.SFit
   | seq _ _ ih1 ih2 => exact ⟨ih1 h.1, ih2 h.2⟩
   | ite _ _ _ ih1 ih2 => exact ⟨h.1.mono hm, ih1 h.2.1, ih2 h.2.2⟩
   | loop _ _ ih => exact ⟨h.1.mono hm, ih h.2⟩
+  | unsafeCode => exact h.elim
 
 theorem CFits.regs {held : List Nat} {perm : Nat → Perm} {c : CSrc} (h : T.CFits held perm c) :
     (ccompile T.env.place c).RegsBelow (T.env.regs + 3) := by
@@ -435,6 +442,7 @@ theorem sync_of_ref (hw : T.WellTyped) {u x : Nat} (h : T.env.taskPerm u x = .re
         simp only [via] at hp
         have := ((hw.caps u p .ref (TProg.capPerm_ref hp)).1 (hval (Or.inr ht))).1 rfl
         simpa [TProg.SyncL, TProg.target, ht] using this
+      | ptr k => exact absurd ht (hw.noPtrs p k)
     · cases h
 
 /-- Two tasks of a block fit at a local with no lock. -/

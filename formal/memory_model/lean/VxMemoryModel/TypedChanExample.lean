@@ -58,6 +58,7 @@ theorem mutexProg_wellTyped : mutexProg.WellTyped where
   width x := by rcases x with _ | x <;> simp [mutexProg, mutexEnv, TProg.vty, Ty.leaves]
   guard_lt x m h := by rcases x with _ | x <;> simp_all [mutexProg]
   guard_val x m h := by rcases x with _ | x <;> simp [mutexProg, mutexEnv] at h ⊢
+  noPtrs x k := by rcases x with _ | x <;> simp [mutexProg, mutexEnv]
   caps u x m h := by
     rcases u with _ | _ | u <;> simp [mutexProg, mutexEnv] at h <;>
       rcases h with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ <;>
