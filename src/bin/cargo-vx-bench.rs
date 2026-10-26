@@ -313,8 +313,7 @@ mod compare {
         }
 
         let libs = vxc::jit::shared_library_paths()?;
-        let dispatch = std::env::var("VX_DISPATCH_LIB")
-            .unwrap_or_else(|_| std::env!("NPU_SHARED_LIB_PATH").to_string());
+        let dispatch = vxc::jit::dispatch_library_path();
         let clang = std::env::var("CLANG_PATH").unwrap_or_else(|_| "clang".to_string());
         let mut cmd = Command::new(&clang);
         cmd.arg(&obj).arg("-o").arg(&exe);

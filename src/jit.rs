@@ -188,8 +188,7 @@ pub fn shared_library_paths() -> Result<Vec<String>, String> {
         ),
         runtime_library_path()?,
     ];
-    let npu = std::env::var("VX_DISPATCH_LIB")
-        .unwrap_or_else(|_| std::env!("NPU_SHARED_LIB_PATH").to_string());
+    let npu = dispatch_library_path();
     if !npu.is_empty() && std::path::Path::new(&npu).exists() {
         libs.push(npu);
     }
@@ -240,6 +239,38 @@ pub fn mlir_shims_path() -> String {
         return built.to_string();
     }
     String::new()
+}
+
+/// The dispatch library that GPU programs link: `VX_DISPATCH_LIB`, else the toolchain's own copy
+/// next to the compiler, else the one the build made in its OUT_DIR. The last one is a path on
+/// the build machine, so a vxc copied to a GPU pod needs one of the first two. The path may not
+/// exist, and the callers check that.
+pub fn dispatch_library_path() -> String {
+    dispatch_library_in(
+        std::env::var("VX_DISPATCH_LIB").ok(),
+        std::env::current_exe().ok().as_deref(),
+        std::env!("NPU_SHARED_LIB_PATH"),
+    )
+}
+
+fn dispatch_library_in(
+    named: Option<String>,
+    exe: Option<&std::path::Path>,
+    built: &str,
+) -> String {
+    if let Some(named) = named {
+        return named;
+    }
+    let file_name = std::path::Path::new(built).file_name();
+    if let (Some(file_name), Some(bin_dir)) = (file_name, exe.and_then(|e| e.parent())) {
+        for relative in ["../lib", "."] {
+            let path = bin_dir.join(relative).join(file_name);
+            if path.exists() {
+                return path.to_string_lossy().into_owned();
+            }
+        }
+    }
+    built.to_string()
 }
 
 /// linker without it and clang reports a missing file with no hint of which build produces it.
@@ -462,13 +493,7 @@ pub fn execute_mlir_streams(
         disable_llvm_optimizations,
     )?;
 
-    // The dispatch backend built alongside this compiler, overridable at run
-    // time. The compile-time path names a file in the build machine's OUT_DIR,
-    // which is the right answer when the compiler runs where it was built and
-    // no answer at all when it does not: a vxc copied onto a rented GPU box has
-    // to be pointed at a backend built there, against that box's CUDA.
-    let lib_npu = std::env::var("VX_DISPATCH_LIB")
-        .unwrap_or_else(|_| std::env!("NPU_SHARED_LIB_PATH").to_string());
+    let lib_npu = dispatch_library_path();
 
     println!("[JIT] Linking native executable...");
     let temp_exe = temp_dir
@@ -689,6 +714,29 @@ mod tests {
 
     /// Without the shared library every test that runs a program fails, and each one reports
     /// only a clang error naming a file it has never heard of. This one names the cause.
+    /// A toolchain unpacked anywhere, `bin/vxc` and `lib/<dispatch library>`, finds its own
+    /// dispatch library. `VX_DISPATCH_LIB` still wins, and with neither the build's path is used.
+    #[test]
+    fn the_dispatch_library_is_found_next_to_the_compiler() {
+        let root = std::env::temp_dir().join(format!("vx-dispatch-{}", std::process::id()));
+        let (bin, lib) = (root.join("bin"), root.join("lib"));
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&lib).unwrap();
+        let exe = bin.join("vxc");
+        let built = "/build/out/libvx_cuda_dispatch.so";
+
+        assert_eq!(dispatch_library_in(None, Some(&exe), built), built);
+        std::fs::write(lib.join("libvx_cuda_dispatch.so"), b"").unwrap();
+        let found = dispatch_library_in(None, Some(&exe), built);
+        assert!(
+            found.ends_with("bin/../lib/libvx_cuda_dispatch.so"),
+            "{found}"
+        );
+        let named = dispatch_library_in(Some("/x/libmine.so".into()), Some(&exe), built);
+        assert_eq!(named, "/x/libmine.so");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn the_runtime_library_the_jit_links_is_present() {
         if let Err(why) = runtime_library_path() {
