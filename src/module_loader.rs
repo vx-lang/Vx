@@ -66,6 +66,9 @@ pub struct ModuleLoader {
     paths: HashMap<Symbol, PathBuf>,
     /// The modules loaded as roots rather than imported, in load order.
     roots: Vec<Symbol>,
+    /// The name each file got when it was first loaded, by its canonical path. A file loaded
+    /// both as a root and by an import path keeps that one name.
+    file_names: HashMap<PathBuf, Symbol>,
 }
 
 impl ModuleLoader {
@@ -105,6 +108,7 @@ impl ModuleLoader {
             returned_modules_directly: false,
             paths: HashMap::new(),
             roots: Vec::new(),
+            file_names: HashMap::new(),
         }
     }
 
@@ -115,7 +119,8 @@ impl ModuleLoader {
     }
 
     pub fn load_main(&mut self, filename: &str) -> Result<(), ModuleError> {
-        let main_program = Self::parse_file(Path::new(filename), filename.into())?;
+        let mut main_program = Self::parse_file(Path::new(filename), filename.into())?;
+        self.name_file_once(&mut main_program, Path::new(filename))?;
         self.paths.insert(filename.into(), PathBuf::from(filename));
         self.roots.push(filename.into());
 
@@ -168,8 +173,9 @@ impl ModuleLoader {
             };
             // The next wave's imports, in source order, each once.
             let mut pending: Vec<(Symbol, Vec<Symbol>)> = Vec::new();
-            for result in parsed {
-                let program = result?;
+            for (result, (_, path)) in parsed.into_iter().zip(&wave) {
+                let mut program = result?;
+                self.name_file_once(&mut program, path)?;
                 for import in &program.imports {
                     let module_name = Self::module_name(&import.path);
                     if seen.insert(module_name.clone()) {
@@ -211,12 +217,14 @@ impl ModuleLoader {
                 continue;
             };
             let path = &self.paths[&program.module_path];
-            let renamed = Self::parse_file_renaming(path, program.module_path.clone(), renames)?;
+            let mut renamed =
+                Self::parse_file_renaming(path, program.module_path.clone(), renames)?;
             // The imports were already followed as first parsed.
             assert_eq!(
                 renamed.imports, program.imports,
                 "renaming a clashing name changed an import path"
             );
+            renamed.file = program.file.clone();
             *program = renamed;
         }
         Ok(())
@@ -266,6 +274,20 @@ impl ModuleLoader {
             .join("::")
             .as_str()
             .into()
+    }
+
+    /// Give `program` the file name that the first load of the same file got. Otherwise a file
+    /// loaded as a root and again by an import path has two names, and its impl blocks no
+    /// longer compare equal, so E3049 reports one impl as two.
+    fn name_file_once(&mut self, program: &mut Program, path: &Path) -> Result<(), ModuleError> {
+        let key = fs::canonicalize(path)
+            .map_err(|e| ModuleError::IO(path.to_string_lossy().into_owned(), e))?;
+        let first = self
+            .file_names
+            .entry(key)
+            .or_insert_with(|| program.file.clone().expect("a parsed file has a name"));
+        program.file = Some(first.clone());
+        Ok(())
     }
 
     /// Read and parse one file as the module `module_path`.
@@ -363,7 +385,8 @@ impl ModuleLoader {
             Resolved::Source(p) => p,
         };
 
-        let program = Self::parse_file(&resolved_path, module_name.clone())?;
+        let mut program = Self::parse_file(&resolved_path, module_name.clone())?;
+        self.name_file_once(&mut program, &resolved_path)?;
         self.paths.insert(module_name.clone(), resolved_path);
 
         let imports = program.imports.clone();
@@ -450,5 +473,31 @@ mod tests {
             !loader.into_programs().unwrap().is_empty(),
             "load_main kept nothing, so a compile through this loader would be empty"
         );
+    }
+
+    /// A file that is a root and is also imported, by itself here, is loaded twice. Both
+    /// loads name the file the way the root was written, in both loaders.
+    #[test]
+    fn a_file_loaded_twice_has_one_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.vx"), "import pkg::a;\n").unwrap();
+        // Written with `./`, so the root's name differs from the path the import finds.
+        let root = format!("{}/./a.vx", dir.path().display());
+        let files = |programs: Vec<Program>| -> Vec<Option<Symbol>> {
+            programs.into_iter().map(|p| p.file).collect()
+        };
+
+        let mut recursive = ModuleLoader::new();
+        recursive.add_package("pkg", dir.path());
+        recursive.load_main(&root).unwrap();
+        let mut waves = ModuleLoader::new();
+        waves.add_package("pkg", dir.path());
+        let from_load_all = waves
+            .load_all(std::slice::from_ref(&root), Schedule::Sequential)
+            .unwrap();
+
+        let expected = vec![Some(Symbol::from(root.as_str())); 2];
+        assert_eq!(files(recursive.into_programs().unwrap()), expected);
+        assert_eq!(files(from_load_all), expected);
     }
 }
