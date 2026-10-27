@@ -546,15 +546,16 @@ theorem cblockOk (hw : T.WellTyped) {is : List CItem} (hp : T.PhaseOk (.block is
     (ChanProg.CPhase.block (ccompileItems T.env.place is) none).Ok T.toChanProg T.g (fun _ => []) := by
   have hacc := ccompileItems_accesses (tp := T.bPerm (cspawnsOf is)) (fun p => via_le _ _) hp.1
   obtain ⟨h1, h2, -, -⟩ := ccompileItems_props hw hp.1 hs
-  refine ⟨h1, h2, ?_, ?_⟩
+  have hn := ChanProg.lowerC_noBlocks (P := T.toChanProg) h1
+  refine ⟨.of_noBlocks hn, h2, ?_, ?_⟩
   · intro u hu w hd
-    rw [ccompileItems_spawnIds] at hu
+    rw [Stmt.allIds_of_noBlocks hn, ccompileItems_spawnIds] at hu
     rw [ChanProg.lowerPhases_nil, TaskProg.desc_nil] at hd
     subst w
     exact capart hw hacc ((hw.bodies u).accesses (TProg.pathPerm_le u))
       fun x hg l hl => fit_block hw hu x hg l hl
   · intro u hu v hv huv w w' hd hd'
-    rw [ccompileItems_spawnIds] at hu hv
+    rw [Stmt.allIds_of_noBlocks hn, ccompileItems_spawnIds] at hu hv
     rw [ChanProg.lowerPhases_nil, TaskProg.desc_nil] at hd hd'
     subst w w'
     exact capart hw ((hw.bodies u).accesses (TProg.pathPerm_le u))
