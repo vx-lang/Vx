@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-10-24T18:00:00Z</updated>
+  <updated>2026-10-27T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Draw the boundary once</title>
+    <link href="https://vxlang.org/blog/draw-the-boundary-once.html"/>
+    <id>https://vxlang.org/blog/draw-the-boundary-once.html</id>
+    <updated>2026-10-27T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Visibility rules, the build system and the package manager all read one thing: the public interface of a package. When a language designs them apart, they disagree about where that interface is, and the disagreement lasts for the life of the language. C++ keeps private fields in headers, a Java jar had no boundary for 21 years, Rust teams widen visibility to split a slow crate, and Swift added a package access level to match its package manager. The contract between a compiler and a build system fits in one equation, and the rebuild rule and the version bump both follow from it. None of 15 compiler and build-system pairs passes all six tests that the equation gives. Elm and Java with Bazel come closest, and Vx scores 0 today. The post describes how Vx plans to draw the boundary once.</summary>
+  </entry>
 
   <entry>
     <title>GLM on an A100, in Vx</title>
