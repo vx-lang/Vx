@@ -43,28 +43,28 @@
 <h1>Draw the boundary once: the scorecard</h1>
 <p class="post-meta">Aditya Kumar &middot; 27 October 2026</p>
 
-<p class="lede">This page holds the evidence for the scores in
+<p class="lede">This page gives the evidence for the scores in
 <a href="/blog/draw-the-boundary-once.html">Draw the boundary once</a>. Each table gives the score,
-the reason and a source for one pair of compiler and build system. The scores are as of
+the reason and a source for one pair of compiler and build system. The scores are from
 25 October 2026.</p>
 
 <p>The six tests come from the equation in the post:</p>
 
 <ol>
-<li><strong>Function:</strong> the compile and the build read only declared inputs.</li>
-<li><strong>Interface:</strong> a dependent compile reads only an interface file, and nothing in
-that file is inferred from a function body.</li>
-<li><strong>Cutoff:</strong> a change to a private item or a function body rebuilds no other
-package.</li>
-<li><strong>Graph:</strong> the build system learns the package graph without scanning source
+<li><strong>Function:</strong> the compiler and the build system read only declared inputs.</li>
+<li><strong>Interface:</strong> when the compiler compiles a package, it reads only the interface
+files of the dependencies. No part of an interface file comes from a function body.</li>
+<li><strong>Cutoff:</strong> a dependency changes only a private item, or the body of a function
+that is not generic or inline. Then the build system compiles no other package again.</li>
+<li><strong>Graph:</strong> the build system gets the package graph without a scan of the source
 files.</li>
-<li><strong>Visibility:</strong> what is visible does not depend on what the build tool compiles
-together.</li>
-<li><strong>Bump:</strong> the package manager computes the version bump from the interface
-diff.</li>
+<li><strong>Visibility:</strong> what is visible does not depend on which files the build system
+compiles together.</li>
+<li><strong>Bump:</strong> the package manager calculates the version bump from the difference
+between the two interfaces.</li>
 </ol>
 
-<p>✓ passes, ◐ passes in part, ✗ fails, – does not apply. None of the 16 pairs passes all six
+<p>✓ passes, ◐ passes partially, ✗ fails, – does not apply. No pair of the 16 passes all six
 tests.</p>
 
 <h2 id="elm"><a href="#elm">Elm (elm make, elm publish): 4 of 6</a></h2>
@@ -73,12 +73,12 @@ tests.</p>
 <table>
 <thead><tr><th>Test</th><th>Score</th><th>Reason</th><th>Source</th></tr></thead>
 <tbody>
-<tr><td>Function</td><td>◐</td><td>No compile-time code, and packages cannot use ports or kernel (JavaScript) code. A package build solves its version ranges against the registry, with no lock file.</td><td><a href="https://raw.githubusercontent.com/elm/compiler/main/compiler/src/Parse/Module.hs">Parse/Module.hs</a>, <a href="https://raw.githubusercontent.com/elm/compiler/main/builder/src/Elm/Details.hs">Elm/Details.hs</a>, <a href="https://guide.elm-lang.org/interop/ports.html">ports guide</a></td></tr>
-<tr><td>Interface</td><td>✓</td><td>Package docs reject <code>exposing (..)</code> and any exposed value without a type annotation. Modules inside an application can still have inferred interfaces.</td><td><a href="https://raw.githubusercontent.com/elm/compiler/main/compiler/src/Elm/Docs.hs">Elm/Docs.hs</a>, <a href="https://raw.githubusercontent.com/elm/compiler/main/compiler/src/Reporting/Error/Docs.hs">Error/Docs.hs</a></td></tr>
-<tr><td>Cutoff</td><td>✓</td><td>The build compares the new <code>.elmi</code> with the old one and keeps dependents cached when they match. The <code>.elmi</code> holds only exposed values.</td><td><a href="https://raw.githubusercontent.com/elm/compiler/main/builder/src/Build.hs">Build.hs</a>, <a href="https://raw.githubusercontent.com/elm/compiler/main/compiler/src/Elm/Interface.hs">Interface.hs</a></td></tr>
-<tr><td>Graph</td><td>◐</td><td><code>elm.json</code> gives the package graph, but the build parses each source file for its imports.</td><td><a href="https://raw.githubusercontent.com/elm/compiler/main/builder/src/Build.hs">Build.hs</a></td></tr>
-<tr><td>Visibility</td><td>✓</td><td>The module's <code>exposing</code> list and <code>exposed-modules</code> set visibility. Two files for one module name are an error.</td><td><a href="https://raw.githubusercontent.com/elm/compiler/main/compiler/src/Elm/Interface.hs">Interface.hs</a></td></tr>
-<tr><td>Bump</td><td>✓</td><td><code>elm publish</code> diffs the old and new API and refuses a version number that does not match.</td><td><a href="https://raw.githubusercontent.com/elm/compiler/main/terminal/src/Publish.hs">Publish.hs</a></td></tr>
+<tr><td>Function</td><td>◐</td><td>Elm has no compile-time code, and packages cannot use ports or kernel (JavaScript) code. When Elm builds a package, it selects the dependency versions from the registry, and it uses no lock file.</td><td><a href="https://raw.githubusercontent.com/elm/compiler/main/compiler/src/Parse/Module.hs">Parse/Module.hs</a>, <a href="https://raw.githubusercontent.com/elm/compiler/main/builder/src/Elm/Details.hs">Elm/Details.hs</a>, <a href="https://guide.elm-lang.org/interop/ports.html">ports guide</a></td></tr>
+<tr><td>Interface</td><td>✓</td><td>Package documentation refuses <code>exposing (..)</code>, and it refuses an exposed value that has no type annotation. A module inside an application can still have an interface that Elm infers.</td><td><a href="https://raw.githubusercontent.com/elm/compiler/main/compiler/src/Elm/Docs.hs">Elm/Docs.hs</a>, <a href="https://raw.githubusercontent.com/elm/compiler/main/compiler/src/Reporting/Error/Docs.hs">Error/Docs.hs</a></td></tr>
+<tr><td>Cutoff</td><td>✓</td><td>The build compares the new <code>.elmi</code> file with the old one. When they are the same, the build keeps the dependents in its cache. The <code>.elmi</code> file holds only exposed values.</td><td><a href="https://raw.githubusercontent.com/elm/compiler/main/builder/src/Build.hs">Build.hs</a>, <a href="https://raw.githubusercontent.com/elm/compiler/main/compiler/src/Elm/Interface.hs">Interface.hs</a></td></tr>
+<tr><td>Graph</td><td>◐</td><td><code>elm.json</code> gives the package graph, but the build parses each source file to find its imports.</td><td><a href="https://raw.githubusercontent.com/elm/compiler/main/builder/src/Build.hs">Build.hs</a></td></tr>
+<tr><td>Visibility</td><td>✓</td><td>The <code>exposing</code> list of the module and <code>exposed-modules</code> set visibility. Two files for one module name cause an error.</td><td><a href="https://raw.githubusercontent.com/elm/compiler/main/compiler/src/Elm/Interface.hs">Interface.hs</a></td></tr>
+<tr><td>Bump</td><td>✓</td><td><code>elm publish</code> compares the old interface with the new interface, and it refuses a version number that does not agree.</td><td><a href="https://raw.githubusercontent.com/elm/compiler/main/terminal/src/Publish.hs">Publish.hs</a></td></tr>
 </tbody>
 </table>
 </div>
@@ -89,12 +89,12 @@ tests.</p>
 <table>
 <thead><tr><th>Test</th><th>Score</th><th>Reason</th><th>Source</th></tr></thead>
 <tbody>
-<tr><td>Function</td><td>◐</td><td>The sandbox shows an action only its declared inputs. Processes can still read the host file system, and the network is allowed by default.</td><td><a href="https://bazel.build/docs/sandboxing">Sandboxing</a>, <a href="https://bazel.build/reference/command-line-reference">command-line reference</a></td></tr>
-<tr><td>Interface</td><td>✓</td><td>Dependents compile against header jars. Turbine and ijar remove method code and private members.</td><td><a href="https://github.com/google/turbine/blob/main/java/com/google/turbine/lower/RemovePrivateMembers.java">Turbine RemovePrivateMembers</a>, <a href="https://github.com/bazelbuild/bazel/blob/master/third_party/ijar/README.txt">ijar README</a></td></tr>
-<tr><td>Cutoff</td><td>✓</td><td>Skyframe skips dependents when a rebuilt value did not change, so A recompiles only when the header jar of B changed.</td><td><a href="https://bazel.build/reference/skyframe">Skyframe</a>, <a href="https://mail.openjdk.org/pipermail/compiler-dev/2020-May/014517.html">compiler-dev mail</a></td></tr>
-<tr><td>Graph</td><td>✓</td><td><code>deps</code> in BUILD files.</td><td><a href="https://bazel.build/reference/be/java">Java rules</a></td></tr>
-<tr><td>Visibility</td><td>✓</td><td>Java access is set in source. Bazel's <code>visibility</code> attribute adds a declared gate at the target level.</td><td><a href="https://bazel.build/concepts/visibility">Visibility</a></td></tr>
-<tr><td>Bump</td><td>✗</td><td>Bazel modules have versions, but the docs say the bump semantics &ldquo;are not enforced&rdquo;.</td><td><a href="https://bazel.build/external/module">Modules</a></td></tr>
+<tr><td>Function</td><td>◐</td><td>The sandbox shows an action only its declared inputs. But processes can still read the file system of the host, and Bazel allows network access by default.</td><td><a href="https://bazel.build/docs/sandboxing">Sandboxing</a>, <a href="https://bazel.build/reference/command-line-reference">command-line reference</a></td></tr>
+<tr><td>Interface</td><td>✓</td><td>Dependents compile against header jars. Turbine and ijar remove the method code and the private members.</td><td><a href="https://github.com/google/turbine/blob/main/java/com/google/turbine/lower/RemovePrivateMembers.java">Turbine RemovePrivateMembers</a>, <a href="https://github.com/bazelbuild/bazel/blob/master/third_party/ijar/README.txt">ijar README</a></td></tr>
+<tr><td>Cutoff</td><td>✓</td><td>Skyframe skips the dependents when a value that it built again did not change. So Bazel compiles A again only when the header jar of B changed.</td><td><a href="https://bazel.build/reference/skyframe">Skyframe</a>, <a href="https://mail.openjdk.org/pipermail/compiler-dev/2020-May/014517.html">compiler-dev mail</a></td></tr>
+<tr><td>Graph</td><td>✓</td><td>The <code>deps</code> lists in BUILD files give the graph.</td><td><a href="https://bazel.build/reference/be/java">Java rules</a></td></tr>
+<tr><td>Visibility</td><td>✓</td><td>The Java source sets access. The <code>visibility</code> attribute of Bazel adds a declared gate at the target level.</td><td><a href="https://bazel.build/concepts/visibility">Visibility</a></td></tr>
+<tr><td>Bump</td><td>✗</td><td>Bazel modules have versions, but the documentation says that the meaning of a version increase is &ldquo;not enforced&rdquo;.</td><td><a href="https://bazel.build/external/module">Modules</a></td></tr>
 </tbody>
 </table>
 </div>
@@ -105,12 +105,12 @@ tests.</p>
 <table>
 <thead><tr><th>Test</th><th>Score</th><th>Reason</th><th>Source</th></tr></thead>
 <tbody>
-<tr><td>Function</td><td>✗</td><td>Build scripts are code that can read environment variables and files, and tasks are not sandboxed.</td><td><a href="https://docs.gradle.org/current/userguide/configuration_cache.html">Configuration cache</a>, <a href="https://docs.gradle.org/current/userguide/incremental_build.html">incremental build</a></td></tr>
-<tr><td>Interface</td><td>◐</td><td>Java signatures are written out, but javac reads the full class files of the dependency.</td><td><a href="https://docs.gradle.org/current/userguide/java_library_plugin.html">Java library plugin</a></td></tr>
-<tr><td>Cutoff</td><td>✓</td><td>Compile avoidance ignores method bodies and private members. Package-private members and constants stay in the hash.</td><td><a href="https://docs.gradle.org/current/userguide/java_plugin.html#sec:java_compile_avoidance">Compile avoidance</a></td></tr>
-<tr><td>Graph</td><td>✓</td><td>From declared dependencies, although the build file is code.</td><td><a href="https://docs.gradle.org/current/userguide/build_lifecycle.html">Build lifecycle</a></td></tr>
-<tr><td>Visibility</td><td>✓</td><td>Java access is set in source. <code>api</code> and <code>implementation</code> are declared in the build file.</td><td><a href="https://docs.oracle.com/javase/specs/jls/se21/html/jls-6.html#jls-6.6">JLS 6.6</a></td></tr>
-<tr><td>Bump</td><td>◐</td><td>Only the third-party tool japicmp suggests the bump.</td><td><a href="https://siom79.github.io/japicmp/">japicmp</a></td></tr>
+<tr><td>Function</td><td>✗</td><td>Build scripts are code that can read environment variables and files, and Gradle does not put tasks in a sandbox.</td><td><a href="https://docs.gradle.org/current/userguide/configuration_cache.html">Configuration cache</a>, <a href="https://docs.gradle.org/current/userguide/incremental_build.html">incremental build</a></td></tr>
+<tr><td>Interface</td><td>◐</td><td>Java signatures state all types, but javac reads the full class files of the dependency.</td><td><a href="https://docs.gradle.org/current/userguide/java_library_plugin.html">Java library plugin</a></td></tr>
+<tr><td>Cutoff</td><td>✓</td><td>Compile avoidance ignores method bodies and private members. The hash still includes package-private members and constants.</td><td><a href="https://docs.gradle.org/current/userguide/java_plugin.html#sec:java_compile_avoidance">Compile avoidance</a></td></tr>
+<tr><td>Graph</td><td>✓</td><td>Gradle gets the graph from declared dependencies, although the build file is code.</td><td><a href="https://docs.gradle.org/current/userguide/build_lifecycle.html">Build lifecycle</a></td></tr>
+<tr><td>Visibility</td><td>✓</td><td>The Java source sets access. The build file declares <code>api</code> and <code>implementation</code>.</td><td><a href="https://docs.oracle.com/javase/specs/jls/se21/html/jls-6.html#jls-6.6">JLS 6.6</a></td></tr>
+<tr><td>Bump</td><td>◐</td><td>Only japicmp, a tool from another project, suggests the bump.</td><td><a href="https://siom79.github.io/japicmp/">japicmp</a></td></tr>
 </tbody>
 </table>
 </div>
@@ -121,12 +121,12 @@ tests.</p>
 <table>
 <thead><tr><th>Test</th><th>Score</th><th>Reason</th><th>Source</th></tr></thead>
 <tbody>
-<tr><td>Function</td><td>✗</td><td><code>build.rs</code> and procedural macros can read any file or environment variable. The API that tracks such reads is nightly-only.</td><td><a href="https://doc.rust-lang.org/cargo/reference/build-scripts.html">Build scripts</a>, <a href="https://doc.rust-lang.org/proc_macro/tracked/index.html">proc_macro::tracked</a></td></tr>
-<tr><td>Interface</td><td>✗</td><td>Auto traits such as <code>Send</code> leak through <code>-&gt; impl Trait</code> and <code>async fn</code>, so the body decides part of the interface.</td><td><a href="https://rust-lang.github.io/rfcs/1522-conservative-impl-trait.html">RFC 1522</a></td></tr>
-<tr><td>Cutoff</td><td>✗</td><td>A crate's fingerprint includes the input hashes of its dependencies, so any change in a dependency recompiles its dependents. Early cutoff is an open issue.</td><td><a href="https://raw.githubusercontent.com/rust-lang/cargo/master/src/compiler/fingerprint/mod.rs">fingerprint/mod.rs</a>, <a href="https://github.com/rust-lang/cargo/issues/17439">cargo#17439</a></td></tr>
-<tr><td>Graph</td><td>✓</td><td><code>Cargo.toml</code> and <code>Cargo.lock</code>. Targets such as <code>src/bin/*</code> are still found by directory layout.</td><td><a href="https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html">Specifying dependencies</a>, <a href="https://doc.rust-lang.org/cargo/reference/cargo-targets.html">targets</a></td></tr>
-<tr><td>Visibility</td><td>✓</td><td>Visibility follows the module tree from <code>mod</code> declarations, starting at the crate root.</td><td><a href="https://doc.rust-lang.org/reference/visibility-and-privacy.html">Visibility and privacy</a></td></tr>
-<tr><td>Bump</td><td>◐</td><td>Only cargo-semver-checks, a separate tool. Moving it into <code>cargo publish</code> is a 2026 project goal.</td><td><a href="https://goals.rust-lang.org/2026/cargo-semver-checks.html">Project goal</a></td></tr>
+<tr><td>Function</td><td>✗</td><td><code>build.rs</code> and procedural macros can read any file or environment variable. The interface that records these reads is available only in nightly Rust.</td><td><a href="https://doc.rust-lang.org/cargo/reference/build-scripts.html">Build scripts</a>, <a href="https://doc.rust-lang.org/proc_macro/tracked/index.html">proc_macro::tracked</a></td></tr>
+<tr><td>Interface</td><td>✗</td><td>Auto traits such as <code>Send</code> pass through <code>-&gt; impl Trait</code> and <code>async fn</code>, so the body decides a part of the interface.</td><td><a href="https://rust-lang.github.io/rfcs/1522-conservative-impl-trait.html">RFC 1522</a></td></tr>
+<tr><td>Cutoff</td><td>✗</td><td>The fingerprint of a crate includes the input hashes of its dependencies. So each change in a dependency causes its dependents to compile again. Early cutoff is an open issue.</td><td><a href="https://raw.githubusercontent.com/rust-lang/cargo/master/src/compiler/fingerprint/mod.rs">fingerprint/mod.rs</a>, <a href="https://github.com/rust-lang/cargo/issues/17439">cargo#17439</a></td></tr>
+<tr><td>Graph</td><td>✓</td><td><code>Cargo.toml</code> and <code>Cargo.lock</code> give the graph. Cargo still finds targets such as <code>src/bin/*</code> from the directory layout.</td><td><a href="https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html">Specifying dependencies</a>, <a href="https://doc.rust-lang.org/cargo/reference/cargo-targets.html">targets</a></td></tr>
+<tr><td>Visibility</td><td>✓</td><td>Visibility follows the module tree that the <code>mod</code> declarations make, from the crate root.</td><td><a href="https://doc.rust-lang.org/reference/visibility-and-privacy.html">Visibility and privacy</a></td></tr>
+<tr><td>Bump</td><td>◐</td><td>Only cargo-semver-checks, a separate tool, checks the bump. A 2026 project goal is to move it into <code>cargo publish</code>.</td><td><a href="https://goals.rust-lang.org/2026/cargo-semver-checks.html">Project goal</a></td></tr>
 </tbody>
 </table>
 </div>
@@ -137,12 +137,12 @@ tests.</p>
 <table>
 <thead><tr><th>Test</th><th>Score</th><th>Reason</th><th>Source</th></tr></thead>
 <tbody>
-<tr><td>Function</td><td>◐</td><td>Buck2 runs <code>build.rs</code> as an action with an explicit environment, but it does not sandbox local actions.</td><td><a href="https://github.com/facebook/buck2/blob/main/prelude/rust/cargo_buildscript.bzl">cargo_buildscript.bzl</a>, <a href="https://github.com/facebook/buck2">Buck2</a></td></tr>
-<tr><td>Interface</td><td>✗</td><td>It uses the same rustc metadata as Cargo.</td><td><a href="https://github.com/facebook/buck2/blob/main/prelude/rust/build_params.bzl">build_params.bzl</a></td></tr>
-<tr><td>Cutoff</td><td>✗</td><td>The DICE engine has early cutoff, but <code>.rmeta</code> changes on every source edit, so the cutoff cannot fire. A test with rustc 1.95.0 showed this for a private function body.</td><td><a href="https://github.com/facebook/buck2/blob/main/dice/docs/incrementality.md">DICE incrementality</a></td></tr>
-<tr><td>Graph</td><td>✓</td><td>BUCK files declare dependencies. Reindeer generates them from <code>Cargo.toml</code>.</td><td><a href="https://github.com/facebook/buck2">Buck2</a></td></tr>
+<tr><td>Function</td><td>◐</td><td>Buck2 runs <code>build.rs</code> as an action with an explicit environment, but it does not put local actions in a sandbox.</td><td><a href="https://github.com/facebook/buck2/blob/main/prelude/rust/cargo_buildscript.bzl">cargo_buildscript.bzl</a>, <a href="https://github.com/facebook/buck2">Buck2</a></td></tr>
+<tr><td>Interface</td><td>✗</td><td>Buck2 uses the same rustc metadata as Cargo.</td><td><a href="https://github.com/facebook/buck2/blob/main/prelude/rust/build_params.bzl">build_params.bzl</a></td></tr>
+<tr><td>Cutoff</td><td>✗</td><td>The DICE engine has early cutoff, but the <code>.rmeta</code> file changes at each source change, so the cutoff cannot occur. A test with rustc 1.95.0 showed this for the body of a private function.</td><td><a href="https://github.com/facebook/buck2/blob/main/dice/docs/incrementality.md">DICE incrementality</a></td></tr>
+<tr><td>Graph</td><td>✓</td><td>BUCK files declare the dependencies. Reindeer generates them from <code>Cargo.toml</code>.</td><td><a href="https://github.com/facebook/buck2">Buck2</a></td></tr>
 <tr><td>Visibility</td><td>✓</td><td>The same Rust module tree as Cargo.</td><td><a href="https://doc.rust-lang.org/reference/visibility-and-privacy.html">Visibility and privacy</a></td></tr>
-<tr><td>Bump</td><td>✗</td><td>No semver step in Buck2 or Reindeer.</td><td><a href="https://github.com/facebookincubator/reindeer/blob/main/docs/MANUAL.md">Reindeer manual</a></td></tr>
+<tr><td>Bump</td><td>✗</td><td>Buck2 and Reindeer have no semantic-version step.</td><td><a href="https://github.com/facebookincubator/reindeer/blob/main/docs/MANUAL.md">Reindeer manual</a></td></tr>
 </tbody>
 </table>
 </div>
@@ -153,12 +153,12 @@ tests.</p>
 <table>
 <thead><tr><th>Test</th><th>Score</th><th>Reason</th><th>Source</th></tr></thead>
 <tbody>
-<tr><td>Function</td><td>◐</td><td>Actions are sandboxed, but the network is allowed by default, and build scripts get the default shell environment.</td><td><a href="https://bazel.build/docs/sandboxing">Sandboxing</a>, <a href="https://github.com/bazelbuild/rules_rust/blob/main/cargo/settings/settings.bzl">rules_rust settings</a></td></tr>
-<tr><td>Interface</td><td>✗</td><td>It uses the same rustc metadata as Cargo.</td><td><a href="https://rust-lang.github.io/rfcs/1522-conservative-impl-trait.html">RFC 1522</a></td></tr>
-<tr><td>Cutoff</td><td>✗</td><td>Pipelined compilation is off by default, so dependents read the whole <code>.rlib</code>. With it on, <code>.rmeta</code> still changes on every edit.</td><td><a href="https://bazel.build/reference/skyframe">Skyframe</a>, <a href="https://github.com/bazelbuild/rules_rust/blob/main/rust/settings/settings.bzl">rules_rust settings</a></td></tr>
-<tr><td>Graph</td><td>✓</td><td>BUILD files declare every direct dependency.</td><td><a href="https://bazel.build/concepts/dependencies">Dependencies</a></td></tr>
-<tr><td>Visibility</td><td>✓</td><td>The same Rust module tree, and <code>srcs</code> is listed explicitly.</td><td><a href="https://doc.rust-lang.org/reference/visibility-and-privacy.html">Visibility and privacy</a></td></tr>
-<tr><td>Bump</td><td>✗</td><td>No semver feature.</td><td><a href="https://bazel.build/external/module">Modules</a></td></tr>
+<tr><td>Function</td><td>◐</td><td>Bazel runs actions in a sandbox, but it allows network access by default, and build scripts get the default shell environment.</td><td><a href="https://bazel.build/docs/sandboxing">Sandboxing</a>, <a href="https://github.com/bazelbuild/rules_rust/blob/main/cargo/settings/settings.bzl">rules_rust settings</a></td></tr>
+<tr><td>Interface</td><td>✗</td><td>rules_rust uses the same rustc metadata as Cargo.</td><td><a href="https://rust-lang.github.io/rfcs/1522-conservative-impl-trait.html">RFC 1522</a></td></tr>
+<tr><td>Cutoff</td><td>✗</td><td>Pipelined compilation is off by default, so dependents read the full <code>.rlib</code> file. When it is on, the <code>.rmeta</code> file still changes at each change.</td><td><a href="https://bazel.build/reference/skyframe">Skyframe</a>, <a href="https://github.com/bazelbuild/rules_rust/blob/main/rust/settings/settings.bzl">rules_rust settings</a></td></tr>
+<tr><td>Graph</td><td>✓</td><td>BUILD files declare each direct dependency.</td><td><a href="https://bazel.build/concepts/dependencies">Dependencies</a></td></tr>
+<tr><td>Visibility</td><td>✓</td><td>The same Rust module tree, and the <code>srcs</code> list names each source file.</td><td><a href="https://doc.rust-lang.org/reference/visibility-and-privacy.html">Visibility and privacy</a></td></tr>
+<tr><td>Bump</td><td>✗</td><td>rules_rust has no semantic-version feature.</td><td><a href="https://bazel.build/external/module">Modules</a></td></tr>
 </tbody>
 </table>
 </div>
@@ -169,11 +169,11 @@ tests.</p>
 <table>
 <thead><tr><th>Test</th><th>Score</th><th>Reason</th><th>Source</th></tr></thead>
 <tbody>
-<tr><td>Function</td><td>◐</td><td>The same sandbox limits as Java + Bazel: the host file system stays readable, and the network is allowed by default.</td><td><a href="https://bazel.build/docs/sandboxing">Sandboxing</a></td></tr>
-<tr><td>Interface</td><td>✗</td><td>Dependents compile the headers, which hold private members and inline and template bodies. An <code>auto</code> return type comes from the body.</td><td><a href="https://bazel.build/reference/be/c-cpp">C/C++ rules</a>, <a href="https://en.cppreference.com/w/cpp/language/function.html">cppreference: function</a></td></tr>
-<tr><td>Cutoff</td><td>◐</td><td>A change to a <code>.cc</code> file does not recompile dependents. Any header edit does, even to a private member.</td><td><a href="https://bazel.build/reference/skyframe">Skyframe</a>, <a href="https://bazel.build/reference/command-line-reference">command-line reference</a></td></tr>
-<tr><td>Graph</td><td>✓</td><td>Headers are declared in <code>hdrs</code> and <code>srcs</code>. Include scanning is off by default.</td><td><a href="https://bazel.build/reference/be/c-cpp">C/C++ rules</a></td></tr>
-<tr><td>Visibility</td><td>◐</td><td>Keeping <code>srcs</code> headers private needs clang's <code>layering_check</code>, and it covers direct includes only.</td><td><a href="https://bazel.build/reference/be/c-cpp">C/C++ rules</a></td></tr>
+<tr><td>Function</td><td>◐</td><td>The same sandbox limits as Java + Bazel: actions can read the file system of the host, and Bazel allows network access by default.</td><td><a href="https://bazel.build/docs/sandboxing">Sandboxing</a></td></tr>
+<tr><td>Interface</td><td>✗</td><td>Dependents compile the headers, which hold private members and inline and template bodies. The body decides an <code>auto</code> return type.</td><td><a href="https://bazel.build/reference/be/c-cpp">C/C++ rules</a>, <a href="https://en.cppreference.com/w/cpp/language/function.html">cppreference: function</a></td></tr>
+<tr><td>Cutoff</td><td>◐</td><td>A change to a <code>.cc</code> file does not cause dependents to compile again. Each change to a header causes this, also a change to a private member.</td><td><a href="https://bazel.build/reference/skyframe">Skyframe</a>, <a href="https://bazel.build/reference/command-line-reference">command-line reference</a></td></tr>
+<tr><td>Graph</td><td>✓</td><td>BUILD files declare headers in <code>hdrs</code> and <code>srcs</code>. Include scanning is off by default.</td><td><a href="https://bazel.build/reference/be/c-cpp">C/C++ rules</a></td></tr>
+<tr><td>Visibility</td><td>◐</td><td>To keep <code>srcs</code> headers private, Bazel needs the <code>layering_check</code> of clang, and that check covers only direct includes.</td><td><a href="https://bazel.build/reference/be/c-cpp">C/C++ rules</a></td></tr>
 <tr><td>Bump</td><td>✗</td><td>The same as Java + Bazel.</td><td><a href="https://bazel.build/external/module">Modules</a></td></tr>
 </tbody>
 </table>
@@ -185,12 +185,12 @@ tests.</p>
 <table>
 <thead><tr><th>Test</th><th>Score</th><th>Reason</th><th>Source</th></tr></thead>
 <tbody>
-<tr><td>Function</td><td>✗</td><td>Ninja has no sandbox, and it learns headers from compiler depfiles by timestamp. CMake takes the compiler from the <code>CXX</code> environment variable.</td><td><a href="https://ninja-build.org/manual.html">Ninja manual</a>, <a href="https://cmake.org/cmake/help/latest/envvar/CXX.html">CMake: CXX</a></td></tr>
+<tr><td>Function</td><td>✗</td><td>Ninja has no sandbox, and it finds headers from the depfiles of the compiler, by the time of each file. CMake gets the compiler from the <code>CXX</code> environment variable.</td><td><a href="https://ninja-build.org/manual.html">Ninja manual</a>, <a href="https://cmake.org/cmake/help/latest/envvar/CXX.html">CMake: CXX</a></td></tr>
 <tr><td>Interface</td><td>◐</td><td>Importers read a compiled module interface (BMI), but Clang may open the input files of a BMI. Reduced BMIs, without non-inline bodies, became the default only in Clang 22.</td><td><a href="https://clang.llvm.org/docs/StandardCPlusPlusModules.html">Clang: C++ modules</a></td></tr>
-<tr><td>Cutoff</td><td>◐</td><td>CMake documents that compilers rewrite the BMI on every compile, so any edit to an interface unit recompiles all importers. An implementation unit has no BMI.</td><td><a href="https://cmake.org/cmake/help/latest/manual/cmake-cxxmodules.7.html">cmake-cxxmodules</a></td></tr>
-<tr><td>Graph</td><td>✗</td><td>CMake scans the sources during the build (P1689 format) and feeds the result to Ninja.</td><td><a href="https://cmake.org/cmake/help/latest/manual/cmake-cxxmodules.7.html">cmake-cxxmodules</a></td></tr>
-<tr><td>Visibility</td><td>◐</td><td><code>export</code> is in the source. But Clang alone decides whether internal partitions are reachable, and CMake does not check private module sets.</td><td><a href="https://clang.llvm.org/docs/StandardCPlusPlusModules.html">Clang: C++ modules</a>, <a href="https://cmake.org/cmake/help/latest/manual/cmake-cxxmodules.7.html">cmake-cxxmodules</a></td></tr>
-<tr><td>Bump</td><td>✗</td><td>The author picks the compatibility mode by hand.</td><td><a href="https://cmake.org/cmake/help/latest/module/CMakePackageConfigHelpers.html">CMakePackageConfigHelpers</a></td></tr>
+<tr><td>Cutoff</td><td>◐</td><td>The CMake documentation says that compilers write the BMI again at each compilation. So each change to an interface unit causes all importers to compile again. An implementation unit has no BMI.</td><td><a href="https://cmake.org/cmake/help/latest/manual/cmake-cxxmodules.7.html">cmake-cxxmodules</a></td></tr>
+<tr><td>Graph</td><td>✗</td><td>CMake scans the source files during the build (P1689 format) and gives the result to Ninja.</td><td><a href="https://cmake.org/cmake/help/latest/manual/cmake-cxxmodules.7.html">cmake-cxxmodules</a></td></tr>
+<tr><td>Visibility</td><td>◐</td><td>The source declares <code>export</code>. But Clang alone decides whether internal partitions are reachable, and CMake does not check private module sets.</td><td><a href="https://clang.llvm.org/docs/StandardCPlusPlusModules.html">Clang: C++ modules</a>, <a href="https://cmake.org/cmake/help/latest/manual/cmake-cxxmodules.7.html">cmake-cxxmodules</a></td></tr>
+<tr><td>Bump</td><td>✗</td><td>The author selects the compatibility mode manually.</td><td><a href="https://cmake.org/cmake/help/latest/module/CMakePackageConfigHelpers.html">CMakePackageConfigHelpers</a></td></tr>
 </tbody>
 </table>
 </div>
@@ -201,12 +201,12 @@ tests.</p>
 <table>
 <thead><tr><th>Test</th><th>Score</th><th>Reason</th><th>Source</th></tr></thead>
 <tbody>
-<tr><td>Function</td><td>✗</td><td>The same as Java + Gradle: build scripts are code, and tasks are not sandboxed.</td><td><a href="https://docs.gradle.org/current/userguide/incremental_build.html">Incremental build</a></td></tr>
-<tr><td>Interface</td><td>✗</td><td>A single-expression function takes its return type from the body unless explicit API mode is on.</td><td><a href="https://kotlinlang.org/docs/functions.html">Functions</a>, <a href="https://kotlinlang.org/docs/whatsnew14.html">What's new in 1.4</a></td></tr>
-<tr><td>Cutoff</td><td>◐</td><td>The Kotlin compiler runs after every change in a dependency. ABI snapshots then limit what recompiles. Inline bodies and <code>const val</code> values count as ABI.</td><td><a href="https://blog.jetbrains.com/kotlin/2022/07/a-new-approach-to-incremental-compilation-in-kotlin/">JetBrains blog, 2022</a></td></tr>
+<tr><td>Function</td><td>✗</td><td>The same as Java + Gradle: build scripts are code, and Gradle does not put tasks in a sandbox.</td><td><a href="https://docs.gradle.org/current/userguide/incremental_build.html">Incremental build</a></td></tr>
+<tr><td>Interface</td><td>✗</td><td>A single-expression function gets its return type from the body, unless explicit API mode is on.</td><td><a href="https://kotlinlang.org/docs/functions.html">Functions</a>, <a href="https://kotlinlang.org/docs/whatsnew14.html">What's new in 1.4</a></td></tr>
+<tr><td>Cutoff</td><td>◐</td><td>Gradle starts the Kotlin compiler after each change in a dependency. Then ABI snapshots limit what compiles again. Inline bodies and <code>const val</code> values are part of the ABI.</td><td><a href="https://blog.jetbrains.com/kotlin/2022/07/a-new-approach-to-incremental-compilation-in-kotlin/">JetBrains blog, 2022</a></td></tr>
 <tr><td>Graph</td><td>✓</td><td>The same as Java + Gradle.</td><td><a href="https://docs.gradle.org/current/userguide/build_lifecycle.html">Build lifecycle</a></td></tr>
-<tr><td>Visibility</td><td>✗</td><td><code>internal</code> means &ldquo;a set of Kotlin files compiled together&rdquo;, such as a Gradle source set.</td><td><a href="https://kotlinlang.org/docs/visibility-modifiers.html#modules">Visibility modifiers</a></td></tr>
-<tr><td>Bump</td><td>◐</td><td>The experimental ABI validation fails on an ABI change but ignores the version number.</td><td><a href="https://kotlinlang.org/docs/gradle-binary-compatibility-validation.html">Binary compatibility validation</a></td></tr>
+<tr><td>Visibility</td><td>✗</td><td><code>internal</code> means &ldquo;a set of Kotlin files compiled together&rdquo;, for example a Gradle source set.</td><td><a href="https://kotlinlang.org/docs/visibility-modifiers.html#modules">Visibility modifiers</a></td></tr>
+<tr><td>Bump</td><td>◐</td><td>The experimental ABI validation fails when the ABI changes, but it ignores the version number.</td><td><a href="https://kotlinlang.org/docs/gradle-binary-compatibility-validation.html">Binary compatibility validation</a></td></tr>
 </tbody>
 </table>
 </div>
@@ -218,10 +218,10 @@ tests.</p>
 <thead><tr><th>Test</th><th>Score</th><th>Reason</th><th>Source</th></tr></thead>
 <tbody>
 <tr><td>Function</td><td>◐</td><td>Go has no build scripts or compile-time code. But cgo reads <code>CC</code>, <code>CGO_CFLAGS</code> and pkg-config, and the go command finds <code>go.work</code> from the current directory.</td><td><a href="https://pkg.go.dev/cmd/cgo">cgo</a>, <a href="https://go.dev/ref/mod">Modules reference</a></td></tr>
-<tr><td>Interface</td><td>◐</td><td>Dependents read export data. It carries the bodies of inlinable and generic functions, and of unexported helpers they reach.</td><td><a href="https://github.com/golang/go/blob/master/src/cmd/compile/internal/noder/linker.go">noder/linker.go</a>, <a href="https://github.com/golang/proposal/blob/master/design/generics-implementation-dictionaries-go1.18.md">generics design</a></td></tr>
-<tr><td>Cutoff</td><td>✗</td><td>Go 1.27 keys a dependent on a hash of the whole archive, object code included. A key on export data landed on the development branch in August 2026 and is not released. Export data also records line positions.</td><td><a href="https://github.com/golang/go/blob/release-branch.go1.27/src/cmd/go/internal/work/exec.go">exec.go, Go 1.27</a>, <a href="https://github.com/golang/go/commit/1dacc62658">commit 1dacc62658</a>, <a href="https://github.com/golang/go/issues/15752">go#15752</a></td></tr>
+<tr><td>Interface</td><td>◐</td><td>Dependents read export data. It holds the bodies of inlinable functions and generic functions, and of the unexported helpers that they use.</td><td><a href="https://github.com/golang/go/blob/master/src/cmd/compile/internal/noder/linker.go">noder/linker.go</a>, <a href="https://github.com/golang/proposal/blob/master/design/generics-implementation-dictionaries-go1.18.md">generics design</a></td></tr>
+<tr><td>Cutoff</td><td>✗</td><td>Go 1.27 keys each dependent on a hash of the full archive, which includes object code. A key on export data came to the development branch in August 2026, and no release has it yet. Export data also records line positions.</td><td><a href="https://github.com/golang/go/blob/release-branch.go1.27/src/cmd/go/internal/work/exec.go">exec.go, Go 1.27</a>, <a href="https://github.com/golang/go/commit/1dacc62658">commit 1dacc62658</a>, <a href="https://github.com/golang/go/issues/15752">go#15752</a></td></tr>
 <tr><td>Graph</td><td>✗</td><td>The package graph comes from the import lines of each source file. <code>go.mod</code> gives only the module requirements.</td><td><a href="https://github.com/golang/go/blob/master/src/cmd/go/internal/imports/read.go">imports/read.go</a></td></tr>
-<tr><td>Visibility</td><td>✗</td><td>The spec leaves the set of files in a package to the tool, and <code>internal/</code> is a rule about directory paths.</td><td><a href="https://go.dev/ref/spec">Go spec</a>, <a href="https://pkg.go.dev/cmd/go">cmd/go</a></td></tr>
+<tr><td>Visibility</td><td>✗</td><td>The specification lets the tool decide which files are in a package, and <code>internal/</code> is a rule about directory paths.</td><td><a href="https://go.dev/ref/spec">Go spec</a>, <a href="https://pkg.go.dev/cmd/go">cmd/go</a></td></tr>
 <tr><td>Bump</td><td>◐</td><td><code>gorelease</code> suggests a version, but it is experimental and nothing enforces it.</td><td><a href="https://pkg.go.dev/golang.org/x/exp/cmd/gorelease">gorelease</a></td></tr>
 </tbody>
 </table>
@@ -233,11 +233,11 @@ tests.</p>
 <table>
 <thead><tr><th>Test</th><th>Score</th><th>Reason</th><th>Source</th></tr></thead>
 <tbody>
-<tr><td>Function</td><td>✗</td><td><code>build.zig</code> is arbitrary code with access to the environment and the file system. The compiler itself is pure: comptime cannot call external functions.</td><td><a href="https://codeberg.org/ziglang/zig/raw/branch/master/lib/std/Build.zig">std/Build.zig</a>, <a href="https://ziglang.org/download/0.17.0/release-notes.html">0.17.0 release notes</a></td></tr>
-<tr><td>Interface</td><td>✗</td><td>A project is one compilation of all modules from source. An inferred error set takes part of the return type from the body.</td><td><a href="https://codeberg.org/ziglang/zig/raw/branch/master/doc/langref.html.in">Language reference</a></td></tr>
-<tr><td>Cutoff</td><td>✗</td><td>By default, any change reruns the whole compilation. Incremental compilation per declaration needs <code>-fincremental</code>.</td><td><a href="https://codeberg.org/ziglang/zig/raw/branch/master/src/Compilation.zig">Compilation.zig</a>, <a href="https://ziglang.org/download/0.17.0/release-notes.html">0.17.0 release notes</a></td></tr>
+<tr><td>Function</td><td>✗</td><td><code>build.zig</code> can be any code, with access to the environment and the file system. The compiler itself is pure: comptime cannot call external functions.</td><td><a href="https://codeberg.org/ziglang/zig/raw/branch/master/lib/std/Build.zig">std/Build.zig</a>, <a href="https://ziglang.org/download/0.17.0/release-notes.html">0.17.0 release notes</a></td></tr>
+<tr><td>Interface</td><td>✗</td><td>A project is one compilation of all modules from source. An inferred error set gets a part of the return type from the body.</td><td><a href="https://codeberg.org/ziglang/zig/raw/branch/master/doc/langref.html.in">Language reference</a></td></tr>
+<tr><td>Cutoff</td><td>✗</td><td>By default, each change runs the full compilation again. Incremental compilation for each declaration needs <code>-fincremental</code>.</td><td><a href="https://codeberg.org/ziglang/zig/raw/branch/master/src/Compilation.zig">Compilation.zig</a>, <a href="https://ziglang.org/download/0.17.0/release-notes.html">0.17.0 release notes</a></td></tr>
 <tr><td>Graph</td><td>◐</td><td><code>build.zig.zon</code> lists packages as data, but the module graph exists only after <code>build.zig</code> runs.</td><td><a href="https://codeberg.org/ziglang/zig/raw/branch/master/doc/build.zig.zon.md">build.zig.zon</a></td></tr>
-<tr><td>Visibility</td><td>✓</td><td>A declaration without <code>pub</code> stays in its file, and files join only by <code>@import</code>.</td><td><a href="https://codeberg.org/ziglang/zig/raw/branch/master/test/cases/compile_errors/import_outside_module_path.zig">import outside module path</a></td></tr>
+<tr><td>Visibility</td><td>✓</td><td>A declaration without <code>pub</code> stays in its file, and files join only through <code>@import</code>.</td><td><a href="https://codeberg.org/ziglang/zig/raw/branch/master/test/cases/compile_errors/import_outside_module_path.zig">import outside module path</a></td></tr>
 <tr><td>Bump</td><td>✗</td><td><code>version</code> is a string that nothing checks.</td><td><a href="https://codeberg.org/ziglang/zig/raw/branch/master/doc/build.zig.zon.md">build.zig.zon</a></td></tr>
 </tbody>
 </table>
@@ -249,12 +249,12 @@ tests.</p>
 <table>
 <thead><tr><th>Test</th><th>Score</th><th>Reason</th><th>Source</th></tr></thead>
 <tbody>
-<tr><td>Function</td><td>◐</td><td>On Linux, a build sees only its store inputs and has no network. Fixed-output derivations keep the network, and the sandbox is off by default on other systems.</td><td><a href="https://nix.dev/manual/nix/latest/command-ref/conf-file.html">nix.conf</a></td></tr>
-<tr><td>Interface</td><td>✗</td><td>Inputs are whole outputs of other derivations. There is no interface.</td><td><a href="https://nix.dev/manual/nix/latest/store/derivation/">Derivations</a></td></tr>
-<tr><td>Cutoff</td><td>✗</td><td>An output path hashes the derivation of each dependency, so any change rebuilds every dependent. Content-addressed derivations are experimental and need bit-identical outputs.</td><td><a href="https://nix.dev/manual/nix/latest/store/derivation/outputs/input-address">Input addressing</a>, <a href="https://nix.dev/manual/nix/latest/development/experimental-features">experimental features</a></td></tr>
-<tr><td>Graph</td><td>✓</td><td>All inputs are declared. Import-from-derivation is the exception.</td><td><a href="https://nix.dev/manual/nix/latest/store/derivation/">Derivations</a>, <a href="https://nix.dev/manual/nix/latest/language/import-from-derivation">import from derivation</a></td></tr>
-<tr><td>Visibility</td><td>–</td><td>Nix has no item visibility. The compiler it wraps decides.</td><td><a href="https://nix.dev/manual/nix/latest/store/derivation/">Derivations</a></td></tr>
-<tr><td>Bump</td><td>–</td><td>Dependencies are pinned by hash, with no version ranges.</td><td><a href="https://nix.dev/manual/nix/latest/store/derivation/">Derivations</a></td></tr>
+<tr><td>Function</td><td>◐</td><td>On Linux, a build sees only its store inputs and has no network access. Fixed-output derivations keep network access, and the sandbox is off by default on other systems.</td><td><a href="https://nix.dev/manual/nix/latest/command-ref/conf-file.html">nix.conf</a></td></tr>
+<tr><td>Interface</td><td>✗</td><td>Inputs are the full outputs of other derivations. There is no interface.</td><td><a href="https://nix.dev/manual/nix/latest/store/derivation/">Derivations</a></td></tr>
+<tr><td>Cutoff</td><td>✗</td><td>An output path includes a hash of the derivation of each dependency, so each change causes each dependent to build again. Content-addressed derivations are experimental, and they need outputs that are identical bit for bit.</td><td><a href="https://nix.dev/manual/nix/latest/store/derivation/outputs/input-address">Input addressing</a>, <a href="https://nix.dev/manual/nix/latest/development/experimental-features">experimental features</a></td></tr>
+<tr><td>Graph</td><td>✓</td><td>Each derivation declares all of its inputs. Import-from-derivation is the exception.</td><td><a href="https://nix.dev/manual/nix/latest/store/derivation/">Derivations</a>, <a href="https://nix.dev/manual/nix/latest/language/import-from-derivation">import from derivation</a></td></tr>
+<tr><td>Visibility</td><td>–</td><td>Nix has no item visibility. The compiler that Nix runs decides.</td><td><a href="https://nix.dev/manual/nix/latest/store/derivation/">Derivations</a></td></tr>
+<tr><td>Bump</td><td>–</td><td>A hash pins each dependency, and there are no version ranges.</td><td><a href="https://nix.dev/manual/nix/latest/store/derivation/">Derivations</a></td></tr>
 </tbody>
 </table>
 </div>
@@ -265,12 +265,12 @@ tests.</p>
 <table>
 <thead><tr><th>Test</th><th>Score</th><th>Reason</th><th>Source</th></tr></thead>
 <tbody>
-<tr><td>Function</td><td>✗</td><td>A preprocessor's file inputs count only if the author lists them. Dune's sandbox is opt-in and keeps the environment variables.</td><td><a href="https://dune.readthedocs.io/en/stable/concepts/sandboxing.html">Sandboxing</a>, <a href="https://dune.readthedocs.io/en/stable/reference/preprocessing-spec.html">preprocessing</a></td></tr>
-<tr><td>Interface</td><td>◐</td><td>Dependents read the <code>.cmi</code>, which can come from a hand-written <code>.mli</code>. Without one, the types are inferred. Native code also reads <code>.cmx</code> unless <code>-opaque</code> is set.</td><td><a href="https://ocaml.org/manual/5.3/comp.html">Batch compiler</a>, <a href="https://ocaml.org/manual/5.3/native.html">native compiler</a></td></tr>
-<tr><td>Cutoff</td><td>◐</td><td>The dev profile uses <code>-opaque</code> and content hashes. The release profile, which opam uses, drops <code>-opaque</code>. A <code>.cmi</code> also records the digests of every interface it imported.</td><td><a href="https://dune.readthedocs.io/en/latest/reference/dune-workspace/profile.html">Profiles</a>, <a href="https://raw.githubusercontent.com/ocaml/ocaml/trunk/typing/persistent_env.ml">persistent_env.ml</a></td></tr>
-<tr><td>Graph</td><td>◐</td><td><code>libraries</code> gives the library graph, but ocamldep scans the sources for module dependencies.</td><td><a href="https://ocaml.org/manual/5.3/depend.html">ocamldep</a>, <a href="https://discuss.ocaml.org/t/experience-report-refining-dune-s-dependency-graph/18002">Discuss report</a></td></tr>
-<tr><td>Visibility</td><td>◐</td><td>The <code>.mli</code> sets visibility. But a library's modules default to every file in its directory.</td><td><a href="https://dune.readthedocs.io/en/stable/reference/dune/library.html">library stanza</a></td></tr>
-<tr><td>Bump</td><td>✗</td><td>opam has no semver rule and no API check.</td><td><a href="https://opam.ocaml.org/doc/Manual.html">opam manual</a></td></tr>
+<tr><td>Function</td><td>✗</td><td>The file inputs of a preprocessor count only if the author lists them. The dune sandbox is optional, and it keeps the environment variables.</td><td><a href="https://dune.readthedocs.io/en/stable/concepts/sandboxing.html">Sandboxing</a>, <a href="https://dune.readthedocs.io/en/stable/reference/preprocessing-spec.html">preprocessing</a></td></tr>
+<tr><td>Interface</td><td>◐</td><td>Dependents read the <code>.cmi</code> file, which can come from an <code>.mli</code> file that a person wrote. Without an <code>.mli</code> file, the compiler infers the types. Native code also reads the <code>.cmx</code> file, unless the build uses <code>-opaque</code>.</td><td><a href="https://ocaml.org/manual/5.3/comp.html">Batch compiler</a>, <a href="https://ocaml.org/manual/5.3/native.html">native compiler</a></td></tr>
+<tr><td>Cutoff</td><td>◐</td><td>The dev profile uses <code>-opaque</code> and content hashes. The release profile, which opam uses, does not use <code>-opaque</code>. A <code>.cmi</code> file also records the digests of all interfaces that it imported.</td><td><a href="https://dune.readthedocs.io/en/latest/reference/dune-workspace/profile.html">Profiles</a>, <a href="https://raw.githubusercontent.com/ocaml/ocaml/trunk/typing/persistent_env.ml">persistent_env.ml</a></td></tr>
+<tr><td>Graph</td><td>◐</td><td>The <code>libraries</code> field gives the library graph, but ocamldep scans the source files to find module dependencies.</td><td><a href="https://ocaml.org/manual/5.3/depend.html">ocamldep</a>, <a href="https://discuss.ocaml.org/t/experience-report-refining-dune-s-dependency-graph/18002">Discuss report</a></td></tr>
+<tr><td>Visibility</td><td>◐</td><td>The <code>.mli</code> file sets visibility. But by default, a library holds each module file in its directory.</td><td><a href="https://dune.readthedocs.io/en/stable/reference/dune/library.html">library stanza</a></td></tr>
+<tr><td>Bump</td><td>✗</td><td>opam has no semantic-version rule and no interface check.</td><td><a href="https://opam.ocaml.org/doc/Manual.html">opam manual</a></td></tr>
 </tbody>
 </table>
 </div>
@@ -281,12 +281,12 @@ tests.</p>
 <table>
 <thead><tr><th>Test</th><th>Score</th><th>Reason</th><th>Source</th></tr></thead>
 <tbody>
-<tr><td>Function</td><td>✗</td><td>Template Haskell <code>runIO</code> can do any IO at compile time, and declaring the files it reads is opt-in. A custom <code>Setup.hs</code> runs arbitrary code.</td><td><a href="https://hackage-content.haskell.org/package/template-haskell-2.24.0.0/docs/Language-Haskell-TH-Syntax.html">Template Haskell</a>, <a href="https://cabal.readthedocs.io/en/stable/cabal-package-description-file.html">package description</a></td></tr>
-<tr><td>Interface</td><td>◐</td><td>Top-level type signatures are optional, and above <code>-O0</code> the <code>.hi</code> carries function bodies.</td><td><a href="https://downloads.haskell.org/ghc/latest/docs/users_guide/using-warnings.html">Warnings</a>, <a href="https://downloads.haskell.org/ghc/latest/docs/users_guide/using-optimisation.html">optimisation</a></td></tr>
-<tr><td>Cutoff</td><td>◐</td><td>GHC keeps a fingerprint per declaration. But Cabal builds with <code>-O1</code> by default, so a body change reaches dependents.</td><td><a href="https://downloads.haskell.org/ghc/latest/docs/users_guide/separate_compilation.html">Separate compilation</a>, <a href="https://cabal.readthedocs.io/en/stable/cabal-project-description-file.html">cabal.project</a></td></tr>
+<tr><td>Function</td><td>✗</td><td>Template Haskell <code>runIO</code> can do any IO at compile time, and it is optional to declare the files that it reads. A custom <code>Setup.hs</code> can run any code.</td><td><a href="https://hackage-content.haskell.org/package/template-haskell-2.24.0.0/docs/Language-Haskell-TH-Syntax.html">Template Haskell</a>, <a href="https://cabal.readthedocs.io/en/stable/cabal-package-description-file.html">package description</a></td></tr>
+<tr><td>Interface</td><td>◐</td><td>Top-level type signatures are optional, and above <code>-O0</code> the <code>.hi</code> file holds function bodies.</td><td><a href="https://downloads.haskell.org/ghc/latest/docs/users_guide/using-warnings.html">Warnings</a>, <a href="https://downloads.haskell.org/ghc/latest/docs/users_guide/using-optimisation.html">optimisation</a></td></tr>
+<tr><td>Cutoff</td><td>◐</td><td>GHC keeps a fingerprint for each declaration. But Cabal builds with <code>-O1</code> by default, so a change to a body gets to the dependents.</td><td><a href="https://downloads.haskell.org/ghc/latest/docs/users_guide/separate_compilation.html">Separate compilation</a>, <a href="https://cabal.readthedocs.io/en/stable/cabal-project-description-file.html">cabal.project</a></td></tr>
 <tr><td>Graph</td><td>◐</td><td><code>build-depends</code> gives the package graph. <code>ghc --make</code> follows the imports to find modules.</td><td><a href="https://downloads.haskell.org/ghc/latest/docs/users_guide/separate_compilation.html">Separate compilation</a></td></tr>
-<tr><td>Visibility</td><td>◐</td><td>Export lists set visibility, but GHC can pick up a module from disk that the package does not list.</td><td><a href="https://downloads.haskell.org/ghc/latest/docs/users_guide/using-warnings.html">Warnings</a></td></tr>
-<tr><td>Bump</td><td>✗</td><td>The PVP states the rules, but Hackage does not check them.</td><td><a href="https://pvp.haskell.org/">PVP</a></td></tr>
+<tr><td>Visibility</td><td>◐</td><td>Export lists set visibility, but GHC can use a module from disk that the package does not list.</td><td><a href="https://downloads.haskell.org/ghc/latest/docs/users_guide/using-warnings.html">Warnings</a></td></tr>
+<tr><td>Bump</td><td>✗</td><td>The PVP gives the rules, but Hackage does not check them.</td><td><a href="https://pvp.haskell.org/">PVP</a></td></tr>
 </tbody>
 </table>
 </div>
@@ -297,30 +297,30 @@ tests.</p>
 <table>
 <thead><tr><th>Test</th><th>Score</th><th>Reason</th><th>Source</th></tr></thead>
 <tbody>
-<tr><td>Function</td><td>✗</td><td><code>Package.swift</code> can read every environment variable and the git status as official API. The macOS sandbox allows every file read.</td><td><a href="https://raw.githubusercontent.com/swiftlang/swift-package-manager/main/Sources/Runtimes/PackageDescription/Context.swift">Context.swift</a>, <a href="https://raw.githubusercontent.com/swiftlang/swift-package-manager/main/Sources/Basics/Sandbox.swift">Sandbox.swift</a></td></tr>
-<tr><td>Interface</td><td>◐</td><td>Dependents read a <code>.swiftmodule</code>. Library evolution is off by default, so clients see every layout. The concrete type behind <code>some P</code> comes from the body.</td><td><a href="https://github.com/swiftlang/swift-evolution/blob/main/proposals/0260-library-evolution.md">SE-0260</a>, <a href="https://github.com/swiftlang/swift-evolution/blob/main/proposals/0244-opaque-result-types.md">SE-0244</a></td></tr>
-<tr><td>Cutoff</td><td>◐</td><td>Debug builds use fingerprints across modules. Release builds compile each module whole, and a change to a private stored property is an interface change.</td><td><a href="https://raw.githubusercontent.com/swiftlang/swift-driver/main/Sources/SwiftDriver/IncrementalCompilation/IncrementalDependencyAndInputSetup.swift">swift-driver</a>, <a href="https://raw.githubusercontent.com/swiftlang/swift-package-manager/main/Sources/Build/BuildDescription/SwiftModuleBuildDescription.swift">SwiftModuleBuildDescription</a></td></tr>
-<tr><td>Graph</td><td>◐</td><td>Targets come from the manifest. But an undeclared import compiles if an earlier build left the module behind.</td><td><a href="https://raw.githubusercontent.com/swiftlang/swift-package-manager/main/Sources/CoreCommands/Options.swift">Options.swift</a>, <a href="https://forums.swift.org/t/should-swiftpm-diagnose-missing-dependencies/70926">forum thread</a></td></tr>
-<tr><td>Visibility</td><td>✗</td><td><code>internal</code> means the module, and the module is whatever files the build target holds.</td><td><a href="https://raw.githubusercontent.com/swiftlang/swift-book/main/TSPL.docc/LanguageGuide/AccessControl.md">Access control</a>, <a href="https://raw.githubusercontent.com/swiftlang/swift-package-manager/main/Sources/Runtimes/PackageDescription/Target.swift">Target.swift</a></td></tr>
-<tr><td>Bump</td><td>◐</td><td><code>swift package diagnose-api-breaking-changes</code> exists. It is optional, and it reports breaks without computing the bump.</td><td><a href="https://raw.githubusercontent.com/swiftlang/swift-package-manager/main/Sources/PackageManagerDocs/Documentation.docc/Package/PackageDiagnoseAPIBreakingChange.md">Documentation</a></td></tr>
+<tr><td>Function</td><td>✗</td><td><code>Package.swift</code> can read each environment variable and the git status through an official interface. The macOS sandbox allows all file reads.</td><td><a href="https://raw.githubusercontent.com/swiftlang/swift-package-manager/main/Sources/Runtimes/PackageDescription/Context.swift">Context.swift</a>, <a href="https://raw.githubusercontent.com/swiftlang/swift-package-manager/main/Sources/Basics/Sandbox.swift">Sandbox.swift</a></td></tr>
+<tr><td>Interface</td><td>◐</td><td>Dependents read a <code>.swiftmodule</code> file. Library evolution is off by default, so clients see each layout. The body decides the concrete type behind <code>some P</code>.</td><td><a href="https://github.com/swiftlang/swift-evolution/blob/main/proposals/0260-library-evolution.md">SE-0260</a>, <a href="https://github.com/swiftlang/swift-evolution/blob/main/proposals/0244-opaque-result-types.md">SE-0244</a></td></tr>
+<tr><td>Cutoff</td><td>◐</td><td>Debug builds use fingerprints across modules. Release builds compile each module as one unit, and a change to a private stored property changes the interface.</td><td><a href="https://raw.githubusercontent.com/swiftlang/swift-driver/main/Sources/SwiftDriver/IncrementalCompilation/IncrementalDependencyAndInputSetup.swift">swift-driver</a>, <a href="https://raw.githubusercontent.com/swiftlang/swift-package-manager/main/Sources/Build/BuildDescription/SwiftModuleBuildDescription.swift">SwiftModuleBuildDescription</a></td></tr>
+<tr><td>Graph</td><td>◐</td><td>Targets come from the manifest. But an import that the manifest does not declare compiles if an earlier build left the module.</td><td><a href="https://raw.githubusercontent.com/swiftlang/swift-package-manager/main/Sources/CoreCommands/Options.swift">Options.swift</a>, <a href="https://forums.swift.org/t/should-swiftpm-diagnose-missing-dependencies/70926">forum thread</a></td></tr>
+<tr><td>Visibility</td><td>✗</td><td><code>internal</code> means the module, and the module is the set of files that the build target holds.</td><td><a href="https://raw.githubusercontent.com/swiftlang/swift-book/main/TSPL.docc/LanguageGuide/AccessControl.md">Access control</a>, <a href="https://raw.githubusercontent.com/swiftlang/swift-package-manager/main/Sources/Runtimes/PackageDescription/Target.swift">Target.swift</a></td></tr>
+<tr><td>Bump</td><td>◐</td><td><code>swift package diagnose-api-breaking-changes</code> exists. It is optional, and it reports breaks but does not calculate the bump.</td><td><a href="https://raw.githubusercontent.com/swiftlang/swift-package-manager/main/Sources/PackageManagerDocs/Documentation.docc/Package/PackageDiagnoseAPIBreakingChange.md">Documentation</a></td></tr>
 </tbody>
 </table>
 </div>
 
 <h2 id="vx-today"><a href="#vx-today">Vx today: 0 of 6</a></h2>
 
-<p>Scored from the compiler source on main at commit e66345d3. The post describes the design. This
-table describes what is built.</p>
+<p>This table uses the compiler source on main at commit e66345d3. The post describes the design.
+This table describes what exists.</p>
 
 <div class="table-scroll">
 <table>
 <thead><tr><th>Test</th><th>Score</th><th>Reason</th><th>Source</th></tr></thead>
 <tbody>
-<tr><td>Function</td><td>✗</td><td>The compiler reads 19 environment variables, and 15 of them can change the program it builds or the tool that builds it. It finds <code>z3</code> and the LLVM tools through <code>PATH</code>. Without <code>VX_STD_PATH</code>, it looks for the standard library beside the compiler, then in the current directory.</td><td><a href="https://github.com/vx-lang/Vx/blob/e66345d3e45ae79bde50387b50535f989e7ff14f/src/module_loader.rs#L71-L97">module_loader.rs</a>, <a href="https://github.com/vx-lang/Vx/blob/e66345d3e45ae79bde50387b50535f989e7ff14f/src/jit.rs#L246-L265">jit.rs</a>, <a href="https://github.com/vx-lang/Vx/blob/e66345d3e45ae79bde50387b50535f989e7ff14f/src/hir/solver.rs#L35">solver.rs</a>, <a href="https://github.com/vx-lang/Vx/blob/e66345d3e45ae79bde50387b50535f989e7ff14f/src/dialect/VxLowering.cpp#L4919">VxLowering.cpp</a></td></tr>
-<tr><td>Interface</td><td>◐</td><td>A signature is the whole contract, and <code>vxc --emit-interface</code> writes a <code>.vxlib</code> interface file. The file also carries function bodies, and the parallel compile (<code>-j</code>) does not read it yet.</td><td><a href="https://github.com/vx-lang/Vx/blob/e66345d3e45ae79bde50387b50535f989e7ff14f/src/driver.rs#L477-L485">driver.rs</a></td></tr>
-<tr><td>Cutoff</td><td>✗</td><td>There is no build system yet, so nothing skips a rebuild.</td><td></td></tr>
-<tr><td>Graph</td><td>◐</td><td>Each package is passed as <code>--package name=dir</code>. There is no manifest yet.</td><td><a href="https://github.com/vx-lang/Vx/blob/e66345d3e45ae79bde50387b50535f989e7ff14f/src/driver.rs#L114-L118">driver.rs</a></td></tr>
-<tr><td>Visibility</td><td>◐</td><td><code>pub</code> and private items exist, but <code>pkg</code> and <code>ws</code> are not built. Imports resolve through search paths that include the current directory.</td><td><a href="https://github.com/vx-lang/Vx/blob/e66345d3e45ae79bde50387b50535f989e7ff14f/src/module_loader.rs#L91-L97">module_loader.rs</a></td></tr>
+<tr><td>Function</td><td>✗</td><td>The compiler reads 19 environment variables, and 15 of them can change the program it builds or the tool that builds it. It finds <code>z3</code> and the LLVM tools through <code>PATH</code>. Without <code>VX_STD_PATH</code>, it looks for the standard library next to the compiler, then in the current directory.</td><td><a href="https://github.com/vx-lang/Vx/blob/e66345d3e45ae79bde50387b50535f989e7ff14f/src/module_loader.rs#L71-L97">module_loader.rs</a>, <a href="https://github.com/vx-lang/Vx/blob/e66345d3e45ae79bde50387b50535f989e7ff14f/src/jit.rs#L246-L265">jit.rs</a>, <a href="https://github.com/vx-lang/Vx/blob/e66345d3e45ae79bde50387b50535f989e7ff14f/src/hir/solver.rs#L35">solver.rs</a>, <a href="https://github.com/vx-lang/Vx/blob/e66345d3e45ae79bde50387b50535f989e7ff14f/src/dialect/VxLowering.cpp#L4919">VxLowering.cpp</a></td></tr>
+<tr><td>Interface</td><td>◐</td><td>A signature is the full contract, and <code>vxc --emit-interface</code> writes a <code>.vxlib</code> interface file. The file also holds function bodies, and the parallel compiler (<code>-j</code>) does not read it yet.</td><td><a href="https://github.com/vx-lang/Vx/blob/e66345d3e45ae79bde50387b50535f989e7ff14f/src/driver.rs#L477-L485">driver.rs</a></td></tr>
+<tr><td>Cutoff</td><td>✗</td><td>There is no build system yet, so nothing skips a compilation.</td><td></td></tr>
+<tr><td>Graph</td><td>◐</td><td>Each package comes from a <code>--package name=dir</code> flag. There is no manifest yet.</td><td><a href="https://github.com/vx-lang/Vx/blob/e66345d3e45ae79bde50387b50535f989e7ff14f/src/driver.rs#L114-L118">driver.rs</a></td></tr>
+<tr><td>Visibility</td><td>◐</td><td><code>pub</code> items and private items exist, but <code>pkg</code> and <code>ws</code> do not exist yet. Imports use search paths that include the current directory.</td><td><a href="https://github.com/vx-lang/Vx/blob/e66345d3e45ae79bde50387b50535f989e7ff14f/src/module_loader.rs#L91-L97">module_loader.rs</a></td></tr>
 <tr><td>Bump</td><td>✗</td><td>There is no package manager yet.</td><td></td></tr>
 </tbody>
 </table>
