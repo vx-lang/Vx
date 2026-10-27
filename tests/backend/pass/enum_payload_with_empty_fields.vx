@@ -1,0 +1,86 @@
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Empty fields share the pointer's offset. Matching must read the pointer field.
+// Another enum holds two empty values and a number at the same offset. Its number survives returns.
+// REQUIRES: flat-codegen
+// EXPECT: -2 11 42 31 -13 47
+
+struct First {}
+struct Second {}
+
+enum EmptySlots {
+  Values(First, Second, i32),
+}
+
+fn make_values(number: i32) -> EmptySlots {
+  return EmptySlots::Values(First {}, Second {}, number);
+}
+
+fn read_values(value: EmptySlots) -> i32 {
+  match value {
+    EmptySlots::Values(_, _, number) => {
+      return number;
+    },
+  }
+}
+
+struct Fields {
+  first: First,
+  second: Second,
+  pointer: *const i32,
+  number: i32,
+}
+
+enum Value {
+  Wrapped(Fields),
+  Direct(*const i32),
+}
+
+fn read(value: Value) -> i32 {
+  match value {
+    Value::Wrapped(fields) => {
+      return unsafe { *fields.pointer } + fields.number;
+    },
+    Value::Direct(pointer) => {
+      return unsafe { *pointer };
+    },
+  }
+}
+
+fn borrowed_number(fields: &Fields) -> i32 {
+  let number = &fields.number;
+  return *number;
+}
+
+fn main() -> i32 {
+  let first = -7;
+  let second = 31;
+  let initial = Fields {
+    first: First {},
+    second: Second {},
+    pointer: (&first) as *const i32,
+    number: 5,
+  };
+  print(read(Value::Wrapped(initial)));
+  print(" ");
+  let mut changed = Fields {
+    first: First {},
+    second: Second {},
+    pointer: (&first) as *const i32,
+    number: 5,
+  };
+  changed.pointer = (&second) as *const i32;
+  changed.number = 11;
+  print(borrowed_number(&changed));
+  print(" ");
+  print(read(Value::Wrapped(changed)));
+  print(" ");
+  print(read(Value::Direct((&second) as *const i32)));
+  print(" ");
+  print(read_values(make_values(-13)));
+  print(" ");
+  print(read_values(make_values(47)));
+  return 0;
+}

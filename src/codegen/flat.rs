@@ -818,8 +818,7 @@ pub fn build_callee_map(
 
 /// The MLIR shape of an aggregate (struct) whose fields are all scalar or pointer: the
 /// `!llvm.struct<(...)>` type (for the slot `llvm.alloca` and field `getelementptr`), each field's
-/// byte offset in declaration order — so a `FieldLoad`/`FieldStore`, which carries a byte offset,
-/// recovers the GEP field index by `offsets.position(|o| o == offset)` — and each field's MLIR type
+/// byte offset in declaration order, and each field's MLIR type
 /// string, so a field op prints the right load/store type (a scalar's element or `!llvm.ptr`).
 pub struct AggLayout {
     pub struct_ty: String,
@@ -849,6 +848,31 @@ pub(crate) fn generated_storage_type(layout: &crate::layout::GeneratedAggregateL
 }
 
 impl AggLayout {
+    /// Older instructions may use an offset only when it identifies exactly one field.
+    fn field_index(&self, imm: u64) -> Lowered<usize> {
+        let index = if imm & crate::bytecode::FIELD_INDEX_FLAG != 0 {
+            usize::try_from(imm & !crate::bytecode::FIELD_INDEX_FLAG)
+                .ok()
+                .filter(|&index| index < self.offsets.len())
+                .ok_or(crate::emitter_gap!())?
+        } else {
+            let mut matches = self
+                .offsets
+                .iter()
+                .enumerate()
+                .filter(|(_, offset)| **offset == imm);
+            let (index, _) = matches.next().ok_or(crate::emitter_gap!())?;
+            if matches.next().is_some() {
+                return Err(Decline::TypeNotModelled {
+                    what:
+                        "a field offset shared by multiple fields without an explicit field index",
+                });
+            }
+            index
+        };
+        Ok(index)
+    }
+
     /// Derive the emitter's storage view from the shared generated layout.
     fn from_generated(layout: &crate::layout::GeneratedAggregateLayout) -> Self {
         Self {
@@ -2487,12 +2511,9 @@ impl<'a> FnEmit<'a> {
             Opcode::AutoDiff => self.op_autodiff(idx, ins),
             Opcode::TensorLoad => self.op_tensor_load(idx, ins),
             Opcode::TensorDim => self.op_tensor_dim(idx, ins),
-            // Store a scalar into a struct field (no result). `operand1` is the struct slot pointer,
-            // `operand2` the value, `imm` the field's byte offset. GEP to the field, then `llvm.store`;
-            // the field index comes from matching the offset against the layout, the value type from
-            // the stored register's tracked type.
+            // Store a field by explicit index, with the stored value in operand2.
             Opcode::FieldStore => self.op_field_store(idx, ins),
-            // Load a field by byte offset, or an enum payload by its variant and field indices.
+            // Load a field by index, or an enum payload by variant and payload position.
             Opcode::FieldLoad | Opcode::EnumPayloadLoad => self.op_field_load(idx, ins),
             // The address of a by-value nested-aggregate field (`&outer.inner`): GEP to the field and
             // yield the pointer, tracked as an aggregate slot (its layout GID from `type_idx`), so a
@@ -3133,6 +3154,14 @@ mod tests {
         src: &str,
         change_layouts: impl FnOnce(&mut Vec<crate::layout::GeneratedAggregateLayout>),
     ) -> Result<String, ModuleEmitError> {
+        emit_module_with_field_instructions(src, change_layouts, |_, _| {})
+    }
+
+    fn emit_module_with_field_instructions(
+        src: &str,
+        change_layouts: impl FnOnce(&mut Vec<crate::layout::GeneratedAggregateLayout>),
+        change_instruction: impl Fn(&mut HirInstruction, &ImmutableGlobalRegistry),
+    ) -> Result<String, ModuleEmitError> {
         let mut lexer = crate::lexer::Lexer::new(src);
         let tokens = lexer.tokenize();
         let mut parser = crate::parser::Parser::new(&tokens, src);
@@ -3162,6 +3191,9 @@ mod tests {
             let mut w = LocalWorkerState::new(session.clone());
             let result = lower_function_to_hir(f, &mut w);
             assert!(result.is_ok(), "function {} lowers: {result:?}", f.name);
+            for instruction in &mut w.local_hir_stream {
+                change_instruction(instruction, &session.registry);
+            }
             lowered.push(w);
         }
         let funcs: Vec<(&Function, &[HirInstruction], &[TypeId])> = mods[0]
@@ -3211,6 +3243,275 @@ mod tests {
             crate::config::Schedule::Parallel,
             false,
         )
+    }
+
+    #[rstest::rstest]
+    #[case::load("fn read(fields: &Fields) -> i32 { return fields.number; }")]
+    #[case::store("fn write(fields: &mut Fields) -> void { fields.number = 7; }")]
+    #[case::address("fn address(fields: &Fields) -> &i32 { return &fields.number; }")]
+    fn older_field_offsets_require_a_unique_field(
+        #[case] function: &str,
+        #[values("Empty", "i8")] preceding_type: &str,
+    ) {
+        let source = format!(
+            "struct Empty {{}}\nstruct Fields {{ first: {preceding_type}, second: {preceding_type}, number: i32 }}\n{function}"
+        );
+        let result = emit_module_with_field_instructions(
+            &source,
+            |_| {},
+            |instruction, registry| {
+                if matches!(
+                    instruction.opcode,
+                    Opcode::FieldLoad | Opcode::FieldStore | Opcode::FieldAddr
+                ) {
+                    let index = (instruction.imm & !crate::bytecode::FIELD_INDEX_FLAG) as usize;
+                    let layout = registry
+                        .layouts
+                        .values()
+                        .find(|layout| {
+                            layout
+                                .fields
+                                .iter()
+                                .any(|field| field.name.as_ref() == "number")
+                        })
+                        .expect("Fields has a registered layout");
+                    instruction.imm = layout.fields[index].offset as u64;
+                }
+            },
+        );
+        if preceding_type == "Empty" {
+            assert!(
+                matches!(result, Err(ModuleEmitError::Declined(Decline::TypeNotModelled { what: "a field offset shared by multiple fields without an explicit field index" }))),
+                "an older ambiguous field access must decline: {result:?}"
+            );
+        } else {
+            let mlir = result.expect("an older unique field offset remains supported");
+            assert!(
+                mlir.lines()
+                    .any(|line| line.contains("llvm.getelementptr") && line.contains("[0, 2]")),
+                "the older offset selects number: {mlir}"
+            );
+        }
+    }
+
+    fn fields_with_empty_values_and_padding() -> AggLayout {
+        AggLayout {
+            struct_ty:
+                "!llvm.struct<(!llvm.struct<()>, !llvm.struct<()>, i8, !llvm.array<7 x i8>, i64)>"
+                    .into(),
+            offsets: vec![0, 0, 0, 1, 8],
+            field_tys: vec![
+                "!llvm.struct<()>".into(),
+                "!llvm.struct<()>".into(),
+                "i8".into(),
+                "!llvm.array<7 x i8>".into(),
+                "i64".into(),
+            ],
+            field_pointee: vec![None; 5],
+            field_agg: vec![None; 5],
+            variant_payloads: vec![],
+        }
+    }
+
+    #[test]
+    fn field_indices_distinguish_empty_fields_and_explicit_padding() {
+        let layout = fields_with_empty_values_and_padding();
+        for index in 0..5 {
+            assert_eq!(
+                layout.field_index(crate::bytecode::encode_field_index(index)),
+                Ok(index),
+                "physical field {index} retains its identity"
+            );
+        }
+        assert!(layout.field_index(0).is_err(), "offset zero is ambiguous");
+        assert_eq!(
+            layout.field_index(8),
+            Ok(4),
+            "a unique older offset selects its physical field"
+        );
+        assert!(
+            layout
+                .field_index(crate::bytecode::encode_field_index(5))
+                .is_err(),
+            "an index outside the layout must decline"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::load(
+        Opcode::FieldLoad,
+        "fn read(fields: &Fields) -> i64 { return fields.number; }"
+    )]
+    #[case::store(
+        Opcode::FieldStore,
+        "fn write(fields: &mut Fields) -> void { fields.number = 7; }"
+    )]
+    #[case::address(
+        Opcode::FieldAddr,
+        "fn address(fields: &Fields) -> &i64 { return &fields.number; }"
+    )]
+    fn direct_field_operations_use_indices_after_explicit_padding(
+        #[case] opcode: Opcode,
+        #[case] source: &str,
+    ) {
+        use crate::bytecode::{encode_field_index, Register, TypeIdx};
+        let gid = TypeId::new(1, 1, 0, 0);
+        let mut function = parse_fn(source);
+        if let Type::Borrow { inner, .. } = &mut function.params[0].1 {
+            **inner = Type::Struct("Fields".into(), Some(gid));
+        }
+        let mut context = EmitCtx {
+            identities: Arc::new(crate::layout::identity::AggregateIdentities::new([(
+                gid,
+                "Fields".into(),
+            )])),
+            ..EmitCtx::default()
+        };
+        context.agg_names.insert("Fields".into(), gid);
+        context
+            .aggs
+            .insert(gid, fields_with_empty_values_and_padding());
+        let types = [ptr_gid(), scalar_gid(&ElementType::I64)];
+        let mut code = vec![HirInstruction::new(
+            Opcode::Load,
+            Register(0),
+            Register(0),
+            TypeIdx(0),
+            0,
+        )];
+        if opcode == Opcode::FieldStore {
+            code.push(HirInstruction::new(
+                Opcode::Const,
+                Register(0),
+                Register(0),
+                TypeIdx(1),
+                7,
+            ));
+        }
+        let result = Register(code.len() as u32);
+        code.push(HirInstruction::new(
+            opcode,
+            Register(0),
+            if opcode == Opcode::FieldStore {
+                Register(1)
+            } else {
+                Register(0)
+            },
+            TypeIdx(1),
+            encode_field_index(4),
+        ));
+        code.push(HirInstruction::new(
+            Opcode::Ret,
+            result,
+            Register(0),
+            TypeIdx(match opcode {
+                Opcode::FieldStore => u32::MAX,
+                Opcode::FieldAddr => 0,
+                _ => 1,
+            }),
+            0,
+        ));
+        let mlir = emit_function_mlir(
+            &function,
+            &code,
+            &types,
+            &context,
+            &mut Vec::new(),
+            0,
+            &[],
+            0,
+            &[],
+            &[],
+            &mut 1,
+        )
+        .expect("direct field operation emits MLIR");
+        assert!(
+            mlir.lines()
+                .any(|line| line.contains("llvm.getelementptr") && line.contains("[0, 4]")),
+            "the number follows explicit padding at physical field 4: {mlir}"
+        );
+        use melior::ir::operation::OperationLike;
+        let dialects = melior::dialect::DialectRegistry::new();
+        melior::utility::register_all_dialects(&dialects);
+        let mlir_context = melior::Context::new();
+        mlir_context.append_dialect_registry(&dialects);
+        mlir_context.load_all_available_dialects();
+        let module = melior::ir::Module::parse(&mlir_context, &mlir)
+            .unwrap_or_else(|| panic!("padded field access parses: {mlir}"));
+        assert!(
+            module.as_operation().verify(),
+            "padded field access verifies: {mlir}"
+        );
+    }
+
+    // Empty fields share the number's offset. Nonempty fields provide a control with distinct offsets.
+    #[rstest::rstest]
+    #[case::load("fn read(fields: &Fields) -> i32 { return fields.number; }")]
+    #[case::store("fn write(fields: &mut Fields) -> void { fields.number = 7; }")]
+    #[case::address("fn address(fields: &Fields) -> &i32 { return &fields.number; }")]
+    fn field_access_after_empty_fields_keeps_its_field_index(
+        #[case] function: &str,
+        #[values("Empty", "i8")] preceding_type: &str,
+    ) {
+        let source = format!(
+            "struct Empty {{}}\nstruct Fields {{ first: {preceding_type}, second: {preceding_type}, number: i32 }}\n{function}"
+        );
+        let mlir = emit_module_with_layouts(&source, |_| {}).expect("field access emits MLIR");
+        let accesses: Vec<_> = mlir
+            .lines()
+            .filter(|line| line.contains("llvm.getelementptr"))
+            .collect();
+        assert_eq!(accesses.len(), 1, "the function accesses exactly one field");
+        assert!(
+            accesses[0].contains("[0, 2]"),
+            "access to number must select field 2, even when empty fields share its offset:\n{mlir}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::load("fn read(fields: &Fields) -> *const i32 { return fields.pointer; }")]
+    fn pointer_field_after_empty_fields_lowers(
+        #[case] function: &str,
+        #[values("Empty", "i8")] preceding_type: &str,
+    ) {
+        let source = format!(
+            "struct Empty {{}}\nstruct Fields {{ first: {preceding_type}, second: {preceding_type}, pointer: *const i32 }}\n{function}"
+        );
+        emit_module_and_verify(&source);
+    }
+
+    #[rstest::rstest]
+    #[case::load("fn read(fields: &Fields) -> Second { return fields.second; }")]
+    #[case::store("fn write(fields: &mut Fields) -> void { fields.second = Second {}; }")]
+    #[case::address("fn address(fields: &Fields) -> &Second { return &fields.second; }")]
+    fn second_empty_field_keeps_its_identity(#[case] function: &str) {
+        let source = format!("struct First {{}}\nstruct Second {{}}\nstruct Fields {{ first: First, second: Second, number: i32 }}\n{function}");
+        let mlir = emit_module_with_layouts_and_verify(&source, |_| {});
+        let accesses: Vec<_> = mlir
+            .lines()
+            .filter(|line| line.contains("llvm.getelementptr"))
+            .collect();
+        assert_eq!(accesses.len(), 1, "one empty field is accessed");
+        assert!(
+            accesses[0].contains("[0, 1]"),
+            "the second empty field must retain index 1: {mlir}"
+        );
+    }
+
+    #[test]
+    fn enum_payload_with_an_empty_field_before_a_pointer_lowers() {
+        emit_module_and_verify(
+            "struct Empty {}\n\
+             struct Fields { marker: Empty, pointer: *const i32 }\n\
+             enum Value { Wrapped(Fields), Direct(*const i32) }\n\
+             fn read(value: Value, fallback: *const i32) -> *const i32 {\n\
+               match value {\n\
+                 Value::Wrapped(fields) => { return fields.pointer; },\n\
+                 Value::Direct(pointer) => { return pointer; }\n\
+               }\n\
+               return fallback;\n\
+             }",
+        );
     }
 
     #[test]

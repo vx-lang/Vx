@@ -15,12 +15,12 @@
 // name earlier instructions by index; `type_idx` indexes `local_type_stream`.
 //
 //===----------------------------------------------------------------------===//
+use crate::bytecode::{encode_field_index, TENSOR_DROP_FIELD, TENSOR_DROP_FLAG};
 use crate::bytecode::{
     EnumPayloadIndex, HirInstruction, Opcode, Register, TypeIdx, IMM_BLOCK_BOUND, IMM_BLOCK_INIT,
     IMM_BLOCK_STEP, IMM_PARALLEL_BOUND, IMM_PARALLEL_INIT, IMM_PARALLEL_STEP, IMM_THREAD_INIT,
     IMM_THREAD_STEP,
 };
-use crate::bytecode::{TENSOR_DROP_FIELD, TENSOR_DROP_FLAG};
 use crate::decline::{Decline, Lowered};
 use crate::gid::TypeId;
 use crate::hir::check::parallel::{parallel_outer_for, parallel_two_level, TwoLevelPlan};
@@ -1012,14 +1012,15 @@ impl<'r> Lowerer<'r> {
         );
         if is_string {
             let (base, gid) = self.lower_agg_base(arg)?;
-            let off = self
+            let access = self
                 .layout_of(&gid)
-                .and_then(|d| d.fields.iter().find(|f| f.name.as_ref() == "ptr"))
-                .map(|f| f.offset as u64)
+                .and_then(|d| d.fields.iter().position(|f| f.name.as_ref() == "ptr"))
+                .map(encode_field_index)
                 .ok_or(Decline::TypeNotModelled {
                     what: "a String with no ptr field",
                 })?;
-            let handle = self.emit_typed(Opcode::FieldLoad, base, Register(0), LoweredTy::Ptr, off);
+            let handle =
+                self.emit_typed(Opcode::FieldLoad, base, Register(0), LoweredTy::Ptr, access);
             let missing = Decline::TypeNotModelled {
                 what: "a String print without std::string's runtime entry points in scope",
             };
@@ -1508,7 +1509,7 @@ impl<'r> Lowerer<'r> {
             // A struct field read `base.member`. `base` is either a local aggregate slot (`p.x`,
             // #215) or a pointer to an aggregate (`self.len`/`self.data` where `self : &mut Vec`,
             // #242) — `lower_agg_base` resolves both to the `!llvm.ptr` addressing the struct plus its
-            // layout GID. The field's offset + type come from the registry layout: a scalar field
+            // layout GID. The field's index and type come from the registry layout: a scalar field
             // yields its element, a pointer field (`Vec`'s `data`) an opaque `!llvm.ptr`, and a by-value
             // nested-aggregate field (`VecMap`'s `f : Closure1`) the whole `!llvm.struct` value (#242).
             Expr::MemberAccess(m) => {
@@ -2372,20 +2373,21 @@ impl<'r> Lowerer<'r> {
             })
     }
 
-    /// The byte offset and the type of the field `member` in the aggregate whose layout is `gid`.
+    /// The encoded index and type of field `member` in the aggregate whose layout is `gid`.
     fn field_of(&self, gid: &TypeId, member: &str) -> Lowered<(u64, FieldTy)> {
-        let field = self
+        let (index, field) = self
             .layout_of(gid)
             .ok_or(Decline::TypeNotModelled {
                 what: "a struct with no modelled layout",
             })?
             .fields
             .iter()
-            .find(|f| f.name.as_ref() == member)
+            .enumerate()
+            .find(|(_, f)| f.name.as_ref() == member)
             .ok_or(Decline::TypeNotModelled {
                 what: "a field not in the modelled layout",
             })?;
-        Ok((field.offset as u64, field.ty.clone()))
+        Ok((encode_field_index(index), field.ty.clone()))
     }
 
     /// Read the field `member` of the aggregate that `base_reg` points to. A scalar field gives its
@@ -2409,9 +2411,9 @@ impl<'r> Lowerer<'r> {
         Ok(self.emit_typed(Opcode::FieldLoad, base_reg, Register(0), result_ty, offset))
     }
 
-    /// A `FieldAddr`: the address `offset` bytes into the aggregate that `base_reg` points to.
+    /// A `FieldAddr`: the address of the field selected by its encoded index.
     /// `gid` is the type of the field, which codegen uses to track the pointer.
-    fn emit_field_addr(&mut self, base_reg: Register, gid: TypeId, offset: u64) -> Register {
+    fn emit_field_addr(&mut self, base_reg: Register, gid: TypeId, access: u64) -> Register {
         let type_idx = TypeIdx(self.types.len() as u32);
         self.types.push(gid);
         let reg = Register(self.code.len() as u32);
@@ -2420,7 +2422,7 @@ impl<'r> Lowerer<'r> {
             base_reg,
             Register(0),
             type_idx,
-            offset,
+            access,
         ));
         reg
     }
@@ -2704,15 +2706,13 @@ impl<'r> Lowerer<'r> {
             .ok_or(Decline::TypeNotModelled {
                 what: "a match subject with no concrete enum type",
             })?;
-        let (gid, offsets) =
+        let gid =
             self.enum_instance_layout_of(declaration, args)
                 .ok_or(Decline::TypeNotModelled {
                     what: "an enum with no modelled instance layout",
                 })?;
         let slot = self.lower_data_match_slot(&m.expr, gid)?;
-        let tag_off = *offsets.first().ok_or(Decline::TypeNotModelled {
-            what: "an enum payload offset that is not laid out",
-        })?;
+        let tag_field = encode_field_index(0);
         let registry = self.registry;
         let data = registry
             .enum_data
@@ -2744,7 +2744,7 @@ impl<'r> Lowerer<'r> {
                         slot,
                         Register(0),
                         ElementType::I32,
-                        tag_off,
+                        tag_field,
                     );
                     let tagc = self.emit_value(
                         Opcode::Const,
@@ -3315,7 +3315,7 @@ impl<'r> Lowerer<'r> {
                 })
             }
         };
-        let (enum_gid, offsets) =
+        let enum_gid =
             self.enum_instance_layout_of(base, args)
                 .ok_or(Decline::TypeNotModelled {
                     what: "an enum with no modelled instance layout",
@@ -3399,9 +3399,7 @@ impl<'r> Lowerer<'r> {
             opt_slot.reg,
             Register(0),
             ElementType::I32,
-            *offsets.first().ok_or(Decline::TypeNotModelled {
-                what: "an enum payload offset that is not laid out",
-            })?,
+            encode_field_index(0),
         );
         let some_c = self.emit_value(
             Opcode::Const,
@@ -3860,12 +3858,10 @@ impl<'r> Lowerer<'r> {
             .aggregate_identities()
             .resolve_base(nominal.into())
             .ok_or(not_modelled("the Result of a task that can fail"))?;
-        let (gid, offsets) = self
+        let gid = self
             .enum_instance_layout_of(declaration, args)
             .ok_or(not_modelled("the layout of the Result of a task"))?;
-        let tag_off = *offsets
-            .first()
-            .ok_or(not_modelled("the tag of the Result of a task"))?;
+        let tag_field = self.enum_field_index(gid, 0)?;
         let err =
             self.registry
                 .enum_data
@@ -3887,7 +3883,7 @@ impl<'r> Lowerer<'r> {
             slot,
             Register(0),
             ElementType::I32,
-            tag_off,
+            tag_field,
         );
         let err = self.emit_value(
             Opcode::Const,
@@ -4134,11 +4130,11 @@ impl<'r> Lowerer<'r> {
         })?;
         let (_, args) =
             nominal_name_and_args(&ty).expect("an enum construction has a nominal type");
-        let (gid, offsets) =
-            self.enum_instance_layout_of(base, &args)
-                .ok_or(Decline::TypeNotModelled {
-                    what: "an enum with no modelled instance layout",
-                })?;
+        let gid = self
+            .enum_instance_layout_of(base, &args)
+            .ok_or(Decline::TypeNotModelled {
+                what: "an enum with no modelled instance layout",
+            })?;
         let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
         let tag = self.emit_value(
             Opcode::Const,
@@ -4147,14 +4143,7 @@ impl<'r> Lowerer<'r> {
             ElementType::I32,
             ordinal,
         );
-        self.emit_effect(
-            Opcode::FieldStore,
-            slot.reg,
-            tag.reg,
-            *offsets.first().ok_or(Decline::TypeNotModelled {
-                what: "an enum payload offset that is not laid out",
-            })?,
-        );
+        self.emit_effect(Opcode::FieldStore, slot.reg, tag.reg, encode_field_index(0));
         if let Some(payload) = &ev.payload {
             for (i, pexpr) in payload.iter().enumerate() {
                 let mut v = self.lower_expr(pexpr)?;
@@ -4167,9 +4156,7 @@ impl<'r> Lowerer<'r> {
                     Opcode::FieldStore,
                     slot.reg,
                     v.reg,
-                    *offsets.get(i + 1).ok_or(Decline::TypeNotModelled {
-                        what: "an enum payload offset that is not laid out",
-                    })?,
+                    encode_field_index(i + 1),
                 );
             }
         }
@@ -4197,7 +4184,7 @@ impl<'r> Lowerer<'r> {
                 .get(&name)
                 .is_some_and(|data| data.variants.iter().any(|(_, fields)| !fields.is_empty()))
             {
-                let (gid, _) = self.enum_instance_layout_of(base, args)?;
+                let gid = self.enum_instance_layout_of(base, args)?;
                 return Some(LoweredTy::Aggregate(gid));
             }
             if matches!(base, Type::Struct(..)) && self.registry.nominal_layout_id(base).is_none() {
@@ -4319,7 +4306,6 @@ impl<'r> Lowerer<'r> {
         self.resolving_layouts.push((gid, identity.clone()));
         let result = if is_enum {
             self.build_enum_instance_layout(declaration, &args)
-                .map(|(id, _)| id)
         } else {
             self.build_struct_instance_layout(declaration, &args, gid)
         };
@@ -4509,7 +4495,7 @@ impl<'r> Lowerer<'r> {
                                 self.registry.enum_data.contains_key(&name)
                             }) =>
                     {
-                        let (inner, _) = self.enum_instance_layout_of(b.as_ref(), a)?;
+                        let inner = self.enum_instance_layout_of(b.as_ref(), a)?;
                         let layout = self.generated_layout(inner)?;
                         (
                             layout.size_bytes,
@@ -4673,7 +4659,7 @@ impl<'r> Lowerer<'r> {
         &mut self,
         base: impl Into<crate::layout::identity::AggregateBase<'a>>,
         args: &[Type],
-    ) -> Option<(TypeId, Vec<u64>)> {
+    ) -> Option<TypeId> {
         let (name, declaration) = self
             .registry
             .aggregate_identities()
@@ -4685,22 +4671,19 @@ impl<'r> Lowerer<'r> {
             Type::GenericInstance(Box::new(base), args.to_vec())
         };
         let gid = self.resolve_concrete_layout(&ty)?;
-        Some((gid, self.generated_layout(gid)?.field_offsets()))
+        self.generated_layout(gid)?;
+        Some(gid)
     }
 
-    fn build_enum_instance_layout(
-        &mut self,
-        declaration: TypeId,
-        args: &[Type],
-    ) -> Option<(TypeId, Vec<u64>)> {
+    fn build_enum_instance_layout(&mut self, declaration: TypeId, args: &[Type]) -> Option<TypeId> {
         let base = self
             .registry
             .aggregate_identities()
             .resolve_base(declaration.into())?
             .0;
         let gid = enum_instance_gid(declaration, args, self.registry.aggregate_identities())?;
-        if let Some(layout) = self.generated_layout(gid) {
-            return Some((gid, layout.field_offsets()));
+        if self.generated_layout(gid).is_some() {
+            return Some(gid);
         }
         let data = self.registry.enum_data.get(&base)?;
         if data.generics.len() != args.len() {
@@ -4775,8 +4758,8 @@ impl<'r> Lowerer<'r> {
             self.instance_layouts.insert(gid, layout.type_definition());
             self.record_generated_layout(layout);
         }
-        let layout = self.generated_layout(gid)?;
-        Some((gid, layout.field_offsets()))
+        self.generated_layout(gid)?;
+        Some(gid)
     }
 
     fn lower_struct_init(&mut self, si: &crate::syntax::StructInitExpr) -> Lowered<Val> {
@@ -4819,11 +4802,12 @@ impl<'r> Lowerer<'r> {
                 what: "a struct layout that is not modelled yet",
             }); // layout not modelled yet
         }
-        // Snapshot (name, offset, type) so the immutable registry borrow ends before we emit.
-        let field_layouts: Vec<(Symbol, u64, FieldTy)> = def
+        // Save each field's name and index before generating its initializer.
+        let field_layouts: Vec<(Symbol, u64)> = def
             .fields
             .iter()
-            .map(|f| (f.name.clone(), f.offset as u64, f.ty.clone()))
+            .enumerate()
+            .map(|(i, f)| (f.name.clone(), encode_field_index(i)))
             .collect();
 
         let not_in_layout = Decline::TypeNotModelled {
@@ -4831,7 +4815,7 @@ impl<'r> Lowerer<'r> {
         };
         if field_layouts
             .iter()
-            .any(|(name, _, _)| !si.fields.iter().any(|(n, _)| n == name))
+            .any(|(name, _)| !si.fields.iter().any(|(n, _)| n == name))
         {
             return Err(not_in_layout);
         }
@@ -4841,10 +4825,10 @@ impl<'r> Lowerer<'r> {
             // Scalar, pointer, or by-value nested-aggregate fields — a nested aggregate is stored as a
             // whole `!llvm.struct` value (`VecMap { iter: VecIter, f: Closure1 }`), the store type coming
             // from the layout's `field_tys` at emit (#242).
-            let offset = field_layouts
+            let access = field_layouts
                 .iter()
-                .find(|(n, _, _)| n == name)
-                .map(|(_, offset, _)| *offset)
+                .find(|(n, _)| n == name)
+                .map(|(_, access)| *access)
                 .ok_or(not_in_layout.clone())?;
             // The initializer already carries the field's declared type — the checker infers a literal
             // to the field type and rejects a genuine mismatch (no implicit conversion, #240).
@@ -4857,7 +4841,7 @@ impl<'r> Lowerer<'r> {
             if construction_tail(init_expr) && matches!(v.ty, LoweredTy::Aggregate(_)) {
                 v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
             }
-            self.emit_effect(Opcode::FieldStore, slot.reg, v.reg, offset);
+            self.emit_effect(Opcode::FieldStore, slot.reg, v.reg, access);
         }
         Ok(slot)
     }
@@ -5478,31 +5462,22 @@ impl<'r> Lowerer<'r> {
                 .ok_or(Decline::TypeNotModelled {
                     what: "the Closure1 layout",
                 })?;
-        let (env_off, func_off) = {
-            let fields = &self
-                .layout_of(&ck_gid)
-                .ok_or(Decline::TypeNotModelled {
-                    what: "the Closure1 layout",
-                })?
-                .fields;
-            (
-                fields
-                    .first()
-                    .ok_or(Decline::TypeNotModelled {
-                        what: "a Closure1 field offset",
-                    })?
-                    .offset as u64,
-                fields
-                    .get(1)
-                    .ok_or(Decline::TypeNotModelled {
-                        what: "a Closure1 field offset",
-                    })?
-                    .offset as u64,
-            )
-        };
+        if self
+            .layout_of(&ck_gid)
+            .is_none_or(|layout| layout.fields.len() < 2)
+        {
+            return Err(Decline::TypeNotModelled {
+                what: "a Closure1 layout with fewer than two fields",
+            });
+        }
         let slot = self.emit_alloca(LoweredTy::Aggregate(ck_gid));
-        self.emit_effect(Opcode::FieldStore, slot.reg, env_ptr, env_off);
-        self.emit_effect(Opcode::FieldStore, slot.reg, fnptr.reg, func_off);
+        self.emit_effect(Opcode::FieldStore, slot.reg, env_ptr, encode_field_index(0));
+        self.emit_effect(
+            Opcode::FieldStore,
+            slot.reg,
+            fnptr.reg,
+            encode_field_index(1),
+        );
         // Passed by value: load the completed fat struct.
         Ok(self.emit_typed(
             Opcode::SlotLoad,
@@ -6072,18 +6047,19 @@ impl<'r> Lowerer<'r> {
         // store isn't modelled.
         if let Expr::MemberAccess(m) = lhs {
             let (base_reg, gid) = self.lower_agg_base(&m.base)?;
-            let field = self
+            let (field_index, field) = self
                 .layout_of(&gid)
                 .ok_or(Decline::TypeNotModelled {
                     what: "a struct with no modelled layout",
                 })?
                 .fields
                 .iter()
-                .find(|f| f.name.as_ref() == m.member.as_ref())
+                .enumerate()
+                .find(|(_, f)| f.name.as_ref() == m.member.as_ref())
                 .ok_or(Decline::TypeNotModelled {
                     what: "a field not in the modelled layout",
                 })?;
-            let offset = field.offset as u64;
+            let access = encode_field_index(field_index);
             let nested =
                 matches!(field.ty, FieldTy::Nominal(n) if !self.registry.is_payload_free_enum(n));
             if nested && !construction_tail(rhs) {
@@ -6098,7 +6074,7 @@ impl<'r> Lowerer<'r> {
             }
             self.run_value_drops()?;
             let pos = self.code.len();
-            self.emit_effect(Opcode::FieldStore, base_reg, v.reg, offset);
+            self.emit_effect(Opcode::FieldStore, base_reg, v.reg, access);
             // A place-write field store (`*r = v` through a `&mut o.field` place): record it for
             // alias-scope metadata. A direct `p.x = v` leaves `pending_place_write` unset. (#275, §5.4)
             if let Some((root, path)) = self.pending_place_write.take() {
@@ -7923,10 +7899,13 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
                 n_types
             );
         }
-        if matches!(ins.opcode, Opcode::FieldLoad | Opcode::EnumPayloadLoad) {
+        if matches!(
+            ins.opcode,
+            Opcode::FieldLoad | Opcode::EnumPayloadLoad | Opcode::FieldAddr
+        ) {
             assert_eq!(
                 ins.operand2.0, 0,
-                "HIR field load has an unexpected second operand at instruction {i}"
+                "HIR field access has an unexpected second operand at instruction {i}"
             );
         }
         match ins.opcode {
@@ -7965,6 +7944,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::SlotLoad
             | Opcode::FieldLoad
             | Opcode::EnumPayloadLoad
+            | Opcode::FieldAddr
             | Opcode::TensorLoad
             | Opcode::TensorDataPtr
             | Opcode::Transfer
