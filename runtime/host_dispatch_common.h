@@ -754,4 +754,6 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload) {
 
 } // extern "C"
 
+#include "vx_collective_cpu.h"
+
 #endif /* VX_HOST_DISPATCH_COMMON_H */

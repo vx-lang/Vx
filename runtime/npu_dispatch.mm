@@ -860,3 +860,5 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload) {
   return 0;
 }
 }
+
+#include "vx_collective_cpu.h"

@@ -343,6 +343,34 @@ CUDA backend (`runtime/cuda_dispatch.cpp`). These rules hold for such a call:
 - **Optimization level.** The device image follows `-O`. A library built at `-O 3` can hold
   different PTX from `--emit-ptx` at the default level, so build both at the same level.
 
+### 3.7 Collectives across GPUs
+
+A job runs one process per GPU, for example with `CUDA_VISIBLE_DEVICES=<rank>`. Each process
+is one rank. The dispatch library has these C functions (`runtime/vx_collective.h`):
+
+| Function | What it does |
+|---|---|
+| `void vx_collective_init(int32_t rank, int32_t ranks)` | Joins the job as `rank` of `ranks`. |
+| `void vx_collective_finish(void)` | Leaves the job. |
+| `int32_t vx_collective_rank(void)`, `vx_collective_ranks(void)` | The rank and the size of the job, or -1 and 0 before `init`. |
+| `vx_collective_all_reduce_sum_f32(in, out, count)` | `out[i]` becomes the sum of `in[i]` over all ranks. |
+| `vx_collective_all_gather_f32(in, out, count)` | `out` becomes the `count` elements of rank 0, then of rank 1, and so on. |
+
+Each of the last two also has a `_bf16` form, with `uint16_t` elements. `in` and `out` can be
+the same buffer. Vx stops the program with a message on a wrong argument or an NCCL error.
+
+- **NCCL.** The CUDA backend calls NCCL, which it loads with `dlopen` from `libnccl.so.2`, or
+  from the path in `VX_NCCL_LIB`. `init` uses the GPU that is current at the call.
+- **The NCCL id.** All ranks must join with the id that rank 0 makes. A job of more than one
+  rank needs `VX_NCCL_ID_FILE`, a path that every rank can read. Rank 0 writes the id there,
+  and the other ranks wait for the file, at most 300 s. Remove the file before you start the
+  ranks: rank 0 stops if the file is already there, because it can hold an earlier job's id.
+- **Memory.** The tensors must be in GPU memory.
+- **Stream and graphs.** A collective goes on the stream from `vx_cuda_set_stream` (§3.6),
+  with Vx's kernels, so a CUDA graph can record it. Call `init` before the recording.
+- **No GPU.** A CPU backend, or the CUDA backend on a machine with no GPU, runs a job of one
+  rank only. There, each collective copies `in` to `out`.
+
 ## 4. Symbol names
 
 - A function the program defines keeps its name, and is `hidden` and `dso_local`.

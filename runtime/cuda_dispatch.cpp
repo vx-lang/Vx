@@ -53,6 +53,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "vx_arrival_counts.h"
+#include "vx_collective.h"
 #include "vx_device_pool.h"
 #include "vx_dispatch_plan.h"
 #include "vx_host_call.h"
@@ -1567,6 +1568,94 @@ void vx_cuda_set_stream(void *stream) {
 
 /// The stream that `vx_cuda_set_stream` set on the calling thread, or null.
 void *vx_cuda_get_stream(void) { return caller_stream; }
+
+/// This process's rank in a job of several GPUs. See docs/lang/abi.md
+/// section 3.7.
+static vx::NcclCollective &collective() {
+  static vx::NcclCollective c(vx::CollectiveDevice{
+      [] { return static_cast<void *>(caller_stream); },
+      [] { return recording(); },
+      [](const void *ptr) { return is_device_ptr(ptr); },
+      [] {
+        int device = 0;
+        VX_CUDA_CHECK(cudaGetDevice(&device));
+        return device;
+      },
+      [](int device) { VX_CUDA_CHECK(cudaSetDevice(device)); },
+  });
+  return c;
+}
+
+/// With no GPU, a program runs on the CPU, and a job has one rank.
+static vx::OneRankCollective one_rank;
+
+static void collective_check(const std::string &why) {
+  if (!why.empty()) {
+    fprintf(stderr, "[Vx CUDA] FATAL: %s\n", why.c_str());
+    abort();
+  }
+}
+
+void vx_collective_init(int32_t rank, int32_t ranks) {
+  if (!cuda_available()) {
+    collective_check(one_rank.init(rank, ranks));
+    return;
+  }
+  const char *lib = getenv("VX_NCCL_LIB");
+  const char *id_file = getenv("VX_NCCL_ID_FILE");
+  collective_check(collective().init(rank, ranks,
+                                     lib && *lib ? lib : "libnccl.so.2",
+                                     id_file, std::chrono::seconds(300)));
+}
+
+void vx_collective_finish(void) {
+  collective_check(cuda_available() ? collective().finish()
+                                    : one_rank.finish());
+}
+
+int32_t vx_collective_rank(void) {
+  return cuda_available() ? collective().rank() : one_rank.rank();
+}
+
+int32_t vx_collective_ranks(void) {
+  return cuda_available() ? collective().ranks() : one_rank.ranks();
+}
+
+void vx_collective_all_reduce_sum_f32(const float *input, float *output,
+                                      int64_t count) {
+  const char *name = "vx_collective_all_reduce_sum_f32";
+  collective_check(cuda_available()
+                       ? collective().all_reduce_sum(input, output, count,
+                                                     vx::NcclFloat32, name)
+                       : one_rank.copy(input, output, count, 4, name));
+}
+
+void vx_collective_all_reduce_sum_bf16(const uint16_t *input, uint16_t *output,
+                                       int64_t count) {
+  const char *name = "vx_collective_all_reduce_sum_bf16";
+  collective_check(cuda_available()
+                       ? collective().all_reduce_sum(input, output, count,
+                                                     vx::NcclBfloat16, name)
+                       : one_rank.copy(input, output, count, 2, name));
+}
+
+void vx_collective_all_gather_f32(const float *input, float *output,
+                                  int64_t count) {
+  const char *name = "vx_collective_all_gather_f32";
+  collective_check(
+      cuda_available()
+          ? collective().all_gather(input, output, count, vx::NcclFloat32, name)
+          : one_rank.copy(input, output, count, 4, name));
+}
+
+void vx_collective_all_gather_bf16(const uint16_t *input, uint16_t *output,
+                                   int64_t count) {
+  const char *name = "vx_collective_all_gather_bf16";
+  collective_check(cuda_available()
+                       ? collective().all_gather(input, output, count,
+                                                 vx::NcclBfloat16, name)
+                       : one_rank.copy(input, output, count, 2, name));
+}
 
 static vx::ArrivalCounts &arrival_counts() {
   static vx::ArrivalCounts counts;

@@ -12,6 +12,7 @@ mod integration_test {
     mod borrow_test;
     mod build_commit_in_the_version;
     mod codegen_determinism;
+    mod collective_test;
     mod compile_test;
     mod compile_time_of_vec_calls;
     mod comptime_twins;
