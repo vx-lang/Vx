@@ -5005,6 +5005,38 @@ static void orderRelaxedReads(Operation *root) {
   });
 }
 
+/// LLVM's NVPTX back end gives each `atomicrmw` the PTX default, a relaxed
+/// `atom`, whatever its order. So the order moves into fences around a relaxed
+/// one, as in the PTX memory model's mapping for C++: a release fence before it
+/// (seq_cst for a seq_cst one) and an acquire fence after it, at its scope.
+static void fenceOrderedReadModifyWrites(Operation *root) {
+  using LLVM::AtomicOrdering;
+  root->walk([&](LLVM::AtomicRMWOp rmw) {
+    AtomicOrdering o = rmw.getOrdering();
+    bool releases = o == AtomicOrdering::release ||
+                    o == AtomicOrdering::acq_rel ||
+                    o == AtomicOrdering::seq_cst;
+    bool acquires = o == AtomicOrdering::acquire ||
+                    o == AtomicOrdering::acq_rel ||
+                    o == AtomicOrdering::seq_cst;
+    if (!releases && !acquires)
+      return;
+    StringRef scope = rmw.getSyncscope().value_or(StringRef());
+    OpBuilder b(rmw);
+    if (releases)
+      b.create<LLVM::FenceOp>(rmw.getLoc(),
+                              o == AtomicOrdering::seq_cst
+                                  ? AtomicOrdering::seq_cst
+                                  : AtomicOrdering::release,
+                              scope);
+    rmw.setOrdering(AtomicOrdering::monotonic);
+    if (acquires) {
+      b.setInsertionPointAfter(rmw);
+      b.create<LLVM::FenceOp>(rmw.getLoc(), AtomicOrdering::acquire, scope);
+    }
+  });
+}
+
 /// Whether `-fweak-relaxed-atomics` was given for the module that holds `op`.
 static bool weakRelaxedAtomics(Operation *op) {
   ModuleOp module =
@@ -5184,6 +5216,7 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
   });
   if (!weakRelaxedAtomics(gpuModule))
     orderRelaxedReads(*device);
+  fenceOrderedReadModifyWrites(*device);
   if (failed(toBinary.run(*device))) {
     error = "the NVPTX pipeline failed";
     return {};

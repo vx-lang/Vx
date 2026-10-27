@@ -13,6 +13,10 @@
 //   may move a relaxed load after a later store. With `-fweak-relaxed-atomics`, a relaxed load
 //   stays `ld.relaxed`. A relaxed compare-and-swap is the same.
 // - A `SeqCst` load or store is a `fence.sc` and then an acquire load or a release store.
+// - A read-modify-write is a relaxed `atom` between fences, because LLVM's NVPTX back end drops
+//   the order of the `atom` itself. A release one has a release fence before it (`fence.sc` for
+//   `SeqCst`), and an acquire one an acquire fence after it. A relaxed one gets the acquire fence
+//   too, unless `-fweak-relaxed-atomics`.
 // - A fence of block scope becomes `fence.acq_rel.cta`, and one of device scope `.gpu`.
 // - A `SeqCst` fence becomes `fence.sc`.
 //
@@ -33,6 +37,11 @@
 // CHECK-SAME: fence.acq_rel.cta;\0A\09fence.acq_rel.gpu;\0A\09fence.sc.sys;
 // STRONG-SAME: atom.acquire.sys.global.cas.b32
 // WEAK-SAME: atom.relaxed.sys.global.cas.b32
+// STRONG-SAME: atom.global.add.u32 \09%r{{[0-9]+}}, [%rd{{[0-9]+}}], 4;\0A\09fence.acq_rel.sys;
+// WEAK-SAME: atom.global.add.u32 \09%r{{[0-9]+}}, [%rd{{[0-9]+}}], 4;\0A\09st.global
+// STRONG-SAME: fence.acq_rel.sys;\0A\09atom.global.add.u32 \09%r{{[0-9]+}}, [%rd{{[0-9]+}}+4], 5;\0A\09fence.acq_rel.sys;
+// WEAK-SAME: fence.acq_rel.sys;\0A\09atom.global.add.u32 \09%r{{[0-9]+}}, [%rd{{[0-9]+}}+4], 5;\0A\09st.global
+// CHECK-SAME: fence.sc.sys;\0A\09atom.global.add.u32 \09%r{{[0-9]+}}, [%rd{{[0-9]+}}+8], 7;\0A\09fence.acq_rel.sys;
 // STRONG-NOT: llvm.load {{.*}} atomic monotonic
 // WEAK: llvm.load {{.*}} atomic monotonic
 
@@ -54,6 +63,9 @@ fn main() -> i32 {
         scoped_fence(AtomicOrdering::Acquire, FenceScope::Device);
         scoped_fence(AtomicOrdering::SeqCst, FenceScope::System);
         let _c = atomic_compare_and_swap_i32(&x, 2, 3, 6, AtomicOrdering::Relaxed);
+        out[b + l] = atomic_fetch_add_i32(&x, 0, 4, AtomicOrdering::Relaxed);
+        out[b + l + 1] = atomic_fetch_add_i32(&x, 1, 5, AtomicOrdering::Release);
+        out[b + l + 2] = atomic_fetch_add_i32(&x, 2, 7, AtomicOrdering::SeqCst);
       }
     }
   }
