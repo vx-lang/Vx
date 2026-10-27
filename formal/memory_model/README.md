@@ -138,10 +138,16 @@ then, so the spawns and the joins order its accesses with each task (`main_task`
 The code can also fail. Each access to the failure slot and the cancel flag is atomic
 (`fail_atomic`), so these places never race. `drf_sc_of_footprints` still needs code with no
 failures: `cancel_flag_read_before_the_failure.litmus` has a result that no interleaving gives.
-A task can also start tasks, with the same tree of tasks as in `Footprint.lean`.
+A task can also start tasks, with the same tree of tasks as in `Footprint.lean`. The code of a
+block can hold other blocks, with `NestOk` and `allIds` as in `Footprint.lean`. The lock proof
+needs no change for this: a lowered inner block only clears registers and reads the `done` flags
+(`lower_keeps`).
 `ChanFootprintExample.lean` has a block where one task sends a value to the other, a block
 where two tasks add 1 to one place under a lock, and a block where a task fails. In
-`nestChanFoot`, a task starts two tasks, and one sends a value to the other. The edges of
+`nestChanFoot`, a task starts two tasks, and one sends a value to the other. In
+`innerLockFoot`, the code of a block starts task 0, then runs an inner block of tasks 1 and 2,
+then adds 1 to a place under a lock. Task 1 sends a value to task 2, and tasks 0 and 2 write that
+place under the lock. The edges of
 channels need a finite execution whose `co` orders the writes to each place. So these theorems use `drf_sc_co`, which gives the race-freedom hypothesis
 only such executions.
 
@@ -296,9 +302,8 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - herd7 checks each test completely, but only the tests. memalloy checks every execution up to 5
   or 6 events.
 - The core language has no functions and no references.
-- The rule of `Footprint.lean` compares each task of an inner block with all the code of the outer
-  block, also the code after the inner block joined it. The rules for channels and locks need a
-  block whose body holds no other `tasks` block (#2286).
+- The rules compare each task of an inner block with all the code of the outer block, also the
+  code after the inner block joined it.
 - The Lean model has no scopes and no barriers.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.

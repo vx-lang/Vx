@@ -221,7 +221,7 @@ for each pass (`Runs.loop_pass`). In `Footprint.lean` the loop can also run code
 task before and after the block (#2241). Two tasks that one `spawn` of the block starts need not
 be apart, because one pass starts at most one of them (#2242). The ninth part lets the code of a
 block in `Footprint.lean` hold other blocks (#2285). The tasks of an inner block count as tasks of
-the outer block. `ChanFootprint.lean` and `LockFootprint.lean` do not allow this yet (#2286).
+the outer block. `ChanFootprint.lean` and `LockFootprint.lean` allow it too (#2286).
 
 ## Later
 
