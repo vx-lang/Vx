@@ -5,8 +5,17 @@
   <link href="https://vxlang.org/blog/feed.xml" rel="self"/>
   <link href="https://vxlang.org/blog/"/>
   <id>https://vxlang.org/blog/</id>
-  <updated>2026-10-24T18:00:00Z</updated>
+  <updated>2026-10-27T18:00:00Z</updated>
   <author><name>Aditya Kumar</name></author>
+
+  <entry>
+    <title>Two bugs the H100 did not show</title>
+    <link href="https://vxlang.org/blog/two-bugs-the-h100-did-not-show.html"/>
+    <id>https://vxlang.org/blog/two-bugs-the-h100-did-not-show.html</id>
+    <updated>2026-10-27T18:00:00Z</updated>
+    <author><name>Aditya Kumar</name></author>
+    <summary>Vx's memory model forbids load buffering with relaxed atomics, as RC11 does, so that no value comes out of thin air. herd7, memalloy and Lean check the model, but nothing checked the GPU code that vxc generates. Five of the model's litmus tests, written as Vx programs, ran 11 times each on an H100, with 100,000 rounds per run and a stress version of each. Every run printed 0, also the two controls whose result the model allows, so this setup showed no weak result at all. Reading the PTX found two bugs. vxc generated ld.relaxed then st.relaxed, which the PTX model may reorder, so vxc now makes each relaxed atomic read an acquire read, unless a program asks for -fweak-relaxed-atomics. And LLVM 22's NVPTX back end gave every atomicrmw the same relaxed atom, whatever its order. vxc now puts the order in fences around a relaxed atom, as NVIDIA's mapping for C++ allows. LLVM fixed this upstream in LLVM 23. We have not measured the cost of either fix on a GPU yet.</summary>
+  </entry>
 
   <entry>
     <title>GLM on an A100, in Vx</title>

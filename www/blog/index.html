@@ -43,6 +43,14 @@
 
   <ul class="posts">
     <li>
+      <a href="/blog/two-bugs-the-h100-did-not-show.html">Two bugs the H100 did not show</a>
+      <time datetime="2026-10-27">27 October 2026</time>
+      <p>Five litmus tests of Vx's memory model ran on an H100 for over a million rounds each, and
+      printed 0. So did the controls, so the runs showed nothing. Reading the PTX found two bugs: a
+      relaxed load that the GPU may move after a later store, and LLVM 22 dropping the order of
+      every read-modify-write, such as <code>fetch_add</code>, in a kernel.</p>
+    </li>
+    <li>
       <a href="/blog/glm-on-an-a100.html">GLM on an A100, in Vx</a>
       <time datetime="2026-10-20">20 October 2026</time>
       <p>GLM-5's decoder, with its sparse attention and 256-expert layers, runs on an A100 through
