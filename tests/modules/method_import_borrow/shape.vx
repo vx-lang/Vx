@@ -1,0 +1,21 @@
+//===- shape.vx - Vx Compiler ------------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Imported by an_error_in_an_imported_method_is_reported.vx: a borrow error in
+// a method that is only checked when the importer calls it (#1825).
+
+struct S {
+  x : i32,
+}
+
+impl S {
+  fn reset(self : &mut S) -> i32 {
+    let r = &self.x;
+    self.x = 0;
+    return *r;
+  }
+}
