@@ -154,6 +154,9 @@ pub struct EnumDecl {
 pub struct ExternDecl {
     pub name: Symbol,
     pub is_safe: bool,
+    /// The memory parameters, the `M` of `fn f<M : Memory>(p : *mut f32 in Memory::M)`. Each
+    /// call binds them to the memories of its pointer arguments.
+    pub memories: Vec<Symbol>,
     pub params: Vec<(Symbol, Type)>,
     pub return_type: Type,
     /// Where the declaration was written, so a diagnostic about the signature can point at it.

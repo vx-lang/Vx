@@ -1147,6 +1147,48 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The parameters of a call to an extern function with memory parameters, with each one
+    /// bound to the memory of the first pointer argument whose parameter names it. A later
+    /// argument in another memory then gets E6029. `None` for any other callee.
+    fn bind_extern_memories(
+        &self,
+        callee: &str,
+        params: &[Type],
+        arg_types: &[Type],
+    ) -> Option<Vec<Type>> {
+        let ext = self
+            .env
+            .externs
+            .iter()
+            .find(|e| e.name.as_ref() == callee && !e.memories.is_empty())?;
+        let variable = |ty: &Type| match ty {
+            Type::Pointer(_, Some(place), _) => crate::syntax::types::memory_variable(place)
+                .filter(|name| ext.memories.contains(name))
+                .cloned(),
+            _ => None,
+        };
+        let mut binding: HashMap<crate::symbol::Symbol, Option<crate::syntax::Placement>> =
+            HashMap::new();
+        for (param, arg) in params.iter().zip(arg_types) {
+            if let (Some(name), Type::Pointer(_, place, _)) = (variable(param), arg) {
+                binding.entry(name).or_insert_with(|| place.clone());
+            }
+        }
+        Some(
+            params
+                .iter()
+                .map(|param| match (param, variable(param)) {
+                    (Type::Pointer(inner, _, is_mut), Some(name))
+                        if binding.contains_key(&name) =>
+                    {
+                        Type::Pointer(inner.clone(), binding[&name].clone(), *is_mut)
+                    }
+                    _ => param.clone(),
+                })
+                .collect(),
+        )
+    }
+
     /// Check a call's arguments against the callee's parameter list: the count first (E3010),
     /// then each argument's type against its parameter (E3003). A literal argument is refined to
     /// the parameter's type before the comparison, so `f(7)` fits an `i64` parameter. Every
@@ -1174,6 +1216,8 @@ impl<'a> TypeChecker<'a> {
             }
             return;
         }
+        let bound = self.bind_extern_memories(callee, params, arg_types);
+        let params = bound.as_deref().unwrap_or(params);
         for (i, param_ty) in params.iter().enumerate() {
             let arg_ty = self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
             // An `Unknown` argument already has its error, a use of a moved value say.

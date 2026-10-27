@@ -1,0 +1,32 @@
+//===- extern_function_with_a_memory_parameter.vx - Vx Compiler --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An extern function can take a memory parameter, as in `<M : Memory>`. Then one C function
+// takes a pointer into any memory, because the memory never reaches C. Each call binds `M`
+// to the memory of its pointer arguments. Here `copy` is called with host pointers and with
+// pointers into GPU memory, and both calls go to the one C declaration.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-COUNT-1: func.func private @vendor_copy(!llvm.ptr, !llvm.ptr, i64)
+// CHECK-NOT: func.func private @vendor_copy
+// CHECK-COUNT-2: call @vendor_copy({{.*}}) : (!llvm.ptr, !llvm.ptr, i64) -> ()
+
+extern "C" {
+  fn vendor_copy<M : Memory>(from : *const f32 in Memory::M, to : *mut f32 in Memory::M, n : i64) -> void;
+}
+
+fn main() -> i32 {
+  let a = Tensor<f32, [4]>::fill(1.0);
+  let mut b = Tensor<f32, [4]>::fill(0.0);
+  let c = transfer(Tensor<f32, [4]>::fill(1.0), Memory::GPU_HBM);
+  let mut d = transfer(Tensor<f32, [4]>::fill(0.0), Memory::GPU_HBM);
+  unsafe {
+    vendor_copy(a.as_ptr(), b.as_mut_ptr(), 4);
+    vendor_copy(c.as_ptr(), d.as_mut_ptr(), 4);
+  }
+  return 0;
+}

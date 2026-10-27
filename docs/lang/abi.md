@@ -64,6 +64,20 @@ device address, the same `float *` cuBLAS expects. The placement is checked by t
 compiler and never reaches C: a host pointer passed where a device pointer is
 declared is E6029, and a host read through the device pointer is E6003.
 
+An extern function can take memory parameters, so that one C function takes a pointer into
+any memory. Each call binds `M` to the memory of the first pointer argument whose parameter
+names it. The other parameters that name `M` must then get pointers into the same memory
+(E6029). A library function that is generic over a memory can pass its tensor on:
+
+```rust
+extern "C" {
+  fn vendor_copy<M : Memory>(from : *const f32 in Memory::M, to : *mut f32 in Memory::M,
+                             n : i64) -> void;
+}
+```
+
+An extern function cannot take a type parameter, because a C function has one machine type.
+
 ### 2.1 Opaque-pointer ownership lifecycle (the Rust core contract)
 
 Vx's standard library is backed by a Rust crate (`stdlib/rust_core`, built as

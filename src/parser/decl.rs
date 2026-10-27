@@ -1177,6 +1177,25 @@ impl<'a> Parser<'a> {
             let is_safe = self.match_token(&TokenType::Safe);
             self.consume(&TokenType::Fn, "Expected 'fn'")?;
             let name = self.expect_identifier("Expected function name")?;
+            // `<M : Memory>`: one C function for a pointer into any memory, since the memory
+            // never reaches C. Only memory parameters, because a C function has one machine type.
+            let generics = self.parse_generic_params()?;
+            let mut memories = Vec::new();
+            for g in &generics {
+                match g {
+                    GenericParam::Type { name, bounds }
+                        if bounds.len() == 1 && bounds[0].trait_name.as_ref() == "Memory" =>
+                    {
+                        memories.push(name.clone())
+                    }
+                    _ => {
+                        return Err(self.error(
+                            "An extern function can only take memory parameters, as in \
+                             `<M : Memory>`",
+                        ))
+                    }
+                }
+            }
 
             self.consume(&TokenType::LeftParen, "Expected '('")?;
             let params = self.parse_comma_separated_params()?;
@@ -1185,10 +1204,14 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::Arrow, "Expected '->'")?;
             let return_type = self.parse_return_type()?;
             self.consume(&TokenType::Semicolon, "Expected ';'")?;
+            for _ in 0..generics.len() {
+                self.generic_params.pop();
+            }
 
             externs.push(ExternDecl {
                 name: name.into(),
                 is_safe,
+                memories,
                 params,
                 return_type,
                 span: Span {
