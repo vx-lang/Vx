@@ -21,8 +21,9 @@ more than 0, a 0 from the other programs is weak evidence.
 Each `_stress.vx` program is the same test with 14 more blocks. They write and read their own
 part of a buffer while the test runs, which makes weak results more likely.
 
-`lb_relaxed_blocks.vx` is the one most likely to fail. vxc makes a relaxed load followed by a
-relaxed store (`ld.relaxed`, then `st.relaxed`), and the PTX model does not order these two.
+`lb_relaxed_blocks.vx` checks the rule against values out of thin air. PTX does not order a
+relaxed load before a later store, so vxc makes the load `ld.acquire`. Compiled with
+`-fweak-relaxed-atomics`, the load is `ld.relaxed`, and the program may print more than 0.
 
 ## Running them
 

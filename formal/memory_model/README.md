@@ -248,8 +248,11 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 ## Two choices in the model
 
 - **No value comes out of thin air.** The model keeps the rule of RC11: no cycle of program order
-  and reads, also for relaxed atomics. AArch64 allows such a cycle, so a relaxed load needs a
-  dependency on AArch64, as RC11 says. The other choice would leave the problem open, as in C++.
+  and reads, also for relaxed atomics. PTX and AArch64 allow such a cycle, so vxc makes each
+  relaxed atomic read an acquire read (`vx-order-relaxed-reads`). The other choice would leave the
+  problem open, as in C++. `-fweak-relaxed-atomics` keeps relaxed reads relaxed. A program
+  compiled with it follows this model without the rule, and can show
+  `load_buffering_relaxed.litmus`.
 - **Two atomics race unless each one reaches the thread of the other.** This follows the PTX
   model. `atomic_of_block_scope_across_blocks.litmus` shows the case.
 

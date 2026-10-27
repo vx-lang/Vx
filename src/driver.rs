@@ -215,8 +215,14 @@ pub struct DriverOptions {
 
     /// `-fauto-schedule-levels`: an `across` loop on an arch that cannot launch its levels runs
     /// as a plain `for` that carries its level as metadata for MLIR and LLVM. The default,
-    /// `-fno-auto-schedule-levels`, makes such a loop an error. The last one wins
-    #[arg(short = 'f', value_name = "FEATURE", value_parser = ["auto-schedule-levels", "no-auto-schedule-levels"])]
+    /// `-fno-auto-schedule-levels`, makes such a loop an error.
+    ///
+    /// `-fweak-relaxed-atomics`: a relaxed atomic read stays relaxed, so a program may see load
+    /// buffering, which the memory model otherwise forbids. The default,
+    /// `-fno-weak-relaxed-atomics`, makes each relaxed read an acquire read.
+    ///
+    /// For each feature, the last one wins
+    #[arg(short = 'f', value_name = "FEATURE", value_parser = ["auto-schedule-levels", "no-auto-schedule-levels", "weak-relaxed-atomics", "no-weak-relaxed-atomics"])]
     pub features: Vec<String>,
 
     /// Optimization level (-O0 to -O3)
@@ -241,11 +247,23 @@ pub struct DriverOptions {
 }
 
 impl DriverOptions {
-    /// Whether `-fauto-schedule-levels` is on: the last of it and `-fno-auto-schedule-levels`.
-    pub fn auto_schedule_levels(&self) -> bool {
+    /// Whether `-f<name>` is on: the last of it and `-fno-<name>`.
+    fn feature(&self, name: &str) -> bool {
         self.features
-            .last()
-            .is_some_and(|f| f == "auto-schedule-levels")
+            .iter()
+            .rev()
+            .find(|f| f.strip_prefix("no-").unwrap_or(f) == name)
+            .is_some_and(|f| f == name)
+    }
+
+    /// Whether `-fauto-schedule-levels` is on.
+    pub fn auto_schedule_levels(&self) -> bool {
+        self.feature("auto-schedule-levels")
+    }
+
+    /// Whether `-fweak-relaxed-atomics` is on.
+    pub fn weak_relaxed_atomics(&self) -> bool {
+        self.feature("weak-relaxed-atomics")
     }
 }
 
@@ -1555,6 +1573,13 @@ impl CompilerDriver {
                 .as_operation_mut()
                 .set_attribute("vx.export_kernels", melior::ir::Attribute::unit(context));
         }
+        if self.options.weak_relaxed_atomics() {
+            use melior::ir::operation::OperationMutLike;
+            module.as_operation_mut().set_attribute(
+                "vx.weak_relaxed_atomics",
+                melior::ir::Attribute::unit(context),
+            );
+        }
         let ran = crate::intern_mode::timed("mlir_passes", || pass_manager.run(&mut module));
         if let Err(e) = ran {
             return Err(format!("MLIR passes failed for {}: {}", filename, e));
@@ -2088,6 +2113,8 @@ fn get_optimization_pipeline(
         // A function the program defines is not exported, so a `fn write` cannot replace
         // libc's `write` for the runtime library. See the pass.
         passes.push("vx-hide-program-symbols".to_string());
+        // Each relaxed atomic read becomes an acquire read, unless `-fweak-relaxed-atomics`.
+        passes.push("vx-order-relaxed-reads".to_string());
     }
 
     format!("builtin.module({})", passes.join(","))
@@ -2302,6 +2329,28 @@ mod flat_codegen_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each `-f` feature takes the last of its own two spellings. Giving another feature after
+    /// it does not turn it off.
+    #[test]
+    fn each_feature_takes_the_last_of_its_own_flags() {
+        let parse = |args: &[&str]| {
+            let mut all = vec!["vxc", "a.vx"];
+            all.extend_from_slice(args);
+            DriverOptions::try_parse_from(all).expect("the flags parse")
+        };
+        let o = parse(&["-fweak-relaxed-atomics", "-fauto-schedule-levels"]);
+        assert!(o.weak_relaxed_atomics() && o.auto_schedule_levels());
+        let o = parse(&["-fweak-relaxed-atomics", "-fno-weak-relaxed-atomics"]);
+        assert!(!o.weak_relaxed_atomics());
+        let o = parse(&[
+            "-fno-auto-schedule-levels",
+            "-fauto-schedule-levels",
+            "-fno-weak-relaxed-atomics",
+        ]);
+        assert!(o.auto_schedule_levels() && !o.weak_relaxed_atomics());
+        assert!(!parse(&[]).weak_relaxed_atomics());
+    }
 
     /// Two modules can declare a host topology at once -- `--machine fleet/h100.vx --host default`
     /// gives exactly that -- so which one answers must not depend on the order the caller happened

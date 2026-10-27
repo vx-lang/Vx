@@ -8,23 +8,33 @@
 // The PTX for each atomic order and fence scope of `core::sync::atomic`. The memory model in
 // formal/memory_model/ relies on this mapping, which is the one the PTX memory model gives:
 //
-// - A load or a store becomes `ld` or `st` with the same order: relaxed, acquire or release.
+// - A store becomes `st` with the same order: relaxed or release.
+// - A load becomes `ld.acquire`, also a relaxed one. The model forbids load buffering, and PTX
+//   may move a relaxed load after a later store. With `-fweak-relaxed-atomics`, a relaxed load
+//   stays `ld.relaxed`. A relaxed compare-and-swap is the same.
 // - A `SeqCst` load or store is a `fence.sc` and then an acquire load or a release store.
 // - A fence of block scope becomes `fence.acq_rel.cta`, and one of device scope `.gpu`.
 // - A `SeqCst` fence becomes `fence.sc`.
 //
 // The kernel does each one once, in this order. The PTX is one line of the output, with `\0A`
-// for each line break and `\09` for each tab.
+// for each line break and `\09` for each tab. The host code makes a relaxed load too, after the
+// PTX in the output: it is an acquire load by default, and stays `monotonic` with the flag.
 //
-// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefixes=CHECK,STRONG
+// RUN: vxc %s -fweak-relaxed-atomics --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --check-prefixes=CHECK,WEAK
 // CHECK: .entry vx_npu_kernel_0(
 // CHECK-SAME: st.relaxed.sys.global.b32 \09[%rd{{[0-9]+}}], 1;
 // CHECK-SAME: st.release.sys.global.b32 \09[%rd{{[0-9]+}}+4], 2;
 // CHECK-SAME: fence.sc.sys;\0A\09st.release.sys.global.b32 \09[%rd{{[0-9]+}}+8], 3;
-// CHECK-SAME: ld.relaxed.sys.global.b32 \09%r{{[0-9]+}}, [%rd{{[0-9]+}}];
+// STRONG-SAME: ld.acquire.sys.global.b32 \09%r{{[0-9]+}}, [%rd{{[0-9]+}}];
+// WEAK-SAME: ld.relaxed.sys.global.b32 \09%r{{[0-9]+}}, [%rd{{[0-9]+}}];
 // CHECK-SAME: ld.acquire.sys.global.b32 \09%r{{[0-9]+}}, [%rd{{[0-9]+}}+4];
 // CHECK-SAME: fence.sc.sys;\0A\09ld.acquire.sys.global.b32 \09%r{{[0-9]+}}, [%rd{{[0-9]+}}+8];
 // CHECK-SAME: fence.acq_rel.cta;\0A\09fence.acq_rel.gpu;\0A\09fence.sc.sys;
+// STRONG-SAME: atom.acquire.sys.global.cas.b32
+// WEAK-SAME: atom.relaxed.sys.global.cas.b32
+// STRONG-NOT: llvm.load {{.*}} atomic monotonic
+// WEAK: llvm.load {{.*}} atomic monotonic
 
 import core::sync::atomic;
 
@@ -43,10 +53,13 @@ fn main() -> i32 {
         scoped_fence(AtomicOrdering::Release, FenceScope::Block);
         scoped_fence(AtomicOrdering::Acquire, FenceScope::Device);
         scoped_fence(AtomicOrdering::SeqCst, FenceScope::System);
+        let _c = atomic_compare_and_swap_i32(&x, 2, 3, 6, AtomicOrdering::Relaxed);
       }
     }
   }
   let o = transfer(out, Memory::CPU_DRAM);
-  println!("{} {} {}", o[0], o[1], o[2]);
+  let host = Tensor<i32, [1]>::fill(8);
+  let on_host = atomic_load_i32(&host, 0, AtomicOrdering::Relaxed);
+  println!("{} {} {} {}", o[0], o[1], o[2], on_host);
   return 0;
 }

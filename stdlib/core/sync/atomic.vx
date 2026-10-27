@@ -44,7 +44,9 @@ import core::convert;
 
 /// How an atomic operation is ordered with the memory operations around it.
 enum AtomicOrdering {
-  // Only the operation itself is atomic; no order with other memory operations.
+  // Only the operation itself is atomic, with one exception: a relaxed read is not moved after a
+  // write that comes later in its thread, so no value comes out of thin air. The compiler makes
+  // each relaxed read an acquire read for this. `-fweak-relaxed-atomics` drops the exception.
   Relaxed,
   // Writes before this store are visible to a thread whose `Acquire` load reads it.
   Release,

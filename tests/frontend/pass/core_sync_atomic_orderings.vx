@@ -5,19 +5,24 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// RUN: vxc %s --emit-llvm -O2 2>&1 | FileCheck %s
-// RUN: vxc %s --emit-llvm -O2 --legacy-codegen 2>&1 | FileCheck %s
+// RUN: vxc %s --emit-llvm -O2 -fweak-relaxed-atomics 2>&1 | FileCheck %s --check-prefixes=CHECK,WEAK
+// RUN: vxc %s --emit-llvm -O2 -fweak-relaxed-atomics --legacy-codegen 2>&1 | FileCheck %s --check-prefixes=CHECK,WEAK
+// RUN: vxc %s --emit-llvm -O2 2>&1 | FileCheck %s --check-prefixes=CHECK,STRONG
 // Each function below makes one `core::sync::atomic` call with a fixed ordering, and `main`
 // calls them in order. After optimization they are inlined into `main`, and the checks see
 // exactly one atomic operation per call, of the right kind, with the ordering asked for.
 // `cas_release_acquire` shows `compare_exchange` using one ordering that covers both of its
 // orderings: Release on success and Acquire on failure become AcqRel and Acquire.
+// `-fweak-relaxed-atomics` keeps each ordering as asked. Without it, a read that is relaxed
+// becomes an acquire read, so the relaxed add is `acquire` and the release sub `acq_rel`.
 //
 // CHECK-LABEL: llvm.func {{(hidden )?}}@main()
 // CHECK-NOT: {{atomic|cmpxchg|fence}}
-// CHECK: llvm.atomicrmw add {{.*}} monotonic : !llvm.ptr, i32
+// WEAK: llvm.atomicrmw add {{.*}} monotonic : !llvm.ptr, i32
+// STRONG: llvm.atomicrmw add {{.*}} acquire : !llvm.ptr, i32
 // CHECK-NOT: {{atomic|cmpxchg|fence}}
-// CHECK: llvm.atomicrmw sub {{.*}} release : !llvm.ptr, i64
+// WEAK: llvm.atomicrmw sub {{.*}} release : !llvm.ptr, i64
+// STRONG: llvm.atomicrmw sub {{.*}} acq_rel : !llvm.ptr, i64
 // CHECK-NOT: {{atomic|cmpxchg|fence}}
 // CHECK: llvm.atomicrmw umax {{.*}} acquire : !llvm.ptr, i32
 // CHECK-NOT: {{atomic|cmpxchg|fence}}
