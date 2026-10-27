@@ -1,0 +1,45 @@
+//===- collectives_in_a_job_of_one_rank.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `std::collective` in a job of one rank. The sum over one rank is the tensor itself, and the
+// gather is a copy. The output gives the rank and the job size before `join_job`, inside the
+// job and after `leave_job`. Then it gives the host tensors, and last a gather of tensors in
+// GPU memory, which host code passes by reference.
+//
+// EXPECT: -1 0, 0 1, -1 0, 1.5 2.5, 3 3, 1 2 3, 4 4
+//===----------------------------------------------------------------------===//
+
+import std::collective;
+
+fn main() -> i32 {
+  print!("{} {}, ", job_rank(), job_ranks());
+  join_job(0, 1);
+  print!("{} {}, ", job_rank(), job_ranks());
+
+  let mut x = Tensor<f32, [2]>::fill(1.5);
+  x[1] = 2.5;
+  all_reduce_sum_f32(&mut x);
+  let mut h = Tensor<bf16, [2]>::fill(3.0 as bf16);
+  all_reduce_sum_bf16(&mut h);
+  let mut parts = Tensor<f32, [3]>::fill(1.0);
+  parts[1] = 2.0;
+  parts[2] = 3.0;
+  let mut gathered = Tensor<f32, [3]>::fill(0.0);
+  all_gather_f32(&parts, &mut gathered);
+  let on_gpu = transfer(Tensor<f32, [2]>::fill(4.0), Memory::GPU_HBM);
+  let mut gathered_on_gpu = transfer(Tensor<f32, [2]>::fill(0.0), Memory::GPU_HBM);
+  all_gather_f32(&on_gpu, &mut gathered_on_gpu);
+
+  leave_job();
+  print!("{} {}, ", job_rank(), job_ranks());
+  print!("{} {}, ", x[0], x[1]);
+  print!("{} {}, ", h[0] as f32, h[1] as f32);
+  print!("{} {} {}, ", gathered[0], gathered[1], gathered[2]);
+  let back = transfer(gathered_on_gpu, Memory::CPU_DRAM);
+  println!("{} {}", back[0], back[1]);
+  return 0;
+}
