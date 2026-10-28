@@ -9,12 +9,12 @@
   <author><name>Aditya Kumar</name></author>
 
   <entry>
-    <title>Draw the boundary once</title>
-    <link href="https://vxlang.org/blog/draw-the-boundary-once.html"/>
-    <id>https://vxlang.org/blog/draw-the-boundary-once.html</id>
+    <title>Design visibility, builds and versions together</title>
+    <link href="https://vxlang.org/blog/design-visibility-builds-and-versions-together.html"/>
+    <id>https://vxlang.org/blog/design-visibility-builds-and-versions-together.html</id>
     <updated>2026-10-27T18:00:00Z</updated>
     <author><name>Aditya Kumar</name></author>
-    <summary>Visibility rules, the build system and the package manager all use one thing: the public interface of a package. When a language designs the three tools separately, they disagree about where that interface is. The disagreement then stays for the life of the language. In C++, private fields are in headers. A Java jar had no boundary for 21 years. Rust teams make items public when they divide a slow crate. Swift added a package access level to match its package manager. One equation states the contract between a compiler and a build system, and the rebuild rule and the version bump both come from it. None of 15 pairs of compiler and build system passes all six tests that come from the equation. Elm and Java with Bazel are the closest, and Vx scores 0 today. The post describes how Vx plans to draw the boundary once.</summary>
+    <summary>Three tools in a programming language depend on the public interface of a package: the visibility rules, the build system and the package manager. When a language designs them separately, they disagree. In C++, a private field makes other files rebuild. In Rust, splitting a slow crate makes private items public, and the package manager must then version them. Swift added a package keyword nine years after 1.0 to match its package manager. The idea is to define the interface once and let all three tools read it. That needs a signature that holds the whole interface, and visibility levels that match the units of the build system and the package manager. In Vx, the planned levels private, pkg, ws and pub each answer three questions: who can call this, what rebuilds when it changes, and which version bump the change needs. Today vxc writes interface files and vx-api diff computes the version bump, but pkg and ws do not exist yet, so vx-api treats every item as public.</summary>
   </entry>
 
   <entry>

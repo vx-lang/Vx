@@ -43,12 +43,12 @@
 
   <ul class="posts">
     <li>
-      <a href="/blog/draw-the-boundary-once.html">Draw the boundary once</a>
+      <a href="/blog/design-visibility-builds-and-versions-together.html">Design visibility, builds and versions together</a>
       <time datetime="2026-10-27">27 October 2026</time>
-      <p>Visibility rules, the build system and the package manager all use the public interface
-      of a package. C++, Java, Rust, Swift and Go each let these three tools disagree. One equation
-      states the contract between a compiler and a build system. None of 15 toolchains passes all
-      six tests that come from it, and Vx does not pass them yet either.</p>
+      <p>Visibility rules, the build system and the package manager all depend on the public
+      interface of a package. In C++, Rust and Swift they disagree, and programmers pay for it. In
+      Vx, one visibility keyword will answer three questions: who can call this, what rebuilds when
+      it changes, and which version bump the change needs.</p>
     </li>
     <li>
       <a href="/blog/two-bugs-the-h100-did-not-show.html">Two bugs the H100 did not show</a>
