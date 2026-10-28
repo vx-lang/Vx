@@ -224,6 +224,7 @@ unit and the registry publishes as one unit. A workspace is a set of packages th
 publishes together, at one version. The manifest of each member names its workspace, and the
 manifest of the workspace sets the version. The visibility levels use the same units:</p>
 
+<!-- vx-doctest: skip (proposed syntax: the parser does not accept pkg and ws yet) -->
 <pre><code><span class="k">fn</span> <span class="f">helper</span>()        <span class="c">// private: this module only (the default)</span>
 <span class="k">pkg fn</span> <span class="f">plan</span>()      <span class="c">// any module in this package</span>
 <span class="k">ws fn</span> <span class="f">lower</span>()      <span class="c">// any package in this workspace</span>
