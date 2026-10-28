@@ -17,7 +17,7 @@ struct S {
 impl S {
   fn reset(self : &mut S) -> i32 {
     let r = &self.x;
-    // CHECK: Error[E4009] at [[@LINE+1]]:{{.*}}`self.x` is assigned while it is borrowed
+    // CHECK: Error[E4009] at {{.*}}an_error_inside_a_method_is_reported_once.vx:[[@LINE+1]]:{{.*}}`self.x` is assigned while it is borrowed
     self.x = 0;
     return *r;
   }
