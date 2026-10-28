@@ -698,6 +698,7 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   // local.
   std::vector<const void *> memrefs;
   std::vector<int32_t> memref_elems;
+  std::vector<int32_t> memref_ranks;
   VX_NPU_LOG("[Vx Dispatcher] Scanning %lld args:\n", (long long)num_args);
   for (int64_t i = 0; i < num_args; i++) {
     VX_NPU_LOG("  Arg %lld: tag=%d\n", (long long)i, arg_tags[i]);
@@ -710,6 +711,7 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     }
     memrefs.push_back(desc);
     memref_elems.push_back(VX_ABI_ELEM(arg_tags[i]));
+    memref_ranks.push_back(VX_ABI_RANK(arg_tags[i]));
   }
   VX_NPU_LOG("[Vx Dispatcher] Found %zu MemRefs\n", memrefs.size());
 
@@ -723,17 +725,19 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
       }
     }
 
-    if (scalars.size() >= 2) {
-      const int64_t *res_sizes = vx_memref_sizes(memrefs[0]);
-      const int64_t *a_sizes = vx_memref_sizes(memrefs[1]);
+    // The model copies 4 adjacent floats in and 4 out, so it can take only a
+    // rank-1 view of 4 elements with stride 1. The CPU runs any other view.
+    auto is_vector_of_4 = [&](size_t m) {
+      return memref_ranks[m] == 1 && vx_memref_sizes(memrefs[m])[0] == 4 &&
+             vx_memref_strides(memrefs[m], memref_ranks[m])[0] == 1;
+    };
 
-      if (res_sizes[0] == 4 && a_sizes[0] == 4) {
-        if (vx_dispatch_ane_affine((float *)vx_memref_aligned(memrefs[0]),
-                                   (float *)vx_memref_aligned(memrefs[1]),
-                                   scalars[0], scalars[1], 4)) {
-          return 1;
-        }
-      }
+    if (scalars.size() >= 2 && is_vector_of_4(0) && is_vector_of_4(1) &&
+        vx_dispatch_ane_affine(
+            (float *)vx_memref_data(memrefs[0], VX_DTYPE_F32),
+            (float *)vx_memref_data(memrefs[1], VX_DTYPE_F32), scalars[0],
+            scalars[1], 4)) {
+      return 1;
     }
   }
 
