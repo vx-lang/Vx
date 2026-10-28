@@ -184,6 +184,16 @@ impl<'a> TypeChecker<'a> {
 
             // Only a last expression with no `;` gives the block its value.
             ret_ty = Type::Struct("void".into(), None);
+            // A variable that takes the block's value holds the borrows of that value only. The
+            // borrows of a statement, as in `v.push(1);`, end with the statement.
+            let is_value = matches!(s, Statement::ExprStmt(e) if !e.has_semi)
+                && i == last
+                && tail.is_none()
+                && !block_unused;
+            let target = self.current_assignment_target.take();
+            if is_value {
+                self.current_assignment_target = target.clone();
+            }
             if let Statement::ExprStmt(ExprStmtStmt {
                 ref mut expr,
                 has_semi,
@@ -225,6 +235,7 @@ impl<'a> TypeChecker<'a> {
                 ));
                 self.check_statement(s, &expected_ret, consume);
             }
+            self.current_assignment_target = target;
 
             match s {
                 Statement::Return(_) | Statement::Break(_) | Statement::Continue(_)

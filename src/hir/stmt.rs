@@ -451,6 +451,9 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.current_assignment_target = Some(name.to_string());
+        // The variable is declared into the innermost scope, so it holds its borrows there.
+        self.pending_lets
+            .push((name.to_string(), self.scopes.len()));
         // Forward the annotation as an expected-type hint so a generic call can
         // deduce a return-only topology/type variable from it.
         if let Some(ann) = ty_ann.as_mut() {
@@ -469,6 +472,7 @@ impl<'a> TypeChecker<'a> {
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, ty_ann.as_ref());
         self.expected_type = prev_expected;
         self.current_assignment_target = None;
+        self.pending_lets.pop();
 
         let mut tmp_env = HashMap::new();
         for env in &self.consteval.env {

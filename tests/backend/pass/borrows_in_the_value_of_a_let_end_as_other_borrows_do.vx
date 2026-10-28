@@ -1,0 +1,95 @@
+//===- borrows_in_the_value_of_a_let_end_as_other_borrows_do.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A variable keeps the borrows made in the `if` that gives it its value. These borrows end as
+// other borrows do, at the last use of the variable. A borrow that no variable keeps ends with
+// its block or its statement.
+
+fn keep(r : &mut i64) -> &mut i64 {
+  return r;
+}
+
+fn borrow_in_an_if_statement(c : bool) -> i64 {
+  let mut x : i64 = 5;
+  if c {
+    keep(&mut x);
+  }
+  x = 6;
+  return x;
+}
+
+fn value_with_no_borrow(c : bool) -> i64 {
+  let mut x : i64 = 5;
+  let n : i64 = if c {
+    1
+  } else {
+    2
+  };
+  x = 6;
+  return x + n;
+}
+
+fn borrow_held_by_a_variable_of_an_arm(c : bool) -> i64 {
+  let mut x : i64 = 5;
+  let mut y : i64 = 7;
+  if c {
+    let r : &mut i64 = if c {
+      &mut x
+    } else {
+      &mut y
+    };
+    *r = 1;
+  }
+  x = x + 10;
+  return x + y;
+}
+
+fn borrow_that_ends_at_its_last_use(c : bool) -> i64 {
+  let mut x : i64 = 5;
+  let mut y : i64 = 7;
+  let r : &mut i64 = if c {
+    &mut x
+  } else {
+    &mut y
+  };
+  *r = 9;
+  x = x + 100;
+  return x + y;
+}
+
+// `r` holds the borrow of `x`, the value of the arm. The statement before it gets a borrow of `y`
+// back from `keep`, and nothing keeps it, so it ends with the statement.
+fn borrow_made_by_a_statement_of_an_arm(c : bool) -> i64 {
+  let mut x : i64 = 5;
+  let mut y : i64 = 7;
+  let r : &mut i64 = if c {
+    keep(&mut y);
+    &mut x
+  } else {
+    &mut x
+  };
+  y = y + 10;
+  *r = *r + 100;
+  return x + y;
+}
+
+fn main() -> i32 {
+  // CHECK: {{^}}6{{$}}
+  println!("{}", borrow_in_an_if_statement(true));
+  // CHECK-NEXT: {{^}}7{{$}}
+  println!("{}", value_with_no_borrow(true));
+  // CHECK-NEXT: {{^}}18{{$}}
+  println!("{}", borrow_held_by_a_variable_of_an_arm(true));
+  // CHECK-NEXT: {{^}}116{{$}}
+  println!("{}", borrow_that_ends_at_its_last_use(true));
+  // CHECK-NEXT: {{^}}122{{$}}
+  println!("{}", borrow_made_by_a_statement_of_an_arm(true));
+  return 0;
+}
