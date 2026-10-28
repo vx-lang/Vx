@@ -336,6 +336,8 @@ pub enum Opcode {
     CancelOn = 77,
     /// `h.join()`: waits for the task whose value is `operand1`, or is in the slot `operand1`.
     TaskJoin = 78,
+    /// Check that operand1 addresses the aggregate identified by type_idx. Generates no code.
+    CheckAggregate = 79,
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.
@@ -345,12 +347,22 @@ pub struct EnumPayloadIndex {
     pub field: u32,
 }
 
-/// Distinguish explicit field indices from offsets in older instruction streams.
+/// Mark explicit field indices in field instructions.
 pub const FIELD_INDEX_FLAG: u64 = 1 << 63;
 
 /// Field identity belongs in the immediate, never in a register operand.
 pub fn encode_field_index(index: usize) -> u64 {
     FIELD_INDEX_FLAG | u64::from(u32::try_from(index).expect("a field index must fit in u32"))
+}
+
+/// Decode a field index. A missing flag indicates a compiler bug.
+pub fn decode_field_index(imm: u64) -> usize {
+    assert_ne!(
+        imm & FIELD_INDEX_FLAG,
+        0,
+        "a field instruction must carry FIELD_INDEX_FLAG"
+    );
+    usize::try_from(imm & !FIELD_INDEX_FLAG).expect("a field index must fit in usize")
 }
 
 impl EnumPayloadIndex {
@@ -449,6 +461,7 @@ impl Opcode {
             69 => LoopHint,
             70 => EnumPayloadLoad,
             71 => LaneReduce,
+            79 => CheckAggregate,
             8 => Call,
             9 => Ret,
             10 => Matmul,

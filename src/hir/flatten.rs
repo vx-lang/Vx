@@ -456,7 +456,7 @@ struct Lowerer<'r> {
     types: Vec<TypeId>,
     scope: HashMap<Symbol, Binding>,
     /// The frozen nominal-type registry — the source of aggregate layouts (size/align/field offsets)
-    /// used to size an aggregate's `Alloca` and, later, resolve field offsets.
+    /// used to size an aggregate's `Alloca` and select field indices.
     registry: &'r ImmutableGlobalRegistry,
     /// When set, named locals live in memory (`Alloca`/`Store`/`SlotLoad`) so values survive across
     /// basic blocks — chosen for functions with control flow (or an aggregate local, which must sit
@@ -2296,6 +2296,18 @@ impl<'r> Lowerer<'r> {
     /// *pointer to* an aggregate (`self : &mut Vec<i32>`, #242). Both are an `!llvm.ptr` to the
     /// struct, so a `FieldLoad`/`FieldStore` addresses them identically. `None` for any other base.
     fn lower_agg_base(&mut self, base: &Expr) -> Lowered<(Register, TypeId)> {
+        let (reg, gid) = self.lower_agg_base_value(base)?;
+        self.emit_typed(
+            Opcode::CheckAggregate,
+            reg,
+            Register(0),
+            LoweredTy::Aggregate(gid),
+            0,
+        );
+        Ok((reg, gid))
+    }
+
+    fn lower_agg_base_value(&mut self, base: &Expr) -> Lowered<(Register, TypeId)> {
         if let Expr::Identifier(id) = base {
             if let Some(Binding::Slot {
                 reg,
@@ -2323,10 +2335,10 @@ impl<'r> Lowerer<'r> {
         // lowering `base` again would run a call in it twice.
         if let Expr::MemberAccess(m) = base {
             let (parent_reg, parent_gid) = self.lower_agg_base(&m.base)?;
-            let (offset, fty) = self.field_of(&parent_gid, m.member.as_ref())?;
+            let (access, fty) = self.field_of(&parent_gid, m.member.as_ref())?;
             if let FieldTy::Nominal(nested_gid) = fty {
                 return Ok((
-                    self.emit_field_addr(parent_reg, nested_gid, offset),
+                    self.emit_field_addr(parent_reg, nested_gid, access),
                     nested_gid,
                 ));
             }
@@ -2394,7 +2406,7 @@ impl<'r> Lowerer<'r> {
     /// element, a pointer field an opaque `!llvm.ptr`, and a by-value nested-aggregate field the
     /// whole `!llvm.struct` value.
     fn load_field(&mut self, base_reg: Register, gid: &TypeId, member: &str) -> Lowered<Val> {
-        let (offset, fty) = self.field_of(gid, member)?;
+        let (access, fty) = self.field_of(gid, member)?;
         let result_ty = match fty {
             FieldTy::Scalar(e) => LoweredTy::Scalar(e),
             FieldTy::Opaque => LoweredTy::Ptr,
@@ -2408,7 +2420,7 @@ impl<'r> Lowerer<'r> {
                     })?
             }
         };
-        Ok(self.emit_typed(Opcode::FieldLoad, base_reg, Register(0), result_ty, offset))
+        Ok(self.emit_typed(Opcode::FieldLoad, base_reg, Register(0), result_ty, access))
     }
 
     /// A `FieldAddr`: the address of the field selected by its encoded index.
@@ -2712,7 +2724,7 @@ impl<'r> Lowerer<'r> {
                     what: "an enum with no modelled instance layout",
                 })?;
         let slot = self.lower_data_match_slot(&m.expr, gid)?;
-        let tag_field = encode_field_index(0);
+        let tag_field = self.enum_field_index(gid, 0)?;
         let registry = self.registry;
         let data = registry
             .enum_data
@@ -3399,7 +3411,7 @@ impl<'r> Lowerer<'r> {
             opt_slot.reg,
             Register(0),
             ElementType::I32,
-            encode_field_index(0),
+            self.enum_field_index(enum_gid, 0)?,
         );
         let some_c = self.emit_value(
             Opcode::Const,
@@ -4100,10 +4112,15 @@ impl<'r> Lowerer<'r> {
         Ok(None)
     }
 
-    /// Construct a struct literal into a fresh stack slot: `Alloca` the aggregate (sized from its
-    /// layout) then `FieldStore` each field at its layout offset. Returns the slot as an aggregate
-    /// `Val`. First cut: scalar fields only, and the struct's GID must be annotated (by the type
-    /// checker) and its layout computed — otherwise the construction is declined.
+    fn enum_field_index(&self, gid: TypeId, index: usize) -> Lowered<u64> {
+        self.layout_of(&gid)
+            .and_then(|layout| layout.fields.get(index))
+            .ok_or(Decline::TypeNotModelled {
+                what: "an enum payload offset that is not laid out",
+            })?;
+        Ok(encode_field_index(index))
+    }
+
     /// Construct a data-carrying enum value (`Option<i32>::Some(30)` / `::None`) as a `{ i32 tag,
     /// payload }` aggregate: `Alloca` the instance's synthesized layout, `FieldStore` the variant's
     /// discriminant ordinal into the tag, then `FieldStore` each payload value into its field (a
@@ -4143,7 +4160,12 @@ impl<'r> Lowerer<'r> {
             ElementType::I32,
             ordinal,
         );
-        self.emit_effect(Opcode::FieldStore, slot.reg, tag.reg, encode_field_index(0));
+        self.emit_effect(
+            Opcode::FieldStore,
+            slot.reg,
+            tag.reg,
+            self.enum_field_index(gid, 0)?,
+        );
         if let Some(payload) = &ev.payload {
             for (i, pexpr) in payload.iter().enumerate() {
                 let mut v = self.lower_expr(pexpr)?;
@@ -4156,7 +4178,7 @@ impl<'r> Lowerer<'r> {
                     Opcode::FieldStore,
                     slot.reg,
                     v.reg,
-                    encode_field_index(i + 1),
+                    self.enum_field_index(gid, i + 1)?,
                 );
             }
         }
@@ -4762,6 +4784,10 @@ impl<'r> Lowerer<'r> {
         Some(gid)
     }
 
+    /// Construct a struct literal into a fresh stack slot: `Alloca` the aggregate (sized from its
+    /// layout) then store each field by its index. Returns the slot as an aggregate
+    /// `Val`. First cut: scalar fields only, and the struct's GID must be annotated (by the type
+    /// checker) and its layout computed — otherwise the construction is declined.
     fn lower_struct_init(&mut self, si: &crate::syntax::StructInitExpr) -> Lowered<Val> {
         // The struct's layout GID: the checker-attached `type_id` when present, else resolved by
         // name. A *monomorphized generic* construction (`Vec<i32> { .. }`) carries no `type_id` (the
@@ -5462,10 +5488,10 @@ impl<'r> Lowerer<'r> {
                 .ok_or(Decline::TypeNotModelled {
                     what: "the Closure1 layout",
                 })?;
-        if self
-            .layout_of(&ck_gid)
-            .is_none_or(|layout| layout.fields.len() < 2)
-        {
+        let closure_layout = self.layout_of(&ck_gid).ok_or(Decline::TypeNotModelled {
+            what: "the Closure1 layout",
+        })?;
+        if closure_layout.fields.len() < 2 {
             return Err(Decline::TypeNotModelled {
                 what: "a Closure1 layout with fewer than two fields",
             });
@@ -7908,6 +7934,16 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
                 "HIR field access has an unexpected second operand at instruction {i}"
             );
         }
+        if matches!(
+            ins.opcode,
+            Opcode::FieldLoad | Opcode::FieldStore | Opcode::FieldAddr
+        ) {
+            assert_ne!(
+                ins.imm & crate::bytecode::FIELD_INDEX_FLAG,
+                0,
+                "HIR field instruction is missing FIELD_INDEX_FLAG at instruction {i}"
+            );
+        }
         match ins.opcode {
             // Binary: both operands read.
             Opcode::Add
@@ -7945,6 +7981,7 @@ pub fn verify_hir_stream(worker: &LocalWorkerState) {
             | Opcode::FieldLoad
             | Opcode::EnumPayloadLoad
             | Opcode::FieldAddr
+            | Opcode::CheckAggregate
             | Opcode::TensorLoad
             | Opcode::TensorDataPtr
             | Opcode::Transfer

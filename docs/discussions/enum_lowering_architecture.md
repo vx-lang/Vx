@@ -275,8 +275,12 @@ A byte offset alone also cannot distinguish logical fields that share an offset.
 `FieldLoad`, `FieldStore`, and `FieldAddr` encode a physical field index in `imm`, marked by bit 63.
 The remaining bits carry the index. Register operands retain their existing meaning.
 This encoding travels with the instruction through both compilation drivers, direct emitter calls, and serialized function bodies.
-Older offset-based instructions are accepted only when exactly one physical field has that offset.
-Ambiguous offsets decline instead of selecting the first matching field.
+The HIR verifier and field-index decoder assert that ordinary field instructions carry the flag.
+Offset-based field instructions are compiler errors.
+Pointer fields resolve their target layouts by declaration ID. Ambiguous names cannot select a layout.
+`CheckAggregate` compares the lowerer's expected layout ID with the emitter's tracked layout ID before field access.
+A mismatch declines with a named reason, even when the field index fits both layouts.
+This instruction generates no native code and remains in serialized function bodies.
 
 Iterator lowering also uses explicit enum payload reads for the `next()` result. See [iterator lowering](../../src/hir/flatten.rs).
 Nested payload bindings still use the free `lowered_ty` helper in matching, which cannot synthesize arbitrary nested layouts.
@@ -350,9 +354,9 @@ Similarly, [Lowerer::lower_ty_synth](../../src/hir/flatten.rs) handles supported
 Do not skip unsupported fields, substitute a smaller layout, or read inactive payloads to extend this support.
 Future changes must preserve the storage contract, variant metadata, and conflict checks together.
 
-[VXLIB_FORMAT_TAG](../../src/metadata.rs) currently identifies `vxlib-interface-v18`.
-Explicit ordinary field indices require a format bump from version 17 to version 18.
-Version 17 artifacts must be rebuilt because their readers do not understand indexed field instructions.
+[VXLIB_FORMAT_TAG](../../src/metadata.rs) currently identifies `vxlib-interface-v19`.
+Version 19 requires explicit field indices and aggregate layout checks in serialized function bodies.
+Version 17 and version 18 artifacts require rebuilding.
 Older interface versions are rejected. Affected module artifacts and compiled objects require rebuilding.
 Version compatibility does not establish complete export dependencies.
 Exported bodies currently omit their generated layout records, so importing an enum-using body can fail even with scalar public signatures.

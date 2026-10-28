@@ -1,0 +1,37 @@
+//===- field_base_function_runs_once.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A chained pointer field access must evaluate its base function once.
+// REQUIRES: flat-codegen
+// EXPECT: called 17
+
+struct Item {
+  value: i32
+}
+struct Holder {
+  pointer: *const Item
+}
+
+fn make_holder(pointer: *const Item, calls: &mut i32) -> Holder {
+  *calls = *calls + 1;
+  print("called ");
+  return Holder {
+    pointer: pointer
+  };
+}
+
+fn main() -> i32 {
+  let mut calls: i32 = 0;
+  let item = Item {
+    value: 17
+  };
+  print(unsafe {
+    make_holder((&item) as *const Item, &mut calls).pointer.value
+  });
+  assert(calls == 1, "the base function must run exactly once");
+  return 0;
+}

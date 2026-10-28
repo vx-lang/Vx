@@ -2122,16 +2122,16 @@ fn struct_construction_lowers_to_alloca_and_field_stores() {
         .unwrap();
     assert_eq!(alloca.imm, 8, "Point slot sized from its layout");
     assert_eq!(count(&w, Opcode::FieldStore), 2, "x and y stored");
-    let store_offsets: Vec<u64> = w
+    let store_indices: Vec<u64> = w
         .local_hir_stream
         .iter()
         .filter(|i| i.opcode == Opcode::FieldStore)
         .map(|i| i.imm)
         .collect();
     assert!(
-        store_offsets.contains(&encode_field_index(0))
-            && store_offsets.contains(&encode_field_index(1)),
-        "fields stored at explicit indices 0 and 1, got {store_offsets:?}"
+        store_indices.contains(&encode_field_index(0))
+            && store_indices.contains(&encode_field_index(1)),
+        "fields stored at explicit indices 0 and 1, got {store_indices:?}"
     );
     assert_eq!(count(&w, Opcode::FieldLoad), 1, "p.y read");
     verify_hir_stream(&w);
@@ -4232,5 +4232,67 @@ fn enum_payload_immediate_is_not_a_register() {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| verify_hir_stream(&worker)))
             .is_ok(),
         "enum payload indices are immediate values, without register dominance requirements"
+    );
+}
+
+#[rstest::rstest]
+#[case::load(Opcode::FieldLoad)]
+#[case::store(Opcode::FieldStore)]
+#[case::address(Opcode::FieldAddr)]
+#[should_panic(expected = "HIR field instruction is missing FIELD_INDEX_FLAG")]
+fn field_instructions_require_an_encoded_index(#[case] opcode: Opcode) {
+    let mut worker = worker();
+    worker.local_hir_stream.push(HirInstruction::new(
+        Opcode::Nop,
+        Register(0),
+        Register(0),
+        TypeIdx(NO_TYPE),
+        0,
+    ));
+    worker.local_hir_stream.push(HirInstruction::new(
+        opcode,
+        Register(0),
+        Register(0),
+        TypeIdx(NO_TYPE),
+        1,
+    ));
+    verify_hir_stream(&worker);
+}
+
+#[test]
+fn a_pointer_field_base_function_is_called_once() {
+    let (lowered, worker) = lower_with_registry(
+        "struct Item { value: i32 } struct Holder { pointer: *const Item } fn make_holder() -> Holder { return Holder { pointer: 0 as *const Item }; } fn inspect() -> i32 { return make_holder().pointer.value; }", "inspect");
+    assert!(lowered, "a field through a returned holder must lower");
+    assert_eq!(
+        count(&worker, Opcode::Call),
+        1,
+        "the base function must run exactly once"
+    );
+}
+
+#[rstest::rstest]
+#[case::missing_tag(0, 0)]
+#[case::missing_payload(1, 1)]
+fn missing_enum_fields_keep_the_named_decline(#[case] field_count: usize, #[case] index: usize) {
+    let registry = optional_code_registry();
+    let mut lowerer = Lowerer::new(&registry);
+    let gid = lowerer
+        .enum_instance_layout_of("Maybe", &[Type::Scalar(ElementType::I32)])
+        .unwrap();
+    lowerer
+        .instance_layouts
+        .get_mut(&gid)
+        .unwrap()
+        .fields
+        .truncate(field_count);
+    assert!(
+        matches!(
+            lowerer.enum_field_index(gid, index),
+            Err(Decline::TypeNotModelled {
+                what: "an enum payload offset that is not laid out",
+            })
+        ),
+        "a missing enum storage field must keep its named decline"
     );
 }

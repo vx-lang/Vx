@@ -2348,6 +2348,52 @@ fn flat_matches_ast_scalar_casts() {
     );
 }
 
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn same_named_pointer_targets_use_their_own_module_layout(#[case] jobs: Option<usize>) {
+    use std::process::Command;
+    let directory = tempfile::tempdir().unwrap();
+    for (name, source) in [
+        ("left.vx", "struct Node { count: i32, value: i64 } struct Left { node: *const Node } fn read_left() -> i64 { let node = Node { count: 1, value: 42 }; let holder = Left { node: (&node) as *const Node }; return unsafe { holder.node.value }; }"),
+        ("right.vx", "struct Node { count: i32, value: i32 } struct Right { node: *const Node } fn read_right() -> i32 { let node = Node { count: 1, value: 7 }; let holder = Right { node: (&node) as *const Node }; return unsafe { holder.node.value }; }"),
+        ("app.vx", "import left; import right; fn main() -> i32 { print(read_left()); print(\" \"); print(read_right()); return 0; }"),
+    ] {
+        std::fs::write(directory.path().join(name), source).unwrap();
+    }
+    for optimization in ["-O0", "-O2"] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_vxc"));
+        command
+            .arg(directory.path().join("app.vx"))
+            .arg("--run")
+            .arg(optimization)
+            .env("VX_FLAT_DBG", "1");
+        if let Some(jobs) = jobs {
+            command.arg("-j").arg(jobs.to_string());
+        }
+        let output = command.output().unwrap();
+        let log = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "different Node layouts must compile: {log}"
+        );
+        let marker = if jobs.is_some() {
+            "[parallel-frontend] emitted module with -j 2"
+        } else {
+            "[flat-codegen] emitted module via the flat path"
+        };
+        assert!(
+            log.contains(marker),
+            "both Node layouts must use the flat path: {log}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).lines().last(),
+            Some("42 7"),
+            "each pointer must read its own module's value at {optimization}"
+        );
+    }
+}
+
 const LIBRARY_WITH_EMPTY_FIELDS: &str = r#"
 struct Empty {}
 struct Fields { marker: Empty, number: i32 }
@@ -2404,6 +2450,12 @@ fn indexed_fields_survive_imports(#[case] jobs: Option<usize>, #[case] artifact_
             let body = registry
                 .body_of(signature.gid)
                 .expect("field helper body is exported");
+            assert!(
+                body.hir
+                    .iter()
+                    .any(|instruction| instruction.opcode == Opcode::CheckAggregate),
+                "imported {name} must retain its aggregate layout check"
+            );
             let indices: Vec<_> = body
                 .hir
                 .iter()

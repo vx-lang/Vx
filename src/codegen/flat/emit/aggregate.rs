@@ -12,7 +12,7 @@ fn is_scalar_field(fty: &str) -> bool {
 }
 
 impl FnEmit<'_> {
-    // Store a field by explicit index. Older instructions can use an unambiguous byte offset.
+    // Store a field by explicit index.
     // The stored register supplies the active value type, including enum payload values.
     pub(crate) fn op_field_store(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let gid = (*self

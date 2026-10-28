@@ -678,23 +678,24 @@ pub struct Callee {
 /// (for the call's result type) without a name→AST walk.
 pub type CalleeMap = HashMap<TypeId, Callee>;
 
-/// Resolve a nominal type to a *modelled* aggregate layout GID: the attached GID when name resolution
-/// set it (present in `aggs`), else the base name's GID (`agg_names`) — a monomorphized cross-module
-/// signature carries an unresolved base (`GenericInstance(Struct("Vec", None), ..)` / `Struct("Vec",
-/// None)`), so the layout must be recovered by name. Resolves a generic instance through its base.
-/// (#242)
+/// Resolve an aggregate layout by declaration identity.
+/// Complete generic declarations share storage. Other generic instances use generated layout IDs.
+/// A missing attached ID permits an unambiguous name lookup. An unknown attached ID does not.
 fn resolve_agg_gid(
     ty: &Type,
     aggs: &AggMap,
     agg_names: &HashMap<String, TypeId>,
     identities: &crate::layout::identity::AggregateIdentities,
 ) -> Option<TypeId> {
-    // A data-carrying enum instance (`Option<i32>`) has a *synthesized* per-instance layout keyed by
-    // `enum_instance_gid` (the lowerer recorded it in the side table now folded into `aggs`); try that
-    // first. Its `gid` is distinct from any registry layout, so a struct instance (`Vec<i32>`) misses
-    // here and falls through to the nominal resolution below. (#242)
+    // Prefer the lowerer's complete declaration layout, then try generated instance layouts.
     if let Type::GenericInstance(base, args) = ty {
         if matches!(base.as_ref(), Type::Enum(..) | Type::Struct(..)) {
+            // Use the same complete declaration layout that the lowerer uses.
+            // Generic structs with argument-dependent storage have no complete declaration layout.
+            let (_, declaration) = identities.resolve_base(base.as_ref().into())?;
+            if aggs.contains_key(&declaration) {
+                return Some(declaration);
+            }
             let gid = crate::hir::flatten::enum_instance_gid(base.as_ref(), args, identities)?;
             if aggs.contains_key(&gid) {
                 return Some(gid);
@@ -717,8 +718,10 @@ fn resolve_agg_gid(
             if aggs.contains_key(&bare) {
                 return Some(bare);
             }
-            id.filter(|g| aggs.contains_key(g))
-                .or_else(|| agg_names.get(name.as_ref()).copied())
+            match id {
+                Some(id) => aggs.contains_key(id).then_some(*id),
+                None => agg_names.get(name.as_ref()).copied(),
+            }
         }
         _ => None,
     }
@@ -817,14 +820,12 @@ pub fn build_callee_map(
 }
 
 /// The MLIR shape of an aggregate (struct) whose fields are all scalar or pointer: the
-/// `!llvm.struct<(...)>` type (for the slot `llvm.alloca` and field `getelementptr`), each field's
-/// byte offset in declaration order, and each field's MLIR type
-/// string, so a field op prints the right load/store type (a scalar's element or `!llvm.ptr`).
+/// `!llvm.struct<(...)>` type and each field's MLIR type in declaration order.
+/// Field instructions select fields by index.
 pub struct AggLayout {
     pub struct_ty: String,
-    pub offsets: Vec<u64>,
     /// Each field's MLIR type (`"i32"`, `"!llvm.ptr"`, …) in declaration order, index-aligned with
-    /// `offsets`. A field op loads/stores at `field_tys[field_idx]`.
+    /// the other field metadata. A field op uses `field_tys[field_idx]`.
     pub field_tys: Vec<String>,
     /// For each pointer field, the layout GID of the aggregate it points *to*, when that pointee's
     /// layout is instance-independent (`VecIter`'s `vec : *const Vec<T>` -> the `Vec` layout GID, the
@@ -848,28 +849,14 @@ pub(crate) fn generated_storage_type(layout: &crate::layout::GeneratedAggregateL
 }
 
 impl AggLayout {
-    /// Older instructions may use an offset only when it identifies exactly one field.
+    /// Select a physical field by its encoded index.
     fn field_index(&self, imm: u64) -> Lowered<usize> {
-        let index = if imm & crate::bytecode::FIELD_INDEX_FLAG != 0 {
-            usize::try_from(imm & !crate::bytecode::FIELD_INDEX_FLAG)
-                .ok()
-                .filter(|&index| index < self.offsets.len())
-                .ok_or(crate::emitter_gap!())?
-        } else {
-            let mut matches = self
-                .offsets
-                .iter()
-                .enumerate()
-                .filter(|(_, offset)| **offset == imm);
-            let (index, _) = matches.next().ok_or(crate::emitter_gap!())?;
-            if matches.next().is_some() {
-                return Err(Decline::TypeNotModelled {
-                    what:
-                        "a field offset shared by multiple fields without an explicit field index",
-                });
-            }
-            index
-        };
+        let index = crate::bytecode::decode_field_index(imm);
+        if index >= self.field_tys.len() {
+            return Err(Decline::TypeNotModelled {
+                what: "a field index outside the aggregate layout",
+            });
+        }
         Ok(index)
     }
 
@@ -877,11 +864,6 @@ impl AggLayout {
     fn from_generated(layout: &crate::layout::GeneratedAggregateLayout) -> Self {
         Self {
             struct_ty: generated_storage_type(layout),
-            offsets: layout
-                .fields
-                .iter()
-                .map(|f| f.layout.offset as u64)
-                .collect(),
             field_tys: layout.fields.iter().map(|f| f.mlir_type.clone()).collect(),
             field_pointee: layout.fields.iter().map(|f| f.pointer_target_id).collect(),
             field_agg: layout.fields.iter().map(|f| f.aggregate_id).collect(),
@@ -902,18 +884,8 @@ pub type AggMap = HashMap<TypeId, AggLayout>;
 /// field is modelled as `!llvm.ptr`.
 pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::Schedule) -> AggMap {
     use crate::layout::FieldTy;
-    // Name -> layout GID for every modelled nominal, to resolve a pointer field's pointee aggregate
-    // (its layout is instance-independent when the field is behind a pointer, so the base name suffices
-    // — `VecIter`'s `vec : *const Vec<T>` resolves to the `Vec` layout GID for any `T`).
-    let name_to_gid: HashMap<&str, TypeId> = registry
-        .layouts
-        .iter()
-        .filter(|(_, d)| d.align_bytes != 0 && !d.fields.is_empty())
-        .map(|(g, d)| (d.name.as_str(), *g))
-        .collect();
-    // Each layout's entry depends only on the registry and `name_to_gid`, and the key is the layout's
-    // own GID, so the map is the same whatever order the entries are produced in. (See
-    // `build_callee_map` for why this is worth parallelising.)
+    // Pointer targets retain declaration IDs. Names alone cannot distinguish modules.
+    let identities = registry.aggregate_identities();
     let layout_of = |(gid, def): (&TypeId, &crate::registry::TypeDefinition)| {
         if def.align_bytes == 0 {
             return None; // an unmodelled stub
@@ -929,7 +901,6 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                 *gid,
                 AggLayout {
                     struct_ty: "!llvm.struct<()>".to_string(),
-                    offsets: Vec::new(),
                     field_tys: Vec::new(),
                     field_pointee: Vec::new(),
                     field_agg: Vec::new(),
@@ -942,7 +913,6 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
         // the definition's own GID is the key.
         let decl_fields = registry.structs.get(gid);
         let mut field_tys = Vec::with_capacity(def.fields.len());
-        let mut offsets = Vec::with_capacity(def.fields.len());
         let mut field_pointee = Vec::with_capacity(def.fields.len());
         let mut field_agg: Vec<Option<TypeId>> = Vec::with_capacity(def.fields.len());
         let mut modelled = true;
@@ -977,8 +947,7 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                     field_tys.push("!llvm.ptr".to_string());
                     let pointee = decl_fields
                         .and_then(|sf| sf.fields.get(fi))
-                        .and_then(|(_, ft)| pointer_pointee_name(ft))
-                        .and_then(|n| name_to_gid.get(n.as_str()).copied());
+                        .and_then(|(_, ft)| pointer_pointee_layout(ft, registry, identities));
                     field_pointee.push(pointee);
                     field_agg.push(None);
                 }
@@ -1011,7 +980,6 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                     }
                 }
             }
-            offsets.push(f.offset as u64);
         }
         if !modelled {
             return None;
@@ -1020,7 +988,6 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
             *gid,
             AggLayout {
                 struct_ty: format!("!llvm.struct<({})>", field_tys.join(", ")),
-                offsets,
                 field_tys,
                 field_pointee,
                 field_agg,
@@ -1087,23 +1054,44 @@ pub(crate) fn registry_field_storage_type(
     })
 }
 
-/// The base nominal name a pointer/borrow points *to* (`*const Vec<T>` -> `"Vec"`), for resolving a
-/// pointer field's pointee aggregate. `None` for a pointer to a non-nominal (a scalar, `*mut T`). (#242)
-fn pointer_pointee_name(ty: &Type) -> Option<String> {
+/// Resolve a pointer target by declaration identity, including concrete generic arguments.
+fn pointer_pointee_layout(
+    ty: &Type,
+    registry: &ImmutableGlobalRegistry,
+    identities: &crate::layout::identity::AggregateIdentities,
+) -> Option<TypeId> {
     let inner = match ty {
         Type::Pointer(inner, ..) | Type::Borrow { inner, .. } | Type::Ref(inner, ..) => {
             inner.as_ref()
         }
         _ => return None,
     };
-    match inner {
-        Type::GenericInstance(base, _) => match base.as_ref() {
-            Type::Struct(n, _) | Type::Enum(n, _) => Some(n.as_ref().to_string()),
-            _ => None,
-        },
-        Type::Struct(n, _) | Type::Enum(n, _) => Some(n.as_ref().to_string()),
-        _ => None,
+    let (base, args) = match inner {
+        Type::GenericInstance(base, args) => (base.as_ref(), args.as_slice()),
+        other => (other, &[][..]),
+    };
+    let (_, declaration) = identities.resolve_base(base.into())?;
+    if args.is_empty() {
+        return registry
+            .layouts
+            .get(&declaration)
+            .filter(|def| def.align_bytes != 0)
+            .map(|_| declaration);
     }
+    let instance = crate::hir::flatten::struct_instance_gid(declaration, args, identities)?;
+    if registry
+        .layouts
+        .get(&instance)
+        .is_some_and(|def| def.align_bytes != 0)
+    {
+        return Some(instance);
+    }
+    // A generic declaration's complete storage can be shared when its fields do not depend on its arguments.
+    registry
+        .layouts
+        .get(&declaration)
+        .filter(|def| def.align_bytes != 0)
+        .map(|_| declaration)
 }
 
 /// A tensor type recovered by GID: its element and shape (dim expressions, numeric or symbolic).
@@ -2286,7 +2274,7 @@ pub(crate) struct FnEmit<'a> {
     pub(crate) etypes: Vec<Option<ElementType>>,
     /// The aggregate GID for each register that is a struct-slot pointer (from an aggregate
     /// `Alloca`), so a `FieldLoad`/`FieldStore` on that slot recovers the struct's `!llvm.struct`
-    /// type + field offsets. The aggregate analogue of `etypes` (kept separate: struct slots are
+    /// type and field indices. The aggregate analogue of `etypes` (kept separate: struct slots are
     /// pointers, not scalar values).
     pub(crate) agg_of: Vec<Option<TypeId>>,
     /// The aggregate GID for each register that holds a struct *value* (not a slot pointer): an
@@ -2511,6 +2499,21 @@ impl<'a> FnEmit<'a> {
             Opcode::AutoDiff => self.op_autodiff(idx, ins),
             Opcode::TensorLoad => self.op_tensor_load(idx, ins),
             Opcode::TensorDim => self.op_tensor_dim(idx, ins),
+            Opcode::CheckAggregate => {
+                let expected = self.types.get(ins.type_idx.0 as usize).copied();
+                let actual = self.agg_of.get(ins.operand1.0 as usize).copied().flatten();
+                if expected.is_none() || actual != expected {
+                    if std::env::var_os("VX_FLAT_DBG").is_some() {
+                        eprintln!(
+                            "[flat-dbg] aggregate check expected {expected:?}, actual {actual:?}"
+                        );
+                    }
+                    return Err(Decline::TypeNotModelled {
+                        what: "an aggregate base whose layout does not match its declared type",
+                    });
+                }
+                Ok(())
+            }
             // Store a field by explicit index, with the stored value in operand2.
             Opcode::FieldStore => self.op_field_store(idx, ins),
             // Load a field by index, or an enum payload by variant and payload position.
@@ -3246,52 +3249,101 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[case::load("fn read(fields: &Fields) -> i32 { return fields.number; }")]
-    #[case::store("fn write(fields: &mut Fields) -> void { fields.number = 7; }")]
-    #[case::address("fn address(fields: &Fields) -> &i32 { return &fields.number; }")]
-    fn older_field_offsets_require_a_unique_field(
-        #[case] function: &str,
-        #[values("Empty", "i8")] preceding_type: &str,
-    ) {
-        let source = format!(
-            "struct Empty {{}}\nstruct Fields {{ first: {preceding_type}, second: {preceding_type}, number: i32 }}\n{function}"
-        );
+    #[case::load("fn inspect(a: &First, b: &Second) -> i32 { return b.value; }")]
+    #[case::store("fn inspect(a: &First, b: &mut Second) -> void { b.value = 7; }")]
+    #[case::address("fn inspect(a: &First, b: &Second) -> &i32 { return &b.value; }")]
+    fn field_access_rejects_a_different_aggregate_with_an_in_bounds_index(#[case] function: &str) {
+        let source =
+            format!("struct First {{ value: i32 }} struct Second {{ value: i32 }} {function}");
         let result = emit_module_with_field_instructions(
             &source,
             |_| {},
-            |instruction, registry| {
-                if matches!(
-                    instruction.opcode,
-                    Opcode::FieldLoad | Opcode::FieldStore | Opcode::FieldAddr
-                ) {
-                    let index = (instruction.imm & !crate::bytecode::FIELD_INDEX_FLAG) as usize;
-                    let layout = registry
-                        .layouts
-                        .values()
-                        .find(|layout| {
-                            layout
-                                .fields
-                                .iter()
-                                .any(|field| field.name.as_ref() == "number")
-                        })
-                        .expect("Fields has a registered layout");
-                    instruction.imm = layout.fields[index].offset as u64;
+            |instruction, _| {
+                if instruction.opcode == Opcode::CheckAggregate {
+                    // Register zero is the first parameter, but the access expects Second.
+                    instruction.operand1 = crate::bytecode::Register(0);
                 }
             },
         );
-        if preceding_type == "Empty" {
-            assert!(
-                matches!(result, Err(ModuleEmitError::Declined(Decline::TypeNotModelled { what: "a field offset shared by multiple fields without an explicit field index" }))),
-                "an older ambiguous field access must decline: {result:?}"
-            );
-        } else {
-            let mlir = result.expect("an older unique field offset remains supported");
-            assert!(
-                mlir.lines()
-                    .any(|line| line.contains("llvm.getelementptr") && line.contains("[0, 2]")),
-                "the older offset selects number: {mlir}"
+        assert!(
+            matches!(
+                result,
+                Err(ModuleEmitError::Declined(Decline::TypeNotModelled {
+                    what: "an aggregate base whose layout does not match its declared type",
+                }))
+            ),
+            "a different aggregate must decline before field access: {result:?}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::normal(crate::config::Schedule::Sequential)]
+    #[case::parallel(crate::config::Schedule::Parallel)]
+    fn pointer_fields_keep_same_named_declarations_separate(
+        #[case] schedule: crate::config::Schedule,
+    ) {
+        let mut modules = Vec::new();
+        for (name, source) in [
+            (
+                "crate::left",
+                "struct Node { count: i32, value: i64 } struct Left { node: *const Node }",
+            ),
+            (
+                "crate::right",
+                "struct Node { count: i32, value: i32 } struct Right { node: *const Node }",
+            ),
+        ] {
+            let mut lexer = crate::lexer::Lexer::new(source);
+            let tokens = lexer.tokenize();
+            let mut parser = crate::parser::Parser::new(&tokens, source);
+            let mut module = parser.parse().unwrap();
+            module.module_path = name.into();
+            modules.push(module);
+        }
+        let symbols = crate::resolver::build_symbol_map(&modules);
+        for module in &mut modules {
+            module.resolve_names(&symbols, &[]);
+        }
+        let registry = crate::pipeline::build_frozen_registry(&modules).unwrap();
+        let aggs = build_agg_map(&registry, schedule);
+        for module in &modules {
+            let node = symbols[&module.module_path][&crate::symbol::Symbol::from("Node")];
+            let holder = module
+                .structs
+                .iter()
+                .find(|decl| decl.name.as_ref() != "Node")
+                .unwrap();
+            let holder_id = symbols[&module.module_path][&holder.name];
+            assert_eq!(
+                aggs[&holder_id].field_pointee[0],
+                Some(node),
+                "a pointer must use its own module's Node layout"
             );
         }
+        let bare = Type::Pointer(Box::new(Type::Struct("Node".into(), None)), None, false);
+        assert_eq!(
+            pointer_pointee_layout(&bare, &registry, registry.aggregate_identities()),
+            None,
+            "an ambiguous name must not select either Node"
+        );
+        let missing = Type::Pointer(
+            Box::new(Type::Struct("Left".into(), Some(TypeId::new(99, 1, 0, 0)))),
+            None,
+            false,
+        );
+        assert_eq!(
+            pointer_pointee_layout(&missing, &registry, registry.aggregate_identities()),
+            None,
+            "an unknown attached ID must not fall back to a known name"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a field instruction must carry FIELD_INDEX_FLAG")]
+    fn a_raw_field_index_is_a_compiler_error() {
+        fields_with_empty_values_and_padding()
+            .field_index(0)
+            .unwrap();
     }
 
     fn fields_with_empty_values_and_padding() -> AggLayout {
@@ -3299,7 +3351,6 @@ mod tests {
             struct_ty:
                 "!llvm.struct<(!llvm.struct<()>, !llvm.struct<()>, i8, !llvm.array<7 x i8>, i64)>"
                     .into(),
-            offsets: vec![0, 0, 0, 1, 8],
             field_tys: vec![
                 "!llvm.struct<()>".into(),
                 "!llvm.struct<()>".into(),
@@ -3323,12 +3374,6 @@ mod tests {
                 "physical field {index} retains its identity"
             );
         }
-        assert!(layout.field_index(0).is_err(), "offset zero is ambiguous");
-        assert_eq!(
-            layout.field_index(8),
-            Ok(4),
-            "a unique older offset selects its physical field"
-        );
         assert!(
             layout
                 .field_index(crate::bytecode::encode_field_index(5))
@@ -3773,7 +3818,6 @@ mod tests {
                             *id,
                             (
                                 record.struct_ty.clone(),
-                                record.offsets.clone(),
                                 record.field_tys.clone(),
                                 record.field_agg.clone(),
                                 record.field_pointee.clone(),
