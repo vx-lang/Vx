@@ -22,7 +22,7 @@
 //! directly into the final application.
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Where a usable CUDA toolkit lives, as (root, library directory), or `None`
@@ -165,6 +165,15 @@ fn main() {
         println!("cargo:rerun-if-changed=runtime/npu_dispatch.mm");
         println!("cargo:rerun-if-changed=runtime/npu_dispatch.h");
         println!("cargo:rerun-if-changed=scripts/tools/generate_ane_primitives.py");
+        // A new interpreter or a recreated venv can build models that the old one could not.
+        // Cargo reruns this script on every build for a watched file that is missing, so
+        // watch only the venvs that exist.
+        println!("cargo:rerun-if-env-changed=VX_PYTHON");
+        for cfg in ["venv-ane/pyvenv.cfg", "venv/pyvenv.cfg"] {
+            if Path::new(cfg).exists() {
+                println!("cargo:rerun-if-changed={cfg}");
+            }
+        }
 
         let out_dir = env::var("OUT_DIR").unwrap();
         let obj_path = PathBuf::from(&out_dir).join("npu_dispatch.o");
@@ -221,9 +230,10 @@ fn main() {
             Some(p) => eprintln!("ANE models: generating with {p}"),
             None => println!(
                 "cargo:warning=No interpreter can build the ANE models: none of $VX_PYTHON, \
-                 venv/bin/python3, python3, python3.13, python3.12 or python3.11 has a working \
-                 coremltools (the compiled half, libmilstoragepython, is what is checked). \
-                 Dispatch will use the CPU shim. Set VX_PYTHON to one that does."
+                 venv-ane/bin/python3, venv/bin/python3, python3, python3.13, python3.12 or \
+                 python3.11 has a working coremltools (the compiled half, libmilstoragepython, \
+                 is what is checked). Dispatch will use the CPU shim. Set VX_PYTHON to one that \
+                 does."
             ),
         }
 
