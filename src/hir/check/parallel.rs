@@ -698,11 +698,12 @@ fn parallel_int_literal(e: &Expr) -> Option<i64> {
 /// Scalar math the walk may trust. By the time `parallel_outer_for` runs, the checker has
 /// rewritten every method call into a mangled free call — `(x).exp()` arrives as
 /// `f32$exp(x)` — so a syntactic walk meets no `MethodCall`, only calls whose names carry the
-/// receiver type. These are the stdlib's value-receiver scalar intrinsics: value in, value out,
+/// receiver type. A call written with the type's path, `f32::sqrt(x)` or `f32::from_bits(b)`,
+/// keeps its `::`. These are the stdlib's scalar intrinsics: value in, value out,
 /// nothing written anywhere, which is exactly what the disjointness proof needs from a call.
 /// Anything not on this list rejects the region — a name here is a purity claim.
 pub(crate) fn parallel_pure_call(name: &str) -> bool {
-    let Some((ty, method)) = name.split_once('$') else {
+    let Some((ty, method)) = name.split_once('$').or_else(|| name.split_once("::")) else {
         return false;
     };
     matches!(ty, "f32" | "f64" | "i32" | "i64")
@@ -729,6 +730,8 @@ pub(crate) fn parallel_pure_call(name: &str) -> bool {
                 | "pow"
                 | "powi"
                 | "recip"
+                | "to_bits"
+                | "from_bits"
         )
 }
 
