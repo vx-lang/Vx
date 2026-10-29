@@ -1,0 +1,38 @@
+// W1009: a parameter that only a `requires` or an `ensures` names is used, because the
+// contract is about it. `never_read` is the control: no code and no contract names it.
+// WARN: W1009
+// WARN: Unused function parameter 'never_read'
+// NO-WARN: 'blocks'
+// NO-WARN: 'len'
+// NO-WARN: 'other'
+
+// `blocks` is in both contracts.
+fn slot(b : i32, off : i32, blocks : i32) -> i32
+requires b >= 0 && b < blocks && off >= 0 && off < 16
+ensures return >= 0 && return < 16 * blocks
+{
+  return 16 * b + off;
+}
+
+// `len` is only in the `requires`.
+fn checked_index(i : i32, len : i32) -> i32
+requires i >= 0 && i < len
+{
+  return i;
+}
+
+// `other` is only in the `ensures`.
+fn first(x : i32, other : i32) -> i32
+ensures return == x || return == other
+{
+  return x;
+}
+
+fn ignore(never_read : i32) -> i32 {
+  return 0;
+}
+
+fn main() -> i32 {
+  println!(slot(2, 5, 4) + checked_index(1, 3) + first(1, 2) + ignore(7));
+  return 0;
+}

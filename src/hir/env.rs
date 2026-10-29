@@ -1942,12 +1942,22 @@ impl<'a> TypeChecker<'a> {
         }
         self.consteval.current_ensures = prev_ensures;
 
-        // W1009: Unused function parameters
+        // W1009: Unused function parameters. A parameter that only a contract names is used:
+        // the contract is about it.
+        let mut in_contracts = Vec::new();
+        for e in func.requires.iter().chain(&func.ensures) {
+            visit_expr(e, &mut |e| {
+                if let Expr::Identifier(id) = e {
+                    in_contracts.push(id.name.clone());
+                }
+            });
+        }
         for (param_name, _) in &func.params {
             let name_str: &str = param_name.as_ref();
             if !name_str.starts_with('_')
                 && name_str != "self"
                 && !self.used_vars.contains(param_name.as_ref())
+                && !in_contracts.contains(param_name)
             {
                 // A function built in memory, such as a copied trait default, has no position
                 // of its own; `0:0` would point nowhere.
