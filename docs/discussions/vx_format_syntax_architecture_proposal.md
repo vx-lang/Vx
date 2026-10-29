@@ -178,7 +178,8 @@ The views should evolve into a coherent syntax representation rather than unrela
 ```mermaid
 flowchart TD
     A[Original source bytes] --> B[Lexer retaining tokens and whitespace]
-    B --> C[Source-preserving syntax views]
+    B --> MAC[Recognize macro envelopes before their contents]
+    MAC --> C[Source-preserving syntax views]
     C --> OWN[Source ownership and legacy-isolation gate]
     OWN --> D[Node dispatcher and formatter registry]
     CFG[vx-config resolved settings] -.-> D
@@ -265,16 +266,61 @@ The following names describe proposed interfaces, not existing APIs:
 | View | Information exposed |
 | --- | --- |
 | `SourceFileView` | Original source, tokens, line information, constrained gaps, and top-level structures. |
-| `FunctionDeclView` | Modifiers, name, generic parameters, parameter list, return type, and declaration boundaries. |
+| `FunctionDeclView` | Modifiers, name, the complete header view with all accepted clauses, and declaration or body boundaries. |
+| `FunctionHeaderView` | Complete ordered header, including topology, contract expressions, transfer constraints, and the confirmed body or declaration delimiter. |
+| `HeaderClauseView` | Clause kind, expression or constraint structure, source boundaries, comments, and constrained gaps. |
 | `ParameterListView` | Delimiters, ordered parameters, separators, and associated comments. |
 | `ParameterView` | Name, type, source range, and associated comments. |
 | `TypeView` | Supported type structure, source ranges, separators, and grammatical-gap constraints. |
+| `MacroInvocationView` | Invocation envelope, argument token trees, optional trailing block, and opaque ownership boundaries. |
+| `MacroDefinitionView` | Definition envelope, matcher and transcriber token trees, and opaque ownership boundaries. |
 | `OpaqueView` | A confidently bounded structure that remains unchanged. |
 
 The first version must cover the type spacing already handled by the signature formatter before claiming output compatibility.
 Opaque preservation is not an interchangeable implementation of that existing spacing policy.
 Extend shared views when adding support for another construct.
 Do not add a new recognizer inside each formatting rule.
+
+### Complete function-header coverage
+
+Type compatibility is necessary but does not establish declaration migration eligibility by itself.
+`FunctionDeclView` must expose a complete `FunctionHeaderView`, rather than only generics, parameters, and the return type.
+The current function parser also accepts topology, contract, and transfer-constraint clauses.
+See [`parse_function`](../../src/parser/decl.rs).
+
+| Header component | Required recognition and compatibility |
+| --- | --- |
+| Modifiers, name, and generics | Identify their source ranges, nesting, separators, and existing spacing policy. |
+| Parameter list | Identify parameters, nested types, comments, and separators. |
+| Optional `on` clause | Recognize the topology syntax after the parameter list and before the return arrow. |
+| Return type | Identify its complete range and distinguish it from following clauses. |
+| Repeated `requires` clauses | Recognize each precondition expression and its boundary without assuming expressions are single tokens. |
+| Repeated `ensures` clauses | Recognize each postcondition expression and preserve its position and order. |
+| Optional `where` clause | Recognize the accepted `Reachable<A, B>` constraints, including comma-separated constraints and their topology arguments. |
+| Header terminator | Confirm the actual body-opening delimiter or supported declaration terminator through the applicable declaration grammar. |
+
+Preserve the parser's accepted clause order and multiplicity.
+Inventory methods, trait declarations, and foreign declarations separately where their accepted headers differ.
+Do not assume every declaration form accepts all clauses listed for ordinary functions.
+
+Clause expressions contribute to source boundaries, width decisions, comments, and grammatical-gap constraints.
+They can contain nested expressions, shifts, macro token trees, and delimiters.
+Do not identify the function body by taking the next brace or semicolon without recognizing the complete header.
+Treat macro token trees inside expressions as atomic owned ranges under the macro policy below.
+
+The width calculation must include every recognized header clause and its required separators.
+Initially reproduce the current complete-header layout policy, without introducing new clause-wrapping styles during the refactor.
+Any new contract or constraint wrapping policy requires a separate behavior change and expected-output fixtures.
+Existing header-boundary bugs require separate correctness changes rather than reproducing a parsing error for compatibility.
+
+Migration eligibility requires recognized boundaries and compatible formatting for every applicable header component.
+If an `on`, `requires`, `ensures`, or `where` clause remains unrecognized, keep the whole header on the isolated legacy path.
+Prefer whole-declaration legacy ownership when a header-only handoff cannot establish the enclosing renderer state safely.
+Do not migrate the parameters and return type while leaving an unknown suffix for a separate scanner.
+
+Legacy fallback must still honor macro opacity, exclusions, and grammatical-gap constraints.
+If no isolated compatible path exists, preserve the enclosing declaration and record that fallback as an explicit behavior difference.
+If declaration boundaries cannot be established, preserve a larger enclosing structure or the entire file.
 
 ### Minimum initial type support and compatibility
 
@@ -304,7 +350,7 @@ Use three distinct ownership categories:
 - A legacy-owned declaration still uses the current formatting behavior through the isolated compatibility adapter.
 - An opaque structure preserves its original bytes exactly and is not described as output-compatible merely because it remains valid.
 
-If any type lacks compatible support, leave the entire declaration legacy-owned during the behavior-preserving migration.
+If any type or header clause lacks compatible support, leave the entire declaration legacy-owned during the behavior-preserving migration.
 Do not migrate its header while silently preserving formerly normalized child types as opaque text.
 The compatibility adapter must retain the current signature policy until the declaration qualifies for the new path.
 
@@ -324,6 +370,50 @@ In particular, the current parser converts a final expression into a return stat
 See `src/parser/decl.rs`.
 Using that transformed representation alone would lose a source distinction the formatter may need.
 A future shared parser interface must retain original syntax or provide a separate source-syntax result.
+
+### Macro token trees own their embedded language
+
+Vx grammar constraints cannot describe every whitespace requirement inside a macro token tree.
+An argument can contain an embedded language rather than a Vx expression or declaration.
+Matchers and transcribers also contain macro syntax and may generate another language.
+
+For example, `mlir!` reconstructs embedded text using token line and column positions.
+Changing `%x` to `% x` can preserve Vx token kinds and order while changing the reconstructed MLIR.
+See [`expand_mlir_macro` and macro transcription](../../src/parser/macro_expand.rs).
+Vx re-lexing, Vx adjacency checks, and successful parsing of the surrounding function do not establish embedded-language preservation.
+
+Default macro ownership is exact opaque preservation:
+
+- Preserve unrecognized invocation arguments as original token-tree bytes, including their delimiters, whitespace, comments, and line endings.
+- Include an invocation's optional trailing block, such as the block consumed by `mlir!`.
+- Preserve macro-definition matchers and transcribers as opaque ranges.
+- Initially preserve an entire macro definition rather than formatting its wrapper while guessing the meaning of its rules.
+- Treat recognizing a macro name as envelope recognition, not permission to format its contents.
+- Preserve `mlir!` under this default until an explicit embedded-language formatter and preservation contract are implemented.
+
+Use an opaque invocation envelope as the initial safe unit, including `name!` and all associated token trees.
+Retain the required adjacency between the invocation name and `!`.
+Do not move or reindent an opaque macro while assuming its positional relationships are irrelevant.
+Include necessary leading whitespace in the protected range when emitted token positions depend on it.
+If its position cannot be preserved within a new enclosing layout, preserve the enclosing statement or declaration instead.
+
+Recognition must establish macro envelopes before discovering ordinary declarations inside their source ranges.
+Do not dispatch a Vx function formatter on declaration-like text inside a macro argument, matcher, or transcriber.
+Do not treat strings, comments, or embedded-language punctuation inside those ranges as ordinary Vx structure boundaries.
+Inspect delimiters only as needed to establish the macro envelope without interpreting its contents as Vx grammar.
+Use parser-compatible token-tree boundaries and preserve a larger source region when those boundaries are uncertain.
+
+Do not expand macros to decide formatting ownership.
+Expansion can change source structure and requires knowledge that a standalone formatter should not need.
+An opaque macro can be a child of a recognized expression or header clause without exposing its internal language to Vx formatters.
+
+Macro opacity applies to legacy normalization, indentation, comment handling, and final cleanup too.
+A legacy compatibility path is eligible only when it can preserve those ranges and their positional constraints.
+If current formatting changes a macro's embedded text, correcting that behavior requires an explicit correctness change rather than claimed byte-for-byte parity.
+No migration may use baseline compatibility as permission to rewrite opaque macro contents.
+
+A future macro-specific formatter would need explicit registration, language-aware recognition, and tests for its own semantics and positional requirements.
+Ordinary Vx formatters must not become the default for macros whose embedded language is unknown.
 
 ### Dispatch by syntax kind
 
@@ -498,12 +588,18 @@ The same principle applies to function calls when their formatting enters scope 
 | Step | Scope | Completion evidence |
 | --- | --- | --- |
 | 0. Establish a baseline | Run existing configuration, formatter, CLI, and framework tests when authorized. | Record actual results and required mutation checks; keep existing failures distinct. |
-| 1. Introduce source views | Recognize declarations, minimum compatible type forms, and grammatical gaps from original source. | Views reconstruct original bytes, identify nested separators, and record adjacency constraints; unsupported declarations remain legacy-owned. |
-| 2. Gate legacy isolation | Introduce the ownership map, bounded legacy edits, renderer-state handoffs, and provenance-aware cleanup before enabling new dispatch. | Protected spans survive every pass; enclosing indentation and delimiter state remain correct across mixed spans; final checks cover adjacency and exact copies. |
-| 3. Add hierarchical dispatch | Activate syntax-owned function formatting only after Step 2 passes; carry explicit width budgets. | Eligible declarations preserve existing output, including normalized type spacing; no source span is processed by both paths. |
+| 1. Introduce source views | Recognize macro envelopes, complete headers, minimum compatible types, and grammatical gaps from original source. | Views reconstruct original bytes and identify all header clauses; macro contents remain opaque and unsupported headers remain legacy-owned. |
+| 2. Gate legacy isolation | Introduce ownership, bounded legacy edits, renderer-state handoffs, and provenance-aware cleanup before new dispatch. | Exclusions and opaque macro spans survive every pass; enclosing state remains correct and final checks cover adjacency and exact copies. |
+| 3. Add hierarchical dispatch | Activate syntax-owned formatting only after Step 2 passes and every header component qualifies. | Eligible declarations preserve compatible header and type layout; opaque macro children retain bytes and position constraints. |
 | 4. Compose child layouts | Delegate parameter lists and the minimum compatible type forms; keep incomplete declarations legacy-owned. | Nested-layout fixtures stabilize in one invocation without substituting opaque preservation for current normalization. |
 | 5. Migrate legacy policies | Replace isolated block and spacing policies with structure-owned formatters in small changes. | Each migrated policy passes final preservation, adjacency, exclusion, and output checks. |
 | 6. Consolidate | Remove superseded token-position dispatch, compatibility adapters, and scanners after their coverage migrates. | One ownership model remains; no supported structure is formatted twice. |
+
+Step 1 must recognize macro envelopes before scanning their contents for ordinary declarations.
+It must also inventory complete function headers, including `on`, `requires`, `ensures`, and `where` clauses.
+Step 2 must protect opaque macro arguments, trailing blocks, matchers, and transcribers from every legacy pass and cleanup operation.
+Step 3 may activate only when the complete header qualifies, including its clause boundaries and macro children.
+Compatible parameter types alone do not satisfy that activation gate.
 
 Do not replace the entire formatter in one change.
 Do not format the repository merely to demonstrate the migration.
@@ -531,6 +627,14 @@ Required checks include:
 - Preserved adjacency across child layouts, legacy handoffs, opaque boundaries, and final cleanup.
 - Type-spacing parity, including `Tensor< f32, [2, 2] >` becoming `Tensor<f32, [2, 2]>` on the compatible path.
 - Whole-declaration legacy fallback when a child type lacks compatible formatting support.
+- Complete-header fixtures for `on`, repeated `requires`, repeated `ensures`, and `where` constraints, including accepted combinations and order.
+- Clause expressions with nested delimiters, shifts, comments, and opaque macro children, without mistaking their delimiters for the function body.
+- Whole-header or whole-declaration legacy fallback whenever a clause lacks recognized boundaries or compatible formatting.
+- Width and adjacency checks covering clauses and their boundaries, not only parameters and return types.
+- Exact macro argument, trailing-block, matcher, and transcriber preservation through dispatch, legacy passes, rendering, and cleanup.
+- No Vx declaration discovery inside macro token trees, including declaration-like text and nested macro definitions.
+- Preserved macro position constraints when surrounding syntax changes indentation or line wrapping; enclosing-source fallback when those constraints cannot be retained.
+- Embedded MLIR text retaining `%x` and its original gaps even when `% x` would have the same Vx lexer tokens.
 - Nested functions or methods retaining enclosing indentation across protected spans and resumed legacy rendering.
 - Correct delimiter stacks and multiline-bracket flags when preserved spans contain opening or closing delimiters.
 - Rejection of legacy normalization or cleanup edits that cross ownership boundaries.
@@ -547,6 +651,9 @@ For adjacency checks, deliberately separate `>>` or `name!` without changing the
 For compatibility checks, replace normalized type layout with exact opaque copying and require the expected-output assertion to fail.
 For isolation checks, let normalization or cleanup touch a protected span and require its final byte-preservation assertion to fail.
 Break handoff-state updates separately and require the enclosing-indentation or delimiter-state assertion to fail.
+For header coverage, remove recognition of one accepted clause and require the eligibility or whole-header fallback assertion to fail.
+For macro opacity, insert a space between `%` and its name and require exact-byte preservation to fail despite unchanged Vx tokens.
+Allow declaration discovery inside a matcher or transcriber and require the opaque-ownership assertion to fail.
 Test execution remains deferred until the user lifts the existing no-tests instruction.
 
 ## Costs and remaining review decisions
@@ -561,6 +668,8 @@ Review these decisions before implementation:
 1. Is incremental source-preserving syntax recognition the preferred path over a complete syntax tree immediately?
 1. Which existing parser helpers can be reused without source transformations or semantic analysis?
 1. Does the minimum type coverage preserve all existing signature normalization, with whole-declaration legacy fallback for remaining forms?
+1. Does eligibility cover the complete accepted header, with whole-header or whole-declaration fallback for unsupported clauses?
+1. Are macro invocation envelopes, trailing blocks, matchers, and transcribers opaque by default before ordinary declaration recognition?
 1. Is one owning formatter per syntax kind the intended extension model?
 1. Can legacy isolation, renderer-state transitions, and provenance-aware cleanup satisfy Step 2 before any new dispatch is activated?
 1. Which shared parser interfaces should supply grammatical-gap constraints and verify syntax-role preservation?
