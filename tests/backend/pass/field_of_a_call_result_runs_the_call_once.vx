@@ -1,0 +1,46 @@
+//===- field_of_a_call_result_runs_the_call_once.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A field of a call result runs the call once. The first read borrows an `i64` field,
+// `&make_holder(p).n`. The second reads through a pointer field, `make_holder(p).p.x`.
+// Each `make` in the trace is one call.
+//
+// EXPECT: start, make, 5, make, 7, done
+
+struct Inner {
+  x : i64,
+}
+
+struct Holder {
+  n : i64,
+  p : *mut Inner,
+}
+
+fn make_holder(p : *mut Inner) -> Holder {
+  print!("make, ");
+  return Holder {
+    n: 5, p: p
+  };
+}
+
+fn read(r : &i64) -> i64 {
+  return *r;
+}
+
+fn main() -> i32 {
+  let mut inner = Inner {
+    x: 7
+  };
+  let p = (&mut inner) as *mut Inner;
+  print!("start, ");
+  print(read(&make_holder(p).n));
+  print!(", ");
+  let x = unsafe { make_holder(p).p.x };
+  print(x);
+  print!(", done");
+  return 0;
+}

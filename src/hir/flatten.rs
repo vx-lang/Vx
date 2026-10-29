@@ -1302,32 +1302,7 @@ impl<'r> Lowerer<'r> {
             // nested-aggregate field (`VecMap`'s `f : Closure1`) the whole `!llvm.struct` value (#242).
             Expr::MemberAccess(m) => {
                 let (base_reg, gid) = self.lower_agg_base(&m.base)?;
-                let field = self
-                    .layout_of(&gid)
-                    .ok_or(Decline::TypeNotModelled {
-                        what: "a struct with no modelled layout",
-                    })?
-                    .fields
-                    .iter()
-                    .find(|f| f.name.as_ref() == m.member.as_ref())
-                    .ok_or(Decline::TypeNotModelled {
-                        what: "a field not in the modelled layout",
-                    })?;
-                let offset = field.offset as u64;
-                let fty = field.ty.clone();
-                let result_ty = match fty {
-                    FieldTy::Scalar(e) => LoweredTy::Scalar(e),
-                    FieldTy::Opaque => LoweredTy::Ptr,
-                    FieldTy::Nominal(nested_gid) => LoweredTy::Aggregate(nested_gid),
-                    FieldTy::Vector(elem, lanes) => LoweredTy::Vector { elem, lanes },
-                    // The layout holds the element and rank; the shape is in the declaration.
-                    FieldTy::Tensor(..) => self.declared_field_ty(&gid, m.member.as_ref()).ok_or(
-                        Decline::TypeNotModelled {
-                            what: "a tensor field whose declared type is not modelled",
-                        },
-                    )?,
-                };
-                Ok(self.emit_typed(Opcode::FieldLoad, base_reg, Register(0), result_ty, offset))
+                self.load_field(base_reg, &gid, m.member.as_ref())
             }
             // Indexing `base[index]`. A *tensor* base rank-reduces along its outermost dimension (a
             // remaining shape yields a row/sub-view tensor, an empty one the scalar element; chained
@@ -1681,26 +1656,35 @@ impl<'r> Lowerer<'r> {
                         });
                     }
                 }
-                if let Expr::MemberAccess(m) = &*b.expr {
-                    // `&outer.inner`: the address of a by-value nested-aggregate field — a method
-                    // receiver (`self.iter.next()` -> `&self.iter`) or a nested `&o.inner`.
-                    // `lower_agg_base` GEPs to the field (a `FieldAddr`); the pointer is the borrow. (#242)
-                    if let Ok((reg, _)) = self.lower_agg_base(&b.expr) {
+                // `&s.f`: `s` is lowered once, and the field's type picks what the borrow is.
+                // Lowering `s` a second time would run a call in it twice.
+                let v = if let Expr::MemberAccess(m) = &*b.expr {
+                    let (parent_reg, parent_gid) = self.lower_agg_base(&m.base)?;
+                    let (offset, fty) = self.field_of(&parent_gid, m.member.as_ref())?;
+                    // The address of a by-value nested-aggregate field (a method receiver
+                    // `self.iter.next()` -> `&self.iter`), or of a scalar field (a reference return
+                    // `probe(m : &Map) -> &i32 { return &m.slot; }`). The borrow checker already
+                    // proved that the field outlives the borrow.
+                    let addr_gid = match &fty {
+                        FieldTy::Nominal(gid) => Some(*gid),
+                        FieldTy::Scalar(e) => Some(scalar_gid(e)),
+                        _ => None,
+                    };
+                    if let Some(gid) = addr_gid {
                         return Ok(Val {
-                            reg,
+                            reg: self.emit_field_addr(parent_reg, gid, offset),
                             ty: LoweredTy::Ptr,
                         });
                     }
-                    // `&param.scalar` — the address of a *scalar* field (a reference return
-                    // `probe(m : &Map) -> &i32 { return &m.slot; }`, #275 M3b). `lower_agg_base` only
-                    // addresses nested-aggregate fields; a scalar field GEPs to its element pointer here.
-                    // Safety is the borrow checker's (return-provenance, #243): the flat path only emits
-                    // the address the frontend already proved outlives the callee.
-                    if let Some(val) = self.lower_scalar_field_addr(m) {
-                        return Ok(val);
+                    let v = self.load_field(parent_reg, &parent_gid, m.member.as_ref())?;
+                    // A pointer to an aggregate is the borrow itself.
+                    if matches!(v.ty, LoweredTy::Ptr) && self.agg_base_gid(&b.expr).is_ok() {
+                        return Ok(v);
                     }
-                }
-                let v = self.lower_expr(&b.expr)?;
+                    v
+                } else {
+                    self.lower_expr(&b.expr)?
+                };
                 match v.ty {
                     LoweredTy::Tensor { .. } => Ok(v),
                     // An aggregate: a construction already sits in a slot, whose address this is.
@@ -2043,14 +2027,7 @@ impl<'r> Lowerer<'r> {
         // itself (loading `p`, e.g. `self.vec`, a `*const Vec<T>` field, to an `!llvm.ptr`) plus the
         // pointee aggregate's layout GID, so the following field op GEPs through it. (#242)
         if let Expr::Dereference(d) = base {
-            let base_ty = self.infer_ast_type(base).ok_or(Decline::TypeNotModelled {
-                what: "a base whose type cannot be inferred",
-            })?; // the pointee (Vec<T>)
-            let gid = self
-                .agg_gid_synth(&base_ty)
-                .ok_or(Decline::TypeNotModelled {
-                    what: "an aggregate with no GID",
-                })?;
+            let gid = self.agg_base_gid(base)?; // the pointee (Vec<T>)
             let v = self.lower_expr(&d.expr)?; // lower the pointer, not the deref
             return matches!(v.ty, LoweredTy::Ptr)
                 .then_some((v.reg, gid))
@@ -2058,48 +2035,30 @@ impl<'r> Lowerer<'r> {
                     what: "an aggregate base that is not a pointer",
                 });
         }
-        // A by-value nested-aggregate field as a base (`outer.inner.a`, or `&self.iter` as a method
-        // receiver): recurse to the enclosing aggregate's pointer, then GEP to the nested field via a
-        // `FieldAddr`. The nested field must itself be a modelled aggregate. (#242)
+        // A field as a base. A by-value nested-aggregate field (`outer.inner.a`) is addressed with a
+        // `FieldAddr`, and a pointer field (`make(p).p.x`) is loaded. `m.base` is lowered only here:
+        // lowering `base` again would run a call in it twice.
         if let Expr::MemberAccess(m) = base {
-            if let Ok((parent_reg, parent_gid)) = self.lower_agg_base(&m.base) {
-                let field = self
-                    .layout_of(&parent_gid)
-                    .ok_or(Decline::TypeNotModelled {
-                        what: "a nested aggregate with no modelled layout",
-                    })?
-                    .fields
-                    .iter()
-                    .find(|f| f.name.as_ref() == m.member.as_ref())
-                    .ok_or(Decline::TypeNotModelled {
-                        what: "a field not in the modelled layout",
-                    })?;
-                if let FieldTy::Nominal(nested_gid) = field.ty {
-                    let offset = field.offset as u64;
-                    let type_idx = TypeIdx(self.types.len() as u32);
-                    self.types.push(nested_gid);
-                    let reg = Register(self.code.len() as u32);
-                    self.code.push(HirInstruction::new(
-                        Opcode::FieldAddr,
-                        parent_reg,
-                        Register(0),
-                        type_idx,
-                        offset,
-                    ));
-                    return Ok((reg, nested_gid));
-                }
+            let (parent_reg, parent_gid) = self.lower_agg_base(&m.base)?;
+            let (offset, fty) = self.field_of(&parent_gid, m.member.as_ref())?;
+            if let FieldTy::Nominal(nested_gid) = fty {
+                return Ok((
+                    self.emit_field_addr(parent_reg, nested_gid, offset),
+                    nested_gid,
+                ));
             }
+            let gid = self.agg_base_gid(base)?;
+            let v = self.load_field(parent_reg, &parent_gid, m.member.as_ref())?;
+            return match v.ty {
+                LoweredTy::Ptr => Ok((v.reg, gid)),
+                _ => Err(Decline::TypeNotModelled {
+                    what: "an aggregate base that is not a pointer",
+                }),
+            };
         }
         // A pointer to an aggregate: the base lowers to a pointer value; its pointee layout GID comes
         // from the base's AST type (the layout the frozen registry keyed under the base nominal).
-        let base_ty = self.infer_ast_type(base).ok_or(Decline::TypeNotModelled {
-            what: "a base whose type cannot be inferred",
-        })?;
-        let gid = self
-            .agg_gid_synth(&base_ty)
-            .ok_or(Decline::TypeNotModelled {
-                what: "an aggregate with no GID",
-            })?;
+        let gid = self.agg_base_gid(base)?;
         let v = self.lower_expr(base)?;
         match v.ty {
             LoweredTy::Ptr => Ok((v.reg, gid)),
@@ -2120,39 +2079,68 @@ impl<'r> Lowerer<'r> {
         }
     }
 
-    /// The address of a **scalar** field as an element pointer (`&param.slot`): GEP the parent aggregate
-    /// (resolved by `lower_agg_base`, so a param `&Map`, a local slot, or a nested aggregate all work) to
-    /// the field and yield a `!llvm.ptr`. The result type GID is the field's *scalar* GID so codegen
-    /// tracks it as a plain pointer (not an aggregate slot). `None` when the parent doesn't resolve or the
-    /// field is not scalar (a nested-aggregate field is the `lower_agg_base` path instead). (#275 M3b)
-    fn lower_scalar_field_addr(&mut self, m: &crate::syntax::MemberAccessExpr) -> Option<Val> {
-        let (parent_reg, parent_gid) = self.lower_agg_base(&m.base).ok()?;
-        // Snapshot the field's offset + element so the immutable registry borrow ends before we emit.
-        let (offset, elem) = {
-            let field = self
-                .layout_of(&parent_gid)?
-                .fields
-                .iter()
-                .find(|f| f.name.as_ref() == m.member.as_ref())?;
-            match &field.ty {
-                FieldTy::Scalar(e) => (field.offset as u64, e.clone()),
-                _ => return None,
+    /// The layout of the aggregate that `base` is, or points to, from its AST type.
+    fn agg_base_gid(&mut self, base: &Expr) -> Lowered<TypeId> {
+        let base_ty = self.infer_ast_type(base).ok_or(Decline::TypeNotModelled {
+            what: "a base whose type cannot be inferred",
+        })?;
+        self.agg_gid_synth(&base_ty)
+            .ok_or(Decline::TypeNotModelled {
+                what: "an aggregate with no GID",
+            })
+    }
+
+    /// The byte offset and the type of the field `member` in the aggregate whose layout is `gid`.
+    fn field_of(&self, gid: &TypeId, member: &str) -> Lowered<(u64, FieldTy)> {
+        let field = self
+            .layout_of(gid)
+            .ok_or(Decline::TypeNotModelled {
+                what: "a struct with no modelled layout",
+            })?
+            .fields
+            .iter()
+            .find(|f| f.name.as_ref() == member)
+            .ok_or(Decline::TypeNotModelled {
+                what: "a field not in the modelled layout",
+            })?;
+        Ok((field.offset as u64, field.ty.clone()))
+    }
+
+    /// Read the field `member` of the aggregate that `base_reg` points to. A scalar field gives its
+    /// element, a pointer field an opaque `!llvm.ptr`, and a by-value nested-aggregate field the
+    /// whole `!llvm.struct` value.
+    fn load_field(&mut self, base_reg: Register, gid: &TypeId, member: &str) -> Lowered<Val> {
+        let (offset, fty) = self.field_of(gid, member)?;
+        let result_ty = match fty {
+            FieldTy::Scalar(e) => LoweredTy::Scalar(e),
+            FieldTy::Opaque => LoweredTy::Ptr,
+            FieldTy::Nominal(nested_gid) => LoweredTy::Aggregate(nested_gid),
+            FieldTy::Vector(elem, lanes) => LoweredTy::Vector { elem, lanes },
+            // The layout holds the element and rank; the shape is in the declaration.
+            FieldTy::Tensor(..) => {
+                self.declared_field_ty(gid, member)
+                    .ok_or(Decline::TypeNotModelled {
+                        what: "a tensor field whose declared type is not modelled",
+                    })?
             }
         };
+        Ok(self.emit_typed(Opcode::FieldLoad, base_reg, Register(0), result_ty, offset))
+    }
+
+    /// A `FieldAddr`: the address `offset` bytes into the aggregate that `base_reg` points to.
+    /// `gid` is the type of the field, which codegen uses to track the pointer.
+    fn emit_field_addr(&mut self, base_reg: Register, gid: TypeId, offset: u64) -> Register {
         let type_idx = TypeIdx(self.types.len() as u32);
-        self.types.push(scalar_gid(&elem));
+        self.types.push(gid);
         let reg = Register(self.code.len() as u32);
         self.code.push(HirInstruction::new(
             Opcode::FieldAddr,
-            parent_reg,
+            base_reg,
             Register(0),
             type_idx,
             offset,
         ));
-        Some(Val {
-            reg,
-            ty: LoweredTy::Ptr,
-        })
+        reg
     }
 
     /// Lower an `if`/`else` statement to basic blocks + branches (memory mode only, so mutated or
