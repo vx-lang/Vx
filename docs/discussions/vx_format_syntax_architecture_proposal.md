@@ -61,6 +61,10 @@ Duplicate names and competing proposals cause assertions.
 The plan checks token order and complete delimiter pairs.
 The renderer checks for accidental lexical token merging.
 
+Lexical equality alone does not protect whitespace-sensitive grammar.
+The parser recognizes shifts from adjacent angle tokens and macro invocations from an adjacent identifier and `!`.
+The current framework does not explicitly validate those adjacency relationships.
+
 However, one accepted replacement owns its entire range.
 Other rules do not run independently inside that range.
 The signature rule must recognize declarations and format their internal spacing itself.
@@ -175,7 +179,8 @@ The views should evolve into a coherent syntax representation rather than unrela
 flowchart TD
     A[Original source bytes] --> B[Lexer retaining tokens and whitespace]
     B --> C[Source-preserving syntax views]
-    C --> D[Node dispatcher and formatter registry]
+    C --> OWN[Source ownership and legacy-isolation gate]
+    OWN --> D[Node dispatcher and formatter registry]
     CFG[vx-config resolved settings] -.-> D
     C --> EX[Comments, exclusions, and opaque source ranges]
     EX -.-> D
@@ -187,10 +192,14 @@ flowchart TD
     O --> L
     T -->|Type layout| P
     P -->|Parameter layout| F
-    C --> RAW[Preserved source for excluded or unsupported structures]
+    OWN --> RAW[Preserved source for excluded or unsupported structures]
     RAW --> L
+    OWN --> LEG[Context-aware legacy compatibility adapter]
+    LEG --> GUARD[Reject edits touching protected or newly owned spans]
+    GUARD --> L
     L --> R[Shared renderer]
-    R --> V[Final token, comment, and exclusion checks]
+    R --> CLEAN[Cleanup limited by output provenance]
+    CLEAN --> V[Final token, adjacency, comment, and exclusion checks]
     V --> CLI[CLI write mode or check mode]
 ```
 
@@ -215,23 +224,97 @@ A lossless representation retains that data even when a formatter chooses a diff
 Reconstructing an untouched syntax view must reproduce its original bytes exactly.
 This requirement includes excluded regions and opaque structures.
 
+### Grammatical adjacency is part of syntax
+
+Preserve both token identity and the whitespace relationships required by the grammar.
+Two outputs can have identical token kinds, spelling, and order while parsing differently:
+
+| Source relationship | Unsafe formatting | Why lexical equality is insufficient |
+| --- | --- | --- |
+| `value >> count` | `value > > count` | The lexer supplies two angle tokens in both cases; the parser recognizes a shift only when they touch. |
+| `value << count` | `value < < count` | The parser also requires adjacency for left shifts. |
+| `name!(value)` | `name !(value)` | Macro recognition requires the identifier and `!` to touch on the same line. |
+
+Shift assignments have the same adjacency requirement.
+See [`shift_at`, `shift_assign_at`, and macro recognition in the expression parser](../../src/parser/expr.rs).
+
+Syntax views must describe constrained gaps between stable original token identifiers.
+Use explicit relationships such as `MustTouch`, `MustSeparate`, and `FlexibleGap`.
+`MustTouch` permits no space, newline, or intervening comment.
+`MustSeparate` prevents a join that changes lexical or grammatical interpretation.
+Only a gap established as flexible by syntax recognition may change freely.
+Required newlines after line comments remain constraints too.
+
+Determine these relationships from grammatical roles, not punctuation kinds alone.
+Adjacent closing generic delimiters must not automatically be classified as a shift.
+Unknown or invalid syntax retains its original gaps rather than receiving guessed constraints.
+The formatter must not turn invalid `name !` or `> >` syntax into a different valid construct silently.
+
+Carry constraints into composed layouts and validate them after rendering and final cleanup.
+Validation must include the joins between child layouts, preserved ranges, and legacy output.
+Parent ownership should keep a constrained token pair together wherever possible.
+Source positions describe the original gap; validate output adjacency using newly rendered positions.
+
+Token preservation, grammatical-gap preservation, and supported syntax round-trips are separate checks.
+A successful re-lex does not replace adjacency validation.
+
 ### Initial syntax views
 
 The following names describe proposed interfaces, not existing APIs:
 
 | View | Information exposed |
 | --- | --- |
-| `SourceFileView` | Original source, tokens, line information, and top-level structures. |
+| `SourceFileView` | Original source, tokens, line information, constrained gaps, and top-level structures. |
 | `FunctionDeclView` | Modifiers, name, generic parameters, parameter list, return type, and declaration boundaries. |
 | `ParameterListView` | Delimiters, ordered parameters, separators, and associated comments. |
 | `ParameterView` | Name, type, source range, and associated comments. |
-| `TypeView` | Structured supported types or an opaque range preserving the original text. |
+| `TypeView` | Supported type structure, source ranges, separators, and grammatical-gap constraints. |
 | `OpaqueView` | A confidently bounded structure that remains unchanged. |
 
-The first version can leave complex types opaque.
-It should still distinguish top-level parameter separators from commas inside those types.
+The first version must cover the type spacing already handled by the signature formatter before claiming output compatibility.
+Opaque preservation is not an interchangeable implementation of that existing spacing policy.
 Extend shared views when adding support for another construct.
 Do not add a new recognizer inside each formatting rule.
+
+### Minimum initial type support and compatibility
+
+The current signature formatter normalizes whitespace inside parameter and return types.
+For example, it turns `Tensor< f32, [2, 2] >` into `Tensor<f32, [2, 2]>`.
+Copying that type as an exact opaque span would change existing output during an architectural refactor.
+
+Before migrating a declaration, provide the following syntax and spacing support for every applicable type in that declaration:
+
+| Type form | Minimum compatibility requirement |
+| --- | --- |
+| Primitive and named types | Retain spelling and apply the current boundary spacing. |
+| Qualified paths and generic applications | Recognize path separators, angle delimiters, nested arguments, and comma gaps. |
+| Tensor and array-shaped types | Recognize nested square brackets and dimensions without confusing their commas with parameter separators. |
+| Tuple and parenthesized types | Recognize nested parentheses, element separators, and spacing after the parameter's colon. |
+| Pointer and reference types | Preserve operator spelling, qualifiers, and constrained gaps between reference tokens. |
+| Function types, where accepted | Distinguish their parameter list from the enclosing declaration and retain current arrow spacing. |
+| Expressions within types, where accepted | Preserve their syntax and adjacency, including shifts and macro invocation boundaries. |
+
+Inventory actual accepted forms using the parser, current formatter, and baseline fixtures.
+This table is a migration minimum, not permission to claim unsupported grammar coverage.
+Behavioral parity must cover parameter types, return types, and generic declarations that the current rule formats.
+
+Use three distinct ownership categories:
+
+- A syntax-owned declaration has sufficient recognized structure to reproduce the baseline layout through composed formatters.
+- A legacy-owned declaration still uses the current formatting behavior through the isolated compatibility adapter.
+- An opaque structure preserves its original bytes exactly and is not described as output-compatible merely because it remains valid.
+
+If any type lacks compatible support, leave the entire declaration legacy-owned during the behavior-preserving migration.
+Do not migrate its header while silently preserving formerly normalized child types as opaque text.
+The compatibility adapter must retain the current signature policy until the declaration qualifies for the new path.
+
+Truly unsupported syntax can still use `OpaqueView` as an explicitly recorded fallback.
+If this changes previously normalized output, document and review that behavior change separately.
+Do not count it as a successful behavior-preserving migration.
+
+Previously unsafe adjacency changes are another explicit exception to baseline parity.
+Correcting them is a correctness change with dedicated fixtures and a separate implementation change.
+Do not preserve a known parsing error merely to reproduce the old formatter's bytes.
 
 Reuse the existing lexer.
 Evaluate reusable parser helpers before writing recognition code.
@@ -302,6 +385,7 @@ Parent and child layouts should flatten into one validated output plan.
 
 Each token, comment, and retained source range must have one owner.
 Source tokens must not be duplicated, removed, reordered, or merged by a whitespace decision.
+Grammatical adjacency constraints must survive layout selection, rendering, and cleanup even when token identity remains unchanged.
 Do not add trailing parameter commas: the current Vx grammar does not accept them.
 
 ### Comments and formatting exclusions
@@ -333,6 +417,66 @@ The CLI policy needs a separate review decision.
 One recommendation is that strict check mode must not report complete success when parsing coverage is incomplete.
 That policy would change observable behavior and must not enter the initial behavior-preserving refactor silently.
 
+### Legacy isolation before activating new dispatch
+
+Legacy isolation is a prerequisite for hierarchical formatting, not a later cleanup task.
+The existing normalization functions and final cleanup cannot run unchanged across the complete stream during mixed ownership.
+Masking spans only after those passes would already be too late.
+
+Build an ownership map over immutable original source ranges before invoking any mutating pass.
+Distinguish syntax-owned, legacy-owned, excluded, and opaque ranges.
+Excluded and opaque ranges are exact source copies.
+Syntax-owned ranges can be rendered only by their owning structure formatter.
+Each intervening whitespace gap also has one owner and retains its grammatical constraints.
+
+The compatibility adapter may inspect the original stream for context, including protected spans.
+It may propose changes only inside legacy-owned ranges.
+Every legacy transformation must expose its affected source range before acceptance.
+Reject transformations that cross a boundary or touch syntax-owned, excluded, or opaque source.
+Do not run global normalization first and attempt to restore protected text afterward.
+
+If a pass cannot expose bounded edits, it cannot run over a mixed-ownership structure.
+Keep the entire enclosing structure on one formatting path, or preserve it when exclusions prevent safe legacy processing.
+Do not enable new dispatch for that structure until the adapter can establish a safe boundary.
+
+#### Renderer state at a protected span
+
+Skipping bytes is not sufficient because the legacy renderer maintains enclosing state.
+Its state includes block indentation, delimiter stacks, multiline-bracket indentation flags, the current column, and line-start status.
+Precomputed exclusion boundaries also remain active across handoffs.
+
+Use this handoff contract:
+
+1. Enter a child or preserved span with an explicit snapshot of the enclosing rendering state.
+1. Emit its composed layout or exact source bytes once.
+1. Update the output column and line-start status from the text actually emitted.
+1. Apply the span's structural transition once, using original syntax and retained layout context.
+1. Resume legacy formatting at the next original token with the resulting state.
+
+For a complete balanced child, the enclosing delimiter stack and block indentation remain unchanged.
+The child's internal delimiters must not be processed again by the outer renderer.
+For a migrated function header, the body-opening brace remains outside the header and is processed once by its owning path.
+
+A raw exclusion can cross a delimiter boundary and therefore have a nonzero structural transition.
+Preserve its bytes while updating the full ordered delimiter state and applicable bracket-layout flags.
+A net brace-depth count alone is insufficient.
+If that transition cannot be established safely, enlarge the preserved boundary to an enclosing structure or the whole file.
+
+Do not restart the legacy renderer on each fragment with indentation zero.
+Do not reformat a protected span to discover its exit state.
+Do not feed newly rendered text back through global normalization.
+
+#### Final cleanup and provenance
+
+Carry source ownership into the emitted output as provenance for each output segment.
+Cleanup may change only writable whitespace with legacy ownership and no grammatical-gap restriction.
+It must skip preserved bytes, string contents, comments with unchanged-text contracts, and syntax-owned output.
+Source offsets alone cannot identify output segments after line wrapping changes their lengths.
+
+Run delivered-output checks after cleanup.
+They must verify token identity, grammatical adjacency, comment policy, and exact excluded or opaque bytes.
+The legacy adapter is not ready until these checks cover nested structures and boundary joins.
+
 ## How adding a rule would work
 
 For a new array-layout rule:
@@ -354,11 +498,12 @@ The same principle applies to function calls when their formatting enters scope 
 | Step | Scope | Completion evidence |
 | --- | --- | --- |
 | 0. Establish a baseline | Run existing configuration, formatter, CLI, and framework tests when authorized. | Record actual results and required mutation checks; keep existing failures distinct. |
-| 1. Introduce source views | Recognize function declarations from original source without changing output. | Views reconstruct original bytes and identify nested parameter boundaries correctly. |
-| 2. Add hierarchical dispatch | Select the function formatter by syntax kind and carry explicit width budgets. | Existing signature outputs and CLI behavior remain unchanged. |
-| 3. Compose child layouts | Delegate parameter lists and supported types; preserve unsupported types as opaque ranges. | Nested-layout fixtures stabilize in one formatting invocation. |
-| 4. Migrate legacy passes | Move block and spacing policies under structure ownership in small changes. | Each migrated policy passes preservation, exclusion, and output checks. |
-| 5. Consolidate | Remove superseded token-position dispatch and scanners. | One ownership model remains; no supported structure is formatted twice. |
+| 1. Introduce source views | Recognize declarations, minimum compatible type forms, and grammatical gaps from original source. | Views reconstruct original bytes, identify nested separators, and record adjacency constraints; unsupported declarations remain legacy-owned. |
+| 2. Gate legacy isolation | Introduce the ownership map, bounded legacy edits, renderer-state handoffs, and provenance-aware cleanup before enabling new dispatch. | Protected spans survive every pass; enclosing indentation and delimiter state remain correct across mixed spans; final checks cover adjacency and exact copies. |
+| 3. Add hierarchical dispatch | Activate syntax-owned function formatting only after Step 2 passes; carry explicit width budgets. | Eligible declarations preserve existing output, including normalized type spacing; no source span is processed by both paths. |
+| 4. Compose child layouts | Delegate parameter lists and the minimum compatible type forms; keep incomplete declarations legacy-owned. | Nested-layout fixtures stabilize in one invocation without substituting opaque preservation for current normalization. |
+| 5. Migrate legacy policies | Replace isolated block and spacing policies with structure-owned formatters in small changes. | Each migrated policy passes final preservation, adjacency, exclusion, and output checks. |
+| 6. Consolidate | Remove superseded token-position dispatch, compatibility adapters, and scanners after their coverage migrates. | One ownership model remains; no supported structure is formatted twice. |
 
 Do not replace the entire formatter in one change.
 Do not format the repository merely to demonstrate the migration.
@@ -368,6 +513,7 @@ During the transition, partition source ownership explicitly.
 A supported syntax span belongs to its new formatter.
 A legacy fallback may format an independently owned region, but must not rewrite a span already handled by the new path.
 Protected and opaque regions retain their original bytes through both paths.
+Step 2 is a blocking gate for activation, including normalization and final cleanup, rather than a promise of later isolation.
 
 ## Validation requirements
 
@@ -379,6 +525,15 @@ Required checks include:
 - Expected behavior for comments before, between, and after parameters.
 - Exact excluded-byte preservation through all passes and final cleanup.
 - Original token order and spelling, including lexical boundaries and string contents.
+- Required adjacency for shifts, shift assignments, and `name!`, including pairs with unchanged lexer tokens after whitespace changes.
+- Rejection of inserted spaces or newlines in `MustTouch` gaps and unsafe joins in `MustSeparate` gaps.
+- No silent repair of invalid separated shifts or macro names, and no shift classification based only on generic closing delimiters.
+- Preserved adjacency across child layouts, legacy handoffs, opaque boundaries, and final cleanup.
+- Type-spacing parity, including `Tensor< f32, [2, 2] >` becoming `Tensor<f32, [2, 2]>` on the compatible path.
+- Whole-declaration legacy fallback when a child type lacks compatible formatting support.
+- Nested functions or methods retaining enclosing indentation across protected spans and resumed legacy rendering.
+- Correct delimiter stacks and multiline-bracket flags when preserved spans contain opening or closing delimiters.
+- Rejection of legacy normalization or cleanup edits that cross ownership boundaries.
 - Stable output after one formatting invocation.
 - Equivalent layout in write mode and non-writing check mode.
 - Configuration defaults, overrides, and printed defaults remaining compatible.
@@ -386,7 +541,12 @@ Required checks include:
 - Explicit handling of malformed delimiters and incomplete parsing coverage.
 
 Reparse supported formatted fixtures to establish that formatting preserves valid source.
+Compare their syntax roles, including operator and macro-call classification, rather than checking parser success alone.
 Mutation-check the important assertions individually, as repository guidance requires.
+For adjacency checks, deliberately separate `>>` or `name!` without changing their lexer-token sequence.
+For compatibility checks, replace normalized type layout with exact opaque copying and require the expected-output assertion to fail.
+For isolation checks, let normalization or cleanup touch a protected span and require its final byte-preservation assertion to fail.
+Break handoff-state updates separately and require the enclosing-indentation or delimiter-state assertion to fail.
 Test execution remains deferred until the user lifts the existing no-tests instruction.
 
 ## Costs and remaining review decisions
@@ -400,8 +560,10 @@ Review these decisions before implementation:
 
 1. Is incremental source-preserving syntax recognition the preferred path over a complete syntax tree immediately?
 1. Which existing parser helpers can be reused without source transformations or semantic analysis?
-1. Should the initial type view remain opaque except for structural boundaries?
+1. Does the minimum type coverage preserve all existing signature normalization, with whole-declaration legacy fallback for remaining forms?
 1. Is one owning formatter per syntax kind the intended extension model?
+1. Can legacy isolation, renderer-state transitions, and provenance-aware cleanup satisfy Step 2 before any new dispatch is activated?
+1. Which shared parser interfaces should supply grammatical-gap constraints and verify syntax-role preservation?
 1. Which incomplete-formatting outcomes should fail normal mode or check mode?
 1. Which existing comment and exclusion behaviors must change to meet exact preservation guarantees?
 

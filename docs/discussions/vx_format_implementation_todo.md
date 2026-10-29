@@ -95,6 +95,9 @@ Logs are under `build/vx-format-config-*`, `build/vx-format-print-config-*`, and
 ## Future work
 
 - [ ] Review the [syntax-aware architecture proposal](vx_format_syntax_architecture_proposal.md) before changing dispatch or adding further structural rules.
+- [ ] Include grammatical adjacency in syntax views, layout validation, and final preservation checks.
+- [ ] Establish minimum compatible type formatting before migrating signature ownership; keep other declarations legacy-owned.
+- [ ] Pass the legacy-isolation gate, including renderer-state handoffs and final cleanup protection, before enabling hierarchical dispatch.
 - [ ] Define a complete Vx style guide with examples.
 - [ ] Add file and directory exclusions through configuration.
 - [ ] Document editor integration and publish the standard-format blog.
