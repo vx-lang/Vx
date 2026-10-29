@@ -94,6 +94,8 @@ Logs are under `build/vx-format-config-*`, `build/vx-format-print-config-*`, and
 
 ## Future work
 
+- [x] Select nonfatal warnings for unsupported syntax; warning-only `--check` returns `0` and preserves the affected source.
+- [ ] Implement syntax-coverage outcomes and warning reporting; retain `1` for supported formatting differences and `2` for input or configuration errors.
 - [ ] Review the [syntax-aware architecture proposal](vx_format_syntax_architecture_proposal.md) before changing dispatch or adding further structural rules.
 - [ ] Include grammatical adjacency in syntax views, layout validation, and final preservation checks.
 - [ ] Establish minimum compatible type formatting before migrating signature ownership; keep other declarations legacy-owned.

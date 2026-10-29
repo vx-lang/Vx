@@ -2,6 +2,9 @@
 
 Status: proposed for review. Implementation is not authorized by this document.
 
+The unsupported-syntax warning policy below was selected by the user on 2026-10-29.
+Its implementation remains pending with syntax-coverage detection.
+
 Prepared on 2026-10-29 for [issue 2343](https://github.com/vx-lang/Vx/issues/2343).
 
 ## Decision to review
@@ -503,9 +506,41 @@ Never guess a range that might consume another declaration or comment.
 Introduce an internal outcome that records complete formatting, preserved unsupported syntax, or invalid syntax.
 The existing string-only result cannot express all three cases.
 
-The CLI policy needs a separate review decision.
-One recommendation is that strict check mode must not report complete success when parsing coverage is incomplete.
-That policy would change observable behavior and must not enter the initial behavior-preserving refactor silently.
+### Selected policy: unsupported syntax warns without failing
+
+Formatting is a quality-of-life tool and must tolerate syntax introduced after the formatter's supported grammar.
+Incomplete syntax coverage must preserve the affected source and emit a nonfatal `WARN` message.
+Do not fail `--check` solely because a construct is unrecognized.
+A formatter recognition failure alone does not establish that the source is invalid.
+
+Report the file, available source location, and scope preserved by the fallback.
+Write warnings to standard error and retain ordinary formatting-difference reports on standard output.
+For example, the following is a proposed message, not existing output:
+
+```text
+WARN: program.vx:12: unsupported syntax; preserved the enclosing declaration unchanged.
+```
+
+Continue checking independently supported regions or files when their ownership boundaries are reliable.
+If no safe boundary exists, preserve the entire file and identify that scope in the warning.
+Warn without rewriting the unsupported source in normal formatting mode too.
+Check mode remains entirely non-writing.
+
+| Check result | Exit status |
+| --- | --- |
+| Supported regions need no formatting changes, with or without unsupported-syntax warnings. | `0` |
+| At least one supported region needs formatting changes, with or without unsupported-syntax warnings. | `1` |
+| An argument, configuration, or file-access error prevents completion. | `2` |
+
+A warning does not hide formatting differences elsewhere or unrelated input errors.
+For a wholly preserved unsupported file, warning-only check mode returns `0`.
+Do not describe that file as fully formatted or fully understood.
+Expected opaque macro preservation does not itself require an unsupported-syntax warning when its envelope is recognized safely.
+
+Expose coverage and warnings separately from formatting changes in the internal outcome.
+This lets the CLI preserve its existing exit-status meanings while reporting partial coverage honestly.
+Do not introduce a strict-coverage flag or treat warnings as errors by default.
+The warning policy is decided; syntax-coverage detection and warning output are not implemented by this proposal.
 
 ### Legacy isolation before activating new dispatch
 
@@ -643,6 +678,10 @@ Required checks include:
 - Configuration defaults, overrides, and printed defaults remaining compatible.
 - Unicode source positions, line endings, and opaque syntax where supported.
 - Explicit handling of malformed delimiters and incomplete parsing coverage.
+- Warning-only unsupported syntax returning `0`, including whole-file preservation, without any source writes in check mode.
+- Unsupported-syntax warnings coexisting with supported-code differences returning `1` and actual input or configuration errors returning `2`.
+- Warning messages identifying the preserved scope without claiming complete formatting coverage.
+- Recognition failure under a newer grammar remaining nonfatal rather than being classified as proven invalid source.
 
 Reparse supported formatted fixtures to establish that formatting preserves valid source.
 Compare their syntax roles, including operator and macro-call classification, rather than checking parser success alone.
@@ -654,6 +693,8 @@ Break handoff-state updates separately and require the enclosing-indentation or 
 For header coverage, remove recognition of one accepted clause and require the eligibility or whole-header fallback assertion to fail.
 For macro opacity, insert a space between `%` and its name and require exact-byte preservation to fail despite unchanged Vx tokens.
 Allow declaration discovery inside a matcher or transcriber and require the opaque-ownership assertion to fail.
+For warning policy, turn an unsupported-syntax warning into a failing status and require the warning-only exit-status assertion to fail.
+Suppress supported-code differences when a warning exists and require the mixed-result exit-status assertion to fail.
 Test execution remains deferred until the user lifts the existing no-tests instruction.
 
 ## Costs and remaining review decisions
@@ -673,7 +714,7 @@ Review these decisions before implementation:
 1. Is one owning formatter per syntax kind the intended extension model?
 1. Can legacy isolation, renderer-state transitions, and provenance-aware cleanup satisfy Step 2 before any new dispatch is activated?
 1. Which shared parser interfaces should supply grammatical-gap constraints and verify syntax-role preservation?
-1. Which incomplete-formatting outcomes should fail normal mode or check mode?
+1. How should definitively malformed known syntax be reported while recognition failures under newer grammar remain nonfatal?
 1. Which existing comment and exclusion behaviors must change to meet exact preservation guarantees?
 
 The recommendation is to approve the ownership and syntax boundaries first.
