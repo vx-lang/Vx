@@ -30,7 +30,7 @@ fn prints_defaults_without_reading_project_config_or_changing_files() {
     assert!(output.status.success(), "{output:?}");
     assert!(output.stderr.is_empty(), "{output:?}");
     let text = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(text, "[format]\nindent = 2\n");
+    assert_eq!(text, "[format]\nindent = 2\nfn_signature_width = 100\n");
     assert_eq!(
         vx_config::parse_format_config(Path::new("vx-format.toml"), &text).unwrap(),
         vx_config::FormatConfig::default()
@@ -75,6 +75,29 @@ fn check_reports_each_changed_file_without_writing() {
         fs::read_to_string(project.join("other.vx")).unwrap(),
         SOURCE
     );
+}
+
+#[test]
+fn signature_width_controls_wrapping_and_check_mode() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = project(
+        directory.path(),
+        "project",
+        Some("[format]\nindent = 4\nfn_signature_width = 39\n"),
+    );
+    let source = "fn add(first: i32, second: i32) -> i32 {\n  first + second\n}\n";
+    fs::write(project.join("main.vx"), source).unwrap();
+    let output = formatter(&project, &["--check", "main.vx"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), source);
+    let output = formatter(&project, &["main.vx"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(project.join("main.vx")).unwrap(),
+        "fn add(\n    first: i32,\n    second: i32\n) -> i32 {\n    first + second\n}\n"
+    );
+    let output = formatter(&project, &["--check", "main.vx"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
 }
 
 #[test]

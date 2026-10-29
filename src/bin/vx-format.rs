@@ -17,8 +17,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use vx_config::{default_format_config_toml, resolve_format_config};
-use vxc::formatter::format_file;
+use vx_config::{default_format_config_toml, resolve_format_config, FormatConfig};
+use vxc::formatter::format_file_with_config;
 
 use clap::{Parser, ValueEnum};
 use rayon::prelude::*;
@@ -55,7 +55,7 @@ struct Cli {
 fn process_file(
     file_path: &str,
     content: &str,
-    indent_spaces: usize,
+    config: &FormatConfig,
     check: bool,
 ) -> anyhow::Result<bool> {
     let path = Path::new(file_path);
@@ -63,7 +63,7 @@ fn process_file(
         anyhow::bail!("File not found: {}", file_path);
     }
 
-    let formatted = format_file(content, indent_spaces);
+    let formatted = format_file_with_config(content, config);
     let changed = formatted != content;
     if changed {
         if check {
@@ -96,13 +96,13 @@ fn run(cli: Cli) -> anyhow::Result<bool> {
             let config = resolve_format_config(path, cli.config.as_deref(), cli.indent)?;
             let content = fs::read_to_string(path)
                 .map_err(|error| anyhow::anyhow!("{}: {}", path.display(), error))?;
-            Ok((file_path, content, config.settings.indent))
+            Ok((file_path, content, config.settings))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     let changes = inputs
         .par_iter()
-        .map(|(path, content, indent)| process_file(path, content, *indent, cli.check))
+        .map(|(path, content, config)| process_file(path, content, config, cli.check))
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(cli.check && changes.into_iter().any(|changed| changed))
 }

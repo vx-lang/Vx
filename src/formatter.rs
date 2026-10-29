@@ -14,8 +14,21 @@
 //===----------------------------------------------------------------------===//
 use crate::lexer::{Lexer, Token, TokenType};
 use std::collections::HashMap;
+use vx_config::FormatConfig;
+
+mod signatures;
 
 pub fn format_file(content: &str, indent_spaces: usize) -> String {
+    format_file_with_config(
+        content,
+        &FormatConfig {
+            indent: indent_spaces,
+            ..FormatConfig::default()
+        },
+    )
+}
+
+pub fn format_file_with_config(content: &str, config: &FormatConfig) -> String {
     let mut lexer = Lexer::new_with_comments(content);
     let tokens = lexer.tokenize();
 
@@ -38,7 +51,7 @@ pub fn format_file(content: &str, indent_spaces: usize) -> String {
 
     let tokens = normalize_and_expand_blocks(tokens);
     let tokens = adjust_spacing(tokens);
-    emit_formatted_string(tokens, indent_spaces, content.len())
+    emit_formatted_string(tokens, config, content.len())
 }
 
 fn normalize_and_expand_blocks(mut tokens: Vec<Token>) -> Vec<Token> {
@@ -332,7 +345,8 @@ fn adjust_spacing(tokens: Vec<Token>) -> Vec<Token> {
     new_tokens
 }
 
-fn emit_formatted_string(tokens: Vec<Token>, indent_spaces: usize, original_len: usize) -> String {
+fn emit_formatted_string(tokens: Vec<Token>, config: &FormatConfig, original_len: usize) -> String {
+    let indent_spaces = config.indent;
     let mut formatted = String::with_capacity(original_len + original_len / 10);
     let mut indent_level: isize = 0;
 
@@ -349,13 +363,43 @@ fn emit_formatted_string(tokens: Vec<Token>, indent_spaces: usize, original_len:
     // For each open `[`, whether its line ends after it, so its rows are indented one level.
     let mut brackets: Vec<bool> = Vec::new();
 
-    let mut tokens = tokens.into_iter().peekable();
-    while let Some(token) = tokens.next() {
+    let all_tokens = tokens;
+    let mut tokens = all_tokens.iter().cloned().enumerate().peekable();
+    while let Some((index, token)) = tokens.next() {
         if token.kind == TokenType::Eof {
             break;
         }
 
         match token.kind {
+            TokenType::Fn if format_enabled => {
+                let column = if is_new_line {
+                    indent_level.max(0) as usize * indent_spaces
+                } else {
+                    formatted.rsplit('\n').next().unwrap_or("").chars().count()
+                };
+                if let Some((end, header)) = signatures::format_signature(
+                    &all_tokens,
+                    index,
+                    column,
+                    indent_level.max(0) as usize,
+                    config,
+                ) {
+                    if is_new_line {
+                        write_indent(&mut formatted, indent_level, indent_spaces);
+                    }
+                    formatted.push_str(&header);
+                    is_new_line = false;
+                    while tokens.peek().is_some_and(|(next, _)| *next < end) {
+                        tokens.next();
+                    }
+                } else {
+                    if is_new_line {
+                        write_indent(&mut formatted, indent_level, indent_spaces);
+                    }
+                    formatted.push_str("fn");
+                    is_new_line = false;
+                }
+            }
             TokenType::LeftBracket => {
                 if format_enabled && is_new_line {
                     write_indent(&mut formatted, indent_level, indent_spaces);
@@ -363,7 +407,7 @@ fn emit_formatted_string(tokens: Vec<Token>, indent_spaces: usize, original_len:
                 is_new_line = false;
                 formatted.push('[');
                 let rows_below = matches!(
-                    tokens.peek().map(|t| &t.kind),
+                    tokens.peek().map(|(_, t)| &t.kind),
                     Some(TokenType::Whitespace(ws)) if ws.contains('\n')
                 );
                 if rows_below {
@@ -463,6 +507,113 @@ fn emit_formatted_string(tokens: Vec<Token>, indent_spaces: usize, original_len:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signatures_fit_on_one_line_or_wrap_at_the_configured_width() {
+        let cases = [
+            (
+                100,
+                2,
+                "fn add(\nfirst: i32,\nsecond: i32\n) -> i32 {\nfirst + second\n}",
+                "fn add(first: i32, second: i32) -> i32 {\n  first + second\n}",
+            ),
+            (
+                39,
+                2,
+                "fn add(first: i32, second: i32) -> i32 {\nfirst + second\n}",
+                "fn add(\n  first: i32,\n  second: i32\n) -> i32 {\n  first + second\n}",
+            ),
+            (
+                40,
+                4,
+                "extern {\nfn add(first: i32, second: i32) -> i32;\n}",
+                "extern {\n    fn add(\n        first: i32,\n        second: i32\n    ) -> i32;\n}",
+            ),
+            (
+                40,
+                2,
+                "fn use_pair<T>(value: Tensor<T, [2, 2]>, pair: (i32, i32)) -> T;",
+                "fn use_pair<T>(\n  value: Tensor<T, [2, 2]>,\n  pair: (i32, i32)\n) -> T;",
+            ),
+            (
+                100,
+                2,
+                "pub fn add(first: i32,second: i32)->i32 {\nfirst + second\n}",
+                "pub fn add(first: i32, second: i32) -> i32 {\n  first + second\n}",
+            ),
+        ];
+        for (width, indent, input, expected) in cases {
+            let config = FormatConfig {
+                indent,
+                fn_signature_width: width,
+            };
+            let output = format_file_with_config(input, &config);
+            assert_eq!(output, expected, "width {width}, indent {indent}");
+            assert_eq!(
+                format_file_with_config(&output, &config),
+                output,
+                "formatting must be stable"
+            );
+            let content_tokens = |text: &str| {
+                Lexer::new_with_comments(text)
+                    .tokenize()
+                    .into_iter()
+                    .filter(|token| {
+                        !matches!(token.kind, TokenType::Whitespace(_) | TokenType::Eof)
+                    })
+                    .map(|token| token.kind.to_string())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                content_tokens(input),
+                content_tokens(&output),
+                "source tokens must be preserved"
+            );
+        }
+    }
+
+    #[test]
+    fn signature_width_includes_return_type_brace_and_indentation() {
+        let input = "fn add(first: i32, second: i32) -> i32;";
+        let exact_width = input.chars().count();
+        let config = FormatConfig {
+            indent: 2,
+            fn_signature_width: exact_width,
+        };
+        assert_eq!(format_file_with_config(input, &config), input);
+        let config = FormatConfig {
+            fn_signature_width: exact_width - 1,
+            ..config
+        };
+        assert_eq!(
+            format_file_with_config(input, &config),
+            "fn add(\n  first: i32,\n  second: i32\n) -> i32;"
+        );
+    }
+
+    #[test]
+    fn signature_layout_leaves_calls_comments_and_disabled_text_to_existing_rules() {
+        let cases = [
+            "fn call() {\n  add(first, second);\n}",
+            "fn add(\nfirst: i32, // first value\nsecond: i32\n) -> i32;",
+            "//! vx-format: OFF\nfn   add(first: i32,second: i32)->i32;",
+            "// vx-format-begin: OFF\nfn   add(first: i32,second: i32)->i32;\n// vx-format-end: OFF",
+        ];
+        for input in cases {
+            let narrow = FormatConfig {
+                indent: 2,
+                fn_signature_width: 10,
+            };
+            let wide = FormatConfig {
+                fn_signature_width: 100,
+                ..narrow.clone()
+            };
+            assert_eq!(
+                format_file_with_config(input, &narrow),
+                format_file_with_config(input, &wide)
+            );
+        }
+    }
 
     #[test]
     fn test_format_off_top_level() {

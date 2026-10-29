@@ -10,12 +10,16 @@ Create `vx-format.toml` in your project:
 ```toml
 [format]
 indent = 2
+fn_signature_width = 100
 ```
 
-`indent` is the only supported setting.
-It sets the number of spaces per indentation level.
+`indent` sets the number of spaces per indentation level.
 Zero disables indentation.
 The formatter preserves its existing spacing and layout rules.
+
+`fn_signature_width` sets the preferred maximum width of a function declaration.
+It defaults to 100 when omitted and must be greater than zero.
+Existing configuration files containing only `indent` remain valid.
 
 For each input, the formatter searches from the file's real parent directory upward.
 It uses the nearest `vx-format.toml` and does not merge ancestor files.
@@ -42,6 +46,7 @@ The command writes a complete TOML configuration to standard output:
 ```toml
 [format]
 indent = 2
+fn_signature_width = 100
 ```
 
 Save it with `vx-format --print-config default > vx-format.toml`.
@@ -94,3 +99,40 @@ let   value = 1;
 ```
 
 File exclusions through TOML are not implemented yet.
+
+## Function declarations
+
+Short declarations stay on one line, even when their parameters originally occupied several lines:
+
+```vx
+fn add(first: i32, second: i32) -> i32 {
+  first + second
+}
+```
+
+When a declaration exceeds `fn_signature_width`, each parameter occupies its own line.
+For example, with `fn_signature_width = 39`:
+
+```vx
+fn add(
+  first: i32,
+  second: i32
+) -> i32 {
+  first + second
+}
+```
+
+The width includes indentation, visibility modifiers, the return type, and the opening brace or semicolon.
+The closing parenthesis aligns with the declaration's indentation.
+Methods and foreign declarations follow the same rule.
+Commas inside generic, array, and tuple types do not separate parameters.
+The formatter does not insert trailing commas because Vx does not accept them in parameter lists.
+
+This rule follows Rustfmt's preference for short signatures on one line and long signatures with vertical parameters.
+See [Rustfmt's default parameter layout](https://github.com/rust-lang/rustfmt/blob/main/Configurations.md#fn_params_layout).
+
+Declarations containing comments retain their existing line breaks and use the existing formatting rules.
+Formatting-disabled declarations remain excluded from this rule.
+Function calls retain their existing formatting policy.
+The width is a preference: a single long type or function name can still exceed it.
+Declarations without parameters remain on one line.
