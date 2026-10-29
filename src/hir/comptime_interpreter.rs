@@ -2678,7 +2678,13 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             Expr::Closure(_) => ComptimeEvalOutcome::refusal(),
             Expr::AsCast(cast) => {
                 let value = self.expr(&cast.expr);
-                let concrete = match (&cast.source_ty, &cast.target_ty) {
+                // A body the checker has not typed has no source type. The operand's own type
+                // stands in for it.
+                let source_ty = cast
+                    .source_ty
+                    .clone()
+                    .or_else(|| value.value.ty.clone().map(Type::Scalar));
+                let concrete = match (&source_ty, &cast.target_ty) {
                     // `*const i8` to `*mut i8` and back: the same buffer. Only a pointer is a
                     // `Ptr`, so this holds in a body the checker has not seen yet too.
                     (_, Type::Pointer(..)) => value
