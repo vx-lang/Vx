@@ -94,6 +94,7 @@ Logs are under `build/vx-format-config-*`, `build/vx-format-print-config-*`, and
 
 ## Future work
 
+- [ ] Review the [syntax-aware architecture proposal](vx_format_syntax_architecture_proposal.md) before changing dispatch or adding further structural rules.
 - [ ] Define a complete Vx style guide with examples.
 - [ ] Add file and directory exclusions through configuration.
 - [ ] Document editor integration and publish the standard-format blog.

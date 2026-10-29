@@ -5,6 +5,10 @@ Function declaration layout is the first registered rule.
 Existing block normalization, spacing, and fallback indentation remain in the original formatting pipeline.
 External plugin loading and a stable third-party API are outside this change.
 
+A [syntax-aware architecture proposal](../discussions/vx_format_syntax_architecture_proposal.md) is pending review.
+It describes a possible migration to structure-based dispatch and nested layout composition.
+The implementation below remains the current architecture.
+
 ## Pipeline
 
 1. Tokenize the source and apply the existing normalization and spacing passes.
