@@ -47,6 +47,9 @@ impl SyntaxNode<'_> {
 
 pub trait NodeFormatter: Sync {
     fn kind(&self) -> SyntaxKind;
+    fn roots<'a>(&self, _source: &'a SourceFileView<'_>) -> Vec<SyntaxNode<'a>> {
+        Vec::new()
+    }
     fn format(
         &self,
         node: SyntaxNode<'_>,
@@ -60,6 +63,20 @@ pub struct NodeRegistry<'a> {
 }
 
 impl<'a> NodeRegistry<'a> {
+    pub fn roots<'source>(&self, source: &'source SourceFileView<'_>) -> Vec<SyntaxNode<'source>> {
+        self.formatters
+            .iter()
+            .flat_map(|formatter| {
+                let nodes = formatter.roots(source);
+                assert!(
+                    nodes.iter().all(|node| node.kind() == formatter.kind()),
+                    "A root node must belong to its registered syntax formatter"
+                );
+                nodes
+            })
+            .collect()
+    }
+
     pub fn new(formatters: &'a [&'a dyn NodeFormatter]) -> Result<Self, String> {
         let mut kinds = HashSet::new();
         for formatter in formatters {

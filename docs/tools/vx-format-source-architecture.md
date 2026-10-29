@@ -1,107 +1,117 @@
-# Experimental source-syntax formatter foundations
+# Source-syntax formatter architecture
 
-The new foundations live in `src/formatter/source/`.
-The existing CLI still uses the token-rule pipeline described in [the contributor guide](vx-format-rules.md).
-There is no runtime flag selecting the experimental pipeline.
-These Rust interfaces are experimental and carry no compatibility promise.
-
-## Source recognition
-
-`SourceFileView::parse` retains the original source snapshot, token byte ranges, and delimiter pairs.
-It identifies macro envelopes before looking for functions in their contents.
-Macro invocations include their trailing blocks.
-Macro definitions retain matcher and transcriber token-tree ranges under one opaque envelope.
-Formatter directives inside opaque macros cannot extend outside their envelopes.
-
-Function-header recognition uses a separate reader in `src/parser/formatting.rs`.
-It reuses the existing type, generic, topology, and expression parsing routines.
-It does not parse or transform function bodies, load imports, check types, or expand macros.
-The ordinary compiler parser entry points are unchanged.
-
-The reader records parameter types, return types, and ordered `on`, `requires`, `ensures`, and `where` clauses.
-Unknown header suffixes produce coverage warnings instead of partially recognized function views.
-Uncertain delimiter or macro boundaries also produce preservation warnings.
-
-Parser-recognized type ranges are token-backed views.
-They do not yet expose a complete recursive type-syntax tree.
-Header recognition is not a complete file grammar or a guarantee of contextual eligibility for every declaration form.
-Foreign declarations, trait signatures, and method contexts still need their complete compatibility inventory before CLI activation.
-
-## Dispatch and nested layout
-
-`NodeRegistry` assigns one formatter to each `SyntaxKind` and rejects duplicate ownership.
-`NodeContext::child` delegates nested formatting with an explicit `Shape`.
-`Shape` carries the current column, indentation level, indentation width, and line-width budget.
-
-The experimental built-in registry composes these owners:
+The CLI and library use the source-syntax pipeline in `src/formatter/source/`.
+The former token-position registry and duplicate signature scanner were removed.
+The Rust extension interfaces remain internal and can change.
 
 ```mermaid
 flowchart TD
-    F[Function] --> H[Complete header]
-    H --> P[Parameter list]
-    P --> A[Parameter]
-    A --> T[Type]
-    H --> T
-    F --> B[Original body preserved as source]
+    A[Original source and configuration] --> B[Lossless tokens and syntax views]
+    B --> C[Macro exclusions and coverage protection]
+    C --> D[Registered syntax roots]
+    D --> E[Parent and child documents]
+    C --> F[Bounded legacy intervals]
+    C --> G[Exact preserved intervals]
+    E --> H[Shared renderer state]
+    F --> H
+    G --> H
+    H --> I[Validate final delivered output]
+    I --> J[Text coverage and warnings]
+    J --> K[CLI write or check]
 ```
 
-`format_declaration` exercises that composition for one recognized declaration.
-It formats the header and preserves the body.
-It is not a replacement for full-file formatting.
-Coverage in its result describes that requested formatting operation, not support for every construct in the file.
+## Source recognition
 
-`Document` represents original tokens, spaces, line breaks, nested concatenation, width-limited children, flat/expanded alternatives, and exact source copies.
-The renderer chooses alternatives against the current column and width budget.
-Rules do not construct replacement source code strings.
+`SourceFileView` retains original bytes, token byte ranges, delimiter pairs, and grammatical gap constraints.
+Byte ranges derive from cumulative token lengths, including whitespace and Unicode bytes.
+Lexer line metadata does not define byte ownership.
 
-## Preservation and isolation
+Macro envelopes are discovered before ordinary function declarations.
+Invocation arguments, trailing blocks, matchers, and transcribers remain opaque.
+Directive-like comments and declaration-like text inside macros cannot escape their envelopes.
+The engine preserves enclosing macro lines to retain embedded-language columns.
 
-`verify_preservation` and `verify_span_preservation` check token identity, spelling, grammatical gaps, and exact opaque or excluded bytes.
-Sensitive angle-token and macro-name gaps initially retain their original adjacency conservatively.
-These constraints do not classify generic closing brackets as shift operators.
-Broader grammar-specific relaxation and full type-spacing parity remain migration work.
+A separate reader in `src/parser/formatting.rs` reuses the compiler's existing grammar routines.
+It records generics, parameters, return types, and ordered `on`, `requires`, `ensures`, and `where` clauses.
+Body and remaining-file probes discard parsed structures after checking coverage.
+These probes perform no import loading, type checking, macro expansion, or backend work.
+Ordinary compiler parsing entry points remain unchanged.
 
-`OwnershipMap` distinguishes legacy, syntax-owned, excluded, opaque-macro, and unsupported source ranges.
-Its legacy-edit guard rejects edits crossing protected ownership.
-Protected children can exist inside a syntax-owned declaration.
+Recognition records root, implementation, trait, and foreign declaration contexts.
+Implementation and trait generics remain available to type recognition.
+Unsupported contextual clauses preserve their declaration.
+Unknown header boundaries preserve the file rather than accepting a partial header.
+Arrowless headers remain accepted for compatibility with existing formatter and editor inputs.
+This does not extend the compiler's accepted language.
 
-`RenderedDocument` includes output segments with original-source provenance.
-Opaque children must be supplied by complete preserved source segments.
-Macro preservation also checks original columns so layout cannot silently reindent embedded languages.
-Cleanup eligibility checks both legacy ownership and constrained source gaps.
-The new renderer performs no global trailing-whitespace cleanup.
+Types remain parser-confirmed token-backed views rather than a complete recursive syntax tree.
+Their formatter retains existing type whitespace normalization, including `Tensor<f32, [2, 2]>`.
+Adjacent generic closing brackets can compact only within confirmed type ranges.
+Expression shifts and macro-name adjacency retain grammatical constraints.
 
-`RenderState` carries the enclosing delimiter stack, indentation, multiline-bracket flags, line, and column.
-It can consume a preserved fragment without restarting state at zero.
-Structural transitions occur once for the consumed original span.
-Output positions come from the text actually rendered.
+## Dispatch and composition
 
-These guards are available for a future bounded legacy adapter.
-The existing whole-stream normalization and cleanup functions are not yet connected to that adapter.
-The isolation gate therefore remains incomplete.
+`NodeRegistry` assigns one formatter to each syntax kind.
+Registered owners publish independent roots through `NodeFormatter::roots`.
+Parents delegate children through `NodeContext::child` with an explicit `Shape`.
+No syntax-specific engine branch selects the current header rule.
 
-## Coverage outcomes
+The built-in root owner formats function headers.
+It delegates parameter lists, parameters, and types.
+Bodies retain existing formatting through the bounded legacy adapter.
+The optional `format_declaration` helper composes a function document with an unchanged body.
+It is not a second full-file pipeline.
 
-`FormatOutcome` carries output, coverage, and warnings separately.
-An unsupported experimental declaration falls back to its original bytes with a warning.
-Warning-only `check_status` returns zero; actual output differences return one.
-`CoverageWarning::render` produces a `WARN` message with a file and source line.
-Argument, configuration, and file-access errors remain the command adapter's responsibility.
+`Document` supports original tokens, spaces, lines, concatenation, width reservations, layout alternatives, and exact source copies.
+`Shape` supplies column, indentation, indentation width, and available width.
+The renderer chooses flat or expanded layouts within the parent's budget.
+Headers containing comments retain their original header text while supported surrounding code can still format.
 
-This does not yet enable general unknown-syntax detection or warning output in the existing CLI.
-That integration must preserve the approved nonfatal policy.
+## Ownership and state
 
-## Activation gates
+Protection is installed before syntax dispatch and before legacy transformations.
+Merged protected ranges cover macros, exclusions, and unsupported syntax.
+The scheduler claims syntax roots outside those ranges.
+Legacy normalization and spacing receive only the remaining bounded intervals.
+`OwnershipMap::validate_legacy_edit` rejects transformations across protected or syntax-owned ranges.
 
-Before changing the CLI rendering path:
+One `RenderState` spans legacy, syntax, and preserved intervals.
+It carries the delimiter stack, indentation, multiline-bracket flags, line, and column.
+A preserved interval advances delimiter state from original tokens and position state from its unchanged bytes.
+A syntax document reports its exit state.
+The next legacy interval therefore retains enclosing braces and indentation.
 
-1. Execute the existing baseline and the new contract tests when authorized.
-1. Complete the required mutation checks.
-1. Establish full-header eligibility and type-spacing parity for supported declaration contexts.
-1. Connect bounded legacy edits and provenance-aware cleanup without crossing opaque or excluded source.
-1. Verify final adjacency, exact-byte preservation, state handoffs, and one-run formatting stability.
-1. Integrate complete-file coverage and warnings without treating unsupported syntax as fatal.
+There is no whole-output whitespace cleanup.
+Legacy whitespace cleanup operates on whitespace tokens inside permitted intervals.
+String contents, comment contents, exclusions, and opaque text cannot be trimmed by that cleanup.
+Exclusion marker lines now remain exact source, including their original indentation.
+This deliberately corrects the old renderer's reindentation of those lines.
 
-The user requested no tests yet.
-The new tests were added for compilation and later execution.
-Do not infer successful behavioral validation from compilation alone.
+## Final preservation
+
+The document renderer checks token order, complete source ownership, and preserved child provenance.
+The full-file validator runs after every rendering operation.
+It checks token kinds, spelling, grammatical adjacency, exact excluded or opaque bytes, and macro columns.
+Any validation failure restores the original file and emits a warning.
+Token equality alone cannot establish safety for shifts or embedded macro languages.
+
+## Coverage and CLI behavior
+
+`FormatOutcome` carries text, coverage, and warnings separately.
+A coverage warning preserves the affected declaration when boundaries are certain.
+Uncertain header, macro, delimiter, or file grammar boundaries preserve the complete file.
+Other independent supported declarations can still format after a scoped warning.
+
+The CLI prints `WARN` messages with file and line information.
+Warning-only `--check` returns zero.
+Supported formatting differences return one, even when other regions produce warnings.
+Argument, configuration, and file-access errors return two.
+Both write mode and check mode use the same validated result.
+
+## Extension boundary
+
+The infrastructure supports registered syntax owners without another scanner or renderer branch per rule.
+New constructs still need shared recognition when no syntax view exists.
+Unsupported constructs remain preserved until their coverage and layout are implemented.
+Dynamic plugins, a stable public API, and a complete concrete syntax tree remain future choices.
+See [the contributor guide](vx-format-rules.md) for the extension workflow.

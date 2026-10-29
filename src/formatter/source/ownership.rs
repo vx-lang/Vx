@@ -32,6 +32,24 @@ pub struct OwnershipMap {
 }
 
 impl OwnershipMap {
+    pub(crate) fn protect_union(&mut self, ranges: &[Range<usize>]) -> Result<(), String> {
+        if ranges
+            .iter()
+            .any(|range| range.start > range.end || range.end > self.length)
+        {
+            return Err("Invalid preserved source envelope".into());
+        }
+        self.spans = ranges
+            .iter()
+            .cloned()
+            .map(|bytes| OwnedSpan {
+                bytes,
+                owner: Owner::OpaqueUnsupported,
+            })
+            .collect();
+        Ok(())
+    }
+
     pub fn from_source(source: &SourceFileView<'_>) -> Self {
         let mut spans: Vec<_> = source
             .exclusions

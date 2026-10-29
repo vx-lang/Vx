@@ -27,6 +27,8 @@ impl SourceFileView<'_> {
             .any(|warning| warning.bytes == (0..self.text.len()))
         {
             self.find_functions(&significant);
+            self.relax_type_closers(&significant);
+            self.check_remaining_syntax(&significant);
         }
     }
 
@@ -265,6 +267,8 @@ impl SourceFileView<'_> {
                 .map(|index| self.tokens[*index].token.clone())
                 .collect();
             let mut parser = Parser::new(&input, self.text);
+            let (context, inherited) = self.function_context(significant, position);
+            parser.formatting_inherit_generics(inherited);
             let parsed = match parser.formatting_header() {
                 Ok(parsed) => parsed,
                 Err(_) => {
@@ -294,6 +298,31 @@ impl SourceFileView<'_> {
             {
                 start = significant[parser_start - 1];
             }
+            if parser.formatting_body().is_err() {
+                self.warnings.push(CoverageWarning {
+                    bytes: self.token_bytes(start..declaration_end),
+                    message:
+                        "Unsupported function body; preserved the enclosing declaration unchanged"
+                            .into(),
+                });
+            }
+            let ineligible = context == DeclarationContext::Other
+                || (matches!(
+                    context,
+                    DeclarationContext::Trait | DeclarationContext::Extern
+                ) && (!parsed.clauses.is_empty() || parsed.return_type.is_empty()))
+                || (context == DeclarationContext::Trait
+                    && self.tokens[start..raw].iter().any(|token| {
+                        matches!(
+                            token.token.kind,
+                            TokenType::Pub | TokenType::Unsafe | TokenType::Safe
+                        )
+                    }))
+                || (context == DeclarationContext::Extern
+                    && !matches!(self.tokens[terminator].token.kind, TokenType::Semicolon));
+            if ineligible {
+                self.warnings.push(CoverageWarning { bytes: self.token_bytes(start..declaration_end), message: "Unsupported declaration context; preserved the enclosing declaration unchanged".into() });
+            }
             let convert = |range: Range<usize>| {
                 if range.is_empty() {
                     let point = ids[range.start];
@@ -303,6 +332,7 @@ impl SourceFileView<'_> {
                 }
             };
             self.functions.push(FunctionDeclView {
+                context,
                 tokens: start..declaration_end,
                 bytes: self.token_bytes(start..declaration_end),
                 header: FunctionHeaderView {
@@ -339,6 +369,136 @@ impl SourceFileView<'_> {
                         .collect(),
                     terminator: TokenId(terminator),
                 },
+            });
+        }
+    }
+
+    fn function_context(
+        &self,
+        significant: &[usize],
+        position: usize,
+    ) -> (DeclarationContext, Vec<String>) {
+        let at = significant[position];
+        let mut scopes = std::collections::BTreeMap::new();
+        for (start, index) in significant[..position].iter().copied().enumerate() {
+            let kind = match self.tokens[index].token.kind {
+                TokenType::Impl => DeclarationContext::Impl,
+                TokenType::Trait => DeclarationContext::Trait,
+                TokenType::Extern => DeclarationContext::Extern,
+                TokenType::Struct | TokenType::Enum | TokenType::Memory | TokenType::Topology => {
+                    DeclarationContext::Other
+                }
+                _ => continue,
+            };
+            if self.is_opaque(TokenId(index)) {
+                continue;
+            }
+            let open = significant[start + 1..position]
+                .iter()
+                .copied()
+                .find(|candidate| {
+                    matches!(self.tokens[*candidate].token.kind, TokenType::LeftBrace)
+                })
+                .filter(|candidate| self.matching[*candidate].is_some_and(|close| at < close));
+            if let Some(open) = open {
+                scopes.entry(open).or_insert((kind, start));
+            }
+        }
+        let mut context = DeclarationContext::Root;
+        let mut generics = Vec::new();
+        for (_, (kind, start)) in scopes {
+            context = kind;
+            if !matches!(kind, DeclarationContext::Impl | DeclarationContext::Trait) {
+                continue;
+            }
+            let input: Vec<_> = significant[start..]
+                .iter()
+                .map(|index| self.tokens[*index].token.clone())
+                .collect();
+            if let Ok(names) = Parser::new(&input, self.text).formatting_scope_generics() {
+                generics.extend(names);
+            }
+        }
+        (context, generics)
+    }
+
+    fn relax_type_closers(&mut self, significant: &[usize]) {
+        let types: Vec<_> = self
+            .functions
+            .iter()
+            .flat_map(|function| {
+                function
+                    .header
+                    .parameters
+                    .iter()
+                    .map(|parameter| parameter.ty.tokens.clone())
+                    .chain(std::iter::once(function.header.return_type.tokens.clone()))
+                    .chain(std::iter::once(function.header.generics.clone()))
+            })
+            .collect();
+        for gap in &mut self.gaps {
+            if !matches!(
+                (
+                    &self.tokens[gap.left.0].token.kind,
+                    &self.tokens[gap.right.0].token.kind
+                ),
+                (TokenType::RightAngle, TokenType::RightAngle)
+            ) {
+                continue;
+            }
+            let in_expression = self.tokens.iter().enumerate().any(|(index, token)| {
+                matches!(
+                    token.token.kind,
+                    TokenType::LeftBracket | TokenType::LeftBrace
+                ) && index < gap.left.0
+                    && self.matching[index].is_some_and(|close| gap.right.0 < close)
+                    && types.iter().any(|range| range.contains(&index))
+            });
+            if in_expression {
+                continue;
+            }
+            let next = significant
+                .iter()
+                .copied()
+                .find(|index| *index > gap.right.0);
+            let closes_type = types.iter().any(|range| {
+                range.contains(&gap.left.0)
+                    && range.contains(&gap.right.0)
+                    && next.is_none_or(|index| {
+                        index >= range.end
+                            || matches!(
+                                self.tokens[index].token.kind,
+                                TokenType::Comma | TokenType::RightAngle | TokenType::RightParen
+                            )
+                    })
+            });
+            if closes_type {
+                gap.constraint = GapConstraint::Flexible;
+            }
+        }
+    }
+
+    fn check_remaining_syntax(&mut self, significant: &[usize]) {
+        let input: Vec<_> = significant
+            .iter()
+            .copied()
+            .filter(|index| {
+                !self
+                    .functions
+                    .iter()
+                    .any(|function| function.tokens.contains(index))
+            })
+            .map(|index| self.tokens[index].token.clone())
+            .collect();
+        // AST results are discarded. Source views remain authoritative for every output range.
+        if Parser::new(&input, self.text).parse().is_err()
+            && Parser::new(&input, self.text)
+                .formatting_statements()
+                .is_err()
+        {
+            self.warnings.push(CoverageWarning {
+                bytes: 0..self.text.len(),
+                message: "Unsupported source syntax; preserved the file unchanged".into(),
             });
         }
     }

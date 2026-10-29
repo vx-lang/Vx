@@ -1,90 +1,69 @@
 # Adding a Vx formatting rule
 
-The formatter has an internal rule interface and an explicit registry.
-Function declaration layout is the first registered rule.
-Existing block normalization, spacing, and fallback indentation remain in the original formatting pipeline.
-External plugin loading and a stable third-party API are outside this change.
-
-A [syntax-aware architecture proposal](../discussions/vx_format_syntax_architecture_proposal.md) is pending review.
-It describes a possible migration to structure-based dispatch and nested layout composition.
-The implementation below remains the current architecture.
-
-Experimental [source-syntax foundations](vx-format-source-architecture.md) now implement views, hierarchical dispatch, layout composition, and preservation guards.
-They are not yet the CLI rendering path.
+The CLI uses syntax-aware dispatch through `NodeRegistry`.
+One `NodeFormatter` owns each `SyntaxKind`.
+Parents delegate child layouts through `NodeContext::child`.
+These interfaces are internal Rust interfaces, without a stable external plugin API.
 
 ## Pipeline
 
-1. Tokenize the source and apply the existing normalization and spacing passes.
-1. Build shared delimiter and formatting-exclusion information.
-1. Visit tokens in source order and consult the rule registry at eligible positions.
-1. Let enabled rules propose a layout using immutable source and configuration context.
-1. Render the accepted layout through the shared renderer, or use the existing fallback formatting.
-1. Verify lexical token preservation before the existing final whitespace cleanup when a rule changes layout.
+1. Read configuration and retain the original source bytes.
+1. Discover opaque macros and exclusions before recognizing ordinary Vx declarations.
+1. Recognize supported syntax with shared parser helpers and record coverage warnings.
+1. Protect preserved ranges before selecting registered syntax roots.
+1. Render roots through the registry and render remaining intervals through the bounded legacy adapter.
+1. Check the final output for token, adjacency, macro-column, and exact-byte preservation.
 
-Normal formatting and `--check` use this same pipeline.
-The command adapter handles configuration and file writes.
-Rules perform neither operation.
+Normal formatting and `--check` share this pipeline.
+The command adapter owns file access, configuration, warnings, and exit status.
 
 ## Modules
 
 | Module | Responsibility |
 | --- | --- |
-| `src/formatter/context.rs` | Tokens, matched delimiters, exclusions, configuration, and current renderer position. |
-| `src/formatter/registry.rs` | Rule interface, registration, selection, and deterministic execution order. |
-| `src/formatter/layout.rs` | Token and whitespace instructions, replacement ownership, and structural validation. |
-| `src/formatter/renderer.rs` | Rendering and lexical token-preservation checks. |
-| `src/formatter/rules/` | Individual rule implementations. |
-| `src/formatter/framework_tests.rs` | Shared extension and protection contracts. |
+| `src/formatter/source/mod.rs` | Original bytes, token ranges, syntax views, and final preservation checks. |
+| `src/parser/formatting.rs` | Parser-backed range recognition without imports, type checking, or macro expansion. |
+| `src/formatter/source/recognize.rs` | Coverage, declaration contexts, exclusions, macros, and grammatical gaps. |
+| `src/formatter/source/dispatch.rs` | Syntax ownership, root discovery, and child dispatch. |
+| `src/formatter/source/formatters.rs` | Built-in node formatters. |
+| `src/formatter/source/document.rs` | Composable layouts, width budgets, and renderer state. |
+| `src/formatter/source/ownership.rs` | Source ownership and legacy edit guards. |
+| `src/formatter/source/engine.rs` | Full-file scheduling and final validation. |
+| `src/formatter/legacy.rs` | Existing block, spacing, and indentation behavior within permitted intervals. |
 
-## Rule interface
+## Adding an owner
 
-Implement `FormatRule` in a new module under `src/formatter/rules/`.
-Use `function_signatures.rs` as an example.
+1. Use an existing syntax view, or extend the shared syntax layer for a new construct.
+1. Implement `NodeFormatter::kind` and `NodeFormatter::format` for that view.
+1. Implement `roots` when the formatter owns independent source ranges.
+1. Return child nodes from the parent's layout through `context.child` when the parent owns their range.
+1. Register the formatter in `builtin_registry()`.
+1. Add configuration only for behavior the formatter implements.
+1. Test output, preservation, nesting, exclusions, unknown syntax, and repeated-formatting stability.
+1. Verify each important assertion with a deliberate implementation regression.
 
-The interface provides these methods:
-
-- `name()` returns a unique, stable internal name.
-- `starts_at(token)` cheaply identifies positions worth inspecting.
-- `enabled(config)` can select behavior from typed configuration. Its default enables the rule.
-- `apply(context, layout)` examines the source and proposes a `LayoutEdit` through `LayoutPlan::propose`.
-
-The context provides the current token index, output column, enclosing indentation, and resolved settings.
-Shared delimiter matching covers parentheses, square brackets, and braces.
-Rules can inspect original token kinds without parsing printed output.
+The engine discovers roots through the registry.
+Adding an owner does not require a syntax-specific branch in the engine or CLI.
+A registration-only test exercises this contract through `format_file_with_registry`.
+New language constructs can require shared parser and syntax-view work.
+The registry does not automatically understand new grammar.
 
 ## Layout ownership
 
-A layout replaces a token range beginning at the current position.
-Its instructions can reference original tokens, insert a space, or start a line at an indentation level.
-The shared renderer converts indentation levels using the configured indentation width.
-Rules cannot supply arbitrary source strings.
+Return a `Document` containing original tokens, spaces, line breaks, child documents, or exact source copies.
+Use `Shape` for the current column, indentation, and remaining width.
+Use flat and expanded alternatives when layout depends on width.
+Rules do not generate replacement token spellings or mutate rendered strings.
 
-Every non-whitespace token in the range must appear exactly once, in its original order.
-The range must include complete delimiter pairs and must not include the end-of-file token.
-Formatting-disabled tokens prevent the proposal from being accepted.
-The renderer also checks lexical tokens across replacement boundaries to detect accidental token merging.
+The registry rejects duplicate owners for one syntax kind.
+The scheduler rejects identical or partially overlapping roots.
+An enclosing root owns its complete range and delegates children explicitly.
+Protected source ranges take precedence over registered roots.
 
-Registration order is explicit and deterministic.
-Duplicate names and competing proposals at the same position cause assertions with clear messages.
-These conditions indicate an implementation error in built-in rules.
-They do not silently select one rule's output.
+The renderer requires each original content token exactly once, in source order.
+The final validator also checks token spelling and grammatical adjacency.
+Opaque macros retain their original bytes and columns.
+Excluded text retains its original bytes, including directive lines.
+Unknown syntax produces preservation warnings instead of speculative formatting.
 
-An accepted replacement owns its complete range.
-The renderer resumes at the first token after that range.
-Rules therefore do not run separately inside a range owned by another rule.
-When rules need to cooperate inside one structure, compose their layout decisions within its owning rule.
-
-## Contributor checklist
-
-1. Add the rule module and implement `FormatRule`.
-1. Declare the module in `src/formatter/rules/mod.rs`.
-1. Add the rule to `builtin_rules()` in `src/formatter/registry.rs` at its intended execution position.
-1. Add typed settings to `vx-config` only for behavior the rule implements.
-1. Update default configuration output and user documentation when settings change.
-1. Add focused cases for output, boundaries, comments, exclusions, nesting, and non-ASCII text where relevant.
-1. Verify source-token preservation and repeated-formatting stability.
-1. Add CLI coverage when the rule adds configuration or command behavior.
-1. Run the focused tests and required mutation checks when test execution is authorized.
-
-New rules do not require branches in the main renderer or changes to the CLI driver.
-The existing signature behavior remains covered by formatter and CLI assertions.
+See [the source architecture guide](vx-format-source-architecture.md) for state handoffs and coverage boundaries.

@@ -1,9 +1,10 @@
 # Proposal: syntax-aware architecture for vx-format
 
-Status: experimental foundations implemented; CLI migration remains gated by validation.
+Status: the source-syntax pipeline is active in the CLI and library.
+See [the implementation guide](../tools/vx-format-source-architecture.md) for the current architecture and boundaries.
 
 The unsupported-syntax warning policy below was selected by the user on 2026-10-29.
-Warning-bearing outcomes exist in the experimental API; complete-file detection and CLI reporting remain pending.
+Coverage outcomes and nonfatal CLI warnings are implemented.
 
 Prepared on 2026-10-29 for [issue 2343](https://github.com/vx-lang/Vx/issues/2343).
 
@@ -21,11 +22,11 @@ This proposal changes the internal architecture.
 It does not propose new formatting styles, configuration keys, lint rules, or external plugins.
 Existing formatting behavior should remain stable during the first migration steps.
 
-## Current implementation
+## Original implementation before migration
 
-The original pipeline below remains active in the CLI.
-New [source-syntax foundations](../tools/vx-format-source-architecture.md) provide a separate experimental composition path.
-They do not yet replace legacy normalization or establish that the activation gates passed.
+This section records the original architecture that motivated the proposal.
+The listed token-position modules were removed during migration.
+The active pipeline uses syntax roots, bounded legacy intervals, and final preservation validation.
 
 The formatter currently tokenizes source, applies legacy normalization and spacing passes, then renders tokens.
 The rendering loop consults registered rules at eligible token positions.
@@ -81,8 +82,8 @@ It does not establish preservation of the final output after that cleanup.
 Exclusion protection in the rule framework also does not cover every earlier legacy transformation.
 The target architecture should apply preservation guarantees across the complete pipeline.
 
-Existing tests compile, but their execution and mutation checks remain pending at the user's request.
-The current framework must not be treated as fully validated.
+The initial implementation compiled tests without execution.
+The later activation work executes baseline, contract, and CLI tests with deliberate regression checks.
 
 ## Why the current model becomes expensive
 
@@ -699,7 +700,8 @@ For macro opacity, insert a space between `%` and its name and require exact-byt
 Allow declaration discovery inside a matcher or transcriber and require the opaque-ownership assertion to fail.
 For warning policy, turn an unsupported-syntax warning into a failing status and require the warning-only exit-status assertion to fail.
 Suppress supported-code differences when a warning exists and require the mixed-result exit-status assertion to fail.
-Test execution remains deferred until the user lifts the existing no-tests instruction.
+The user subsequently authorized execution through the foundation activation work.
+See [the implementation checklist](vx_format_implementation_todo.md) for validation results.
 
 ## Costs and remaining review decisions
 

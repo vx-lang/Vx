@@ -243,3 +243,45 @@ fn configuration_errors_prevent_writes_to_every_input() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("missing.toml"));
     assert_eq!(fs::read_to_string(first.join("main.vx")).unwrap(), SOURCE);
 }
+
+#[test]
+fn unsupported_syntax_warns_without_failing_or_writing() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = project(directory.path(), "project", None);
+    let source = "fn future(value: i32) -> i32 effects Read { value }\n";
+    fs::write(project.join("main.vx"), source).unwrap();
+    for args in [vec!["--check", "main.vx"], vec!["main.vx"]] {
+        let output = formatter(&project, &args);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+        let warnings = String::from_utf8(output.stderr).unwrap();
+        assert!(warnings.contains("WARN: main.vx:1:"), "{warnings}");
+        assert!(warnings.contains("preserve"), "{warnings}");
+        assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), source);
+    }
+}
+
+#[test]
+fn warnings_do_not_hide_supported_differences_in_the_same_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = project(directory.path(), "project", None);
+    let source =
+        "fn future() -> i32 {\nfuture_binding value;\n}\nfn known(value: i32) -> i32 {\nvalue\n}\n";
+    fs::write(project.join("main.vx"), source).unwrap();
+    let output = formatter(&project, &["--check", "main.vx"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("WARN: main.vx:1:"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Would reformat main.vx"));
+    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), source);
+    let output = formatter(&project, &["main.vx"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let formatted = fs::read_to_string(project.join("main.vx")).unwrap();
+    assert!(formatted.starts_with("fn future() -> i32 {\nfuture_binding value;\n}\n"));
+    assert!(
+        formatted.ends_with("fn known(value: i32) -> i32 {\n  value\n}\n"),
+        "{formatted}"
+    );
+    let output = formatter(&project, &["--check", "main.vx"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("WARN:"));
+}

@@ -1,4 +1,4 @@
-//! Read source ranges with the existing grammar, without parsing or transforming a function body.
+//! Read source ranges and check grammar coverage without compiler analysis or source transformations.
 
 use super::{ParseResult, Parser};
 use crate::lexer::TokenType;
@@ -25,6 +25,40 @@ pub(crate) struct HeaderRanges {
 }
 
 impl Parser<'_> {
+    pub(crate) fn formatting_inherit_generics(&mut self, names: Vec<String>) {
+        self.generic_params.extend(names);
+    }
+
+    pub(crate) fn formatting_scope_generics(&mut self) -> ParseResult<'_, Vec<String>> {
+        if self.match_token(&TokenType::Impl) {
+        } else if self.match_token(&TokenType::Trait) {
+            self.expect_identifier("Expected trait name")?;
+        } else {
+            return Ok(Vec::new());
+        }
+        self.parse_generic_params()?;
+        Ok(self.generic_params.clone())
+    }
+
+    pub(crate) fn formatting_body(&mut self) -> ParseResult<'_, ()> {
+        if self.match_token(&TokenType::Semicolon) {
+            return Ok(());
+        }
+        self.consume(&TokenType::LeftBrace, "Expected function body")?;
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            self.parse_statement_into(&mut Vec::new())?;
+        }
+        self.consume(&TokenType::RightBrace, "Expected closing body delimiter")?;
+        Ok(())
+    }
+
+    pub(crate) fn formatting_statements(&mut self) -> ParseResult<'_, ()> {
+        while !self.check(&TokenType::Eof) {
+            self.parse_statement_into(&mut Vec::new())?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn formatting_header(&mut self) -> ParseResult<'_, HeaderRanges> {
         self.match_token(&TokenType::Unsafe);
         self.consume(&TokenType::Fn, "Expected 'fn'")?;
@@ -60,10 +94,19 @@ impl Parser<'_> {
             self.parse_topology()?;
             clauses.push((ClauseKind::On, start..self.pos));
         }
-        self.consume(&TokenType::Arrow, "Expected '->'")?;
-        let type_start = self.pos;
-        self.parse_return_type()?;
-        let return_type = type_start..self.pos;
+        let return_type = if self.match_token(&TokenType::Arrow) {
+            let start = self.pos;
+            self.parse_return_type()?;
+            start..self.pos
+        } else if matches!(
+            self.peek().kind,
+            TokenType::LeftBrace | TokenType::Semicolon
+        ) {
+            // Keep support for incomplete editor signatures that the formatter already accepted.
+            self.pos..self.pos
+        } else {
+            return Err(self.error("Unsupported function header suffix"));
+        };
         for (keyword, kind) in [
             (TokenType::Requires, ClauseKind::Requires),
             (TokenType::Ensures, ClauseKind::Ensures),

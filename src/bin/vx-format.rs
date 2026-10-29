@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use vx_config::{default_format_config_toml, resolve_format_config, FormatConfig};
-use vxc::formatter::format_file_with_config;
+use vxc::formatter::format_file_with_report;
 
 use clap::{Parser, ValueEnum};
 use rayon::prelude::*;
@@ -63,7 +63,11 @@ fn process_file(
         anyhow::bail!("File not found: {}", file_path);
     }
 
-    let formatted = format_file_with_config(content, config);
+    let outcome = format_file_with_report(content, config);
+    for warning in &outcome.warnings {
+        eprintln!("{}", warning.render(file_path, content));
+    }
+    let formatted = outcome.text;
     let changed = formatted != content;
     if changed {
         if check {
@@ -73,7 +77,7 @@ fn process_file(
                 .map_err(|error| anyhow::anyhow!("{}: {}", path.display(), error))?;
             println!("Formatted {}", file_path);
         }
-    } else if !check {
+    } else if !check && outcome.warnings.is_empty() {
         println!("Unchanged {}", file_path);
     }
     Ok(changed)

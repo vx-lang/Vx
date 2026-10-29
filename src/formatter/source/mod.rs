@@ -1,7 +1,8 @@
-//! Source-syntax foundations. The existing CLI renderer is not switched to this pipeline yet.
+//! Source-preserving syntax views, registered layouts, and the shared CLI formatting pipeline.
 
 pub mod dispatch;
 pub mod document;
+pub(crate) mod engine;
 mod formatters;
 pub mod ownership;
 mod recognize;
@@ -93,9 +94,19 @@ pub struct FunctionHeaderView {
 
 #[derive(Clone, Debug)]
 pub struct FunctionDeclView {
+    pub context: DeclarationContext,
     pub tokens: Range<usize>,
     pub bytes: Range<usize>,
     pub header: FunctionHeaderView,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeclarationContext {
+    Root,
+    Impl,
+    Trait,
+    Extern,
+    Other,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -253,36 +264,64 @@ impl<'a> SourceFileView<'a> {
                 return Err("Formatting changed an excluded source range".into());
             }
         }
+        for macro_view in &self.macros {
+            let Some(position) = &positions[macro_view.tokens.start] else {
+                continue;
+            };
+            let prefix = &output[..position.start];
+            let original_line_start = self.text[..bytes.start]
+                .rfind('\n')
+                .map_or(0, |offset| offset + 1);
+            let entry_column = self.text[original_line_start..bytes.start].chars().count();
+            let column = prefix
+                .rfind('\n')
+                .map_or(entry_column + prefix.chars().count(), |newline| {
+                    prefix[newline + 1..].chars().count()
+                });
+            if column != macro_view.original_column - 1 {
+                return Err("Formatting changed an opaque macro's column".into());
+            }
+        }
         Ok(())
     }
 
     fn parse_tokens(text: &str) -> SourceFileView<'_> {
-        let mut starts = vec![0];
-        starts.extend(text.match_indices('\n').map(|(offset, _)| offset + 1));
+        let mut offset = 0;
+        let mut line = 1;
+        let mut column = 1;
         let tokens = Lexer::new_with_comments(text)
             .tokenize()
             .into_iter()
-            .map(|token| {
-                let start = if matches!(token.kind, TokenType::Eof) {
-                    text.len()
-                } else {
-                    let line = starts[token.line - 1];
-                    line + text[line..]
-                        .char_indices()
-                        .nth(token.column - 1)
-                        .map_or(text.len() - line, |(offset, _)| offset)
-                };
-                let end = start + token.length;
+            .map(|mut token| {
+                let start = offset;
+                offset += token.length;
                 assert!(
-                    end <= text.len() && text.is_char_boundary(start) && text.is_char_boundary(end),
-                    "Lexer positions must reference original source bytes"
+                    offset <= text.len()
+                        && text.is_char_boundary(start)
+                        && text.is_char_boundary(offset),
+                    "Lossless lexer tokens must partition the original source bytes"
                 );
+                token.line = line;
+                token.column = column;
+                for character in text[start..offset].chars() {
+                    if character == '\n' {
+                        line += 1;
+                        column = 1;
+                    } else {
+                        column += 1;
+                    }
+                }
                 SourceToken {
                     token,
-                    bytes: start..end,
+                    bytes: start..offset,
                 }
             })
             .collect();
+        assert_eq!(
+            offset,
+            text.len(),
+            "Lossless lexer must retain the whole source"
+        );
         SourceFileView {
             text,
             tokens,

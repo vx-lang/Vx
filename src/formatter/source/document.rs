@@ -149,7 +149,7 @@ impl RenderState {
         Ok(())
     }
 
-    fn emitted(&mut self, text: &str) {
+    pub(crate) fn emitted(&mut self, text: &str) {
         for character in text.chars() {
             if character == '\n' {
                 self.line += 1;

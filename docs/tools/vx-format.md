@@ -78,7 +78,10 @@ vx-format --check --indent 4 file.vx
 ```
 
 Check mode uses the same configuration, overrides, and formatting exclusions as normal formatting.
-It reports each file that needs formatting and stays silent for unchanged files.
+It reports each file that needs formatting.
+Unsupported syntax produces a `WARN` message and preserves the affected source.
+A warning alone does not fail check mode.
+Supported differences elsewhere still return status `1`.
 CI uses this mode to check Vx files in `tests` and `stdlib`.
 
 | Exit status | Meaning |
@@ -98,6 +101,8 @@ let   value = 1;
 // vx-format-end: OFF
 ```
 
+The formatter preserves both marker lines and enclosed text exactly.
+Unrecognized macro token trees also retain their original bytes and columns.
 File exclusions through TOML are not implemented yet.
 
 ## Function declarations
@@ -131,7 +136,8 @@ The formatter does not insert trailing commas because Vx does not accept them in
 This rule follows Rustfmt's preference for short signatures on one line and long signatures with vertical parameters.
 See [Rustfmt's default parameter layout](https://github.com/rust-lang/rustfmt/blob/main/Configurations.md#fn_params_layout).
 
-Declarations containing comments retain their existing line breaks and use the existing formatting rules.
+Declarations containing comments retain their original header text.
+Supported surrounding code can still format.
 Formatting-disabled declarations remain excluded from this rule.
 Function calls retain their existing formatting policy.
 The width is a preference: a single long type or function name can still exceed it.

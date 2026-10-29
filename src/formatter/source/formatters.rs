@@ -123,6 +123,13 @@ impl NodeFormatter for HeaderFormatter {
     fn kind(&self) -> SyntaxKind {
         SyntaxKind::Header
     }
+    fn roots<'a>(&self, source: &'a SourceFileView<'_>) -> Vec<SyntaxNode<'a>> {
+        source
+            .functions
+            .iter()
+            .map(|function| SyntaxNode::Header(&function.header))
+            .collect()
+    }
     fn format(
         &self,
         node: SyntaxNode<'_>,
@@ -134,6 +141,17 @@ impl NodeFormatter for HeaderFormatter {
         };
         let source = context.source;
         let bytes = source.token_bytes(view.tokens.clone());
+        if source.tokens[view.tokens.clone()].iter().any(|token| {
+            matches!(
+                token.token.kind,
+                TokenType::Comment(_) | TokenType::DocComment(_)
+            )
+        }) {
+            return Ok(Document::Preserve {
+                bytes,
+                keep_column: false,
+            });
+        }
         if source.is_excluded(&bytes)
             || source
                 .macros
@@ -195,6 +213,18 @@ fn header_tail(
     column: usize,
 ) -> Result<Document, CoverageWarning> {
     let source = context.source;
+    if view.return_type.tokens.is_empty() {
+        return Ok(
+            if matches!(
+                source.tokens[view.terminator.0].token.kind,
+                TokenType::LeftBrace
+            ) {
+                Document::Space
+            } else {
+                Document::Concat(Vec::new())
+            },
+        );
+    }
     let before = compact(
         context,
         view.parameter_close.0 + 1..view.return_type.tokens.start,
