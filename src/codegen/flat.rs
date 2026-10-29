@@ -1031,6 +1031,21 @@ pub struct EmitCtx {
     /// The mangled types, among those that a parameter's `&` points to, that hold a
     /// `SharedCell`. A `&` to one of them is not `llvm.readonly`.
     pub shared_cell_types: std::collections::HashSet<String>,
+    /// The start of the name of each function that holds an `mlir!` block.
+    pub mlir_wrapper_prefix: String,
+}
+
+/// `base`, with `_` added until no name in `names` starts with it. The functions that hold
+/// `mlir!` blocks are named from it, so no function of the program can have their names.
+pub(crate) fn mlir_wrapper_prefix<'a>(
+    base: &str,
+    names: impl Iterator<Item = &'a str> + Clone,
+) -> String {
+    let mut prefix = base.to_string();
+    while names.clone().any(|n| n.starts_with(prefix.as_str())) {
+        prefix.push('_');
+    }
+    prefix
 }
 
 /// The declared properties of a memory sub-space the flat emitter re-attaches to a `vx.transfer`,
@@ -1331,6 +1346,10 @@ impl EmitCtx {
                 .collect(),
             shared_cell_types: std::collections::HashSet::new(),
             describe_params: false,
+            mlir_wrapper_prefix: mlir_wrapper_prefix(
+                "vx_flat_mlir_",
+                registry.fn_sigs.keys().map(|n| n.as_ref()),
+            ),
         }
     }
 
@@ -2734,6 +2753,18 @@ mod tests {
     use crate::hir::flatten::lower_function_to_hir;
     use crate::session::{GlobalSession, LocalWorkerState};
     use std::sync::Arc;
+
+    /// The prefix for an `mlir!` block's function grows until no function starts with it.
+    #[test]
+    fn mlir_wrapper_prefix_avoids_every_function_name() {
+        let base = "vx_flat_mlir_";
+        assert_eq!(mlir_wrapper_prefix(base, ["main"].into_iter()), base);
+        let names = ["main", "vx_flat_mlir_0", "vx_flat_mlir__wrap"];
+        assert_eq!(
+            mlir_wrapper_prefix(base, names.into_iter()),
+            "vx_flat_mlir___"
+        );
+    }
 
     // These LLVM target-layout functions are not included in mlir-sys's generated bindings.
     unsafe extern "C" {

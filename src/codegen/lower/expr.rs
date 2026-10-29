@@ -3766,8 +3766,12 @@ impl<'c> LowerToMelior<'c> for InlineMlirExpr {
             call_ret_tys.push(mlir_ret_ty);
         }
 
+        let prefix = crate::codegen::flat::mlir_wrapper_prefix(
+            "vx_macro_mlir_",
+            gen.functions.keys().map(|n| n.as_ref()),
+        );
         let unique_id = format!(
-            "vx_macro_mlir_L{}_C{}_{}",
+            "{prefix}L{}_C{}_{}",
             self.span.line, self.span.column, gen.mlir_block_counter
         );
         gen.mlir_block_counter += 1;

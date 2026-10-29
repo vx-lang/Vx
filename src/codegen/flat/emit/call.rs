@@ -220,7 +220,12 @@ impl FnEmit<'_> {
                 operands.push(name);
             }
         }
-        let fname = format!("vx_flat_mlir_{}", self.inline_base + ins.imm as usize);
+        let prefix = &self.ctx.mlir_wrapper_prefix;
+        assert!(
+            !prefix.is_empty(),
+            "an mlir! block needs EmitCtx::from_registry"
+        );
+        let fname = format!("{prefix}{}", self.inline_base + ins.imm as usize);
         let tys: Vec<&str> = blk.inputs.iter().map(|(_, t)| t.as_str()).collect();
         let params: Vec<String> = blk
             .inputs
