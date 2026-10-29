@@ -3314,7 +3314,9 @@ impl<'a> TypeChecker<'a> {
                         && !self.is_copy(&base_ty)
                     {
                         if let Expr::Identifier(id) = &**obj {
-                            self.consume(&id.name);
+                            if !self.refuse_move_behind_ref(&id.name, &id.name, &id.span) {
+                                self.consume(&id.name);
+                            }
                         }
                     }
                     let (ret_ty, func_call) = self.instantiate_method_call_rewrite(

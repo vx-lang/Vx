@@ -643,6 +643,9 @@ impl<'a> TypeChecker<'a> {
         self.borrow
             .mutable_vars
             .push(std::collections::HashSet::new());
+        self.borrow
+            .bound_behind_ref
+            .push(std::collections::HashSet::new());
         self.consteval.env.push(std::collections::HashMap::new());
     }
 
@@ -665,6 +668,9 @@ impl<'a> TypeChecker<'a> {
         self.borrow
             .mutable_vars
             .push(std::collections::HashSet::new());
+        self.borrow
+            .bound_behind_ref
+            .push(std::collections::HashSet::new());
         self.consteval.env.push(std::collections::HashMap::new());
     }
 
@@ -676,6 +682,7 @@ impl<'a> TypeChecker<'a> {
         self.scopes.pop();
         self.borrow.moved_vars.pop();
         self.borrow.mutable_vars.pop();
+        self.borrow.bound_behind_ref.pop();
         self.consteval.env.pop();
         self.literal_typed_lets.retain(|_, d| *d + 1 < depth);
         self.borrow.unshadow(depth);
@@ -749,6 +756,9 @@ impl<'a> TypeChecker<'a> {
         if let Some(moved) = self.borrow.moved_vars.last_mut() {
             let prefix = format!("{name}.");
             moved.retain(|place| !place.starts_with(&prefix));
+        }
+        if let Some(bound) = self.borrow.bound_behind_ref.last_mut() {
+            bound.remove(&name);
         }
         let current_top = self.active_topology.clone();
         if let Some(scope) = self.scopes.last_mut() {
@@ -1093,6 +1103,12 @@ impl<'a> TypeChecker<'a> {
             Some(scope) => self.borrow.mutable_vars[scope].contains(name),
             None => true,
         }
+    }
+
+    /// Whether the binding of `name` in scope comes from a `match` on a reference.
+    pub(crate) fn is_bound_behind_ref(&self, name: &str) -> bool {
+        self.scope_of(name)
+            .is_some_and(|scope| self.borrow.bound_behind_ref[scope].contains(name))
     }
 
     /// The innermost scope binding `name`. `moved_vars` is pushed and popped alongside

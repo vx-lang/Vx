@@ -1,0 +1,160 @@
+//===- moving_a_payload_out_of_a_match_on_a_reference.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A `match` on a reference gives names to parts of a value that the reference does not own.
+// Moving such a name would drop that part twice, so each way to move one is an error (E4008).
+
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:68:14: `n` cannot be moved out: `n` is part of a value behind a reference
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:81:15: `n` cannot be moved out: `n` is part of a value behind a reference
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:93:14: `n` cannot be moved out: `n` is part of a value behind a reference
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:106:14: `n` cannot be moved out: `n` is part of a value behind a reference
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:117:15: `n` cannot be moved out: `n` is part of a value behind a reference
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:129:16: `p.left` cannot be moved out: `p` is part of a value behind a reference
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:148:17: `n` cannot be moved out: `n` is part of a value behind a reference
+// CHECK: 7 error(s) emitted
+
+import core::ops;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print(self.id);
+  }
+}
+
+impl Noisy {
+  fn into_id(self : Noisy) -> i32 {
+    return self.id;
+  }
+}
+
+struct Pair {
+  left : Noisy,
+  right : Noisy,
+}
+
+enum Holder {
+  Full(Noisy),
+  Empty,
+}
+
+enum Maybe<T> {
+  Some(T),
+  Nothing,
+}
+
+enum Two {
+  Both(Pair),
+  Neither,
+}
+
+enum Outer {
+  Has(Holder),
+  Nothing,
+}
+
+fn return_the_payload(h : &Holder) -> Noisy {
+  match h {
+    Holder::Full(n) => {
+      return n;
+    }
+    Holder::Empty => {
+      return Noisy {
+        id : 0
+      };
+    }
+  }
+}
+
+fn copy_the_payload_into_a_variable(h : &mut Holder) -> i32 {
+  match h {
+    Holder::Full(n) => {
+      let m = n;
+      return m.id;
+    }
+    Holder::Empty => {
+      return 0;
+    }
+  }
+}
+
+fn return_the_payload_of_a_generic_enum(h : &Maybe<Noisy>) -> Noisy {
+  match h {
+    Maybe<Noisy>::Some(n) => {
+      return n;
+    }
+    Maybe<Noisy>::Nothing => {
+      return Noisy {
+        id : 0
+      };
+    }
+  }
+}
+
+fn call_a_method_that_takes_the_payload(h : &Holder) -> i32 {
+  match h {
+    Holder::Full(n) => {
+      return n.into_id();
+    }
+    Holder::Empty => {
+      return 0;
+    }
+  }
+}
+
+fn capture_the_payload_in_a_closure(h : &Holder) -> i32 {
+  match h {
+    Holder::Full(n) => {
+      let f = || n.id;
+      return f();
+    }
+    Holder::Empty => {
+      return 0;
+    }
+  }
+}
+
+fn return_a_field_of_the_payload(t : &Two) -> Noisy {
+  match t {
+    Two::Both(p) => {
+      return p.left;
+    }
+    Two::Neither => {
+      return Noisy {
+        id : 0
+      };
+    }
+  }
+}
+
+// `h` is part of the value behind `o`, so the names of a `match` on `h` are too.
+fn move_out_of_a_match_on_a_payload(o : &Outer) -> Noisy {
+  let mut out = Noisy {
+    id : 0
+  };
+  match o {
+    Outer::Has(h) => {
+      match h {
+        Holder::Full(n) => {
+          out = n;
+        }
+        Holder::Empty => {}
+      };
+    }
+    Outer::Nothing => {}
+  }
+  return out;
+}
+
+fn main() -> i32 {
+  return 0;
+}

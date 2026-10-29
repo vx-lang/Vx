@@ -709,7 +709,12 @@ impl<'a> TypeChecker<'a> {
                                 }
                             }
                         }
-                        if consume && ty.is_linear() && !self.is_copy(&ty) && !self.speculating {
+                        if consume
+                            && ty.is_linear()
+                            && !self.is_copy(&ty)
+                            && !self.speculating
+                            && !self.refuse_move_behind_ref(name.as_ref(), name.as_ref(), &span)
+                        {
                             if !self.borrow.skip_borrow_check
                                 && !self.borrow.live_borrows(name.as_ref()).is_empty()
                             {
@@ -808,6 +813,9 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         let place = Self::field_place(&root, &path);
+        if self.refuse_move_behind_ref(&root, &place, &access.span) {
+            return;
+        }
         if matches!(
             self.lookup(&root).map(|(t, _)| t),
             Some(Type::Borrow { .. } | Type::Pointer(..) | Type::Ref(..))

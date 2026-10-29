@@ -30,6 +30,19 @@ enum ComptimeFold {
     Refused,
 }
 
+/// The names that `pattern` binds, in order.
+fn pattern_names(pattern: &Pattern, out: &mut Vec<crate::symbol::Symbol>) {
+    match pattern {
+        Pattern::Identifier(n) => out.push(n.clone()),
+        Pattern::EnumVariant(_, _, Some(parts)) => {
+            for part in parts {
+                pattern_names(part, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 impl<'a> TypeChecker<'a> {
     /// The constant environment as one map, the innermost scope winning.
     pub(crate) fn consteval_snapshot(&self) -> HashMap<crate::symbol::Symbol, Value> {
@@ -844,23 +857,42 @@ impl<'a> TypeChecker<'a> {
     /// Whether `pattern`, just bound, takes a value that has to move: a name bound to
     /// something linear that is not `Copy`.
     fn pattern_moves(&mut self, pattern: &Pattern) -> bool {
-        fn names(p: &Pattern, out: &mut Vec<crate::symbol::Symbol>) {
-            match p {
-                Pattern::Identifier(n) => out.push(n.clone()),
-                Pattern::EnumVariant(_, _, Some(parts)) => {
-                    for part in parts {
-                        names(part, out);
-                    }
-                }
-                _ => {}
-            }
-        }
         let mut bound = Vec::new();
-        names(pattern, &mut bound);
+        pattern_names(pattern, &mut bound);
         bound.iter().any(|n| {
             let ty = self.lookup(n).map(|(t, _)| t.clone());
             ty.is_some_and(|t| t.is_linear() && !self.is_copy(&t))
         })
+    }
+
+    /// The names of `pattern`, just bound by a `match` on a reference, are parts of a value that
+    /// someone else owns.
+    fn mark_bound_behind_ref(&mut self, pattern: &Pattern) {
+        let mut bound = Vec::new();
+        pattern_names(pattern, &mut bound);
+        let scope = self
+            .borrow
+            .bound_behind_ref
+            .last_mut()
+            .expect("a match arm has a scope");
+        scope.extend(bound.iter().map(|n| n.to_string()));
+    }
+
+    /// E4008 when `place` is, or is part of, a name that a `match` on a reference bound. The
+    /// value stays with its owner, which drops it. Answers whether it refused.
+    pub(crate) fn refuse_move_behind_ref(&mut self, root: &str, place: &str, span: &Span) -> bool {
+        if self.speculating || !self.is_bound_behind_ref(root) {
+            return false;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E4008,
+            format!(
+                "`{place}` cannot be moved out: `{root}` is part of a value behind a reference, and \
+                 the reference does not own that value. Borrow it (`&{place}`) or clone it"
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+        true
     }
 
     /// An arm of `match scrutinee` took its value: the variable is moved, and what a
@@ -984,7 +1016,11 @@ impl<'a> TypeChecker<'a> {
                     {
                         if let Some(payload_types) = &variant.1 {
                             let mut mapping = std::collections::HashMap::new();
-                            if let Type::GenericInstance(_, args) = expr_ty {
+                            let matched = match expr_ty {
+                                Type::Borrow { inner, .. } => inner,
+                                other => other,
+                            };
+                            if let Type::GenericInstance(_, args) = matched {
                                 for (i, param) in enum_decl.generics.iter().enumerate() {
                                     if i < args.len() {
                                         mapping.insert(param.name().into(), args[i].clone());
@@ -1030,6 +1066,11 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     self.check_expr_type(match_expr)
                 };
+                // A `match` on a reference moves nothing. Its names are parts of a value that
+                // someone else owns, and so are the names of a `match` on one of them.
+                let behind_ref = matches!(expr_ty, Type::Borrow { .. })
+                    || matches!(&**match_expr, Expr::Identifier(id)
+                        if self.is_bound_behind_ref(id.name.as_ref()));
 
                 let mut match_ty: Option<Type> = None;
                 let mut covered: Vec<crate::symbol::Symbol> = Vec::new();
@@ -1075,7 +1116,9 @@ impl<'a> TypeChecker<'a> {
                     self.push_scope();
                     self.check_literal_pattern_range(&arm.pattern, &expr_ty);
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);
-                    if place && !self.speculating && self.pattern_moves(&arm.pattern) {
+                    if behind_ref {
+                        self.mark_bound_behind_ref(&arm.pattern);
+                    } else if place && !self.speculating && self.pattern_moves(&arm.pattern) {
                         // Moved before the arm's own names exist, which may hide it.
                         self.pop_scope();
                         self.match_moves(match_expr);
@@ -1255,7 +1298,10 @@ impl<'a> TypeChecker<'a> {
                 if !self.speculating {
                     // Consume captured variables in the outer scope if they are linear
                     for (name, ty) in &captured_vars {
-                        if matches!(ty, Type::Struct(_, _) | Type::Tensor(_, _, _)) {
+                        if matches!(ty, Type::Struct(_, _) | Type::Tensor(_, _, _))
+                            && (self.is_copy(ty)
+                                || !self.refuse_move_behind_ref(name, name, &e.span))
+                        {
                             self.consume(name.as_ref());
                         }
                     }

@@ -1363,7 +1363,12 @@ impl<'a> Parser<'a> {
                             body,
                             ret_ty: None,
                             captures: vec![],
-                            span: Span::default(),
+                            span: Span {
+                                line: token.line,
+                                column: token.column,
+                                length: token.length,
+                                expansion: self.expansion(),
+                            },
                         })
                     }
                     TokenType::Tasks => self.parse_task_block(TaskBlockKind::Tasks, &token)?,

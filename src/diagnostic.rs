@@ -442,7 +442,8 @@ pub enum DiagnosticCode {
     E4007,
     /// A value moved out from behind a reference: `let b = *r;` where `r` is a reference to a
     /// type that is not `Copy`. The reference does not own the value, so it cannot give it
-    /// away; copy or clone it instead.
+    /// away. Copy or clone it instead. A `match` on a reference names parts of the value behind
+    /// it, so `match r { Holder::Full(n) => n }` cannot move `n` either.
     E4008,
     /// An assignment to a variable, or a field or element of it, while a `&` borrow of it is
     /// still used afterwards: `let r = &x; x = 2;` and then a use of `r`. The borrow would see

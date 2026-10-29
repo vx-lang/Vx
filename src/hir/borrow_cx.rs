@@ -36,6 +36,9 @@ pub(crate) struct BorrowCx {
     /// The bindings declared `mut`, one set per lexical scope, kept in step with `moved_vars`.
     /// Every other binding is read-only.
     pub(crate) mutable_vars: Vec<HashSet<String>>,
+    /// The names that a `match` on a reference bound to a part of the value behind it, one set
+    /// per lexical scope, kept in step with `moved_vars`. They do not own their values.
+    pub(crate) bound_behind_ref: Vec<HashSet<String>>,
     /// Provenance of each reference-typed *local* binding (#243): does it root in caller memory
     /// (`External`) or a function-local slot (`Local`)? Reset per function.
     pub(crate) ref_provenance: HashMap<Symbol, RefProvenance>,
@@ -102,6 +105,7 @@ impl Default for BorrowCx {
             // One scope so `consume`'s `moved_vars.last_mut()` is always `Some` at top level.
             moved_vars: vec![HashSet::new()],
             mutable_vars: vec![HashSet::new()],
+            bound_behind_ref: vec![HashSet::new()],
             ref_provenance: HashMap::new(),
             store_targets: HashMap::new(),
             store_target_vars: HashMap::new(),
