@@ -1,0 +1,32 @@
+//===- unsigned_value_from_a_tuple_prints_unsigned.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An unsigned value taken out of a tuple prints as unsigned: first the field itself, then a
+// variable of the field's type that holds a copy of it.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: 255 255
+// CHECK-NEXT: 18446744073709551615 18446744073709551615
+
+fn pair_u8(a : u8) -> (u8, bool) {
+  return (a, true);
+}
+
+fn pair_u64(a : u64) -> (u64, bool) {
+  return (a, true);
+}
+
+fn main() -> i32 {
+  let r = pair_u8(255);
+  let v : u8 = r._0;
+  println!("{} {}", r._0, v);
+  let s = pair_u64(18446744073709551615);
+  let w : u64 = s._0;
+  println!("{} {}", s._0, w);
+  return 0;
+}
