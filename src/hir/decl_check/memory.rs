@@ -56,6 +56,19 @@ impl TypeChecker<'_> {
         let issues = MemoryHierarchy::build(self.env.memories.values().copied()).coherence_issues();
         for issue in issues {
             match issue {
+                MemoryCoherenceIssue::UndeclaredParent { child, parent } => {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E6035,
+                        format!(
+                            "memory space '{}' is `within: Memory::{}`, but the program and its \
+                             machine files declare no memory space '{}'",
+                            child.name(),
+                            parent.name(),
+                            parent.name()
+                        ),
+                        None,
+                    );
+                }
                 MemoryCoherenceIssue::Cycle { space } => {
                     self.errors.error_with_code(
                         crate::diagnostic::DiagnosticCode::E6006,

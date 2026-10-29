@@ -642,6 +642,9 @@ pub enum DiagnosticCode {
     /// storage the compiler lays out (`scope: sm`, `cta` or `thread`), or N is less than the
     /// `alignment:` of the space, which every tensor there has.
     E6034,
+    /// A `Memory` declaration's `within:` names a space that is not built in, and that the
+    /// program and its machine files do not declare. A typo in the name is the usual cause.
+    E6035,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch
