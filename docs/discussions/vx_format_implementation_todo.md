@@ -12,6 +12,7 @@ Formatter configuration and rules remain independent from lint configuration and
 - [x] Reject invalid configuration before writing any input.
 - [x] Print complete defaults through `--print-config default`.
 - [x] Implement non-writing `--check` and use it in CI.
+- [x] Show unified diffs with file headers, numbered hunks, and surrounding context in check mode.
 - [x] Report unsupported syntax with warnings and preserve affected source.
 - [x] Return `0` for warning-only checks, `1` for supported differences, and `2` for command or input errors.
 
@@ -92,6 +93,14 @@ cargo build --offline --locked -p vxc --bin vx-format
 Mutation checks covered adjacency, macro bytes, exclusions, token layouts, duplicate owners, registered roots, legacy ownership, widths, preserved state, header clauses, type normalization, macro discovery, coverage, non-writing checks, and CLI warnings.
 Logs under `build/vx-format-activation-mutations/` identify the intended failing assertion for each deliberate regression.
 The complete workspace and backend suites were not run.
+
+## Check-mode diff validation
+
+Check-mode diff reporting uses the `similar` library for line comparison and unified hunks.
+Each file's complete diff is written under one stdout lock to prevent mixed parallel reports.
+Diff coverage includes exact file headers, context, line counts, additions, removals, Unicode, and missing final newlines.
+The 14 CLI tests passed before five deliberate output regressions failed at their intended assertions.
+Diff validation logs use the `build/vx-format-diff-` prefix.
 
 ## Future work
 

@@ -68,13 +68,35 @@ fn check_reports_each_changed_file_without_writing() {
     let output = formatter(&project, &["--check", "main.vx", "other.vx"]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let report = String::from_utf8(output.stdout).unwrap();
-    assert!(report.contains("Would reformat main.vx"), "{report}");
-    assert!(report.contains("Would reformat other.vx"), "{report}");
+    let expected = |name| {
+        format!("--- {name}\n+++ {name} (formatted)\n@@ -1,3 +1,3 @@\n fn main() {{\n-let value = 1;\n+  let value = 1;\n }}\n")
+    };
+    let first = expected("main.vx");
+    let second = expected("other.vx");
+    assert!(
+        report == format!("{first}{second}") || report == format!("{second}{first}"),
+        "{report}"
+    );
     assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), SOURCE);
     assert_eq!(
         fs::read_to_string(project.join("other.vx")).unwrap(),
         SOURCE
     );
+}
+
+#[test]
+fn check_shows_unicode_and_missing_final_newlines() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = project(directory.path(), "project", None);
+    let source = "fn message() -> i32 {\nreturn \"café\";\n}";
+    fs::write(project.join("main.vx"), source).unwrap();
+    let output = formatter(&project, &["--check", "main.vx"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "--- main.vx\n+++ main.vx (formatted)\n@@ -1,3 +1,3 @@\n fn message() -> i32 {\n-return \"café\";\n+  return \"café\";\n }\n\\ No newline at end of file\n"
+    );
+    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), source);
 }
 
 #[test]
@@ -89,6 +111,9 @@ fn signature_width_controls_wrapping_and_check_mode() {
     fs::write(project.join("main.vx"), source).unwrap();
     let output = formatter(&project, &["--check", "main.vx"]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let diff = String::from_utf8(output.stdout).unwrap();
+    assert!(diff.contains("@@ -1,3 +1,6 @@"), "{diff}");
+    assert!(diff.contains("+    second: i32\n+) -> i32 {\n"), "{diff}");
     assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), source);
     let output = formatter(&project, &["main.vx"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -271,7 +296,9 @@ fn warnings_do_not_hide_supported_differences_in_the_same_file() {
     let output = formatter(&project, &["--check", "main.vx"]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("WARN: main.vx:1:"));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Would reformat main.vx"));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("--- main.vx\n+++ main.vx (formatted)\n")
+    );
     assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), source);
     let output = formatter(&project, &["main.vx"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");

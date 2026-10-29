@@ -35,7 +35,7 @@ struct Cli {
     #[arg(long, value_enum, conflicts_with_all = ["indent", "config", "files", "check"])]
     print_config: Option<PrintConfig>,
 
-    /// Report files that need formatting without modifying them
+    /// Show formatting differences without modifying files
     #[arg(long)]
     check: bool,
 
@@ -71,7 +71,13 @@ fn process_file(
     let changed = formatted != content;
     if changed {
         if check {
-            println!("Would reformat {}", file_path);
+            let diff = similar::TextDiff::from_lines(content, &formatted);
+            let report = diff
+                .unified_diff()
+                .context_radius(3)
+                .header(file_path, &format!("{file_path} (formatted)"))
+                .to_string();
+            std::io::stdout().lock().write_all(report.as_bytes())?;
         } else {
             fs::write(path, formatted)
                 .map_err(|error| anyhow::anyhow!("{}: {}", path.display(), error))?;

@@ -78,7 +78,10 @@ vx-format --check --indent 4 file.vx
 ```
 
 Check mode uses the same configuration, overrides, and formatting exclusions as normal formatting.
-It reports each file that needs formatting.
+It prints a unified diff for each file that needs formatting.
+The `---` header names the original file, and the `+++` header names the formatted version.
+Numbered `@@` hunks show removed lines with `-`, added lines with `+`, and three surrounding context lines.
+Unchanged files produce no diff.
 Unsupported syntax produces a `WARN` message and preserves the affected source.
 A warning alone does not fail check mode.
 Supported differences elsewhere still return status `1`.
