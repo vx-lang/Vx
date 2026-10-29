@@ -1239,7 +1239,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
 
     /// `a op b` for integers of the type whose values are `min..=max`. A result outside the
     /// type has no value: the program wraps it, and a wrapped value folded into the program
-    /// would look like something the compiler worked out.
+    /// would look like something the compiler worked out. So has a `<<` that loses bits.
     pub(crate) fn integer_op(
         a: i64,
         b: i64,
@@ -1247,12 +1247,21 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
         (min, max): (i128, i128),
     ) -> Option<i64> {
         let (a, b) = (i128::from(a), i128::from(b));
+        let bits = 128 - i128::from(max.leading_zeros()) + i128::from(min < 0);
         let result = match op {
             BinaryOp::Add => a + b,
             BinaryOp::Sub => a - b,
             BinaryOp::Mul => a * b,
             BinaryOp::Div => a.checked_div(b)?,
             BinaryOp::Rem => a.checked_rem(b)?,
+            BinaryOp::BitAnd => a & b,
+            BinaryOp::BitOr => a | b,
+            BinaryOp::BitXor => a ^ b,
+            // A shift by the type's width or more has no value in the program. `a` fits in an
+            // `i64`, so a shift below 64 cannot overflow the `i128`. `>>` keeps a negative
+            // value's sign, as the program does for a signed type.
+            BinaryOp::Shl if (0..bits.min(64)).contains(&b) => a << b,
+            BinaryOp::Shr if (0..bits).contains(&b) => a >> b,
             _ => return None,
         };
         if result < min || result > max {
@@ -3006,5 +3015,36 @@ mod tests {
         interpreter.note_opaque_callable(&facts, &[]);
 
         assert_eq!(interpreter.context.escaping_write(), Some(&outside));
+    }
+
+    /// A shift that the program cannot do, or that loses bits, has no value at compile time.
+    #[test]
+    fn a_shift_out_of_the_type_has_no_value() {
+        let range = |ty| ComptimeInterpreter::integer_range(&ty).unwrap();
+        let op = ComptimeInterpreter::integer_op;
+        // The top bit of a u32 is a value bit, and the top bit of an i32 is the sign.
+        assert_eq!(
+            op(1, 31, &BinaryOp::Shl, range(ElementType::U32)),
+            Some(1 << 31)
+        );
+        assert_eq!(op(1, 31, &BinaryOp::Shl, range(ElementType::I32)), None);
+        // A shift by the width or more, or by a negative amount. A shift by one less is a
+        // value, and the sign bit counts in the width.
+        assert_eq!(op(1, 32, &BinaryOp::Shl, range(ElementType::U32)), None);
+        assert_eq!(op(0, 32, &BinaryOp::Shl, range(ElementType::U32)), None);
+        assert_eq!(
+            op(-1, 31, &BinaryOp::Shr, range(ElementType::I32)),
+            Some(-1)
+        );
+        assert_eq!(op(8, 32, &BinaryOp::Shr, range(ElementType::U32)), None);
+        assert_eq!(op(8, -1, &BinaryOp::Shr, range(ElementType::I32)), None);
+        // A usize holds 63 bits, and the program stops on a `<<` past them.
+        assert_eq!(
+            op(1, 62, &BinaryOp::Shl, range(ElementType::USize)),
+            Some(1 << 62)
+        );
+        assert_eq!(op(1, 63, &BinaryOp::Shl, range(ElementType::USize)), None);
+        // `>>` keeps the sign of a negative value.
+        assert_eq!(op(-7, 1, &BinaryOp::Shr, range(ElementType::I32)), Some(-4));
     }
 }
