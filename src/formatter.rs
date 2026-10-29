@@ -16,7 +16,14 @@ use crate::lexer::{Lexer, Token, TokenType};
 use std::collections::HashMap;
 use vx_config::FormatConfig;
 
-mod signatures;
+mod context;
+mod layout;
+mod registry;
+mod renderer;
+mod rules;
+
+#[cfg(test)]
+mod framework_tests;
 
 pub fn format_file(content: &str, indent_spaces: usize) -> String {
     format_file_with_config(
@@ -346,6 +353,15 @@ fn adjust_spacing(tokens: Vec<Token>) -> Vec<Token> {
 }
 
 fn emit_formatted_string(tokens: Vec<Token>, config: &FormatConfig, original_len: usize) -> String {
+    emit_with_rules(tokens, config, original_len, &registry::builtin_rules())
+}
+
+fn emit_with_rules(
+    tokens: Vec<Token>,
+    config: &FormatConfig,
+    original_len: usize,
+    registry: &registry::RuleRegistry<'_>,
+) -> String {
     let indent_spaces = config.indent;
     let mut formatted = String::with_capacity(original_len + original_len / 10);
     let mut indent_level: isize = 0;
@@ -364,42 +380,47 @@ fn emit_formatted_string(tokens: Vec<Token>, config: &FormatConfig, original_len
     let mut brackets: Vec<bool> = Vec::new();
 
     let all_tokens = tokens;
+    let syntax = context::SyntaxContext::new(&all_tokens);
+    let mut applied_rule = false;
     let mut tokens = all_tokens.iter().cloned().enumerate().peekable();
     while let Some((index, token)) = tokens.next() {
         if token.kind == TokenType::Eof {
             break;
         }
 
-        match token.kind {
-            TokenType::Fn if format_enabled => {
-                let column = if is_new_line {
-                    indent_level.max(0) as usize * indent_spaces
-                } else {
-                    formatted.rsplit('\n').next().unwrap_or("").chars().count()
-                };
-                if let Some((end, header)) = signatures::format_signature(
-                    &all_tokens,
-                    index,
-                    column,
-                    indent_level.max(0) as usize,
-                    config,
-                ) {
-                    if is_new_line {
-                        write_indent(&mut formatted, indent_level, indent_spaces);
-                    }
-                    formatted.push_str(&header);
-                    is_new_line = false;
-                    while tokens.peek().is_some_and(|(next, _)| *next < end) {
-                        tokens.next();
-                    }
-                } else {
-                    if is_new_line {
-                        write_indent(&mut formatted, indent_level, indent_spaces);
-                    }
-                    formatted.push_str("fn");
-                    is_new_line = false;
+        if format_enabled && registry.has_candidate(&token.kind) {
+            let column = if is_new_line {
+                indent_level.max(0) as usize * indent_spaces
+            } else {
+                formatted.rsplit('\n').next().unwrap_or("").chars().count()
+            };
+            let context = context::FormatContext {
+                tokens: &all_tokens,
+                syntax: &syntax,
+                config,
+                index,
+                column,
+                indent_level: indent_level.max(0) as usize,
+            };
+            let plan = registry.plan(&context);
+            if let Some(edit) = plan.into_edit() {
+                applied_rule = true;
+                if is_new_line {
+                    write_indent(&mut formatted, indent_level, indent_spaces);
                 }
+                renderer::render(&edit, &context, &mut formatted);
+                is_new_line = formatted.ends_with('\n');
+                while tokens
+                    .peek()
+                    .is_some_and(|(next, _)| *next < edit.range.end)
+                {
+                    tokens.next();
+                }
+                continue;
             }
+        }
+
+        match token.kind {
             TokenType::LeftBracket => {
                 if format_enabled && is_new_line {
                     write_indent(&mut formatted, indent_level, indent_spaces);
@@ -489,6 +510,10 @@ fn emit_formatted_string(tokens: Vec<Token>, config: &FormatConfig, original_len
                 write!(&mut formatted, "{}", other).unwrap();
             }
         }
+    }
+
+    if applied_rule {
+        renderer::assert_preserves_tokens(&all_tokens, &formatted);
     }
 
     // Strip trailing whitespace from all lines

@@ -136,3 +136,8 @@ Formatting-disabled declarations remain excluded from this rule.
 Function calls retain their existing formatting policy.
 The width is a preference: a single long type or function name can still exceed it.
 Declarations without parameters remain on one line.
+
+## Extending the formatter
+
+Built-in rules use an internal registry and a shared layout renderer.
+See [adding a formatting rule](vx-format-rules.md) for the architecture and contributor checklist.

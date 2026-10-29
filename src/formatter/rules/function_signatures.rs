@@ -1,6 +1,26 @@
-use crate::lexer::{Token, TokenType};
+use super::super::context::FormatContext;
+use super::super::layout::{flat_width, LayoutEdit, LayoutPiece, LayoutPlan};
+use super::super::registry::FormatRule;
+use crate::lexer::TokenType;
 use std::ops::Range;
-use vx_config::FormatConfig;
+
+pub(in crate::formatter) struct FunctionSignatures;
+
+impl FormatRule for FunctionSignatures {
+    fn name(&self) -> &'static str {
+        "function_signatures"
+    }
+
+    fn starts_at(&self, token: &TokenType<'_>) -> bool {
+        matches!(token, TokenType::Fn)
+    }
+
+    fn apply(&self, context: &FormatContext<'_, '_>, layout: &mut LayoutPlan) {
+        if let Some(edit) = signature_layout(context) {
+            layout.propose(self.name(), context, edit);
+        }
+    }
+}
 
 #[derive(Default)]
 struct Depth {
@@ -30,11 +50,12 @@ impl Depth {
     }
 }
 
-fn compact(tokens: &[Token<'_>]) -> String {
-    let mut result = String::new();
+fn compact(context: &FormatContext<'_, '_>, range: Range<usize>) -> Vec<LayoutPiece> {
+    let tokens = &context.tokens[range.clone()];
+    let mut result = Vec::new();
     let mut previous: Option<&TokenType<'_>> = None;
     let mut whitespace = false;
-    for token in tokens {
+    for (index, token) in tokens.iter().enumerate() {
         if matches!(token.kind, TokenType::Whitespace(_)) {
             whitespace = true;
             continue;
@@ -72,24 +93,23 @@ fn compact(tokens: &[Token<'_>]) -> String {
             let separate_references = matches!(previous, TokenType::Ampersand)
                 && matches!(token.kind, TokenType::Ampersand);
             if separate_references || (space && !no_space) {
-                result.push(' ');
+                result.push(LayoutPiece::Space);
             }
         }
-        result.push_str(&token.kind.to_string());
+        result.push(LayoutPiece::Token(range.start + index));
         previous = Some(&token.kind);
         whitespace = false;
     }
     result
 }
 
-/// Reflow named declarations only. Leave comments and function calls to the normal formatter.
-pub(super) fn format_signature(
-    tokens: &[Token<'_>],
-    start: usize,
-    column: usize,
-    indent_level: usize,
-    config: &FormatConfig,
-) -> Option<(usize, String)> {
+/// Reflow named declarations only. Comments retain their existing layout.
+fn signature_layout(context: &FormatContext<'_, '_>) -> Option<LayoutEdit> {
+    let tokens = context.tokens;
+    let start = context.index;
+    let column = context.column;
+    let indent_level = context.indent_level;
+    let config = context.config;
     let name = tokens[start + 1..]
         .iter()
         .find(|token| !matches!(token.kind, TokenType::Whitespace(_)))?;
@@ -99,15 +119,11 @@ pub(super) fn format_signature(
 
     let mut depth = Depth::default();
     let mut open = None;
-    let mut close = None;
     let mut end = None;
     for (index, token) in tokens.iter().enumerate().skip(start + 1) {
         match token.kind {
             TokenType::Comment(_) | TokenType::DocComment(_) | TokenType::Eof => return None,
             TokenType::LeftParen if open.is_none() && depth.is_zero() => open = Some(index),
-            TokenType::RightParen if open.is_some() && close.is_none() && depth.parens == 1 => {
-                close = Some(index);
-            }
             TokenType::LeftBrace | TokenType::Semicolon if depth.is_zero() => {
                 end = Some(index);
                 break;
@@ -116,7 +132,12 @@ pub(super) fn format_signature(
         }
         depth.advance(&token.kind);
     }
-    let (open, close, end) = (open?, close?, end?);
+    let open = open?;
+    let close = context.syntax.matching_delimiter(open)?;
+    let end = end?;
+    if close >= end || !context.can_format(start..end) {
+        return None;
+    }
     let mut parameters: Vec<Range<usize>> = Vec::new();
     let mut parameter_start = open + 1;
     let mut depth = Depth::default();
@@ -134,29 +155,34 @@ pub(super) fn format_signature(
         parameters.push(parameter_start..close);
     }
 
-    let inline = compact(&tokens[start..end]);
+    let inline = compact(context, start..end);
     let body_space = usize::from(matches!(tokens[end].kind, TokenType::LeftBrace));
-    let mut header = if parameters.is_empty()
+    let mut pieces = if parameters.is_empty()
         || column
-            .saturating_add(inline.chars().count())
+            .saturating_add(flat_width(context, &inline))
             .saturating_add(body_space + 1)
             <= config.fn_signature_width
     {
         inline
     } else {
-        let mut multiline = compact(&tokens[start..=open]);
+        let mut multiline = compact(context, start..open + 1);
         for parameter in parameters {
-            multiline.push('\n');
-            multiline.push_str(&" ".repeat((indent_level + 1) * config.indent));
-            multiline.push_str(&compact(&tokens[parameter]));
+            multiline.push(LayoutPiece::Line {
+                indent: indent_level + 1,
+            });
+            multiline.extend(compact(context, parameter));
         }
-        multiline.push('\n');
-        multiline.push_str(&" ".repeat(indent_level * config.indent));
-        multiline.push_str(&compact(&tokens[close..end]));
+        multiline.push(LayoutPiece::Line {
+            indent: indent_level,
+        });
+        multiline.extend(compact(context, close..end));
         multiline
     };
     if body_space != 0 {
-        header.push(' ');
+        pieces.push(LayoutPiece::Space);
     }
-    Some((end, header))
+    Some(LayoutEdit {
+        range: start..end,
+        pieces,
+    })
 }

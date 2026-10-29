@@ -53,6 +53,32 @@ Signature-layout logs use the `build/vx-format-signatures-` prefix.
 - Cargo commands sourced `config.local` and used eight workers for compilation.
 - Test execution, mutation checks, and Markdown formatting remain pending.
 
+## Rule framework
+
+- [x] Add an internal `FormatRule` interface with stable names and typed configuration access.
+- [x] Add an explicit registry with deterministic ordering and duplicate-name checks.
+- [x] Share token context, delimiter matching, and formatting exclusions.
+- [x] Represent rule output as original token references plus spaces and indented line breaks.
+- [x] Reject overlapping layouts, token removal or reordering, and incomplete delimiter ranges.
+- [x] Check lexical token preservation across replacement boundaries.
+- [x] Move function-signature formatting into `rules/function_signatures.rs`.
+- [x] Remove signature-specific dispatch from the main rendering loop.
+- [x] Add extension-contract assertions and a contributor architecture guide.
+- [ ] Execute framework, formatter, and CLI tests and their required mutation checks when authorized.
+
+The framework is internal and does not load external plugins.
+Existing normalization and fallback formatting remain in the original pipeline.
+The public CLI and configuration schema are unchanged by this refactor.
+Architecture logs use the `build/vx-format-rules-` prefix.
+
+- `cargo build --offline --locked -p vxc --bin vx-format` passed.
+- `cargo check --offline --locked -p vxc --lib --tests` compiled the tests without execution.
+- `cargo clippy --offline --locked -p vxc --lib --bin vx-format --tests -- -D warnings` passed.
+- Rust formatting and whitespace checks passed.
+- Cargo commands sourced `config.local` and used eight workers for compilation.
+- Test execution and mutation checks remain deferred at the user's request.
+- Markdown formatting remains pending because the project environment lacks `mdformat`.
+
 ## Validation still required
 
 - [ ] Run the configuration tests and formatter CLI tests.
