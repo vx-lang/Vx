@@ -1542,8 +1542,13 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
       if (auto s = xfer->getAttrOfType<StringAttr>("space"))
         space = s.getValue();
 
+      // A declared topology's id is a hash of its name, so name it instead.
+      std::string where = "topology " + std::to_string(topology);
+      if (auto name = spawn->getAttrOfType<StringAttr>("topology_name"))
+        where = ("`Topology::" + name.getValue() + "`").str();
+
       spawn.emitError()
-          << "this region is placed on topology " << topology
+          << "this region is placed on " << where
           << ", but the compiler cannot emit a device kernel for it and its "
              "operands are in '"
           << space

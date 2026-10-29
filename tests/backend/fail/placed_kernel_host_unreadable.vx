@@ -34,7 +34,7 @@
 // keeps this region off the device, because a kernel cannot call the runtime.
 //
 // RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s
-// CHECK: cannot emit a device kernel
+// CHECK: placed on `Topology::GPU[0]`, but the compiler cannot emit a device kernel
 // CHECK: managed: explicit
 // CHECK: dereference device memory
 
