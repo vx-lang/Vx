@@ -1253,8 +1253,10 @@ impl<'a> Parser<'a> {
                         if is_macro {
                             self.advance(); // consume Bang
                             let token_tree = self.parse_token_tree()?;
+                            // Only `mlir!` has a `{ .. }` block after its arguments. After any
+                            // other macro the `{` is not its own, as in `if x == m!(a) {`.
                             let mut block_tree = None;
-                            if self.check(&TokenType::LeftBrace) {
+                            if s == "mlir" && self.check(&TokenType::LeftBrace) {
                                 block_tree = Some(self.parse_token_tree()?);
                             }
                             Expr::MacroCall(MacroCallExpr {
