@@ -79,6 +79,36 @@ Architecture logs use the `build/vx-format-rules-` prefix.
 - Test execution and mutation checks remain deferred at the user's request.
 - Markdown formatting remains pending because the project environment lacks `mdformat`.
 
+## Source-syntax foundations
+
+- [x] Add original-source token byte ranges and lossless source views.
+- [x] Identify opaque macro envelopes before discovering ordinary function declarations.
+- [x] Add a parser-backed header-range reader for types, topology, contracts, and transfer constraints.
+- [x] Add grammatical-gap and exact opaque-byte preservation checks.
+- [x] Add one-owner syntax dispatch and parent-child formatting with explicit width budgets.
+- [x] Add nested layout documents, exact source copies, and flat/expanded layout alternatives.
+- [x] Add ownership guards, output provenance, and explicit enclosing renderer-state handoffs.
+- [x] Add experimental declaration formatting with warning-bearing preservation outcomes.
+- [x] Add source, header, macro, adjacency, layout, ownership, and warning contract tests.
+- [ ] Execute baseline and contract tests and their required mutation checks when authorized.
+- [ ] Complete declaration-context eligibility and recursive type coverage needed for complete baseline parity.
+- [ ] Connect a bounded legacy adapter and final cleanup to ownership guards.
+- [ ] Activate the CLI path only after isolation, preservation, and compatibility validation passes.
+
+See [the source-syntax implementation guide](../tools/vx-format-source-architecture.md) for interfaces and limitations.
+The existing CLI renderer remains active.
+The new APIs are experimental foundations, not a claim that the migration gates passed.
+Logs use the `build/vx-format-source-` prefix.
+
+- `cargo check --offline --locked -p vxc --lib --bin vx-format` passed.
+- `cargo check --offline --locked -p vxc --lib --tests` compiled the test sources without execution.
+- `cargo build --offline --locked -p vxc --bin vx-format` passed.
+- `cargo clippy --offline --locked -p vxc --lib --bin vx-format --tests -- -D warnings` passed.
+- Rust formatting and whitespace checks passed.
+- Cargo commands sourced `config.local` and used eight workers for compilation.
+- Test execution, mutation checks, and migration activation remain pending under the user's no-tests instruction.
+- Markdown formatting remains pending because the project environment lacks `mdformat`.
+
 ## Validation still required
 
 - [ ] Run the configuration tests and formatter CLI tests.

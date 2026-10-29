@@ -22,6 +22,9 @@ mod registry;
 mod renderer;
 mod rules;
 
+/// Experimental source-preserving abstractions for the syntax-aware formatter migration.
+pub mod source;
+
 #[cfg(test)]
 mod framework_tests;
 

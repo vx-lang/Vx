@@ -9,6 +9,9 @@ A [syntax-aware architecture proposal](../discussions/vx_format_syntax_architect
 It describes a possible migration to structure-based dispatch and nested layout composition.
 The implementation below remains the current architecture.
 
+Experimental [source-syntax foundations](vx-format-source-architecture.md) now implement views, hierarchical dispatch, layout composition, and preservation guards.
+They are not yet the CLI rendering path.
+
 ## Pipeline
 
 1. Tokenize the source and apply the existing normalization and spacing passes.

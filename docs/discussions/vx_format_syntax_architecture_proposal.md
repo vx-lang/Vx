@@ -1,9 +1,9 @@
 # Proposal: syntax-aware architecture for vx-format
 
-Status: proposed for review. Implementation is not authorized by this document.
+Status: experimental foundations implemented; CLI migration remains gated by validation.
 
 The unsupported-syntax warning policy below was selected by the user on 2026-10-29.
-Its implementation remains pending with syntax-coverage detection.
+Warning-bearing outcomes exist in the experimental API; complete-file detection and CLI reporting remain pending.
 
 Prepared on 2026-10-29 for [issue 2343](https://github.com/vx-lang/Vx/issues/2343).
 
@@ -22,6 +22,10 @@ It does not propose new formatting styles, configuration keys, lint rules, or ex
 Existing formatting behavior should remain stable during the first migration steps.
 
 ## Current implementation
+
+The original pipeline below remains active in the CLI.
+New [source-syntax foundations](../tools/vx-format-source-architecture.md) provide a separate experimental composition path.
+They do not yet replace legacy normalization or establish that the activation gates passed.
 
 The formatter currently tokenizes source, applies legacy normalization and spacing passes, then renders tokens.
 The rendering loop consults registered rules at eligible token positions.
