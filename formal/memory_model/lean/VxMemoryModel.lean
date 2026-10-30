@@ -37,3 +37,5 @@ import VxMemoryModel.Machine
 import VxMemoryModel.Interleave
 import VxMemoryModel.InterleaveComplete
 import VxMemoryModel.MachineExample
+import VxMemoryModel.Progress
+import VxMemoryModel.ProgressExample

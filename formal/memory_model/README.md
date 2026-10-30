@@ -257,6 +257,12 @@ data race, each finite execution that the model allows comes from a run. `Machin
 runs message passing on a CPU node. A run that ends is fair, and a run in which no node moves is
 not fair.
 
+`Progress.lean` has the WF1 rule of TLA. Assume that an action `A` can happen while `P` holds, and
+that `P` holds until `A` happens. Then in a fair run, `A` happens after each point where `P` holds
+(`wf1_taken`). `wf1` gives the usual form, "`P` leads to `Q`". `delivers` shows that in a fair run,
+the fleet delivers each message in flight. In `ProgressExample.lean`, node 0 sends one message to
+node 1. `ping_arrives` uses WF1 twice to show that in each fair run, node 1 gets the message.
+
 The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
 `run_lean.py` checks that Lean and `vx.cat` agree on the 13 tests without scopes and barriers:
 
