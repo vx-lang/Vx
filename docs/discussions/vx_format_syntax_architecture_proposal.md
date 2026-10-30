@@ -115,7 +115,9 @@ The target design should compose nested layouts during one formatting operation.
 Consider this declaration:
 
 ```vx
-fn combine(first: Tensor<f32, [64, 64]>, second: Tensor<f32, [64, 64]>) -> i32;
+fn combine(first: Tensor<f32, [64, 64]>, second: Tensor<f32, [64, 64]>) -> i32 {
+  return 0;
+}
 ```
 
 The parameter formatter needs less space than the whole declaration.
