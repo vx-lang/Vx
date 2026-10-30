@@ -42,3 +42,5 @@ import VxMemoryModel.ProgressExample
 import VxMemoryModel.Deadlock
 import VxMemoryModel.CpuDeadlock
 import VxMemoryModel.DeadlockExample
+import VxMemoryModel.Finish
+import VxMemoryModel.TimeoutExample

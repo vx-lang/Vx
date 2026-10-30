@@ -275,6 +275,14 @@ deadlocked fleet of CPU nodes never changes again. In `DeadlockExample.lean`, tw
 the flags of each other and never move. A second example shows that the snapshot needs its
 hypothesis on the cut.
 
+`Finish.lean` has W7 for a thread of a CPU node (`Cpu.finishes`). In a fair run, a thread with no
+loop finishes, if three things hold. It is never stuck, except at a wait. Each of its waits can
+continue at some point. A wait that can continue stays so until the thread moves. A weight of the
+code goes down at each step of the thread, except at a spin of a wait. A wait across nodes has a
+timeout, which is an error in the task. In `TimeoutExample.lean`, `wait_ends` shows that in each
+fair run, such a wait ends, whatever the other nodes do. `no_timeout_hangs` shows a fair run in
+which a wait with no timeout never ends.
+
 The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
 `run_lean.py` checks that Lean and `vx.cat` agree on the 13 tests without scopes and barriers:
 
@@ -376,3 +384,5 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - `snapshot` assumes a cut that no message crosses. The marker protocol that gives such a cut is
   not modeled. A thread that a failed bounds check stopped has no step, and `Cpu.stops` does not
   tell it from a thread that is done.
+- `Cpu.finishes` takes its three conditions as hypotheses on the run. The proofs that the waits of
+  `tasks` and of channels meet them are not done yet. A thread with a `loop` is not covered.
