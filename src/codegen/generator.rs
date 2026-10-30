@@ -2449,6 +2449,25 @@ impl<'c> MeliorGenerator<'c> {
                 .get(&s.name)
                 .filter(|decl| decl.generics.is_empty())
                 .map(|_| syntax::Type::Struct(s.name.clone(), s.type_id)),
+            // A variant has the type the checker gives it. Without this, a `match &h` on an
+            // unannotated `let h = Holder::Full(..)` could not find the enum behind `&h`.
+            Expr::EnumVariant(e) => {
+                let base = e.enum_name.split('<').next()?;
+                if !self.enums.contains_key(base) {
+                    return None;
+                }
+                Some(match e.type_args.as_deref() {
+                    Some(args) if !args.is_empty() => syntax::Type::GenericInstance(
+                        Box::new(syntax::Type::Struct(base.into(), None)),
+                        args.to_vec(),
+                    ),
+                    // `Maybe::Some(5)` does not write `T`, so its type is not known here.
+                    _ if self.enum_generics.get(base).is_some_and(|g| !g.is_empty()) => {
+                        return None;
+                    }
+                    _ => syntax::Type::Enum(base.into(), None),
+                })
+            }
             // The parser reads `true` and `false` as names, and the lowering makes each an `i1`.
             Expr::Identifier(id) if matches!(id.name.as_ref(), "true" | "false") => {
                 Some(syntax::Type::Scalar(syntax::ElementType::Bool))

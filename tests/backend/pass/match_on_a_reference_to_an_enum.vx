@@ -6,9 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 // A `match` on a reference to an enum reads the enum it points at. Printed: `code` of `Op::B`
-// through `self : &Op`, and the payload of `Reading::Value(7)` read through `&Reading`.
+// through `self : &Op`, the payload of `Reading::Value(7)` read through `&Reading`, and `Op::B`
+// read through `&x`, where `let x` has no written type.
 //
-// EXPECT: 2 7
+// EXPECT: 2 7 B
 
 enum Op {
   A,
@@ -50,5 +51,14 @@ fn main() -> i32 {
   print!(" ");
   let r = Reading::Value(7);
   print(value_of(&r));
+  print!(" ");
+  match &x {
+    Op::A => {
+      print!("A");
+    }
+    Op::B => {
+      print!("B");
+    }
+  }
   return 0;
 }

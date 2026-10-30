@@ -1,0 +1,61 @@
+//===- match_on_a_reference_to_an_enum_let_without_a_type.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each `let` here makes an enum value and has no written type. A `match` on a reference to it
+// reads the enum behind the reference: a struct payload, a generic payload, and a variant with
+// no payload.
+//
+// EXPECT: 7, 5, empty
+
+struct Noisy {
+  id : i32,
+}
+
+enum Holder {
+  Full(Noisy),
+  Empty,
+}
+
+enum Maybe<T> {
+  Some(T),
+  Nothing,
+}
+
+fn main() -> i32 {
+  let h = Holder::Full(Noisy {
+    id : 7
+  });
+  match &h {
+    Holder::Full(n) => {
+      print(n.id);
+    }
+    Holder::Empty => {
+      print!("empty");
+    }
+  }
+  print!(", ");
+  let m = Maybe<i32>::Some(5);
+  match &m {
+    Maybe<i32>::Some(v) => {
+      print(v);
+    }
+    Maybe<i32>::Nothing => {
+      print!("nothing");
+    }
+  }
+  print!(", ");
+  let e = Holder::Empty;
+  match &e {
+    Holder::Full(n) => {
+      print(n.id);
+    }
+    Holder::Empty => {
+      print!("empty");
+    }
+  }
+  return 0;
+}
