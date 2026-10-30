@@ -312,3 +312,23 @@ fn warnings_do_not_hide_supported_differences_in_the_same_file() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stderr).contains("WARN:"));
 }
+
+#[test]
+fn exclusions_do_not_hide_diffs_in_check_mode() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = project(directory.path(), "project", None);
+    let excluded = "// vx-format-begin: OFF\nfuture_binding value;\n// vx-format-end: OFF\n";
+    for source in [
+        format!("{excluded}fn   known(value:i32)->i32 {{\nreturn value;\n}}\n"),
+        format!("fn   known(value:i32)->i32 {{\n{excluded}return value;\n}}\n"),
+    ] {
+        fs::write(project.join("main.vx"), &source).unwrap();
+        let output = formatter(&project, &["--check", "main.vx"]);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let diff = String::from_utf8(output.stdout).unwrap();
+        assert!(diff.contains("+fn known(value: i32) -> i32 {"), "{diff}");
+        assert!(diff.contains("+  return value;"), "{diff}");
+        assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), source);
+    }
+}

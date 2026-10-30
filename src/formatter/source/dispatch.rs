@@ -124,7 +124,12 @@ pub struct NodeContext<'a, 'source, 'rules> {
 
 impl NodeContext<'_, '_, '_> {
     pub fn child(&self, node: SyntaxNode<'_>, shape: Shape) -> Result<Document, CoverageWarning> {
-        self.registry.format(node, self.source, self.config, shape)
+        self.registry
+            .format(node, self.source, self.config, shape)
+            .map(|child| Document::WithShape {
+                shape,
+                child: Box::new(child),
+            })
     }
 }
 

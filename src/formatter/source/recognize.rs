@@ -8,7 +8,7 @@ fn trivia(kind: &TokenType<'_>) -> bool {
     )
 }
 
-impl SourceFileView<'_> {
+impl<'source> SourceFileView<'source> {
     pub(super) fn recognize(&mut self) {
         self.match_delimiters();
         let significant: Vec<usize> = self
@@ -20,6 +20,14 @@ impl SourceFileView<'_> {
             .collect();
         self.find_macros(&significant);
         self.find_exclusions();
+        if self.tokens.iter().any(|token| {
+            matches!(token.token.kind, TokenType::Unknown(_)) && !self.is_excluded(&token.bytes)
+        }) {
+            self.warnings.push(CoverageWarning {
+                bytes: 0..self.text.len(),
+                message: "Unrecognized lexer token; preserve the file".into(),
+            });
+        }
         self.find_gaps(&significant);
         if !self
             .warnings
@@ -67,16 +75,6 @@ impl SourceFileView<'_> {
             self.warnings.push(CoverageWarning {
                 bytes: 0..self.text.len(),
                 message: "Incomplete delimiter structure; preserve the file".into(),
-            });
-        }
-        if self
-            .tokens
-            .iter()
-            .any(|token| matches!(token.token.kind, TokenType::Unknown(_)))
-        {
-            self.warnings.push(CoverageWarning {
-                bytes: 0..self.text.len(),
-                message: "Unrecognized lexer token; preserve the file".into(),
             });
         }
     }
@@ -127,7 +125,10 @@ impl SourceFileView<'_> {
             let mut end = close + 1;
             let mut trees: Vec<_> = std::iter::once(open..end).collect();
             if !definition {
-                if let Some(next) = significant.iter().copied().find(|index| *index >= end) {
+                if let Some(next) = significant
+                    .get(significant.partition_point(|index| *index < end))
+                    .copied()
+                {
                     if matches!(self.tokens[next].token.kind, TokenType::LeftBrace) {
                         if let Some(block_close) = self.matching[next] {
                             trees.push(next..block_close + 1);
@@ -240,6 +241,12 @@ impl SourceFileView<'_> {
     }
 
     fn find_functions(&mut self, significant: &[usize]) {
+        let input: Vec<_> = significant
+            .iter()
+            .map(|index| self.tokens[*index].token.clone())
+            .collect();
+        let contexts = self.function_contexts(significant, &input);
+        let (coverage_ids, coverage) = self.coverage_tokens(significant);
         for (position, raw) in significant.iter().copied().enumerate() {
             if !matches!(self.tokens[raw].token.kind, TokenType::Fn)
                 || self.is_opaque(TokenId(raw))
@@ -262,13 +269,10 @@ impl SourceFileView<'_> {
                 position
             };
             let ids = &significant[parser_start..];
-            let input: Vec<_> = ids
-                .iter()
-                .map(|index| self.tokens[*index].token.clone())
-                .collect();
-            let mut parser = Parser::new(&input, self.text);
-            let (context, inherited) = self.function_context(significant, position);
-            parser.formatting_inherit_generics(inherited);
+            let mut parser = Parser::new(&input[parser_start..], self.text);
+            let (context, inherited) = &contexts[&position];
+            let context = *context;
+            parser.formatting_inherit_generics(inherited.clone());
             let parsed = match parser.formatting_header() {
                 Ok(parsed) => parsed,
                 Err(_) => {
@@ -298,7 +302,11 @@ impl SourceFileView<'_> {
             {
                 start = significant[parser_start - 1];
             }
-            if parser.formatting_body().is_err() {
+            let body_start = coverage_ids.partition_point(|id| *id < terminator);
+            let body_end = coverage_ids.partition_point(|id| *id < declaration_end);
+            let mut body = Parser::new(&coverage[body_start..body_end], self.text);
+            body.formatting_inherit_generics(parser.formatting_generic_names());
+            if body.formatting_body().is_err() {
                 self.warnings.push(CoverageWarning {
                     bytes: self.token_bytes(start..declaration_end),
                     message:
@@ -373,53 +381,85 @@ impl SourceFileView<'_> {
         }
     }
 
-    fn function_context(
+    fn function_contexts(
         &self,
         significant: &[usize],
-        position: usize,
-    ) -> (DeclarationContext, Vec<String>) {
-        let at = significant[position];
-        let mut scopes = std::collections::BTreeMap::new();
-        for (start, index) in significant[..position].iter().copied().enumerate() {
-            let kind = match self.tokens[index].token.kind {
-                TokenType::Impl => DeclarationContext::Impl,
-                TokenType::Trait => DeclarationContext::Trait,
-                TokenType::Extern => DeclarationContext::Extern,
-                TokenType::Struct | TokenType::Enum | TokenType::Memory | TokenType::Topology => {
-                    DeclarationContext::Other
-                }
-                _ => continue,
-            };
+        input: &[Token<'_>],
+    ) -> std::collections::BTreeMap<usize, (DeclarationContext, Vec<String>)> {
+        let mut result = std::collections::BTreeMap::new();
+        let mut stack = vec![(DeclarationContext::Root, Vec::new())];
+        let mut pending = None;
+        for (position, index) in significant.iter().copied().enumerate() {
             if self.is_opaque(TokenId(index)) {
                 continue;
             }
-            let open = significant[start + 1..position]
-                .iter()
-                .copied()
-                .find(|candidate| {
-                    matches!(self.tokens[*candidate].token.kind, TokenType::LeftBrace)
-                })
-                .filter(|candidate| self.matching[*candidate].is_some_and(|close| at < close));
-            if let Some(open) = open {
-                scopes.entry(open).or_insert((kind, start));
+            let kind = match self.tokens[index].token.kind {
+                TokenType::Impl => Some(DeclarationContext::Impl),
+                TokenType::Trait => Some(DeclarationContext::Trait),
+                TokenType::Extern => Some(DeclarationContext::Extern),
+                TokenType::Struct | TokenType::Enum | TokenType::Memory | TokenType::Topology => {
+                    Some(DeclarationContext::Other)
+                }
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                pending.get_or_insert((kind, position));
+            }
+            match self.tokens[index].token.kind {
+                TokenType::Fn => {
+                    result.insert(position, stack.last().unwrap().clone());
+                }
+                TokenType::LeftBrace => {
+                    let mut scope = stack.last().unwrap().clone();
+                    if let Some((kind, start)) = pending.take() {
+                        scope.0 = kind;
+                        if matches!(kind, DeclarationContext::Impl | DeclarationContext::Trait) {
+                            if let Ok(names) = Parser::new(&input[start..position], self.text)
+                                .formatting_scope_generics()
+                            {
+                                scope.1.extend(names);
+                            }
+                        }
+                    }
+                    stack.push(scope);
+                }
+                TokenType::RightBrace => {
+                    if stack.len() > 1 {
+                        stack.pop();
+                    }
+                    pending = None;
+                }
+                TokenType::Semicolon => pending = None,
+                _ => {}
             }
         }
-        let mut context = DeclarationContext::Root;
-        let mut generics = Vec::new();
-        for (_, (kind, start)) in scopes {
-            context = kind;
-            if !matches!(kind, DeclarationContext::Impl | DeclarationContext::Trait) {
-                continue;
+        result
+    }
+
+    /// Ignore excluded text in grammar probes, but retain delimiters that connect to outside code.
+    fn coverage_tokens(&self, significant: &[usize]) -> (Vec<usize>, Vec<Token<'source>>) {
+        let mut ids = Vec::new();
+        let mut tokens = Vec::new();
+        for index in significant.iter().copied() {
+            let token = &self.tokens[index];
+            let excluded = self.is_excluded(&token.bytes);
+            if excluded {
+                let connects = self.matching[index]
+                    .is_some_and(|partner| !self.is_excluded(&self.tokens[partner].bytes));
+                if !connects {
+                    continue;
+                }
+                if matches!(token.token.kind, TokenType::LeftBrace) {
+                    let mut block = token.token.clone();
+                    block.kind = TokenType::Loop;
+                    ids.push(index);
+                    tokens.push(block);
+                }
             }
-            let input: Vec<_> = significant[start..]
-                .iter()
-                .map(|index| self.tokens[*index].token.clone())
-                .collect();
-            if let Ok(names) = Parser::new(&input, self.text).formatting_scope_generics() {
-                generics.extend(names);
-            }
+            ids.push(index);
+            tokens.push(token.token.clone());
         }
-        (context, generics)
+        (ids, tokens)
     }
 
     fn relax_type_closers(&mut self, significant: &[usize]) {
@@ -436,6 +476,34 @@ impl SourceFileView<'_> {
                     .chain(std::iter::once(function.header.generics.clone()))
             })
             .collect();
+        let mut owner = vec![None; self.tokens.len()];
+        for (id, range) in types.iter().enumerate() {
+            for item in &mut owner[range.clone()] {
+                *item = Some(id);
+            }
+        }
+        let mut changes = vec![0i32; self.tokens.len() + 1];
+        for (index, token) in self.tokens.iter().enumerate() {
+            if owner[index].is_some()
+                && matches!(
+                    token.token.kind,
+                    TokenType::LeftBracket | TokenType::LeftBrace
+                )
+            {
+                if let Some(close) = self.matching[index] {
+                    changes[index] += 1;
+                    changes[close] -= 1;
+                }
+            }
+        }
+        let mut depth = 0;
+        let expression: Vec<_> = changes
+            .into_iter()
+            .map(|change| {
+                depth += change;
+                depth > 0
+            })
+            .collect();
         for gap in &mut self.gaps {
             if !matches!(
                 (
@@ -443,52 +511,54 @@ impl SourceFileView<'_> {
                     &self.tokens[gap.right.0].token.kind
                 ),
                 (TokenType::RightAngle, TokenType::RightAngle)
-            ) {
+            ) || expression[gap.left.0]
+            {
                 continue;
             }
-            let in_expression = self.tokens.iter().enumerate().any(|(index, token)| {
-                matches!(
-                    token.token.kind,
-                    TokenType::LeftBracket | TokenType::LeftBrace
-                ) && index < gap.left.0
-                    && self.matching[index].is_some_and(|close| gap.right.0 < close)
-                    && types.iter().any(|range| range.contains(&index))
-            });
-            if in_expression {
+            let Some(id) = owner[gap.left.0] else {
+                continue;
+            };
+            if owner[gap.right.0] != Some(id) {
                 continue;
             }
-            let next = significant
-                .iter()
-                .copied()
-                .find(|index| *index > gap.right.0);
-            let closes_type = types.iter().any(|range| {
-                range.contains(&gap.left.0)
-                    && range.contains(&gap.right.0)
-                    && next.is_none_or(|index| {
-                        index >= range.end
-                            || matches!(
-                                self.tokens[index].token.kind,
-                                TokenType::Comma | TokenType::RightAngle | TokenType::RightParen
-                            )
-                    })
-            });
-            if closes_type {
+            let next = significant.get(significant.partition_point(|index| *index <= gap.right.0));
+            if next.is_none_or(|index| {
+                *index >= types[id].end
+                    || matches!(
+                        self.tokens[*index].token.kind,
+                        TokenType::Comma | TokenType::RightAngle | TokenType::RightParen
+                    )
+            }) {
                 gap.constraint = GapConstraint::Flexible;
             }
         }
     }
 
     fn check_remaining_syntax(&mut self, significant: &[usize]) {
-        let input: Vec<_> = significant
+        let (ids, tokens) = self.coverage_tokens(significant);
+        let mut ranges: Vec<_> = self
+            .functions
             .iter()
-            .copied()
-            .filter(|index| {
-                !self
-                    .functions
-                    .iter()
-                    .any(|function| function.tokens.contains(index))
+            .map(|function| function.tokens.clone())
+            .collect();
+        ranges.sort_by_key(|range| range.start);
+        let mut cursor = 0;
+        let input: Vec<_> = ids
+            .iter()
+            .zip(tokens)
+            .filter_map(|(index, token)| {
+                while cursor < ranges.len() && ranges[cursor].end <= *index {
+                    cursor += 1;
+                }
+                if ranges
+                    .get(cursor)
+                    .is_some_and(|range| range.contains(index))
+                {
+                    None
+                } else {
+                    Some(token)
+                }
             })
-            .map(|index| self.tokens[index].token.clone())
             .collect();
         // AST results are discarded. Source views remain authoritative for every output range.
         if Parser::new(&input, self.text).parse().is_err()

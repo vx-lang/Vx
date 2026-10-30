@@ -47,6 +47,10 @@ pub enum Document {
         width: usize,
         child: Box<Document>,
     },
+    WithShape {
+        shape: Shape,
+        child: Box<Document>,
+    },
     Preserve {
         bytes: Range<usize>,
         keep_column: bool,
@@ -54,6 +58,22 @@ pub enum Document {
 }
 
 impl Document {
+    /// Select this group's expanded alternative while retaining child constraints.
+    pub fn expanded(&self) -> Self {
+        match self {
+            Self::Choice { expanded, .. } => *expanded.clone(),
+            Self::WithShape { shape, child } => Self::WithShape {
+                shape: *shape,
+                child: Box::new(child.expanded()),
+            },
+            Self::WithWidth { width, child } => Self::WithWidth {
+                width: *width,
+                child: Box::new(child.expanded()),
+            },
+            _ => self.clone(),
+        }
+    }
+
     pub fn flat_width(&self, source: &SourceFileView<'_>) -> Option<usize> {
         match self {
             Self::Token(id) => Some(source.token_text(*id).chars().count()),
@@ -63,7 +83,9 @@ impl Document {
                 width.checked_add(child.flat_width(source)?)
             }),
             Self::Choice { flat, .. } => flat.flat_width(source),
-            Self::WithWidth { child, .. } => child.flat_width(source),
+            Self::WithWidth { child, .. } | Self::WithShape { child, .. } => {
+                child.flat_width(source)
+            }
             Self::Preserve { bytes, .. } => {
                 let text = &source.text[bytes.clone()];
                 (!text.contains(['\r', '\n'])).then(|| text.chars().count())
@@ -109,10 +131,12 @@ impl RenderState {
         source: &SourceFileView<'_>,
         bytes: Range<usize>,
     ) -> Result<(), String> {
-        for (index, token) in
-            source.tokens.iter().enumerate().filter(|(_, token)| {
-                bytes.start <= token.bytes.start && token.bytes.end <= bytes.end
-            })
+        let range = source.token_range(&bytes);
+        for (index, token) in source.tokens[range.clone()]
+            .iter()
+            .enumerate()
+            .map(|(index, token)| (index + range.start, token))
+            .filter(|(_, token)| bytes.start <= token.bytes.start && token.bytes.end <= bytes.end)
         {
             let opening = match token.token.kind {
                 TokenType::LeftParen => Some((DelimiterKind::Parenthesis, false)),
@@ -201,10 +225,11 @@ pub fn render(
         &mut segments,
         &mut tokens,
     )?;
-    let expected: Vec<_> = source
-        .tokens
+    let token_range = source.token_range(&consumed);
+    let expected: Vec<_> = source.tokens[token_range.clone()]
         .iter()
         .enumerate()
+        .map(|(index, token)| (index + token_range.start, token))
         .filter(|(_, token)| {
             token.bytes.start >= consumed.start
                 && token.bytes.end <= consumed.end
@@ -217,7 +242,7 @@ pub fn render(
     }
     source.verify_span_preservation(consumed.clone(), &text)?;
     for span in ownership
-        .protected_spans()
+        .protected_in(&consumed)
         .filter(|span| super::overlaps(&span.bytes, &consumed))
     {
         if !segments.iter().any(|segment| {
@@ -232,6 +257,12 @@ pub fn render(
     for macro_view in source
         .macros
         .iter()
+        .skip(
+            source
+                .macros
+                .partition_point(|view| view.bytes.end <= consumed.start),
+        )
+        .take_while(|view| view.bytes.start < consumed.end)
         .filter(|view| super::overlaps(&view.bytes, &consumed))
     {
         let segment = segments
@@ -249,11 +280,10 @@ pub fn render(
             .expect("preserved segment has original source");
         let offset = segment.output.start + macro_view.bytes.start - origin.start;
         let prefix = &text[..offset];
-        let column = prefix
-            .rfind('\n')
-            .map_or(shape.column + prefix.chars().count(), |newline| {
-                prefix[newline + 1..].chars().count()
-            });
+        let column = prefix.rfind('\n').map_or_else(
+            || shape.column + prefix.chars().count(),
+            |newline| prefix[newline + 1..].chars().count(),
+        );
         if column != macro_view.original_column - 1 {
             return Err("Opaque macro cannot move to a different column".into());
         }
@@ -278,6 +308,27 @@ fn render_part(
     tokens: &mut Vec<TokenId>,
 ) -> Result<(), String> {
     match document {
+        Document::WithShape {
+            shape: child_shape,
+            child,
+        } => {
+            return render_part(
+                source,
+                ownership,
+                child,
+                Shape {
+                    column: state.column,
+                    width: shape
+                        .width
+                        .min(state.column.saturating_add(child_shape.remaining())),
+                    ..*child_shape
+                },
+                state,
+                text,
+                segments,
+                tokens,
+            );
+        }
         Document::WithWidth { width, child } => {
             return render_part(
                 source,
@@ -350,7 +401,12 @@ fn render_part(
                     return Err("Opaque source cannot move to a different column".into());
                 }
             }
-            for (index, token) in source.tokens.iter().enumerate() {
+            let range = source.token_range(bytes);
+            for (index, token) in source.tokens[range.clone()]
+                .iter()
+                .enumerate()
+                .map(|(index, token)| (index + range.start, token))
+            {
                 if bytes.start <= token.bytes.start
                     && token.bytes.end <= bytes.end
                     && !matches!(token.token.kind, TokenType::Whitespace(_) | TokenType::Eof)

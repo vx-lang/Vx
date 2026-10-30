@@ -25,6 +25,10 @@ pub(crate) struct HeaderRanges {
 }
 
 impl Parser<'_> {
+    pub(crate) fn formatting_generic_names(&self) -> Vec<String> {
+        self.generic_params.clone()
+    }
+
     pub(crate) fn formatting_inherit_generics(&mut self, names: Vec<String>) {
         self.generic_params.extend(names);
     }

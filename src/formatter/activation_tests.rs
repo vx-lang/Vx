@@ -3,7 +3,6 @@ use source::dispatch::{NodeContext, NodeFormatter, NodeRegistry, SyntaxKind, Syn
 use source::document::{self, Document, RenderState, Shape};
 use source::ownership::OwnershipMap;
 use source::{CoverageWarning, SourceFileView, TokenId};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn checked(input: &str, width: usize) -> FormatOutcome {
     format_file_with_report(
@@ -175,9 +174,9 @@ fn comments_between_parameters_keep_their_header_but_allow_body_formatting() {
     );
 }
 
-struct RegisteredType<'a>(&'a AtomicUsize);
+struct RegisteredType;
 
-impl NodeFormatter for RegisteredType<'_> {
+impl NodeFormatter for RegisteredType {
     fn kind(&self) -> SyntaxKind {
         SyntaxKind::Type
     }
@@ -194,15 +193,16 @@ impl NodeFormatter for RegisteredType<'_> {
         _: &NodeContext<'_, '_, '_>,
         _: Shape,
     ) -> Result<Document, CoverageWarning> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(Document::Token(TokenId(node.tokens().start)))
+        Ok(Document::Concat(vec![
+            Document::Line { indent_level: 0 },
+            Document::Token(TokenId(node.tokens().start)),
+        ]))
     }
 }
 
 #[test]
 fn registering_a_syntax_owner_is_enough_to_enter_the_real_pipeline() {
-    let calls = AtomicUsize::new(0);
-    let owner = RegisteredType(&calls);
+    let owner = RegisteredType;
     let owners: &[&dyn NodeFormatter] = &[&owner];
     let registry = NodeRegistry::new(owners).unwrap();
     let result = format_file_with_registry(
@@ -210,9 +210,8 @@ fn registering_a_syntax_owner_is_enough_to_enter_the_real_pipeline() {
         &FormatConfig::default(),
         &registry,
     );
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-    assert_eq!(result.text, "fn value(value: i32) -> i32 {\n  value\n}");
+    assert_eq!(result.text, "fn value(value: i32) -> \ni32 {\n  value\n}");
 }
 
 #[test]
@@ -252,4 +251,125 @@ fn macro_name_adjacency_is_checked_without_opaque_tree_fallback() {
     assert!(SourceFileView::parse("name!")
         .verify_preservation("name !")
         .is_err());
+}
+
+struct BudgetHeader;
+struct BudgetType;
+
+impl NodeFormatter for BudgetHeader {
+    fn kind(&self) -> SyntaxKind {
+        SyntaxKind::Header
+    }
+    fn roots<'a>(&self, source: &'a SourceFileView<'_>) -> Vec<SyntaxNode<'a>> {
+        source
+            .functions
+            .iter()
+            .map(|function| SyntaxNode::Header(&function.header))
+            .collect()
+    }
+    fn format(
+        &self,
+        node: SyntaxNode<'_>,
+        context: &NodeContext<'_, '_, '_>,
+        shape: Shape,
+    ) -> Result<Document, CoverageWarning> {
+        let SyntaxNode::Header(header) = node else {
+            unreachable!()
+        };
+        let all = context.source.token_bytes(header.tokens.clone());
+        let ty = context
+            .source
+            .token_bytes(header.return_type.tokens.clone());
+        let prefix = all.start..ty.start;
+        let column = shape.column + context.source.text[prefix.clone()].chars().count();
+        let child = context.child(
+            SyntaxNode::Type(&header.return_type),
+            Shape {
+                column,
+                width: column,
+                ..shape
+            },
+        )?;
+        Ok(Document::Concat(vec![
+            Document::Preserve {
+                bytes: prefix,
+                keep_column: false,
+            },
+            child,
+            Document::Preserve {
+                bytes: ty.end..all.end,
+                keep_column: false,
+            },
+        ]))
+    }
+}
+
+impl NodeFormatter for BudgetType {
+    fn kind(&self) -> SyntaxKind {
+        SyntaxKind::Type
+    }
+    fn format(
+        &self,
+        node: SyntaxNode<'_>,
+        context: &NodeContext<'_, '_, '_>,
+        shape: Shape,
+    ) -> Result<Document, CoverageWarning> {
+        assert_eq!(shape.remaining(), 0);
+        let flat = Document::Preserve {
+            bytes: context.source.token_bytes(node.tokens()),
+            keep_column: false,
+        };
+        Ok(Document::Choice {
+            flat: Box::new(flat.clone()),
+            expanded: Box::new(Document::Concat(vec![
+                Document::Line { indent_level: 0 },
+                flat,
+            ])),
+        })
+    }
+}
+
+#[test]
+fn composed_children_keep_their_width_budget() {
+    let owners: &[&dyn NodeFormatter] = &[&BudgetHeader, &BudgetType];
+    let registry = NodeRegistry::new(owners).unwrap();
+    let result = format_file_with_registry("fn f() -> i32 {}", &FormatConfig::default(), &registry);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.text, "fn f() -> \ni32 {}");
+}
+
+#[test]
+fn excluded_root_syntax_does_not_disable_independent_declarations() {
+    let excluded = "// vx-format-begin: OFF\nfuture_binding value;\n// vx-format-end: OFF\n";
+    let input = format!("{excluded}fn   known(value:i32)->i32 {{\nvalue\n}}\n");
+    let result = checked(&input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.text,
+        format!("{excluded}fn known(value: i32) -> i32 {{\n  value\n}}\n")
+    );
+    assert_eq!(result.check_status(&input), 1);
+}
+
+#[test]
+fn excluded_statements_do_not_disable_the_rest_of_the_body() {
+    let excluded = "// vx-format-begin: OFF\nfuture_binding value;\n// vx-format-end: OFF\n";
+    let input = format!("fn   known(value:i32)->i32 {{\n{excluded}return value;\n}}\n");
+    let result = checked(&input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.text,
+        format!("fn known(value: i32) -> i32 {{\n{excluded}  return value;\n}}\n")
+    );
+    assert_eq!(checked(&result.text, 100).text, result.text);
+}
+
+#[test]
+fn source_intervals_keep_only_intersecting_tokens() {
+    let source = SourceFileView::parse("fn f() -> i32 {}\nfn g() -> i32 {}\n");
+    let bytes = source.functions[1].bytes.clone();
+    let range = source.token_range(&bytes);
+    assert!(range.start > 0);
+    assert_eq!(source.tokens[range.start].bytes.start, bytes.start);
+    assert_eq!(source.tokens[range.end - 1].bytes.end, bytes.end);
 }

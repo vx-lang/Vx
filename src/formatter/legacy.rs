@@ -16,7 +16,7 @@ pub(super) fn render(
 ) -> Result<String, String> {
     ownership.validate_legacy_edit(bytes.clone())?;
     let mut input = Vec::new();
-    for original in &source.tokens {
+    for original in &source.tokens[source.token_range(&bytes)] {
         if !super::source::overlaps(&original.bytes, &bytes) {
             continue;
         }

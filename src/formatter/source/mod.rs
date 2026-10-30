@@ -159,18 +159,35 @@ impl<'a> SourceFileView<'a> {
         }
     }
 
+    /// Find tokens intersecting a byte interval without scanning earlier source.
+    pub(crate) fn token_range(&self, bytes: &Range<usize>) -> Range<usize> {
+        let start = self
+            .tokens
+            .partition_point(|token| token.bytes.end <= bytes.start);
+        let end = self
+            .tokens
+            .partition_point(|token| token.bytes.start < bytes.end);
+        start.min(end)..end
+    }
+
     pub fn matching_delimiter(&self, token: TokenId) -> Option<TokenId> {
         self.matching[token.0].map(TokenId)
     }
 
     pub fn is_opaque(&self, token: TokenId) -> bool {
-        self.macros
-            .iter()
-            .any(|node| node.tokens.contains(&token.0))
+        let end = self
+            .macros
+            .partition_point(|node| node.tokens.start <= token.0);
+        end > 0 && self.macros[end - 1].tokens.contains(&token.0)
     }
 
     pub fn is_excluded(&self, bytes: &Range<usize>) -> bool {
-        self.exclusions.iter().any(|range| overlaps(range, bytes))
+        let first = self
+            .exclusions
+            .partition_point(|range| range.end <= bytes.start);
+        self.exclusions
+            .get(first)
+            .is_some_and(|range| overlaps(range, bytes))
     }
 
     pub fn verify_preservation(&self, output: &str) -> Result<(), String> {
@@ -183,10 +200,11 @@ impl<'a> SourceFileView<'a> {
         output: &str,
     ) -> Result<(), String> {
         let rendered = SourceFileView::parse_tokens(output);
-        let original: Vec<_> = self
-            .tokens
+        let range = self.token_range(&bytes);
+        let original: Vec<_> = self.tokens[range.clone()]
             .iter()
             .enumerate()
+            .map(|(index, token)| (index + range.start, token))
             .filter(|(_, token)| {
                 token.bytes.start >= bytes.start
                     && token.bytes.end <= bytes.end
@@ -201,21 +219,27 @@ impl<'a> SourceFileView<'a> {
         if original.len() != actual.len() {
             return Err("Formatting changed the number of source tokens".into());
         }
-        let mut positions = vec![None; self.tokens.len()];
+        let mut positions = vec![None; range.len()];
         for ((id, before), after) in original.iter().zip(&actual) {
             if before.token.kind != after.token.kind
                 || self.text[before.bytes.clone()] != output[after.bytes.clone()]
             {
                 return Err("Formatting changed a source token".into());
             }
-            positions[*id] = Some(after.bytes.clone());
+            positions[*id - range.start] = Some(after.bytes.clone());
         }
-        for gap in &self.gaps {
+        let gap_start = self.gaps.partition_point(|gap| gap.left.0 < range.start);
+        for gap in self.gaps[gap_start..]
+            .iter()
+            .take_while(|gap| gap.right.0 < range.end)
+        {
             if gap.constraint == GapConstraint::Flexible {
                 continue;
             }
-            let (Some(left), Some(right)) = (&positions[gap.left.0], &positions[gap.right.0])
-            else {
+            let (Some(left), Some(right)) = (
+                &positions[gap.left.0 - range.start],
+                &positions[gap.right.0 - range.start],
+            ) else {
                 continue;
             };
             let touching = left.end == right.start;
@@ -226,8 +250,22 @@ impl<'a> SourceFileView<'a> {
         for preserved in self
             .exclusions
             .iter()
+            .skip(
+                self.exclusions
+                    .partition_point(|item| item.end <= bytes.start),
+            )
+            .take_while(|item| item.start < bytes.end)
             .cloned()
-            .chain(self.macros.iter().map(|view| view.bytes.clone()))
+            .chain(
+                self.macros
+                    .iter()
+                    .skip(
+                        self.macros
+                            .partition_point(|view| view.bytes.end <= bytes.start),
+                    )
+                    .take_while(|view| view.bytes.start < bytes.end)
+                    .map(|view| view.bytes.clone()),
+            )
         {
             if !overlaps(&bytes, &preserved) {
                 continue;
@@ -235,24 +273,21 @@ impl<'a> SourceFileView<'a> {
             if preserved.start < bytes.start || preserved.end > bytes.end {
                 return Err("A preserved structure crosses the formatting boundary".into());
             }
-            let owned: Vec<_> = original
-                .iter()
-                .filter(|(_, token)| {
-                    token.bytes.start >= preserved.start && token.bytes.end <= preserved.end
-                })
-                .collect();
+            let start = original.partition_point(|(_, token)| token.bytes.start < preserved.start);
+            let end = original.partition_point(|(_, token)| token.bytes.end <= preserved.end);
+            let owned = &original[start..end];
             if let (Some((first, first_token)), Some((last, last_token))) =
-                (owned.first().copied(), owned.last().copied())
+                (owned.first(), owned.last())
             {
                 let leading = first_token.bytes.start - preserved.start;
                 let trailing = preserved.end - last_token.bytes.end;
-                let start = positions[*first]
+                let start = positions[*first - range.start]
                     .as_ref()
                     .expect("preserved token has an output position")
                     .start
                     .checked_sub(leading)
                     .ok_or("Formatting removed preserved leading whitespace")?;
-                let end = positions[*last]
+                let end = positions[*last - range.start]
                     .as_ref()
                     .expect("preserved token has an output position")
                     .end
@@ -264,8 +299,19 @@ impl<'a> SourceFileView<'a> {
                 return Err("Formatting changed an excluded source range".into());
             }
         }
-        for macro_view in &self.macros {
-            let Some(position) = &positions[macro_view.tokens.start] else {
+        for macro_view in self
+            .macros
+            .iter()
+            .skip(
+                self.macros
+                    .partition_point(|view| view.bytes.end <= bytes.start),
+            )
+            .take_while(|view| view.bytes.start < bytes.end)
+        {
+            if macro_view.tokens.start < range.start {
+                continue;
+            }
+            let Some(position) = &positions[macro_view.tokens.start - range.start] else {
                 continue;
             };
             let prefix = &output[..position.start];
@@ -273,11 +319,10 @@ impl<'a> SourceFileView<'a> {
                 .rfind('\n')
                 .map_or(0, |offset| offset + 1);
             let entry_column = self.text[original_line_start..bytes.start].chars().count();
-            let column = prefix
-                .rfind('\n')
-                .map_or(entry_column + prefix.chars().count(), |newline| {
-                    prefix[newline + 1..].chars().count()
-                });
+            let column = prefix.rfind('\n').map_or_else(
+                || entry_column + prefix.chars().count(),
+                |newline| prefix[newline + 1..].chars().count(),
+            );
             if column != macro_view.original_column - 1 {
                 return Err("Formatting changed an opaque macro's column".into());
             }

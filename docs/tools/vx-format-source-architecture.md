@@ -54,6 +54,8 @@ Expression shifts and macro-name adjacency retain grammatical constraints.
 `NodeRegistry` assigns one formatter to each syntax kind.
 Registered owners publish independent roots through `NodeFormatter::roots`.
 Parents delegate children through `NodeContext::child` with an explicit `Shape`.
+Child documents retain their shape and remaining width budget during later composition.
+Parents select a group's expanded layout through the document interface rather than inspecting its representation.
 No syntax-specific engine branch selects the current header rule.
 
 The built-in root owner formats function headers.
@@ -80,6 +82,11 @@ It carries the delimiter stack, indentation, multiline-bracket flags, line, and 
 A preserved interval advances delimiter state from original tokens and position state from its unchanged bytes.
 A syntax document reports its exit state.
 The next legacy interval therefore retains enclosing braces and indentation.
+
+Coverage probes omit excluded text while retaining delimiters connected to surrounding code.
+An excluded opening block uses a neutral block in the grammar probe.
+The original source and renderer still retain the real tokens and delimiter state.
+Unsupported excluded statements therefore cannot disable independent supported declarations.
 
 There is no whole-output whitespace cleanup.
 Legacy whitespace cleanup operates on whitespace tokens inside permitted intervals.
@@ -115,3 +122,13 @@ New constructs still need shared recognition when no syntax view exists.
 Unsupported constructs remain preserved until their coverage and layout are implemented.
 Dynamic plugins, a stable public API, and a complete concrete syntax tree remain future choices.
 See [the contributor guide](vx-format-rules.md) for the extension workflow.
+
+## Indexed source traversal
+
+Recognition builds one significant-token buffer and records scope context in one traversal.
+Each declaration borrows that buffer instead of copying the remaining source tokens.
+Byte intervals locate their token slices through binary searches.
+Rendering, state updates, and local validation visit only those slices.
+Local position maps use the interval's size rather than the complete file's size.
+Ownership uses indexed syntax claims and sorted protected intervals.
+The engine retains one final full-file preservation check after all output operations.

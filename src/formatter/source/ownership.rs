@@ -1,4 +1,5 @@
 use super::{overlaps, SourceFileView};
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +30,8 @@ pub struct OwnedSpan {
 pub struct OwnershipMap {
     length: usize,
     spans: Vec<OwnedSpan>,
+    prefix_ends: Vec<usize>,
+    syntax: BTreeMap<usize, OwnedSpan>,
 }
 
 impl OwnershipMap {
@@ -47,7 +50,32 @@ impl OwnershipMap {
                 owner: Owner::OpaqueUnsupported,
             })
             .collect();
+        self.reindex();
         Ok(())
+    }
+
+    fn reindex(&mut self) {
+        self.spans.sort_by_key(|span| span.bytes.start);
+        let mut end = 0;
+        self.prefix_ends = self
+            .spans
+            .iter()
+            .map(|span| {
+                end = end.max(span.bytes.end);
+                end
+            })
+            .collect();
+    }
+
+    fn overlapping<'a>(
+        &'a self,
+        bytes: &'a Range<usize>,
+    ) -> impl Iterator<Item = &'a OwnedSpan> + 'a {
+        let start = self.prefix_ends.partition_point(|end| *end <= bytes.start);
+        self.spans[start..]
+            .iter()
+            .take_while(move |span| span.bytes.start < bytes.end)
+            .filter(move |span| overlaps(&span.bytes, bytes))
     }
 
     pub fn from_source(source: &SourceFileView<'_>) -> Self {
@@ -64,17 +92,29 @@ impl OwnershipMap {
             bytes: view.bytes.clone(),
             owner: Owner::OpaqueMacro,
         }));
-        Self {
+        let mut result = Self {
             length: source.text.len(),
             spans,
-        }
+            prefix_ends: Vec::new(),
+            syntax: BTreeMap::new(),
+        };
+        result.reindex();
+        result
     }
 
     pub fn claim(&mut self, bytes: Range<usize>, owner: Owner) -> Result<(), String> {
         if bytes.start >= bytes.end || bytes.end > self.length {
             return Err("Invalid source ownership range".into());
         }
-        for previous in &self.spans {
+        if self
+            .syntax
+            .range(..bytes.end)
+            .next_back()
+            .is_some_and(|(_, span)| overlaps(&span.bytes, &bytes))
+        {
+            return Err("Overlapping source ownership claims".into());
+        }
+        for previous in self.overlapping(&bytes) {
             if !overlaps(&bytes, &previous.bytes) {
                 continue;
             }
@@ -84,28 +124,51 @@ impl OwnershipMap {
             }
             return Err("Overlapping source ownership claims".into());
         }
-        self.spans.push(OwnedSpan { bytes, owner });
+        if owner.preserves_bytes() {
+            self.spans.push(OwnedSpan { bytes, owner });
+            self.reindex();
+        } else {
+            self.syntax.insert(bytes.start, OwnedSpan { bytes, owner });
+        }
         Ok(())
     }
 
     pub fn owner_at(&self, byte: usize) -> Owner {
-        self.spans
-            .iter()
-            .filter(|span| span.bytes.contains(&byte))
-            .min_by_key(|span| (!span.owner.preserves_bytes(), span.bytes.len()))
-            .map_or(Owner::Legacy, |span| span.owner)
+        let point = byte..byte.saturating_add(1);
+        self.overlapping(&point)
+            .min_by_key(|span| span.bytes.len())
+            .map(|span| span.owner)
+            .or_else(|| {
+                self.syntax
+                    .range(..=byte)
+                    .next_back()
+                    .filter(|(_, span)| span.bytes.contains(&byte))
+                    .map(|(_, span)| span.owner)
+            })
+            .unwrap_or(Owner::Legacy)
     }
 
     pub fn validate_legacy_edit(&self, bytes: Range<usize>) -> Result<(), String> {
         if bytes.end > self.length || bytes.start > bytes.end {
             return Err("Invalid legacy edit range".into());
         }
-        if self.spans.iter().any(|span| {
-            overlaps(&span.bytes, &bytes)
-                || (bytes.is_empty()
-                    && span.bytes.start < bytes.start
-                    && bytes.start < span.bytes.end)
-        }) {
+        let crosses = if bytes.is_empty() {
+            self.overlapping(&(bytes.start..bytes.end.saturating_add(1)))
+                .any(|span| span.bytes.start < bytes.start)
+        } else {
+            self.overlapping(&bytes).next().is_some()
+        };
+        let syntax = self
+            .syntax
+            .range(..bytes.end)
+            .next_back()
+            .is_some_and(|(_, span)| {
+                overlaps(&span.bytes, &bytes)
+                    || (bytes.is_empty()
+                        && span.bytes.start < bytes.start
+                        && bytes.start < span.bytes.end)
+            });
+        if crosses || syntax {
             return Err("Legacy edit crosses a protected ownership boundary".into());
         }
         Ok(())
@@ -115,6 +178,13 @@ impl OwnershipMap {
         self.spans
             .iter()
             .filter(|span| span.owner.preserves_bytes())
+    }
+
+    pub(crate) fn protected_in<'a>(
+        &'a self,
+        bytes: &'a Range<usize>,
+    ) -> impl Iterator<Item = &'a OwnedSpan> + 'a {
+        self.overlapping(bytes)
     }
 }
 

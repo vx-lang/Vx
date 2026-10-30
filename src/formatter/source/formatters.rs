@@ -155,8 +155,12 @@ impl NodeFormatter for HeaderFormatter {
         if source.is_excluded(&bytes)
             || source
                 .macros
-                .iter()
-                .any(|macro_view| super::overlaps(&macro_view.bytes, &bytes))
+                .get(
+                    source
+                        .macros
+                        .partition_point(|view| view.bytes.end <= bytes.start),
+                )
+                .is_some_and(|view| super::overlaps(&view.bytes, &bytes))
         {
             let end = source.tokens[view.terminator.0].bytes.start;
             return Ok(Document::Preserve {
@@ -173,22 +177,19 @@ impl NodeFormatter for HeaderFormatter {
             ..shape
         };
         let parameters = context.child(SyntaxNode::ParameterList(view), parameter_shape)?;
-        let (flat_parameters, expanded_parameters) = match parameters {
-            Document::Choice { flat, expanded } => (*flat, Some(*expanded)),
-            flat => (flat, None),
-        };
+        let expanded_parameters = parameters.expanded();
         let flat_end = parameter_shape.column
-            + flat_parameters
+            + parameters
                 .flat_width(source)
                 .ok_or_else(|| unsupported(context, node))?;
         let flat = Document::Concat(vec![
             prefix.clone(),
-            flat_parameters,
+            parameters,
             header_tail(context, view, shape, flat_end)?,
         ]);
-        let Some(expanded_parameters) = expanded_parameters else {
+        if view.parameters.is_empty() {
             return Ok(flat);
-        };
+        }
         let expanded_end = shape.indent_level * shape.indent_spaces + 1;
         let expanded = Document::Concat(vec![
             prefix,
@@ -408,8 +409,8 @@ fn compact(
                     && matches!(kind, TokenType::Ampersand));
             let constrained = source
                 .gaps
-                .iter()
-                .find(|gap| gap.left.0 == before && gap.right.0 == index)
+                .get(source.gaps.partition_point(|gap| gap.left.0 < before))
+                .filter(|gap| gap.left.0 == before && gap.right.0 == index)
                 .map(|gap| gap.constraint);
             let insert_space = match constrained {
                 Some(GapConstraint::MustTouch) => false,

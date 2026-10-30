@@ -81,7 +81,7 @@ fn line_envelope(source: &SourceFileView<'_>, bytes: &Range<usize>) -> Range<usi
         .find('\n')
         .map_or(source.text.len(), |offset| bytes.end + offset + 1);
     // A multiline literal can cross a line boundary. Never split its token.
-    for token in &source.tokens {
+    for token in &source.tokens[source.token_range(&(start..end))] {
         if matches!(token.token.kind, TokenType::Whitespace(_)) {
             continue;
         }
@@ -155,7 +155,12 @@ fn render_file(
             }
         }
         previous_root = Some(bytes.clone());
-        if bytes.is_empty() || merged.iter().any(|range| overlaps(range, &bytes)) {
+        let protected = merged.partition_point(|range| range.end <= bytes.start);
+        if bytes.is_empty()
+            || merged
+                .get(protected)
+                .is_some_and(|range| overlaps(range, &bytes))
+        {
             continue;
         }
         ownership.claim(bytes.clone(), Owner::Syntax)?;
