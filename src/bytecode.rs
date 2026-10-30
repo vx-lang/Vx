@@ -321,6 +321,12 @@ pub enum Opcode {
     /// The stream that `Print` and `PrintStr` write to, from here on in this thread: standard error
     /// when `imm` is 1, standard output when it is 0. An `eprint!` and a `panic` are between two.
     PrintStream = 72,
+    /// In a `tasks` block, before the drops of a `return`, `break` or `continue` that leaves it:
+    /// waits until each task of the block ends.
+    TasksWait = 73,
+    /// Leaves the innermost `Spawn` region from its middle, with no value. It ends its block, as
+    /// `Ret` does.
+    RegionExit = 74,
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.

@@ -472,7 +472,9 @@ pub enum DiagnosticCode {
     /// that the same pass does not join runs at the same time as the next pass, so it must not
     /// write a variable from outside the loop, or read one that the loop writes. A task must not
     /// use a variable that ends before its `tasks` block, such as one of the loop body. Join the
-    /// task in the same block: `let h = spawn { .. };` and then `h.join();`.
+    /// task in the same block: `let h = spawn { .. };` and then `h.join();`. A `return`, `break`
+    /// or `continue` that leaves two `tasks` blocks waits only for the tasks of the inner one, so
+    /// it cannot drop a value from outside the inner block yet.
     E4014,
 
     // --- Safety Errors (E5xxx) ---

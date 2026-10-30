@@ -105,6 +105,15 @@ fn comptime_survivor(e: &crate::syntax::IfExpr) -> Option<&[Statement]> {
     Some(e.else_block.as_deref().unwrap_or(&[]))
 }
 
+/// Whether the body of a `tasks` block has a `return`, `break` or `continue` that leaves it.
+/// The checker puts a wait for the tasks before each one. A wait of a `tasks` block inside
+/// this one also counts.
+fn has_tasks_exit(stmts: &[Statement]) -> bool {
+    let mut found = false;
+    crate::syntax::visit_exprs(stmts, &mut |e| found |= crate::syntax::is_tasks_wait(e));
+    found
+}
+
 /// Whether an expression's value is a construction's slot: a struct or enum construction, or
 /// an `unsafe`/`comptime` block whose trailing value is one.
 fn construction_tail(e: &Expr) -> bool {
@@ -399,6 +408,30 @@ struct RegionLaunch<'a> {
 /// A name a `let` in a block shadows, with the binding and type it had before the block.
 type Shadowed = (Symbol, Option<Binding>, Option<Type>);
 
+/// What an exit from a `tasks` block does after the block ends.
+#[derive(Clone, Copy)]
+enum TasksExitKind {
+    Return,
+    Break,
+    Continue,
+}
+
+/// A `tasks` block with a `return`, `break` or `continue` that leaves it. Such an exit writes
+/// its number to `code` and leaves the region. After the region, the code reads `code` and
+/// does what the exit does. It is 0 when the region ends at its end.
+struct TasksExits {
+    /// `spawn_depth` inside the block's region.
+    spawn_depth: u32,
+    /// `loop_stack.len()` at the block: a `break` of one of these loops leaves the block.
+    loops: usize,
+    /// An `i32` slot.
+    code: Register,
+    /// The slot for the value of a `return` in a function that returns one.
+    ret: Option<Val>,
+    /// Each exit, in the order of their numbers, from 1.
+    exits: Vec<TasksExitKind>,
+}
+
 /// Per-function lowering accumulator. Instructions and their result-type GIDs are built into local
 /// buffers and only committed to the worker on full success, so a partial (aborted) lowering leaves
 /// no trace.
@@ -419,6 +452,8 @@ struct Lowerer<'r> {
     /// Enclosing loops: `(continue_target, break_target)` block ids. `continue` branches to the
     /// first (the header for `loop`, the increment latch for `for`), `break` to the second (exit).
     loop_stack: Vec<(u32, u32)>,
+    /// The open `tasks` blocks that a `return`, `break` or `continue` leaves, innermost last.
+    tasks_exits: Vec<TasksExits>,
     /// Tensor-type side table `GID -> (element, shape)`, recorded as tensor-typed values are emitted.
     /// Tensor GIDs are content hashes, so codegen recovers a tensor's memref shape from here rather
     /// than by inverting the GID (which is impossible). Committed onto the worker.
@@ -545,6 +580,7 @@ impl<'r> Lowerer<'r> {
             memory: false,
             next_block: 1,
             loop_stack: Vec::new(),
+            tasks_exits: Vec::new(),
             tensor_types: Vec::new(),
             strings: Vec::new(),
             ast_types: HashMap::new(),
@@ -652,8 +688,78 @@ impl<'r> Lowerer<'r> {
     fn block_terminated(&self) -> bool {
         matches!(
             self.code.last().map(|i| i.opcode),
-            Some(Opcode::Ret | Opcode::Br | Opcode::CondBr)
+            Some(Opcode::Ret | Opcode::Br | Opcode::CondBr | Opcode::RegionExit)
         )
+    }
+
+    /// Whether a `return` (`loop_exit` false), or a `break` or `continue` of the innermost
+    /// loop (true), here leaves a `tasks` block.
+    fn leaving_tasks(&self, loop_exit: bool) -> bool {
+        self.tasks_exits.last().is_some_and(|t| {
+            t.spawn_depth == self.spawn_depth && (!loop_exit || self.loop_stack.len() <= t.loops)
+        })
+    }
+
+    /// Leave the innermost `tasks` block's region by the exit `kind`.
+    fn emit_tasks_exit(&mut self, kind: TasksExitKind) {
+        let t = self
+            .tasks_exits
+            .last_mut()
+            .expect("an exit leaves an open tasks block");
+        t.exits.push(kind);
+        let (slot, number) = (t.code, t.exits.len() as u64);
+        let number = self.emit_value(
+            Opcode::Const,
+            Register(0),
+            Register(0),
+            ElementType::I32,
+            number,
+        );
+        self.emit_effect(Opcode::Store, slot, number.reg, 0);
+        self.emit_effect(Opcode::RegionExit, Register(0), Register(0), 0);
+    }
+
+    /// The function returns `v`. In a `tasks` block, `v` waits in a slot until the block ends.
+    fn emit_ret(&mut self, v: Option<Val>) -> Lowered<()> {
+        if !self.leaving_tasks(false) {
+            match v {
+                Some(v) => {
+                    self.emit_typed(Opcode::Ret, v.reg, Register(0), v.ty, 0);
+                }
+                None => self.emit_effect(Opcode::Ret, Register(0), Register(0), 0),
+            }
+            return Ok(());
+        }
+        let slot = self.tasks_exits.last().and_then(|t| t.ret.clone());
+        match (v, slot) {
+            (Some(v), Some(slot)) => self.emit_effect(Opcode::Store, slot.reg, v.reg, 0),
+            (None, _) => {}
+            (Some(_), None) => {
+                return Err(Decline::Unsupported {
+                    what: "a return of a value of this type from inside a tasks block",
+                })
+            }
+        }
+        self.emit_tasks_exit(TasksExitKind::Return);
+        Ok(())
+    }
+
+    /// A `break` or `continue`: a branch to the loop's target, or an exit from a `tasks` block
+    /// inside the loop.
+    fn lower_loop_exit(&mut self, kind: TasksExitKind) -> Lowered<()> {
+        if self.leaving_tasks(true) {
+            self.emit_tasks_exit(kind);
+            return Ok(());
+        }
+        let (cont, brk) = *self.loop_stack.last().ok_or(Decline::Unsupported {
+            what: "a break or continue outside a loop",
+        })?;
+        let target = match kind {
+            TasksExitKind::Break => brk,
+            _ => cont,
+        };
+        self.emit_effect(Opcode::Br, Register(0), Register(0), target as u64);
+        Ok(())
     }
 
     /// Bind a fresh local name to a value: an SSA alias in straight-line mode, or an `Alloca` slot
@@ -3421,17 +3527,102 @@ impl<'r> Lowerer<'r> {
             crate::syntax::TaskBlockKind::Tasks => crate::arch::TASKS_BLOCK_DISPATCH_ID,
             crate::syntax::TaskBlockKind::Spawn => crate::arch::TASK_DISPATCH_ID,
         };
-        self.lower_region(
+        let launch = RegionLaunch {
+            shape: &[],
+            across: false,
+        };
+        let exits = kind == crate::syntax::TaskBlockKind::Tasks && has_tasks_exit(&u.stmts);
+        if !exits {
+            return self.lower_region(
+                id as u32 as u64,
+                launch,
+                &u.stmts,
+                u.ret.as_deref(),
+                want_value,
+                false,
+            );
+        }
+        if want_value {
+            return Err(Decline::Unsupported {
+                what: "a tasks block with a value and a return, break or continue inside",
+            });
+        }
+        if !self.memory {
+            return Err(Decline::NeedsMemoryMode {
+                construct: "a return, break or continue inside a tasks block",
+            });
+        }
+        let code = self.emit_alloca(LoweredTy::Scalar(ElementType::I32));
+        let zero = self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0);
+        self.emit_effect(Opcode::Store, code.reg, zero.reg, 0);
+        let ret = match self.ret_ty.clone() {
+            Some(ty @ (LoweredTy::Scalar(_) | LoweredTy::Ptr)) if !self.ret_void => {
+                Some(self.emit_alloca(ty))
+            }
+            _ => None,
+        };
+        self.tasks_exits.push(TasksExits {
+            spawn_depth: self.spawn_depth + 1,
+            loops: self.loop_stack.len(),
+            code: code.reg,
+            ret: ret.clone(),
+            exits: Vec::new(),
+        });
+        let lowered = self.lower_region(
             id as u32 as u64,
-            RegionLaunch {
-                shape: &[],
-                across: false,
-            },
+            launch,
             &u.stmts,
             u.ret.as_deref(),
-            want_value,
             false,
-        )
+            false,
+        );
+        let exits = self.tasks_exits.pop().expect("pushed above").exits;
+        lowered?;
+        // The tasks ended. Each exit that left the region goes on here.
+        for (i, kind) in exits.into_iter().enumerate() {
+            let taken = self.emit_typed(
+                Opcode::SlotLoad,
+                code.reg,
+                Register(0),
+                LoweredTy::Scalar(ElementType::I32),
+                0,
+            );
+            let number = self.emit_value(
+                Opcode::Const,
+                Register(0),
+                Register(0),
+                ElementType::I32,
+                i as u64 + 1,
+            );
+            let cond = self.emit_value(
+                Opcode::Cmp,
+                taken.reg,
+                number.reg,
+                ElementType::Bool,
+                rel_code(&RelationalOp::Eq),
+            );
+            let exit_b = self.new_block();
+            let next_b = self.new_block();
+            self.emit_effect(
+                Opcode::CondBr,
+                cond.reg,
+                Register(0),
+                pack_targets(exit_b, next_b),
+            );
+            self.emit_effect(Opcode::BlockStart, Register(0), Register(0), exit_b as u64);
+            match kind {
+                TasksExitKind::Return => {
+                    let v = ret.clone().map(|slot| {
+                        let ty = slot.ty.clone();
+                        self.emit_typed(Opcode::SlotLoad, slot.reg, Register(0), ty, 0)
+                    });
+                    self.emit_ret(v)?;
+                }
+                loop_exit => self.lower_loop_exit(loop_exit)?,
+            }
+            self.emit_effect(Opcode::BlockStart, Register(0), Register(0), next_b as u64);
+        }
+        Ok(None)
     }
 
     /// The `Spawn`/`SpawnEnd` region of `lower_spawn` and `lower_task_region`. `imm` is the
@@ -5907,7 +6098,7 @@ impl<'r> Lowerer<'r> {
                                 })
                             } // a non-scalar default return isn't modelled
                         };
-                        self.emit_typed(Opcode::Ret, zero.reg, Register(0), rty, 0);
+                        self.emit_ret(Some(Val { reg: zero.reg, ty: rty }))?;
                     }
                     return Ok(());
                 }
@@ -5917,7 +6108,7 @@ impl<'r> Lowerer<'r> {
                 let Some(ret_expr) = &r.expr else {
                     self.run_value_drops()?;
                     self.drop_temps_here(None);
-                    self.emit_effect(Opcode::Ret, Register(0), Register(0), 0);
+                    self.emit_ret(None)?;
                     return Ok(());
                 };
                 // A `void` function that ends in an `if` returns it, but its branches give no value.
@@ -5926,7 +6117,7 @@ impl<'r> Lowerer<'r> {
                     if !self.block_terminated() {
                         self.run_value_drops()?;
                         self.drop_temps_here(None);
-                        self.emit_effect(Opcode::Ret, Register(0), Register(0), 0);
+                        self.emit_ret(None)?;
                     }
                     return Ok(());
                 }
@@ -5935,7 +6126,7 @@ impl<'r> Lowerer<'r> {
                     if !self.block_terminated() {
                         self.run_value_drops()?;
                         self.drop_temps_here(None);
-                        self.emit_effect(Opcode::Ret, Register(0), Register(0), 0);
+                        self.emit_ret(None)?;
                     }
                     return Ok(());
                 }
@@ -5950,7 +6141,7 @@ impl<'r> Lowerer<'r> {
                 let v = self.forget_extents_for_return(v)?;
                 self.run_value_drops()?;
                 self.drop_temps_here(Some(v.reg));
-                self.emit_typed(Opcode::Ret, v.reg, Register(0), v.ty, 0);
+                self.emit_ret(Some(v))?;
                 Ok(())
             }
             Statement::Assign(a) => self.lower_assign(&a.lhs, &a.rhs),
@@ -6066,6 +6257,14 @@ impl<'r> Lowerer<'r> {
                 //
                 // `panic(msg)` prints `panic: <msg>` and a newline to standard error first, and then
                 // aborts with an empty message, as the AST code generator does.
+                expr if crate::syntax::is_tasks_wait(expr) => {
+                    assert!(
+                        self.leaving_tasks(false),
+                        "the checker waits for tasks only in a tasks block"
+                    );
+                    self.emit_effect(Opcode::TasksWait, Register(0), Register(0), 0);
+                    Ok(())
+                }
                 Expr::FunctionCall(fc) if crate::syntax::is_abort_or_panic(fc) => {
                     let mut abort_msg = "abort() called";
                     if fc.name.as_ref() == "panic" {
@@ -6114,21 +6313,8 @@ impl<'r> Lowerer<'r> {
             },
             Statement::Loop(l) => self.lower_loop(&l.body),
             Statement::ForLoop(f) => self.lower_for(f),
-            // `break`/`continue` branch to the enclosing loop's exit/continue target.
-            Statement::Break(_) => {
-                let (_, brk) = *self.loop_stack.last().ok_or(Decline::Unsupported {
-                    what: "a break outside a loop",
-                })?;
-                self.emit_effect(Opcode::Br, Register(0), Register(0), brk as u64);
-                Ok(())
-            }
-            Statement::Continue(_) => {
-                let (cont, _) = *self.loop_stack.last().ok_or(Decline::Unsupported {
-                    what: "a continue outside a loop",
-                })?;
-                self.emit_effect(Opcode::Br, Register(0), Register(0), cont as u64);
-                Ok(())
-            }
+            Statement::Break(_) => self.lower_loop_exit(TasksExitKind::Break),
+            Statement::Continue(_) => self.lower_loop_exit(TasksExitKind::Continue),
             Statement::Drop(_) => unreachable!("lower_stmt lowers a drop"),
             other => {
                 if std::env::var("VX_FLAT_DBG").is_ok() {

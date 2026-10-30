@@ -360,11 +360,11 @@ impl<'a> TypeChecker<'a> {
             Statement::Loop(lp) => self.check_loop_stmt(lp, return_type),
             Statement::Break(b) => {
                 self.check_task_exit(&Statement::Break(b.clone()));
-                self.drops_exit("break", b.span.line, true)
+                self.drops_exit("break", &b.span, true)
             }
             Statement::Continue(c) => {
                 self.check_task_exit(&Statement::Continue(c.clone()));
-                self.drops_exit("continue", c.span.line, true)
+                self.drops_exit("continue", &c.span, true)
             }
             Statement::Assign(AssignStmt { lhs, rhs, span }) => {
                 let span = *span;
@@ -1768,7 +1768,7 @@ impl<'a> TypeChecker<'a> {
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
             }
-            self.drops_exit("return", span.line, false);
+            self.drops_exit("return", span, false);
             return false;
         };
 
@@ -1779,7 +1779,7 @@ impl<'a> TypeChecker<'a> {
         self.consteval.comptime_return_is_value = false;
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, Some(return_type));
         self.expected_type = prev_expected;
-        self.drops_exit("return", span.line, false);
+        self.drops_exit("return", span, false);
 
         let mut expected_ty = return_type.clone();
         if let Some(Type::Unknown) = self.current_return_type {

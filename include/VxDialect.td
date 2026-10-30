@@ -122,6 +122,14 @@ def Vx_YieldOp : Vx_Op<"yield", [Pure, Terminator, ReturnLike]> {
     let assemblyFormat = "($results^ `:` type($results))? attr-dict";
 }
 
+// In a `tasks` block, before a `return`, `break` or `continue` leaves it: waits
+// until each task of the block ends, so that the drops before the exit run with no
+// task running. It reads and writes memory, so nothing moves across it.
+def Vx_TasksWaitOp : Vx_Op<"tasks_wait", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Waits for the tasks of the enclosing tasks block.";
+    let assemblyFormat = "attr-dict";
+}
+
 // A dispatch operation to execute an outlined kernel
 // The kernel may read and write any buffer it is given.
 def Vx_DispatchOp : Vx_Op<"dispatch", [MemoryEffects<[MemRead, MemWrite]>]> {

@@ -1800,15 +1800,15 @@ static LaneElem hostTree(OpBuilder &b, Location loc, ValueRange a,
   Value one = b.create<arith::ConstantIndexOp>(loc, 1);
   for (int64_t offset : {16, 8, 4, 2, 1}) {
     Value off = b.create<arith::ConstantIndexOp>(loc, offset);
-    b.create<scf::ForOp>(
-        loc, zero, off, one, ValueRange{},
-        [&](OpBuilder &nb, Location l, Value i, ValueRange) {
-          Value j = nb.create<arith::AddIOp>(l, i, off);
-          LaneElem x = laneLoad(nb, l, a, i);
-          LaneElem y = laneLoad(nb, l, a, j);
-          laneStore(nb, l, laneCombine(nb, l, kind, x, y), a, i);
-          nb.create<scf::YieldOp>(l);
-        });
+    b.create<scf::ForOp>(loc, zero, off, one, ValueRange{},
+                         [&](OpBuilder &nb, Location l, Value i, ValueRange) {
+                           Value j = nb.create<arith::AddIOp>(l, i, off);
+                           LaneElem x = laneLoad(nb, l, a, i);
+                           LaneElem y = laneLoad(nb, l, a, j);
+                           laneStore(nb, l, laneCombine(nb, l, kind, x, y), a,
+                                     i);
+                           nb.create<scf::YieldOp>(l);
+                         });
   }
   return laneLoad(b, loc, a, zero);
 }
@@ -3222,15 +3222,30 @@ static LogicalResult lowerTasksBlock(vx::SpawnOp block, ModuleOp module) {
 
   // The tasks of this block, not of a `tasks` block inside one of them.
   SmallVector<vx::SpawnOp> tasks;
-  body.walk<WalkOrder::PreOrder>([&](vx::SpawnOp op) {
-    if (isTasksBlock(op))
-      return WalkResult::skip();
-    if (isTask(op)) {
-      tasks.push_back(op);
-      return WalkResult::skip();
+  SmallVector<vx::TasksWaitOp> waits;
+  body.walk<WalkOrder::PreOrder>([&](Operation *op) {
+    if (auto spawn = dyn_cast<vx::SpawnOp>(op)) {
+      if (isTasksBlock(spawn))
+        return WalkResult::skip();
+      if (isTask(spawn)) {
+        tasks.push_back(spawn);
+        return WalkResult::skip();
+      }
     }
+    if (auto wait = dyn_cast<vx::TasksWaitOp>(op))
+      waits.push_back(wait);
     return WalkResult::advance();
   });
+  if (!waits.empty()) {
+    auto waitFn = LLVM::lookupOrCreateFn(b, module, "vx_tasks_wait", {ptrTy},
+                                         LLVM::LLVMVoidType::get(ctx));
+    assert(succeeded(waitFn) && "the runtime function has one declaration");
+    for (vx::TasksWaitOp wait : waits) {
+      OpBuilder wb(wait);
+      LLVM::CallOp::create(wb, loc, *waitFn, ValueRange{group});
+      wait.erase();
+    }
+  }
   SmallVector<TaskSlot> slots;
   for (vx::SpawnOp task : tasks)
     if (failed(lowerTask(task, group, module, slots)))

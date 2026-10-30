@@ -186,6 +186,8 @@ enum FrameKind {
     /// A `spawn` region. A tensor it captures stays owned by the enclosing function, so a
     /// move inside the region does not reach owners outside it.
     Spawn,
+    /// A `tasks` block. An exit that leaves it waits for its tasks before its drops.
+    Tasks,
     Block {
         owners: Vec<Owner>,
         /// What each statement of the block uses, and where each name has a `let`.
@@ -745,6 +747,18 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    pub(crate) fn drops_enter_tasks(&mut self) {
+        self.borrow.drops.frames.push(FrameKind::Tasks);
+    }
+
+    pub(crate) fn drops_exit_tasks(&mut self) {
+        let popped = self.borrow.drops.frames.pop();
+        assert!(
+            matches!(popped, Some(FrameKind::Tasks)),
+            "a tasks frame closes a tasks block"
+        );
+    }
+
     pub(crate) fn drops_exit_loop(&mut self) {
         let popped = self.borrow.drops.frames.pop();
         assert!(
@@ -880,7 +894,7 @@ impl<'a> TypeChecker<'a> {
         for (k, f) in self.borrow.drops.frames.iter_mut().enumerate().rev() {
             match f {
                 FrameKind::Function { .. } | FrameKind::Spawn => return,
-                FrameKind::Loop => {}
+                FrameKind::Loop | FrameKind::Tasks => {}
                 FrameKind::Block { owners, stmt, .. } => {
                     if let Some(o) = owners.iter_mut().rev().find(|o| o.name == name) {
                         let (scope, decl) = (o.scope, o.decl);
@@ -979,7 +993,7 @@ impl<'a> TypeChecker<'a> {
             match f {
                 FrameKind::Function { .. } => return,
                 // A raw pointer taken inside a region still points into the owner outside it.
-                FrameKind::Loop | FrameKind::Spawn => {}
+                FrameKind::Loop | FrameKind::Spawn | FrameKind::Tasks => {}
                 FrameKind::Block { owners, .. } => {
                     for o in owners.iter_mut().filter(|o| names.contains(&o.name)) {
                         o.to_block_end = true;
@@ -1000,7 +1014,7 @@ impl<'a> TypeChecker<'a> {
         for f in self.borrow.drops.frames.iter_mut().rev() {
             match f {
                 FrameKind::Function { .. } | FrameKind::Spawn => return,
-                FrameKind::Loop => {}
+                FrameKind::Loop | FrameKind::Tasks => {}
                 FrameKind::Block { owners, .. } => {
                     if let Some(o) = owners.iter_mut().rev().find(|o| o.name == name) {
                         o.fields.clear();
@@ -1029,7 +1043,7 @@ impl<'a> TypeChecker<'a> {
         for f in self.borrow.drops.frames.iter().rev() {
             match f {
                 FrameKind::Function { .. } | FrameKind::Spawn => return None,
-                FrameKind::Loop => {}
+                FrameKind::Loop | FrameKind::Tasks => {}
                 FrameKind::Block { owners, .. } => {
                     if let Some(o) = owners.iter().rev().find(|o| o.name == name) {
                         return Some(o);
@@ -1681,14 +1695,19 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// A `return` (`out_of_loop` false) or a `break` or `continue` (true) on `line`: the owners
-    /// it leaves that are still alive are dropped first.
-    pub(crate) fn drops_exit(&mut self, what: &str, line: usize, out_of_loop: bool) {
+    /// A `return` (`out_of_loop` false) or a `break` or `continue` (true) at `span`: the owners
+    /// it leaves that are still alive are dropped first. When it leaves a `tasks` block, it
+    /// first waits for the tasks of that block, which can still use these owners.
+    pub(crate) fn drops_exit(&mut self, what: &str, span: &Span, out_of_loop: bool) {
         if self.speculating {
             return;
         }
+        let line = span.line;
         let rewriting = self.drops_rewriting();
         let mut dropped = Vec::new();
+        let mut tasks_blocks = 0;
+        // An owner outside the inner `tasks` block that the exit leaves.
+        let mut outside_inner = None;
         let d = &self.borrow.drops;
         'frames: for f in d.frames.iter().rev() {
             match f {
@@ -1696,6 +1715,7 @@ impl<'a> TypeChecker<'a> {
                 FrameKind::Function { .. } | FrameKind::Spawn => break 'frames,
                 FrameKind::Loop if out_of_loop => break 'frames,
                 FrameKind::Loop => {}
+                FrameKind::Tasks => tasks_blocks += 1,
                 FrameKind::Block {
                     owners, uses, stmt, ..
                 } => {
@@ -1711,12 +1731,30 @@ impl<'a> TypeChecker<'a> {
                         }
                         self.drops_print(owner, format!("before the {what} on line {line}"));
                         dropped.extend(owner_drop(owner));
+                        if tasks_blocks > 0 && outside_inner.is_none() {
+                            outside_inner = Some(owner.name.clone());
+                        }
                     }
                 }
             }
         }
+        // The wait is for the inner block only. A task of an outer block can still run.
+        if let (true, Some(name)) = (tasks_blocks > 1, outside_inner) {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E4014,
+                format!(
+                    "this `{what}` leaves two `tasks` blocks, and it drops '{name}' first. A \
+                     task of the outer block can still use '{name}' then. Move the `{what}` out \
+                     of the inner `tasks` block"
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        }
         if !rewriting {
             return;
+        }
+        if tasks_blocks > 0 {
+            dropped.insert(0, crate::syntax::tasks_wait_stmt(*span));
         }
         if let Some(FrameKind::Block { stmt, edits, .. }) = self.borrow.drops.frames.last_mut() {
             edits.before.entry(*stmt).or_default().extend(dropped);

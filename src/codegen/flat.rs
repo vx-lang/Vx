@@ -2459,6 +2459,17 @@ impl<'a> FnEmit<'a> {
             // terminator already ended it), stamp the `topology` attribute, and resume emitting into
             // the enclosing block (which the spawn op did not terminate).
             Opcode::SpawnEnd => self.op_spawn_end(idx, ins),
+            Opcode::TasksWait => {
+                self.body += "  \"vx.tasks_wait\"() : () -> ()\n";
+                Ok(())
+            }
+            // A way out of the region before its end. `VxLowering` sends each `vx.yield` of a
+            // `tasks` block to the code after the block.
+            Opcode::RegionExit => {
+                self.body += "  \"vx.yield\"() : () -> ()\n";
+                self.terminated = true;
+                Ok(())
+            }
             // Print a string literal (no result): take the address of the module-level global emitted
             // for this string (`@".str.<n>"`, `n = str_base + imm`) and call the `@print_str` runtime
             // helper. `emit_module_mlir` emits the global's bytes and the helper's `private` decl.

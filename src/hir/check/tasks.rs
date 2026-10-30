@@ -260,6 +260,7 @@ impl TypeChecker<'_> {
         }
         let closures = self.mono.closure_depths.len();
         let loops = self.borrow.loop_exits.len();
+        self.drops_enter_tasks();
         let ty = self.check_task_body(expr, consume, |me| {
             me.tasks.frames.push(Frame::Tasks {
                 scope_len: me.scopes.len(),
@@ -268,6 +269,7 @@ impl TypeChecker<'_> {
                 tasks: Vec::new(),
             });
         });
+        self.drops_exit_tasks();
         // The end of the block joins each task that the program did not join (T2).
         let Some(Frame::Tasks {
             scope_len, tasks, ..

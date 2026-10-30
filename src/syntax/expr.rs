@@ -712,6 +712,29 @@ pub fn is_abort_or_panic(c: &FunctionCallExpr) -> bool {
     }
 }
 
+/// The callee of the statement the checker puts before the drops of an exit from a `tasks`
+/// block. No program can name it. It waits for the tasks of the innermost `tasks` block.
+pub const TASKS_WAIT: &str = "$tasks_wait";
+
+/// `$tasks_wait();`, for the exit at `span`.
+pub fn tasks_wait_stmt(span: Span) -> super::Statement {
+    super::Statement::ExprStmt(super::ExprStmtStmt {
+        expr: Expr::FunctionCall(FunctionCallExpr::new(
+            TASKS_WAIT.into(),
+            None,
+            Vec::new(),
+            span,
+        )),
+        has_semi: true,
+        span,
+    })
+}
+
+/// Whether `e` is the call of [`tasks_wait_stmt`].
+pub fn is_tasks_wait(e: &Expr) -> bool {
+    matches!(e, Expr::FunctionCall(c) if c.name.as_ref() == TASKS_WAIT)
+}
+
 /// Whether this expression cannot be a value, so a trailing one is a statement rather than the
 /// block's result.
 ///

@@ -114,6 +114,20 @@ pub unsafe extern "C" fn vx_task_join(group: *mut VxTaskGroup, task: i64) {
     wait(task);
 }
 
+/// A `return`, `break` or `continue` that leaves a `tasks` block: joins each task that is not
+/// joined yet, so that the drops before the exit run with no task running. `vx_tasks_end`
+/// still ends the block.
+///
+/// # Safety
+/// `group` comes from `vx_tasks_begin`, and its block did not end.
+#[no_mangle]
+pub unsafe extern "C" fn vx_tasks_wait(group: *mut VxTaskGroup) {
+    let group = &mut *group;
+    for task in &mut group.tasks {
+        wait(task);
+    }
+}
+
 /// The end of a `tasks` block: joins each task that is not joined yet, in the order of their
 /// `spawn`s. Then frees each `env`, and `group`.
 ///

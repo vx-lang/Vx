@@ -1803,6 +1803,23 @@ impl<'c> MeliorGenerator<'c> {
                     block,
                 ))
             }
+            // This code generator runs the tasks of a `tasks` block one after another, so at a
+            // `return` inside the block each task has ended. The value is never read.
+            e if syntax::is_tasks_wait(e) => {
+                let zero =
+                    melior::ir::operation::OperationBuilder::new("arith.constant", self.loc())
+                        .add_attributes(&[(
+                            melior::ir::Identifier::new(self.context, "value"),
+                            melior::ir::attribute::IntegerAttribute::new(self.i32_ty, 0).into(),
+                        )])
+                        .add_results(&[self.i32_ty])
+                        .build()?;
+                Ok((
+                    block.append_operation(zero).result(0)?.into(),
+                    self.i32_ty,
+                    block,
+                ))
+            }
             Expr::FunctionCall(e) => LowerToMelior::lower(e, self, block),
             Expr::MethodCall(e) => LowerToMelior::lower(e, self, block),
             Expr::SpawnOn(e) => LowerToMelior::lower(e, self, block),
