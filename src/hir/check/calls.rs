@@ -1054,6 +1054,13 @@ impl<'a> TypeChecker<'a> {
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
                     }
+                    // A call that fails still returns a scalar that the function declares, such
+                    // as the `i32` of `fn f<T>(x : &T) -> i32`. With no type, later checks
+                    // report errors about the value.
+                    let declared_scalar = match &generic_func.return_type {
+                        ty @ Type::Scalar(_) if !ty.has_generic_params() => ty.clone(),
+                        _ => Type::Unknown,
+                    };
                     self.instantiate_generic_function_call(
                         generic_func,
                         origin_hash,
@@ -1064,7 +1071,7 @@ impl<'a> TypeChecker<'a> {
                         &explicit_generic_args,
                         span,
                     )
-                    .unwrap_or(Type::Unknown)
+                    .unwrap_or(declared_scalar)
                 } else if resolved_name.contains("::") {
                     self.check_static_method_call(&resolved_name, name, args, &arg_types, span)
                 } else if let Some(sig) = self
