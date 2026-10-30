@@ -1096,6 +1096,10 @@ impl CompilerDriver {
         // entry module has no body in the env, so an `assert` calling one was left unevaluated
         // and quietly became a run-time check.
         env.annotate_comptime_bodies(std::slice::from_ref(ast));
+        // Entry-module impl methods get a dedicated check below. Record them so a call that
+        // rewrites the body for emission can drop a second diagnostic copy. Imported methods
+        // are not recorded: they are checked only when used (#1825).
+        env.note_impl_methods_checked_directly(&ast.impls);
 
         let mut worker = LocalWorkerState::new(global_session.clone());
         let mut checker = TypeChecker::new(&env, &mut worker);

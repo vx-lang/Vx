@@ -183,7 +183,7 @@ pub const CODEGEN_LOWER: &str = "  codegen:lower";
 pub const CODEGEN_SETUP: &str = "  codegen:setup";
 pub const CODEGEN_EMIT: &str = "  codegen:emit";
 
-pub const PHASES: [&str; 22] = [
+pub const PHASES: [&str; 23] = [
     "parse",
     "macro_expand",
     "name_resolution",
@@ -192,6 +192,7 @@ pub const PHASES: [&str; 22] = [
     "env_build",
     "return_prov",
     "comptime_bodies",
+    "impl_methods_noted",
     "decl_check",
     "type_check",
     "dedup_barrier",
@@ -279,10 +280,10 @@ mod tests {
     fn timed_passes_values_through_and_only_knows_declared_phases() {
         assert_eq!(timed("parse", || 41 + 1), 42);
         assert_eq!(timed("not_a_phase", || "ok"), "ok");
-        assert_eq!(phase_index("type_check"), Some(9));
+        assert_eq!(phase_index("type_check"), Some(10));
         assert_eq!(phase_index("not_a_phase"), None);
         // Every name the pipeline instruments must be declared, or its time vanishes.
-        assert_eq!(PHASES.len(), 22);
+        assert_eq!(PHASES.len(), 23);
         // The sub-phase constants are the names their instrumentation sites pass, so a lookup
         // that misses here is a row that would have read 0.0 in every report.
         for name in [CODEGEN_LOWER, CODEGEN_SETUP, CODEGEN_EMIT] {

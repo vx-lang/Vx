@@ -2854,7 +2854,22 @@ impl<'a> TypeChecker<'a> {
             let saved_edge = self.seam.lowering_edge.take();
             // The body's own `let`s overwrite it, and the caller's `let` still needs it.
             let saved_target = self.current_assignment_target.take();
-            self.check_instance(generic_method, &mut func_to_check);
+            // A method that already had a dedicated impl-method check is re-checked here
+            // so the body is rewritten for emission; drop those diagnostics so a call does
+            // not double-report. An imported method is not in that set: the call is its
+            // only check, so its diagnostics must be kept (#1825).
+            let already_checked_as_impl_method = mapping.is_empty()
+                && self
+                    .env
+                    .impl_methods_checked_directly
+                    .contains(&mangled_sym);
+            let start = self.errors.len();
+            if already_checked_as_impl_method {
+                self.check_function(&mut func_to_check);
+                self.errors.discard_since(start);
+            } else {
+                self.check_instance(generic_method, &mut func_to_check);
+            }
             self.current_assignment_target = saved_target;
             self.seam.lowering_edge = saved_edge;
             self.mono.being_checked.remove(&mangled_sym);

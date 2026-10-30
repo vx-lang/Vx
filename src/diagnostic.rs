@@ -989,6 +989,12 @@ impl DiagnosticsVec {
         self.inner.len()
     }
 
+    /// Drop every diagnostic added since `start`. Used when a body is checked
+    /// again only to rewrite it for emission, and the first check already reported.
+    pub fn discard_since(&mut self, start: usize) {
+        self.inner.truncate(start);
+    }
+
     pub fn iter(&self) -> std::slice::Iter<'_, Diagnostic> {
         self.inner.iter()
     }
