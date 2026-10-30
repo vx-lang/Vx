@@ -1087,6 +1087,8 @@ bool run_device_image(const void *payload, size_t payload_size,
     CUfunction fn;
     /* The parameters that the entry declares, read from the image once. */
     int params;
+    /* The `.align` of each parameter, also read once. */
+    std::vector<long> align;
   };
   static std::unordered_map<std::string, Loaded> loaded;
   /* Tasks (#1863) can dispatch from several threads at once. */
@@ -1102,10 +1104,12 @@ bool run_device_image(const void *payload, size_t payload_size,
 
   CUfunction fn = nullptr;
   int declared = 0;
+  std::vector<long> align;
   auto found = loaded.find(key);
   if (found != loaded.end()) {
     fn = found->second.fn;
     declared = found->second.params;
+    align = found->second.align;
   } else {
     if (recording()) {
       char what[256];
@@ -1185,7 +1189,9 @@ bool run_device_image(const void *payload, size_t payload_size,
       }
     }
     declared = vx_launch_entry_param_count(image, kernel_name);
-    loaded.emplace(key, Loaded{fn, declared});
+    align.assign(declared > 0 ? declared : 0, 0);
+    vx_launch_param_aligns(image, kernel_name, align.data(), (int)align.size());
+    loaded.emplace(key, Loaded{fn, declared, align});
   }
   lock.unlock();
 
@@ -1216,6 +1222,31 @@ bool run_device_image(const void *payload, size_t payload_size,
             "          this kernel's signature and the runtime's have "
             "diverged (#251).\n",
             kernel_name, declared, params.count);
+    abort();
+  }
+
+  const int misaligned =
+      vx_launch_misaligned(&params, align.data(), (int)align.size());
+  if (misaligned >= 0) {
+    uintptr_t at;
+    memcpy(&at, params.params[misaligned], sizeof at);
+    /* The argument that the PTX parameter is a field of, counted from 0. */
+    int64_t arg = 0;
+    for (int first = 0; arg < num_args; ++arg) {
+      first += vx_launch_param_width(arg_tags[arg]);
+      if (misaligned < first)
+        break;
+    }
+    fprintf(stderr,
+            "[Vx CUDA] FATAL: argument %lld of %s is at address %p. The "
+            "machine file\n"
+            "          gives its memory space `alignment: %ld B`, and the "
+            "address is not a\n"
+            "          multiple of %ld. A tensor view over memory from "
+            "elsewhere must start\n"
+            "          at a multiple of the alignment of its space.\n",
+            (long long)arg, kernel_name, (void *)at, align[misaligned],
+            align[misaligned]);
     abort();
   }
 

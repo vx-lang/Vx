@@ -374,6 +374,26 @@ pub(crate) fn placed_device(id: u64, ctx: &EmitCtx) -> Option<i32> {
 }
 
 fn param_alias_attrs(ty: &Type, ctx: &EmitCtx) -> String {
+    let alias = borrow_alias_attr(ty, ctx);
+    // A borrowed tensor has the `alignment:` of its space. A GPU kernel puts it on the pointer.
+    let align = match ty {
+        Type::Borrow { inner, .. } => match inner.as_ref() {
+            Type::Tensor(_, _, Some(p)) => ctx
+                .subspaces
+                .get(&(crate::arch::memory_space_dispatch_id(&p.space) as u64))
+                .and_then(|s| s.alignment),
+            _ => None,
+        },
+        _ => None,
+    };
+    match (alias.as_str(), align) {
+        (_, None) => alias,
+        ("", Some(n)) => format!(" {{vx.align = {n} : i64}}"),
+        (a, Some(n)) => format!("{}, vx.align = {n} : i64}}", a.trim_end_matches('}')),
+    }
+}
+
+fn borrow_alias_attr(ty: &Type, ctx: &EmitCtx) -> String {
     match ty {
         Type::Borrow { is_mut: true, .. } => " {llvm.noalias}".to_string(),
         // A `SharedCell` in the value lets code write through the `&`.

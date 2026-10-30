@@ -878,12 +878,16 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // What the kernel may assume about each buffer it takes: a parameter of
     // the function that is `llvm.readonly` (a `&`) or `llvm.noalias` (a
     // `&mut`). The borrow checker proved that nothing else writes such a
-    // buffer while the kernel runs. A device kernel puts it on its parameter.
+    // buffer while the kernel runs. `vx.align` is the `alignment:` of the
+    // buffer's memory space, 0 for none. A device kernel puts these on its
+    // parameter.
     {
       SmallVector<Attribute> access;
+      SmallVector<int64_t> align;
       for (Value v : captures) {
         auto arg = dyn_cast<BlockArgument>(v);
         StringRef kind;
+        int64_t bytes = 0;
         if (parentFunc && arg &&
             arg.getOwner() == &parentFunc.getBody().front()) {
           unsigned i = arg.getArgNumber();
@@ -891,13 +895,18 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
             kind = "readonly";
           else if (parentFunc.getArgAttr(i, "llvm.noalias"))
             kind = "noalias";
+          if (auto a = parentFunc.getArgAttrOfType<IntegerAttr>(i, "vx.align"))
+            bytes = a.getInt();
         }
         access.push_back(rewriter.getStringAttr(kind));
+        align.push_back(bytes);
       }
       if (llvm::any_of(access, [](Attribute a) {
             return !cast<StringAttr>(a).getValue().empty();
           }))
         kernelOp->setAttr("vx.arg_access", rewriter.getArrayAttr(access));
+      if (llvm::any_of(align, [](int64_t a) { return a != 0; }))
+        kernelOp->setAttr("vx.arg_align", rewriter.getI64ArrayAttr(align));
     }
     // The declared arch travels from the machine file, via the spawn, onto the
     // outlined kernel -- a discardable attribute, so no dialect change. It is
@@ -3521,8 +3530,9 @@ struct ConvertVxToStandardPass
       gpuFunc->setAttr(gpu::GPUDialect::getKernelFuncAttrName(),
                        inner.getUnitAttr());
       // `deviceImageOf` puts these on the LLVM parameters of the kernel.
-      if (auto access = kernel->getAttr("vx.arg_access"))
-        gpuFunc->setAttr("vx.arg_access", access);
+      for (StringRef name : {"vx.arg_access", "vx.arg_align"})
+        if (auto a = kernel->getAttr(name))
+          gpuFunc->setAttr(name, a);
       // A block size that is a number is the block of every launch. ptxas
       // then uses few enough registers for a block of that size. Without it,
       // a large kernel can get a thread limit below its block. A block of at
@@ -5082,11 +5092,14 @@ static bool weakRelaxedAtomics(Operation *op) {
 /// cache (`ld.global.nc`). A buffer that only this parameter writes is
 /// `noalias`. The NVVM conversion splits a memref parameter into its fields,
 /// 3 + 2 * rank of them, and drops these marks, so they go on its two pointers.
+/// The alignment of the buffer's memory space goes on the aligned pointer, the
+/// one that loads use. The runtime checks it at launch.
 static void markKernelBuffers(gpu::GPUModuleOp original, ModuleOp device) {
   MLIRContext *ctx = device.getContext();
   original.walk([&](gpu::GPUFuncOp f) {
     auto access = f->getAttrOfType<ArrayAttr>("vx.arg_access");
-    if (!access)
+    auto align = f->getAttrOfType<ArrayAttr>("vx.arg_align");
+    if (!access && !align)
       return;
     LLVM::LLVMFuncOp lowered;
     device.walk([&](LLVM::LLVMFuncOp g) {
@@ -5098,8 +5111,9 @@ static void markKernelBuffers(gpu::GPUModuleOp original, ModuleOp device) {
     unsigned at = 0;
     for (auto [i, ty] : llvm::enumerate(f.getArgumentTypes())) {
       auto memref = dyn_cast<MemRefType>(ty);
-      StringRef kind =
-          i < access.size() ? cast<StringAttr>(access[i]).getValue() : "";
+      StringRef kind = access && i < access.size()
+                           ? cast<StringAttr>(access[i]).getValue()
+                           : "";
       if (memref && (kind == "readonly" || kind == "noalias")) {
         for (unsigned p : {at, at + 1}) {
           lowered.setArgAttr(p, "llvm.noalias", UnitAttr::get(ctx));
@@ -5107,6 +5121,11 @@ static void markKernelBuffers(gpu::GPUModuleOp original, ModuleOp device) {
             lowered.setArgAttr(p, "llvm.readonly", UnitAttr::get(ctx));
         }
       }
+      int64_t bytes =
+          align && i < align.size() ? cast<IntegerAttr>(align[i]).getInt() : 0;
+      if (memref && bytes != 0)
+        lowered.setArgAttr(at + 1, "llvm.align",
+                           IntegerAttr::get(IntegerType::get(ctx, 64), bytes));
       at += memref ? 3 + 2 * memref.getRank() : 1;
     }
     assert(at == lowered.getNumArguments() &&

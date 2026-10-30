@@ -1,0 +1,65 @@
+//===- gpu_kernel_loads_16_bytes_at_once_from_aligned_memory.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The machine file gives HBM `alignment: 16 B`, so the pointer of a tensor there that the
+// function borrows is `.align 16`. Four words in a row that start at a multiple of 4 are then one 16-byte load.
+// A `&` tensor gives `ld.global.nc.v4`. A tensor that the kernel writes gives `ld.global.v4`.
+// Four words that start at 4 * k + 1 are not 16-byte aligned, so they stay narrower loads.
+//
+// REQUIRES: flat-codegen
+// RUN: env -u VX_GPU_CHIP vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s < %t.ptx
+//
+// CHECK-LABEL: .entry sum_shared(
+// CHECK:       .param .u64 .ptr .align 16 sum_shared_param_1,
+// CHECK:       ld.global.nc.v4.b32
+// CHECK-LABEL: .entry add_one(
+// CHECK:       ld.global.v4.b32
+// CHECK:       st.global.v4.b32
+// CHECK-LABEL: .entry sum_from_odd_start(
+// CHECK-NOT:   .v4.
+// CHECK:       ret;
+
+pub fn sum_shared(out : &mut Tensor<u32, [?], Memory::HBM>, w : &Tensor<u32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for row in 0..rows across blocks {
+      for j in 0..32 across lanes {
+        let b = (row * 32 + j) * 4;
+        out[row * 32 + j] = w[b] + w[b + 1] + w[b + 2] + w[b + 3];
+      }
+    }
+  }
+  return;
+}
+
+pub fn add_one(t : &mut Tensor<u32, [?, 4], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for row in 0..rows across blocks {
+      t[row][0] = t[row][0] + 1;
+      t[row][1] = t[row][1] + 1;
+      t[row][2] = t[row][2] + 1;
+      t[row][3] = t[row][3] + 1;
+    }
+  }
+  return;
+}
+
+pub fn sum_from_odd_start(out : &mut Tensor<u32, [?], Memory::HBM>, w : &Tensor<u32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for row in 0..rows across blocks {
+      for j in 0..32 across lanes {
+        let b = (row * 32 + j) * 4 + 1;
+        out[row * 32 + j] = w[b] + w[b + 1] + w[b + 2] + w[b + 3];
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

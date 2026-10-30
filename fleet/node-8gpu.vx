@@ -25,7 +25,8 @@
 // spec: NVIDIA H100 product page, SXM column (verified 2026-08-03) -- 80 GB
 // HBM3 at 3.35 TB/s. Keep in sync with fleet/h100-sxm.vx.
 Memory HBM {
-  capacity: 80 GiB, bandwidth: 3.35 TB/s, managed: explicit, scope: device
+  // alignment: cudaMalloc gives 256 B. A view at an offset keeps 16, which ld.global.v4 needs.
+  capacity: 80 GiB, bandwidth: 3.35 TB/s, managed: explicit, alignment: 16 B, scope: device
 }
 
 // spec: NVIDIA Hopper Architecture Whitepaper -- 50 MB L2 cache.

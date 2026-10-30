@@ -80,8 +80,12 @@ image, so two topologies with different chips in one program are an error.
 ## Alignment
 
 `alignment:` on a memory space is the least alignment, in bytes, of every tensor in it. The NVIDIA
-files give `SMEM` 16 bytes, which LLVM's 16-byte vector accesses need. A tensor asks for more with
-`aligned(N)` in its type (`docs/lang/types.md`).
+files give `SMEM` and `HBM` 16 bytes, which LLVM's 16-byte vector accesses need. A tensor asks for
+more with `aligned(N)` in its type (`docs/lang/types.md`).
+
+A GPU kernel marks the pointer of each `HBM` tensor that its function borrows with that alignment.
+A view over memory from elsewhere (`tensor_view_2d`) can start at any address, so the runtime
+checks each such pointer before a launch, and stops with an error when it is not aligned.
 
 ## Registers
 
