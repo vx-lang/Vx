@@ -701,7 +701,6 @@ Allow declaration discovery inside a matcher or transcriber and require the opaq
 For warning policy, turn an unsupported-syntax warning into a failing status and require the warning-only exit-status assertion to fail.
 Suppress supported-code differences when a warning exists and require the mixed-result exit-status assertion to fail.
 The user subsequently authorized execution through the foundation activation work.
-See [the implementation checklist](vx_format_implementation_todo.md) for validation results.
 
 ## Costs and remaining review decisions
 
