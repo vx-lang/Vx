@@ -22,7 +22,7 @@ the test suite has one, a program that triggers it.
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6035` (35 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
-- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8007` (7 codes)
+- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8009` (9 codes)
 
 ## Warnings
 
@@ -251,7 +251,9 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | [`E8005`](/errors/E8005/) | Compile-time evaluation ran more loop iterations than the budget allows. A loop whose end condition is never reached is the usual cause; without this it hung the compiler. |
 | [`E8006`](/errors/E8006/) | A call does not meet the called function's precondition (`requires`) |
 | [`E8007`](/errors/E8007/) | An access clause that does not hold: an `atomic(t)` whose body uses `t` without an atomic operation, or a `writes_only()` whose body may write memory |
+| [`E8008`](/errors/E8008/) | A loop invariant that the prover cannot show to hold when the loop starts |
+| [`E8009`](/errors/E8009/) | A loop invariant that the prover cannot show to hold after a pass through the loop body |
 
 ______________________________________________________________________
 
-165 diagnostics.
+167 diagnostics.

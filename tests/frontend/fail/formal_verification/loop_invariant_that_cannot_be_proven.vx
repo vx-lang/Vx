@@ -1,0 +1,36 @@
+//===- loop_invariant_that_cannot_be_proven.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// The prover cannot show either invariant below when its loop starts, or after a pass through
+// the loop body. So each invariant gets two errors: E8008 for the start of the loop and E8009
+// for the end of the body. Each error points at the invariant and quotes it.
+
+fn count_with_while() -> i32 {
+  let mut i : i32 = 0;
+  // CHECK: Error[E8008] at {{.*}}.vx:[[@LINE+2]]:28: this loop invariant `i > 100` may not hold when the loop starts: the compiler cannot prove it from what it knows before the loop{{$}}
+  // CHECK: Error[E8009] at {{.*}}.vx:[[@LINE+1]]:28: this loop invariant `i > 100` may not hold after a pass through the loop body: the compiler cannot prove it from what it knows at the end of the body{{$}}
+  while i < 10 invariant(i > 100) {
+    i = i + 1;
+  }
+  return i;
+}
+
+fn count_with_for() -> i32 {
+  let mut k : i32 = 5;
+  // CHECK: Error[E8008] at {{.*}}.vx:[[@LINE+2]]:29: this loop invariant `k == 5` may not hold when the loop starts: the compiler cannot prove it from what it knows before the loop{{$}}
+  // CHECK: Error[E8009] at {{.*}}.vx:[[@LINE+1]]:29: this loop invariant `k == 5` may not hold after a pass through the loop body: the compiler cannot prove it from what it knows at the end of the body{{$}}
+  for j in 0..3 invariant(k == 5) {
+    k = k + 1;
+  }
+  return k;
+}
+
+fn main() -> i32 {
+  return 0;
+}

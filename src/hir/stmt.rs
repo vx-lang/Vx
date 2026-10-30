@@ -985,8 +985,7 @@ impl<'a> TypeChecker<'a> {
         }
         for inv in invariants.iter() {
             if !self.prove_expr(inv) {
-                self.errors
-                    .push("Loop invariant cannot be proven on entry".to_string());
+                self.report_unproven_invariant(inv, false);
             }
             self.consteval.constraints.push(inv.clone());
         }
@@ -1037,8 +1036,7 @@ impl<'a> TypeChecker<'a> {
         // Check invariants hold after the loop iteration (we don't strictly prove induction here, just checking at end of block)
         for inv in invariants.iter() {
             if !self.prove_expr(inv) {
-                self.errors
-                    .push("Loop invariant cannot be proven to hold across iterations".to_string());
+                self.report_unproven_invariant(inv, true);
             }
         }
 
@@ -1104,6 +1102,35 @@ impl<'a> TypeChecker<'a> {
         self.restore_moved(after);
     }
 
+    /// E8008 or E8009: a loop invariant that the prover cannot show to hold when the loop
+    /// starts, or after a pass through the loop body.
+    fn report_unproven_invariant(&mut self, inv: &Expr, after_a_pass: bool) {
+        let condition = crate::hir::prover::to_source(inv)
+            .map(|c| format!(" `{c}`"))
+            .unwrap_or_default();
+        let (code, when, where_known) = if after_a_pass {
+            (
+                crate::diagnostic::DiagnosticCode::E8009,
+                "after a pass through the loop body",
+                "at the end of the body",
+            )
+        } else {
+            (
+                crate::diagnostic::DiagnosticCode::E8008,
+                "when the loop starts",
+                "before the loop",
+            )
+        };
+        self.errors.error_with_code(
+            code,
+            format!(
+                "this loop invariant{condition} may not hold {when}: the compiler cannot prove \
+                 it from what it knows {where_known}"
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(&inv.span())),
+        );
+    }
+
     fn check_loop_stmt(&mut self, lp: &mut LoopStmt, return_type: &Type) {
         let LoopStmt {
             body,
@@ -1118,8 +1145,7 @@ impl<'a> TypeChecker<'a> {
         let prev_constraints_len = self.consteval.constraints.len();
         for inv in invariants.iter() {
             if !self.prove_expr(inv) {
-                self.errors
-                    .push("Loop invariant cannot be proven on entry".to_string());
+                self.report_unproven_invariant(inv, false);
             }
             self.consteval.constraints.push(inv.clone());
         }
@@ -1147,8 +1173,7 @@ impl<'a> TypeChecker<'a> {
 
         for inv in invariants.iter() {
             if !self.prove_expr(inv) {
-                self.errors
-                    .push("Loop invariant cannot be proven to hold across iterations".to_string());
+                self.report_unproven_invariant(inv, true);
             }
         }
 

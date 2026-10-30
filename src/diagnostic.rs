@@ -673,6 +673,10 @@ pub enum DiagnosticCode {
     /// An access clause that does not hold: an `atomic(t)` whose body uses `t` without an atomic
     /// operation, or a `writes_only()` whose body may write memory
     E8007,
+    /// A loop invariant that the prover cannot show to hold when the loop starts
+    E8008,
+    /// A loop invariant that the prover cannot show to hold after a pass through the loop body
+    E8009,
 }
 
 impl std::fmt::Display for DiagnosticCode {

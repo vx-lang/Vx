@@ -8,13 +8,12 @@
 // A `while` invariant is proven on entry: one the `requires` clause does not
 // establish is rejected, and the one beside it that it does establish is not.
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Loop invariant cannot be proven on entry
-// CHECK: 1 error(s) emitted
 
 fn entry_fails(N : i32) -> i32
 requires N > 5 && N < 15 ensures return > 5
 {
   let mut i : i32 = 0;
+  // CHECK: Error[E8008] at {{.*}}while_inv_fail.vx:[[@LINE+1]]:27: this loop invariant `N > 10` may not hold when the loop starts
   while i < 5 invariant(N > 10) {
     i = i + 1;
   }
@@ -31,6 +30,7 @@ requires N > 5 && N < 15 ensures return > 5
   return N;
 }
 
+// CHECK: 1 error(s) emitted
 fn main() -> i32 {
   return 0;
 }
