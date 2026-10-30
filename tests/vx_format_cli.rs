@@ -1,53 +1,67 @@
+use anyhow::{ensure, Context, Result};
+use std::fmt::Debug;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
 const SOURCE: &str = "fn main() {\nlet value = 1;\n}\n";
 
-fn project(parent: &Path, name: &str, config: Option<&str>) -> std::path::PathBuf {
+fn project(parent: &Path, name: &str, config: Option<&str>) -> Result<std::path::PathBuf> {
     let directory = parent.join(name);
-    fs::create_dir_all(directory.join(".git")).unwrap();
-    fs::write(directory.join("main.vx"), SOURCE).unwrap();
+    fs::create_dir_all(directory.join(".git"))?;
+    fs::write(directory.join("main.vx"), SOURCE)?;
     if let Some(config) = config {
-        fs::write(directory.join("vx-format.toml"), config).unwrap();
+        fs::write(directory.join("vx-format.toml"), config)?;
     }
-    directory
+    Ok(directory)
 }
 
-fn formatter(directory: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_vx-format"))
+fn formatter(directory: &Path, args: &[&str]) -> Result<Output> {
+    Ok(Command::new(env!("CARGO_BIN_EXE_vx-format"))
         .current_dir(directory)
         .args(args)
-        .output()
-        .unwrap()
+        .output()?)
+}
+
+#[track_caller]
+fn check_equal<T: Debug + PartialEq<U> + ?Sized, U: Debug + ?Sized>(
+    actual: &T,
+    expected: &U,
+) -> Result<()> {
+    let location = std::panic::Location::caller();
+    ensure!(
+        actual == expected,
+        "{}:{}: expected {expected:?}, got {actual:?}",
+        location.file(),
+        location.line()
+    );
+    Ok(())
 }
 
 #[test]
-fn prints_defaults_without_reading_project_config_or_changing_files() {
-    let directory = tempfile::tempdir().unwrap();
-    let project = project(directory.path(), "project", Some("invalid TOML ["));
-    let output = formatter(&project, &["--print-config", "default"]);
-    assert!(output.status.success(), "{output:?}");
-    assert!(output.stderr.is_empty(), "{output:?}");
-    let text = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(
-        text,
-        "[format]\nindent = 2\nfn_signature_width = 100\nspace_before_colon = false\nformat_function_headers = true\n"
-    );
-    assert_eq!(
-        vx_config::parse_format_config(Path::new("vx-format.toml"), &text).unwrap(),
-        vx_config::FormatConfig::default()
-    );
-    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), SOURCE);
-    assert_eq!(
-        fs::read_to_string(project.join("vx-format.toml")).unwrap(),
-        "invalid TOML ["
-    );
+fn prints_defaults_without_reading_project_config_or_changing_files() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let project = project(directory.path(), "project", Some("invalid TOML ["))?;
+    let output = formatter(&project, &["--print-config", "default"])?;
+    ensure!(output.status.success(), "{output:?}");
+    ensure!(output.stderr.is_empty(), "{output:?}");
+    let text = String::from_utf8(output.stdout)?;
+    check_equal(&text, &"[format]\nindent = 2\nfn_signature_width = 100\nspace_before_colon = false\nformat_function_headers = true\n")?;
+    check_equal(
+        &vx_config::parse_format_config(Path::new("vx-format.toml"), &text)?,
+        &vx_config::FormatConfig::default(),
+    )?;
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &SOURCE)?;
+    check_equal(
+        &fs::read_to_string(project.join("vx-format.toml"))?,
+        &"invalid TOML [",
+    )?;
+    Ok(())
 }
 
 #[test]
-fn rejects_unsupported_print_modes_and_conflicting_arguments() {
-    let directory = tempfile::tempdir().unwrap();
+fn rejects_unsupported_print_modes_and_conflicting_arguments() -> Result<()> {
+    let directory = tempfile::tempdir()?;
     for args in [
         vec![],
         vec!["--print-config"],
@@ -64,244 +78,239 @@ fn rejects_unsupported_print_modes_and_conflicting_arguments() {
             "false",
         ],
     ] {
-        let output = formatter(directory.path(), &args);
-        assert!(!output.status.success(), "accepted {args:?}");
-        assert!(output.stdout.is_empty(), "{output:?}");
+        let output = formatter(directory.path(), &args)?;
+        ensure!(!output.status.success(), "accepted {args:?}");
+        ensure!(output.stdout.is_empty(), "{output:?}");
     }
+    Ok(())
 }
 
 #[test]
-fn check_reports_each_changed_file_without_writing() {
-    let directory = tempfile::tempdir().unwrap();
-    let project = project(directory.path(), "project", None);
-    fs::write(project.join("other.vx"), SOURCE).unwrap();
-    let output = formatter(&project, &["--check", "main.vx", "other.vx"]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let report = String::from_utf8(output.stdout).unwrap();
+fn check_reports_each_changed_file_without_writing() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let project = project(directory.path(), "project", None)?;
+    fs::write(project.join("other.vx"), SOURCE)?;
+    let output = formatter(&project, &["--check", "main.vx", "other.vx"])?;
+    check_equal(&output.status.code(), &Some(1)).with_context(|| format!("{output:?}"))?;
+    let report = String::from_utf8(output.stdout)?;
     let expected = |name| {
         format!("--- {name}\n+++ {name} (formatted)\n@@ -1,3 +1,3 @@\n fn main() {{\n-let value = 1;\n+  let value = 1;\n }}\n")
     };
     let first = expected("main.vx");
     let second = expected("other.vx");
-    assert!(
+    ensure!(
         report == format!("{first}{second}") || report == format!("{second}{first}"),
         "{report}"
     );
-    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), SOURCE);
-    assert_eq!(
-        fs::read_to_string(project.join("other.vx")).unwrap(),
-        SOURCE
-    );
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &SOURCE)?;
+    check_equal(&fs::read_to_string(project.join("other.vx"))?, &SOURCE)?;
+    Ok(())
 }
 
 #[test]
-fn check_shows_unicode_and_missing_final_newlines() {
-    let directory = tempfile::tempdir().unwrap();
-    let project = project(directory.path(), "project", None);
+fn check_shows_unicode_and_missing_final_newlines() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let project = project(directory.path(), "project", None)?;
     let source = "fn message() -> i32 {\nreturn \"café\";\n}";
-    fs::write(project.join("main.vx"), source).unwrap();
-    let output = formatter(&project, &["--check", "main.vx"]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "--- main.vx\n+++ main.vx (formatted)\n@@ -1,3 +1,3 @@\n fn message() -> i32 {\n-return \"café\";\n+  return \"café\";\n }\n\\ No newline at end of file\n"
-    );
-    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), source);
+    fs::write(project.join("main.vx"), source)?;
+    let output = formatter(&project, &["--check", "main.vx"])?;
+    check_equal(&output.status.code(), &Some(1)).with_context(|| format!("{output:?}"))?;
+    check_equal(&String::from_utf8(output.stdout)?, &"--- main.vx\n+++ main.vx (formatted)\n@@ -1,3 +1,3 @@\n fn message() -> i32 {\n-return \"café\";\n+  return \"café\";\n }\n\\ No newline at end of file\n")?;
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &source)?;
+    Ok(())
 }
 
 #[test]
-fn signature_width_controls_wrapping_and_check_mode() {
-    let directory = tempfile::tempdir().unwrap();
+fn signature_width_controls_wrapping_and_check_mode() -> Result<()> {
+    let directory = tempfile::tempdir()?;
     let project = project(
         directory.path(),
         "project",
         Some("[format]\nindent = 4\nfn_signature_width = 39\n"),
-    );
+    )?;
     let source = "fn add(first: i32, second: i32) -> i32 {\n  first + second\n}\n";
-    fs::write(project.join("main.vx"), source).unwrap();
-    let output = formatter(&project, &["--check", "main.vx"]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let diff = String::from_utf8(output.stdout).unwrap();
-    assert!(diff.contains("@@ -1,3 +1,6 @@"), "{diff}");
-    assert!(diff.contains("+    second: i32\n+) -> i32 {\n"), "{diff}");
-    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), source);
-    let output = formatter(&project, &["main.vx"]);
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert_eq!(
-        fs::read_to_string(project.join("main.vx")).unwrap(),
-        "fn add(\n    first: i32,\n    second: i32\n) -> i32 {\n    first + second\n}\n"
-    );
-    let output = formatter(&project, &["--check", "main.vx"]);
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    fs::write(project.join("main.vx"), source)?;
+    let output = formatter(&project, &["--check", "main.vx"])?;
+    check_equal(&output.status.code(), &Some(1)).with_context(|| format!("{output:?}"))?;
+    let diff = String::from_utf8(output.stdout)?;
+    ensure!(diff.contains("@@ -1,3 +1,6 @@"), "{diff}");
+    ensure!(diff.contains("+    second: i32\n+) -> i32 {\n"), "{diff}");
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &source)?;
+    let output = formatter(&project, &["main.vx"])?;
+    check_equal(&output.status.code(), &Some(0)).with_context(|| format!("{output:?}"))?;
+    check_equal(
+        &fs::read_to_string(project.join("main.vx"))?,
+        &"fn add(\n    first: i32,\n    second: i32\n) -> i32 {\n    first + second\n}\n",
+    )?;
+    let output = formatter(&project, &["--check", "main.vx"])?;
+    check_equal(&output.status.code(), &Some(0)).with_context(|| format!("{output:?}"))?;
+    Ok(())
 }
 
 #[test]
-fn colon_spacing_configuration_and_cli_override_apply_in_both_modes() {
-    let directory = tempfile::tempdir().unwrap();
+fn colon_spacing_configuration_and_cli_override_apply_in_both_modes() -> Result<()> {
+    let directory = tempfile::tempdir()?;
     let project = project(
         directory.path(),
         "project",
         Some("[format]\nindent = 2\nspace_before_colon = true\n"),
-    );
+    )?;
     let spaced = "fn value(x : i32) -> i32 {\n  x\n}\n";
     let compact = "fn value(x: i32) -> i32 {\n  x\n}\n";
-    fs::write(project.join("main.vx"), compact).unwrap();
-    let output = formatter(&project, &["--check", "main.vx"]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert_eq!(
-        fs::read_to_string(project.join("main.vx")).unwrap(),
-        compact
-    );
-    let output = formatter(&project, &["main.vx"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), spaced);
-    let output = formatter(&project, &["--check", "main.vx"]);
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    fs::write(project.join("main.vx"), compact)?;
+    let output = formatter(&project, &["--check", "main.vx"])?;
+    check_equal(&output.status.code(), &Some(1)).with_context(|| format!("{output:?}"))?;
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &compact)?;
+    let output = formatter(&project, &["main.vx"])?;
+    ensure!(output.status.success(), "{output:?}");
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &spaced)?;
+    let output = formatter(&project, &["--check", "main.vx"])?;
+    check_equal(&output.status.code(), &Some(0)).with_context(|| format!("{output:?}"))?;
 
     let output = formatter(
         &project,
         &["--check", "--space-before-colon", "false", "main.vx"],
-    );
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), spaced);
-    let output = formatter(&project, &["--space-before-colon", "false", "main.vx"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(
-        fs::read_to_string(project.join("main.vx")).unwrap(),
-        compact
-    );
+    )?;
+    check_equal(&output.status.code(), &Some(1)).with_context(|| format!("{output:?}"))?;
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &spaced)?;
+    let output = formatter(&project, &["--space-before-colon", "false", "main.vx"])?;
+    ensure!(output.status.success(), "{output:?}");
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &compact)?;
 
     fs::write(
         project.join("vx-format.toml"),
         "[format]\nindent = 2\nspace_before_colon = false\n",
-    )
-    .unwrap();
-    let output = formatter(&project, &["--space-before-colon", "true", "main.vx"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), spaced);
+    )?;
+    let output = formatter(&project, &["--space-before-colon", "true", "main.vx"])?;
+    ensure!(output.status.success(), "{output:?}");
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &spaced)?;
+    Ok(())
 }
 
 #[test]
-fn check_uses_configuration_and_overrides() {
-    let directory = tempfile::tempdir().unwrap();
-    let project = project(directory.path(), "project", Some("[format]\nindent = 0\n"));
-    let output = formatter(&project, &["--check", "main.vx"]);
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
+fn check_uses_configuration_and_overrides() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let project = project(directory.path(), "project", Some("[format]\nindent = 0\n"))?;
+    let output = formatter(&project, &["--check", "main.vx"])?;
+    check_equal(&output.status.code(), &Some(0)).with_context(|| format!("{output:?}"))?;
+    ensure!(output.stdout.is_empty(), "{output:?}");
 
-    let output = formatter(&project, &["--check", "--indent", "4", "main.vx"]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), SOURCE);
+    let output = formatter(&project, &["--check", "--indent", "4", "main.vx"])?;
+    check_equal(&output.status.code(), &Some(1)).with_context(|| format!("{output:?}"))?;
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &SOURCE)?;
 
-    let output = formatter(&project, &["--indent", "4", "main.vx"]);
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let formatted = fs::read_to_string(project.join("main.vx")).unwrap();
-    let output = formatter(&project, &["--check", "--indent", "4", "main.vx"]);
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    assert_eq!(
-        fs::read_to_string(project.join("main.vx")).unwrap(),
-        formatted
-    );
+    let output = formatter(&project, &["--indent", "4", "main.vx"])?;
+    check_equal(&output.status.code(), &Some(0)).with_context(|| format!("{output:?}"))?;
+    let formatted = fs::read_to_string(project.join("main.vx"))?;
+    let output = formatter(&project, &["--check", "--indent", "4", "main.vx"])?;
+    check_equal(&output.status.code(), &Some(0)).with_context(|| format!("{output:?}"))?;
+    ensure!(output.stdout.is_empty(), "{output:?}");
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &formatted)?;
+    Ok(())
 }
 
 #[test]
-fn check_honors_file_and_region_exclusions() {
-    let directory = tempfile::tempdir().unwrap();
-    let project = project(directory.path(), "project", None);
+fn check_honors_file_and_region_exclusions() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let project = project(directory.path(), "project", None)?;
     let disabled_file = "//! vx-format: OFF\nfn   main(){let x=1;}\n";
     let disabled_region =
         "// vx-format-begin: OFF\nconst   value : i32 = 1;\n// vx-format-end: OFF\n";
-    fs::write(project.join("main.vx"), disabled_file).unwrap();
-    fs::write(project.join("region.vx"), disabled_region).unwrap();
-    let output = formatter(&project, &["--check", "main.vx", "region.vx"]);
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert_eq!(
-        fs::read_to_string(project.join("main.vx")).unwrap(),
-        disabled_file
-    );
-    assert_eq!(
-        fs::read_to_string(project.join("region.vx")).unwrap(),
-        disabled_region
-    );
+    fs::write(project.join("main.vx"), disabled_file)?;
+    fs::write(project.join("region.vx"), disabled_region)?;
+    let output = formatter(&project, &["--check", "main.vx", "region.vx"])?;
+    check_equal(&output.status.code(), &Some(0)).with_context(|| format!("{output:?}"))?;
+    check_equal(
+        &fs::read_to_string(project.join("main.vx"))?,
+        &disabled_file,
+    )?;
+    check_equal(
+        &fs::read_to_string(project.join("region.vx"))?,
+        &disabled_region,
+    )?;
+    Ok(())
 }
 
 #[test]
-fn check_distinguishes_errors_from_formatting_changes() {
-    let directory = tempfile::tempdir().unwrap();
-    let project = project(directory.path(), "project", Some("invalid TOML ["));
-    let output = formatter(&project, &["--check", "main.vx"]);
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("vx-format.toml"));
-    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), SOURCE);
+fn check_distinguishes_errors_from_formatting_changes() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let project = project(directory.path(), "project", Some("invalid TOML ["))?;
+    let output = formatter(&project, &["--check", "main.vx"])?;
+    check_equal(&output.status.code(), &Some(2)).with_context(|| format!("{output:?}"))?;
+    ensure!(output.stdout.is_empty(), "{output:?}");
+    ensure!(String::from_utf8_lossy(&output.stderr).contains("vx-format.toml"));
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &SOURCE)?;
 
-    fs::remove_file(project.join("vx-format.toml")).unwrap();
-    let output = formatter(&project, &["--check", "main.vx", "missing.vx"]);
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("missing.vx"));
-    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), SOURCE);
+    fs::remove_file(project.join("vx-format.toml"))?;
+    let output = formatter(&project, &["--check", "main.vx", "missing.vx"])?;
+    check_equal(&output.status.code(), &Some(2)).with_context(|| format!("{output:?}"))?;
+    ensure!(output.stdout.is_empty(), "{output:?}");
+    ensure!(String::from_utf8_lossy(&output.stderr).contains("missing.vx"));
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &SOURCE)?;
+    Ok(())
 }
 
 #[test]
-fn uses_project_indentation_and_explicit_overrides() {
-    let directory = tempfile::tempdir().unwrap();
-    let project = project(directory.path(), "project", Some("[format]\nindent = 4\n"));
-    let output = formatter(&project, &["main.vx"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(
-        fs::read_to_string(project.join("main.vx")).unwrap(),
-        "fn main() {\n    let value = 1;\n}\n"
-    );
+fn uses_project_indentation_and_explicit_overrides() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let project = project(directory.path(), "project", Some("[format]\nindent = 4\n"))?;
+    let output = formatter(&project, &["main.vx"])?;
+    ensure!(output.status.success(), "{output:?}");
+    check_equal(
+        &fs::read_to_string(project.join("main.vx"))?,
+        &"fn main() {\n    let value = 1;\n}\n",
+    )?;
 
-    let output = formatter(&project, &["--indent", "0", "main.vx"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), SOURCE);
+    let output = formatter(&project, &["--indent", "0", "main.vx"])?;
+    ensure!(output.status.success(), "{output:?}");
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &SOURCE)?;
+    Ok(())
 }
 
 #[test]
-fn defaults_without_config_and_ignores_lint_config() {
-    let directory = tempfile::tempdir().unwrap();
-    let project = project(directory.path(), "project", None);
-    fs::write(project.join("vx-lint.toml"), "not valid TOML [").unwrap();
-    let output = formatter(&project, &["main.vx"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(
-        fs::read_to_string(project.join("main.vx")).unwrap(),
-        "fn main() {\n  let value = 1;\n}\n"
-    );
+fn defaults_without_config_and_ignores_lint_config() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let project = project(directory.path(), "project", None)?;
+    fs::write(project.join("vx-lint.toml"), "not valid TOML [")?;
+    let output = formatter(&project, &["main.vx"])?;
+    ensure!(output.status.success(), "{output:?}");
+    check_equal(
+        &fs::read_to_string(project.join("main.vx"))?,
+        &"fn main() {\n  let value = 1;\n}\n",
+    )?;
+    Ok(())
 }
 
 #[test]
-fn resolves_each_project_and_explicit_config_paths() {
-    let directory = tempfile::tempdir().unwrap();
-    let first = project(directory.path(), "first", Some("[format]\nindent = 4\n"));
-    let second = project(directory.path(), "second", Some("[format]\nindent = 0\n"));
-    let output = formatter(directory.path(), &["first/main.vx", "second/main.vx"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(
-        fs::read_to_string(first.join("main.vx")).unwrap(),
-        "fn main() {\n    let value = 1;\n}\n"
-    );
-    assert_eq!(fs::read_to_string(second.join("main.vx")).unwrap(), SOURCE);
+fn resolves_each_project_and_explicit_config_paths() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let first = project(directory.path(), "first", Some("[format]\nindent = 4\n"))?;
+    let second = project(directory.path(), "second", Some("[format]\nindent = 0\n"))?;
+    let output = formatter(directory.path(), &["first/main.vx", "second/main.vx"])?;
+    ensure!(output.status.success(), "{output:?}");
+    check_equal(
+        &fs::read_to_string(first.join("main.vx"))?,
+        &"fn main() {\n    let value = 1;\n}\n",
+    )?;
+    check_equal(&fs::read_to_string(second.join("main.vx"))?, &SOURCE)?;
 
     let output = formatter(
         directory.path(),
         &["--config", "first/vx-format.toml", "second/main.vx"],
-    );
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(
-        fs::read_to_string(second.join("main.vx")).unwrap(),
-        "fn main() {\n    let value = 1;\n}\n"
-    );
+    )?;
+    ensure!(output.status.success(), "{output:?}");
+    check_equal(
+        &fs::read_to_string(second.join("main.vx"))?,
+        &"fn main() {\n    let value = 1;\n}\n",
+    )?;
+    Ok(())
 }
 
 #[test]
-fn configuration_errors_prevent_writes_to_every_input() {
-    let directory = tempfile::tempdir().unwrap();
-    let first = project(directory.path(), "first", Some("[format]\nindent = 4\n"));
-    let second = project(directory.path(), "second", None);
+fn configuration_errors_prevent_writes_to_every_input() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let first = project(directory.path(), "first", Some("[format]\nindent = 4\n"))?;
+    let second = project(directory.path(), "second", None)?;
     for invalid in [
         "",
         "[format]",
@@ -309,131 +318,126 @@ fn configuration_errors_prevent_writes_to_every_input() {
         "[format]\nindent = 2\nwidth = 80",
         "[",
     ] {
-        fs::write(second.join("vx-format.toml"), invalid).unwrap();
+        fs::write(second.join("vx-format.toml"), invalid)?;
         let output = formatter(
             directory.path(),
             &["--indent", "4", "first/main.vx", "second/main.vx"],
-        );
-        assert!(!output.status.success(), "accepted {invalid:?}");
-        assert!(String::from_utf8_lossy(&output.stderr).contains("vx-format.toml"));
-        assert_eq!(fs::read_to_string(first.join("main.vx")).unwrap(), SOURCE);
-        assert_eq!(fs::read_to_string(second.join("main.vx")).unwrap(), SOURCE);
+        )?;
+        ensure!(!output.status.success(), "accepted {invalid:?}");
+        ensure!(String::from_utf8_lossy(&output.stderr).contains("vx-format.toml"));
+        check_equal(&fs::read_to_string(first.join("main.vx"))?, &SOURCE)?;
+        check_equal(&fs::read_to_string(second.join("main.vx"))?, &SOURCE)?;
     }
-    let output = formatter(&first, &["--config", "missing.toml", "main.vx"]);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("missing.toml"));
-    assert_eq!(fs::read_to_string(first.join("main.vx")).unwrap(), SOURCE);
+    let output = formatter(&first, &["--config", "missing.toml", "main.vx"])?;
+    ensure!(!output.status.success());
+    ensure!(String::from_utf8_lossy(&output.stderr).contains("missing.toml"));
+    check_equal(&fs::read_to_string(first.join("main.vx"))?, &SOURCE)?;
+    Ok(())
 }
 
 #[test]
-fn unsupported_syntax_warns_without_failing_or_writing() {
-    let directory = tempfile::tempdir().unwrap();
-    let project = project(directory.path(), "project", None);
+fn unsupported_syntax_warns_without_failing_or_writing() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let project = project(directory.path(), "project", None)?;
     let source = "fn future(value: i32) -> i32 effects Read { value }\n";
-    fs::write(project.join("main.vx"), source).unwrap();
+    fs::write(project.join("main.vx"), source)?;
     for args in [vec!["--check", "main.vx"], vec!["main.vx"]] {
-        let output = formatter(&project, &args);
-        assert_eq!(output.status.code(), Some(0), "{output:?}");
-        assert!(output.stdout.is_empty(), "{output:?}");
-        let warnings = String::from_utf8(output.stderr).unwrap();
-        assert!(warnings.contains("WARN: main.vx:1:"), "{warnings}");
-        assert!(warnings.contains("preserve"), "{warnings}");
-        assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), source);
+        let output = formatter(&project, &args)?;
+        check_equal(&output.status.code(), &Some(0)).with_context(|| format!("{output:?}"))?;
+        ensure!(output.stdout.is_empty(), "{output:?}");
+        let warnings = String::from_utf8(output.stderr)?;
+        ensure!(warnings.contains("WARN: main.vx:1:"), "{warnings}");
+        ensure!(warnings.contains("preserve"), "{warnings}");
+        check_equal(&fs::read_to_string(project.join("main.vx"))?, &source)?;
     }
+    Ok(())
 }
 
 #[test]
-fn warnings_do_not_hide_supported_differences_in_the_same_file() {
-    let directory = tempfile::tempdir().unwrap();
-    let project = project(directory.path(), "project", None);
+fn warnings_do_not_hide_supported_differences_in_the_same_file() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let project = project(directory.path(), "project", None)?;
     let source =
         "fn future() -> i32 {\nfuture_binding value;\n}\nfn known(value: i32) -> i32 {\nvalue\n}\n";
-    fs::write(project.join("main.vx"), source).unwrap();
-    let output = formatter(&project, &["--check", "main.vx"]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("WARN: main.vx:1:"));
-    assert!(
+    fs::write(project.join("main.vx"), source)?;
+    let output = formatter(&project, &["--check", "main.vx"])?;
+    check_equal(&output.status.code(), &Some(1)).with_context(|| format!("{output:?}"))?;
+    ensure!(String::from_utf8_lossy(&output.stderr).contains("WARN: main.vx:1:"));
+    ensure!(
         String::from_utf8_lossy(&output.stdout).contains("--- main.vx\n+++ main.vx (formatted)\n")
     );
-    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), source);
-    let output = formatter(&project, &["main.vx"]);
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let formatted = fs::read_to_string(project.join("main.vx")).unwrap();
-    assert!(formatted.starts_with("fn future() -> i32 {\nfuture_binding value;\n}\n"));
-    assert!(
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &source)?;
+    let output = formatter(&project, &["main.vx"])?;
+    check_equal(&output.status.code(), &Some(0)).with_context(|| format!("{output:?}"))?;
+    let formatted = fs::read_to_string(project.join("main.vx"))?;
+    ensure!(formatted.starts_with("fn future() -> i32 {\nfuture_binding value;\n}\n"));
+    ensure!(
         formatted.ends_with("fn known(value: i32) -> i32 {\n  value\n}\n"),
         "{formatted}"
     );
-    let output = formatter(&project, &["--check", "main.vx"]);
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("WARN:"));
+    let output = formatter(&project, &["--check", "main.vx"])?;
+    check_equal(&output.status.code(), &Some(0)).with_context(|| format!("{output:?}"))?;
+    ensure!(String::from_utf8_lossy(&output.stderr).contains("WARN:"));
+    Ok(())
 }
 
 #[test]
-fn exclusions_do_not_hide_diffs_in_check_mode() {
-    let directory = tempfile::tempdir().unwrap();
-    let project = project(directory.path(), "project", None);
+fn exclusions_do_not_hide_diffs_in_check_mode() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let project = project(directory.path(), "project", None)?;
     let excluded = "// vx-format-begin: OFF\nfuture_binding value;\n// vx-format-end: OFF\n";
     for source in [
         format!("{excluded}fn   known(value:i32)->i32 {{\nreturn value;\n}}\n"),
         format!("fn   known(value:i32)->i32 {{\n{excluded}return value;\n}}\n"),
     ] {
-        fs::write(project.join("main.vx"), &source).unwrap();
-        let output = formatter(&project, &["--check", "main.vx"]);
-        assert_eq!(output.status.code(), Some(1), "{output:?}");
-        assert!(output.stderr.is_empty(), "{output:?}");
-        let diff = String::from_utf8(output.stdout).unwrap();
-        assert!(diff.contains("+fn known(value: i32) -> i32 {"), "{diff}");
-        assert!(diff.contains("+  return value;"), "{diff}");
-        assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), source);
+        fs::write(project.join("main.vx"), &source)?;
+        let output = formatter(&project, &["--check", "main.vx"])?;
+        check_equal(&output.status.code(), &Some(1)).with_context(|| format!("{output:?}"))?;
+        ensure!(output.stderr.is_empty(), "{output:?}");
+        let diff = String::from_utf8(output.stdout)?;
+        ensure!(diff.contains("+fn known(value: i32) -> i32 {"), "{diff}");
+        ensure!(diff.contains("+  return value;"), "{diff}");
+        check_equal(&fs::read_to_string(project.join("main.vx"))?, &source)?;
     }
+    Ok(())
 }
 
 #[test]
-fn disabled_headers_preserve_their_style_and_still_format_bodies() {
-    let directory = tempfile::tempdir().unwrap();
+fn disabled_headers_preserve_their_style_and_still_format_bodies() -> Result<()> {
+    let directory = tempfile::tempdir()?;
     let project = project(
         directory.path(),
         "project",
         Some("[format]\nindent = 2\nfn_signature_width = 20\nformat_function_headers = false\n"),
-    );
+    )?;
     let original = "fn   keep(a: i32, b : i32) -> i32 {\nreturn a;\n}\n";
     let preserved = "fn   keep(a: i32, b : i32) -> i32 {\n  return a;\n}\n";
-    fs::write(project.join("main.vx"), original).unwrap();
-    let output = formatter(&project, &["--check", "main.vx"]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert_eq!(
-        fs::read_to_string(project.join("main.vx")).unwrap(),
-        original
-    );
-    let output = formatter(&project, &["--space-before-colon", "true", "main.vx"]);
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(
-        fs::read_to_string(project.join("main.vx")).unwrap(),
-        preserved
-    );
-    let output = formatter(&project, &["--check", "main.vx"]);
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
+    fs::write(project.join("main.vx"), original)?;
+    let output = formatter(&project, &["--check", "main.vx"])?;
+    check_equal(&output.status.code(), &Some(1)).with_context(|| format!("{output:?}"))?;
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &original)?;
+    let output = formatter(&project, &["--space-before-colon", "true", "main.vx"])?;
+    ensure!(output.status.success(), "{output:?}");
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &preserved)?;
+    let output = formatter(&project, &["--check", "main.vx"])?;
+    check_equal(&output.status.code(), &Some(0)).with_context(|| format!("{output:?}"))?;
+    ensure!(output.stdout.is_empty(), "{output:?}");
     let output = formatter(
         &project,
         &["--check", "--format-function-headers", "true", "main.vx"],
-    );
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stdout).contains("+fn keep("));
+    )?;
+    check_equal(&output.status.code(), &Some(1)).with_context(|| format!("{output:?}"))?;
+    ensure!(String::from_utf8_lossy(&output.stdout).contains("+fn keep("));
     fs::write(
         project.join("vx-format.toml"),
         "[format]\nindent = 2\nformat_function_headers = true\n",
-    )
-    .unwrap();
+    )?;
     let output = formatter(
         &project,
         &["--check", "--format-function-headers", "false", "main.vx"],
-    );
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    assert_eq!(
-        fs::read_to_string(project.join("main.vx")).unwrap(),
-        preserved
-    );
+    )?;
+    check_equal(&output.status.code(), &Some(0)).with_context(|| format!("{output:?}"))?;
+    ensure!(output.stdout.is_empty(), "{output:?}");
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &preserved)?;
+    Ok(())
 }
