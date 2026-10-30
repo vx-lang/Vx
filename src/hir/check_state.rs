@@ -94,6 +94,9 @@ pub(crate) struct ComptimeValueFacts {
     pub captured_writes: HashSet<Symbol>,
     /// The callable's body is unavailable, so a call through it must be conservative.
     pub unknown_callable: bool,
+    /// An integer operation on known values gave this value a result outside its type, such
+    /// as an overflow. So it is unknown, though no value from the running program went in.
+    pub out_of_range: bool,
 }
 
 impl ComptimeValueFacts {
@@ -115,6 +118,7 @@ impl ComptimeValueFacts {
         self.captured_writes
             .extend(other.captured_writes.iter().cloned());
         self.unknown_callable |= other.unknown_callable;
+        self.out_of_range |= other.out_of_range;
     }
 }
 
@@ -338,6 +342,9 @@ pub(crate) enum ComptimeCheckProblemKind {
     MayFail,
     /// The check depends on a value known only when the program runs.
     Undecided,
+    /// The check has no value, because an integer operation on known values gives a result
+    /// outside its type.
+    OutOfRange,
 }
 
 /// Per-`comptime`-block state for the unified concrete/abstract interpreter.
@@ -397,11 +404,19 @@ impl ComptimeEvalContext {
     }
 
     /// Records a check that passes when `passes` is `Some(true)`, and nothing in that case.
-    pub(crate) fn note_check(&mut self, check: ComptimeCheck, passes: Option<bool>, span: Span) {
+    /// `out_of_range` says that the check has no value because of an operation on known values.
+    pub(crate) fn note_check(
+        &mut self,
+        check: ComptimeCheck,
+        passes: Option<bool>,
+        out_of_range: bool,
+        span: Span,
+    ) {
         let kind = match (passes, self.on_uncertain_path) {
             (Some(true), _) => return,
             (Some(false), false) => ComptimeCheckProblemKind::Fails,
             (Some(false), true) => ComptimeCheckProblemKind::MayFail,
+            (None, _) if out_of_range => ComptimeCheckProblemKind::OutOfRange,
             (None, _) => ComptimeCheckProblemKind::Undecided,
         };
         self.add_check_problem(ComptimeCheckProblem { span, check, kind });

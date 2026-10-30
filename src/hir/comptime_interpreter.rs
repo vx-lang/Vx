@@ -489,6 +489,7 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                     self.context.note_check(
                         ComptimeCheck::Assert(assert.msg.clone()),
                         condition,
+                        outcome.value.facts.out_of_range,
                         assert.span,
                     );
                 }
@@ -1179,8 +1180,12 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 rhs.value.concrete.as_ref(),
                 range,
             );
-            self.context
-                .note_check(ComptimeCheck::Division, passes, span);
+            self.context.note_check(
+                ComptimeCheck::Division,
+                passes,
+                lhs.value.facts.out_of_range || rhs.value.facts.out_of_range,
+                span,
+            );
         }
         let concrete = match (&lhs.value.concrete, &rhs.value.concrete) {
             (Some(Value::Int(a)), Some(Value::Int(b))) => {
@@ -1199,9 +1204,21 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
             .map(Value::Number),
             _ => None,
         };
+        // These operations on two known integers have no value only when the result is outside
+        // the type.
+        let out_of_range = concrete.is_none()
+            && matches!(
+                op,
+                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Shl | BinaryOp::Shr
+            )
+            && matches!(
+                (&lhs.value.concrete, &rhs.value.concrete),
+                (Some(Value::Int(_)), Some(Value::Int(_)))
+            );
         let mut outcome = self.unknown_after([lhs, rhs]);
         outcome.value.concrete = concrete;
         outcome.value.ty = ty;
+        outcome.value.facts.out_of_range |= out_of_range;
         outcome
     }
 
@@ -2524,6 +2541,9 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 };
                 if matches!(op.op, UnaryOp::Neg) {
                     outcome.value.ty = inner.value.ty.clone();
+                    // `-x` of the minimum value of a signed type.
+                    outcome.value.facts.out_of_range |= outcome.value.concrete.is_none()
+                        && matches!(inner.value.concrete, Some(Value::Int(_)));
                 }
                 outcome
             }

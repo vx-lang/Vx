@@ -202,6 +202,10 @@ impl<'a> TypeChecker<'a> {
             (ComptimeCheck::Assert(_), Undecided) => {
                 "this assert depends on a value known only when the program runs"
             }
+            (ComptimeCheck::Assert(_), OutOfRange) => {
+                "this assert has no value, because an operation it depends on gives a result \
+                 outside its type, such as an overflow"
+            }
             (ComptimeCheck::Division, Fails) => {
                 "this division stops the program: it divides by zero, or it divides the \
                  minimum value by -1"
@@ -209,6 +213,10 @@ impl<'a> TypeChecker<'a> {
             (ComptimeCheck::Division, MayFail) => {
                 "this division stops the program on a path that depends on a value known only \
                  when the program runs"
+            }
+            (ComptimeCheck::Division, OutOfRange) => {
+                "this division has no value, because an operation it depends on gives a result \
+                 outside its type, such as an overflow"
             }
             (ComptimeCheck::Division, Undecided) => {
                 "this division depends on a value known only when the program runs, and it may \

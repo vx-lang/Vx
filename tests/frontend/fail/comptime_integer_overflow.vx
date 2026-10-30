@@ -18,17 +18,17 @@ fn main() -> i32 {
   comptime {
     let big : i64 = 9223372036854775807i64;
     let over : i64 = big + 1;
-    // CHECK-DAG: Error[E3033] at {{.*}}comptime_integer_overflow.vx:[[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert depends on a value known only when the program runs
+    // CHECK-DAG: Error[E3033] at {{.*}}comptime_integer_overflow.vx:[[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert has no value, because an operation it depends on gives a result outside its type, such as an overflow
     assert(over == 0, "the overflow produced a value");
   }
   comptime {
     let over : i32 = 2147483647i32 + 1i32;
-    // CHECK-DAG: Error[E3033] at {{.*}}comptime_integer_overflow.vx:[[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert depends on a value known only when the program runs
+    // CHECK-DAG: Error[E3033] at {{.*}}comptime_integer_overflow.vx:[[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert has no value, because an operation it depends on gives a result outside its type, such as an overflow
     assert(over == 0i32, "the i32 overflow produced a value");
   }
   comptime {
     let under : u32 = 3u32 - 5u32;
-    // CHECK-DAG: Error[E3033] at {{.*}}comptime_integer_overflow.vx:[[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert depends on a value known only when the program runs
+    // CHECK-DAG: Error[E3033] at {{.*}}comptime_integer_overflow.vx:[[@LINE+1]]:5: this `comptime` block cannot be evaluated: this assert has no value, because an operation it depends on gives a result outside its type, such as an overflow
     assert(under == 0u32, "the u32 subtraction produced a value");
   }
   return 0;
