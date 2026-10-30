@@ -6370,7 +6370,10 @@ struct CheckIntegerDivisionPass
       if (isSigned && ty.getWidth() > 1 && (!constant || divisor.isAllOnes())) {
         Value min = b.create<arith::ConstantOp>(
             loc, b.getIntegerAttr(ty, APInt::getSignedMinValue(ty.getWidth())));
-        Value minusOne = b.create<arith::ConstantIntOp>(loc, ty, -1);
+        // ConstantIntOp(loc, ty, -1) only fills 64 bits; i128 needs the full
+        // width of ones or MIN/-1 misses the overflow guard (#2278).
+        Value minusOne = b.create<arith::ConstantOp>(
+            loc, b.getIntegerAttr(ty, APInt::getAllOnes(ty.getWidth())));
         Value isMin =
             b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lhs, min);
         Value isMinusOne = b.create<arith::CmpIOp>(
