@@ -756,6 +756,34 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The uses in a block's statements and the value it ends with. After a `let` in the
+    /// block, its name is the new variable, so a later use of the name is not a use of a
+    /// variable from outside the block.
+    pub fn extract_uses_block(
+        stmts: &[Statement],
+        tail: Option<&Expr>,
+        uses: &mut std::collections::HashSet<String>,
+    ) {
+        let mut declared = std::collections::HashSet::new();
+        let mut add = |found: std::collections::HashSet<String>,
+                       declared: &std::collections::HashSet<String>| {
+            uses.extend(found.into_iter().filter(|name| !declared.contains(name)));
+        };
+        for stmt in stmts {
+            let mut found = std::collections::HashSet::new();
+            Self::extract_uses_stmt(stmt, &mut found);
+            add(found, &declared);
+            if let Statement::LetDecl(l) = stmt {
+                declared.insert(l.name.to_string());
+            }
+        }
+        if let Some(tail) = tail {
+            let mut found = std::collections::HashSet::new();
+            Self::extract_uses_expr(tail, &mut found);
+            add(found, &declared);
+        }
+    }
+
     pub fn extract_uses_stmt(stmt: &Statement, uses: &mut std::collections::HashSet<String>) {
         match stmt {
             Statement::ExprStmt(e) => Self::extract_uses_expr(&e.expr, uses),
@@ -778,17 +806,13 @@ impl<'a> TypeChecker<'a> {
                 for inv in &f.invariants {
                     Self::extract_uses_expr(inv, uses);
                 }
-                for s in &f.body {
-                    Self::extract_uses_stmt(s, uses);
-                }
+                Self::extract_uses_block(&f.body, None, uses);
             }
             Statement::Loop(l) => {
                 for inv in &l.invariants {
                     Self::extract_uses_expr(inv, uses);
                 }
-                for s in &l.body {
-                    Self::extract_uses_stmt(s, uses);
-                }
+                Self::extract_uses_block(&l.body, None, uses);
             }
             Statement::Assert(a) => Self::extract_uses_expr(&a.expr, uses),
             // A drop uses what it frees, and leaves a mark a body already rewritten is known by.
@@ -869,12 +893,7 @@ impl<'a> TypeChecker<'a> {
             // held across a region look like one, which the space then had room for.
             Expr::SpawnOn(s) => {
                 topology(&s.top, uses);
-                for stmt in &s.stmts {
-                    Self::extract_uses_stmt(stmt, uses);
-                }
-                if let Some(ret) = &s.ret {
-                    Self::extract_uses_expr(ret, uses);
-                }
+                Self::extract_uses_block(&s.stmts, s.ret.as_deref(), uses);
             }
             Expr::Print(pr) => {
                 for a in &pr.args {
@@ -889,9 +908,7 @@ impl<'a> TypeChecker<'a> {
             Expr::Match(m) => {
                 Self::extract_uses_expr(&m.expr, uses);
                 for arm in &m.arms {
-                    for stmt in &arm.body {
-                        Self::extract_uses_stmt(stmt, uses);
-                    }
+                    Self::extract_uses_block(&arm.body, None, uses);
                 }
             }
             Expr::Range(r) => {
@@ -912,38 +929,19 @@ impl<'a> TypeChecker<'a> {
             }
             Expr::If(i) => {
                 Self::extract_uses_expr(&i.cond, uses);
-                for s in &i.then_block {
-                    Self::extract_uses_stmt(s, uses);
-                }
+                Self::extract_uses_block(&i.then_block, None, uses);
                 if let Some(eb) = &i.else_block {
-                    for s in eb {
-                        Self::extract_uses_stmt(s, uses);
-                    }
+                    Self::extract_uses_block(eb, None, uses);
                 }
             }
             Expr::UnsafeBlock(u) => {
-                for s in &u.stmts {
-                    Self::extract_uses_stmt(s, uses);
-                }
-                if let Some(ret) = &u.ret {
-                    Self::extract_uses_expr(ret, uses);
-                }
+                Self::extract_uses_block(&u.stmts, u.ret.as_deref(), uses);
             }
             Expr::TaskBlock(u) => {
-                for s in &u.stmts {
-                    Self::extract_uses_stmt(s, uses);
-                }
-                if let Some(ret) = &u.ret {
-                    Self::extract_uses_expr(ret, uses);
-                }
+                Self::extract_uses_block(&u.stmts, u.ret.as_deref(), uses);
             }
             Expr::ComptimeBlock(c) => {
-                for stmt in &c.stmts {
-                    Self::extract_uses_stmt(stmt, uses);
-                }
-                if let Some(ret) = &c.ret {
-                    Self::extract_uses_expr(ret, uses);
-                }
+                Self::extract_uses_block(&c.stmts, c.ret.as_deref(), uses);
             }
             Expr::Grad(g) => {
                 for arg in &g.args {

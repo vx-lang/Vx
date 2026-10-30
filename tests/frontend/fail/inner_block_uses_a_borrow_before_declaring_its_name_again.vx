@@ -1,0 +1,31 @@
+//===- inner_block_uses_a_borrow_before_declaring_its_name_again.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// The `if` block uses the borrow `r` of `d` before it declares a new `r`. So the borrow is
+// still alive when `d` is read before the block, and that read gets E4002.
+
+struct P {
+  x : i64,
+}
+
+fn main() -> i32 {
+  let mut d : Tensor<i64, [3]> = [ 1i64, 2i64, 3i64 ];
+  let r : &mut Tensor<i64, [3]> = &mut d;
+  // CHECK: Error[E4002] at {{.*}}.vx:[[@LINE+1]]:9: Cannot access 'd' because it is mutably borrowed.
+  print(d[0]);
+  let mut p = P {
+    x : 1i64
+  };
+  if true {
+    r[0] = 9i64;
+    let r : &mut P = &mut p;
+    r.x = 5i64;
+  };
+  return 0;
+}
