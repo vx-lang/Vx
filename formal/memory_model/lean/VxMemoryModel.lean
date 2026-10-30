@@ -39,3 +39,6 @@ import VxMemoryModel.InterleaveComplete
 import VxMemoryModel.MachineExample
 import VxMemoryModel.Progress
 import VxMemoryModel.ProgressExample
+import VxMemoryModel.Deadlock
+import VxMemoryModel.CpuDeadlock
+import VxMemoryModel.DeadlockExample

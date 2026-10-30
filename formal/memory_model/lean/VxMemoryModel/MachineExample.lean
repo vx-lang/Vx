@@ -52,7 +52,7 @@ def cfg (s : Cpu) : Fleet.Config Cpu Unit := ⟨fun n => if n = 0 then s else Cp
 
 theorem cfg_step {s s' : Cpu} {t ls} (h : Cpu.Step s t ls s') :
     fleet.Step (.move 0 t) (cfg s) (cfg s') := by
-  have e : cfg s' = ⟨setAt (cfg s).state 0 s', (cfg s).flight ++ Fleet.number (cfg s).sent [],
+  have e : cfg s' = ⟨setAt (cfg s).state 0 s', (cfg s).flight ++ Fleet.number 0 (cfg s).sent [],
       (cfg s).sent + ([] : List (Nat × Unit)).length⟩ := by
     simp only [cfg, Fleet.Config.mk.injEq]
     refine ⟨funext fun n => ?_, rfl, rfl⟩

@@ -38,6 +38,8 @@ structure Node (S M : Type) where
 /-- A message in flight. The fleet gives each message its own number. -/
 structure Msg (M : Type) where
   id : Nat
+  /-- The node that sent the message. -/
+  src : Nat
   dst : Nat
   data : M
 
@@ -55,10 +57,10 @@ structure Config (S M : Type) where
   /-- The number of messages sent so far. The next message gets this number. -/
   sent : Nat
 
-/-- Give the numbers `n`, `n + 1`, ... to the messages `out`. -/
-def number (n : Nat) : List (Nat × M) → List (Msg M)
+/-- Give the numbers `n`, `n + 1`, ... to the messages `out` that the node `src` sends. -/
+def number (src n : Nat) : List (Nat × M) → List (Msg M)
   | [] => []
-  | p :: out => ⟨n, p.1, p.2⟩ :: number (n + 1) out
+  | p :: out => ⟨n, src, p.1, p.2⟩ :: number src (n + 1) out
 
 /-- An action of the fleet, for fairness. -/
 inductive Act where
@@ -71,7 +73,7 @@ inductive Act where
 inductive Step : Act → Config S M → Config S M → Prop
   | move {c n a s' out} : (F.node n).step (c.state n) a s' out →
     Step (.move n a) c
-      ⟨setAt c.state n s', c.flight ++ number c.sent out, c.sent + out.length⟩
+      ⟨setAt c.state n s', c.flight ++ number n c.sent out, c.sent + out.length⟩
   | deliver {c} (i : Nat) (h : i < c.flight.length) :
     Step (.deliver c.flight[i].id) c
       ⟨setAt c.state c.flight[i].dst ((F.node c.flight[i].dst).recv (c.state c.flight[i].dst)

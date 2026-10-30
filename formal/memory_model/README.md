@@ -263,6 +263,18 @@ that `P` holds until `A` happens. Then in a fair run, `A` happens after each poi
 the fleet delivers each message in flight. In `ProgressExample.lean`, node 0 sends one message to
 node 1. `ping_arrives` uses WF1 twice to show that in each fair run, node 1 gets the message.
 
+`Deadlock.lean` has F9 for a fleet. A node is quiet when each of its tasks is done or waits. A
+quiet node sends nothing and stays quiet until a message comes. The fleet is deadlocked when each
+node is quiet and no message is in flight, and then it stays deadlocked (`Deadlocked.forever`).
+`snapshot` shows that a snapshot in the style of Chandy and Lamport is sound. Each node records
+its state at its own point. If each node records that it is quiet and no message crosses the cut,
+the fleet is deadlocked when the last node records. `CpuDeadlock.lean` defines "waits" for a CPU
+node: the next step of the thread reads a flag that holds 0 or has no value. `Cpu.stops` is W6:
+if no step of a CPU node changes it, each thread waits or has no step. `Cpu.frozen` shows that a
+deadlocked fleet of CPU nodes never changes again. In `DeadlockExample.lean`, two threads wait for
+the flags of each other and never move. A second example shows that the snapshot needs its
+hypothesis on the cut.
+
 The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
 `run_lean.py` checks that Lean and `vx.cat` agree on the 13 tests without scopes and barriers:
 
@@ -361,3 +373,6 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - `Cpu.complete` needs code with no `rmwStore` in it (`Stmt.NoRmw`). Only a `fetchAdd` or a
   `cas` makes one. Without the rule, `load` and then `rmwStore` give an execution that no run
   makes.
+- `snapshot` assumes a cut that no message crosses. The marker protocol that gives such a cut is
+  not modeled. A thread that a failed bounds check stopped has no step, and `Cpu.stops` does not
+  tell it from a thread that is done.

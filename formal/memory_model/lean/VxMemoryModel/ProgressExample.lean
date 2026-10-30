@@ -56,7 +56,7 @@ theorem ping_arrives {r : Nat → Config Nat Unit} (hr : ping.IsRun start r) (hf
     cases hj with
     | move h =>
       obtain ⟨_, _, _, _, rfl⟩ := h
-      exact ⟨⟨(r j).sent, 1, ()⟩, by simp [number], rfl⟩
+      exact ⟨⟨(r j).sent, 0, 1, ()⟩, by simp [number], rfl⟩
   obtain ⟨k, _, hk⟩ := delivers hr hf hin
   refine ⟨k + 1, ?_⟩
   have hdst := to_one hr k
