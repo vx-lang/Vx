@@ -789,8 +789,12 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The variant names of `ty`'s enum declaration, or `None` when it is not an enum this
-    /// compilation declares (so exhaustiveness cannot be decided by enumeration).
-    fn enum_variants_of(&self, ty: &Type) -> Option<Vec<crate::symbol::Symbol>> {
+    /// compilation declares (so exhaustiveness cannot be decided by enumeration). A reference
+    /// to an enum has the variants of the enum.
+    fn enum_variants_of(&self, mut ty: &Type) -> Option<Vec<crate::symbol::Symbol>> {
+        while let Type::Borrow { inner, .. } = ty {
+            ty = inner;
+        }
         let name = match ty {
             Type::Enum(n, _) | Type::Struct(n, _) => n.clone(),
             Type::GenericInstance(inner, _) => match &**inner {
@@ -1019,7 +1023,7 @@ impl<'a> TypeChecker<'a> {
             Expr::Match(MatchExpr {
                 expr: match_expr,
                 arms,
-                span: _,
+                span: match_span,
             }) => {
                 // Matching a variable, or what a reference points at, reads it: only an arm
                 // that binds a value which has to move moves it (below). Any other scrutinee
@@ -1139,6 +1143,7 @@ impl<'a> TypeChecker<'a> {
                 // fact, so asking it for a wildcard stays limited to value position, where the
                 // fall-through edge would otherwise have no value to carry.
                 if !has_wildcard && !self.speculating {
+                    let at = Some(crate::diagnostic::SourceSpan::from_ast_span(match_span));
                     match self.enum_variants_of(&expr_ty) {
                         Some(all) => {
                             let missing: Vec<String> = all
@@ -1154,7 +1159,7 @@ impl<'a> TypeChecker<'a> {
                                          or a `_` arm",
                                         missing.join(", ")
                                     ),
-                                    None,
+                                    at,
                                 );
                             }
                         }
@@ -1165,7 +1170,7 @@ impl<'a> TypeChecker<'a> {
                                     "this `match` produces a value but has no arm matching every \
                                      value; add a `_` arm so every path yields one"
                                         .to_string(),
-                                    None,
+                                    at,
                                 );
                             }
                         }

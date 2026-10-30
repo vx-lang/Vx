@@ -996,7 +996,15 @@ impl<'a> Parser<'a> {
                 else_block,
                 span: if_span,
             }));
-        } else if self.match_token(&TokenType::Match) {
+        } else if self.check(&TokenType::Match) {
+            // The `match` token, so a diagnostic about the `match` points at it.
+            let match_span = Span {
+                line: self.peek().line,
+                column: self.peek().column,
+                length: self.peek().length,
+                expansion: self.expansion(),
+            };
+            self.advance();
             let at_statement = std::mem::take(&mut self.match_is_statement);
             let expr = self.parse_expr()?;
             self.consume(&TokenType::LeftBrace, "Expected '{' after match expr")?;
@@ -1044,7 +1052,7 @@ impl<'a> Parser<'a> {
             return Ok(Expr::Match(MatchExpr {
                 expr: Box::new(expr),
                 arms,
-                span: Span::default(),
+                span: match_span,
             }));
         }
 
