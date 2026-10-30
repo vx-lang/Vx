@@ -875,6 +875,30 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
         "vx_npu_kernel_" + std::to_string(kernelIdx.fetch_add(1));
     auto kernelOp = rewriter.create<vx::KernelOp>(op.getLoc(), funcName,
                                                   funcType, topology);
+    // What the kernel may assume about each buffer it takes: a parameter of
+    // the function that is `llvm.readonly` (a `&`) or `llvm.noalias` (a
+    // `&mut`). The borrow checker proved that nothing else writes such a
+    // buffer while the kernel runs. A device kernel puts it on its parameter.
+    {
+      SmallVector<Attribute> access;
+      for (Value v : captures) {
+        auto arg = dyn_cast<BlockArgument>(v);
+        StringRef kind;
+        if (parentFunc && arg &&
+            arg.getOwner() == &parentFunc.getBody().front()) {
+          unsigned i = arg.getArgNumber();
+          if (parentFunc.getArgAttr(i, "llvm.readonly"))
+            kind = "readonly";
+          else if (parentFunc.getArgAttr(i, "llvm.noalias"))
+            kind = "noalias";
+        }
+        access.push_back(rewriter.getStringAttr(kind));
+      }
+      if (llvm::any_of(access, [](Attribute a) {
+            return !cast<StringAttr>(a).getValue().empty();
+          }))
+        kernelOp->setAttr("vx.arg_access", rewriter.getArrayAttr(access));
+    }
     // The declared arch travels from the machine file, via the spawn, onto the
     // outlined kernel -- a discardable attribute, so no dialect change. It is
     // what lets `materializeGpuKernels` gate device compilation on the
@@ -3496,6 +3520,9 @@ struct ConvertVxToStandardPass
           kernel.getLoc(), kernel.getSymName(), funcType);
       gpuFunc->setAttr(gpu::GPUDialect::getKernelFuncAttrName(),
                        inner.getUnitAttr());
+      // `deviceImageOf` puts these on the LLVM parameters of the kernel.
+      if (auto access = kernel->getAttr("vx.arg_access"))
+        gpuFunc->setAttr("vx.arg_access", access);
       // A block size that is a number is the block of every launch. ptxas
       // then uses few enough registers for a block of that size. Without it,
       // a large kernel can get a thread limit below its block. A block of at
@@ -5049,6 +5076,44 @@ static bool weakRelaxedAtomics(Operation *op) {
   return module && module->hasAttr("vx.weak_relaxed_atomics");
 }
 
+/// Mark the buffers of each kernel in `device`, the lowered copy of
+/// `original`. A buffer that nothing writes while the kernel runs is `noalias
+/// readonly`, as Rust marks a `&T`, so NVPTX loads it through the read-only
+/// cache (`ld.global.nc`). A buffer that only this parameter writes is
+/// `noalias`. The NVVM conversion splits a memref parameter into its fields,
+/// 3 + 2 * rank of them, and drops these marks, so they go on its two pointers.
+static void markKernelBuffers(gpu::GPUModuleOp original, ModuleOp device) {
+  MLIRContext *ctx = device.getContext();
+  original.walk([&](gpu::GPUFuncOp f) {
+    auto access = f->getAttrOfType<ArrayAttr>("vx.arg_access");
+    if (!access)
+      return;
+    LLVM::LLVMFuncOp lowered;
+    device.walk([&](LLVM::LLVMFuncOp g) {
+      if (g.getSymName() == f.getName())
+        lowered = g;
+    });
+    if (!lowered)
+      return;
+    unsigned at = 0;
+    for (auto [i, ty] : llvm::enumerate(f.getArgumentTypes())) {
+      auto memref = dyn_cast<MemRefType>(ty);
+      StringRef kind =
+          i < access.size() ? cast<StringAttr>(access[i]).getValue() : "";
+      if (memref && (kind == "readonly" || kind == "noalias")) {
+        for (unsigned p : {at, at + 1}) {
+          lowered.setArgAttr(p, "llvm.noalias", UnitAttr::get(ctx));
+          if (kind == "readonly")
+            lowered.setArgAttr(p, "llvm.readonly", UnitAttr::get(ctx));
+        }
+      }
+      at += memref ? 3 + 2 * memref.getRank() : 1;
+    }
+    assert(at == lowered.getNumArguments() &&
+           "a kernel's memref parameter is 3 + 2 * rank LLVM parameters");
+  });
+}
+
 /// Compile a `gpu.module` to a device image, as PTX text.
 ///
 /// This is the pipeline a standalone script established, moved into the
@@ -5195,6 +5260,7 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
     error = "the NVPTX pipeline failed";
     return {};
   }
+  markKernelBuffers(gpuModule, *device);
   // The conversion gives each function a C wrapper, `_mlir_ciface_<name>`. The
   // host cannot call a device function, and a wrapper is public, so it would
   // keep its callee in the PTX after the kernels inline that callee.
