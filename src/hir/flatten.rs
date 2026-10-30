@@ -1717,11 +1717,9 @@ impl<'r> Lowerer<'r> {
             // load the result. (The annotated `let v: T = if ..` form uses its annotation directly in
             // `lower_stmt`, a more precise path that this does not replace.)
             Expr::If(if_expr) => {
-                let result_ty = self
-                    .infer_block_ty(comptime_survivor(if_expr).unwrap_or(&if_expr.then_block))
-                    .ok_or(Decline::TypeNotModelled {
-                        what: "an if branch whose type cannot be inferred",
-                    })?;
+                let result_ty = self.infer_if_ty(if_expr).ok_or(Decline::TypeNotModelled {
+                    what: "an if branch whose type cannot be inferred",
+                })?;
                 let slot = self.emit_alloca(result_ty.clone());
                 self.lower_if_into_slot(if_expr, slot.reg)?;
                 Ok(self.emit_typed(Opcode::SlotLoad, slot.reg, Register(0), result_ty, 0))
@@ -1877,8 +1875,11 @@ impl<'r> Lowerer<'r> {
                 let sig = self.registry.fn_sigs.get(&fc.name)?;
                 lowered_ty(&sig.ret_ty, self.registry)
             }
-            Expr::Match(m) => m.arms.iter().find_map(|arm| self.infer_block_ty(&arm.body)),
-            Expr::If(iff) => self.infer_block_ty(comptime_survivor(iff).unwrap_or(&iff.then_block)),
+            Expr::Match(m) => m.arms.iter().find_map(|arm| {
+                self.infer_block_ty(&arm.body)
+                    .or_else(|| self.infer_payload_binding_ty(m, arm))
+            }),
+            Expr::If(iff) => self.infer_if_ty(iff),
             // `t.extent(k)`, as the checker rewrites it: an `i32`, as `lower_expr` emits it.
             Expr::IndexAccess(ix) if matches!(&*ix.base, Expr::MemberAccess(ma) if ma.member.as_ref() == "$extent") => {
                 Some(LoweredTy::Scalar(ElementType::I32))
@@ -1903,6 +1904,55 @@ impl<'r> Lowerer<'r> {
             Expr::ComptimeBlock(cb) => self.infer_expr_ty(cb.ret.as_deref()?),
             _ => None,
         }
+    }
+
+    /// The type of a value `if`: its `then` branch's value, or its `else` branch's when the
+    /// `then` branch gives none, as in `if c { continue; } else { x }`.
+    fn infer_if_ty(&mut self, iff: &crate::syntax::IfExpr) -> Option<LoweredTy> {
+        if let Some(block) = comptime_survivor(iff) {
+            return self.infer_block_ty(block);
+        }
+        self.infer_block_ty(&iff.then_block)
+            .or_else(|| self.infer_block_ty(iff.else_block.as_deref()?))
+    }
+
+    /// The type of an arm whose value is a name its pattern binds, `Some(v) => { v }`: the
+    /// variant's payload type, from the subject's enum type.
+    fn infer_payload_binding_ty(
+        &mut self,
+        m: &crate::syntax::MatchExpr,
+        arm: &crate::syntax::MatchArm,
+    ) -> Option<LoweredTy> {
+        let Statement::ExprStmt(es) = arm.body.last()? else {
+            return None;
+        };
+        if es.has_semi {
+            return None;
+        }
+        let Expr::Identifier(id) = &es.expr else {
+            return None;
+        };
+        let crate::syntax::Pattern::EnumVariant(pattern_en, variant, Some(pats)) = &arm.pattern
+        else {
+            return None;
+        };
+        let index = pats
+            .iter()
+            .position(|p| matches!(p, crate::syntax::Pattern::Identifier(n) if *n == id.name))?;
+        let enum_ty = self
+            .infer_ast_type(&m.expr)
+            .unwrap_or_else(|| Type::Enum(pattern_en.to_string().into(), None));
+        let (name, mut args) = nominal_name_and_args(deref_to_pointee(&enum_ty))?;
+        if args.is_empty() {
+            args = parse_struct_instance(name.as_ref()).1;
+        }
+        let data = self.registry.enum_data.get(base_name(name.as_ref()))?;
+        let (_, payload) = data
+            .variants
+            .iter()
+            .find(|(n, _)| n.as_ref() == variant.as_ref())?;
+        let ty = substitute_generics(payload.get(index)?, &data.generics, &args);
+        lowered_ty(&ty, self.registry)
     }
 
     /// The inferred type of a block's trailing semicolon-less value expression (a branch's value).
@@ -2629,7 +2679,11 @@ impl<'r> Lowerer<'r> {
                         return self.lower_stmt(s);
                     }
                 }
-                if matches!(s, Statement::Return(_)) {
+                // A `return`, `break` or `continue` leaves the branch with no value.
+                if matches!(
+                    s,
+                    Statement::Return(_) | Statement::Break(_) | Statement::Continue(_)
+                ) {
                     return self.lower_stmt(s);
                 }
                 return Err(Decline::Unsupported {
@@ -5729,7 +5783,7 @@ impl<'r> Lowerer<'r> {
                 // A value-position `if` (`let v: T = if c { .. } else { .. }`): allocate a result slot,
                 // have each branch store its trailing value into it, and bind the local to the slot
                 // (the merge block loads it). The slot type comes from the `let`'s annotation, else
-                // from the then-branch's trailing value.
+                // from a branch's trailing value.
                 if let Expr::If(if_expr) = &l.expr {
                     let result_ty = match l.ty_ann.as_ref() {
                         Some(ann) => {
@@ -5737,13 +5791,9 @@ impl<'r> Lowerer<'r> {
                                 what: "a let whose annotated type is not modelled",
                             })?
                         }
-                        None => self
-                            .infer_block_ty(
-                                comptime_survivor(if_expr).unwrap_or(&if_expr.then_block),
-                            )
-                            .ok_or(Decline::TypeNotModelled {
-                                what: "a let with no type annotation",
-                            })?,
+                        None => self.infer_if_ty(if_expr).ok_or(Decline::TypeNotModelled {
+                            what: "a let with no type annotation",
+                        })?,
                     };
                     let slot = self.emit_alloca(result_ty.clone());
                     self.lower_if_into_slot(if_expr, slot.reg)?;

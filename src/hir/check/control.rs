@@ -599,9 +599,15 @@ impl<'a> TypeChecker<'a> {
                 marks_after_else = self.branch_end(else_b);
 
                 // A branch that never finishes, `todo()`, has no value: the other branch decides.
-                if crate::syntax::is_never_ty(&then_ty) {
+                // So does a branch that ends in `continue` when the value is used. A `while` is
+                // an unused `if` with an `else { break }`, and its body must still give no value.
+                if crate::syntax::is_never_ty(&then_ty)
+                    || (!unused && self.branch_ends_early(&if_expr.then_block))
+                {
                     then_ty = else_ty.clone();
-                } else if crate::syntax::is_never_ty(&else_ty) {
+                } else if crate::syntax::is_never_ty(&else_ty)
+                    || (!unused && self.branch_ends_early(else_b))
+                {
                     else_ty = then_ty.clone();
                 }
                 if !if_expr.is_comptime && then_ty != else_ty {
