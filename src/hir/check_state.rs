@@ -700,6 +700,8 @@ pub struct MonoState {
     /// only after its body is checked, so a method that calls itself looks here to avoid
     /// checking its own body again, without end.
     pub being_checked: HashSet<Symbol>,
+    /// Instances that a `Type::method(..)` call made, such as `f32::from_bits`.
+    pub static_method_instances: HashSet<Symbol>,
     /// The warnings already given in each generic function's body, keyed by
     /// `TypeChecker::generic_body_key`. Every instance checks the same body, so a later
     /// instance's copy of a warning is dropped.

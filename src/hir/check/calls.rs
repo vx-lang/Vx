@@ -1018,7 +1018,14 @@ impl<'a> TypeChecker<'a> {
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
                     }
-                    if !mono_topology.same_device(&self.active_topology) && !self.speculating {
+                    // `Type::method(..)` checks no placement, so a later call to the instance that
+                    // it made must not check one either.
+                    let from_static_method =
+                        self.mono.static_method_instances.contains(&resolved_name);
+                    if !from_static_method
+                        && !mono_topology.same_device(&self.active_topology)
+                        && !self.speculating
+                    {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E6001,
                             format!(
@@ -1871,6 +1878,7 @@ impl<'a> TypeChecker<'a> {
                 self.check_instance(&generic_func, &mut inst_func);
                 self.seam.lowering_edge = saved_edge;
                 self.mono.being_checked.remove(&inst_name);
+                self.mono.static_method_instances.insert(inst_name.clone());
                 self.mono.functions.push((inst_func, 0));
             }
 
