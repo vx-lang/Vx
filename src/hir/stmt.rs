@@ -1877,9 +1877,12 @@ impl<'a> TypeChecker<'a> {
                 tmp_env.insert(k.clone(), v.clone());
             }
         }
+        // Each assert has its own loop budget.
+        let outer_steps = self.consteval.loop_steps.replace(0);
         let eval_res = self.eval_expr(expr, &tmp_env);
         self.report_depth_exceeded(span);
         self.report_steps_exceeded(span);
+        self.consteval.loop_steps.set(outer_steps);
 
         if let Some(Value::Bool(b)) = eval_res {
             if !b {

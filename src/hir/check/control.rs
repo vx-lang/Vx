@@ -354,6 +354,8 @@ impl<'a> TypeChecker<'a> {
                 }
                 let before = self.consteval_snapshot();
                 self.push_scope();
+                // Each block has its own loop budget, as in the `comptime` interpreter.
+                let outer_steps = self.consteval.loop_steps.replace(0);
                 self.consteval.comptime_depth += 1;
                 self.value_unused = unused;
                 let mut ret_ty = self.check_expr_block(stmts, ret.as_deref(), consume);
@@ -361,6 +363,7 @@ impl<'a> TypeChecker<'a> {
                     ret_ty = self.check_expr_type(r);
                 }
                 self.consteval.comptime_depth -= 1;
+                self.consteval.loop_steps.set(outer_steps);
                 self.pop_scope();
                 let folded = self.fold_comptime_block(
                     stmts,

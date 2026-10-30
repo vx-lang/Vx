@@ -1,0 +1,43 @@
+//===- each_comptime_block_and_assert_has_its_own_loop_limit.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// Compile-time evaluation stops a `comptime` block after 1,000,000 loop iterations (E8005).
+// The checker also runs a plain assert while compiling, to find one that is always false.
+// Each block and each assert below runs 600,000 iterations, which is under the limit. The
+// compiler used to count them together, so the second block and the second assert got E8005.
+
+fn count() -> i64 {
+  let mut n : i64 = 0i64;
+  for i in 0..600000 {
+    n = n + 1i64;
+  }
+  return n;
+}
+
+fn main() -> i32 {
+  assert(count() == 600000i64, "the first assert");
+  assert(count() == 600000i64, "the second assert");
+  let a = comptime {
+    let mut n : i64 = 0i64;
+    for i in 0..600000 {
+      n = n + 1i64;
+    }
+    n
+  };
+  let b = comptime {
+    let mut n : i64 = 0i64;
+    for i in 0..600000 {
+      n = n + 1i64;
+    }
+    n
+  };
+  // CHECK: 1200000
+  print(a + b);
+  return 0;
+}
