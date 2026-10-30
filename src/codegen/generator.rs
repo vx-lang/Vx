@@ -103,6 +103,9 @@ pub struct MeliorGenerator<'c> {
     pub(crate) across_kinds: Vec<crate::arch::LevelKind>,
     pub in_spawn: bool,
     pub break_blocks: Vec<*const melior::ir::Block<'c>>,
+    /// The open `tasks` blocks that can fail: the block after each, which takes the value of
+    /// the block, and the type `Result<U, E>` of that value.
+    pub tasks_leaves: Vec<(*const melior::ir::Block<'c>, syntax::Type)>,
     pub continue_blocks: Vec<*const melior::ir::Block<'c>>,
     pub allocs: std::collections::HashSet<String>,
     /// One frame per block being lowered: what each name a `let` in the block shadows meant
@@ -856,6 +859,7 @@ impl<'c> MeliorGenerator<'c> {
             across_kinds: Vec::new(),
             in_spawn: false,
             break_blocks: Vec::new(),
+            tasks_leaves: Vec::new(),
             continue_blocks: Vec::new(),
             allocs: std::collections::HashSet::new(),
             blocks: Vec::new(),

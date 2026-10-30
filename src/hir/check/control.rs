@@ -443,7 +443,9 @@ impl<'a> TypeChecker<'a> {
         stmts: &[Statement],
     ) -> Option<Vec<std::collections::HashSet<String>>> {
         let exit = stmts.iter().find_map(|s| match s {
+            // The leave of a failed join goes out of a `tasks` block, not out of a loop.
             Statement::Return(_) => Some(0),
+            Statement::Break(b) if b.tasks_value.is_some() => Some(0),
             Statement::Break(_) => Some(1),
             Statement::Continue(_) => Some(2),
             _ => None,

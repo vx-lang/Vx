@@ -1,0 +1,165 @@
+//===- tasks_join_gives_the_value_or_leaves_with_the_failure.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A task whose body gives `Result<T, E>` can fail. Its `join()` gives the `T`. When the
+// task failed, the join leaves the `tasks` block, and the block gives that `Err`. The
+// block drops the results of the other tasks, so each error is given back or dropped once.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+import core::result;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("dropped {}", self.id);
+  }
+}
+
+fn fetch(n : i32) -> Result<i32, i32> {
+  if n == 2 {
+    return Result<i32, i32>::Err(n * 100);
+  }
+  return Result<i32, i32>::Ok(n * 10);
+}
+
+// The joins are in one expression. 10 + 30 when both work. `fetch(2)` fails with 200.
+// CHECK: sum 40
+// CHECK-NEXT: sum failed 200
+fn sum(second : i32) -> Result<i32, i32> {
+  let r = tasks {
+    let a = spawn {
+      fetch(1)
+    };
+    let b = spawn {
+      fetch(second)
+    };
+    let total = a.join() + b.join();
+    Result<i32, i32>::Ok(total)
+  };
+  return r;
+}
+
+fn show_sum(r : Result<i32, i32>) -> i32 {
+  match r {
+    Result<i32, i32>::Ok(v) => {
+      println!("sum {}", v);
+    }
+    Result<i32, i32>::Err(e) => {
+      println!("sum failed {}", e);
+    }
+  }
+  return 0;
+}
+
+// A join in a loop: the pass with `i == 2` fails, and the block gives its error.
+// CHECK-NEXT: in_a_loop failed 200
+fn in_a_loop() -> Result<i32, i32> {
+  let r = tasks {
+    let mut total = 0;
+    for i in 0..4 {
+      let h = spawn {
+        fetch(i)
+      };
+      total = total + h.join();
+    }
+    Result<i32, i32>::Ok(total)
+  };
+  return r;
+}
+
+fn work(id : i32, fails : bool) -> Result<Noisy, Noisy> {
+  if fails {
+    return Result<Noisy, Noisy>::Err(Noisy {
+      id: id
+    });
+  }
+  return Result<Noisy, Noisy>::Ok(Noisy {
+    id: id
+  });
+}
+
+fn run(a_fails : bool, b_fails : bool) -> Result<Noisy, Noisy> {
+  let r = tasks {
+    let a = spawn {
+      work(1, a_fails)
+    };
+    let b = spawn {
+      work(2, b_fails)
+    };
+    let x = a.join();
+    let y = b.join();
+    Result<Noisy, Noisy>::Ok(Noisy {
+      id: x.id + y.id
+    })
+  };
+  return r;
+}
+
+fn show(r : &Result<Noisy, Noisy>) -> i32 {
+  match r {
+    Result<Noisy, Noisy>::Ok(v) => {
+      println!("ok {}", v.id);
+    }
+    Result<Noisy, Noisy>::Err(e) => {
+      println!("err {}", e.id);
+    }
+  }
+  return 0;
+}
+
+// Nothing fails: the block drops the joined values, and gives a new one.
+// CHECK-NEXT: -- none fail
+// CHECK-NEXT: dropped 2
+// CHECK-NEXT: dropped 1
+// CHECK-NEXT: ok 3
+//
+// `b` fails: the block drops the value of `a`, and gives the error of `b`.
+// CHECK-NEXT: -- b fails
+// CHECK-NEXT: dropped 1
+// CHECK-NEXT: err 2
+//
+// Both fail: the join of `a` comes first, so the block gives its error. The block drops the
+// error of `b`, once.
+// CHECK-NEXT: -- both fail
+// CHECK-NEXT: dropped 2
+// CHECK-NEXT: err 1
+//
+// `main` drops the three results it got, the last one first.
+// CHECK-NEXT: end
+// CHECK-NEXT: dropped 1
+// CHECK-NEXT: dropped 2
+// CHECK-NEXT: dropped 3
+// CHECK-NOT: dropped
+
+fn main() -> i32 {
+  show_sum(sum(3));
+  show_sum(sum(2));
+  match in_a_loop() {
+    Result<i32, i32>::Ok(v) => {
+      println!("in_a_loop {}", v);
+    }
+    Result<i32, i32>::Err(e) => {
+      println!("in_a_loop failed {}", e);
+    }
+  }
+  println!("-- none fail");
+  let none_fail = run(false, false);
+  show(&none_fail);
+  println!("-- b fails");
+  let b_fails = run(false, true);
+  show(&b_fails);
+  println!("-- both fail");
+  let both_fail = run(true, true);
+  show(&both_fail);
+  println!("end");
+  return 0;
+}

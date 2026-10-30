@@ -183,10 +183,16 @@ impl LoopStmt {
 #[derive(Debug, PartialEq, Clone)]
 pub struct BreakStmt {
     pub span: Span,
+    /// Set by the checker for the `join()` of a task that failed: then this leaves the innermost
+    /// `tasks` block, not a loop, and this `Err` is the value of the block. No program writes it.
+    pub tasks_value: Option<Box<super::Expr>>,
 }
 impl BreakStmt {
     pub fn new(span: Span) -> Self {
-        Self { span }
+        Self {
+            span,
+            tasks_value: None,
+        }
     }
 }
 
