@@ -580,23 +580,24 @@ pub struct Callee {
 /// (for the call's result type) without a name→AST walk.
 pub type CalleeMap = HashMap<TypeId, Callee>;
 
-/// Resolve a nominal type to a *modelled* aggregate layout GID: the attached GID when name resolution
-/// set it (present in `aggs`), else the base name's GID (`agg_names`) — a monomorphized cross-module
-/// signature carries an unresolved base (`GenericInstance(Struct("Vec", None), ..)` / `Struct("Vec",
-/// None)`), so the layout must be recovered by name. Resolves a generic instance through its base.
-/// (#242)
+/// Resolve an aggregate layout by declaration identity.
+/// Complete generic declarations share storage. Other generic instances use generated layout IDs.
+/// A missing attached ID permits an unambiguous name lookup. An unknown attached ID does not.
 fn resolve_agg_gid(
     ty: &Type,
     aggs: &AggMap,
     agg_names: &HashMap<String, TypeId>,
     identities: &crate::layout::identity::AggregateIdentities,
 ) -> Option<TypeId> {
-    // A data-carrying enum instance (`Option<i32>`) has a *synthesized* per-instance layout keyed by
-    // `enum_instance_gid` (the lowerer recorded it in the side table now folded into `aggs`); try that
-    // first. Its `gid` is distinct from any registry layout, so a struct instance (`Vec<i32>`) misses
-    // here and falls through to the nominal resolution below. (#242)
+    // Prefer the lowerer's complete declaration layout, then try generated instance layouts.
     if let Type::GenericInstance(base, args) = ty {
         if matches!(base.as_ref(), Type::Enum(..) | Type::Struct(..)) {
+            // Use the same complete declaration layout that the lowerer uses.
+            // Generic structs with argument-dependent storage have no complete declaration layout.
+            let (_, declaration) = identities.resolve_base(base.as_ref().into())?;
+            if aggs.contains_key(&declaration) {
+                return Some(declaration);
+            }
             let gid = crate::hir::flatten::enum_instance_gid(base.as_ref(), args, identities)?;
             if aggs.contains_key(&gid) {
                 return Some(gid);
@@ -619,8 +620,10 @@ fn resolve_agg_gid(
             if aggs.contains_key(&bare) {
                 return Some(bare);
             }
-            id.filter(|g| aggs.contains_key(g))
-                .or_else(|| agg_names.get(name.as_ref()).copied())
+            match id {
+                Some(id) => aggs.contains_key(id).then_some(*id),
+                None => agg_names.get(name.as_ref()).copied(),
+            }
         }
         _ => None,
     }
@@ -719,15 +722,12 @@ pub fn build_callee_map(
 }
 
 /// The MLIR shape of an aggregate (struct) whose fields are all scalar or pointer: the
-/// `!llvm.struct<(...)>` type (for the slot `llvm.alloca` and field `getelementptr`), each field's
-/// byte offset in declaration order — so a `FieldLoad`/`FieldStore`, which carries a byte offset,
-/// recovers the GEP field index by `offsets.position(|o| o == offset)` — and each field's MLIR type
-/// string, so a field op prints the right load/store type (a scalar's element or `!llvm.ptr`).
+/// `!llvm.struct<(...)>` type and each field's MLIR type in declaration order.
+/// Field instructions select fields by index.
 pub struct AggLayout {
     pub struct_ty: String,
-    pub offsets: Vec<u64>,
     /// Each field's MLIR type (`"i32"`, `"!llvm.ptr"`, …) in declaration order, index-aligned with
-    /// `offsets`. A field op loads/stores at `field_tys[field_idx]`.
+    /// the other field metadata. A field op uses `field_tys[field_idx]`.
     pub field_tys: Vec<String>,
     /// For each pointer field, the layout GID of the aggregate it points *to*, when that pointee's
     /// layout is instance-independent (`VecIter`'s `vec : *const Vec<T>` -> the `Vec` layout GID, the
@@ -751,15 +751,21 @@ pub(crate) fn generated_storage_type(layout: &crate::layout::GeneratedAggregateL
 }
 
 impl AggLayout {
+    /// Select a physical field by its encoded index.
+    fn field_index(&self, imm: u64) -> Lowered<usize> {
+        let index = crate::bytecode::decode_field_index(imm);
+        if index >= self.field_tys.len() {
+            return Err(Decline::TypeNotModelled {
+                what: "a field index outside the aggregate layout",
+            });
+        }
+        Ok(index)
+    }
+
     /// Derive the emitter's storage view from the shared generated layout.
     fn from_generated(layout: &crate::layout::GeneratedAggregateLayout) -> Self {
         Self {
             struct_ty: generated_storage_type(layout),
-            offsets: layout
-                .fields
-                .iter()
-                .map(|f| f.layout.offset as u64)
-                .collect(),
             field_tys: layout.fields.iter().map(|f| f.mlir_type.clone()).collect(),
             field_pointee: layout.fields.iter().map(|f| f.pointer_target_id).collect(),
             field_agg: layout.fields.iter().map(|f| f.aggregate_id).collect(),
@@ -780,18 +786,8 @@ pub type AggMap = HashMap<TypeId, AggLayout>;
 /// field is modelled as `!llvm.ptr`.
 pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::Schedule) -> AggMap {
     use crate::layout::FieldTy;
-    // Name -> layout GID for every modelled nominal, to resolve a pointer field's pointee aggregate
-    // (its layout is instance-independent when the field is behind a pointer, so the base name suffices
-    // — `VecIter`'s `vec : *const Vec<T>` resolves to the `Vec` layout GID for any `T`).
-    let name_to_gid: HashMap<&str, TypeId> = registry
-        .layouts
-        .iter()
-        .filter(|(_, d)| d.align_bytes != 0 && !d.fields.is_empty())
-        .map(|(g, d)| (d.name.as_str(), *g))
-        .collect();
-    // Each layout's entry depends only on the registry and `name_to_gid`, and the key is the layout's
-    // own GID, so the map is the same whatever order the entries are produced in. (See
-    // `build_callee_map` for why this is worth parallelising.)
+    // Pointer targets retain declaration IDs. Names alone cannot distinguish modules.
+    let identities = registry.aggregate_identities();
     let layout_of = |(gid, def): (&TypeId, &crate::registry::TypeDefinition)| {
         if def.align_bytes == 0 {
             return None; // an unmodelled stub
@@ -807,7 +803,6 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                 *gid,
                 AggLayout {
                     struct_ty: "!llvm.struct<()>".to_string(),
-                    offsets: Vec::new(),
                     field_tys: Vec::new(),
                     field_pointee: Vec::new(),
                     field_agg: Vec::new(),
@@ -820,7 +815,6 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
         // the definition's own GID is the key.
         let decl_fields = registry.structs.get(gid);
         let mut field_tys = Vec::with_capacity(def.fields.len());
-        let mut offsets = Vec::with_capacity(def.fields.len());
         let mut field_pointee = Vec::with_capacity(def.fields.len());
         let mut field_agg: Vec<Option<TypeId>> = Vec::with_capacity(def.fields.len());
         let mut modelled = true;
@@ -855,8 +849,7 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                     field_tys.push("!llvm.ptr".to_string());
                     let pointee = decl_fields
                         .and_then(|sf| sf.fields.get(fi))
-                        .and_then(|(_, ft)| pointer_pointee_name(ft))
-                        .and_then(|n| name_to_gid.get(n.as_str()).copied());
+                        .and_then(|(_, ft)| pointer_pointee_layout(ft, registry, identities));
                     field_pointee.push(pointee);
                     field_agg.push(None);
                 }
@@ -889,7 +882,6 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
                     }
                 }
             }
-            offsets.push(f.offset as u64);
         }
         if !modelled {
             return None;
@@ -898,7 +890,6 @@ pub fn build_agg_map(registry: &ImmutableGlobalRegistry, sched: crate::config::S
             *gid,
             AggLayout {
                 struct_ty: format!("!llvm.struct<({})>", field_tys.join(", ")),
-                offsets,
                 field_tys,
                 field_pointee,
                 field_agg,
@@ -965,23 +956,44 @@ pub(crate) fn registry_field_storage_type(
     })
 }
 
-/// The base nominal name a pointer/borrow points *to* (`*const Vec<T>` -> `"Vec"`), for resolving a
-/// pointer field's pointee aggregate. `None` for a pointer to a non-nominal (a scalar, `*mut T`). (#242)
-fn pointer_pointee_name(ty: &Type) -> Option<String> {
+/// Resolve a pointer target by declaration identity, including concrete generic arguments.
+fn pointer_pointee_layout(
+    ty: &Type,
+    registry: &ImmutableGlobalRegistry,
+    identities: &crate::layout::identity::AggregateIdentities,
+) -> Option<TypeId> {
     let inner = match ty {
         Type::Pointer(inner, ..) | Type::Borrow { inner, .. } | Type::Ref(inner, ..) => {
             inner.as_ref()
         }
         _ => return None,
     };
-    match inner {
-        Type::GenericInstance(base, _) => match base.as_ref() {
-            Type::Struct(n, _) | Type::Enum(n, _) => Some(n.as_ref().to_string()),
-            _ => None,
-        },
-        Type::Struct(n, _) | Type::Enum(n, _) => Some(n.as_ref().to_string()),
-        _ => None,
+    let (base, args) = match inner {
+        Type::GenericInstance(base, args) => (base.as_ref(), args.as_slice()),
+        other => (other, &[][..]),
+    };
+    let (_, declaration) = identities.resolve_base(base.into())?;
+    if args.is_empty() {
+        return registry
+            .layouts
+            .get(&declaration)
+            .filter(|def| def.align_bytes != 0)
+            .map(|_| declaration);
     }
+    let instance = crate::hir::flatten::struct_instance_gid(declaration, args, identities)?;
+    if registry
+        .layouts
+        .get(&instance)
+        .is_some_and(|def| def.align_bytes != 0)
+    {
+        return Some(instance);
+    }
+    // A generic declaration's complete storage can be shared when its fields do not depend on its arguments.
+    registry
+        .layouts
+        .get(&declaration)
+        .filter(|def| def.align_bytes != 0)
+        .map(|_| declaration)
 }
 
 /// A tensor type recovered by GID: its element and shape (dim expressions, numeric or symbolic).
@@ -2161,7 +2173,7 @@ pub(crate) struct FnEmit<'a> {
     pub(crate) etypes: Vec<Option<ElementType>>,
     /// The aggregate GID for each register that is a struct-slot pointer (from an aggregate
     /// `Alloca`), so a `FieldLoad`/`FieldStore` on that slot recovers the struct's `!llvm.struct`
-    /// type + field offsets. The aggregate analogue of `etypes` (kept separate: struct slots are
+    /// type and field indices. The aggregate analogue of `etypes` (kept separate: struct slots are
     /// pointers, not scalar values).
     pub(crate) agg_of: Vec<Option<TypeId>>,
     /// The aggregate GID for each register that holds a struct *value* (not a slot pointer): an
@@ -2386,12 +2398,24 @@ impl<'a> FnEmit<'a> {
             Opcode::AutoDiff => self.op_autodiff(idx, ins),
             Opcode::TensorLoad => self.op_tensor_load(idx, ins),
             Opcode::TensorDim => self.op_tensor_dim(idx, ins),
-            // Store a scalar into a struct field (no result). `operand1` is the struct slot pointer,
-            // `operand2` the value, `imm` the field's byte offset. GEP to the field, then `llvm.store`;
-            // the field index comes from matching the offset against the layout, the value type from
-            // the stored register's tracked type.
+            Opcode::CheckAggregate => {
+                let expected = self.types.get(ins.type_idx.0 as usize).copied();
+                let actual = self.agg_of.get(ins.operand1.0 as usize).copied().flatten();
+                if expected.is_none() || actual != expected {
+                    if std::env::var_os("VX_FLAT_DBG").is_some() {
+                        eprintln!(
+                            "[flat-dbg] aggregate check expected {expected:?}, actual {actual:?}"
+                        );
+                    }
+                    return Err(Decline::TypeNotModelled {
+                        what: "an aggregate base whose layout does not match its declared type",
+                    });
+                }
+                Ok(())
+            }
+            // Store a field by explicit index, with the stored value in operand2.
             Opcode::FieldStore => self.op_field_store(idx, ins),
-            // Load a field by byte offset, or an enum payload by its variant and field indices.
+            // Load a field by index, or an enum payload by variant and payload position.
             Opcode::FieldLoad | Opcode::EnumPayloadLoad => self.op_field_load(idx, ins),
             // The address of a by-value nested-aggregate field (`&outer.inner`): GEP to the field and
             // yield the pointer, tracked as an aggregate slot (its layout GID from `type_idx`), so a
@@ -2988,6 +3012,14 @@ mod tests {
         src: &str,
         change_layouts: impl FnOnce(&mut Vec<crate::layout::GeneratedAggregateLayout>),
     ) -> Result<String, ModuleEmitError> {
+        emit_module_with_field_instructions(src, change_layouts, |_, _| {})
+    }
+
+    fn emit_module_with_field_instructions(
+        src: &str,
+        change_layouts: impl FnOnce(&mut Vec<crate::layout::GeneratedAggregateLayout>),
+        change_instruction: impl Fn(&mut HirInstruction, &ImmutableGlobalRegistry),
+    ) -> Result<String, ModuleEmitError> {
         let mut lexer = crate::lexer::Lexer::new(src);
         let tokens = lexer.tokenize();
         let mut parser = crate::parser::Parser::new(&tokens, src);
@@ -3017,6 +3049,9 @@ mod tests {
             let mut w = LocalWorkerState::new(session.clone());
             let result = lower_function_to_hir(f, &mut w);
             assert!(result.is_ok(), "function {} lowers: {result:?}", f.name);
+            for instruction in &mut w.local_hir_stream {
+                change_instruction(instruction, &session.registry);
+            }
             lowered.push(w);
         }
         let funcs: Vec<(&Function, &[HirInstruction], &[TypeId])> = mods[0]
@@ -3066,6 +3101,317 @@ mod tests {
             crate::config::Schedule::Parallel,
             false,
         )
+    }
+
+    #[rstest::rstest]
+    #[case::load("fn inspect(a: &First, b: &Second) -> i32 { return b.value; }")]
+    #[case::store("fn inspect(a: &First, b: &mut Second) -> void { b.value = 7; }")]
+    #[case::address("fn inspect(a: &First, b: &Second) -> &i32 { return &b.value; }")]
+    fn field_access_rejects_a_different_aggregate_with_an_in_bounds_index(#[case] function: &str) {
+        let source =
+            format!("struct First {{ value: i32 }} struct Second {{ value: i32 }} {function}");
+        let result = emit_module_with_field_instructions(
+            &source,
+            |_| {},
+            |instruction, _| {
+                if instruction.opcode == Opcode::CheckAggregate {
+                    // Register zero is the first parameter, but the access expects Second.
+                    instruction.operand1 = crate::bytecode::Register(0);
+                }
+            },
+        );
+        assert!(
+            matches!(
+                result,
+                Err(ModuleEmitError::Declined(Decline::TypeNotModelled {
+                    what: "an aggregate base whose layout does not match its declared type",
+                }))
+            ),
+            "a different aggregate must decline before field access: {result:?}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::normal(crate::config::Schedule::Sequential)]
+    #[case::parallel(crate::config::Schedule::Parallel)]
+    fn pointer_fields_keep_same_named_declarations_separate(
+        #[case] schedule: crate::config::Schedule,
+    ) {
+        let mut modules = Vec::new();
+        for (name, source) in [
+            (
+                "crate::left",
+                "struct Node { count: i32, value: i64 } struct Left { node: *const Node }",
+            ),
+            (
+                "crate::right",
+                "struct Node { count: i32, value: i32 } struct Right { node: *const Node }",
+            ),
+        ] {
+            let mut lexer = crate::lexer::Lexer::new(source);
+            let tokens = lexer.tokenize();
+            let mut parser = crate::parser::Parser::new(&tokens, source);
+            let mut module = parser.parse().unwrap();
+            module.module_path = name.into();
+            modules.push(module);
+        }
+        let symbols = crate::resolver::build_symbol_map(&modules);
+        for module in &mut modules {
+            module.resolve_names(&symbols, &[]);
+        }
+        let registry = crate::pipeline::build_frozen_registry(&modules).unwrap();
+        let aggs = build_agg_map(&registry, schedule);
+        for module in &modules {
+            let node = symbols[&module.module_path][&crate::symbol::Symbol::from("Node")];
+            let holder = module
+                .structs
+                .iter()
+                .find(|decl| decl.name.as_ref() != "Node")
+                .unwrap();
+            let holder_id = symbols[&module.module_path][&holder.name];
+            assert_eq!(
+                aggs[&holder_id].field_pointee[0],
+                Some(node),
+                "a pointer must use its own module's Node layout"
+            );
+        }
+        let bare = Type::Pointer(Box::new(Type::Struct("Node".into(), None)), None, false);
+        assert_eq!(
+            pointer_pointee_layout(&bare, &registry, registry.aggregate_identities()),
+            None,
+            "an ambiguous name must not select either Node"
+        );
+        let missing = Type::Pointer(
+            Box::new(Type::Struct("Left".into(), Some(TypeId::new(99, 1, 0, 0)))),
+            None,
+            false,
+        );
+        assert_eq!(
+            pointer_pointee_layout(&missing, &registry, registry.aggregate_identities()),
+            None,
+            "an unknown attached ID must not fall back to a known name"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a field instruction must carry FIELD_INDEX_FLAG")]
+    fn a_raw_field_index_is_a_compiler_error() {
+        fields_with_empty_values_and_padding()
+            .field_index(0)
+            .unwrap();
+    }
+
+    fn fields_with_empty_values_and_padding() -> AggLayout {
+        AggLayout {
+            struct_ty:
+                "!llvm.struct<(!llvm.struct<()>, !llvm.struct<()>, i8, !llvm.array<7 x i8>, i64)>"
+                    .into(),
+            field_tys: vec![
+                "!llvm.struct<()>".into(),
+                "!llvm.struct<()>".into(),
+                "i8".into(),
+                "!llvm.array<7 x i8>".into(),
+                "i64".into(),
+            ],
+            field_pointee: vec![None; 5],
+            field_agg: vec![None; 5],
+            variant_payloads: vec![],
+        }
+    }
+
+    #[test]
+    fn field_indices_distinguish_empty_fields_and_explicit_padding() {
+        let layout = fields_with_empty_values_and_padding();
+        for index in 0..5 {
+            assert_eq!(
+                layout.field_index(crate::bytecode::encode_field_index(index)),
+                Ok(index),
+                "physical field {index} retains its identity"
+            );
+        }
+        assert!(
+            layout
+                .field_index(crate::bytecode::encode_field_index(5))
+                .is_err(),
+            "an index outside the layout must decline"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::load(
+        Opcode::FieldLoad,
+        "fn read(fields: &Fields) -> i64 { return fields.number; }"
+    )]
+    #[case::store(
+        Opcode::FieldStore,
+        "fn write(fields: &mut Fields) -> void { fields.number = 7; }"
+    )]
+    #[case::address(
+        Opcode::FieldAddr,
+        "fn address(fields: &Fields) -> &i64 { return &fields.number; }"
+    )]
+    fn direct_field_operations_use_indices_after_explicit_padding(
+        #[case] opcode: Opcode,
+        #[case] source: &str,
+    ) {
+        use crate::bytecode::{encode_field_index, Register, TypeIdx};
+        let gid = TypeId::new(1, 1, 0, 0);
+        let mut function = parse_fn(source);
+        if let Type::Borrow { inner, .. } = &mut function.params[0].1 {
+            **inner = Type::Struct("Fields".into(), Some(gid));
+        }
+        let mut context = EmitCtx {
+            identities: Arc::new(crate::layout::identity::AggregateIdentities::new([(
+                gid,
+                "Fields".into(),
+            )])),
+            ..EmitCtx::default()
+        };
+        context.agg_names.insert("Fields".into(), gid);
+        context
+            .aggs
+            .insert(gid, fields_with_empty_values_and_padding());
+        let types = [ptr_gid(), scalar_gid(&ElementType::I64)];
+        let mut code = vec![HirInstruction::new(
+            Opcode::Load,
+            Register(0),
+            Register(0),
+            TypeIdx(0),
+            0,
+        )];
+        if opcode == Opcode::FieldStore {
+            code.push(HirInstruction::new(
+                Opcode::Const,
+                Register(0),
+                Register(0),
+                TypeIdx(1),
+                7,
+            ));
+        }
+        let result = Register(code.len() as u32);
+        code.push(HirInstruction::new(
+            opcode,
+            Register(0),
+            if opcode == Opcode::FieldStore {
+                Register(1)
+            } else {
+                Register(0)
+            },
+            TypeIdx(1),
+            encode_field_index(4),
+        ));
+        code.push(HirInstruction::new(
+            Opcode::Ret,
+            result,
+            Register(0),
+            TypeIdx(match opcode {
+                Opcode::FieldStore => u32::MAX,
+                Opcode::FieldAddr => 0,
+                _ => 1,
+            }),
+            0,
+        ));
+        let mlir = emit_function_mlir(
+            &function,
+            &code,
+            &types,
+            &context,
+            &mut Vec::new(),
+            0,
+            &[],
+            0,
+            &[],
+            &[],
+            &mut 1,
+        )
+        .expect("direct field operation emits MLIR");
+        assert!(
+            mlir.lines()
+                .any(|line| line.contains("llvm.getelementptr") && line.contains("[0, 4]")),
+            "the number follows explicit padding at physical field 4: {mlir}"
+        );
+        use melior::ir::operation::OperationLike;
+        let dialects = melior::dialect::DialectRegistry::new();
+        melior::utility::register_all_dialects(&dialects);
+        let mlir_context = melior::Context::new();
+        mlir_context.append_dialect_registry(&dialects);
+        mlir_context.load_all_available_dialects();
+        let module = melior::ir::Module::parse(&mlir_context, &mlir)
+            .unwrap_or_else(|| panic!("padded field access parses: {mlir}"));
+        assert!(
+            module.as_operation().verify(),
+            "padded field access verifies: {mlir}"
+        );
+    }
+
+    // Empty fields share the number's offset. Nonempty fields provide a control with distinct offsets.
+    #[rstest::rstest]
+    #[case::load("fn read(fields: &Fields) -> i32 { return fields.number; }")]
+    #[case::store("fn write(fields: &mut Fields) -> void { fields.number = 7; }")]
+    #[case::address("fn address(fields: &Fields) -> &i32 { return &fields.number; }")]
+    fn field_access_after_empty_fields_keeps_its_field_index(
+        #[case] function: &str,
+        #[values("Empty", "i8")] preceding_type: &str,
+    ) {
+        let source = format!(
+            "struct Empty {{}}\nstruct Fields {{ first: {preceding_type}, second: {preceding_type}, number: i32 }}\n{function}"
+        );
+        let mlir = emit_module_with_layouts(&source, |_| {}).expect("field access emits MLIR");
+        let accesses: Vec<_> = mlir
+            .lines()
+            .filter(|line| line.contains("llvm.getelementptr"))
+            .collect();
+        assert_eq!(accesses.len(), 1, "the function accesses exactly one field");
+        assert!(
+            accesses[0].contains("[0, 2]"),
+            "access to number must select field 2, even when empty fields share its offset:\n{mlir}"
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::load("fn read(fields: &Fields) -> *const i32 { return fields.pointer; }")]
+    fn pointer_field_after_empty_fields_lowers(
+        #[case] function: &str,
+        #[values("Empty", "i8")] preceding_type: &str,
+    ) {
+        let source = format!(
+            "struct Empty {{}}\nstruct Fields {{ first: {preceding_type}, second: {preceding_type}, pointer: *const i32 }}\n{function}"
+        );
+        emit_module_and_verify(&source);
+    }
+
+    #[rstest::rstest]
+    #[case::load("fn read(fields: &Fields) -> Second { return fields.second; }")]
+    #[case::store("fn write(fields: &mut Fields) -> void { fields.second = Second {}; }")]
+    #[case::address("fn address(fields: &Fields) -> &Second { return &fields.second; }")]
+    fn second_empty_field_keeps_its_identity(#[case] function: &str) {
+        let source = format!("struct First {{}}\nstruct Second {{}}\nstruct Fields {{ first: First, second: Second, number: i32 }}\n{function}");
+        let mlir = emit_module_with_layouts_and_verify(&source, |_| {});
+        let accesses: Vec<_> = mlir
+            .lines()
+            .filter(|line| line.contains("llvm.getelementptr"))
+            .collect();
+        assert_eq!(accesses.len(), 1, "one empty field is accessed");
+        assert!(
+            accesses[0].contains("[0, 1]"),
+            "the second empty field must retain index 1: {mlir}"
+        );
+    }
+
+    #[test]
+    fn enum_payload_with_an_empty_field_before_a_pointer_lowers() {
+        emit_module_and_verify(
+            "struct Empty {}\n\
+             struct Fields { marker: Empty, pointer: *const i32 }\n\
+             enum Value { Wrapped(Fields), Direct(*const i32) }\n\
+             fn read(value: Value, fallback: *const i32) -> *const i32 {\n\
+               match value {\n\
+                 Value::Wrapped(fields) => { return fields.pointer; },\n\
+                 Value::Direct(pointer) => { return pointer; }\n\
+               }\n\
+               return fallback;\n\
+             }",
+        );
     }
 
     #[test]
@@ -3327,7 +3673,6 @@ mod tests {
                             *id,
                             (
                                 record.struct_ty.clone(),
-                                record.offsets.clone(),
                                 record.field_tys.clone(),
                                 record.field_agg.clone(),
                                 record.field_pointee.clone(),

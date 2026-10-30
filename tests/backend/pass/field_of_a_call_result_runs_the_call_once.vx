@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // A field of a call result runs the call once. The first read borrows an `i64` field,
 // `&make_holder(p).n`. The second reads through a pointer field, `make_holder(p).p.x`.
-// Each `make` in the trace is one call.
+// The counter checks each call separately.
 //
 // EXPECT: start, make, 5, make, 7, done
 
@@ -20,7 +20,8 @@ struct Holder {
   p : *mut Inner,
 }
 
-fn make_holder(p : *mut Inner) -> Holder {
+fn make_holder(p : *mut Inner, calls : &mut i32) -> Holder {
+  *calls = *calls + 1;
   print!("make, ");
   return Holder {
     n: 5, p: p
@@ -32,14 +33,17 @@ fn read(r : &i64) -> i64 {
 }
 
 fn main() -> i32 {
+  let mut calls : i32 = 0;
   let mut inner = Inner {
     x: 7
   };
   let p = (&mut inner) as *mut Inner;
   print!("start, ");
-  print(read(&make_holder(p).n));
+  print(read(&make_holder(p, &mut calls).n));
+  assert(calls == 1, "borrowing a scalar field must run the base function once");
   print!(", ");
-  let x = unsafe { make_holder(p).p.x };
+  let x = unsafe { make_holder(p, &mut calls).p.x };
+  assert(calls == 2, "reading a pointer field must run the base function once");
   print(x);
   print!(", done");
   return 0;

@@ -1469,6 +1469,21 @@ fn non_generic_struct_with_an_option_field_runs(#[case] jobs: Option<usize>) {
     );
 }
 
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn enum_payload_with_empty_fields_runs(
+    #[case] jobs: Option<usize>,
+    #[values(0, 2)] optimization: u8,
+) {
+    assert_generated_aggregate_runs_at_optimization(
+        "enum_payload_with_empty_fields.vx",
+        &["-2", "11", "42", "31", "-13", "47"],
+        jobs,
+        optimization,
+    );
+}
+
 fn assert_enum_layout_falls_back(jobs: Option<usize>) {
     use melior::ir::operation::OperationLike;
 
@@ -2333,7 +2348,203 @@ fn flat_matches_ast_scalar_casts() {
     );
 }
 
-/// Compile a "library" module to a serialized `.vxlib` interface (frozen registry + flat-HIR bodies).
+#[rstest::rstest]
+#[case::normal(None)]
+#[case::parallel(Some(2))]
+fn same_named_pointer_targets_use_their_own_module_layout(#[case] jobs: Option<usize>) {
+    use std::process::Command;
+    let directory = tempfile::tempdir().unwrap();
+    for (name, source) in [
+        ("left.vx", "struct Node { count: i32, value: i64 } struct Left { node: *const Node } fn read_left() -> i64 { let node = Node { count: 1, value: 42 }; let holder = Left { node: (&node) as *const Node }; return unsafe { holder.node.value }; }"),
+        ("right.vx", "struct Node { count: i32, value: i32 } struct Right { node: *const Node } fn read_right() -> i32 { let node = Node { count: 1, value: 7 }; let holder = Right { node: (&node) as *const Node }; return unsafe { holder.node.value }; }"),
+        ("app.vx", "import left; import right; fn main() -> i32 { print(read_left()); print(\" \"); print(read_right()); return 0; }"),
+    ] {
+        std::fs::write(directory.path().join(name), source).unwrap();
+    }
+    for optimization in ["-O0", "-O2"] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_vxc"));
+        command
+            .arg(directory.path().join("app.vx"))
+            .arg("--run")
+            .arg(optimization)
+            .env("VX_FLAT_DBG", "1");
+        if let Some(jobs) = jobs {
+            command.arg("-j").arg(jobs.to_string());
+        }
+        let output = command.output().unwrap();
+        let log = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "different Node layouts must compile: {log}"
+        );
+        let marker = if jobs.is_some() {
+            "[parallel-frontend] emitted module with -j 2"
+        } else {
+            "[flat-codegen] emitted module via the flat path"
+        };
+        assert!(
+            log.contains(marker),
+            "both Node layouts must use the flat path: {log}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).lines().last(),
+            Some("42 7"),
+            "each pointer must read its own module's value at {optimization}"
+        );
+    }
+}
+
+const LIBRARY_WITH_EMPTY_FIELDS: &str = r#"
+struct Empty {}
+struct Fields { marker: Empty, number: i32 }
+fn read_number(fields: &Fields) -> i32 { return fields.number; }
+fn write_number(fields: &mut Fields, number: i32) -> void { fields.number = number; }
+fn number_address(fields: &Fields) -> &i32 { return &fields.number; }
+fn answer() -> i32 {
+    let mut fields = Fields { marker: Empty {}, number: 7 };
+    let initial = read_number(&fields);
+    write_number(&mut fields, initial + 35);
+    let number = number_address(&fields);
+    return *number;
+}
+"#;
+
+#[rstest::rstest]
+#[case::artifact(None, true)]
+#[case::source_normal(None, false)]
+#[case::source_parallel(Some(2), false)]
+fn indexed_fields_survive_imports(#[case] jobs: Option<usize>, #[case] artifact_only: bool) {
+    use std::process::Command;
+    use vxc::bytecode::Opcode;
+    let directory = tempfile::tempdir().expect("create artifact test directory");
+    let library = directory.path().join("fields.vx");
+    let artifact = directory.path().join("fields.vxlib");
+    let app = directory.path().join("app.vx");
+    std::fs::write(&library, LIBRARY_WITH_EMPTY_FIELDS).expect("write library");
+    if artifact_only {
+        let export = Command::new(env!("CARGO_BIN_EXE_vxc"))
+            .arg("--emit-interface")
+            .arg(&library)
+            .arg("-o")
+            .arg(&artifact)
+            .output()
+            .expect("export interface");
+        assert!(
+            export.status.success(),
+            "export interface: {}",
+            String::from_utf8_lossy(&export.stderr)
+        );
+        let bytes = std::fs::read(&artifact).expect("read exported interface");
+        let metadata = vxc::metadata::VxMetadata::load_from_buffer(&bytes);
+        let registry = vxc::metadata::deserialize_registry_interface(metadata.interface_data)
+            .expect("read exported function bodies");
+        for (name, opcode) in [
+            ("read_number", Opcode::FieldLoad),
+            ("write_number", Opcode::FieldStore),
+            ("number_address", Opcode::FieldAddr),
+        ] {
+            let signature = registry
+                .fn_sigs
+                .get(&vxc::symbol::Symbol::from(name))
+                .expect("field helper is exported");
+            let body = registry
+                .body_of(signature.gid)
+                .expect("field helper body is exported");
+            assert!(
+                body.hir
+                    .iter()
+                    .any(|instruction| instruction.opcode == Opcode::CheckAggregate),
+                "imported {name} must retain its aggregate layout check"
+            );
+            let indices: Vec<_> = body
+                .hir
+                .iter()
+                .filter(|instruction| instruction.opcode == opcode)
+                .map(|instruction| instruction.imm)
+                .collect();
+            assert_eq!(
+                indices,
+                vec![vxc::bytecode::encode_field_index(1)],
+                "imported {name} must retain the number field index"
+            );
+        }
+        std::fs::remove_file(&library)
+            .expect("remove library source before importing its artifact");
+    }
+    let import = if artifact_only {
+        ""
+    } else {
+        "import fields;\n"
+    };
+    std::fs::write(
+        &app,
+        format!("{import}fn main() -> i32 {{ print(answer()); return 0; }}"),
+    )
+    .expect("write consumer");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_vxc"));
+    if artifact_only {
+        command.arg("--link-interface").arg(&artifact);
+    }
+    command.arg(&app).arg("--emit-mlir").env("VX_FLAT_DBG", "1");
+    if let Some(jobs) = jobs {
+        command.arg("-j").arg(jobs.to_string());
+    }
+    let emitted = command.output().expect("emit imported field helpers");
+    assert!(
+        emitted.status.success(),
+        "emit imported field helpers: {}",
+        String::from_utf8_lossy(&emitted.stderr)
+    );
+    let mlir = String::from_utf8_lossy(&emitted.stdout);
+    for name in ["read_number", "write_number", "number_address"] {
+        let header = format!("@{name}(");
+        let lines: Vec<_> = mlir
+            .lines()
+            .skip_while(|line| {
+                !(line.trim_start().starts_with("func.func") && line.contains(&header))
+            })
+            .skip(1)
+            .take_while(|line| !line.trim_start().starts_with('}'))
+            .filter(|line| line.contains("llvm.getelementptr"))
+            .collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "imported {name} must access exactly one field: {mlir}"
+        );
+        assert!(
+            lines[0].contains("[0, 1]"),
+            "imported {name} must select the number field: {mlir}"
+        );
+    }
+    let mut run = Command::new(env!("CARGO_BIN_EXE_vxc"));
+    if artifact_only {
+        run.arg("--link-interface").arg(&artifact);
+    }
+    run.arg(&app).arg("--run").env("VX_FLAT_DBG", "1");
+    if let Some(jobs) = jobs {
+        run.arg("-j").arg(jobs.to_string());
+    }
+    let output = run.output().expect("run imported field helpers");
+    let log = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "import consumer: {log}");
+    let marker = if jobs.is_some() {
+        "[parallel-frontend] emitted module with -j 2"
+    } else {
+        "[flat-codegen] emitted module via the flat path"
+    };
+    assert!(
+        log.contains(marker),
+        "import consumer must use the flat path: {log}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).lines().last(),
+        Some("42"),
+        "imported field stores and borrowed access must preserve the number"
+    );
+}
+
+/// Compile a library to an interface containing its registry and flat function bodies.
 fn build_lib_interface(path: &str, src: &str) -> Vec<u8> {
     let mut prog = parse(src);
     prog.module_path = path.into();

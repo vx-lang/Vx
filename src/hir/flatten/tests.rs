@@ -783,9 +783,7 @@ fn enum_lookup_uses_the_attached_declaration(
     assert_eq!(
         (
             lowerer.known_aggregate_id(&ty),
-            lowerer
-                .enum_instance_layout_of(&base, &args)
-                .map(|(id, _)| id),
+            lowerer.enum_instance_layout_of(&base, &args),
             lowerer.lower_ty_synth(&ty).map(|ty| match ty {
                 LoweredTy::Aggregate(id) => Some(id),
                 _ => None,
@@ -2029,7 +2027,7 @@ fn pointer_field_and_raw_index_lower_through_self_pointer() {
 
 #[test]
 fn struct_field_read_lowers_to_field_load() {
-    // `p.y` becomes a `FieldLoad` off the aggregate slot at y's layout offset (4).
+    // `p.y` selects field 1, independently of its byte offset.
     let (did, w) = lower_with_registry(
         "struct Point { x: i32, y: i32 }\nfn gety(p: Point) -> i32 { return p.y; }",
         "gety",
@@ -2040,16 +2038,55 @@ fn struct_field_read_lowers_to_field_load() {
         .iter()
         .find(|i| i.opcode == Opcode::FieldLoad)
         .expect("a FieldLoad instruction");
-    assert_eq!(fl.imm, 4, "y is at byte offset 4 in {{x:i32, y:i32}}");
+    assert_eq!(fl.imm, encode_field_index(1), "y is field 1");
     assert_eq!(count(&w, Opcode::FieldLoad), 1);
     assert_eq!(count(&w, Opcode::Ret), 1);
     verify_hir_stream(&w);
 }
 
+#[rstest::rstest]
+#[case::first_empty(1)]
+#[case::second_empty(2)]
+#[case::number(3)]
+fn enum_constructor_distinguishes_payloads_at_the_same_offset(#[case] field: usize) {
+    let (did, worker) = lower_with_registry(
+        "struct First {}\nstruct Second {}\n\
+         enum Value { Values(First, Second, i32) }\n\
+         fn make(number: i32) -> Value { return Value::Values(First {}, Second {}, number); }",
+        "make",
+    );
+    assert!(did, "the enum constructor lowers");
+    let layout = worker
+        .local_agg_layouts
+        .iter()
+        .find(|layout| layout.name == "Value")
+        .expect("Value has a generated layout");
+    assert_eq!(
+        layout.field_offsets(),
+        vec![0, 4, 4, 4],
+        "all three payload slots must share offset four"
+    );
+    let stores: Vec<_> = worker
+        .local_hir_stream
+        .iter()
+        .filter(|instruction| instruction.opcode == Opcode::FieldStore)
+        .collect();
+    assert_eq!(
+        stores.len(),
+        4,
+        "the constructor stores the tag and all three payloads"
+    );
+    assert_eq!(
+        stores[field].imm,
+        encode_field_index(field),
+        "constructor payload field {field} must retain its own index"
+    );
+    verify_hir_stream(&worker);
+}
+
 #[test]
-fn field_read_offset_honours_alignment_padding() {
-    // Rec { a: i8, b: i32 } -> b sits at offset 4 (3 bytes of padding after `a`); the FieldLoad
-    // must use that padded offset, proving it comes from the real layout, not field order.
+fn field_read_index_is_independent_of_alignment_padding() {
+    // Padding changes the byte offset, but b remains field 1.
     let (did, w) = lower_with_registry(
         "struct Rec { a: i8, b: i32 }\nfn getb(r: Rec) -> i32 { return r.b; }",
         "getb",
@@ -2060,14 +2097,17 @@ fn field_read_offset_honours_alignment_padding() {
         .iter()
         .find(|i| i.opcode == Opcode::FieldLoad)
         .expect("a FieldLoad instruction");
-    assert_eq!(fl.imm, 4, "b is at offset 4 after i8 + 3 bytes padding");
+    assert_eq!(
+        fl.imm,
+        encode_field_index(1),
+        "b remains field 1 after padding"
+    );
     verify_hir_stream(&w);
 }
 
 #[test]
 fn struct_construction_lowers_to_alloca_and_field_stores() {
-    // `let p = Point { .. }` constructs in place: one sized Alloca + a FieldStore per field at
-    // its layout offset; the later `p.y` is a FieldLoad off the same slot.
+    // Construction stores each field by index. The later read uses the same slot.
     let (did, w) = lower_with_registry(
         "struct Point { x: i32, y: i32 }\n\
              fn build() -> i32 { let p = Point { x: 7i32, y: 9i32 }; return p.y; }",
@@ -2082,15 +2122,16 @@ fn struct_construction_lowers_to_alloca_and_field_stores() {
         .unwrap();
     assert_eq!(alloca.imm, 8, "Point slot sized from its layout");
     assert_eq!(count(&w, Opcode::FieldStore), 2, "x and y stored");
-    let store_offsets: Vec<u64> = w
+    let store_indices: Vec<u64> = w
         .local_hir_stream
         .iter()
         .filter(|i| i.opcode == Opcode::FieldStore)
         .map(|i| i.imm)
         .collect();
     assert!(
-        store_offsets.contains(&0) && store_offsets.contains(&4),
-        "fields stored at layout offsets 0 and 4, got {store_offsets:?}"
+        store_indices.contains(&encode_field_index(0))
+            && store_indices.contains(&encode_field_index(1)),
+        "fields stored at explicit indices 0 and 1, got {store_indices:?}"
     );
     assert_eq!(count(&w, Opcode::FieldLoad), 1, "p.y read");
     verify_hir_stream(&w);
@@ -4105,8 +4146,8 @@ fn enum_payload_loads_keep_indices_out_of_register_operands() {
         .collect();
     assert_eq!(
         tags,
-        vec![(0, 0); 3],
-        "enum tags remain ordinary field loads"
+        vec![(0, encode_field_index(0)); 3],
+        "enum tags use an explicit field index without a second register"
     );
     verify_hir_stream(&worker);
 }
@@ -4114,8 +4155,9 @@ fn enum_payload_loads_keep_indices_out_of_register_operands() {
 #[rstest::rstest]
 #[case::field(Opcode::FieldLoad)]
 #[case::payload(Opcode::EnumPayloadLoad)]
-#[should_panic(expected = "HIR field load has an unexpected second operand")]
-fn field_loads_reject_a_second_register(#[case] opcode: Opcode) {
+#[case::address(Opcode::FieldAddr)]
+#[should_panic(expected = "HIR field access has an unexpected second operand")]
+fn field_accesses_reject_a_second_register(#[case] opcode: Opcode) {
     let mut worker = worker();
     worker.local_hir_stream.push(HirInstruction::new(
         Opcode::Nop,
@@ -4190,5 +4232,67 @@ fn enum_payload_immediate_is_not_a_register() {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| verify_hir_stream(&worker)))
             .is_ok(),
         "enum payload indices are immediate values, without register dominance requirements"
+    );
+}
+
+#[rstest::rstest]
+#[case::load(Opcode::FieldLoad)]
+#[case::store(Opcode::FieldStore)]
+#[case::address(Opcode::FieldAddr)]
+#[should_panic(expected = "HIR field instruction is missing FIELD_INDEX_FLAG")]
+fn field_instructions_require_an_encoded_index(#[case] opcode: Opcode) {
+    let mut worker = worker();
+    worker.local_hir_stream.push(HirInstruction::new(
+        Opcode::Nop,
+        Register(0),
+        Register(0),
+        TypeIdx(NO_TYPE),
+        0,
+    ));
+    worker.local_hir_stream.push(HirInstruction::new(
+        opcode,
+        Register(0),
+        Register(0),
+        TypeIdx(NO_TYPE),
+        1,
+    ));
+    verify_hir_stream(&worker);
+}
+
+#[test]
+fn a_pointer_field_base_function_is_called_once() {
+    let (lowered, worker) = lower_with_registry(
+        "struct Item { value: i32 } struct Holder { pointer: *const Item } fn make_holder() -> Holder { return Holder { pointer: 0 as *const Item }; } fn inspect() -> i32 { return make_holder().pointer.value; }", "inspect");
+    assert!(lowered, "a field through a returned holder must lower");
+    assert_eq!(
+        count(&worker, Opcode::Call),
+        1,
+        "the base function must run exactly once"
+    );
+}
+
+#[rstest::rstest]
+#[case::missing_tag(0, 0)]
+#[case::missing_payload(1, 1)]
+fn missing_enum_fields_keep_the_named_decline(#[case] field_count: usize, #[case] index: usize) {
+    let registry = optional_code_registry();
+    let mut lowerer = Lowerer::new(&registry);
+    let gid = lowerer
+        .enum_instance_layout_of("Maybe", &[Type::Scalar(ElementType::I32)])
+        .unwrap();
+    lowerer
+        .instance_layouts
+        .get_mut(&gid)
+        .unwrap()
+        .fields
+        .truncate(field_count);
+    assert!(
+        matches!(
+            lowerer.enum_field_index(gid, index),
+            Err(Decline::TypeNotModelled {
+                what: "an enum payload offset that is not laid out",
+            })
+        ),
+        "a missing enum storage field must keep its named decline"
     );
 }
