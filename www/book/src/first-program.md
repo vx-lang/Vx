@@ -45,12 +45,16 @@ fn main() -> i32 {
 
 ## Compiling ahead of time
 
-The JIT is convenient for iterating. For anything you intend to keep, compile to a native
-executable:
+The JIT is convenient for iterating. For anything you intend to keep, compile to an object file:
 
 ```bash
 vxc -c hello.vx -o hello.o
 ```
+
+That writes an object file, not an executable. The object needs the Vx runtime and MLIR's
+runner libraries around it before anything can run it; see [Linking an object file into an
+executable](linking.md) for the verified way to finish the build, or just use `--run`, which
+does the whole pipeline including the link step for you.
 
 `vxc --help` lists the other actions — `--emit-mlir` and `--emit-llvm` are the two you will reach
 for most when you want to see what the compiler did with your code.
