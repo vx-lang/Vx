@@ -104,8 +104,8 @@ jobs:
       - name: Check Vx Formatting (vx-format)
         run: |
           cargo build --release --bin vx-format
-          find tests stdlib -name "*.vx" -exec ./target/release/vx-format {} +
-          git diff --exit-code || (echo "Vx files are not formatted properly. Run vx-format locally." && exit 1)
+          # Discover the same repository configuration as scripts/pre-commit.sh.
+          find tests stdlib -name "*.vx" -exec ./target/release/vx-format --check {} +
 
       - name: Check Markdown Formatting (mdformat)
         run: |

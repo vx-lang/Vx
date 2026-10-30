@@ -37,8 +37,10 @@ petgraph = "0.6.5"
 melior = "0.27.0"
 clap = { version = "4.4", features = ["derive"] }
 anyhow = "1.0"
+similar = "2.7"
 # The commit for `vxc --version`. A crate of its own, so a new commit does not rerun build.rs.
 vx-build-commit = { path = "vx-build-commit", version = "0.1.0" }
+vx-config = { path = "vx-config", version = "0.1.0" }
 
 [dev-dependencies]
 
@@ -51,7 +53,8 @@ rstest = "0.19"
 members = ["refactor_tool",
     "stdlib/rust_core"
 , "vx-analyzer"
-, "vx-build-commit"]
+, "vx-build-commit"
+, "vx-config"]
 
 # A bare `cargo build` has to cover stdlib/rust_core as well. Depending on it only asks for an
 # rlib to link against; the cdylib the JIT loads at run time is built when the package is
