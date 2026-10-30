@@ -1418,7 +1418,12 @@ impl<'a> TypeChecker<'a> {
             } else {
                 "index"
             };
-            let ty = self.operand_type(base);
+            // On a reference `p`, `p[i]` uses the impls of the type it refers to, as a method
+            // call does.
+            let ty = match self.operand_type(base) {
+                Type::Borrow { inner, .. } => *inner,
+                ty => ty,
+            };
             if Self::is_user_type(&ty)
                 && self
                     .resolve_method_in_impls(&ty, &method.into(), &mut HashMap::new())
