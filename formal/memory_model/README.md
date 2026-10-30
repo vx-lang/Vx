@@ -243,6 +243,15 @@ makes two `recv`s. The first gets 7, and the second finds the channel closed. `c
 the model allows this run with no data race. `MutexExample.lean` builds a run where a lock orders
 a plain write of the main code before a plain read of a task.
 
+`Machine.lean` starts the progress model of #2360. A fleet is a set of nodes that share no memory
+and pass messages. A node is opaque: the fleet sees only its steps and its messages, and a node can
+always take a message. A run is an infinite sequence of configurations, and a fair run is weakly
+fair to each step of a node and to each delivery. `Interleave.lean` makes a CPU node: one memory,
+in which one thread moves at each step, and a read-modify-write is one step.
+`Cpu.Reach.execs` shows that the accesses of each finite run are an execution of the program, and
+that in it the accesses happen one at a time. `MachineExample.lean` runs message passing on a CPU
+node. A run that ends is fair, and a run in which no node moves is not fair.
+
 The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
 `run_lean.py` checks that Lean and `vx.cat` agree on the 13 tests without scopes and barriers:
 
@@ -335,3 +344,6 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   `spawn` starts both (`OneSite`). The rule is stricter than needed: two blocks that run one after
   the other can share places, but two tasks from two `spawn`s of one block cannot.
 - In both rules, one thread starts each task, and a task starts only tasks with larger ids.
+- A CPU node sends and takes no messages yet. A read of a place that no write wrote has no step.
+- The converse of `Cpu.Reach.execs` is not proved yet: that each execution with no reordering
+  comes from a run of the CPU node.
