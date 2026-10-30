@@ -38,6 +38,7 @@ The command adapter owns file access, configuration, warnings, and exit status.
 1. Implement `roots` when the formatter owns independent source ranges.
 1. Return child nodes from the parent's layout through `context.child` when the parent owns their range.
 1. Register the formatter in `builtin_registry()`.
+1. Override `enabled(config)` when typed configuration can disable the owner.
 1. Add configuration only for behavior the formatter implements.
 1. Test output, preservation, nesting, exclusions, unknown syntax, and repeated-formatting stability.
 1. Verify each important assertion with a deliberate implementation regression.
@@ -59,6 +60,8 @@ The registry rejects duplicate owners for one syntax kind.
 The scheduler rejects identical or partially overlapping roots.
 An enclosing root owns its complete range and delegates children explicitly.
 Protected source ranges take precedence over registered roots.
+The registry preserves a disabled owner's original source range.
+Legacy passes cannot rewrite that range.
 
 The renderer requires each original content token exactly once, in source order.
 The final validator also checks token spelling and grammatical adjacency.

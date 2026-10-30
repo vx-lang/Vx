@@ -374,3 +374,22 @@ fn source_intervals_keep_only_intersecting_tokens() {
     assert_eq!(source.tokens[range.start].bytes.start, bytes.start);
     assert_eq!(source.tokens[range.end - 1].bytes.end, bytes.end);
 }
+
+#[test]
+fn disabled_function_headers_preserve_layout_types_and_contracts() {
+    let header = "fn   long_name(a: Tensor< f32, [2, 2] >, b : i32) -> i32\nrequires b > 0\nensures return > 0 ";
+    let input = format!("{header}{{\nreturn b;\n}}\n");
+    let config = FormatConfig {
+        format_function_headers: false,
+        fn_signature_width: 20,
+        space_before_colon: true,
+        ..FormatConfig::default()
+    };
+    let result = format_file_with_report(&input, &config);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.text, format!("{header}{{\n  return b;\n}}\n"));
+    assert_eq!(
+        format_file_with_report(&result.text, &config).text,
+        result.text
+    );
+}

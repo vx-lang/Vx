@@ -12,6 +12,7 @@ Create `vx-format.toml` in your project:
 indent = 2
 fn_signature_width = 100
 space_before_colon = false
+format_function_headers = true
 ```
 
 `indent` sets the number of spaces per indentation level.
@@ -29,6 +30,12 @@ Both styles use one space after the colon.
 Paths such as `module::Type` remain unchanged.
 This setting does not change colon spacing in function bodies or struct declarations.
 The added spaces count toward `fn_signature_width`.
+
+`format_function_headers` defaults to `true`.
+Set it to `false` to preserve existing function header spacing, type spelling, wrapping, and contract-clause layout.
+Body formatting remains active.
+Header width and colon-spacing settings do not change disabled headers.
+CI disables header formatting to preserve the repository's existing mixed styles.
 
 For each input, the formatter searches from the file's real parent directory upward.
 It uses the nearest `vx-format.toml` and does not merge ancestor files.
@@ -57,10 +64,11 @@ The command writes a complete TOML configuration to standard output:
 indent = 2
 fn_signature_width = 100
 space_before_colon = false
+format_function_headers = true
 ```
 
 Save it with `vx-format --print-config default > vx-format.toml`.
-Print mode cannot be combined with input files, `--config`, `--indent`, `--space-before-colon`, or `--check`.
+Print mode cannot be combined with input files, `--config`, `--indent`, `--space-before-colon`, `--format-function-headers`, or `--check`.
 
 Use `--config FILE` to select one configuration file for all inputs.
 Relative configuration paths use the command's working directory.
@@ -69,11 +77,13 @@ An explicitly selected missing file causes an error.
 Use `--indent 4` to override indentation from a valid configuration or the built-in default.
 Overrides do not hide errors in an existing configuration file.
 Use `--space-before-colon true` or `--space-before-colon false` to override the configured colon style.
+Use `--format-function-headers true` or `--format-function-headers false` to override the header-formatting setting.
 
 ```sh
 vx-format --config path/to/vx-format.toml file.vx
 vx-format --indent 4 file.vx
 vx-format --space-before-colon true file.vx
+vx-format --check --format-function-headers false file.vx
 ```
 
 The formatter validates all configurations and reads all inputs before modifying any file.

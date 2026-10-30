@@ -47,6 +47,9 @@ impl SyntaxNode<'_> {
 
 pub trait NodeFormatter: Sync {
     fn kind(&self) -> SyntaxKind;
+    fn enabled(&self, _config: &FormatConfig) -> bool {
+        true
+    }
     fn roots<'a>(&self, _source: &'a SourceFileView<'_>) -> Vec<SyntaxNode<'a>> {
         Vec::new()
     }
@@ -104,6 +107,12 @@ impl<'a> NodeRegistry<'a> {
                 message: "Unsupported syntax kind; preserve the enclosing structure".into(),
             });
         };
+        if !formatter.enabled(config) {
+            return Ok(Document::Preserve {
+                bytes: source.token_bytes(node.tokens()),
+                keep_column: false,
+            });
+        }
         formatter.format(
             node,
             &NodeContext {

@@ -32,7 +32,7 @@ fn prints_defaults_without_reading_project_config_or_changing_files() {
     let text = String::from_utf8(output.stdout).unwrap();
     assert_eq!(
         text,
-        "[format]\nindent = 2\nfn_signature_width = 100\nspace_before_colon = false\n"
+        "[format]\nindent = 2\nfn_signature_width = 100\nspace_before_colon = false\nformat_function_headers = true\n"
     );
     assert_eq!(
         vx_config::parse_format_config(Path::new("vx-format.toml"), &text).unwrap(),
@@ -57,6 +57,12 @@ fn rejects_unsupported_print_modes_and_conflicting_arguments() {
         vec!["--print-config", "default", "--config", "vx-format.toml"],
         vec!["--print-config", "default", "main.vx"],
         vec!["--print-config", "default", "--check"],
+        vec![
+            "--print-config",
+            "default",
+            "--format-function-headers",
+            "false",
+        ],
     ] {
         let output = formatter(directory.path(), &args);
         assert!(!output.status.success(), "accepted {args:?}");
@@ -381,4 +387,53 @@ fn exclusions_do_not_hide_diffs_in_check_mode() {
         assert!(diff.contains("+  return value;"), "{diff}");
         assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), source);
     }
+}
+
+#[test]
+fn disabled_headers_preserve_their_style_and_still_format_bodies() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = project(
+        directory.path(),
+        "project",
+        Some("[format]\nindent = 2\nfn_signature_width = 20\nformat_function_headers = false\n"),
+    );
+    let original = "fn   keep(a: i32, b : i32) -> i32 {\nreturn a;\n}\n";
+    let preserved = "fn   keep(a: i32, b : i32) -> i32 {\n  return a;\n}\n";
+    fs::write(project.join("main.vx"), original).unwrap();
+    let output = formatter(&project, &["--check", "main.vx"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(project.join("main.vx")).unwrap(),
+        original
+    );
+    let output = formatter(&project, &["--space-before-colon", "true", "main.vx"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(project.join("main.vx")).unwrap(),
+        preserved
+    );
+    let output = formatter(&project, &["--check", "main.vx"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let output = formatter(
+        &project,
+        &["--check", "--format-function-headers", "true", "main.vx"],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("+fn keep("));
+    fs::write(
+        project.join("vx-format.toml"),
+        "[format]\nindent = 2\nformat_function_headers = true\n",
+    )
+    .unwrap();
+    let output = formatter(
+        &project,
+        &["--check", "--format-function-headers", "false", "main.vx"],
+    );
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(project.join("main.vx")).unwrap(),
+        preserved
+    );
 }

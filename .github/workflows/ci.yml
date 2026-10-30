@@ -132,7 +132,7 @@ jobs:
       - name: Check Vx Formatting (vx-format)
         run: |
           cargo build --release --bin vx-format
-          find tests stdlib -name "*.vx" -exec ./target/release/vx-format --check --space-before-colon true {} +
+          find tests stdlib -name "*.vx" -exec ./target/release/vx-format --check --format-function-headers false {} +
 
       - name: Check Markdown Formatting (mdformat)
         run: |

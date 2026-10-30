@@ -13,6 +13,10 @@ fn default_fn_signature_width() -> usize {
     DEFAULT_FN_SIGNATURE_WIDTH
 }
 
+fn default_format_function_headers() -> bool {
+    true
+}
+
 fn deserialize_signature_width<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<usize, D::Error> {
@@ -39,6 +43,9 @@ pub struct FormatConfig {
     /// Add a space before single colons in function headers.
     #[serde(default)]
     pub space_before_colon: bool,
+    /// Format function headers. Disabled headers retain their original text.
+    #[serde(default = "default_format_function_headers")]
+    pub format_function_headers: bool,
 }
 
 impl Default for FormatConfig {
@@ -47,6 +54,7 @@ impl Default for FormatConfig {
             indent: 2,
             fn_signature_width: DEFAULT_FN_SIGNATURE_WIDTH,
             space_before_colon: false,
+            format_function_headers: true,
         }
     }
 }
@@ -55,8 +63,8 @@ impl Default for FormatConfig {
 pub fn default_format_config_toml() -> String {
     let defaults = FormatConfig::default();
     format!(
-        "[format]\nindent = {}\nfn_signature_width = {}\nspace_before_colon = {}\n",
-        defaults.indent, defaults.fn_signature_width, defaults.space_before_colon
+        "[format]\nindent = {}\nfn_signature_width = {}\nspace_before_colon = {}\nformat_function_headers = {}\n",
+        defaults.indent, defaults.fn_signature_width, defaults.space_before_colon, defaults.format_function_headers
     )
 }
 
@@ -177,6 +185,7 @@ mod tests {
             assert_eq!(config.indent, indent);
             assert_eq!(config.fn_signature_width, 100);
             assert!(!config.space_before_colon);
+            assert!(config.format_function_headers);
         }
     }
 
@@ -196,6 +205,8 @@ mod tests {
             "[format]\nindent = 2\nfn_signature_width = 18446744073709551616",
             "[format]\nindent = 2\nspace_before_colon = 'true'",
             "[format]\nindent = 2\nspace_before_colon = 1",
+            "[format]\nindent = 2\nformat_function_headers = 'false'",
+            "[format]\nindent = 2\nformat_function_headers = 0",
             "[format]\nindent = 2\nindent = 4",
             "[format]\nindent = 2\nwidth = 80",
             "[format]\nindent = 2\n[lints]",
@@ -219,6 +230,18 @@ mod tests {
                 .unwrap(),
             FormatConfig::default()
         );
+    }
+
+    #[test]
+    fn reads_both_function_header_modes() {
+        for enabled in [true, false] {
+            let config = parse_format_config(
+                Path::new(FORMAT_CONFIG_FILE),
+                &format!("[format]\nindent = 2\nformat_function_headers = {enabled}\n"),
+            )
+            .unwrap();
+            assert_eq!(config.format_function_headers, enabled);
+        }
     }
 
     #[test]

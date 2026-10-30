@@ -120,6 +120,10 @@ impl NodeFormatter for FunctionFormatter {
 }
 
 impl NodeFormatter for HeaderFormatter {
+    fn enabled(&self, config: &FormatConfig) -> bool {
+        config.format_function_headers
+    }
+
     fn kind(&self) -> SyntaxKind {
         SyntaxKind::Header
     }
