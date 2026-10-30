@@ -35,7 +35,9 @@ The added spaces count toward `fn_signature_width`.
 Set it to `false` to preserve existing function header spacing, type spelling, wrapping, and contract-clause layout.
 Body formatting remains active.
 Header width and colon-spacing settings do not change disabled headers.
-CI disables header formatting to preserve the repository's existing mixed styles.
+The Vx repository's root `vx-format.toml` disables header formatting to preserve its existing mixed styles.
+CI and `scripts/pre-commit.sh` both discover that configuration without command-line style overrides.
+The built-in defaults above remain unchanged.
 
 For each input, the formatter searches from the file's real parent directory upward.
 It uses the nearest `vx-format.toml` and does not merge ancestor files.
@@ -165,6 +167,10 @@ Declarations containing comments retain their original header text.
 Supported surrounding code can still format.
 Formatting-disabled declarations remain excluded from this rule.
 Function calls retain their existing formatting policy.
+Formatting a header preserves the existing text and line breaks of its `requires`, `ensures`, and `where` clauses.
+Inline clauses count toward the available signature width.
+Clauses on following lines do not force short parameter lists to wrap.
+
 The width is a preference: a single long type or function name can still exceed it.
 Declarations without parameters remain on one line.
 

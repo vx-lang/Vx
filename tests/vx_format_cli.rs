@@ -441,3 +441,50 @@ fn disabled_headers_preserve_their_style_and_still_format_bodies() -> Result<()>
     check_equal(&fs::read_to_string(project.join("main.vx"))?, &preserved)?;
     Ok(())
 }
+
+#[test]
+fn repository_configuration_matches_hook_and_ci_formatting() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let project = project(
+        directory.path(),
+        "project",
+        Some(include_str!("../vx-format.toml")),
+    )?;
+    let source = "fn   keep(a: i32, b : i32) -> i32\nrequires a > b {\n  return a;\n}\n";
+    fs::write(project.join("main.vx"), source)?;
+    let check = formatter(&project, &["--check", "main.vx"])?;
+    check_equal(&check.status.code(), &Some(0)).with_context(|| format!("{check:?}"))?;
+    ensure!(check.stdout.is_empty(), "{check:?}");
+    ensure!(check.stderr.is_empty(), "{check:?}");
+    let write = formatter(&project, &["main.vx"])?;
+    ensure!(write.status.success(), "{write:?}");
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &source)?;
+    Ok(())
+}
+
+#[test]
+fn enabled_headers_preserve_contract_layout_in_check_and_write_modes() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let project = project(directory.path(), "project", None)?;
+    let source = "fn   check(n : i32) -> i32\nrequires n > 0\nensures return > 0 {\nreturn n;\n}\n";
+    let expected =
+        "fn check(n: i32) -> i32\nrequires n > 0\nensures return > 0 {\n  return n;\n}\n";
+    fs::write(project.join("main.vx"), source)?;
+    let check = formatter(
+        &project,
+        &["--check", "--format-function-headers", "true", "main.vx"],
+    )?;
+    check_equal(&check.status.code(), &Some(1)).with_context(|| format!("{check:?}"))?;
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &source)?;
+    let write = formatter(&project, &["--format-function-headers", "true", "main.vx"])?;
+    ensure!(write.status.success(), "{write:?}");
+    check_equal(&fs::read_to_string(project.join("main.vx"))?, &expected)?;
+    let check = formatter(
+        &project,
+        &["--check", "--format-function-headers", "true", "main.vx"],
+    )?;
+    check_equal(&check.status.code(), &Some(0)).with_context(|| format!("{check:?}"))?;
+    ensure!(check.stdout.is_empty(), "{check:?}");
+    ensure!(check.stderr.is_empty(), "{check:?}");
+    Ok(())
+}

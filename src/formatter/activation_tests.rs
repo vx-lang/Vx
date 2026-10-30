@@ -80,7 +80,7 @@ fn all_header_clauses_survive_the_active_path() {
     let input = "fn compute(value: i32) on Topology::CPU -> i32 requires value > 0 ensures value > 0 where Reachable<CPU, GPU> {\nvalue\n}";
     let result = checked(input, 40);
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-    assert!(result.text.contains("fn compute(\n  value: i32\n) on Topology::CPU -> i32 requires value> 0 ensures value> 0 where Reachable<CPU, GPU>"), "{}", result.text);
+    assert!(result.text.contains("fn compute(\n  value: i32\n) on Topology::CPU -> i32 requires value > 0 ensures value > 0 where Reachable<CPU, GPU>"), "{}", result.text);
     assert!(crate::parse_module(&result.text).is_ok());
 }
 
@@ -435,4 +435,56 @@ fn unknown_tokens_outside_macros_still_warn_and_preserve_the_file() {
         .any(|warning| warning.message.contains("Unrecognized lexer token")));
     assert_eq!(result.text, input);
     assert_eq!(result.check_status(input), 0);
+}
+
+#[test]
+fn inline_contracts_keep_expression_spacing_while_parameters_format() {
+    let input =
+        "fn   check(n : i32) -> i32 requires n > 0 && n < 100 ensures return > 0 {\nreturn n;\n}\n";
+    let result = checked(input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.text,
+        "fn check(n: i32) -> i32 requires n > 0 && n < 100 ensures return > 0 {\n  return n;\n}\n"
+    );
+    assert!(crate::parse_module(&result.text).is_ok());
+    assert_eq!(checked(&result.text, 100).text, result.text);
+}
+
+#[test]
+fn multiline_contracts_do_not_force_short_parameters_to_wrap() {
+    let clauses = "\n  requires n > 0 && n < 100 && n < 1000\n  requires n << 1 > 0\n  ensures return > 0\n  where Reachable<CPU, GPU>\n";
+    let input = format!("fn   check(n : i32) -> i32{clauses}{{\nreturn n;\n}}\n");
+    let result = checked(&input, 28);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.text,
+        format!("fn check(n: i32) -> i32{clauses}{{\n  return n;\n}}\n")
+    );
+    assert!(crate::parse_module(&result.text).is_ok());
+    assert_eq!(checked(&result.text, 28).text, result.text);
+}
+
+#[test]
+fn wrapped_parameters_keep_contracts_on_their_original_lines() {
+    let input = "fn   merge(first : i32, second : i32) -> i32\nrequires first > second\nensures return > 0 {\nreturn first;\n}\n";
+    let result = checked(input, 25);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.text, "fn merge(\n  first: i32,\n  second: i32\n) -> i32\nrequires first > second\nensures return > 0 {\n  return first;\n}\n");
+    assert_eq!(checked(&result.text, 25).text, result.text);
+}
+
+#[test]
+fn inline_contract_width_reserves_the_expression_and_body_delimiter() {
+    let input = "fn f(a: i32) -> i32 requires a > 0 {\n  return a;\n}\n";
+    let width = input.lines().next().unwrap().chars().count();
+    let fits = checked(input, width);
+    assert!(fits.warnings.is_empty(), "{:?}", fits.warnings);
+    assert_eq!(fits.text, input);
+    let wraps = checked(input, width - 1);
+    assert!(wraps.warnings.is_empty(), "{:?}", wraps.warnings);
+    assert_eq!(
+        wraps.text,
+        "fn f(\n  a: i32\n) -> i32 requires a > 0 {\n  return a;\n}\n"
+    );
 }

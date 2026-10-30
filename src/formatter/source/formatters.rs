@@ -172,6 +172,11 @@ impl NodeFormatter for HeaderFormatter {
                 keep_column: true,
             });
         }
+        let (suffix, reserved) = header_suffix(context, view);
+        let signature_shape = Shape {
+            width: shape.width.saturating_sub(reserved),
+            ..shape
+        };
         let prefix = compact(context, view.tokens.start..view.parameter_open.0)?;
         let parameter_shape = Shape {
             column: shape.column
@@ -189,26 +194,64 @@ impl NodeFormatter for HeaderFormatter {
         let flat = Document::Concat(vec![
             prefix.clone(),
             parameters,
-            header_tail(context, view, shape, flat_end)?,
+            header_tail(context, view, signature_shape, flat_end)?,
         ]);
         if view.parameters.is_empty() {
-            return Ok(flat);
+            return Ok(Document::Concat(vec![flat, suffix]));
         }
         let expanded_end = shape.indent_level * shape.indent_spaces + 1;
         let expanded = Document::Concat(vec![
             prefix,
             expanded_parameters,
-            header_tail(context, view, shape, expanded_end)?,
+            header_tail(context, view, signature_shape, expanded_end)?,
         ]);
-        // The following delimiter is outside this header's source range.
-        Ok(Document::WithWidth {
-            width: shape.width.saturating_sub(1),
-            child: Box::new(Document::Choice {
-                flat: Box::new(flat),
-                expanded: Box::new(expanded),
-            }),
-        })
+        Ok(Document::Concat(vec![
+            Document::WithWidth {
+                width: signature_shape.width,
+                child: Box::new(Document::Choice {
+                    flat: Box::new(flat),
+                    expanded: Box::new(expanded),
+                }),
+            },
+            suffix,
+        ]))
     }
+}
+
+fn header_suffix(
+    context: &NodeContext<'_, '_, '_>,
+    view: &super::FunctionHeaderView,
+) -> (Document, usize) {
+    let source = context.source;
+    let has_contracts = view
+        .clauses
+        .iter()
+        .any(|clause| clause.tokens.start >= view.return_type.tokens.end);
+    if has_contracts {
+        let start = source.tokens[view.return_type.tokens.end - 1].bytes.end;
+        let end = source.tokens[view.terminator.0].bytes.start;
+        let text = &source.text[start..end];
+        let first_line = text.split('\n').next().unwrap_or_default();
+        let reserved = first_line.chars().count() + usize::from(!text.contains('\n'));
+        return (
+            Document::Preserve {
+                bytes: start..end,
+                keep_column: false,
+            },
+            reserved,
+        );
+    }
+    let brace = matches!(
+        source.tokens[view.terminator.0].token.kind,
+        TokenType::LeftBrace
+    );
+    let suffix = if brace {
+        Document::Space
+    } else {
+        Document::Concat(Vec::new())
+    };
+    // Reserve the following delimiter, which lies outside the header's source range.
+    (suffix, 1 + usize::from(brace))
 }
 
 fn header_tail(
@@ -217,49 +260,27 @@ fn header_tail(
     shape: Shape,
     column: usize,
 ) -> Result<Document, CoverageWarning> {
-    let source = context.source;
     if view.return_type.tokens.is_empty() {
-        return Ok(
-            if matches!(
-                source.tokens[view.terminator.0].token.kind,
-                TokenType::LeftBrace
-            ) {
-                Document::Space
-            } else {
-                Document::Concat(Vec::new())
-            },
-        );
+        return Ok(Document::Concat(Vec::new()));
     }
     let before = compact(
         context,
         view.parameter_close.0 + 1..view.return_type.tokens.start,
     )?;
-    let after = compact(context, view.return_type.tokens.end..view.tokens.end)?;
     let before_width = before
-        .flat_width(source)
+        .flat_width(context.source)
         .ok_or_else(|| unsupported(context, SyntaxNode::Header(view)))?;
-    let after_width = after
-        .flat_width(source)
-        .ok_or_else(|| unsupported(context, SyntaxNode::Header(view)))?;
-    let brace = matches!(
-        source.tokens[view.terminator.0].token.kind,
-        TokenType::LeftBrace
-    );
-    let reserved = 1 + usize::from(brace) + after_width + usize::from(after_width > 0);
     let return_shape = Shape {
         column: column + before_width + 2,
-        width: shape.width.saturating_sub(reserved),
         ..shape
     };
     let return_type = context.child(SyntaxNode::Type(&view.return_type), return_shape)?;
-    let mut children = vec![Document::Space, before, Document::Space, return_type];
-    if after_width > 0 {
-        children.extend([Document::Space, after]);
-    }
-    if brace {
-        children.push(Document::Space);
-    }
-    Ok(Document::Concat(children))
+    Ok(Document::Concat(vec![
+        Document::Space,
+        before,
+        Document::Space,
+        return_type,
+    ]))
 }
 
 impl NodeFormatter for ParametersFormatter {
