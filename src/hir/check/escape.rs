@@ -642,6 +642,18 @@ impl<'a> TypeChecker<'a> {
                     s.name.split('<').next().unwrap_or(&s.name).into();
                 Type::Struct(base, None)
             }
+            // An element of a tensor is a number, so a store into one, such as
+            // `y[r] = lanes::sum(&part, 256)`, holds no reference.
+            Expr::IndexAccess(ix) => {
+                let base = match self.check_expr_type_probe(&ix.base) {
+                    Type::Borrow { inner, .. } | Type::Ref(inner, _) => *inner,
+                    other => other,
+                };
+                match base {
+                    Type::Tensor(el, dims, _) if dims.len() <= 1 => Type::Scalar(el),
+                    _ => Type::Unknown,
+                }
+            }
             // A call to a function the checker has resolved: its declared return type.
             Expr::FunctionCall(fc) => {
                 if let Some(f) = self.env.functions.get(&fc.name) {
