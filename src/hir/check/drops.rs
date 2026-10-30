@@ -176,6 +176,14 @@ struct Edits {
     reroot: HashMap<usize, (String, String)>,
 }
 
+/// Where a `return`, `break`, `continue`, or the leave of a failed join goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExitTo {
+    Function,
+    Loop,
+    TasksBlock,
+}
+
 #[derive(Clone)]
 enum FrameKind {
     Function {
@@ -1695,10 +1703,10 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// A `return` (`out_of_loop` false) or a `break` or `continue` (true) at `span`: the owners
-    /// it leaves that are still alive are dropped first. When it leaves a `tasks` block, it
-    /// first waits for the tasks of that block, which can still use these owners.
-    pub(crate) fn drops_exit(&mut self, what: &str, span: &Span, out_of_loop: bool) {
+    /// An exit at `span` to `to`: the owners it leaves that are still alive are dropped first.
+    /// When it leaves a `tasks` block, it first waits for the tasks of that block, which can
+    /// still use these owners.
+    pub(crate) fn drops_exit(&mut self, what: &str, span: &Span, to: ExitTo) {
         if self.speculating {
             return;
         }
@@ -1713,8 +1721,12 @@ impl<'a> TypeChecker<'a> {
             match f {
                 // A `return` inside a region leaves the region, not the function.
                 FrameKind::Function { .. } | FrameKind::Spawn => break 'frames,
-                FrameKind::Loop if out_of_loop => break 'frames,
+                FrameKind::Loop if to == ExitTo::Loop => break 'frames,
                 FrameKind::Loop => {}
+                FrameKind::Tasks if to == ExitTo::TasksBlock => {
+                    tasks_blocks += 1;
+                    break 'frames;
+                }
                 FrameKind::Tasks => tasks_blocks += 1,
                 FrameKind::Block {
                     owners, uses, stmt, ..

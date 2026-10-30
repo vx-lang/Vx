@@ -358,13 +358,24 @@ impl<'a> TypeChecker<'a> {
             Statement::LetDecl(decl) => self.check_let_decl_stmt(decl, consume),
             Statement::ForLoop(floop) => self.check_for_loop_stmt(floop, consume, return_type),
             Statement::Loop(lp) => self.check_loop_stmt(lp, return_type),
+            // The `Err` arm of the join of a task that failed: it leaves the `tasks` block,
+            // and the error moves into the value of the block.
+            Statement::Break(b) if b.tasks_value.is_some() => {
+                let value = b.tasks_value.as_mut().expect("matched above");
+                self.check_expr_type_flag(value, true);
+                self.drops_exit(
+                    "join",
+                    &b.span,
+                    crate::hir::check::drops::ExitTo::TasksBlock,
+                )
+            }
             Statement::Break(b) => {
                 self.check_task_exit(&Statement::Break(b.clone()));
-                self.drops_exit("break", &b.span, true)
+                self.drops_exit("break", &b.span, crate::hir::check::drops::ExitTo::Loop)
             }
             Statement::Continue(c) => {
                 self.check_task_exit(&Statement::Continue(c.clone()));
-                self.drops_exit("continue", &c.span, true)
+                self.drops_exit("continue", &c.span, crate::hir::check::drops::ExitTo::Loop)
             }
             Statement::Assign(AssignStmt { lhs, rhs, span }) => {
                 let span = *span;
@@ -1793,7 +1804,7 @@ impl<'a> TypeChecker<'a> {
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
             }
-            self.drops_exit("return", span, false);
+            self.drops_exit("return", span, crate::hir::check::drops::ExitTo::Function);
             return false;
         };
 
@@ -1804,7 +1815,7 @@ impl<'a> TypeChecker<'a> {
         self.consteval.comptime_return_is_value = false;
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, Some(return_type));
         self.expected_type = prev_expected;
-        self.drops_exit("return", span, false);
+        self.drops_exit("return", span, crate::hir::check::drops::ExitTo::Function);
 
         let mut expected_ty = return_type.clone();
         if let Some(Type::Unknown) = self.current_return_type {

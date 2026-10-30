@@ -2026,6 +2026,9 @@ fn lower_unsafe_block<'c>(
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
 ) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    if let Some(fails_as) = &this.fails_as {
+        return lower_failing_tasks_block(this, fails_as, gen, block);
+    }
     let mut current_block = block;
     for stmt in &this.stmts {
         if let Some(b) = gen.generate_statement(stmt, current_block)? {
@@ -2057,6 +2060,50 @@ fn lower_unsafe_block<'c>(
         let zero_val = current_block.append_operation(zero_op).result(0)?.into();
         Ok((zero_val, i32_ty, current_block))
     }
+}
+
+/// A `tasks` block that can fail. Its last value, and the failure of a join that leaves it,
+/// both go to the block after it, which takes the value of the block. The tasks of this code
+/// generator run one after another, so nothing waits.
+fn lower_failing_tasks_block<'c>(
+    this: &UnsafeBlockExpr,
+    fails_as: &syntax::Type,
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let ty = gen.lower_type(fails_as)?;
+    let after = block
+        .parent_region()
+        .expect("a block being lowered into always sits in a region")
+        .append_block(melior::ir::Block::new(&[(ty, gen.loc())]));
+    gen.tasks_leaves
+        .push((&*after as *const _, fails_as.clone()));
+    let mut current_block = block;
+    let mut reached_end = true;
+    for stmt in &this.stmts {
+        match gen.generate_statement(stmt, current_block)? {
+            Some(b) => current_block = b,
+            None => {
+                reached_end = false;
+                break;
+            }
+        }
+    }
+    if let (true, Some(ret_expr)) = (reached_end, &this.ret) {
+        let waiting = std::mem::take(&mut gen.queued_drops);
+        let (val, _, cur) = gen.generate_expr(ret_expr, current_block)?;
+        gen.queued_drops.extend(waiting);
+        let cur = gen.run_queued_drops(cur)?;
+        cur.append_operation(
+            OperationBuilder::new("cf.br", gen.loc())
+                .add_operands(&[val])
+                .add_successors(&[&*after])
+                .build()?,
+        );
+    }
+    gen.tasks_leaves.pop();
+    let value = after.argument(0)?.into();
+    Ok((value, ty, after))
 }
 
 impl<'c> LowerToMelior<'c> for MemberAccessExpr {
@@ -4007,6 +4054,40 @@ impl<'c> LowerToMelior<'c> for NumberExpr {
     }
 }
 
+/// The type of an arm whose value is a name its pattern binds, `Ok(v) => { v }`: the variant's
+/// payload type, with the type arguments that the pattern's enum names.
+fn payload_binding_type(
+    gen: &MeliorGenerator<'_>,
+    arm: &syntax::MatchArm,
+    value: &Expr,
+) -> Option<syntax::Type> {
+    let (Expr::Identifier(id), syntax::Pattern::EnumVariant(en, vn, Some(pats))) =
+        (value, &arm.pattern)
+    else {
+        return None;
+    };
+    let position = pats
+        .iter()
+        .position(|p| matches!(p, syntax::Pattern::Identifier(n) if *n == id.name))?;
+    let (base, args) = match crate::parser::types::parse_type_text(en)? {
+        syntax::Type::GenericInstance(base, args) => (base.to_string(), args),
+        other => (other.to_string(), Vec::new()),
+    };
+    let base = crate::symbol::Symbol::from(base.split('<').next()?);
+    let declared = gen
+        .enums
+        .get(&base)?
+        .iter()
+        .find(|(v, _)| v.as_ref() == vn.as_ref())?
+        .1
+        .as_ref()?
+        .get(position)?
+        .clone();
+    let generics = gen.enum_generics.get(&base).cloned().unwrap_or_default();
+    let mapping = generics.into_iter().zip(args).collect();
+    Some(declared.substitute(&mapping))
+}
+
 impl<'c> LowerToMelior<'c> for MatchExpr {
     type Output = Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError>;
     fn lower(
@@ -4040,14 +4121,15 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
         // argument and each arm branches with its own, which is what makes the match evaluate
         // to what its arms say. The type comes from the first such arm rather than from
         // `expected_type`, which is unset for an unannotated `let`.
-        let tail_expr = self.arms.iter().find_map(|arm| match arm.body.last() {
+        let tail_arm = self.arms.iter().find_map(|arm| match arm.body.last() {
             Some(syntax::Statement::ExprStmt(syntax::stmt::ExprStmtStmt {
                 expr,
                 has_semi: false,
                 ..
-            })) => Some(expr),
+            })) => Some((arm, expr)),
             _ => None,
         });
+        let tail_expr = tail_arm.map(|(_, e)| e);
         // The fallback to `expected_type` applies only when there *is* a tail expression whose
         // type could not be inferred. Applying it to a match with no tail expression at all
         // would make a statement-position match look value-producing, and every arm would then
@@ -4068,6 +4150,7 @@ impl<'c> LowerToMelior<'c> for MatchExpr {
                 }
                 other => gen
                     .infer_ast_type(other)
+                    .or_else(|| payload_binding_type(gen, tail_arm?.0, other))
                     .and_then(|t| gen.lower_type(&t).ok()),
             }
             .or(gen.expected_type)

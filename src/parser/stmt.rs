@@ -266,7 +266,7 @@ impl<'a> Parser<'a> {
                 }
                 self.consume(&TokenType::RightBrace, "Expected '}'")?;
 
-                let else_block = Some(vec![Statement::Break(BreakStmt { span: while_span })]);
+                let else_block = Some(vec![Statement::Break(BreakStmt::new(while_span))]);
 
                 let if_expr = Expr::If(IfExpr {
                     is_comptime: false,
@@ -291,7 +291,7 @@ impl<'a> Parser<'a> {
             TokenType::Break => {
                 self.advance();
                 self.consume(&TokenType::Semicolon, "Expected ';'")?;
-                Ok(Statement::Break(BreakStmt { span: token_span }))
+                Ok(Statement::Break(BreakStmt::new(token_span)))
             }
             TokenType::Continue => {
                 self.advance();

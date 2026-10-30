@@ -10,7 +10,8 @@
 // docs/discussions/cpu_tasks_send_sync_and_shared_atomics.md.
 //
 // After the checks a `tasks` block and a task body are blocks with a `task` mark,
-// `let h = spawn { e }` is `let h = { e }`, and `h.join()` is `h`. Each pass treats them as plain
+// `let h = spawn { e }` is `let h = { e }`, and `h.join()` is `h`. For a task that can fail, it is
+// a `match` on `h` whose `Err` arm leaves the `tasks` block. Each pass treats them as plain
 // blocks, which T7 allows. The flat code generator runs each task on a thread of its own, and a
 // read of `h` waits for the task. The checks are for the tasks that run at the same time: a task
 // holds a borrow of each variable that it uses, from its `spawn` until its join.
@@ -54,6 +55,8 @@ enum Frame {
         closures: usize,
         loops: usize,
         tasks: Vec<String>,
+        /// The tasks of the block that can fail.
+        failures: Vec<Failure>,
     },
     Spawn {
         /// `scopes.len()` before the body. A variable of a lower scope is from outside the task.
@@ -81,6 +84,30 @@ struct Handle {
     depth: usize,
     task: String,
     result: Type,
+    /// The `T` and `E` of a task whose body gives `Result<T, E>`: a task that can fail (F1).
+    fails: Option<(Type, Type)>,
+}
+
+/// A task that can fail, in its `tasks` block.
+struct Failure {
+    handle: crate::symbol::Symbol,
+    err: Type,
+    spawn: Span,
+    /// A join of the task always runs after its `spawn`.
+    joined: bool,
+}
+
+/// The `T` and `E` of core's `Result<T, E>`. The compiler knows `Result` by its name.
+fn result_parts(ty: &Type) -> Option<(Type, Type)> {
+    let Type::GenericInstance(base, args) = ty else {
+        return None;
+    };
+    let named_result =
+        matches!(&**base, Type::Enum(n, _) | Type::Struct(n, _) if n.as_ref() == "Result");
+    match args.as_slice() {
+        [t, e] if named_result => Some((t.clone(), e.clone())),
+        _ => None,
+    }
 }
 
 /// How a task takes a variable from outside it.
@@ -232,7 +259,12 @@ impl TypeChecker<'_> {
     }
 
     /// Make the checked task block `expr` a plain block for the code generators.
-    fn task_block_to_plain_block(&self, expr: &mut Expr, ret: Option<Expr>) {
+    fn task_block_to_plain_block(
+        &self,
+        expr: &mut Expr,
+        ret: Option<Expr>,
+        fails_as: Option<Type>,
+    ) {
         if self.speculating {
             return;
         }
@@ -247,6 +279,7 @@ impl TypeChecker<'_> {
             span: tb.span,
             generated: true,
             task: Some(tb.kind),
+            fails_as,
         });
     }
 
@@ -267,12 +300,16 @@ impl TypeChecker<'_> {
                 closures,
                 loops,
                 tasks: Vec::new(),
+                failures: Vec::new(),
             });
         });
         self.drops_exit_tasks();
         // The end of the block joins each task that the program did not join (T2).
         let Some(Frame::Tasks {
-            scope_len, tasks, ..
+            scope_len,
+            tasks,
+            failures,
+            ..
         }) = self.tasks.frames.pop()
         else {
             unreachable!("pushed above")
@@ -283,8 +320,50 @@ impl TypeChecker<'_> {
         self.tasks.loop_tasks.retain(|t| !tasks.contains(&t.task));
         self.tasks.handles.retain(|h| h.depth < scope_len - 1);
         self.pop_scope();
-        self.task_block_to_plain_block(expr, None);
+        let fails_as = self.check_block_failures(&failures, &ty, &expr.span());
+        self.task_block_to_plain_block(expr, None, fails_as);
         ty
+    }
+
+    /// F1: a `tasks` block with a task that can fail gives `Result<U, E>`, with the `E` of each
+    /// such task. Each of these tasks has a join that always runs, which gives the block the
+    /// task's failure. So no failure is lost. Returns the type of the block when it can fail.
+    fn check_block_failures(
+        &mut self,
+        failures: &[Failure],
+        block_ty: &Type,
+        span: &Span,
+    ) -> Option<Type> {
+        if failures.is_empty() {
+            return None;
+        }
+        for f in failures.iter().filter(|f| !f.joined) {
+            self.task_error(
+                DiagnosticCode::E3060,
+                format!(
+                    "the task of '{}' can fail, so the `tasks` block must join it. Write `{}.join()` \
+                     after the `spawn`, in the same block, where it always runs",
+                    f.handle, f.handle
+                ),
+                &f.spawn,
+            );
+        }
+        let block_err = result_parts(block_ty).map(|(_, e)| e);
+        for f in failures {
+            if block_err.as_ref() != Some(&f.err) {
+                self.task_error(
+                    DiagnosticCode::E3060,
+                    format!(
+                        "the task of '{}' can fail with '{}', so its `tasks` block must give a \
+                         `Result<_, {}>`. The block gives '{block_ty}'",
+                        f.handle, f.err, f.err
+                    ),
+                    span,
+                );
+                return None;
+            }
+        }
+        Some(block_ty.clone())
     }
 
     fn check_spawn(&mut self, expr: &mut Expr, consume: bool) -> Type {
@@ -317,7 +396,7 @@ impl TypeChecker<'_> {
                 self.task_error(DiagnosticCode::E3056, message.to_string(), &span);
                 let ty = self.check_task_body(expr, consume, |_| {});
                 self.pop_scope();
-                self.task_block_to_plain_block(expr, None);
+                self.task_block_to_plain_block(expr, None, None);
                 // A handle all the same, so that its `join()` reports nothing more.
                 if place == Some(SpawnPlace::Let) {
                     let id = format!("{TASK_PREFIX}{}", self.tasks.next_id);
@@ -340,6 +419,24 @@ impl TypeChecker<'_> {
         // Nothing reads the result of a task that is a statement, so its last value is a
         // statement too. A statement drops its value. The last value of a block does not.
         if place != Some(SpawnPlace::Let) {
+            // A task that can fail needs a handle, so that its join gives the failure to the
+            // block. The type of a tail that names a variable of the task is not known here.
+            let tail_ty = match &*expr {
+                Expr::TaskBlock(TaskBlockExpr {
+                    ret: Some(tail), ..
+                }) => Some(self.operand_type(tail)),
+                _ => None,
+            };
+            if let Some((_, err)) = tail_ty.as_ref().and_then(result_parts) {
+                self.task_error(
+                    DiagnosticCode::E3060,
+                    format!(
+                        "this task can fail with '{err}', so it needs a handle that the `tasks` \
+                         block joins: `let h = spawn {{ .. }};` and then `h.join()`"
+                    ),
+                    &span,
+                );
+            }
             if let Expr::TaskBlock(tb) = &mut *expr {
                 if let Some(tail) = tb.ret.take() {
                     let span = tail.span();
@@ -472,7 +569,7 @@ impl TypeChecker<'_> {
         } else {
             ty = Type::Struct("void".into(), None);
         }
-        self.task_block_to_plain_block(expr, ret);
+        self.task_block_to_plain_block(expr, ret, None);
         ty
     }
 
@@ -596,12 +693,24 @@ impl TypeChecker<'_> {
             }
         }
         let depth = self.lookup_with_depth(&decl.name).map(|(_, _, d)| d);
+        let fails = result_parts(&result);
+        if let (Some((_, err)), Some(Frame::Tasks { failures, .. })) =
+            (&fails, self.tasks.frames.last_mut())
+        {
+            failures.push(Failure {
+                handle: decl.name.clone(),
+                err: err.clone(),
+                spawn: decl.span,
+                joined: false,
+            });
+        }
         if let Some(depth) = depth {
             self.tasks.handles.push(Handle {
                 name: decl.name.clone(),
                 depth,
                 task,
                 result,
+                fails,
             });
         }
     }
@@ -660,8 +769,12 @@ impl TypeChecker<'_> {
         }
         let depth = self.lookup_with_depth(&id.name).map(|(_, _, d)| d);
         let handle = self.tasks.handle(&id.name, depth)?;
-        let (task, result, handle_depth) =
-            (handle.task.clone(), handle.result.clone(), handle.depth);
+        let (task, result, handle_depth, fails) = (
+            handle.task.clone(),
+            handle.result.clone(),
+            handle.depth,
+            handle.fails.clone(),
+        );
         let (span, mut receiver) = (*span, (**base).clone());
         let closures = self.mono.closure_depths.len();
         let in_other_task = matches!(
@@ -677,6 +790,10 @@ impl TypeChecker<'_> {
                 ),
                 &span,
             );
+        }
+        if let (Some((ok_ty, _)), false) = (fails, in_other_task) {
+            let name = id.name.clone();
+            return Some(self.check_failing_join(expr, &name, handle_depth, &task, &result, ok_ty));
         }
         // The join becomes `h`. Only code that takes the value moves it out of `h`. Otherwise
         // `h` still owns the value and drops it at the end of its scope.
@@ -695,6 +812,103 @@ impl TypeChecker<'_> {
             *expr = receiver;
         }
         Some(result)
+    }
+
+    /// `h.join()` of a task that can fail (F1): `match h { Ok(v) => { v } Err(e) => .. }`, where
+    /// the `Err` arm leaves the `tasks` block, and `e` is the failure of the block. Its type is
+    /// the `T` of the task's `Result<T, E>`.
+    fn check_failing_join(
+        &mut self,
+        expr: &mut Expr,
+        handle: &crate::symbol::Symbol,
+        handle_depth: usize,
+        task: &str,
+        result: &Type,
+        ok_ty: Type,
+    ) -> Type {
+        let span = expr.span();
+        let closures = self.mono.closure_depths.len();
+        // The `Err` arm leaves the innermost `tasks` block, so that must be the task's own block.
+        let in_own_block = self.tasks.frames.iter().rev().find_map(|f| match f {
+            Frame::Tasks {
+                scope_len,
+                closures: c,
+                ..
+            } => Some(*c == closures && handle_depth + 1 >= *scope_len),
+            Frame::Spawn { .. } => None,
+        });
+        if in_own_block != Some(true) {
+            self.task_error(
+                DiagnosticCode::E3060,
+                format!(
+                    "the task of '{handle}' can fail, so a join of it must be in its own `tasks` \
+                     block, not in a `tasks` block or a closure inside that block"
+                ),
+                &span,
+            );
+            // One error for the handle is enough.
+            self.note_failure_joined(handle);
+            return ok_ty;
+        }
+        let n = self.tasks.next_id;
+        self.tasks.next_id += 1;
+        let (ok, err): (crate::symbol::Symbol, crate::symbol::Symbol) =
+            (format!("$ok{n}").into(), format!("$err{n}").into());
+        let ident = |name: &crate::symbol::Symbol| {
+            Expr::Identifier(IdentifierExpr::new(name.clone(), span))
+        };
+        let arm = |variant: &str, bind: &crate::symbol::Symbol, body: Statement| MatchArm {
+            pattern: Pattern::EnumVariant(
+                result.to_string().into(),
+                variant.into(),
+                Some(vec![Pattern::Identifier(bind.clone())]),
+            ),
+            body: vec![body],
+            span: Span::default(),
+        };
+        let mut leave = BreakStmt::new(span);
+        leave.tasks_value = Some(Box::new(ident(&err)));
+        let mut joined = Expr::Match(MatchExpr::new(
+            Box::new(ident(handle)),
+            vec![
+                arm(
+                    "Ok",
+                    &ok,
+                    Statement::ExprStmt(ExprStmtStmt {
+                        expr: ident(&ok),
+                        has_semi: false,
+                        span,
+                    }),
+                ),
+                arm("Err", &err, Statement::Break(leave)),
+            ],
+            span,
+        ));
+        self.tasks.joining = true;
+        let ty = self.check_expr_type_flag(&mut joined, true);
+        self.tasks.joining = false;
+        if self.tasks.ending_joins.contains(&span) {
+            self.borrow.end_task(task);
+            self.tasks.loop_tasks.retain(|t| t.task != task);
+            self.note_failure_joined(handle);
+        }
+        if !self.speculating {
+            *expr = joined;
+        }
+        ty
+    }
+
+    /// The task of `handle`, which can fail, has a join that always runs.
+    fn note_failure_joined(&mut self, handle: &crate::symbol::Symbol) {
+        let failures = self.tasks.frames.iter_mut().rev().find_map(|f| match f {
+            Frame::Tasks { failures, .. } if failures.iter().any(|f| f.handle == *handle) => {
+                Some(failures)
+            }
+            _ => None,
+        });
+        if let Some(f) = failures.and_then(|fs| fs.iter_mut().find(|f| f.handle == *handle)) {
+            f.joined = true;
+        }
     }
 
     /// A `return`, `break` or `continue` that leaves a task body (E3058).

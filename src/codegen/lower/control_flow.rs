@@ -924,6 +924,29 @@ impl<'c> LowerToMelior<'c> for BreakStmt {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
+        // The `Err` arm of the join of a task that failed: the block after the `tasks` block
+        // takes the failure as the value of the block.
+        if let Some(value) = &self.tasks_value {
+            let (after_ptr, fails_as) = gen
+                .tasks_leaves
+                .last()
+                .cloned()
+                .expect("the checker leaves only a tasks block that can fail");
+            let failure = crate::syntax::Expr::EnumVariant(crate::syntax::failure_of(
+                &fails_as,
+                (**value).clone(),
+                self.span,
+            ));
+            let (val, _, block) = gen.generate_expr(&failure, block)?;
+            let after: &melior::ir::Block<'c> = unsafe { &*after_ptr };
+            block.append_operation(
+                OperationBuilder::new("cf.br", gen.loc())
+                    .add_operands(&[val])
+                    .add_successors(&[after])
+                    .build()?,
+            );
+            return Ok(None);
+        }
         if let Some(&break_ptr) = gen.break_blocks.last() {
             let break_block: &melior::ir::Block<'c> = unsafe { &*break_ptr };
             block.append_operation(

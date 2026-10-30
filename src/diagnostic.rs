@@ -415,6 +415,12 @@ pub enum DiagnosticCode {
     /// declaration of C's type. A size is a 64-bit integer: `usize`, `i64` or `u64`. A pointer is
     /// a raw pointer to host memory. `free` returns nothing.
     E3059,
+    /// A task that can fail, used in a way that could lose its failure. A task whose body gives
+    /// `Result<T, E>` can fail, and its `join()` gives the `T`. When the task failed, the join
+    /// leaves the `tasks` block, and the block gives the `Err`. So the task needs a handle,
+    /// `let h = spawn { .. };`, and a join in its own block that always runs after the `spawn`.
+    /// The block must give a `Result<U, E>` with the same `E`.
+    E3060,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

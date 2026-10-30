@@ -496,6 +496,9 @@ pub struct UnsafeBlockExpr {
     /// The checker made this block from a `tasks` block or a task body. Each pass treats it as a
     /// plain block, which T7 allows. The flat code generator runs a task on a thread of its own.
     pub task: Option<TaskBlockKind>,
+    /// A `tasks` block with a task that can fail: the type of the block, `Result<U, E>`. A
+    /// `join()` of a task that failed leaves the block with an `Err` of this type.
+    pub fails_as: Option<Type>,
 }
 impl UnsafeBlockExpr {
     pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -505,6 +508,7 @@ impl UnsafeBlockExpr {
             span,
             generated: false,
             task: None,
+            fails_as: None,
         }
     }
 }
@@ -728,6 +732,22 @@ pub fn tasks_wait_stmt(span: Span) -> super::Statement {
         has_semi: true,
         span,
     })
+}
+
+/// `Err(value)` of the type `Result<U, E>` of a `tasks` block that can fail, as the parser and
+/// the checker write a construction: the type in the name, and its arguments apart.
+pub fn failure_of(result: &Type, value: Expr, span: Span) -> EnumVariantExpr {
+    let Type::GenericInstance(_, args) = result else {
+        panic!("a tasks block that can fail gives a Result<U, E>, not {result}");
+    };
+    let mut ev = EnumVariantExpr::new(
+        result.to_string().into(),
+        "Err".into(),
+        Some(vec![value]),
+        span,
+    );
+    ev.type_args = Some(args.clone());
+    ev
 }
 
 /// Whether `e` is the call of [`tasks_wait_stmt`].
@@ -1490,6 +1510,7 @@ impl Expr {
                 span: e.span,
                 generated: e.generated,
                 task: e.task,
+                fails_as: e.fails_as.as_ref().map(|t| t.substitute(mapping)),
             }),
             Expr::StructInit(e) => {
                 let mut new_name = e.name.clone();

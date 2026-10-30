@@ -414,6 +414,8 @@ enum TasksExitKind {
     Return,
     Break,
     Continue,
+    /// The join of a task that failed leaves the block. The code after the block goes on.
+    Leave,
 }
 
 /// A `tasks` block with a `return`, `break` or `continue` that leaves it. Such an exit writes
@@ -428,6 +430,8 @@ struct TasksExits {
     code: Register,
     /// The slot for the value of a `return` in a function that returns one.
     ret: Option<Val>,
+    /// The slot for the value of a block that can fail, with its type `Result<U, E>`.
+    value: Option<(Register, Type)>,
     /// Each exit, in the order of their numbers, from 1.
     exits: Vec<TasksExitKind>,
 }
@@ -454,6 +458,8 @@ struct Lowerer<'r> {
     loop_stack: Vec<(u32, u32)>,
     /// The open `tasks` blocks that a `return`, `break` or `continue` leaves, innermost last.
     tasks_exits: Vec<TasksExits>,
+    /// For the next `lower_region`: a slot that the region's last value is stored into.
+    region_tail_slot: Option<Register>,
     /// Tensor-type side table `GID -> (element, shape)`, recorded as tensor-typed values are emitted.
     /// Tensor GIDs are content hashes, so codegen recovers a tensor's memref shape from here rather
     /// than by inverting the GID (which is impossible). Committed onto the worker.
@@ -581,6 +587,7 @@ impl<'r> Lowerer<'r> {
             next_block: 1,
             loop_stack: Vec::new(),
             tasks_exits: Vec::new(),
+            region_tail_slot: None,
             tensor_types: Vec::new(),
             strings: Vec::new(),
             ast_types: HashMap::new(),
@@ -3542,16 +3549,28 @@ impl<'r> Lowerer<'r> {
                 false,
             );
         }
-        if want_value {
-            return Err(Decline::Unsupported {
-                what: "a tasks block with a value and a return, break or continue inside",
-            });
-        }
+        // The value of a block that can fail is in a slot: its last value, or the failure of a
+        // join that leaves it.
+        let value = match (&u.fails_as, &u.ret) {
+            (Some(ty), Some(_)) => {
+                let lty = self.lower_ty_synth(ty).ok_or(Decline::TypeNotModelled {
+                    what: "the type of a tasks block that can fail",
+                })?;
+                Some((ty.clone(), lty))
+            }
+            _ if want_value => {
+                return Err(Decline::Unsupported {
+                    what: "a tasks block with a value and a return, break or continue inside",
+                })
+            }
+            _ => None,
+        };
         if !self.memory {
             return Err(Decline::NeedsMemoryMode {
                 construct: "a return, break or continue inside a tasks block",
             });
         }
+        let value = value.map(|(ty, lty)| (self.emit_alloca(lty.clone()).reg, ty, lty));
         let code = self.emit_alloca(LoweredTy::Scalar(ElementType::I32));
         let zero = self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0);
         self.emit_effect(Opcode::Store, code.reg, zero.reg, 0);
@@ -3566,8 +3585,10 @@ impl<'r> Lowerer<'r> {
             loops: self.loop_stack.len(),
             code: code.reg,
             ret: ret.clone(),
+            value: value.clone().map(|(slot, ty, _)| (slot, ty)),
             exits: Vec::new(),
         });
+        self.region_tail_slot = value.as_ref().map(|(slot, _, _)| *slot);
         let lowered = self.lower_region(
             id as u32 as u64,
             launch,
@@ -3618,11 +3639,50 @@ impl<'r> Lowerer<'r> {
                     });
                     self.emit_ret(v)?;
                 }
+                // The failure is in the value slot, and the code after the block reads it.
+                TasksExitKind::Leave => {
+                    self.emit_effect(Opcode::Br, Register(0), Register(0), next_b as u64)
+                }
                 loop_exit => self.lower_loop_exit(loop_exit)?,
             }
             self.emit_effect(Opcode::BlockStart, Register(0), Register(0), next_b as u64);
         }
-        Ok(None)
+        match value {
+            // A block whose last value is a construction gives a slot, as the construction does.
+            Some((slot, _, lty)) if want_value && construction_tail(u.ret.as_deref().unwrap()) => {
+                Ok(Some(Val { reg: slot, ty: lty }))
+            }
+            Some((slot, _, lty)) if want_value => Ok(Some(self.emit_typed(
+                Opcode::SlotLoad,
+                slot,
+                Register(0),
+                lty,
+                0,
+            ))),
+            _ => Ok(None),
+        }
+    }
+
+    /// The `Err` arm of the join of a task that failed: the block's value is `Err(value)`, and
+    /// the code leaves the block.
+    fn lower_tasks_leave(&mut self, value: &Expr, span: crate::syntax::Span) -> Lowered<()> {
+        assert!(
+            self.leaving_tasks(false),
+            "the checker leaves only a tasks block"
+        );
+        let (slot, ty) = self
+            .tasks_exits
+            .last()
+            .and_then(|t| t.value.clone())
+            .ok_or(Decline::Unsupported {
+                what: "a failed join in a tasks block whose value is not used",
+            })?;
+        let failure = Expr::EnumVariant(crate::syntax::failure_of(&ty, value.clone(), span));
+        let v = self.lower_expr(&failure)?;
+        let v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
+        self.emit_effect(Opcode::Store, slot, v.reg, 0);
+        self.emit_tasks_exit(TasksExitKind::Leave);
+        Ok(())
     }
 
     /// The `Spawn`/`SpawnEnd` region of `lower_spawn` and `lower_task_region`. `imm` is the
@@ -3636,6 +3696,7 @@ impl<'r> Lowerer<'r> {
         want_value: bool,
         offer_parallel: bool,
     ) -> Lowered<Option<Val>> {
+        let tail_slot = self.region_tail_slot.take();
         self.emit_effect(Opcode::Spawn, Register(0), Register(0), imm);
         if launch.across {
             self.emit_effect(Opcode::AcrossRegion, Register(0), Register(0), 0);
@@ -3731,6 +3792,17 @@ impl<'r> Lowerer<'r> {
             )));
         }
         match ret {
+            // The value of a block that can fail goes to its slot, as the value of a branch does.
+            Some(tail) if tail_slot.is_some() && !self.block_terminated() => {
+                let slot = tail_slot.expect("matched above");
+                let waiting = std::mem::take(&mut self.queued_drops);
+                let mut v = self.lower_expr(tail)?;
+                self.queued_drops.extend(waiting);
+                if construction_tail(tail) && matches!(v.ty, LoweredTy::Aggregate(_)) {
+                    v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
+                }
+                self.emit_effect(Opcode::Store, slot, v.reg, 0);
+            }
             Some(Expr::If(iff)) => self.lower_if(iff)?,
             Some(Expr::Match(m)) => self.lower_match(m)?,
             Some(Expr::SpawnOn(inner)) => {
@@ -6313,7 +6385,10 @@ impl<'r> Lowerer<'r> {
             },
             Statement::Loop(l) => self.lower_loop(&l.body),
             Statement::ForLoop(f) => self.lower_for(f),
-            Statement::Break(_) => self.lower_loop_exit(TasksExitKind::Break),
+            Statement::Break(b) => match &b.tasks_value {
+                Some(value) => self.lower_tasks_leave(value, b.span),
+                None => self.lower_loop_exit(TasksExitKind::Break),
+            },
             Statement::Continue(_) => self.lower_loop_exit(TasksExitKind::Continue),
             Statement::Drop(_) => unreachable!("lower_stmt lowers a drop"),
             other => {
