@@ -393,3 +393,46 @@ fn disabled_function_headers_preserve_layout_types_and_contracts() {
         result.text
     );
 }
+
+#[test]
+fn unknown_tokens_in_macro_definitions_do_not_disable_surrounding_formatting() {
+    let opaque = "macro_rules! make { (# $x:expr) => { %acc#0 = operation }; }\n";
+    let input = format!("{opaque}fn real(value: i32) -> i32 {{\nreturn value;\n}}\n");
+    let source = SourceFileView::parse(&input);
+    assert!(source
+        .tokens
+        .iter()
+        .any(|token| matches!(token.token.kind, crate::lexer::TokenType::Unknown('#'))));
+    let result = checked(&input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.text,
+        format!("{opaque}fn real(value: i32) -> i32 {{\n  return value;\n}}\n")
+    );
+    assert!(source.verify_preservation(&result.text).is_ok());
+}
+
+#[test]
+fn unknown_tokens_in_mlir_blocks_keep_their_bytes_and_columns() {
+    let opaque = "let result = mlir!(inputs: ()) {\n%acc#0 = operation\n};\n";
+    let input = format!("fn real(value: i32) -> i32 {{\n{opaque}return value;\n}}\n");
+    let result = checked(&input, 100);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.text,
+        format!("fn real(value: i32) -> i32 {{\n{opaque}  return value;\n}}\n")
+    );
+    assert_eq!(checked(&result.text, 100).text, result.text);
+}
+
+#[test]
+fn unknown_tokens_outside_macros_still_warn_and_preserve_the_file() {
+    let input = "fn real(value: i32) -> i32 {\nreturn value;\n}\n#\n";
+    let result = checked(input, 100);
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| warning.message.contains("Unrecognized lexer token")));
+    assert_eq!(result.text, input);
+    assert_eq!(result.check_status(input), 0);
+}

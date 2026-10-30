@@ -20,8 +20,10 @@ impl<'source> SourceFileView<'source> {
             .collect();
         self.find_macros(&significant);
         self.find_exclusions();
-        if self.tokens.iter().any(|token| {
-            matches!(token.token.kind, TokenType::Unknown(_)) && !self.is_excluded(&token.bytes)
+        if self.tokens.iter().enumerate().any(|(index, token)| {
+            matches!(token.token.kind, TokenType::Unknown(_))
+                && !self.is_excluded(&token.bytes)
+                && !self.is_opaque(TokenId(index))
         }) {
             self.warnings.push(CoverageWarning {
                 bytes: 0..self.text.len(),
