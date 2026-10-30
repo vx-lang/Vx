@@ -249,8 +249,13 @@ always take a message. A run is an infinite sequence of configurations, and a fa
 fair to each step of a node and to each delivery. `Interleave.lean` makes a CPU node: one memory,
 in which one thread moves at each step, and a read-modify-write is one step.
 `Cpu.Reach.execs` shows that the accesses of each finite run are an execution of the program, and
-that in it the accesses happen one at a time. `MachineExample.lean` runs message passing on a CPU
-node. A run that ends is fair, and a run in which no node moves is not fair.
+that in it the accesses happen one at a time. `InterleaveComplete.lean` proves the converse,
+`Cpu.complete`: each finite execution in which the accesses happen one at a time comes from a run.
+The run adds an event when each event before it is in the run. The read and the write of a
+read-modify-write go in together. `Cpu.complete_of_raceFree` adds DRF-SC: for a program with no
+data race, each finite execution that the model allows comes from a run. `MachineExample.lean`
+runs message passing on a CPU node. A run that ends is fair, and a run in which no node moves is
+not fair.
 
 The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
 `run_lean.py` checks that Lean and `vx.cat` agree on the 13 tests without scopes and barriers:
@@ -345,5 +350,8 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   the other can share places, but two tasks from two `spawn`s of one block cannot.
 - In both rules, one thread starts each task, and a task starts only tasks with larger ids.
 - A CPU node sends and takes no messages yet. A read of a place that no write wrote has no step.
-- The converse of `Cpu.Reach.execs` is not proved yet: that each execution with no reordering
-  comes from a run of the CPU node.
+- An execution can end between the read and the write of a read-modify-write, and a run of the
+  CPU node cannot. So in `Cpu.complete`, the run can lack the last read of a thread.
+- `Cpu.complete` needs code with no `rmwStore` in it (`Stmt.NoRmw`). Only a `fetchAdd` or a
+  `cas` makes one. Without the rule, `load` and then `rmwStore` give an execution that no run
+  makes.

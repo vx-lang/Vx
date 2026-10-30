@@ -35,4 +35,5 @@ import VxMemoryModel.TypedChan
 import VxMemoryModel.TypedChanExample
 import VxMemoryModel.Machine
 import VxMemoryModel.Interleave
+import VxMemoryModel.InterleaveComplete
 import VxMemoryModel.MachineExample
