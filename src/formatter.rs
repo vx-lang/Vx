@@ -91,6 +91,7 @@ mod tests {
             let config = FormatConfig {
                 indent,
                 fn_signature_width: width,
+                ..FormatConfig::default()
             };
             let output = format_file_with_config(input, &config);
             assert_eq!(output, expected, "width {width}, indent {indent}");
@@ -124,6 +125,7 @@ mod tests {
         let config = FormatConfig {
             indent: 2,
             fn_signature_width: exact_width,
+            ..FormatConfig::default()
         };
         assert_eq!(format_file_with_config(input, &config), input);
         let config = FormatConfig {
@@ -133,6 +135,51 @@ mod tests {
         assert_eq!(
             format_file_with_config(input, &config),
             "fn add(\n  first: i32,\n  second: i32\n) -> i32;"
+        );
+    }
+
+    #[test]
+    fn colon_spacing_applies_to_parameters_and_generic_bounds() {
+        let input = "fn identity<T  :Copy>(value:T, other: package::Value<T>) -> T {\n  value\n}";
+        for (space_before_colon, expected) in [
+            (
+                false,
+                "fn identity<T: Copy>(value: T, other: package::Value<T>) -> T {\n  value\n}",
+            ),
+            (
+                true,
+                "fn identity<T : Copy>(value : T, other : package::Value<T>) -> T {\n  value\n}",
+            ),
+        ] {
+            let config = FormatConfig {
+                space_before_colon,
+                ..FormatConfig::default()
+            };
+            let result = format_file_with_report(input, &config);
+            assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+            assert_eq!(
+                result.text, expected,
+                "space_before_colon = {space_before_colon}"
+            );
+            assert_eq!(format_file_with_config(&result.text, &config), result.text);
+        }
+    }
+
+    #[test]
+    fn spaces_before_colons_count_toward_signature_width() {
+        let input = "fn add(first: i32, second: i32) -> i32 {\n  first + second\n}";
+        let config = FormatConfig {
+            fn_signature_width: input.lines().next().unwrap().chars().count(),
+            ..FormatConfig::default()
+        };
+        assert_eq!(format_file_with_config(input, &config), input);
+        let config = FormatConfig {
+            space_before_colon: true,
+            ..config
+        };
+        assert_eq!(
+            format_file_with_config(input, &config),
+            "fn add(\n  first : i32,\n  second : i32\n) -> i32 {\n  first + second\n}"
         );
     }
 
@@ -148,6 +195,7 @@ mod tests {
             let narrow = FormatConfig {
                 indent: 2,
                 fn_signature_width: 10,
+                ..FormatConfig::default()
             };
             let wide = FormatConfig {
                 fn_signature_width: 100,

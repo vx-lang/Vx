@@ -415,6 +415,9 @@ fn compact(
             let insert_space = match constrained {
                 Some(GapConstraint::MustTouch) => false,
                 Some(GapConstraint::MustSeparate) => true,
+                Some(GapConstraint::Flexible) | None if matches!(kind, TokenType::Colon) => {
+                    context.config.space_before_colon
+                }
                 Some(GapConstraint::Flexible) | None => {
                     (spaced && !tight)
                         || (matches!(previous_kind, TokenType::Ampersand)

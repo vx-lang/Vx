@@ -36,6 +36,9 @@ pub struct FormatConfig {
         deserialize_with = "deserialize_signature_width"
     )]
     pub fn_signature_width: usize,
+    /// Add a space before single colons in function headers.
+    #[serde(default)]
+    pub space_before_colon: bool,
 }
 
 impl Default for FormatConfig {
@@ -43,6 +46,7 @@ impl Default for FormatConfig {
         Self {
             indent: 2,
             fn_signature_width: DEFAULT_FN_SIGNATURE_WIDTH,
+            space_before_colon: false,
         }
     }
 }
@@ -51,8 +55,8 @@ impl Default for FormatConfig {
 pub fn default_format_config_toml() -> String {
     let defaults = FormatConfig::default();
     format!(
-        "[format]\nindent = {}\nfn_signature_width = {}\n",
-        defaults.indent, defaults.fn_signature_width
+        "[format]\nindent = {}\nfn_signature_width = {}\nspace_before_colon = {}\n",
+        defaults.indent, defaults.fn_signature_width, defaults.space_before_colon
     )
 }
 
@@ -172,6 +176,7 @@ mod tests {
             .unwrap();
             assert_eq!(config.indent, indent);
             assert_eq!(config.fn_signature_width, 100);
+            assert!(!config.space_before_colon);
         }
     }
 
@@ -189,6 +194,8 @@ mod tests {
             "[format]\nindent = 2\nfn_signature_width = -1",
             "[format]\nindent = 2\nfn_signature_width = 'wide'",
             "[format]\nindent = 2\nfn_signature_width = 18446744073709551616",
+            "[format]\nindent = 2\nspace_before_colon = 'true'",
+            "[format]\nindent = 2\nspace_before_colon = 1",
             "[format]\nindent = 2\nindent = 4",
             "[format]\nindent = 2\nwidth = 80",
             "[format]\nindent = 2\n[lints]",
@@ -212,6 +219,18 @@ mod tests {
                 .unwrap(),
             FormatConfig::default()
         );
+    }
+
+    #[test]
+    fn reads_both_colon_spacing_styles() {
+        for enabled in [true, false] {
+            let config = parse_format_config(
+                Path::new(FORMAT_CONFIG_FILE),
+                &format!("[format]\nindent = 2\nspace_before_colon = {enabled}\n"),
+            )
+            .unwrap();
+            assert_eq!(config.space_before_colon, enabled);
+        }
     }
 
     #[test]

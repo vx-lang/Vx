@@ -9,6 +9,7 @@ Formatter configuration and rules remain independent from lint configuration and
 - [x] Read `vx-format.toml` and use defaults when automatic discovery finds no file.
 - [x] Discover configuration per input through its Git boundary.
 - [x] Support `indent`, `fn_signature_width`, `--indent`, and `--config`.
+- [x] Configure function-header colon spacing with `space_before_colon` and `--space-before-colon true|false`.
 - [x] Reject invalid configuration before writing any input.
 - [x] Print complete defaults through `--print-config default`.
 - [x] Implement non-writing `--check` and use it in CI.
@@ -112,3 +113,21 @@ Diff validation logs use the `build/vx-format-diff-` prefix.
 - [ ] Measure parser and layout costs before selecting more elaborate syntax representations.
 
 Markdown formatting remains unavailable because the project environment lacks `mdformat`.
+
+## Configurable colon spacing validation
+
+`space_before_colon` selects either `value: i32` or `value : i32` in function headers.
+The default remains `false`.
+The CLI accepts `--space-before-colon true|false` in write mode and check mode.
+The setting also covers generic bounds and contributes to signature width calculations.
+
+Validation logs use `build/vx-format-colon-`:
+
+- Configuration tests: 7 passed.
+- Formatter tests: 50 passed.
+- CLI tests: 15 passed.
+- Eight deliberate regressions failed at their intended assertions before code restoration.
+- The restored implementation passed the same tests and focused Clippy with warnings denied.
+
+The regressions covered both styles, width accounting, both CLI overrides, configuration loading, printed defaults, and print-mode conflicts.
+The configuration and CLI tests also retain coverage for older configuration files.

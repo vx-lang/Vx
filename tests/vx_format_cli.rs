@@ -30,7 +30,10 @@ fn prints_defaults_without_reading_project_config_or_changing_files() {
     assert!(output.status.success(), "{output:?}");
     assert!(output.stderr.is_empty(), "{output:?}");
     let text = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(text, "[format]\nindent = 2\nfn_signature_width = 100\n");
+    assert_eq!(
+        text,
+        "[format]\nindent = 2\nfn_signature_width = 100\nspace_before_colon = false\n"
+    );
     assert_eq!(
         vx_config::parse_format_config(Path::new("vx-format.toml"), &text).unwrap(),
         vx_config::FormatConfig::default()
@@ -50,6 +53,7 @@ fn rejects_unsupported_print_modes_and_conflicting_arguments() {
         vec!["--print-config"],
         vec!["--print-config", "unknown"],
         vec!["--print-config", "default", "--indent", "4"],
+        vec!["--print-config", "default", "--space-before-colon", "true"],
         vec!["--print-config", "default", "--config", "vx-format.toml"],
         vec!["--print-config", "default", "main.vx"],
         vec!["--print-config", "default", "--check"],
@@ -123,6 +127,52 @@ fn signature_width_controls_wrapping_and_check_mode() {
     );
     let output = formatter(&project, &["--check", "main.vx"]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
+}
+
+#[test]
+fn colon_spacing_configuration_and_cli_override_apply_in_both_modes() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = project(
+        directory.path(),
+        "project",
+        Some("[format]\nindent = 2\nspace_before_colon = true\n"),
+    );
+    let spaced = "fn value(x : i32) -> i32 {\n  x\n}\n";
+    let compact = "fn value(x: i32) -> i32 {\n  x\n}\n";
+    fs::write(project.join("main.vx"), compact).unwrap();
+    let output = formatter(&project, &["--check", "main.vx"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(project.join("main.vx")).unwrap(),
+        compact
+    );
+    let output = formatter(&project, &["main.vx"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), spaced);
+    let output = formatter(&project, &["--check", "main.vx"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+    let output = formatter(
+        &project,
+        &["--check", "--space-before-colon", "false", "main.vx"],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), spaced);
+    let output = formatter(&project, &["--space-before-colon", "false", "main.vx"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(project.join("main.vx")).unwrap(),
+        compact
+    );
+
+    fs::write(
+        project.join("vx-format.toml"),
+        "[format]\nindent = 2\nspace_before_colon = false\n",
+    )
+    .unwrap();
+    let output = formatter(&project, &["--space-before-colon", "true", "main.vx"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(fs::read_to_string(project.join("main.vx")).unwrap(), spaced);
 }
 
 #[test]

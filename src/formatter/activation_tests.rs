@@ -10,6 +10,7 @@ fn checked(input: &str, width: usize) -> FormatOutcome {
         &FormatConfig {
             indent: 2,
             fn_signature_width: width,
+            ..FormatConfig::default()
         },
     )
 }

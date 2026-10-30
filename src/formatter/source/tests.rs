@@ -203,6 +203,7 @@ fn hierarchical_formatting_keeps_type_normalization_and_header_width() {
     let config = FormatConfig {
         indent: 2,
         fn_signature_width: 40,
+        ..FormatConfig::default()
     };
     let result = format_declaration(&source, 0, &config, RenderState::new(shape(40)));
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
@@ -261,6 +262,7 @@ fn declaration_rendering_preserves_enclosing_impl_state() {
     let config = FormatConfig {
         indent: 2,
         fn_signature_width: 39,
+        ..FormatConfig::default()
     };
     let mut entry = RenderState::new(shape(39));
     entry

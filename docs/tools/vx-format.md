@@ -11,6 +11,7 @@ Create `vx-format.toml` in your project:
 [format]
 indent = 2
 fn_signature_width = 100
+space_before_colon = false
 ```
 
 `indent` sets the number of spaces per indentation level.
@@ -20,6 +21,14 @@ The formatter preserves its existing spacing and layout rules.
 `fn_signature_width` sets the preferred maximum width of a function declaration.
 It defaults to 100 when omitted and must be greater than zero.
 Existing configuration files containing only `indent` remain valid.
+
+`space_before_colon` controls single colons in formatted function headers, including parameters and generic bounds.
+It defaults to `false`, which produces `value: i32`.
+Set it to `true` for `value : i32` and `T : Copy`.
+Both styles use one space after the colon.
+Paths such as `module::Type` remain unchanged.
+This setting does not change colon spacing in function bodies or struct declarations.
+The added spaces count toward `fn_signature_width`.
 
 For each input, the formatter searches from the file's real parent directory upward.
 It uses the nearest `vx-format.toml` and does not merge ancestor files.
@@ -47,10 +56,11 @@ The command writes a complete TOML configuration to standard output:
 [format]
 indent = 2
 fn_signature_width = 100
+space_before_colon = false
 ```
 
 Save it with `vx-format --print-config default > vx-format.toml`.
-Print mode cannot be combined with input files, `--config`, `--indent`, or `--check`.
+Print mode cannot be combined with input files, `--config`, `--indent`, `--space-before-colon`, or `--check`.
 
 Use `--config FILE` to select one configuration file for all inputs.
 Relative configuration paths use the command's working directory.
@@ -58,10 +68,12 @@ An explicitly selected missing file causes an error.
 
 Use `--indent 4` to override indentation from a valid configuration or the built-in default.
 Overrides do not hide errors in an existing configuration file.
+Use `--space-before-colon true` or `--space-before-colon false` to override the configured colon style.
 
 ```sh
 vx-format --config path/to/vx-format.toml file.vx
 vx-format --indent 4 file.vx
+vx-format --space-before-colon true file.vx
 ```
 
 The formatter validates all configurations and reads all inputs before modifying any file.
