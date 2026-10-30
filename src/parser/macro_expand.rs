@@ -18,6 +18,9 @@ use crate::syntax::*;
 use crate::syntax::{Delimiter, Span};
 use std::collections::HashMap;
 
+/// The macros that `expand_macro_call` expands itself, with no `macro_rules!`.
+pub const BUILT_IN_MACROS: [&str; 6] = ["mlir", "vec", "print", "eprint", "println", "eprintln"];
+
 pub struct MacroExpander<'a> {
     pub macros: &'a HashMap<crate::symbol::Symbol, Vec<MacroRule>>,
     /// The trait methods that carry a default body, across every module. Held here because

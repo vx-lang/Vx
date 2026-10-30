@@ -1,5 +1,6 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
-// CHECK: Undefined function 'a'. Available monos: []
+// CHECK: Undefined function 'a'
+// CHECK-NOT: Available monos
 fn main() -> i32 {
   let a = 1;
   return a(2);

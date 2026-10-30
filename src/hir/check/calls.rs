@@ -1124,19 +1124,16 @@ impl<'a> TypeChecker<'a> {
                     }
                     Type::Unknown
                 } else {
-                    let mono_names: Vec<crate::symbol::Symbol> = self
-                        .mono
-                        .functions
-                        .iter()
-                        .map(|(f, _)| f.name.clone())
-                        .collect();
                     if !self.speculating {
+                        let name: &str = resolved_name.as_ref();
+                        let mut message = format!("Undefined function '{name}'");
+                        // A Rust writer often leaves out the `!` of a macro call.
+                        if crate::parser::macro_expand::BUILT_IN_MACROS.contains(&name) {
+                            message += &format!(". To call the macro `{name}`, write `{name}!`");
+                        }
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E2002,
-                            format!(
-                                "Undefined function '{}'. Available monos: {:?}",
-                                resolved_name, mono_names
-                            ),
+                            message,
                             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                         );
                     }
