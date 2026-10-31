@@ -1,6 +1,7 @@
 # Evaluation order and sequence points
 
-Status: proposal. Issues: #1800, #1795, #1847, #1848. Tracking: #1850, #1501.
+Status: proposal. Decided: E3, and what a result made through a raw pointer keeps (option 4).
+Issues: #1800, #1795, #1847, #1848. Tracking: #1850, #1501.
 
 This note specifies the order in which Vx evaluates expressions and statements, and the borrow
 check rules that follow from that order. Both code generators, the comptime interpreter and the
@@ -18,8 +19,10 @@ let p = P { y : note(5, 1), x : note(6, 2) };   // declaration or source order?
 ```
 
 The flat generator also falls back to the legacy one for a whole program that it cannot compile,
-so one program can get either order with no flag (#1848). The borrow checker assumes a third
-model: value before place (`src/hir/stmt.rs`).
+so one program can get either order with no flag (#1848). The legacy generator does not agree
+with itself either. It evaluates `v[i] = x` on a `Vec`, which is the call `v.set(i, x)`, place
+first, and `t[i] = x` on a tensor value first. The borrow checker checks the place first, but its
+comment says that the value comes first, as in Rust (`src/hir/stmt.rs`).
 
 The borrow checker needs the order too. Each of these programs compiles, and then reads memory that
 a `push` freed:
@@ -86,6 +89,10 @@ selects: `a && b`, `a || b`, `if`, `match`, `while` and `loop`.
 
 This is E1 applied to the place and then the value. It differs from Rust, where the value comes
 first. It agrees with the flat generator and the comptime interpreter today.
+
+Decided: the place first. The legacy generator changes for a tensor element and for `*e`. The
+borrow checker already checks the place first. It reserves the borrows that a call in the place
+makes until it has checked the value, as A2 says, so `*a.as_mut_slice() = f(&mut a)` is E4003.
 
 **E4. Compound assignment.** `place op= value` evaluates the operands of the place once, then reads
 the place, then evaluates the value, then applies the operator, then writes. `a[f()] += 1` calls
@@ -337,13 +344,23 @@ The rules can be checked in three layers, from the cheapest to the most expensiv
    - The test of evaluation order from the work list, on both generators and on the comptime
      interpreter.
 
-## The decision this needs
+## What a method result made through a raw pointer keeps
 
 `VecIter::next` has an `unsafe` block, so its return provenance is "any parameter". Under A6 its
 result then keeps `self` borrowed `&mut`. `Iterator::last` (`stdlib/core/iter/traits.vx`) uses
-the result of one `self.next()` at the next call, so it becomes E4004. This blocked the first
-attempt at #1795. In Rust the item has the vector's lifetime, not that of `&mut self`. Vx has no
-lifetimes. The options:
+the result of one `self.next()` at the next call, so it becomes E4004. So do `max`, `min` and the
+`_by` methods. This blocked the first attempt at #1795. In Rust the item has the vector's
+lifetime, not that of `&mut self`. Vx has no lifetimes.
+
+Programs A and B start with `let mut it = a.iter(); let x = it.next().unwrap();`.
+
+| Program | Rust | Option 1 | Option 2 | Options 3 and 4 |
+| --- | --- | --- | --- | --- |
+| A: `let y = it.next()`, then use `x` and `y` | valid | E4004 | valid | valid |
+| B: `a.push(..)`, then use `x` | refused | refused | reads freed memory | refused |
+| C: `let r = a.get_ref(0)`, `a.push(..)`, then use `r` | refused | refused | reads freed memory | refused |
+
+Main refuses A and C, and compiles B, which then reads freed memory. The options:
 
 1. **The result keeps the receiver and what it holds.** Sound, and one rule for every method.
    `Iterator::last`, and code that keeps an item while it asks for the next one, must change.
@@ -354,21 +371,37 @@ lifetimes. The options:
    where `self` points, not into `self`. Precise, but a language change. A fact about one
    signature should be safe under `docs/language_rules_for_a_parallel_compiler.md`, but it must be
    checked against it.
+1. **The summary follows the path of the reference.** `next` returns `&(*self.vec).data[i]`. The
+   path goes through `self.vec`, a field of type `&Vec<T>`, so the result points where that field
+   points. `x` then keeps the borrow of `a` that `it` holds, and not `it`. The rules:
+   - A path through a shared reference field keeps the borrows that the field holds.
+   - A path through a `&mut` field keeps the receiver, as option 1 does. Two calls could otherwise
+     give two `&mut` to one place.
+   - A path through a raw-pointer field stays with the struct that holds the field. So
+     `&self.data[i]` in `get_ref` keeps `a`.
+   - Any other reference made in `unsafe` code keeps every argument, as today.
 
-Option 2 is unsound. Option 1 can come first, and option 3 later, to accept more programs.
+Decided: option 4. Option 2 is unsound, and option 1 refuses program A and `v.iter().max()`.
+Option 4 needs no syntax. The summary comes from the syntax of each body before the checker
+checks any body, as today's summary does, so the checker still checks bodies in parallel. It must
+also cover methods and generic functions, which today's summary skips. The cost: the parallel
+compiler rules say that the compiler reads nothing about a return type from the body. Today's
+summary already breaks that rule, and option 4 makes the exception larger. A change to the body
+of `next` can change which callers compile.
 
 ## What changes
 
 | Rule | Today | Change |
 | --- | --- | --- |
 | E1 struct literal | flat: declaration order | flat: source order (#1848) |
-| E1 `println!` | both: output split by argument evaluation | both: arguments first |
-| E3 assignment | legacy: value first. Checker: models value first | legacy and checker: place first (#1848) |
+| E1 `println!` | both: output split by argument evaluation | both: arguments first (#2416) |
+| E3 assignment | legacy: value first for a tensor element and `*e` | legacy: place first (#1848) |
 | E4 compound assignment | both: the index runs twice | both: once (#1847) |
 | E6, A2 explicit `&mut` argument | E4004 | reserved, valid |
 | A3, A4 | ownership guessed after the call (`retain_present`) | owner in the record (#1800) |
 | A5 | receiver check skipped | checked (#1795) |
 | A6 | held borrows copied only from a reference receiver | from every receiver |
+| A6, return provenance | any parameter after `unsafe`. No summary for methods and generic functions | follows the path (option 4). Methods and generic functions too |
 | C1 `unroll across` | `docs/lang/semantics.md`: parallel instances with no order | index order. Instances overlap only where C3 proves it |
 | C4 | waits planned only before reads of a region's results | also before writes that conflict |
 | C5 | lanes between barriers: not measured. Block scope only | checked by C3. Subgroup and device scopes |
@@ -383,10 +416,12 @@ Option 2 is unsound. Option 1 can come first, and option 3 later, to accept more
 1. Add the owner to `BorrowRecord`, and rewrite the call checks against A2 to A4: one function for
    free functions, methods and static methods. Remove `retain_present`. This fixes #1800 and
    replaces #1845.
-1. Check a receiver that is a reference variable (A5). This fixes the receiver half of #1795.
-1. Make a result hold what the receiver holds (A6). This fixes the iterator program.
-1. Make a method's result keep the receiver as the decision above says. This fixes the rest of
-   #1795.
+1. Make the provenance summary follow the path of a returned reference (option 4), and summarize
+   methods and generic functions.
+1. Make a result hold what the receiver holds (A6). With the step before, this fixes the iterator
+   program and keeps `Iterator::last` valid.
+1. Check a receiver that is a reference variable (A5). This fixes #1795. It needs the two steps
+   before it: alone, it makes `Iterator::last` an error.
 
 Each step adds the programs in this note as tests, in the file for its own step.
 
