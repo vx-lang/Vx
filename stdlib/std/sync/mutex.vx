@@ -1,0 +1,95 @@
+//===- mutex.vx - Vx Standard Library -----------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `Mutex` lets one task at a time use a value that tasks share
+// (docs/discussions/waiting_tasks_channels_and_task_errors.md, M4 and M7).
+//
+// It is a ticket lock. A `lock` takes the next ticket from `next`, and waits until `serving`
+// holds that ticket. The drop of the guard adds 1 to `serving`. So the tasks get the lock in the
+// order of their `lock` calls, and none waits forever while others keep taking it.
+//
+// A wait blocks the OS thread of the task (`std::sync::wait`) on the word `serving`. Each access
+// to a word is a `SeqCst` atomic. So an unlock happens before the next lock (M4).
+//===----------------------------------------------------------------------===//
+import core::cell;
+import core::marker;
+import core::sync::atomic;
+import std::sync::wait;
+
+/// A value that one task at a time can use. Share it with `&` between tasks.
+struct Mutex<T> {
+  // The next ticket that a `lock` takes.
+  next : AtomicI64,
+  // The ticket that has the lock.
+  serving : AtomicI64,
+  // The threads that sleep on `serving`, so that an unlock with no sleeper costs no call.
+  sleepers : AtomicI64,
+  value : SharedCell<T>,
+}
+
+// Only the task that holds the lock reaches the value. So tasks can share a `Mutex` when its
+// value can move between tasks.
+unsafe impl<T : Send> Send for Mutex<T> {}
+unsafe impl<T : Send> Sync for Mutex<T> {}
+
+/// The lock on a `Mutex`. Its drop unlocks the `Mutex`.
+struct MutexGuard<T> {
+  serving : &AtomicI64,
+  sleepers : &AtomicI64,
+  value : *mut T,
+}
+
+impl<T>
+Mutex<T> {
+  /// A new `Mutex` that holds `v`.
+  fn new(v : T) -> Mutex<T> {
+    return Mutex<T> {
+      next : AtomicI64::new(0),
+      serving : AtomicI64::new(0),
+      sleepers : AtomicI64::new(0),
+      value : SharedCell<T>::new(v),
+    };
+  }
+
+  /// Wait until no other task holds the lock, and take it.
+  fn lock(self : &Mutex<T>) -> MutexGuard<T> {
+    let ticket = self.next.fetch_add(1, AtomicOrdering::SeqCst);
+    let mut now = self.serving.load(AtomicOrdering::SeqCst);
+    while now != ticket {
+      self.sleepers.fetch_add(1, AtomicOrdering::SeqCst);
+      wait_while(&self.serving, now);
+      self.sleepers.fetch_sub(1, AtomicOrdering::SeqCst);
+      now = self.serving.load(AtomicOrdering::SeqCst);
+    }
+    return MutexGuard<T> {
+      serving : &self.serving, sleepers : &self.sleepers, value : self.value.get()
+    };
+  }
+
+  /// The value, out of the `Mutex`.
+  fn into_inner(self : Mutex<T>) -> T {
+    return self.value.into_inner();
+  }
+}
+
+impl<T>
+MutexGuard<T> {
+  /// The value in the `Mutex`.
+  fn get(self : &mut MutexGuard<T>) -> &mut T {
+    let p = self.value;
+    return unsafe { &mut *p };
+  }
+}
+
+impl<T> Drop for MutexGuard<T> {
+  fn drop(self : &mut MutexGuard<T>) -> void {
+    self.serving.fetch_add(1, AtomicOrdering::SeqCst);
+    if self.sleepers.load(AtomicOrdering::SeqCst) > 0 {
+      wake_all(self.serving);
+    }
+  }
+}
