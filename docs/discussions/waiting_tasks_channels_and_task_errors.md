@@ -1,6 +1,6 @@
 # Tasks that wait, channels, and errors from tasks
 
-Status: agreed, except decisions 8 (`select`) and 9 (who owns a task's error, #1937). Issues:
+Status: agreed, except decision 9 (who owns a task's error, #1937). Issues:
 #1865, #1864, #1893. Tracking: #1870.
 Builds on `cpu_tasks_send_sync_and_shared_atomics.md` (T1 to T8, S1 to S6) and the memory model
 (C0 to C7).
@@ -181,7 +181,15 @@ So a sender to a dropped receiver does not wait forever, and the join at the end
 ends. In the example, a task whose receiver is gone fails, and so does the block (F1). That is the
 right result: no code reads the values.
 
-**M3. `select`.** `select` waits on several operations, and runs the arm of the first one that can
+**M3. `select`.** Decision 8 chose a library function, not the block expression below (#2384):
+`select(rs : &Vec<Receiver<T>>)` gives the first value from any channel in the list, with the index
+of its channel, or `Closed` when each channel is closed and empty. It waits on `recv` only, and the
+channels have one element type. A program that waits on channels of different types sends an enum
+of its own. A `select` sleeps on one word of the runtime, which each event on any channel changes.
+The rest of this section is the design of the block expression, which can still come later for
+`send` and `sleep` arms.
+
+The block expression waits on several operations, and runs the arm of the first one that can
 continue. It is a block expression, as `tasks` is, not a library type.
 
 <!-- vx-doctest: skip (proposed syntax) -->
@@ -549,9 +557,9 @@ We chose these on 2026-10-19, from the recommendations of a review.
 1. **How a task takes a local.** The use decides, and K2 moves a local that ends first, or a new
    `spawn move`. Chosen: K1 to K3, with no new syntax.
 1. **`select`.** A block expression (M3), or a library type. A library type needs written lifetimes
-   and dynamic dispatch, and Vx has neither. The spelling of an arm and the guard are part of this
-   decision. Open. The recommendation is the block expression, for the reason that made `tasks`
-   syntax.
+   and dynamic dispatch, and Vx has neither. Chosen on 2026-10-31: a library function over a list
+   of receivers of one type (#2384). It needs neither feature, because the list owns the
+   `Receiver`s and they all have one type. It has no `send`, `sleep` or `cancelled` arm yet.
 1. **Who owns a task's error (#1937).** `join()` returns `T` and leaves the block on a failure,
    and the block owns its first failure (F1, F3a). One other choice: `join()` gives a
    `Result<T, &E>`. The code can read it but not pass it up with `?`, so each join needs a `match`.
