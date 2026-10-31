@@ -1818,7 +1818,9 @@ impl<'a> TypeChecker<'a> {
             );
         }
 
-        let prev_constraints = self.consteval.constraints.clone();
+        // A function's proofs start from its own `requires`. A generic instance is checked from
+        // inside its caller, and the caller's facts are about the caller's variables.
+        let prev_constraints = std::mem::take(&mut self.consteval.constraints);
         self.check_atomic_contract(func);
         // An atomic clause is for the race proof, not for the prover.
         let proved: Vec<Expr> = func

@@ -14,9 +14,14 @@ use crate::syntax::*;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+/// The type of a name in a contract, when it is an integer, and whether its range is a fact.
+pub type IntTypeOf<'a> = &'a dyn Fn(&str) -> Option<(ElementType, bool)>;
+
 pub struct SmtProver {
     assertions: Vec<String>,
     declarations: std::collections::HashSet<String>,
+    /// The integer type of each declared name whose range is a fact.
+    ranges: std::collections::HashMap<String, ElementType>,
 }
 
 impl SmtProver {
@@ -25,6 +30,7 @@ impl SmtProver {
         Self {
             assertions: Vec::new(),
             declarations: std::collections::HashSet::new(),
+            ranges: std::collections::HashMap::new(),
         }
     }
 
@@ -35,6 +41,9 @@ impl SmtProver {
 
         for decl in &self.declarations {
             script.push_str(&format!("(declare-const {} Int)\n", decl));
+            if let Some((lo, hi)) = self.ranges.get(decl).and_then(int_range) {
+                script.push_str(&format!("(assert (<= {lo} {decl} {hi}))\n"));
+            }
         }
 
         for assertion in &self.assertions {
@@ -82,34 +91,56 @@ impl SmtProver {
         }
     }
 
-    pub fn add_constraint(&mut self, expr: &Expr) -> Result<(), String> {
-        let smt_expr = self.lower_expr(expr)?;
+    /// Add `expr` as a fact. `type_of` gives the integer type of a name, so that the prover knows
+    /// the width of an operation on it, and its range.
+    pub fn add_constraint(&mut self, expr: &Expr, type_of: IntTypeOf) -> Result<(), String> {
+        let smt_expr = self.lower_expr(expr, type_of, None)?;
         self.assertions.push(smt_expr);
         Ok(())
     }
 
-    fn lower_expr(&mut self, expr: &Expr) -> Result<String, String> {
+    /// `expected` is the integer type that the context gives `expr`: in a contract, which the
+    /// checker does not type, `return == p.x + p.y` adds at the width of `return`.
+    fn lower_expr(
+        &mut self,
+        expr: &Expr,
+        type_of: IntTypeOf,
+        expected: Option<ElementType>,
+    ) -> Result<String, String> {
         match expr {
             Expr::Number(n) => Ok(n.value.to_string()),
             Expr::Identifier(id) => {
                 let name = id.name.replace(".", "_");
                 self.declarations.insert(name.clone());
+                if let Some((ty, true)) = type_of(id.name.as_ref()) {
+                    self.ranges.insert(name.clone(), ty);
+                }
                 Ok(name)
             }
             Expr::BinaryOp(b) => {
-                let lhs = self.lower_expr(&b.lhs)?;
-                let rhs = self.lower_expr(&b.rhs)?;
+                let ty = b
+                    .operand_ty
+                    .clone()
+                    .or_else(|| int_type(expr, type_of))
+                    .or(expected);
+                let lhs = self.lower_expr(&b.lhs, type_of, ty.clone())?;
+                let rhs = self.lower_expr(&b.rhs, type_of, ty.clone())?;
                 let op = match b.op {
                     BinaryOp::Add => "+",
                     BinaryOp::Sub => "-",
                     BinaryOp::Mul => "*",
                     _ => return Err(format!("the `{:?}` operator", b.op)),
                 };
-                Ok(format!("({} {} {})", op, lhs, rhs))
+                wrap(format!("({} {} {})", op, lhs, rhs), ty)
             }
             Expr::RelationalOp(r) => {
-                let lhs = self.lower_expr(&r.lhs)?;
-                let rhs = self.lower_expr(&r.rhs)?;
+                let side = r
+                    .operand_ty
+                    .clone()
+                    .or_else(|| int_type(&r.lhs, type_of))
+                    .or_else(|| int_type(&r.rhs, type_of));
+                let lhs = self.lower_expr(&r.lhs, type_of, side.clone())?;
+                let rhs = self.lower_expr(&r.rhs, type_of, side)?;
                 let op = match r.op {
                     RelationalOp::Eq => "=",
                     RelationalOp::NotEq => "distinct",
@@ -121,8 +152,8 @@ impl SmtProver {
                 Ok(format!("({} {} {})", op, lhs, rhs))
             }
             Expr::LogicalOp(l) => {
-                let lhs = self.lower_expr(&l.lhs)?;
-                let rhs = self.lower_expr(&l.rhs)?;
+                let lhs = self.lower_expr(&l.lhs, type_of, None)?;
+                let rhs = self.lower_expr(&l.rhs, type_of, None)?;
                 let op = match l.op {
                     LogicalOp::And => "and",
                     LogicalOp::Or => "or",
@@ -130,25 +161,34 @@ impl SmtProver {
                 Ok(format!("({} {} {})", op, lhs, rhs))
             }
             Expr::UnaryOp(u) => {
-                let inner = self.lower_expr(&u.expr)?;
+                let inner_expected = (u.op == UnaryOp::Neg).then_some(expected.clone()).flatten();
+                let inner = self.lower_expr(&u.expr, type_of, inner_expected)?;
                 match u.op {
                     UnaryOp::Not => Ok(format!("(not {})", inner)),
-                    UnaryOp::Neg => Ok(format!("(- {})", inner)),
+                    // A negative literal such as `-1000` is a constant, not an operation.
+                    UnaryOp::Neg if matches!(*u.expr, Expr::Number(_)) => {
+                        Ok(format!("(- {inner})"))
+                    }
+                    UnaryOp::Neg => wrap(
+                        format!("(- {})", inner),
+                        int_type(&u.expr, type_of).or(expected),
+                    ),
                 }
             }
+            // A field or an element is a name of its own, `|p.x|` or `|a[0]|`. The `|` quotes it
+            // in SMT, so it cannot be the name of a variable: `p_x` was both.
             Expr::MemberAccess(m) => {
-                let base = self.lower_expr(&m.base)?;
-                let field = m.member.replace(".", "_");
-                let name = format!("{}_{}", base, field);
+                let base = self.lower_expr(&m.base, type_of, None)?;
+                let name = format!("|{}.{}|", base.replace('|', ""), m.member);
                 self.declarations.insert(name.clone());
                 Ok(name)
             }
             Expr::IndexAccess(i) => {
-                let base = self.lower_expr(&i.base)?;
-                let index = self.lower_expr(&i.index)?;
+                let base = self.lower_expr(&i.base, type_of, None)?;
+                let index = self.lower_expr(&i.index, type_of, None)?;
                 // For now, treat array indexing as a flattened variable (e.g. a_0).
                 // Full theory of arrays would require (select a 0).
-                let name = format!("{}_{}", base, index);
+                let name = format!("|{}[{}]|", base.replace('|', ""), index.replace('|', ""));
                 self.declarations.insert(name.clone());
                 Ok(name)
             }
@@ -190,6 +230,67 @@ impl SmtProver {
             }
             _ => Err(format!("a `{}` expression", kind_name(expr))),
         }
+    }
+}
+
+/// The integer type of `e`, from a typed literal, a name, or an operation's operand type.
+fn int_type(e: &Expr, type_of: IntTypeOf) -> Option<ElementType> {
+    match e {
+        Expr::Number(n) => n.ty.clone(),
+        Expr::Identifier(id) => type_of(id.name.as_ref()).map(|(ty, _)| ty),
+        Expr::BinaryOp(b) => b
+            .operand_ty
+            .clone()
+            .or_else(|| int_type(&b.lhs, type_of))
+            .or_else(|| int_type(&b.rhs, type_of)),
+        Expr::UnaryOp(u) => int_type(&u.expr, type_of),
+        _ => None,
+    }
+}
+
+/// `2^bits`, in decimal.
+fn pow2(bits: u32) -> String {
+    match bits {
+        0..=127 => (1u128 << bits).to_string(),
+        128 => "340282366920938463463374607431768211456".to_string(),
+        _ => panic!("no integer type is wider than 128 bits"),
+    }
+}
+
+/// The smallest and largest value of an integer type, as SMT terms. `usize` holds 0 to
+/// `i64::MAX`. `None` for a type that is not an integer.
+fn int_range(ty: &ElementType) -> Option<(String, String)> {
+    let bits = ty.int_bits().filter(|_| *ty != ElementType::Bool)?;
+    let max = |b: u32| {
+        let p = pow2(b);
+        format!("(- {p} 1)")
+    };
+    Some(match ty {
+        ElementType::USize => ("0".to_string(), max(63)),
+        t if t.is_signed_int() => (format!("(- {})", pow2(bits - 1)), max(bits - 1)),
+        _ => ("0".to_string(), max(bits)),
+    })
+}
+
+/// `exact`, an integer `+`, `-`, `*` or negation, with the result the machine gives. It wraps at
+/// the width of the type. A `usize` result is exact: an overflow there stops the program. A float
+/// stays as it is. `None` means the type is not known, and the prover cannot model the operation.
+fn wrap(exact: String, ty: Option<ElementType>) -> Result<String, String> {
+    let Some(ty) = ty else {
+        return Err("an operation whose integer type is not known".to_string());
+    };
+    if ty.is_float() || ty == ElementType::USize {
+        return Ok(exact);
+    }
+    let Some(bits) = ty.int_bits().filter(|_| ty != ElementType::Bool) else {
+        return Err(format!("an operation on `{ty:?}`"));
+    };
+    let m = pow2(bits);
+    if ty.is_signed_int() {
+        let h = pow2(bits - 1);
+        Ok(format!("(- (mod (+ {exact} {h}) {m}) {h})"))
+    } else {
+        Ok(format!("(mod {exact} {m})"))
     }
 }
 
