@@ -555,13 +555,11 @@ impl<'a> TypeChecker<'a> {
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         };
 
+        // A name that a branch declares with its own `let` is a different variable there.
         let mut branch_uses = std::collections::HashSet::new();
-        for s in if_expr
-            .then_block
-            .iter()
-            .chain(if_expr.else_block.iter().flatten())
-        {
-            Self::extract_uses_stmt(s, &mut branch_uses);
+        Self::extract_uses_block(&if_expr.then_block, None, &mut branch_uses);
+        if let Some(else_block) = &if_expr.else_block {
+            Self::extract_uses_block(else_block, None, &mut branch_uses);
         }
         let cond_ty =
             self.check_head_of_branches(branch_uses, |c| c.check_expr_type(&mut if_expr.cond));
@@ -1113,9 +1111,7 @@ impl<'a> TypeChecker<'a> {
                 let mut arm_uses = std::collections::HashSet::new();
                 for arm in arms.iter() {
                     let mut uses = std::collections::HashSet::new();
-                    for s in &arm.body {
-                        Self::extract_uses_stmt(s, &mut uses);
-                    }
+                    Self::extract_uses_block(&arm.body, None, &mut uses);
                     let mut bound = Vec::new();
                     pattern_names(&arm.pattern, &mut bound);
                     for name in &bound {
