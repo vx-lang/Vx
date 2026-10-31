@@ -1167,7 +1167,11 @@ impl CompilerDriver {
         // and space obligations resolve against THIS compilation's machine file, which
         // the library never saw. Reviewed and reproduced: an imported lowering that
         // fails every lowering check compiled clean before this loop.
-        for p in other_asts.values_mut() {
+        // The modules in the order of their paths, not the hash order of `other_asts`: the order of
+        // the checks is the order of the generic instances, and so of the generated functions.
+        let mut modules: Vec<&mut crate::syntax::Program> = other_asts.values_mut().collect();
+        modules.sort_by(|a, b| a.module_path.cmp(&b.module_path));
+        for p in modules.iter_mut() {
             for t in &mut p.transfer_impls {
                 checker.seam.lowering_edge = Some((
                     t.from.clone(),
@@ -1180,7 +1184,7 @@ impl CompilerDriver {
                 checker.seam.lowering_edge = None;
             }
         }
-        for p in other_asts.values() {
+        for p in &modules {
             checker.check_transfer_impl_bodies(&p.transfer_impls);
         }
 
@@ -1198,7 +1202,7 @@ impl CompilerDriver {
             String,
             (String, Vec<crate::diagnostic::Diagnostic>),
         > = std::collections::BTreeMap::new();
-        for p in other_asts.values_mut() {
+        for p in modules.iter_mut() {
             for f in &mut p.functions {
                 if f.generics.is_empty() {
                     let before = checker.errors.len();
