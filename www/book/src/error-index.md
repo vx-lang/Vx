@@ -18,7 +18,7 @@ the test suite has one, a program that triggers it.
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3060` (59 codes)
-- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4014` (14 codes)
+- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4015` (15 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6035` (35 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
@@ -176,6 +176,7 @@ Raised by the borrow checker and the linear-type rules. These rule out use-after
 | [`E4012`](/errors/E4012/) | A call to the `drop` method of a `Drop` impl by hand: `x.drop()`. `drop` runs when the value is dropped, so calling it as well would run it twice. Write `drop(x)`, from `core::mem`, to drop a value early. |
 | [`E4013`](/errors/E4013/) | A field moved out of a value that must keep it: `let x = p.a` where `p`'s type implements `Drop`, whose `drop` needs every field, or `let x = make().a`, where the value has no name and drops all its fields at the end of the statement. Borrow the field (`&p.a`), clone it, or bind the value to a variable first. |
 | [`E4014`](/errors/E4014/) | A task that can still run when a variable that it uses ends or changes. A task in a loop that the same pass does not join runs at the same time as the next pass, so it must not write a variable from outside the loop, or read one that the loop writes. A task must not use a variable that ends before its `tasks` block, such as one of the loop body. Join the task in the same block: `let h = spawn { .. };` and then `h.join();`. A `return`, `break` or `continue` that leaves two `tasks` blocks waits only for the tasks of the inner one, so it cannot drop a value from outside the inner block yet. |
+| [`E4015`](/errors/E4015/) | A `spawn` region that moves a value from the code around it: `let x = t;` or `f(t)` with a parameter that takes `t` by value, where `t` is declared before the region. The region only borrows what it uses, and the function drops `t` after the region. Borrow it (`&t`), or clone it (`t.clone()`). |
 
 ## Safety Errors
 
@@ -257,4 +258,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-168 diagnostics.
+169 diagnostics.

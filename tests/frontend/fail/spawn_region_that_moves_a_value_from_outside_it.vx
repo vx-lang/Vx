@@ -1,0 +1,93 @@
+//===- spawn_region_that_moves_a_value_from_outside_it.vx --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn` region only borrows the values that it uses from the code around it. The function
+// drops them after the region. So the region must not give such a value a new owner: a
+// variable, a struct field, or a parameter that takes it by value. That owner would drop it
+// too.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("dropped {}", self.id);
+  }
+}
+
+struct Holder {
+  t : Tensor<f32, [4]>,
+}
+
+fn sink(t : Tensor<f32, [4]>) -> i32 {
+  return 1;
+}
+
+fn look(t : &Tensor<f32, [4]>) -> i32 {
+  return 1;
+}
+
+// CHECK: Error[E4015] at {{.*}}.vx:[[@LINE+4]]:14: this `spawn` region moves 't', which belongs to the code around the region
+fn into_a_variable() -> i32 {
+  let t = Tensor<f32, [4]>::fill(1.0);
+  spawn on(Topology::Current) {
+    let _x = t;
+  }
+  return 0;
+}
+
+// CHECK: Error[E4015] at {{.*}}.vx:[[@LINE+4]]:19: this `spawn` region moves 't'
+fn into_a_parameter() -> i32 {
+  let t = Tensor<f32, [4]>::fill(1.0);
+  spawn on(Topology::Current) {
+    let _n = sink(t);
+  }
+  return 0;
+}
+
+// CHECK: Error[E4015] at {{.*}}.vx:[[@LINE+5]]:10: this `spawn` region moves 't'
+fn into_a_struct_field() -> i32 {
+  let t = Tensor<f32, [4]>::fill(1.0);
+  spawn on(Topology::Current) {
+    let _h = Holder {
+      t: t
+    };
+  }
+  return 0;
+}
+
+// CHECK: Error[E4015] at {{.*}}.vx:[[@LINE+6]]:14: this `spawn` region moves 'n'
+fn a_value_with_a_drop() -> i32 {
+  let n = Noisy {
+    id: 1
+  };
+  spawn on(Topology::Current) {
+    let _m = n;
+  }
+  return 0;
+}
+
+// A borrow, a clone, and a value made in the region are fine.
+// CHECK-NOT: E4015
+fn borrows_and_clones() -> i32 {
+  let t = Tensor<f32, [4]>::fill(1.0);
+  spawn on(Topology::Current) {
+    let _r = &t;
+    let _n = look(&t);
+    let _c = t.clone();
+    let u = Tensor<f32, [4]>::fill(2.0);
+    let _v = u;
+  }
+  return 0;
+}
+
+fn main() -> i32 {
+  return into_a_variable() + into_a_parameter() + into_a_struct_field() + a_value_with_a_drop() + borrows_and_clones();
+}

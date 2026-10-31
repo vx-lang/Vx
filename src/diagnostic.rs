@@ -482,6 +482,11 @@ pub enum DiagnosticCode {
     /// or `continue` that leaves two `tasks` blocks waits only for the tasks of the inner one, so
     /// it cannot drop a value from outside the inner block yet.
     E4014,
+    /// A `spawn` region that moves a value from the code around it: `let x = t;` or `f(t)`
+    /// with a parameter that takes `t` by value, where `t` is declared before the region. The
+    /// region only borrows what it uses, and the function drops `t` after the region. Borrow it
+    /// (`&t`), or clone it (`t.clone()`).
+    E4015,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block. `Tensor<..>::uninit()` is one: its elements

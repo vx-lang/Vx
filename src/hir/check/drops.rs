@@ -982,6 +982,50 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// E4015 when `value` names an owner from outside a `spawn` region, or a field of one, and
+    /// the place it goes to owns it: a variable, a struct field or a parameter that takes it by
+    /// value. That owner would drop it in the region, and the function after the region.
+    pub(crate) fn check_spawn_capture_moved(&mut self, value: &Expr) {
+        if self.speculating {
+            return;
+        }
+        let Some((name, _)) = Self::extract_base_and_path(value) else {
+            return;
+        };
+        if !matches!(value, Expr::Identifier(_) | Expr::MemberAccess(_))
+            || !self.drops_owner_outside_spawn(&name)
+        {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E4015,
+            format!(
+                "this `spawn` region moves '{name}', which belongs to the code around the \
+                 region. The function drops '{name}' after the region, so it would be dropped \
+                 twice. Borrow it (`&{name}`), or clone it (`{name}.clone()`)"
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(&value.span())),
+        );
+    }
+
+    /// Whether `name` is an owner from outside a `spawn` region that the code is in.
+    fn drops_owner_outside_spawn(&self, name: &str) -> bool {
+        let mut crossed = false;
+        for f in self.borrow.drops.frames.iter().rev() {
+            match f {
+                FrameKind::Function { .. } => return false,
+                FrameKind::Spawn => crossed = true,
+                FrameKind::Loop | FrameKind::Tasks => {}
+                FrameKind::Block { owners, .. } => {
+                    if owners.iter().any(|o| o.name == name) {
+                        return crossed;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// `obj.as_ptr()`: the owner behind `obj` now waits for the end of its block.
     pub(crate) fn drops_note_raw_pointer(&mut self, obj: &Expr) {
         let Some((root, _)) = Self::extract_base_and_path(obj) else {

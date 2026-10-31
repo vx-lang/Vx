@@ -180,7 +180,7 @@ fn distributed_matmul(a: Tensor<f32, [?, ?]>, b: Tensor<f32, [?, ?]>) -> Tensor<
     let local_a = transfer(a, Memory::NPU_HBM);
     let local_b = transfer(b, Memory::NPU_HBM);
     spawn on(Topology::NPU[0]) {
-        let result = local_a; 
+        let result = &local_a; 
         // In a real kernel, we would have explicit NPU intrinsics here.
         // For this test, we verify the spawn and transfer syntax parses.
     }

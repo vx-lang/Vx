@@ -567,6 +567,9 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.bind_view(name.as_ref(), *_is_mut, expr, &binding_ty, span);
+        if !self.borrow.views.contains_key(name.as_ref()) {
+            self.check_spawn_capture_moved(expr);
+        }
         if !self.speculating && !Self::views_foreign_memory(expr) {
             self.drops_note_owner(name.as_ref(), &binding_ty);
         }
