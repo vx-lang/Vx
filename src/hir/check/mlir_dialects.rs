@@ -80,7 +80,18 @@ fn line_op(line: &str) -> Option<(&str, &str)> {
         }
         rest = op.trim_start();
     }
-    let rest = rest.strip_prefix('"').unwrap_or(rest);
+    // A quoted name starts an operation only in the generic form, `"math.ctpop"(%a)`. Any other
+    // string is an operand, such as the PTX of an inline `asm` on a line of its own.
+    let rest = match rest.strip_prefix('"') {
+        Some(quoted) => {
+            let (name, after) = quoted.split_once('"')?;
+            if !after.starts_with('(') {
+                return None;
+            }
+            name
+        }
+        None => rest,
+    };
     let (dialect, op) = rest.split_once('.')?;
     let is_name = |s: &str| {
         s.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
@@ -92,6 +103,10 @@ fn line_op(line: &str) -> Option<(&str, &str)> {
     let op_len = op
         .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
         .unwrap_or(op.len());
+    // A name followed by `,` or `=` is a key in a dictionary of attributes, `llvm.noalias,`.
+    if op[op_len..].trim_start().starts_with([',', '=']) {
+        return None;
+    }
     Some((&rest[..dialect.len() + 1 + op_len], dialect))
 }
 
@@ -160,6 +175,10 @@ mod tests {
         );
         assert_eq!(line_op("}"), None);
         assert_eq!(line_op("^bb0(%in: f32, %out: f32):"), None);
+        // An operand string on a line of its own, and keys in a dictionary of attributes.
+        assert_eq!(line_op("  \"mov.u32 $0, 7;\", \"=r\" : () -> i32"), None);
+        assert_eq!(line_op("llvm.noalias,"), None);
+        assert_eq!(line_op("llvm.align = 16 : i64}"), None);
         assert_eq!(line_op("// math.ctpop in a comment"), None);
         assert_eq!(line_op("iterator_types = [\"parallel\"]"), None);
     }
