@@ -13,9 +13,11 @@
 // - `moved_on`: `keep` takes `v`, so `keep` drops it, once;
 // - `early`: the `return` drops `v` before the function returns;
 // - `temporary`: a `match` on a call's result drops the payload too;
-// - `generic`: a generic function drops its `T`.
+// - `generic`: a generic function drops its `T`;
+// - `through_a_pointer`: a `match *p` on a raw pointer takes nothing, so `o` drops its value
+//   once, at its own end.
 //
-// EXPECT: s1 d1 a | d2 a | k d3 a | e d4 r4 | s5 d5 a | s6 d6 a | end
+// EXPECT: s1 d1 a | d2 a | k d3 a | e d4 r4 | s5 d5 a | s6 d6 a | s7 a | o d7 | end
 
 import core::option;
 
@@ -98,6 +100,25 @@ fn generic<T>(o : Option<T>) -> void {
   print!("a | ");
 }
 
+fn peek(p : *const Option<Noisy>) -> void {
+  unsafe {
+    match *p {
+      Option<Noisy>::Some(v) => {
+        print!("s{} ", v.id);
+      }
+      Option<Noisy>::None => {}
+    }
+  }
+  print!("a | ");
+}
+
+fn through_a_pointer() -> void {
+  let o = some(7);
+  let p = (&o) as *const Option<Noisy>;
+  peek(p);
+  print!("o ");
+}
+
 fn main() -> i32 {
   used(some(1));
   unused(some(2));
@@ -106,6 +127,8 @@ fn main() -> i32 {
   print!("r{} | ", r);
   temporary();
   generic(some(6));
+  through_a_pointer();
+  print!("| ");
   print!("end\n");
   return 0;
 }

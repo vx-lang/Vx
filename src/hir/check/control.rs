@@ -1149,7 +1149,9 @@ impl<'a> TypeChecker<'a> {
                         self.match_moves(match_expr);
                         self.push_scope();
                         self.bind_pattern_variables(&arm.pattern, &expr_ty);
-                        takes_value = true;
+                        // `match *p` takes nothing: through a reference the move is refused
+                        // (E4008), and through a raw pointer the value stays with its owner.
+                        takes_value = matches!(**match_expr, Expr::Identifier(_));
                     }
                     if takes_value && !self.speculating {
                         let mut bound = Vec::new();
