@@ -44,6 +44,8 @@ impl TypeChecker<'_> {
         // An impl binds every associated type its trait declares. Nothing downstream can catch
         // this: the binding is substituted into the signatures before name resolution runs.
         self.check_associated_type_bindings();
+        // An impl writes every method its trait gives no default body.
+        self.check_impls_write_required_methods();
         self.check_no_projections_in_fields();
         // `T : NoSuchTrait` on any declaration, called or not.
         self.check_bounds_name_a_trait();
