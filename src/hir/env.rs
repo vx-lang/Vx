@@ -134,6 +134,8 @@ pub struct GlobalAstEnv<'a> {
         HashMap<crate::symbol::Symbol, crate::hir::provenance::ReturnProvenance>,
     /// The same summary for each method, under [`crate::hir::provenance::method_key`].
     pub method_provenances: HashMap<String, crate::hir::provenance::ReturnProvenance>,
+    /// The struct and enum declarations that a summary reads.
+    pub decls: crate::hir::provenance::Decls<'a>,
     /// This compilation's transfer-cost graph: the built-in memory-space edges plus every declared
     /// topology's, with the all-pairs shortest-path matrix precomputed.
     ///
@@ -172,6 +174,7 @@ impl<'a> GlobalAstEnv<'a> {
             externs: Vec::new(),
             return_provenances: HashMap::new(),
             method_provenances: HashMap::new(),
+            decls: Default::default(),
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
             consts: HashMap::new(),
         };
@@ -296,24 +299,26 @@ impl<'a> GlobalAstEnv<'a> {
         }
         // Summarize the return provenance while the bodies are present. Signature-stripped
         // callers (production) refill the free functions via `annotate_return_provenances`.
-        let decls = crate::hir::provenance::Decls::new(
+        env.decls = crate::hir::provenance::Decls::new(
             env.structs.values().copied(),
             env.enums.values().copied(),
         );
+        let decls = &env.decls;
         let funcs: Vec<&Function> = env
             .syntax_functions
             .values()
             .copied()
             .chain(env.generic_functions.values().map(|(f, _)| *f))
             .collect();
-        env.return_provenances =
-            crate::hir::provenance::provenance_map(funcs.iter().copied(), &decls);
-        crate::hir::provenance::refine_through_calls(&funcs, &decls, &mut env.return_provenances);
-        env.method_provenances = crate::hir::provenance::method_provenance_map(
+        let mut functions = crate::hir::provenance::provenance_map(funcs.iter().copied(), decls);
+        crate::hir::provenance::refine_through_calls(&funcs, decls, &mut functions);
+        let methods = crate::hir::provenance::method_provenance_map(
             env.impls.values().flatten().copied(),
-            &decls,
-            &env.return_provenances,
+            decls,
+            &functions,
         );
+        env.return_provenances = functions;
+        env.method_provenances = methods;
         // Build the transfer-cost graph once, now that `topologies` is populated. It used to be
         // built inside `TypeChecker::new` -- that is, once per *function* -- where it ran the
         // all-pairs shortest-path precompute twice (once in `default()`, once in
@@ -350,21 +355,21 @@ impl<'a> GlobalAstEnv<'a> {
     /// precision. Idempotent — overwrites any existing entry. A function whose summary cannot be
     /// computed (no body) is left absent, i.e. conservative `AnyParam` at lookup.
     pub fn annotate_return_provenances(&mut self, modules: &[Program]) {
-        let decls = crate::hir::provenance::Decls::new(
-            self.structs.values().copied(),
-            self.enums.values().copied(),
-        );
         let funcs: Vec<&Function> = modules.iter().flat_map(|m| m.functions.iter()).collect();
         self.return_provenances
             .extend(crate::hir::provenance::provenance_map(
                 funcs.iter().copied(),
-                &decls,
+                &self.decls,
             ));
-        crate::hir::provenance::refine_through_calls(&funcs, &decls, &mut self.return_provenances);
+        crate::hir::provenance::refine_through_calls(
+            &funcs,
+            &self.decls,
+            &mut self.return_provenances,
+        );
         // A method that calls a free function reads the summaries just made.
         self.method_provenances = crate::hir::provenance::method_provenance_map(
             self.impls.values().flatten().copied(),
-            &decls,
+            &self.decls,
             &self.return_provenances,
         );
     }

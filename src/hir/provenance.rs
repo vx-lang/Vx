@@ -385,7 +385,7 @@ impl<'a> ProvWalk<'a> {
         Some((v, ty))
     }
 
-    /// `&x.f`, or `x.m()` with a method that may take `&mut self`, takes the address of `x`.
+    /// `&mut x.f`, or `x.m()` with a method that may take `&mut self`, lets a call change `x`.
     /// Through a reference variable it takes the address of what the variable points at.
     fn note_borrowed(&mut self, e: &Expr) {
         let Some(root) = root_var(e) else {
@@ -536,7 +536,10 @@ impl<'a> ProvWalk<'a> {
                 None => (Prov::ANY, None),
             },
             Expr::Borrow(b) => {
-                self.note_borrowed(&b.expr);
+                // A `&x` cannot change `x`.
+                if b.is_mut {
+                    self.note_borrowed(&b.expr);
+                }
                 match self.place(&b.expr) {
                     Some((place, ty)) => (
                         place.at,
@@ -649,11 +652,12 @@ impl<'a> ProvWalk<'a> {
                 let (v, _) = self.value(&m.expr);
                 // A name an arm binds is a part of the value, or a reference into it.
                 let part = v.join(v.deeper());
+                let mut value = Prov::NONE;
                 for arm in &m.arms {
                     self.bind(&arm.pattern, part);
-                    self.walk_block(&arm.body);
+                    value = value.join(self.walk_block(&arm.body));
                 }
-                (Prov::ANY, None)
+                (value, None)
             }
             // A `return` in a closure leaves the closure, so its body is not walked here.
             Expr::Closure(_) => (Prov::ANY, None),
@@ -685,7 +689,8 @@ impl<'a> ProvWalk<'a> {
     }
 
     fn call(&mut self, fc: &FunctionCallExpr) -> Prov {
-        let args: Vec<Prov> = fc.args.iter().map(|a| self.value(a).0).collect();
+        let typed: Vec<(Prov, Option<Type>)> = fc.args.iter().map(|a| self.value(a)).collect();
+        let args: Vec<Prov> = typed.iter().map(|(v, _)| *v).collect();
         let given = args.iter().fold(Prov::NONE, |acc, a| acc.join(*a));
         // `Option::Some(r)` makes a value that holds `r`.
         if self.decls.is_variant(fc.name.as_ref()) {
@@ -702,21 +707,30 @@ impl<'a> ProvWalk<'a> {
         if self.vars.contains_key(name) {
             return Prov::ANY;
         }
-        match (self.callee)(name) {
-            Some(ReturnProvenance::NotAReference) => Prov::NONE,
-            Some(ReturnProvenance::FromParams { into, held }) => (0..32)
-                .filter(|&i| has(into | held, i))
-                .map(|i| {
-                    let a = args.get(i).copied().unwrap_or(Prov::ANY);
-                    if has(held, i) {
-                        a.join(a.deeper())
-                    } else {
-                        a
+        let (into, held) = match (self.callee)(name) {
+            Some(ReturnProvenance::NotAReference) => return Prov::NONE,
+            Some(ReturnProvenance::FromParams { into, held }) => (into, held),
+            _ => return Prov::ANY,
+        };
+        let mut v = Prov::NONE;
+        for i in (0..32).filter(|&i| has(into | held, i)) {
+            let a = args.get(i).copied().unwrap_or(Prov::ANY);
+            if has(into, i) {
+                v = v.join(a);
+            }
+            if has(held, i) {
+                // What `&x` holds is what `x` holds, and a reference holds what it points at
+                // holds. Any other argument may be a reference or the value that holds one.
+                v = v.join(match (fc.args.get(i), &typed[i].1) {
+                    (Some(Expr::Borrow(b)), _) => {
+                        self.place(&b.expr).map_or(Prov::ANY, |(p, _)| p.holds)
                     }
-                })
-                .fold(Prov::NONE, Prov::join),
-            _ => Prov::ANY,
+                    (_, Some(ty)) if type_is_ref(ty) => a.deeper(),
+                    _ => a.join(a.deeper()),
+                });
+            }
         }
+        v
     }
 
     /// Walk the statements of a block and its last expression.
@@ -724,15 +738,15 @@ impl<'a> ProvWalk<'a> {
         let tail = self.walk_block(stmts);
         match ret {
             Some(e) => self.value(e).0,
-            None if stmts.is_empty() => Prov::NONE,
             None => tail,
         }
     }
 
     /// Walk a block. Its value is the value of its last statement, when that is an expression
-    /// with no `;`, and unknown otherwise.
+    /// with no `;`. A block with no such statement gives no value: a branch used as a value
+    /// either ends the function, as `return` or `panic` does, or does not type-check.
     fn walk_block(&mut self, stmts: &[Statement]) -> Prov {
-        let mut tail = Prov::ANY;
+        let mut tail = Prov::NONE;
         for (i, s) in stmts.iter().enumerate() {
             match s {
                 Statement::ExprStmt(e) if i + 1 == stmts.len() && !e.has_semi => {
@@ -1135,6 +1149,27 @@ mod tests {
         assert_eq!(summarize(src, "id"), from(0b1, 0b1));
     }
 
+    #[test]
+    fn a_match_whose_arms_return_or_stop_adds_no_value() {
+        // `Option::unwrap`: the `match` is the last statement, and no arm ends in a value.
+        let src = "enum Option<T> { Some(T), None } \
+                   fn unwrap(self : Option<&i32>) -> &i32 { \
+                     match self { Option::Some(v) => { return v; } Option::None => { stop(); } } }";
+        assert_eq!(summarize(src, "unwrap"), from(0, 0b1));
+    }
+
+    #[test]
+    fn a_shared_borrow_given_to_a_call_does_not_change_the_variable() {
+        let src = "enum Option<T> { Some(T), None } \
+                   fn keep(o : Option<&i32>, b : &i32) -> Option<&i32> { \
+                     let s = o; look(&s, b); return s; }";
+        assert_eq!(summarize(src, "keep"), from(0, 0b1));
+        let src = "enum Option<T> { Some(T), None } \
+                   fn keep(o : Option<&i32>, b : &i32) -> Option<&i32> { \
+                     let mut s = o; put(&mut s, b); return s; }";
+        assert_eq!(summarize(src, "keep"), ReturnProvenance::AnyParam);
+    }
+
     /// Every function in `src`, summarized with calls read through their callees.
     fn summarize_all(src: &str) -> HashMap<Symbol, ReturnProvenance> {
         let program = parse(src);
@@ -1166,6 +1201,20 @@ mod tests {
              fn one(m : &i32) -> &i32 { return m; }",
         );
         assert_eq!(map[&Symbol::from("three")], from(0b10, 0));
+    }
+
+    #[test]
+    fn what_an_argument_holds_follows_how_it_is_passed() {
+        let map = summarize_all(
+            "struct H { r : &i32 } \
+             fn get(h : &H) -> &i32 { return h.r; } \
+             fn through_a_reference(h : &H) -> &i32 { return get(h); } \
+             fn through_a_borrow(h : H) -> &i32 { return get(&h); }",
+        );
+        // `h` is a reference, so what `*h` holds is what the caller's argument holds.
+        assert_eq!(map[&Symbol::from("through_a_reference")], from(0, 0b1));
+        // `&h` borrows a parameter given by value, so the result holds what that parameter holds.
+        assert_eq!(map[&Symbol::from("through_a_borrow")], from(0, 0b1));
     }
 
     #[test]

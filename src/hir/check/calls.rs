@@ -1909,6 +1909,7 @@ impl<'a> TypeChecker<'a> {
                 self.seam.lowering_edge = saved_edge;
                 self.mono.being_checked.remove(&inst_name);
                 self.mono.static_method_instances.insert(inst_name.clone());
+                self.summarize_instance(&inst_func);
                 self.mono.functions.push((inst_func, 0));
             }
 
@@ -2224,6 +2225,7 @@ impl<'a> TypeChecker<'a> {
                 self.check_instance(generic_func, &mut inst_func);
                 self.seam.lowering_edge = saved_edge;
                 self.mono.being_checked.remove(&inst_name);
+                self.summarize_instance(&inst_func);
                 self.mono.functions.push((inst_func, origin_hash));
             }
             Some(inst_ret)
@@ -2825,6 +2827,18 @@ impl<'a> TypeChecker<'a> {
         found_method
     }
 
+    /// Summarize a checked instance. Its method calls are calls by name by now, so the summary
+    /// follows each one through the summary of the instance it calls.
+    fn summarize_instance(&mut self, inst: &Function) {
+        let prov = {
+            let instances = &self.mono.return_provenances;
+            let functions = &self.env.return_provenances;
+            let callee = |name: &str| instances.get(name).or_else(|| functions.get(name)).copied();
+            crate::hir::provenance::compute_return_provenance_with(inst, &self.env.decls, &callee)
+        };
+        self.mono.return_provenances.insert(inst.name.clone(), prov);
+    }
+
     /// Names a generic function's body by the function's name and where the body starts. Two
     /// generic methods can share a name, such as two types' `new`, but not a body.
     fn generic_body_key(template: &Function) -> String {
@@ -2900,6 +2914,7 @@ impl<'a> TypeChecker<'a> {
             self.current_assignment_target = saved_target;
             self.seam.lowering_edge = saved_edge;
             self.mono.being_checked.remove(&mangled_sym);
+            self.summarize_instance(&func_to_check);
             self.mono.functions.push((func_to_check, 0)); // 0 will fall back to caller_module_idx
         }
         Some((method_func, mangled_name))
@@ -3314,9 +3329,13 @@ impl<'a> TypeChecker<'a> {
                     );
                     // `w.peek()` passes `&w`, which the rewrite adds and checks only
                     // speculatively, so it is checked here, as a written `&w` argument would be.
+                    // Through a reference variable `p`, the place is `*p`, and its borrows are
+                    // recorded on `p`. A borrow written as the receiver, `(&mut v).push(x)`, was
+                    // checked as the receiver was.
                     let receiver_borrow = match generic_method.params.first() {
                         Some((_, Type::Borrow { is_mut, .. }))
-                            if !matches!(base_ty, Type::Borrow { .. } | Type::Pointer(..)) =>
+                            if !matches!(base_ty, Type::Pointer(..))
+                                && !matches!(**obj, Expr::Borrow(_)) =>
                         {
                             Self::arg_reborrow_base(obj).map(|(base, path)| (base, path, *is_mut))
                         }
@@ -3390,8 +3409,19 @@ impl<'a> TypeChecker<'a> {
                     let holds_ref =
                         !Self::is_ref_type(&ret_ty) && self.result_can_hold_reference(&ret_ty);
                     let returns_ref = matches!(ret_ty, Type::Borrow { .. }) || holds_ref;
+                    // The summary of the checked instance follows the calls in its body, which
+                    // the summary of the generic method cannot.
                     let summary = match &func_call {
-                        Expr::FunctionCall(_) => summary,
+                        Expr::FunctionCall(fc) => {
+                            match self.mono.return_provenances.get(&fc.name) {
+                                Some(p)
+                                    if *p != crate::hir::provenance::ReturnProvenance::AnyParam =>
+                                {
+                                    *p
+                                }
+                                _ => summary,
+                            }
+                        }
                         _ => crate::hir::provenance::ReturnProvenance::AnyParam,
                     };
                     let keeps_borrow = returns_ref && summary.includes(0);
