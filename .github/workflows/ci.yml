@@ -264,5 +264,11 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
+      # The C and C++ programs in tests/runtime/ get AddressSanitizer and UndefinedBehaviorSanitizer
+      # here. Our LLVM has no sanitizer runtimes, so they use GCC.
       - name: Run tests (debug)
+        env:
+          VX_TEST_SANITIZERS: 1
+          VX_TEST_CXX: g++
+          VX_TEST_CC: gcc
         run: cargo test --workspace --verbose
