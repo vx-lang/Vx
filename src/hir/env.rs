@@ -540,9 +540,6 @@ pub struct TypeChecker<'a> {
     /// their scope. Such a variable gets the literal's default type, and a type error on it
     /// says to write the type.
     pub(crate) literal_typed_lets: std::collections::HashMap<String, usize>,
-    /// The number literal being checked is the operand of a `-`. Its range is checked as a
-    /// negative value, where the `-` is checked: `-128` fits an `i8`, though `128` does not.
-    pub(crate) literal_is_negated: bool,
     /// The variables the current function changes: assigns, borrows `&mut`, or calls a
     /// `&mut self` method on.
     pub(crate) changed_vars: std::collections::HashSet<String>,
@@ -616,7 +613,6 @@ impl<'a> TypeChecker<'a> {
             declared_vars: Vec::new(),
             declared_mut_vars: Vec::new(),
             literal_typed_lets: std::collections::HashMap::new(),
-            literal_is_negated: false,
             changed_vars: std::collections::HashSet::new(),
             tasks: Default::default(),
             expected_type: None,
@@ -1935,6 +1931,7 @@ impl<'a> TypeChecker<'a> {
         self.consteval.comptime_depth = outer_comptime;
         self.drops_exit_function();
         Self::drop_spent_comptime_lambdas(&mut func.body);
+        self.check_integer_literals_fit(&func.body);
 
         self.seam.contracts = prev_contracts;
 

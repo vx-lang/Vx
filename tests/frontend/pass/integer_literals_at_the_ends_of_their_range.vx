@@ -8,10 +8,16 @@
 // RUN: vxc %s 2>&1 | FileCheck %s
 //
 // The smallest and largest value of each type fit it. `-128` is a `-` on the literal `128`,
-// which alone does not fit an `i8`, so the check reads the literal and its `-` together.
+// which alone does not fit an `i8`, so the check reads the literal and its `-` together. In
+// `let x : u8 = to_byte(300)`, the literal takes the type of the parameter, `i32`, not the
+// type of the `let`.
 
 fn takes_i8(v : i8) -> i8 {
   return v;
+}
+
+fn to_byte(v : i32) -> u8 {
+  return (v - 256) as u8;
 }
 
 fn main() -> i32 {
@@ -22,7 +28,8 @@ fn main() -> i32 {
   let e : i64 = -9223372036854775808;
   let f : u64 = 18446744073709551615;
   let g = -128i8;
-  // CHECK: -128 127 255 -2147483648 -9223372036854775808 18446744073709551615 -128 -128
-  println!("{} {} {} {} {} {} {} {}", a, b, c, d, e, f, g, takes_i8(-128));
+  let h : u8 = to_byte(300);
+  // CHECK: -128 127 255 -2147483648 -9223372036854775808 18446744073709551615 -128 -128 44
+  println!("{} {} {} {} {} {} {} {} {}", a, b, c, d, e, f, g, takes_i8(-128), h);
   return 0;
 }

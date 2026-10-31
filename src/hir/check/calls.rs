@@ -240,28 +240,18 @@ impl<'a> TypeChecker<'a> {
         param_ty: &Type,
         arg_ty: &Type,
     ) -> Type {
-        // `-5` is a `-` on the literal `5`: its value is negative when the `-`s are odd.
-        let mut negated = false;
-        let mut e: &Expr = arg;
-        while let Expr::UnaryOp(u) = e {
-            if u.op != UnaryOp::Neg {
-                break;
-            }
-            negated = !negated;
-            e = &u.expr;
-        }
-        let span = arg.span();
         if let Some(n) = crate::hir::expr::numeric_literal_mut(arg) {
             if let Some(elem) = expected_numeric_elem(param_ty, &n.value) {
                 n.ty = Some(elem.clone());
-                let text = if negated {
-                    format!("-{}", n.value)
-                } else {
-                    n.value.to_string()
-                };
-                // `-` on a `usize` is refused where the `-` is checked.
-                if !(negated && elem == ElementType::USize) {
-                    self.check_integer_literal_fits(&text, &elem, &span);
+                // `takes_usize(-5)`: the `-` was checked before the literal became a `usize`.
+                if let (Expr::UnaryOp(u), ElementType::USize) = (&*arg, &elem) {
+                    if u.op == UnaryOp::Neg && !self.speculating {
+                        self.errors.error_with_code(
+                            crate::diagnostic::DiagnosticCode::E3030,
+                            "`-` does not apply to a `usize`, which is never negative".to_string(),
+                            Some(crate::diagnostic::SourceSpan::from_ast_span(&u.span)),
+                        );
+                    }
                 }
                 return Type::Scalar(elem);
             }
