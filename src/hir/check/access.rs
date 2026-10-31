@@ -2069,8 +2069,8 @@ impl<'a> TypeChecker<'a> {
                             // the env, conservatively.
                             matches!(
                                 rp,
-                                crate::hir::provenance::ReturnProvenance::FromParams(bits)
-                                    if bits & 1 == 0
+                                crate::hir::provenance::ReturnProvenance::FromParams { into, held }
+                                    if (into | held) & 1 == 0
                             )
                         });
                 if skip_env {

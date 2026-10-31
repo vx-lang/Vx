@@ -274,6 +274,50 @@ impl BorrowCx {
         }
     }
 
+    /// `to` may point where anything that `from` reaches points: `to` holds every borrow that
+    /// `from` holds, and every borrow that a variable `from` borrows holds, and so on. After
+    /// `let x = it.next()`, `x` holds the borrow of the vector that `it` holds.
+    pub(crate) fn copy_borrows_through(&mut self, from: &str, to: &str, scope_depth: usize) {
+        let mut reached: Vec<String> = Vec::new();
+        let mut pending = vec![from.to_string()];
+        while let Some(var) = pending.pop() {
+            if var == to || reached.contains(&var) {
+                continue;
+            }
+            pending.extend(self.borrowed_by(&var).into_iter().map(|(base, _)| base));
+            reached.push(var);
+        }
+        let held_by_reached = |r: &BorrowRecord| {
+            r.borrower_name
+                .as_deref()
+                .is_some_and(|b| reached.iter().any(|v| v == b))
+        };
+        for records in self.active_borrows.values_mut() {
+            // Two variables `from` reaches can hold one borrow. `to` gets one copy of it.
+            let mut copies: Vec<BorrowRecord> = Vec::new();
+            for r in records.iter().filter(|r| held_by_reached(r)) {
+                let same = |c: &BorrowRecord| {
+                    c.borrower_name.as_deref() == Some(to)
+                        && c.is_mut == r.is_mut
+                        && c.path == r.path
+                };
+                if !records.iter().any(same) && !copies.iter().any(same) {
+                    copies.push(BorrowRecord {
+                        borrower_name: Some(to.to_string()),
+                        scope_depth,
+                        ..r.clone()
+                    });
+                }
+            }
+            records.extend(copies);
+        }
+        for borrowers in self.borrowers_ever.values_mut() {
+            if reached.iter().any(|v| borrowers.contains(v)) {
+                borrowers.insert(to.to_string());
+            }
+        }
+    }
+
     /// Every variable that has borrowed `base` in this function.
     pub(crate) fn borrowers_of(&self, base: &str) -> Vec<String> {
         self.borrowers_ever

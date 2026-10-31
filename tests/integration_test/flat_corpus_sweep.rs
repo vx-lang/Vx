@@ -18,6 +18,9 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
+    // `it.next().unwrap()` on a `VecIter<i64>`: the flat path declines `Option<&i64>::unwrap`
+    // ("a non-scalar default return").
+    "backend/pass/a_result_read_through_a_reference_field_points_where_the_field_points.vx",
     // A `match` through a reference to an enum, one of them with a payload: the flat path does
     // not lower a match over a borrowed enum or an enum that carries a payload.
     "backend/pass/match_on_a_reference_to_an_enum.vx",

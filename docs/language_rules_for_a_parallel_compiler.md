@@ -25,6 +25,12 @@ One global fact can still appear inside a body: a **new generic instantiation**.
 exception has its own machinery (deferred identity, in
 [`parallel_compiler_architecture.md`](parallel_compiler_architecture.md)).
 
+The compiler reads one fact about a return type from the body: **where a returned reference may
+point**, by parameter (`src/hir/provenance.rs`). Vx signatures have no lifetimes to say it. The
+compiler reads it from the syntax of every body before it checks any body, and freezes it with
+the rest, so it still checks bodies in parallel. The cost is that a change to a body can change
+which callers compile.
+
 ## What breaking them costs
 
 Rust shows the cost. rustc has worked on a parallel front end since 2018 (rust-lang/rust#48685,
