@@ -31,6 +31,34 @@ jobs:
         with:
           restore: 'false'
 
+  # build.rs compiles runtime/cuda_dispatch.cpp only on a machine with a CUDA toolkit, and the
+  # test jobs have none. So this job installs the toolkit and compiles the plugin. It needs no GPU.
+  cuda-plugin:
+    name: Compile the CUDA plugin
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # The packages of the CUDA job in release.yml, which says why cuda-nvcc is needed.
+      - name: Install the CUDA toolkit
+        run: |
+          set -euo pipefail
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            cuda-cudart-dev-12-6 libcublas-dev-12-6 cuda-driver-dev-12-6 cuda-nvcc-12-6
+          test -f /usr/local/cuda/include/cuda_runtime.h || sudo ln -sfn /usr/local/cuda-12.6 /usr/local/cuda
+
+      # The command of build.rs, with warnings as errors.
+      - name: Compile runtime/cuda_dispatch.cpp
+        run: |
+          clang++ -std=c++17 -O3 -Wall -Wextra -Werror -shared -fPIC runtime/cuda_dispatch.cpp \
+            -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lffi -lcudart -lcublas -ldl \
+            -o "$RUNNER_TEMP/libvx_cuda_dispatch.so"
+
   test:
     name: Run Tests
     needs: llvm
