@@ -1,0 +1,55 @@
+//===- prover_knows_integer_widths.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The prover knows the range of each integer type, and the value that wrapping gives:
+//
+// - `bounded`: an upper bound keeps `a + a` from overflowing, so it stays positive;
+// - `byte`: a `u8` is never negative;
+// - `top`: a `usize` is at most `i64::MAX`;
+// - `wraps_signed`, `wraps_unsigned`: `127i8 + 1` is -128, and `255u8 + 1` is 0.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E8001
+// CHECK: func.func @main
+
+fn bounded(a : i32) -> i32
+requires a > 0 && a < 1073741824
+ensures return > 0 {
+  return a + a;
+}
+
+fn byte(x : u8) -> u8
+ensures return >= 0 {
+  return x;
+}
+
+fn top(n : usize) -> usize
+ensures return <= 9223372036854775807 {
+  return n;
+}
+
+fn wraps_signed(x : i8) -> i8
+requires x == 127
+ensures return == -128 {
+  return x + 1;
+}
+
+fn wraps_unsigned(x : u8) -> u8
+requires x == 255
+ensures return == 0 {
+  return x + 1;
+}
+
+fn main() -> i32 {
+  let a = bounded(1);
+  let b = byte(2u8);
+  let c = top(3);
+  let d = wraps_signed(127i8);
+  let e = wraps_unsigned(255u8);
+  println!("{} {} {} {} {}", a, b, c, d, e);
+  return 0;
+}
