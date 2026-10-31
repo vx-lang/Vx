@@ -686,6 +686,10 @@ pub enum DiagnosticCode {
     E8008,
     /// A loop invariant that the prover cannot show to hold after a pass through the loop body
     E8009,
+    /// An `mlir!` block whose `dialects` list does not match its body: the body uses an
+    /// operation of a dialect that the list does not name, or the list names something that
+    /// is not a dialect. The list is what the block says it uses, so it must be right.
+    E8010,
 }
 
 impl std::fmt::Display for DiagnosticCode {

@@ -22,7 +22,7 @@ the test suite has one, a program that triggers it.
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6035` (35 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
-- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8009` (9 codes)
+- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8010` (10 codes)
 
 ## Warnings
 
@@ -254,7 +254,8 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | [`E8007`](/errors/E8007/) | An access clause that does not hold: an `atomic(t)` whose body uses `t` without an atomic operation, or a `writes_only()` whose body may write memory |
 | [`E8008`](/errors/E8008/) | A loop invariant that the prover cannot show to hold when the loop starts |
 | [`E8009`](/errors/E8009/) | A loop invariant that the prover cannot show to hold after a pass through the loop body |
+| [`E8010`](/errors/E8010/) | An `mlir!` block whose `dialects` list does not match its body: the body uses an operation of a dialect that the list does not name, or the list names something that is not a dialect. The list is what the block says it uses, so it must be right. |
 
 ______________________________________________________________________
 
-168 diagnostics.
+169 diagnostics.
