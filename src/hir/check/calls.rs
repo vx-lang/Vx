@@ -633,7 +633,11 @@ impl<'a> TypeChecker<'a> {
             // would resurrect borrows the arg loop legitimately NLL-released, firing
             // spurious conflicts later.
             let prev: &[BorrowRecord] = snap.as_deref().unwrap_or(&[]);
-            self.borrow.retain_present(base.as_str(), prev);
+            self.borrow.retain_present(
+                base.as_str(),
+                prev,
+                self.current_assignment_target.as_deref(),
+            );
         }
     }
 
@@ -806,8 +810,11 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.commit_reference_arg_reborrows(&reborrow_plan, &arg_types, span);
                 for (base, snap) in &lane_bases {
-                    self.borrow
-                        .retain_present(base, snap.as_deref().unwrap_or(&[]));
+                    self.borrow.retain_present(
+                        base,
+                        snap.as_deref().unwrap_or(&[]),
+                        self.current_assignment_target.as_deref(),
+                    );
                 }
                 if resolved_name == "print".into() && args.len() == 1 {
                     Self::prepare_print_operand(&mut args[0], &arg_types[0]);
@@ -3351,7 +3358,11 @@ impl<'a> TypeChecker<'a> {
                     if holds_no_reference && !self.speculating {
                         for (base, snap) in &borrowed_snapshots {
                             let prev: &[BorrowRecord] = snap.as_deref().unwrap_or(&[]);
-                            self.borrow.retain_present(base.as_str(), prev);
+                            self.borrow.retain_present(
+                                base.as_str(),
+                                prev,
+                                self.current_assignment_target.as_deref(),
+                            );
                         }
                     }
                     // A returned reference keeps the receiver borrowed while it is used.
