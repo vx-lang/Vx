@@ -82,17 +82,20 @@ selects: `a && b`, `a || b`, `if`, `match`, `while` and `loop`.
 
 **E3. Assignment.** `place = value` evaluates, in this order:
 
-1. the operands of the place, left to right: the base of a field, the base and index of `a[i]`,
-   the operand of `*e`.
+1. the code in the place, left to right: the index of `a[i]`, and a call that the place goes
+   through, such as `f()` in `*f() = v`.
 1. the value.
-1. the write. The program drops the old value after it computes the value, and before the write.
+1. the write. The program reads a variable that names the place here, at the write. It drops the
+   old value after it computes the value, and before the write.
 
 This is E1 applied to the place and then the value. It differs from Rust, where the value comes
 first. It agrees with the flat generator and the comptime interpreter today.
 
-Decided: the place first. The legacy generator changes for a tensor element and for `*e`. The
-borrow checker already checks the place first. It reserves the borrows that a call in the place
-makes until it has checked the value, as A2 says, so `*a.as_mut_slice() = f(&mut a)` is E4003.
+Decided: the place first. The legacy generator changes for a tensor element and for `*f()`. The
+program reads a variable in the place at the write, as Swift does. If the value gives `t` a new
+tensor, `t[1] = v` stores into the new one. Reading `t` first would store into freed memory. So
+the place of a write reserves only the borrows that a call in it makes. The borrow checker
+already does this: `*a.as_mut_slice() = f(&mut a)` is E4003, and `c.last = c.take()` is valid.
 
 **E4. Compound assignment.** `place op= value` evaluates the operands of the place once, then reads
 the place, then evaluates the value, then applies the operator, then writes. `a[f()] += 1` calls
@@ -129,7 +132,7 @@ both are reads or shared borrows.
 - A shared borrow `&x` starts when the program evaluates its operand.
 - A `&mut` that an operation needs is **reserved** when the program evaluates its operand, and **starts at
   the operation**. This covers the receiver of a `&mut self` method, a `&mut x` argument (E6),
-  and the place of a write. While the reservation lasts, the program may read the place, but may not
+  and a call in the place of a write (E3). While the reservation lasts, the program may read the place, but may not
   borrow it `&mut`, move it, or write to it.
 
 Unlike Rust, an explicit `&mut x` argument gets a reservation like an implied one. That follows from E6.
