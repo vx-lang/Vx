@@ -33,8 +33,7 @@ struct Env(*mut u8);
 unsafe impl Send for Env {}
 
 struct Task {
-    /// `None` when the task ended and was joined, or when no thread could start and the task
-    /// ran on the thread that started it.
+    /// `None` when the task ended and was joined.
     thread: Option<JoinHandle<()>>,
     env: *mut u8,
 }
@@ -82,16 +81,19 @@ pub unsafe extern "C" fn vx_task_start(
             run(task_env.0);
             lines::task_ended();
         });
-    // With no thread, the task runs here, to its end. T7 allows that run.
+    // A task that waits for a later task, on a channel or a lock, would wait forever if it ran
+    // here. So with no thread, the program stops (W6 in waiting_tasks_channels_and_task_errors.md).
     let thread = match started {
-        Ok(thread) => Some(thread),
-        Err(_) => {
-            run(env);
-            lines::task_ended();
-            None
+        Ok(thread) => thread,
+        Err(e) => {
+            eprintln!("vx: the system could not start a thread for a task: {e}");
+            std::process::abort();
         }
     };
-    group.tasks.push(Task { thread, env });
+    group.tasks.push(Task {
+        thread: Some(thread),
+        env,
+    });
     (group.tasks.len() - 1) as i64
 }
 
