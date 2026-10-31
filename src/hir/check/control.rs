@@ -531,6 +531,23 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Check the condition of an `if` or the value a `match` tests, with `branch_uses` still in
+    /// use: the branches run after it, so a borrow they use must not end while it is checked.
+    fn check_head_of_branches(
+        &mut self,
+        branch_uses: std::collections::HashSet<String>,
+        check: impl FnOnce(&mut Self) -> Type,
+    ) -> Type {
+        self.borrow.enter_block(crate::hir::borrow_cx::BlockUses {
+            last_use: branch_uses.into_iter().map(|n| (n.into(), 1)).collect(),
+            declared: Default::default(),
+            is_loop: false,
+        });
+        let ty = check(self);
+        self.borrow.exit_block();
+        ty
+    }
+
     pub(crate) fn check_if_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let unused = std::mem::replace(&mut self.value_unused, false);
         let if_expr = match expr {
@@ -538,7 +555,14 @@ impl<'a> TypeChecker<'a> {
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         };
 
-        let cond_ty = self.check_expr_type(&mut if_expr.cond);
+        // A name that a branch declares with its own `let` is a different variable there.
+        let mut branch_uses = std::collections::HashSet::new();
+        Self::extract_uses_block(&if_expr.then_block, None, &mut branch_uses);
+        if let Some(else_block) = &if_expr.else_block {
+            Self::extract_uses_block(else_block, None, &mut branch_uses);
+        }
+        let cond_ty =
+            self.check_head_of_branches(branch_uses, |c| c.check_expr_type(&mut if_expr.cond));
         if cond_ty != Type::Scalar(ElementType::Bool) {
             self.errors
                 .push("Condition in if expression must be of type bool (i1)".to_string());
@@ -1084,11 +1108,24 @@ impl<'a> TypeChecker<'a> {
                 // that binds a value which has to move moves it (below). Any other scrutinee
                 // is a value the match takes.
                 let place = matches!(**match_expr, Expr::Identifier(_) | Expr::Dereference(_));
-                let expr_ty = if place {
-                    self.check_expr_type_flag(match_expr, false)
-                } else {
-                    self.check_expr_type(match_expr)
-                };
+                let mut arm_uses = std::collections::HashSet::new();
+                for arm in arms.iter() {
+                    let mut uses = std::collections::HashSet::new();
+                    Self::extract_uses_block(&arm.body, None, &mut uses);
+                    let mut bound = Vec::new();
+                    pattern_names(&arm.pattern, &mut bound);
+                    for name in &bound {
+                        uses.remove(name.as_ref());
+                    }
+                    arm_uses.extend(uses);
+                }
+                let expr_ty = self.check_head_of_branches(arm_uses, |c| {
+                    if place {
+                        c.check_expr_type_flag(match_expr, false)
+                    } else {
+                        c.check_expr_type(match_expr)
+                    }
+                });
                 // A `match` on a reference moves nothing. Its names are parts of a value that
                 // someone else owns, and so are the names of a `match` on one of them.
                 let behind_ref = matches!(expr_ty, Type::Borrow { .. })
