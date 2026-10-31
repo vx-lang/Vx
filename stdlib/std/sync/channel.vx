@@ -1,0 +1,235 @@
+//===- channel.vx - Vx Standard Library ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A channel moves values from tasks that send to one task that receives
+// (docs/discussions/waiting_tasks_channels_and_task_errors.md, M1 and M2).
+//
+// `channel<T>(n)` makes a ring of `n` slots. Each slot has a number that says whose turn it is.
+// This is the layout of `formal/memory_model/lean/VxMemoryModel/Channel.lean`, with the two flags
+// of each value folded into the number of its slot:
+//
+// - A `send` takes the next send number `k`. It waits until slot `k % n` holds `2k` (the model's
+//   flag `taken k`), writes its value, and sets the number to `2k + 1` (the flag `full k`).
+// - A `recv` takes the next receive number `k`. It waits until the slot holds `2k + 1`, reads the
+//   value, and sets the number to `2(k + n)` (the flag `taken (k + n)`).
+//
+// An even number lets a `send` in, and an odd one a `recv`. With `k + 1` for `full k`, as in
+// Vyukov's queue, `full k` and `taken (k + 1)` are the same number when `n` is 1.
+//
+// So a `send` waits only for the `recv` `n` places before it, and a `recv` only for its own
+// `send`. Each access to a word is a `SeqCst` atomic, as in the model.
+//
+// The words of a channel are one array of `AtomicI64`: the counters below, and then the number of
+// each slot. A wait blocks the OS thread of the task (`std::sync::wait`). All waits of a channel
+// sleep on the word `WAKE`. Each change that can end a wait adds 1 to it and wakes the sleepers.
+//===----------------------------------------------------------------------===//
+import core::marker;
+import core::mem;
+import core::ptr;
+import core::clone;
+import core::option;
+import core::result;
+import core::sync::atomic;
+import std::alloc;
+import std::sync::wait;
+
+// The number of the next `send`.
+const SENDS : i64 = 0;
+// The number of the next `recv`.
+const RECVS : i64 = 1;
+// The `Sender`s that are not dropped. At 0 the channel is closed for good: a new `Sender` comes
+// only from another `Sender`.
+const SENDERS : i64 = 2;
+// 1 until the `Receiver` is dropped.
+const RECEIVER : i64 = 3;
+// The ends that are not dropped. The last one frees the channel.
+const ENDS : i64 = 4;
+// Changes at each event that can end a wait.
+const WAKE : i64 = 5;
+// The threads that sleep on `WAKE`, so that an event with no sleeper costs no call.
+const SLEEPERS : i64 = 6;
+// The number of slot 0. The other slots follow it.
+const SLOTS : i64 = 7;
+
+/// Why a `recv` gave no value.
+enum RecvError {
+  // Each `Sender` was dropped, and no value is left in the channel.
+  Closed,
+}
+
+/// A `send` to a channel whose `Receiver` was dropped. It gives the value back.
+struct SendError<T> {
+  value : T,
+}
+
+/// The end of a channel that sends. Clone it to send from many tasks.
+struct Sender<T> {
+  words : *mut AtomicI64,
+  data : *mut T,
+  cap : i64,
+}
+
+/// The end of a channel that receives. A channel has one.
+struct Receiver<T> {
+  words : *mut AtomicI64,
+  data : *mut T,
+  cap : i64,
+}
+
+// The ends move values of `T` between tasks, so they can move to another task when `T` can.
+// They are not `Sync`: two tasks do not share one end.
+unsafe impl<T : Send> Send for Sender<T> {}
+unsafe impl<T : Send> Send for Receiver<T> {}
+
+/// A channel with room for `n` values. `n` must be at least 1.
+fn channel<T : Send>(n : i64) -> (Sender<T>, Receiver<T>) {
+  assert(n >= 1, "channel: the room must be at least 1");
+  let words : *mut AtomicI64 = alloc((SLOTS + n) * 8, 8);
+  let data : *mut T = alloc(n * sizeof<T>(), 16);
+  if is_null_mut(words) || is_null_mut(data) {
+    panic("channel: out of memory");
+  }
+  for i in 0..SLOTS {
+    unsafe { words[i] = AtomicI64::new(0); }
+  }
+  unsafe {
+    words[SENDERS] = AtomicI64::new(1);
+    words[RECEIVER] = AtomicI64::new(1);
+    words[ENDS] = AtomicI64::new(2);
+  }
+  for i in 0..n {
+    unsafe { words[SLOTS + i] = AtomicI64::new(2 * i); }
+  }
+  return (Sender<T> {
+    words : words, data : data, cap : n
+  },
+  Receiver<T> {
+    words : words, data : data, cap : n
+  });
+}
+
+/// The word `i` of a channel.
+fn word(words : *mut AtomicI64, i : i64) -> &AtomicI64 {
+  return unsafe { &words[i] };
+}
+
+/// Wake the threads that wait on a channel. Call it after the change.
+fn notify(words : *mut AtomicI64) -> void {
+  word(words, WAKE).fetch_add(1, AtomicOrdering::SeqCst);
+  if word(words, SLEEPERS).load(AtomicOrdering::SeqCst) > 0 {
+    wake_all(word(words, WAKE));
+  }
+}
+
+/// Sleep until an event on the channel, unless one came after `seen` was read from `WAKE`.
+fn sleep(words : *mut AtomicI64, seen : i64) -> void {
+  word(words, SLEEPERS).fetch_add(1, AtomicOrdering::SeqCst);
+  wait_while(word(words, WAKE), seen);
+  word(words, SLEEPERS).fetch_sub(1, AtomicOrdering::SeqCst);
+}
+
+/// One end is dropped. The last one drops the values that no `recv` took, and frees the channel.
+fn release<T>(words : *mut AtomicI64, data : *mut T, cap : i64) -> void {
+  if word(words, ENDS).fetch_sub(1, AtomicOrdering::SeqCst) != 1 {
+    return;
+  }
+  let mut k = word(words, RECVS).load(AtomicOrdering::SeqCst);
+  let end = word(words, SENDS).load(AtomicOrdering::SeqCst);
+  while k < end {
+    if word(words, SLOTS + k % cap).load(AtomicOrdering::SeqCst) == 2 * k + 1 {
+      let value : T = unsafe { data[k % cap] };
+      drop(value);
+    }
+    k = k + 1;
+  }
+  let w : *mut i8 = words;
+  let d : *mut i8 = data;
+  dealloc(w, 8);
+  dealloc(d, 16);
+}
+
+impl<T>
+Sender<T> {
+  /// Send `v`. Wait while the channel is full. When the `Receiver` was dropped, give `v` back.
+  fn send(self : &Sender<T>, v : T) -> Result<void, SendError<T>> {
+    let words = self.words;
+    let k = word(words, SENDS).fetch_add(1, AtomicOrdering::SeqCst);
+    let slot = word(words, SLOTS + k % self.cap);
+    let mut seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
+    while word(words, RECEIVER).load(AtomicOrdering::SeqCst) == 1 {
+      if slot.load(AtomicOrdering::SeqCst) == 2 * k {
+        let data = self.data;
+        unsafe { data[k % self.cap] = v; }
+        slot.store(2 * k + 1, AtomicOrdering::SeqCst);
+        notify(words);
+        return Result<void, SendError<T>>::Ok();
+      }
+      sleep(words, seen);
+      seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
+    }
+    return Result<void, SendError<T>>::Err(SendError<T> {
+      value : v
+    });
+  }
+}
+
+impl<T>
+Receiver<T> {
+  /// The next value. Wait while the channel is empty. When each `Sender` was dropped and no value
+  /// is left, give `Closed`.
+  fn recv(self : &Receiver<T>) -> Result<T, RecvError> {
+    let words = self.words;
+    let k = word(words, RECVS).fetch_add(1, AtomicOrdering::SeqCst);
+    let slot = word(words, SLOTS + k % self.cap);
+    let mut seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
+    loop {
+      // Read `SENDERS` before the slot, as the model does. The `send` with the number `k` comes
+      // before the drop of its `Sender`, so a closed channel shows its value.
+      let closed = word(words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
+      if slot.load(AtomicOrdering::SeqCst) == 2 * k + 1 {
+        let data = self.data;
+        let value : T = unsafe { data[k % self.cap] };
+        slot.store(2 * (k + self.cap), AtomicOrdering::SeqCst);
+        notify(words);
+        return Result<T, RecvError>::Ok(value);
+      }
+      if closed {
+        break;
+      }
+      sleep(words, seen);
+      seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
+    }
+    return Result<T, RecvError>::Err(RecvError::Closed);
+  }
+}
+
+impl<T> Clone for Sender<T> {
+  fn clone(self : &Sender<T>) -> Sender<T> {
+    word(self.words, SENDERS).fetch_add(1, AtomicOrdering::SeqCst);
+    word(self.words, ENDS).fetch_add(1, AtomicOrdering::SeqCst);
+    return Sender<T> {
+      words : self.words, data : self.data, cap : self.cap
+    };
+  }
+}
+
+impl<T> Drop for Sender<T> {
+  fn drop(self : &mut Sender<T>) -> void {
+    if word(self.words, SENDERS).fetch_sub(1, AtomicOrdering::SeqCst) == 1 {
+      notify(self.words);
+    }
+    release<T>(self.words, self.data, self.cap);
+  }
+}
+
+impl<T> Drop for Receiver<T> {
+  fn drop(self : &mut Receiver<T>) -> void {
+    word(self.words, RECEIVER).store(0, AtomicOrdering::SeqCst);
+    notify(self.words);
+    release<T>(self.words, self.data, self.cap);
+  }
+}
