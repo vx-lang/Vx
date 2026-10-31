@@ -217,6 +217,11 @@ pub struct DriverOptions {
     #[arg(long = "disable-llvm-optimizations")]
     pub disable_llvm_optimizations: bool,
 
+    /// `--sanitize=thread`: build the program with LLVM's ThreadSanitizer, which reports each
+    /// data race when the program runs. Only when `vxc` runs the program (`run-jit`).
+    #[arg(long = "sanitize", value_name = "SANITIZER", value_parser = ["thread"])]
+    pub sanitize: Option<String>,
+
     /// `-fauto-schedule-levels`: an `across` loop on an arch that cannot launch its levels runs
     /// as a plain `for` that carries its level as metadata for MLIR and LLVM. The default,
     /// `-fno-auto-schedule-levels`, makes such a loop an error.
@@ -268,6 +273,11 @@ impl DriverOptions {
     /// Whether `-fweak-relaxed-atomics` is on.
     pub fn weak_relaxed_atomics(&self) -> bool {
         self.feature("weak-relaxed-atomics")
+    }
+
+    /// Whether `--sanitize=thread` is on.
+    pub fn thread_sanitizer(&self) -> bool {
+        self.sanitize.as_deref() == Some("thread")
     }
 }
 
@@ -341,6 +351,13 @@ impl CompilerDriver {
     pub fn execute(&self) -> Result<(), String> {
         if self.options.inputs.is_empty() {
             return Err("No input files provided".to_string());
+        }
+        if self.options.thread_sanitizer() && self.options.action != Action::RunJit {
+            return Err(
+                "--sanitize=thread works only when vxc runs the program. Remove --action, or \
+                 use --action run-jit"
+                    .to_string(),
+            );
         }
         if self.options.inputs.len() == 1 {
             return self.execute_one();
@@ -659,6 +676,7 @@ impl CompilerDriver {
                 self.options.program_args.clone(),
                 self.options.opt_level,
                 self.options.disable_llvm_optimizations,
+                self.options.thread_sanitizer(),
             )
             .map_err(|e| e.to_string())?;
             print_program_output(&out);
@@ -1662,6 +1680,7 @@ impl CompilerDriver {
                     self.options.program_args.clone(),
                     self.options.opt_level,
                     self.options.disable_llvm_optimizations,
+                    self.options.thread_sanitizer(),
                 )
                 .map_err(|e| e.to_string())?;
                 print_program_output(&out);
@@ -1710,6 +1729,7 @@ impl CompilerDriver {
                         temp_dir.path(),
                         self.options.opt_level,
                         self.options.disable_llvm_optimizations,
+                        false,
                     )?;
                     std::fs::copy(&obj, &output_path)
                         .map_err(|e| format!("could not write '{}': {e}", output_path.display()))?;
