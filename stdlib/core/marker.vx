@@ -66,6 +66,13 @@ trait Send {}
 /// write its value through `&`. An atomic holds a `SharedCell` and opts in with `unsafe impl`.
 trait Sync {}
 
+/// A type that holds no reference, at any depth of its fields. A value of it can outlive the
+/// locals of the task that made it, so a channel takes only such values.
+///
+/// The compiler derives it as it derives `Send`. A raw pointer is `Owned`: unsafe code answers for
+/// what it points at.
+trait Owned {}
+
 /// A type whose size is known at compile time, which every Vx type is. The bound exists to be
 /// written; nothing is excluded by it.
 trait Sized {}

@@ -7,7 +7,8 @@
 //===----------------------------------------------------------------------===//
 //
 // `Send` and `Sync`, derived from the fields of a type. The design is S1 to S4 in
-// docs/discussions/cpu_tasks_send_sync_and_shared_atomics.md.
+// docs/discussions/cpu_tasks_send_sync_and_shared_atomics.md. `Owned` is derived the same way,
+// for M5 in docs/discussions/waiting_tasks_channels_and_task_errors.md.
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,6 +22,8 @@ pub(crate) enum ThreadTrait {
     Send,
     /// Two tasks may use the value through `&T` at the same time.
     Sync,
+    /// The value holds no reference, so it can outlive the locals of the task that made it.
+    Owned,
 }
 
 impl ThreadTrait {
@@ -28,6 +31,7 @@ impl ThreadTrait {
         match name {
             "Send" => Some(Self::Send),
             "Sync" => Some(Self::Sync),
+            "Owned" => Some(Self::Owned),
             _ => None,
         }
     }
@@ -36,17 +40,19 @@ impl ThreadTrait {
         match self {
             Self::Send => "Send",
             Self::Sync => "Sync",
+            Self::Owned => "Owned",
         }
     }
 }
 
 impl<'a> TypeChecker<'a> {
-    /// Whether `ty` is `Send` or `Sync`.
+    /// Whether `ty` is `Send`, `Sync` or `Owned`.
     ///
-    /// A number, a `bool`, a tensor and a function are both. A raw pointer and a closure type are
-    /// neither. A struct or an enum is one when each of its fields is, unless an `unsafe impl`
-    /// says so for it. `SharedCell` is never `Sync`. A type parameter that is not known yet
-    /// counts as both, because a generic body is checked again with each concrete type.
+    /// A number, a `bool`, a tensor and a function are all three. A raw pointer is only `Owned`,
+    /// a reference is never `Owned`, and a closure type is none of them. A struct or an enum is
+    /// one when each of its fields is, unless an `unsafe impl` says so for it. `SharedCell` is
+    /// never `Sync`. A type parameter that is not known yet counts as all three, because a
+    /// generic body is checked again with each concrete type.
     pub(crate) fn has_thread_trait(&mut self, ty: &Type, which: ThreadTrait) -> bool {
         self.why_not_thread_trait(ty, which).is_none()
     }
@@ -74,6 +80,8 @@ impl<'a> TypeChecker<'a> {
             | Type::Const(_)
             | Type::Module(..)
             | Type::Unknown => None,
+            // Unsafe code answers for what a raw pointer points at.
+            Type::Pointer(..) if which == ThreadTrait::Owned => None,
             Type::Pointer(..) => Some(format!(
                 "'{ty}' is a raw pointer, which is not `{}`",
                 which.name()
@@ -81,6 +89,9 @@ impl<'a> TypeChecker<'a> {
             Type::Closure(..) => Some(format!(
                 "'{ty}' is a closure type, which does not say what the closure captures"
             )),
+            Type::Borrow { .. } | Type::Ref(..) if which == ThreadTrait::Owned => {
+                Some(format!("'{ty}' is a reference, which is not `Owned`"))
+            }
             // Two tasks that hold `&T` share the `T`, so `&T` needs `T : Sync` to move.
             Type::Borrow {
                 inner,
