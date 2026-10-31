@@ -56,6 +56,23 @@ pub unsafe extern "C" fn vx_wait_while(word: *const i64, value: i64) {
     }
 }
 
+/// As `vx_wait_while`, and also return when the block of this thread was cancelled. The cancel
+/// is read under the lock of the bucket, and a cancel takes each lock after it sets its mark. So
+/// a cancel cannot come between the check and the sleep.
+///
+/// # Safety
+///
+/// As for `vx_wait_while`.
+#[no_mangle]
+pub unsafe extern "C" fn vx_wait_while_or_cancel(word: *const i64, value: i64) {
+    let b = bucket(word);
+    let guard = b.lock.lock().unwrap_or_else(|e| e.into_inner());
+    let atomic = unsafe { &*(word as *const AtomicI64) };
+    if atomic.load(Ordering::SeqCst) == value && crate::ffi::tasks::vx_cancelled() == 0 {
+        drop(b.cond.wait(guard).unwrap_or_else(|e| e.into_inner()));
+    }
+}
+
 /// Wake each thread that waits on the word at `word`. Call it after the change to the word.
 ///
 /// # Safety
@@ -66,6 +83,15 @@ pub unsafe extern "C" fn vx_wake_all(word: *const i64) {
     let b = bucket(word);
     drop(b.lock.lock().unwrap_or_else(|e| e.into_inner()));
     b.cond.notify_all();
+}
+
+/// Wake each thread that waits on any word. A cancel uses it: each wait reads its word again,
+/// and a wait that can be cancelled then sees the cancel.
+pub(crate) fn wake_every_thread() {
+    for b in &TABLE {
+        drop(b.lock.lock().unwrap_or_else(|e| e.into_inner()));
+        b.cond.notify_all();
+    }
 }
 
 /// Two words for `select`, which waits on several channels at once. Each channel event adds 1 to

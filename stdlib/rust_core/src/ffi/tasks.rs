@@ -15,9 +15,17 @@
 // the end of the block, `vx_tasks_end` joins each task that is not joined yet, and frees each
 // `env`.
 //
+// Each block has a cancel mark (F3 to F7 in waiting_tasks_channels_and_task_errors.md). The
+// threads of its tasks, and the thread that runs the code of the block, see it as their current
+// mark. A block in a task has the mark of the task's block as its parent, so a cancel reaches it.
+// A wait that can be cancelled asks `vx_cancelled`, and a cancel wakes each sleeping thread.
+//
 //===----------------------------------------------------------------------===//
 
 use crate::io::lines;
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 /// The function that a task runs.
@@ -39,9 +47,35 @@ struct Task {
     env: *mut u8,
 }
 
+/// The cancel mark of a `tasks` block.
+struct CancelMark {
+    set: AtomicBool,
+    /// The mark of the block that the block is in, when it is in a task or in the code of a block.
+    parent: Option<Arc<CancelMark>>,
+}
+
+impl CancelMark {
+    fn is_set(&self) -> bool {
+        self.set.load(Ordering::SeqCst) || self.parent.as_ref().is_some_and(|p| p.is_set())
+    }
+
+    fn cancel(&self) {
+        self.set.store(true, Ordering::SeqCst);
+        crate::ffi::wait::wake_every_thread();
+    }
+}
+
+thread_local! {
+    /// The mark of the innermost block whose task or code this thread runs.
+    static CURRENT: RefCell<Option<Arc<CancelMark>>> = const { RefCell::new(None) };
+}
+
 /// The tasks of one `tasks` block.
 pub struct VxTaskGroup {
     tasks: Vec<Task>,
+    mark: Arc<CancelMark>,
+    /// The current mark of this thread before the block, which comes back at its end.
+    outer: Option<Arc<CancelMark>>,
 }
 
 fn wait(task: &mut Task) {
@@ -57,7 +91,32 @@ fn wait(task: &mut Task) {
 /// The start of a `tasks` block.
 #[no_mangle]
 pub extern "C" fn vx_tasks_begin() -> *mut VxTaskGroup {
-    Box::into_raw(Box::new(VxTaskGroup { tasks: Vec::new() }))
+    let outer = CURRENT.with(|c| c.borrow().clone());
+    let mark = Arc::new(CancelMark {
+        set: AtomicBool::new(false),
+        parent: outer.clone(),
+    });
+    CURRENT.with(|c| *c.borrow_mut() = Some(mark.clone()));
+    Box::into_raw(Box::new(VxTaskGroup {
+        tasks: Vec::new(),
+        mark,
+        outer,
+    }))
+}
+
+/// Whether the block of this thread's task or code, or a block around it, was cancelled. A wait
+/// that can be cancelled then gives `Cancelled`.
+#[no_mangle]
+pub extern "C" fn vx_cancelled() -> i32 {
+    CURRENT.with(|c| c.borrow().as_ref().is_some_and(|m| m.is_set())) as i32
+}
+
+/// A task or the code of a block failed: cancel its block (F3).
+#[no_mangle]
+pub extern "C" fn vx_task_failed() {
+    if let Some(mark) = CURRENT.with(|c| c.borrow().clone()) {
+        mark.cancel();
+    }
 }
 
 /// A `spawn`: starts `run(env)` on a new thread, and returns the task's number in `group`.
@@ -74,11 +133,13 @@ pub unsafe extern "C" fn vx_task_start(
 ) -> i64 {
     let group = &mut *group;
     let task_env = Env(env);
+    let mark = group.mark.clone();
     lines::task_started();
     let started = thread::Builder::new()
         .stack_size(TASK_STACK_BYTES)
         .spawn(move || {
             let task_env = task_env;
+            CURRENT.with(|c| *c.borrow_mut() = Some(mark));
             run(task_env.0);
             lines::task_ended();
         });
@@ -123,6 +184,8 @@ pub unsafe extern "C" fn vx_task_join(group: *mut VxTaskGroup, task: i64) {
 #[no_mangle]
 pub unsafe extern "C" fn vx_tasks_wait(group: *mut VxTaskGroup) {
     let group = &mut *group;
+    // Leaving the block early cancels its tasks, and then joins them (F7).
+    group.mark.cancel();
     for task in &mut group.tasks {
         wait(task);
     }
@@ -142,6 +205,8 @@ pub unsafe extern "C" fn vx_tasks_end(group: *mut VxTaskGroup) {
     for task in &group.tasks {
         libc::free(task.env as *mut libc::c_void);
     }
+    let outer = group.outer.take();
+    CURRENT.with(|c| *c.borrow_mut() = outer);
     lines::flush();
 }
 

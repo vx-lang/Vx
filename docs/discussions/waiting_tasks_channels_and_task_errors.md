@@ -369,7 +369,11 @@ could drop it, and the block would then have no first failure to return (#1937).
 look at the error of one task makes that task return its own enum, as data.
 
 **F4. Which waits can be cancelled.** `send`, `recv`, `sleep` and I/O can be cancelled. They
-return their error with a `Cancelled` case. A `select` runs its `cancelled` arm (M3). `join()`,
+return their error with a `Cancelled` case. A `send` can be cancelled only until it takes its place in the ring of
+the channel: a place that no value fills would stop the `recv` of that place and each later one.
+After that, it waits for room, or gives its value back when the `Receiver` is dropped. One case
+still hangs: the code of a block holds the `Receiver` and leaves the block while a `send` of its
+task has a place (#2417). A `select` runs its `cancelled` arm (M3). `join()`,
 `lock` and the waits for a device cannot be cancelled. A cancelled parent must join its children
 anyway (T3), so a cancelled `join` gives nothing. A wait for a device holds a token that must be
 used once (#244), and an error would lose it. A loop with no wait point does not see the cancel.

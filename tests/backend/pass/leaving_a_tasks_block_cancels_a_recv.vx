@@ -1,0 +1,62 @@
+//===- leaving_a_tasks_block_cancels_a_recv.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A task waits in `recv`, and the code of the block still holds the `Sender`. The code then
+// returns from the function. Leaving a `tasks` block cancels its tasks before it joins them, so
+// the `recv` gives `Cancelled` and the task ends. Without the cancel, the join would wait forever.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator runs each task to its end at its `spawn`. A task
+// that waits for a later task then waits forever.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}the recv gave Cancelled{{$}}
+// CHECK: {{^}}leave gave 7{{$}}
+
+import std::sync::channel;
+
+fn say(e : RecvError) -> void {
+  match e {
+    RecvError::Closed => {
+      println!("the recv gave Closed");
+    }
+    RecvError::Cancelled => {
+      println!("the recv gave Cancelled");
+    }
+  }
+}
+
+fn wait_for_one(rx : Receiver<i64>) -> void {
+  match rx.recv() {
+    Result<i64, RecvError>::Ok(v) => {
+      println!("the recv gave {}", v);
+    }
+    Result<i64, RecvError>::Err(e) => {
+      say(e);
+    }
+  }
+}
+
+fn leave(early : bool) -> i64 {
+  let (tx, rx) = channel<i64>(1);
+  tasks {
+    spawn {
+      wait_for_one(rx);
+    };
+    if early {
+      return 7;
+    }
+    drop(tx);
+  };
+  return 0;
+}
+
+fn main() -> i32 {
+  let v = leave(true);
+  println!("leave gave {}", v);
+  return 0;
+}

@@ -64,10 +64,12 @@ const SLEEPERS : i64 = 6;
 // The number of slot 0. The other slots follow it.
 const SLOTS : i64 = 7;
 
-/// Why a `recv` gave no value.
+/// Why a `recv` or a `select` gave no value.
 enum RecvError {
   // Each `Sender` was dropped, and no value is left in the channel.
   Closed,
+  // The `tasks` block of this task was cancelled.
+  Cancelled,
 }
 
 /// Why a `try_recv` gave no value.
@@ -84,9 +86,11 @@ struct Selected<T> {
   value : T,
 }
 
-/// A `send` to a channel whose `Receiver` was dropped. It gives the value back.
+/// A `send` that did not send. It gives the value back.
 struct SendError<T> {
   value : T,
+  // True when the `tasks` block of this task was cancelled. False when the `Receiver` was dropped.
+  cancelled : bool,
 }
 
 /// The end of a channel that sends. Clone it to send from many tasks.
@@ -153,10 +157,15 @@ fn notify(words : *mut AtomicI64) -> void {
   }
 }
 
-/// Sleep until an event on the channel, unless one came after `seen` was read from `WAKE`.
-fn sleep(words : *mut AtomicI64, seen : i64) -> void {
+/// Sleep until an event on the channel, unless one came after `seen` was read from `WAKE`. With
+/// `can_cancel`, a cancel of the `tasks` block also ends the sleep.
+fn sleep(words : *mut AtomicI64, seen : i64, can_cancel : bool) -> void {
   word(words, SLEEPERS).fetch_add(1, AtomicOrdering::SeqCst);
-  wait_while(word(words, WAKE), seen);
+  if can_cancel {
+    wait_while_or_cancel(word(words, WAKE), seen);
+  } else {
+    wait_while(word(words, WAKE), seen);
+  }
   word(words, SLEEPERS).fetch_sub(1, AtomicOrdering::SeqCst);
 }
 
@@ -182,8 +191,18 @@ fn release<T>(words : *mut AtomicI64, data : *mut T, cap : i64) -> void {
 
 impl<T>
 Sender<T> {
-  /// Send `v`. Wait while the channel is full. When the `Receiver` was dropped, give `v` back.
+  /// Send `v`. Wait while the channel is full. When the `Receiver` was dropped, or the `tasks`
+  /// block of this task was cancelled, give `v` back.
+  ///
+  /// A cancel stops a `send` only before it takes its place in the ring. A place that no value
+  /// fills would stop the `recv` of that place, and each later one. After it has a place, the
+  /// `send` waits for room, or gives `v` back when the `Receiver` is dropped.
   fn send(self : &Sender<T>, v : T) -> Result<void, SendError<T>> {
+    if cancelled() {
+      return Result<void, SendError<T>>::Err(SendError<T> {
+        value : v, cancelled : true
+      });
+    }
     let words = self.words;
     let k = word(words, SENDS).fetch_add(1, AtomicOrdering::SeqCst);
     let slot = word(words, SLOTS + k % self.cap);
@@ -196,11 +215,11 @@ Sender<T> {
         notify(words);
         return Result<void, SendError<T>>::Ok();
       }
-      sleep(words, seen);
+      sleep(words, seen, false);
       seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
     }
     return Result<void, SendError<T>>::Err(SendError<T> {
-      value : v
+      value : v, cancelled : false
     });
   }
 }
@@ -208,17 +227,26 @@ Sender<T> {
 impl<T>
 Receiver<T> {
   /// The next value. Wait while the channel is empty. When each `Sender` was dropped and no value
-  /// is left, give `Closed`.
+  /// is left, give `Closed`. When the `tasks` block of this task was cancelled, give `Cancelled`.
+  ///
+  /// A channel has one `Receiver`, so `recv` takes its receive number only when it takes a value.
+  /// A cancel can then stop it at any time and leave no place in the ring empty.
   fn recv(self : &Receiver<T>) -> Result<T, RecvError> {
     let words = self.words;
-    let k = word(words, RECVS).fetch_add(1, AtomicOrdering::SeqCst);
+    let k = word(words, RECVS).load(AtomicOrdering::SeqCst);
     let slot = word(words, SLOTS + k % self.cap);
     let mut seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
+    let mut why = RecvError::Closed;
     loop {
+      if cancelled() {
+        why = RecvError::Cancelled;
+        break;
+      }
       // Read `SENDERS` before the slot, as the model does. The `send` with the number `k` comes
       // before the drop of its `Sender`, so a closed channel shows its value.
       let closed = word(words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
       if slot.load(AtomicOrdering::SeqCst) == 2 * k + 1 {
+        word(words, RECVS).store(k + 1, AtomicOrdering::SeqCst);
         let data = self.data;
         let value : T = unsafe { data[k % self.cap] };
         slot.store(2 * (k + self.cap), AtomicOrdering::SeqCst);
@@ -228,10 +256,10 @@ Receiver<T> {
       if closed {
         break;
       }
-      sleep(words, seen);
+      sleep(words, seen, true);
       seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
     }
-    return Result<T, RecvError>::Err(RecvError::Closed);
+    return Result<T, RecvError>::Err(why);
   }
 
   /// The next value, if one is in the channel now. It does not wait. A channel has one
@@ -257,13 +285,19 @@ Receiver<T> {
 }
 
 /// The first value from any channel in `rs`. Wait while each open channel is empty. Give `Closed`
-/// when each channel is closed and empty. The search starts at a channel that changes with the
+/// when each channel is closed and empty, and `Cancelled` when the `tasks` block of this task was
+/// cancelled. The search starts at a channel that changes with the
 /// events, so a busy channel does not hide the others.
 fn select<T : Send + Owned>(rs : &Vec<Receiver<T>>) -> Result<Selected<T>, RecvError> {
   let any = unsafe { vx_any_channel_words() };
   let n = rs.len();
   let mut got = Option<Selected<T>>::None;
+  let mut why = RecvError::Closed;
   while n > 0 {
+    if cancelled() {
+      why = RecvError::Cancelled;
+      break;
+    }
     let seen = word(any, 0).load(AtomicOrdering::SeqCst);
     // The count of events changes between calls, so it moves the start of the search.
     let start = (seen % (n as i64)) as i32;
@@ -292,7 +326,7 @@ fn select<T : Send + Owned>(rs : &Vec<Receiver<T>>) -> Result<Selected<T>, RecvE
       break;
     }
     word(any, 1).fetch_add(1, AtomicOrdering::SeqCst);
-    wait_while(word(any, 0), seen);
+    wait_while_or_cancel(word(any, 0), seen);
     word(any, 1).fetch_sub(1, AtomicOrdering::SeqCst);
   }
   match got {
@@ -300,7 +334,7 @@ fn select<T : Send + Owned>(rs : &Vec<Receiver<T>>) -> Result<Selected<T>, RecvE
       return Result<Selected<T>, RecvError>::Ok(s);
     }
     Option<Selected<T>>::None => {
-      return Result<Selected<T>, RecvError>::Err(RecvError::Closed);
+      return Result<Selected<T>, RecvError>::Err(why);
     }
   }
 }
