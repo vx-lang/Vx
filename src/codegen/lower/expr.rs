@@ -5264,7 +5264,8 @@ fn lower_clone_call<'c>(
             sizes.push(block.append_operation(dim).result(0)?.into());
         }
     }
-    let dst_ty = Type::parse(gen.context, &format!("memref<{}x{elem}>", parts.join("x")))
+    let dims: String = parts.iter().map(|d| format!("{d}x")).collect();
+    let dst_ty = Type::parse(gen.context, &format!("memref<{dims}{elem}>"))
         .ok_or_else(|| format!("clone of a tensor with no memref type: {src_str}"))?;
     if let Some(slot) = nrvo_slot.filter(|s| s.r#type() == dst_ty) {
         let copy = OperationBuilder::new("memref.copy", gen.loc())
