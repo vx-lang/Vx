@@ -1139,14 +1139,22 @@ impl<'a> TypeChecker<'a> {
                     self.push_scope();
                     self.check_literal_pattern_range(&arm.pattern, &expr_ty);
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);
+                    let mut takes_value = !place;
                     if behind_ref {
                         self.mark_bound_behind_ref(&arm.pattern);
+                        takes_value = false;
                     } else if place && !self.speculating && self.pattern_moves(&arm.pattern) {
                         // Moved before the arm's own names exist, which may hide it.
                         self.pop_scope();
                         self.match_moves(match_expr);
                         self.push_scope();
                         self.bind_pattern_variables(&arm.pattern, &expr_ty);
+                        takes_value = true;
+                    }
+                    if takes_value && !self.speculating {
+                        let mut bound = Vec::new();
+                        pattern_names(&arm.pattern, &mut bound);
+                        self.drops_bind_arm(&bound);
                     }
 
                     let arm_ty = if !self.speculating {

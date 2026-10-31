@@ -1,0 +1,111 @@
+//===- a_name_a_match_arm_binds_is_dropped.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `match` that moves a payload out of an enum gives it to the name its arm binds, and the arm
+// drops it at its end. Each `drop` prints `d` and its number:
+//
+// - `used`: `v` is dropped at the end of the arm, before the `a` after the `match`;
+// - `unused`: a name the arm never reads is dropped too;
+// - `moved_on`: `keep` takes `v`, so `keep` drops it, once;
+// - `early`: the `return` drops `v` before the function returns;
+// - `temporary`: a `match` on a call's result drops the payload too;
+// - `generic`: a generic function drops its `T`.
+//
+// EXPECT: s1 d1 a | d2 a | k d3 a | e d4 r4 | s5 d5 a | s6 d6 a | end
+
+import core::option;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("d{} ", self.id);
+  }
+}
+
+fn some(id : i32) -> Option<Noisy> {
+  return Option<Noisy>::Some(Noisy {
+    id: id
+  });
+}
+
+fn used(o : Option<Noisy>) -> void {
+  match o {
+    Option<Noisy>::Some(v) => {
+      print!("s{} ", v.id);
+    }
+    Option<Noisy>::None => {}
+  }
+  print!("a | ");
+}
+
+fn unused(o : Option<Noisy>) -> void {
+  match o {
+    Option<Noisy>::Some(_v) => {}
+    Option<Noisy>::None => {}
+  }
+  print!("a | ");
+}
+
+fn keep(_n : Noisy) -> void {
+  print!("k ");
+}
+
+fn moved_on(o : Option<Noisy>) -> void {
+  match o {
+    Option<Noisy>::Some(v) => {
+      keep(v);
+    }
+    Option<Noisy>::None => {}
+  }
+  print!("a | ");
+}
+
+fn early(o : Option<Noisy>) -> i32 {
+  match o {
+    Option<Noisy>::Some(v) => {
+      print!("e ");
+      return v.id;
+    }
+    Option<Noisy>::None => {}
+  }
+  return 0;
+}
+
+fn temporary() -> void {
+  match some(5) {
+    Option<Noisy>::Some(v) => {
+      print!("s{} ", v.id);
+    }
+    Option<Noisy>::None => {}
+  }
+  print!("a | ");
+}
+
+fn generic<T>(o : Option<T>) -> void {
+  match o {
+    Option<T>::Some(_v) => {
+      print!("s6 ");
+    }
+    Option<T>::None => {}
+  }
+  print!("a | ");
+}
+
+fn main() -> i32 {
+  used(some(1));
+  unused(some(2));
+  moved_on(some(3));
+  let r = early(some(4));
+  print!("r{} | ", r);
+  temporary();
+  generic(some(6));
+  print!("end\n");
+  return 0;
+}
