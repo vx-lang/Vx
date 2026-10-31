@@ -357,7 +357,14 @@ impl<'a> TypeChecker<'a> {
                 }
                 ty
             }
-            Expr::IndexAccess(..) => self.check_indexaccess_expr(expr, consume),
+            Expr::IndexAccess(..) => {
+                // The type that the context expects is the element's. The base and the index
+                // have types of their own: in `let b : i8 = t[200]`, `200` is not an `i8`.
+                let expected = self.expected_type.take();
+                let ty = self.check_indexaccess_expr(expr, consume);
+                self.expected_type = expected;
+                ty
+            }
             Expr::MethodCall(..) => match self.check_task_join(expr, consume && !value_unused) {
                 Some(ty) => ty,
                 None => self.check_methodcall_expr(expr, consume),

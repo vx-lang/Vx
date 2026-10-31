@@ -10,7 +10,8 @@
 // The smallest and largest value of each type fit it. `-128` is a `-` on the literal `128`,
 // which alone does not fit an `i8`, so the check reads the literal and its `-` together. In
 // `let x : u8 = to_byte(300)`, the literal takes the type of the parameter, `i32`, not the
-// type of the `let`.
+// type of the `let`. The operand of `as` and an index keep their own types too: `255 as i8`
+// casts the `i32` 255, and is -1.
 
 fn takes_i8(v : i8) -> i8 {
   return v;
@@ -31,5 +32,12 @@ fn main() -> i32 {
   let h : u8 = to_byte(300);
   // CHECK: -128 127 255 -2147483648 -9223372036854775808 18446744073709551615 -128 -128 44
   println!("{} {} {} {} {} {} {} {} {}", a, b, c, d, e, f, g, takes_i8(-128), h);
+  let i : i8 = 255 as i8;
+  let j : i32 = 2147483648 as i32;
+  let k : i16 = 40000 as i16;
+  let t = Tensor<i8, [300]>::fill(3i8);
+  let m : i8 = t[200];
+  // CHECK: -1 -2147483648 -25536 3
+  println!("{} {} {} {}", i, j, k, m);
   return 0;
 }

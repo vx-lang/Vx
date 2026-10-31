@@ -274,9 +274,6 @@ impl<'a> TypeChecker<'a> {
     /// does not. A `usize` never has its top bit set, which is what lets its arithmetic be
     /// marked as never wrapping.
     pub(crate) fn check_integer_literals_fit(&mut self, body: &[Statement]) {
-        if self.speculating {
-            return;
-        }
         let mut found: Vec<(String, ElementType, Span)> = Vec::new();
         let mut negated: std::collections::HashSet<*const NumberExpr> = Default::default();
         crate::syntax::visit_exprs(body, &mut |e| match e {

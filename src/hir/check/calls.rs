@@ -242,10 +242,12 @@ impl<'a> TypeChecker<'a> {
     ) -> Type {
         if let Some(n) = crate::hir::expr::numeric_literal_mut(arg) {
             if let Some(elem) = expected_numeric_elem(param_ty, &n.value) {
+                let was_usize = n.ty == Some(ElementType::USize);
                 n.ty = Some(elem.clone());
                 // `takes_usize(-5)`: the `-` was checked before the literal became a `usize`.
+                // When it already was one, that check gave the error.
                 if let (Expr::UnaryOp(u), ElementType::USize) = (&*arg, &elem) {
-                    if u.op == UnaryOp::Neg && !self.speculating {
+                    if u.op == UnaryOp::Neg && !was_usize && !self.speculating {
                         self.errors.error_with_code(
                             crate::diagnostic::DiagnosticCode::E3030,
                             "`-` does not apply to a `usize`, which is never negative".to_string(),
