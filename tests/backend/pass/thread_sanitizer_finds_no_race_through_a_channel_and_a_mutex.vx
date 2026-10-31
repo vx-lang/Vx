@@ -1,0 +1,73 @@
+//===- thread_sanitizer_finds_no_race_through_a_channel_and_a_mutex.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two tasks receive numbers, each from a channel of its own, and add each one to a plain `i64` in a `Mutex`.
+// The channel slots and the `i64` are plain memory, so each hand-off between tasks must be
+// ordered by the atomics of the channel and the `Mutex`, or by the start and the join of a task.
+// ThreadSanitizer must see each of these, and report no race.
+//
+// REQUIRES: thread-sanitizer
+// REQUIRES: flat-codegen
+// Only because the older code generator runs each task to its end at its `spawn`. A task
+// that waits for a later task then waits forever.
+//
+// RUN: vxc --sanitize=thread %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
+// CHECK: {{^}}sum 500500{{$}}
+
+import std::sync::channel;
+import std::sync::mutex;
+
+fn add_all(rx : Receiver<i64>, total : &Mutex<i64>) -> void {
+  let mut open = true;
+  while open {
+    match rx.recv() {
+      Result<i64, RecvError>::Ok(v) => {
+        let mut g = total.lock();
+        let t = g.get();
+        *t = *t + v;
+      }
+      Result<i64, RecvError>::Err(_e) => {
+        open = false;
+      }
+    }
+  }
+}
+
+fn send_one(tx : &Sender<i64>, v : i64) -> void {
+  match tx.send(v) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(_e) => {
+      println!("a receiver ended early");
+    }
+  }
+}
+
+fn main() -> i32 {
+  let total = Mutex<i64>::new(0);
+  let (tx, rx) = channel<i64>(4);
+  let (tx2, rx2) = channel<i64>(4);
+  tasks {
+    spawn {
+      add_all(rx, &total);
+    };
+    spawn {
+      add_all(rx2, &total);
+    };
+    let first : i64 = 1;
+    for v in first..1001 {
+      if v % 2 == 0 {
+        send_one(&tx, v);
+      } else {
+        send_one(&tx2, v);
+      }
+    }
+    drop(tx);
+    drop(tx2);
+  };
+  println!("sum {}", total.into_inner());
+  return 0;
+}

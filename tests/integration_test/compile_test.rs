@@ -33,6 +33,29 @@ fn has_timeout() -> bool {
     })
 }
 
+/// Whether clang can link a program with ThreadSanitizer. Linux packages ship its runtime
+/// apart from clang, in `libclang-rt-<version>-dev`.
+fn has_thread_sanitizer() -> bool {
+    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HAS.get_or_init(|| {
+        let Ok(dir) = tempfile::tempdir() else {
+            return false;
+        };
+        let src = dir.path().join("t.c");
+        if fs::write(&src, "int main(void) { return 0; }\n").is_err() {
+            return false;
+        }
+        let clang = std::env::var("CLANG_PATH").unwrap_or_else(|_| "clang".to_string());
+        std::process::Command::new(clang)
+            .arg("-fsanitize=thread")
+            .arg(&src)
+            .arg("-o")
+            .arg(dir.path().join("t"))
+            .output()
+            .is_ok_and(|o| o.status.success())
+    })
+}
+
 /// `s` as one word for bash, in single quotes.
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -955,6 +978,9 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
     // only a macOS-registered plugin can produce is not a failure elsewhere, it is a test
     // that does not apply.
     if source.contains("// REQUIRES: macos") && !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    if source.contains("// REQUIRES: thread-sanitizer") && !has_thread_sanitizer() {
         return Ok(());
     }
 
