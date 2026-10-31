@@ -29,6 +29,7 @@ pub mod escape;
 pub mod imported_errors;
 pub mod lanes;
 pub mod literals;
+pub mod mlir_dialects;
 pub mod operators;
 pub mod parallel;
 pub mod projection;
