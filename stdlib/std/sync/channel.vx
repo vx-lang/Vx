@@ -86,7 +86,7 @@ unsafe impl<T : Send> Send for Sender<T> {}
 unsafe impl<T : Send> Send for Receiver<T> {}
 
 /// A channel with room for `n` values. `n` must be at least 1.
-fn channel<T : Send>(n : i64) -> (Sender<T>, Receiver<T>) {
+fn channel<T : Send + Owned>(n : i64) -> (Sender<T>, Receiver<T>) {
   assert(n >= 1, "channel: the room must be at least 1");
   let words : *mut AtomicI64 = alloc((SLOTS + n) * 8, 8);
   let data : *mut T = alloc(n * sizeof<T>(), 16);

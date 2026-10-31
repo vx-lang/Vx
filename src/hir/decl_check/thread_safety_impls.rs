@@ -52,7 +52,7 @@ impl TypeChecker<'_> {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E3054,
                     format!(
-                        "`unsafe impl {trait_name} for {target}`: only `Send` and `Sync` take \
+                        "`unsafe impl {trait_name} for {target}`: only `Send`, `Sync` and `Owned` take \
                          `unsafe impl`. Remove `unsafe`"
                     ),
                     None,

@@ -389,8 +389,8 @@ pub enum DiagnosticCode {
     /// that holds a raw pointer, and the compiler cannot check the claim. Write
     /// `unsafe impl Send for Handle {}`.
     E3053,
-    /// `unsafe impl` of a trait other than `Send` or `Sync`, or of no trait at all. Only those two
-    /// traits make a claim that the compiler cannot check. Remove `unsafe`.
+    /// `unsafe impl` of a trait other than `Send`, `Sync` or `Owned`, or of no trait at all. Only
+    /// those three traits make a claim that the compiler cannot check. Remove `unsafe`.
     E3054,
     /// A task takes a value that is not `Send`, or reads a variable whose type is not `Sync`.
     /// A task that moves a value, copies it or writes it needs `Send`. A task that reads a
