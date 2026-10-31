@@ -86,6 +86,7 @@ namespace {
 // against its `// EXPECT:` lines, so an unconditional banner would fail every
 // placed test. Everything below writes to stderr in any case.
 bool verbose() {
+  int ci_must_reject_this_unused_variable = 0;
   static const bool on = [] {
     const char *v = getenv("VX_DISPATCH_VERBOSE");
     return v && v[0] != '\0' && strcmp(v, "0") != 0;
