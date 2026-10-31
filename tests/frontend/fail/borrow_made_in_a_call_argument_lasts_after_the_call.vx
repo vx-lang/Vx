@@ -1,0 +1,84 @@
+//===- borrow_made_in_a_call_argument_lasts_after_the_call.vx - Vx -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// An argument such as `if true { s = a.get_ref(0); 0i64 } else { 0i64 }` stores a
+// reference to `a[0]` in `s`. That borrow lasts while `s` is used, so `a` cannot be
+// changed before the last use of `s`. These programs used to compile and read freed memory.
+
+import std::vec;
+
+struct Counter {
+  n : i32,
+}
+
+impl Counter {
+  fn count(self : &Counter, v : &Vec<i64>, x : i64) -> i32 {
+    return v.len();
+  }
+}
+
+fn count(v : &Vec<i64>, x : i64) -> i32 {
+  return v.len();
+}
+
+fn push_changes_its_receiver() -> i64 {
+  let mut a = Vec<i64>::with_capacity(1);
+  a.push(1i64);
+  let zero : i64 = 0i64;
+  let mut s : &i64 = &zero;
+  // CHECK: Error[E4003] at [[@LINE+1]]:{{.*}}Cannot borrow 'a' as mutable because it is also borrowed as immutable
+  a.push(if true {
+    s = a.get_ref(0);
+    0i64
+  } else {
+    0i64
+  });
+  return *s;
+}
+
+fn push_after_a_function_call() -> i64 {
+  let mut a = Vec<i64>::with_capacity(1);
+  a.push(1i64);
+  let zero : i64 = 0i64;
+  let mut s : &i64 = &zero;
+  let n = count(&a, if true {
+    s = a.get_ref(0);
+    0i64
+  } else {
+    0i64
+  });
+  // CHECK: Error[E4003] at [[@LINE+1]]:{{.*}}Cannot borrow 'a' as mutable because it is also borrowed as immutable
+  a.push(5i64);
+  return *s;
+}
+
+fn push_after_a_method_call() -> i64 {
+  let mut a = Vec<i64>::with_capacity(1);
+  a.push(1i64);
+  let zero : i64 = 0i64;
+  let mut s : &i64 = &zero;
+  let c = Counter {
+    n : 0
+  };
+  let n = c.count(&a, if true {
+    s = a.get_ref(0);
+    0i64
+  } else {
+    0i64
+  });
+  // CHECK: Error[E4003] at [[@LINE+1]]:{{.*}}Cannot borrow 'a' as mutable because it is also borrowed as immutable
+  a.push(5i64);
+  return *s;
+}
+
+fn main() -> i32 {
+  let total = push_changes_its_receiver() + push_after_a_function_call() + push_after_a_method_call();
+  return total as i32;
+}
+// CHECK: 3 error(s) emitted

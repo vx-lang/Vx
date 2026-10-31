@@ -633,7 +633,11 @@ impl<'a> TypeChecker<'a> {
             // would resurrect borrows the arg loop legitimately NLL-released, firing
             // spurious conflicts later.
             let prev: &[BorrowRecord] = snap.as_deref().unwrap_or(&[]);
-            self.borrow.retain_present(base.as_str(), prev);
+            self.borrow.retain_present(
+                base.as_str(),
+                prev,
+                self.current_assignment_target.as_deref(),
+            );
         }
     }
 
@@ -3351,7 +3355,11 @@ impl<'a> TypeChecker<'a> {
                     if holds_no_reference && !self.speculating {
                         for (base, snap) in &borrowed_snapshots {
                             let prev: &[BorrowRecord] = snap.as_deref().unwrap_or(&[]);
-                            self.borrow.retain_present(base.as_str(), prev);
+                            self.borrow.retain_present(
+                                base.as_str(),
+                                prev,
+                                self.current_assignment_target.as_deref(),
+                            );
                         }
                     }
                     // A returned reference keeps the receiver borrowed while it is used.
