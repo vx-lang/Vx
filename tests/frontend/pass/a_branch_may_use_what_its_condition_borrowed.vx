@@ -1,0 +1,75 @@
+//===- a_branch_may_use_what_its_condition_borrowed.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+//
+// The branches of an `if` or a `match` run after its condition, so what they use is in use while
+// the condition runs. These programs stay valid:
+//
+// - `read_in_arm`: the arm reads `s`, which the value of the `match` borrowed;
+// - `borrow_after_condition`: the condition reads a copy of `s.x`, so the branch may borrow `s`;
+// - `name_hidden_by_arm`: the arm's own `m` hides the outer `&mut`, which nothing uses after.
+
+struct S {
+  x : i32,
+}
+
+enum Held {
+  R(&i32),
+  Nothing,
+}
+
+fn get(s : &S) -> Held {
+  return Held::R(&s.x);
+}
+
+fn read_in_arm() -> i32 {
+  let s = S {
+    x : 1
+  };
+  match get(&s) {
+    Held::R(r) => {
+      return *r + s.x;
+    }
+    Held::Nothing => {
+      return 0;
+    }
+  }
+}
+
+fn borrow_after_condition() -> i32 {
+  let mut s = S {
+    x : 1
+  };
+  if s.x == 1 {
+    let m = &mut s;
+    m.x = 3;
+  }
+  return s.x;
+}
+
+fn name_hidden_by_arm() -> i32 {
+  let mut s = S {
+    x : 4
+  };
+  let m = &mut s;
+  m.x = 5;
+  match get(&s) {
+    Held::R(m) => {
+      return *m;
+    }
+    Held::Nothing => {
+      return 0;
+    }
+  }
+}
+
+fn main() -> i32 {
+  // CHECK: 2 3 5
+  println!("{} {} {}", read_in_arm(), borrow_after_condition(), name_hidden_by_arm());
+  return 0;
+}
