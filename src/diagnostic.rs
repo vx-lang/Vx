@@ -352,7 +352,8 @@ pub enum DiagnosticCode {
     /// literals and other `const`s. A `const` table holds a list of number literals, and is
     /// read one number at a time, as `TABLE[i]`.
     E3044,
-    /// A number literal that does not fit `usize`, which holds 0 up to the largest `i64`.
+    /// An integer literal that does not fit its type, such as `300` for a `u8`. A `usize`
+    /// holds 0 up to the largest `i64`.
     E3045,
     /// A `for` loop over a tensor that is not a variable or a flat array literal, such as one a
     /// function call returns, or a nested array literal. The loop reads the tensor by index, so

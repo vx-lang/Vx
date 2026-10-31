@@ -1138,7 +1138,18 @@ impl<'a> TypeChecker<'a> {
                 expr: inner,
                 span,
             }) => {
+                let negated_literal = *op == UnaryOp::Neg && matches!(**inner, Expr::Number(_));
+                self.literal_is_negated = negated_literal;
                 let inner_ty = self.check_expr_type(inner);
+                self.literal_is_negated = false;
+                if let (true, Expr::Number(n), Some(elem)) =
+                    (negated_literal, &**inner, Self::scalar_elem(&inner_ty))
+                {
+                    // `-` on a `usize` is refused below, with its own error.
+                    if elem != ElementType::USize {
+                        self.check_integer_literal_fits(&format!("-{}", n.value), &elem, span);
+                    }
+                }
                 if let (UnaryOp::Neg, Expr::Number(n)) = (&*op, &**inner) {
                     if Self::scalar_elem(&inner_ty).is_some_and(|e| e.is_narrow_float()) {
                         let value = match n.value.as_ref().strip_prefix('-') {

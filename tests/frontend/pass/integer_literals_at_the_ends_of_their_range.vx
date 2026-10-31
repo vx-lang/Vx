@@ -1,0 +1,28 @@
+//===- integer_literals_at_the_ends_of_their_range.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+//
+// The smallest and largest value of each type fit it. `-128` is a `-` on the literal `128`,
+// which alone does not fit an `i8`, so the check reads the literal and its `-` together.
+
+fn takes_i8(v : i8) -> i8 {
+  return v;
+}
+
+fn main() -> i32 {
+  let a : i8 = -128;
+  let b : i8 = 127;
+  let c : u8 = 255;
+  let d : i32 = -2147483648;
+  let e : i64 = -9223372036854775808;
+  let f : u64 = 18446744073709551615;
+  let g = -128i8;
+  // CHECK: -128 127 255 -2147483648 -9223372036854775808 18446744073709551615 -128 -128
+  println!("{} {} {} {} {} {} {} {}", a, b, c, d, e, f, g, takes_i8(-128));
+  return 0;
+}

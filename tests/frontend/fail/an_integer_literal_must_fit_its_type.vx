@@ -1,0 +1,42 @@
+//===- an_integer_literal_must_fit_its_type.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// An integer literal must fit the type it takes. Before E3045 covered every integer type,
+// `let c : i32 = 3000000000` held -1294967296, `let b : i8 = -129` held 127, and a `u8`
+// literal above 255 crashed the compiler.
+
+fn takes_i8(v : i8) -> i8 {
+  return v;
+}
+
+fn wide() -> u16 {
+  // CHECK-DAG: E3045{{.*}}70000 does not fit `u16`
+  return 70000;
+}
+
+fn main() -> i32 {
+  // CHECK-DAG: E3045{{.*}}300 does not fit `u8`
+  let a : u8 = 300;
+  // CHECK-DAG: E3045{{.*}}-129 does not fit `i8`
+  let b : i8 = -129;
+  // CHECK-DAG: E3045{{.*}}3000000000 does not fit `i32`
+  let c : i32 = 3000000000;
+  // CHECK-DAG: E3045{{.*}}256 does not fit `u8`
+  let d = 256u8;
+  // CHECK-DAG: E3045{{.*}}200 does not fit `i8`
+  let e = takes_i8(200);
+  // CHECK-DAG: E3045{{.*}}-200 does not fit `i8`
+  let f = takes_i8(-200);
+  let mut g : u8 = 0;
+  // CHECK-DAG: E3045{{.*}}1000 does not fit `u8`
+  g = 1000;
+  println!("{} {} {} {} {} {} {} {}", a, b, c, d, e, f, g, wide());
+  return 0;
+}
+// CHECK: 8 error(s) emitted

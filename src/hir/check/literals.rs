@@ -226,9 +226,12 @@ impl<'a> TypeChecker<'a> {
     /// every downstream consumer — the flat lowerer and the AST codegen alike — sees the concrete
     /// type. A suffixed literal already carries its type and is returned unchanged.
     pub(crate) fn check_number_literal(&mut self, n: &mut NumberExpr) -> Type {
+        let negated = std::mem::take(&mut self.literal_is_negated);
         if let Some(el) = &n.ty {
             let el = el.clone();
-            self.check_usize_literal(n, &el);
+            if !negated {
+                self.check_integer_literal_fits(n.value.as_ref(), &el, &n.span);
+            }
             return Type::Scalar(el);
         }
         let elem = self
@@ -237,7 +240,9 @@ impl<'a> TypeChecker<'a> {
             .and_then(|t| expected_numeric_elem(t, &n.value))
             .unwrap_or_else(|| crate::parser::expr::default_number_elem(&n.value));
         n.ty = Some(elem.clone());
-        self.check_usize_literal(n, &elem);
+        if !negated {
+            self.check_integer_literal_fits(n.value.as_ref(), &elem, &n.span);
+        }
         Type::Scalar(elem)
     }
 
@@ -268,26 +273,33 @@ impl<'a> TypeChecker<'a> {
         })
     }
 
-    /// A `usize` never has its top bit set, which is what lets its arithmetic be marked as
-    /// never wrapping, so a literal past the largest `i64` is refused rather than stored.
-    pub(crate) fn check_usize_literal(&mut self, n: &NumberExpr, elem: &ElementType) {
-        if *elem != ElementType::USize
-            || self.speculating
-            || elem.accepts_integer_literal(n.value.as_ref()) != Some(false)
-        {
+    /// E3045: an integer literal, `text` (`-128` for a negated one), that its type `elem`
+    /// cannot hold. Without this, the code generators kept the low bits, so `let x : i32 =
+    /// 3000000000` held -1294967296. A `usize` never has its top bit set, which is what lets
+    /// its arithmetic be marked as never wrapping, so a literal past the largest `i64` is
+    /// refused rather than stored.
+    pub(crate) fn check_integer_literal_fits(
+        &mut self,
+        text: &str,
+        elem: &ElementType,
+        span: &Span,
+    ) {
+        if self.speculating || elem.accepts_integer_literal(text) != Some(false) {
             return;
         }
-        self.errors.error_with_code(
-            crate::diagnostic::DiagnosticCode::E3045,
+        let message = if *elem == ElementType::USize {
             format!(
-                "{} does not fit `usize`, which holds 0 up to {}",
-                n.value,
+                "{text} does not fit `usize`, which holds 0 up to {}",
                 i64::MAX
-            ),
-            // A number literal has no span of its own: spans take part in comparing types,
-            // and a literal is also a tensor dimension.
-            None,
-        );
+            )
+        } else {
+            format!("{text} does not fit `{elem}`")
+        };
+        // A literal that the compiler wrote has no place in the source.
+        let at =
+            (*span != Span::default()).then(|| crate::diagnostic::SourceSpan::from_ast_span(span));
+        self.errors
+            .error_with_code(crate::diagnostic::DiagnosticCode::E3045, message, at);
     }
 
     /// The tensor an operand denotes, seen through the wrappers that do not
