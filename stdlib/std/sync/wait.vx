@@ -1,0 +1,33 @@
+//===- wait.vx - Vx Standard Library ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Block an OS thread until an atomic changes. The channel and the `Mutex` wait with these two
+// functions. A task runs on an OS thread of its own, so a wait blocks only that task.
+//
+// The pattern: the waiter reads the atomic, and while it does not hold what the waiter needs,
+// calls `wait_while` with the value that it read. The waker changes the atomic first, and then
+// calls `wake_all`. So the waiter never sleeps through the change.
+//===----------------------------------------------------------------------===//
+import core::sync::atomic;
+
+extern {
+  /// The Rust core behind `wait_while`.
+  fn vx_wait_while(word : *mut i64, value : i64) -> void;
+  /// The Rust core behind `wake_all`.
+  fn vx_wake_all(word : *mut i64) -> void;
+}
+
+/// Block the thread while `word` holds `value`. It can also return when `word` did not change.
+/// So the caller reads `word` again, in a loop.
+fn wait_while(word : &AtomicI64, value : i64) -> void {
+  unsafe { vx_wait_while(word.as_ptr(), value); }
+}
+
+/// Wake each thread that waits on `word`. Change `word` before the call.
+fn wake_all(word : &AtomicI64) -> void {
+  unsafe { vx_wake_all(word.as_ptr()); }
+}

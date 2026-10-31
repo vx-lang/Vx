@@ -2663,7 +2663,7 @@ impl<'r> Lowerer<'r> {
                                     .ok_or(Decline::TypeNotModelled {
                                         what: "an enum payload type that is not laid out",
                                     })?;
-                                let lty = lowered_ty(&payload_type, self.registry).ok_or(
+                                let lty = self.payload_lowered_ty(&payload_type).ok_or(
                                     Decline::TypeNotModelled {
                                         what: "an enum payload type that is not modelled",
                                     },
@@ -4101,6 +4101,18 @@ impl<'r> Lowerer<'r> {
         }
     }
 
+    /// The lowered type of an enum payload. A generic struct instance, such as `SendError<i64>`,
+    /// has no registry layout of its own, so it gets its concrete layout here.
+    fn payload_lowered_ty(&mut self, ty: &Type) -> Option<LoweredTy> {
+        if let Some(lty) = lowered_ty(ty, self.registry) {
+            return Some(lty);
+        }
+        match ty {
+            Type::GenericInstance(..) => self.resolve_concrete_layout(ty).map(LoweredTy::Aggregate),
+            _ => None,
+        }
+    }
+
     fn payload_metadata(&self, mut ty: Type) -> Option<crate::layout::GeneratedPayloadLayout> {
         self.registry
             .aggregate_identities()
@@ -4417,8 +4429,12 @@ impl<'r> Lowerer<'r> {
         let mut variants = Vec::new();
         for (_, types) in &data.variants {
             let mut payloads = Vec::new();
+            // A `void` payload, as in `Ok` of `Result<void, E>`, holds nothing.
             for ty in types {
                 let ty = ty.substitute(&mapping);
+                if crate::syntax::types::is_void_ty(&ty) {
+                    continue;
+                }
                 let (size, align, _) = self.payload_field(&ty)?;
                 payloads.push((size, align));
             }
@@ -4458,7 +4474,9 @@ impl<'r> Lowerer<'r> {
                 .map(|(_, types)| {
                     types
                         .iter()
-                        .map(|ty| self.payload_metadata(ty.substitute(&mapping)))
+                        .map(|ty| ty.substitute(&mapping))
+                        .filter(|ty| !crate::syntax::types::is_void_ty(ty))
+                        .map(|ty| self.payload_metadata(ty))
                         .collect::<Option<Vec<_>>>()
                 })
                 .collect::<Option<Vec<_>>>()?;
@@ -6130,6 +6148,16 @@ impl<'r> Lowerer<'r> {
                 if let Some(Expr::Match(m)) = r.expr.as_ref().filter(|expr| {
                     matches!(expr, Expr::Match(m) if !crate::syntax::expr::match_yields_a_value(m))
                 }) {
+                    // A `void` function that ends in a `match`: its arms give no value.
+                    if self.ret_void {
+                        self.lower_match(m)?;
+                        if !self.block_terminated() {
+                            self.run_value_drops()?;
+                            self.drop_temps_here(None);
+                            self.emit_ret(None)?;
+                        }
+                        return Ok(());
+                    }
                     if !self.value_drops.is_empty() {
                         return Err(Decline::Unsupported {
                             what: "a drop waiting for the value of a returned match",

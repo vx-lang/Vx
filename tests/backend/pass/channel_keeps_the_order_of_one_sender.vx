@@ -1,0 +1,56 @@
+//===- channel_keeps_the_order_of_one_sender.vx - Vx Compiler *- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// One task sends 0 to 9999 through a channel with room for 1 value. The code of the block
+// receives them and counts the values that do not come in the order they were sent. The ring
+// wraps at each value. With room for 1, a slot number that says "full" for one value must not
+// also say "free" for the next, or a `send` would write over a value that no `recv` took.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator runs each task to its end at its `spawn`. A task
+// that waits for a later task then waits forever.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}received 10000 out of order 0{{$}}
+
+import std::sync::channel;
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(1);
+  let mut received : i64 = 0;
+  let mut wrong : i64 = 0;
+  tasks {
+    spawn {
+      // The task only calls `send`, so it would borrow `tx`. This moves it in.
+      let t = tx;
+      let first : i64 = 0;
+      for i in first..10000 {
+        match t.send(i) {
+          Result<void, SendError<i64>>::Ok() => {}
+          Result<void, SendError<i64>>::Err(_) => {
+            panic("the receiver is gone");
+          }
+        }
+      }
+    };
+    for _i in 0..10000 {
+      match rx.recv() {
+        Result<i64, RecvError>::Ok(v) => {
+          if v != received {
+            wrong = wrong + 1;
+          }
+          received = received + 1;
+        }
+        Result<i64, RecvError>::Err(_) => {
+          panic("the channel closed early");
+        }
+      }
+    }
+  };
+  println!("received {} out of order {}", received, wrong);
+  return 0;
+}

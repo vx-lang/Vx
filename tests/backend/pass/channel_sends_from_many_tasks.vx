@@ -1,0 +1,57 @@
+//===- channel_sends_from_many_tasks.vx - Vx Compiler --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Eight tasks send to one channel, and the code of the block receives. Each task sends the
+// numbers 1 to 1000 through its own clone of the `Sender`. The channel has room for 4 values,
+// so the senders often wait for room. The code drops its own `Sender`, so `recv` gives `Closed`
+// after the last task ends. Each value arrives once: 8000 values with the sum 8 * 500500.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator runs each task to its end at its `spawn`. A task
+// that waits for a later task then waits forever.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}count 8000 sum 4004000{{$}}
+
+import core::mem;
+import std::sync::channel;
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(4);
+  let mut count : i64 = 0;
+  let mut sum : i64 = 0;
+  tasks {
+    for _part in 0..8 {
+      let t = tx.clone();
+      spawn {
+        let first : i64 = 1;
+        for i in first..1001 {
+          match t.send(i) {
+            Result<void, SendError<i64>>::Ok() => {}
+            Result<void, SendError<i64>>::Err(_) => {
+              panic("the receiver is gone");
+            }
+          }
+        }
+      };
+    }
+    drop(tx);
+    loop {
+      match rx.recv() {
+        Result<i64, RecvError>::Ok(v) => {
+          count = count + 1;
+          sum = sum + v;
+        }
+        Result<i64, RecvError>::Err(_) => {
+          break;
+        }
+      }
+    }
+  };
+  println!("count {} sum {}", count, sum);
+  return 0;
+}
