@@ -1,0 +1,17 @@
+//===- prefix_neg_cast.vx - Vx Compiler ---------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `-1i32 as u8` is `(-1i32) as u8`, which folds to 255. The old parse
+// `-(1i32 as u8)` had no value for the negation of 1u8.
+
+fn main() -> i32 {
+  let d : u8 = comptime {
+    -1i32 as u8
+  };
+  println!("{}", d);
+  return 0;
+}

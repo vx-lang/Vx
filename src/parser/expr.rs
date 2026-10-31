@@ -700,7 +700,7 @@ impl<'a> Parser<'a> {
                             return Err(self.error(&format!(
                                 "Expected field name in struct init, found {:?}",
                                 token_kind
-                            )))
+                            )));
                         }
                     };
                     self.consume(&TokenType::Colon, "Expected ':'")?;
@@ -831,11 +831,21 @@ impl<'a> Parser<'a> {
         }))
     }
 
+    /// A primary expression, including a prefix `-` / `!` and any trailing `as` casts.
+    ///
+    /// `as` binds after a prefix `-` or `!`, so `-x as T` is `(-x) as T`. Field access,
+    /// indexing and calls stay on the operand: `-x.f`, `-a[i]` and `-f()` are unchanged.
     pub(crate) fn parse_primary_expr(&mut self) -> ParseResult<'a, Expr> {
+        let expr = self.parse_prefixed_primary()?;
+        self.parse_as_casts(expr)
+    }
+
+    /// A primary with prefix operators and postfix field/index/call, but not `as`.
+    fn parse_prefixed_primary(&mut self) -> ParseResult<'a, Expr> {
         // Where the `!` or `-` is, so a refused operand is reported at it rather than at 0:0.
         let (bang_line, bang_column) = (self.peek().line, self.peek().column);
         if self.match_token(&TokenType::Bang) {
-            let inner = self.parse_primary_expr()?;
+            let inner = self.parse_prefixed_primary()?;
             return Ok(Expr::UnaryOp(UnaryOpExpr {
                 op: UnaryOp::Not,
                 expr: Box::new(inner),
@@ -847,7 +857,7 @@ impl<'a> Parser<'a> {
                 },
             }));
         } else if self.match_token(&TokenType::Minus) {
-            let inner = self.parse_primary_expr()?;
+            let inner = self.parse_prefixed_primary()?;
             return Ok(Expr::UnaryOp(UnaryOpExpr {
                 op: UnaryOp::Neg,
                 expr: Box::new(inner),
@@ -943,8 +953,8 @@ impl<'a> Parser<'a> {
             }
             self.consume(&TokenType::RightBrace, "Expected '}'")?;
             // Only `as` may follow the block: a `(` or `[` on the next line starts a new
-            // statement, and `as` cannot.
-            return self.parse_as_casts(Expr::UnsafeBlock(UnsafeBlockExpr {
+            // statement, and `as` cannot. `as` is applied by `parse_primary_expr`.
+            return Ok(Expr::UnsafeBlock(UnsafeBlockExpr {
                 stmts,
                 ret,
                 span: unsafe_span,
@@ -1128,7 +1138,7 @@ impl<'a> Parser<'a> {
                     _ => {
                         return Err(
                             self.error("Expected function identifier as first argument to grad")
-                        )
+                        );
                     }
                 };
                 let mut args = Vec::new();
@@ -1155,7 +1165,7 @@ impl<'a> Parser<'a> {
                     _ => {
                         return Err(
                             self.error("Expected function identifier as first argument to vjp")
-                        )
+                        );
                     }
                 };
                 self.consume(&TokenType::Comma, "Expected comma after function name")?;
@@ -1188,7 +1198,7 @@ impl<'a> Parser<'a> {
                     _ => {
                         return Err(
                             self.error("Expected function identifier as first argument to jvp")
-                        )
+                        );
                     }
                 };
                 self.consume(&TokenType::Comma, "Expected comma after function name")?;
@@ -1352,7 +1362,7 @@ impl<'a> Parser<'a> {
                                         _ => {
                                             return Err(
                                                 self.error("Expected identifier in closure params")
-                                            )
+                                            );
                                         }
                                     };
                                     let ty = if self.match_token(&TokenType::Colon) {
@@ -1427,19 +1437,20 @@ impl<'a> Parser<'a> {
                         })
                     }
                     TokenType::Unknown('"') => {
-                        return Err(self.error_at(&token, super::UNCLOSED_STRING))
+                        return Err(self.error_at(&token, super::UNCLOSED_STRING));
                     }
                     _ => {
                         return Err(self.error_at(
                             &token,
                             &format!("Expected expression, found {:?}", token.kind),
-                        ))
+                        ));
                     }
                 }
             }
         };
 
-        // Postfix operators: .member, .method(), [index]
+        // Postfix operators: .member, .method(), [index]. `as` is applied by
+        // `parse_primary_expr` after a prefix `-` or `!`, so `-x as T` is `(-x) as T`.
         loop {
             if self.match_token(&TokenType::Dot) {
                 // The method name's own token, so a diagnostic about the call points at it.
@@ -1525,8 +1536,6 @@ impl<'a> Parser<'a> {
                     index: Box::new(index),
                     span: ix_span,
                 });
-            } else if self.check(&TokenType::As) {
-                expr = self.parse_as_casts(expr)?;
             } else {
                 break;
             }
@@ -2428,6 +2437,54 @@ mod tests {
             assert!(matches!(&*inner, Expr::AsCast(_)));
         } else {
             panic!("Expected chained AsCast, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_prefix_neg_then_as_cast() {
+        // `-x as T` is `(-x) as T`, not `-(x as T)`.
+        let expr = parse_expr("-x as i32");
+        if let Expr::AsCast(AsCastExpr {
+            expr: inner,
+            target_ty,
+            ..
+        }) = expr
+        {
+            assert_eq!(target_ty.to_string(), "i32");
+            assert!(matches!(&*inner, Expr::UnaryOp(u) if u.op == UnaryOp::Neg));
+        } else {
+            panic!("Expected AsCast(UnaryOp(Neg(_)), i32), got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_prefix_not_then_as_cast() {
+        let expr = parse_expr("!flag as i32");
+        if let Expr::AsCast(AsCastExpr {
+            expr: inner,
+            target_ty,
+            ..
+        }) = expr
+        {
+            assert_eq!(target_ty.to_string(), "i32");
+            assert!(matches!(&*inner, Expr::UnaryOp(u) if u.op == UnaryOp::Not));
+        } else {
+            panic!("Expected AsCast(UnaryOp(Not(_)), i32), got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_prefix_neg_still_binds_tighter_than_field() {
+        // `-x.f` stays `-(x.f)`.
+        let expr = parse_expr("-x.f");
+        if let Expr::UnaryOp(UnaryOpExpr {
+            op, expr: inner, ..
+        }) = expr
+        {
+            assert_eq!(op, UnaryOp::Neg);
+            assert!(matches!(&*inner, Expr::MemberAccess(_)));
+        } else {
+            panic!("Expected UnaryOp(Neg(MemberAccess)), got {:?}", expr);
         }
     }
 
