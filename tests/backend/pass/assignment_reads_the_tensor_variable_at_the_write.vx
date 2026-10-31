@@ -1,0 +1,26 @@
+//===- assignment_reads_the_tensor_variable_at_the_write.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// In `t[1] = v`, the index runs before the value, but `t` itself is read at the write. Here the
+// value gives `t` a new tensor and frees the old one, so the 5 goes into the new tensor. Reading
+// `t` before the value would write into freed memory. The default code generator does not
+// compile a tensor given a new value inside a branch, so only the legacy one runs this.
+//
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+
+fn main() -> i32 {
+  let mut t = Tensor<i32, [4]>::fill(0);
+  t[1] = if true {
+    t = Tensor<i32, [4]>::fill(7);
+    5
+  } else {
+    0
+  };
+  println!("{} {}", t[0], t[1]);
+  // CHECK: {{^}}7 5{{$}}
+  return 0;
+}

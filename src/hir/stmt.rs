@@ -1334,8 +1334,8 @@ impl<'a> TypeChecker<'a> {
         self.checking_assign_lhs = false;
         let temporary_place = matches!(lhs, Expr::Dereference(d)
             if matches!(*d.expr, Expr::FunctionCall(_) | Expr::MethodCall(_)));
-        // Rust evaluates the value before the place it goes into, so the place's mutable borrow is
-        // only reserved while the right-hand side is checked: `v[i] = v[i] + 1` reads `v` there.
+        // The place runs before the value, so its mutable borrow is only reserved while the
+        // right-hand side is checked: `v[i] = v[i] + 1` reads `v` there.
         let lhs_borrows = temporary_place.then(|| {
             let added = self.borrow.added_since(&before_lhs);
             self.borrow.reserve(&added)

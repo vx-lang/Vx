@@ -112,6 +112,9 @@ pub struct MeliorGenerator<'c> {
     /// before it, put back when the block ends.
     pub(crate) blocks: Vec<Vec<Shadowed<'c>>>,
     pub(crate) is_lvalue_context: bool,
+    /// The indices of an assignment's place, computed before its value. The next
+    /// `flatten_indices` uses them in place of the index expressions.
+    pub(crate) place_indices: Option<Vec<Value<'c, 'c>>>,
     pub(crate) mlir_block_counter: usize,
     pub(crate) has_returned: bool,
     pub(crate) current_filename: String,
@@ -864,6 +867,7 @@ impl<'c> MeliorGenerator<'c> {
             allocs: std::collections::HashSet::new(),
             blocks: Vec::new(),
             is_lvalue_context: false,
+            place_indices: None,
             mlir_block_counter: 0,
             has_returned: false,
             current_filename: filename,
@@ -2661,34 +2665,80 @@ impl<'c> MeliorGenerator<'c> {
         Vec<Value<'c, 'c>>,
         melior::ir::BlockRef<'c, 'c>,
     )> {
+        let given = self.place_indices.take();
+        self.flatten_indices_given(expr, block, given.as_deref())
+    }
+
+    /// The indices of `t[i][j]` as `index` values, left to right.
+    pub fn index_values(
+        &mut self,
+        expr: &Expr,
+        mut block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Option<(Vec<Value<'c, 'c>>, melior::ir::BlockRef<'c, 'c>)> {
+        let mut exprs = Vec::new();
+        let mut place = expr;
+        while let Expr::IndexAccess(ix) = place {
+            exprs.push(ix.index.as_ref());
+            place = &ix.base;
+        }
+        let mut values = Vec::with_capacity(exprs.len());
+        for idx in exprs.into_iter().rev() {
+            let (v, b) = self.index_value(idx, block)?;
+            values.push(v);
+            block = b;
+        }
+        Some((values, block))
+    }
+
+    fn index_value(
+        &mut self,
+        idx: &Expr,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Option<(Value<'c, 'c>, melior::ir::BlockRef<'c, 'c>)> {
+        // The index is a value even when the element is wanted as a place: `&a[*i]`.
+        let prev_lvalue = std::mem::replace(&mut self.is_lvalue_context, false);
+        let lowered = self.generate_expr(idx, block);
+        self.is_lvalue_context = prev_lvalue;
+        let (idx_val, _, block) = lowered.ok()?;
+
+        let idx_ty_str = idx_val.r#type().to_string();
+        let actual_idx = if idx_ty_str != "index" {
+            let cast_op =
+                melior::ir::operation::OperationBuilder::new("arith.index_cast", self.loc())
+                    .add_operands(&[idx_val])
+                    .add_results(&[self.index_ty])
+                    .build()
+                    .ok()?;
+            block.append_operation(cast_op).result(0).ok()?.into()
+        } else {
+            idx_val
+        };
+        Some((actual_idx, block))
+    }
+
+    fn flatten_indices_given(
+        &mut self,
+        expr: &Expr,
+        block: melior::ir::BlockRef<'c, 'c>,
+        given: Option<&[Value<'c, 'c>]>,
+    ) -> Option<(
+        Value<'c, 'c>,
+        Type<'c>,
+        Vec<Value<'c, 'c>>,
+        melior::ir::BlockRef<'c, 'c>,
+    )> {
         match expr {
             Expr::IndexAccess(syntax::IndexAccessExpr {
                 base,
                 index: idx,
                 span: _,
             }) => {
-                let (base_val, base_ty, mut indices, block) = self.flatten_indices(base, block)?;
-                // The index is a value even when the element is wanted as a place: `&a[*i]`.
-                let prev_lvalue = std::mem::replace(&mut self.is_lvalue_context, false);
-                let lowered = self.generate_expr(idx, block);
-                self.is_lvalue_context = prev_lvalue;
-                let (idx_val, _, block) = lowered.ok()?;
-
-                let idx_ty_str = idx_val.r#type().to_string();
-                let actual_idx = if idx_ty_str != "index" {
-                    let cast_op = melior::ir::operation::OperationBuilder::new(
-                        "arith.index_cast",
-                        self.loc(),
-                    )
-                    .add_operands(&[idx_val])
-                    .add_results(&[self.index_ty])
-                    .build()
-                    .ok()?;
-                    block.append_operation(cast_op).result(0).ok()?.into()
-                } else {
-                    idx_val
+                let (base_val, base_ty, mut indices, block) =
+                    self.flatten_indices_given(base, block, given)?;
+                let (actual_idx, block) = match given.and_then(|g| g.get(indices.len())) {
+                    Some(v) => (*v, block),
+                    None => self.index_value(idx, block)?,
                 };
-
                 indices.push(actual_idx);
                 Some((base_val, base_ty, indices, block))
             }

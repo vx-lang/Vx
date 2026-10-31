@@ -196,6 +196,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // inside a branch or loop"). The kernel has to write `c` for `c` to be passed as a slot,
     // which is what the file checks.
     "optimizations/pass/dispatch_abi_tags.vx",
+    // `t = ..` inside the value of `t[1] = ..`: the flat path declines "a tensor given a new
+    // value inside a branch or loop". The file checks the AST path.
+    "backend/pass/assignment_reads_the_tensor_variable_at_the_write.vx",
 ];
 
 /// Every `.vx` file under `dir`, recursively, sorted for a stable report.
