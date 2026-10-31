@@ -229,7 +229,9 @@ each event of the block of ticket `k` happens before each event of the block of 
 `k` writes it. By `ring_once`, two reads of the same write belong to the same `recv`, so no value
 arrives twice. `ring_move_once` shows that each operation accesses its element once. Right after
 the access, the operation sets its flag, and its number is used only once.
-`Cancel.lean` gives a program a failure slot and a cancel flag. `fail v` writes the error `v` to
+`Cancel.lean` models the design of #1893, which the compiler does not have yet. Today a `tasks`
+block gives the failure of the first join that its code runs, and it cancels no task.
+In the model, a program has a failure slot and a cancel flag. `fail v` writes the error `v` to
 the slot with a CAS from 0. If the CAS wrote the slot, it sets the flag with a release write.
 `checkCancel` reads the flag with acquire, and fails with `cancelled` if the flag is set.
 `one_failure_wins` shows that at most one CAS writes the slot. `block_value_is_failure` shows
@@ -359,6 +361,8 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - `lock_excl` speaks of the reads of `serving` that let a later ticket in. That the `lock` of a
   ticket ends with such a read follows from `Hold` in `Lock.lean`. No theorem states it on its
   own.
+- `Cancel.lean` models #1893, not the rule of the compiler today, where the first failed join in
+  the code wins. No file models that rule yet.
 - A program has one failure slot, so only one `tasks` block can fail. A task that sees the cancel
   flag does not stop: the model shows only that its CAS fails. `ChanProg.drf_sc` needs code with
   no failures, because the flag uses release and acquire. A program with failures has no data

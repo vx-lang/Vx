@@ -141,6 +141,11 @@ acquire. Each such access then needs its own edge proof and a litmus test.
 
 ### Step 5: cancellation, safety only (`Cancel.lean`, F3)
 
+This step models the design of #1893: the first failure in time wins, and the other tasks are
+cancelled. The compiler does not do this yet. Since #2380, a `tasks` block gives the failure of the
+first join that its code runs, and it cancels no task. A model of that rule is simpler: a join
+reads the result of its task after the done flag of the task.
+
 The model:
 
 - A failure slot. A failure writes it by a CAS from 0.
