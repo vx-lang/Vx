@@ -460,6 +460,9 @@ struct Lowerer<'r> {
     tasks_exits: Vec<TasksExits>,
     /// For the next `lower_region`: a slot that the region's last value is stored into.
     region_tail_slot: Option<Register>,
+    /// The `Result` type of the next task region, when its task can fail. An `Err` value at its
+    /// end cancels its `tasks` block (F3).
+    region_cancels_on_err: Option<Type>,
     /// Tensor-type side table `GID -> (element, shape)`, recorded as tensor-typed values are emitted.
     /// Tensor GIDs are content hashes, so codegen recovers a tensor's memref shape from here rather
     /// than by inverting the GID (which is impossible). Committed onto the worker.
@@ -588,6 +591,7 @@ impl<'r> Lowerer<'r> {
             loop_stack: Vec::new(),
             tasks_exits: Vec::new(),
             region_tail_slot: None,
+            region_cancels_on_err: None,
             tensor_types: Vec::new(),
             strings: Vec::new(),
             ast_types: HashMap::new(),
@@ -3540,6 +3544,7 @@ impl<'r> Lowerer<'r> {
         };
         let exits = kind == crate::syntax::TaskBlockKind::Tasks && has_tasks_exit(&u.stmts);
         if !exits {
+            self.region_cancels_on_err = u.cancels_on_err.clone();
             return self.lower_region(
                 id as u32 as u64,
                 launch,
@@ -3663,6 +3668,82 @@ impl<'r> Lowerer<'r> {
         }
     }
 
+    /// At the end of a task that can fail: when its value `v`, of the `Result` type `ty`, is an
+    /// `Err`, call `vx_task_failed`, which cancels the task's `tasks` block (F3).
+    fn cancel_on_err(&mut self, ty: &Type, tail: &Expr, v: &Val) -> Lowered<()> {
+        let (nominal, args) = match ty {
+            Type::GenericInstance(base, args) => (base.as_ref(), args.as_slice()),
+            other => (other, &[][..]),
+        };
+        let not_modelled = |what| Decline::TypeNotModelled { what };
+        let (base, declaration) = self
+            .registry
+            .aggregate_identities()
+            .resolve_base(nominal.into())
+            .ok_or(not_modelled("the Result of a task that can fail"))?;
+        let (gid, offsets) = self
+            .enum_instance_layout_of(declaration, args)
+            .ok_or(not_modelled("the layout of the Result of a task"))?;
+        let tag_off = *offsets
+            .first()
+            .ok_or(not_modelled("the tag of the Result of a task"))?;
+        let err =
+            self.registry
+                .enum_data
+                .get(base.as_ref())
+                .and_then(|d| d.variants.iter().position(|(n, _)| n.as_ref() == "Err"))
+                .ok_or(not_modelled("the Err variant of the Result of a task"))? as u64;
+        // A construction is a slot already. Any other value goes to a slot, to read its tag.
+        let slot = match v.ty {
+            LoweredTy::Aggregate(_) if construction_tail(tail) => v.reg,
+            LoweredTy::Aggregate(_) => {
+                let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
+                self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
+                slot.reg
+            }
+            _ => return Err(not_modelled("a Result of a task that is not an aggregate")),
+        };
+        let tag = self.emit_value(
+            Opcode::FieldLoad,
+            slot,
+            Register(0),
+            ElementType::I32,
+            tag_off,
+        );
+        let err = self.emit_value(
+            Opcode::Const,
+            Register(0),
+            Register(0),
+            ElementType::I32,
+            err,
+        );
+        let cond = self.emit_value(
+            Opcode::Cmp,
+            tag.reg,
+            err.reg,
+            ElementType::Bool,
+            rel_code(&RelationalOp::Eq),
+        );
+        let failed_b = self.new_block();
+        let next_b = self.new_block();
+        self.emit_effect(
+            Opcode::CondBr,
+            cond.reg,
+            Register(0),
+            pack_targets(failed_b, next_b),
+        );
+        self.emit_effect(
+            Opcode::BlockStart,
+            Register(0),
+            Register(0),
+            failed_b as u64,
+        );
+        self.emit_effect(Opcode::TaskFailed, Register(0), Register(0), 0);
+        self.emit_effect(Opcode::Br, Register(0), Register(0), next_b as u64);
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), next_b as u64);
+        Ok(())
+    }
+
     /// The `Err` arm of the join of a task that failed: the block's value is `Err(value)`, and
     /// the code leaves the block.
     fn lower_tasks_leave(&mut self, value: &Expr, span: crate::syntax::Span) -> Lowered<()> {
@@ -3697,6 +3778,7 @@ impl<'r> Lowerer<'r> {
         offer_parallel: bool,
     ) -> Lowered<Option<Val>> {
         let tail_slot = self.region_tail_slot.take();
+        let cancels_on_err = self.region_cancels_on_err.take();
         self.emit_effect(Opcode::Spawn, Register(0), Register(0), imm);
         if launch.across {
             self.emit_effect(Opcode::AcrossRegion, Register(0), Register(0), 0);
@@ -3778,6 +3860,9 @@ impl<'r> Lowerer<'r> {
             // The drops that wait for the value, as in a plain block.
             let waiting = std::mem::take(&mut self.queued_drops);
             let v = self.lower_expr(tail)?;
+            if let Some(ty) = &cancels_on_err {
+                self.cancel_on_err(ty, tail, &v)?;
+            }
             self.queued_drops.extend(waiting);
             self.run_queued_drops()?;
             self.close_blocks_to(depth);

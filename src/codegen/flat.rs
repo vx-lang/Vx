@@ -1101,7 +1101,7 @@ pub struct SubspaceInfo {
 /// `func.func private` declaration prepended. Order is load-bearing — the emit records which of
 /// these a function called as a bitmask over this array's indices, so inserting in the middle
 /// renumbers existing entries.
-const RUNTIME_HELPERS: [(&str, &str); 23] = [
+const RUNTIME_HELPERS: [(&str, &str); 24] = [
     ("printMemrefF32", "(memref<*xf32>)"),
     ("printMemrefF64", "(memref<*xf64>)"),
     ("printMemrefI32", "(memref<*xi32>)"),
@@ -1125,6 +1125,7 @@ const RUNTIME_HELPERS: [(&str, &str); 23] = [
     ("printMemrefI16", "(memref<*xi16>)"),
     ("printMemrefU8", "(memref<*xi8>)"),
     ("printMemrefU16", "(memref<*xi16>)"),
+    ("vx_task_failed", "()"),
 ];
 
 // The helper mask is a `u64`, so the table must not grow past 64 entries.
@@ -2481,6 +2482,10 @@ impl<'a> FnEmit<'a> {
             Opcode::SpawnEnd => self.op_spawn_end(idx, ins),
             Opcode::TasksWait => {
                 self.body += "  \"vx.tasks_wait\"() : () -> ()\n";
+                Ok(())
+            }
+            Opcode::TaskFailed => {
+                self.body += "  func.call @vx_task_failed() : () -> ()\n";
                 Ok(())
             }
             // A way out of the region before its end. `VxLowering` sends each `vx.yield` of a

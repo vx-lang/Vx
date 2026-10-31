@@ -951,6 +951,7 @@ impl<'a> Parser<'a> {
                 generated: false,
                 task: None,
                 fails_as: None,
+                cancels_on_err: None,
             }));
         } else if self.check(&TokenType::If) {
             // The `if` token, so a diagnostic about the `if` points at it.
