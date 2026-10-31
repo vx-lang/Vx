@@ -10,7 +10,9 @@
 // - `bounded`: an upper bound keeps `a + a` from overflowing, so it stays positive;
 // - `byte`: a `u8` is never negative;
 // - `top`: a `usize` is at most `i64::MAX`;
-// - `wraps_signed`, `wraps_unsigned`: `127i8 + 1` is -128, and `255u8 + 1` is 0.
+// - `wraps_signed`, `wraps_unsigned`: `127i8 + 1` is -128, and `255u8 + 1` is 0;
+// - `sum`, `small`: the checker gives a contract no types, so its arithmetic takes the width of
+//   the other side of the comparison, here `return`.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-NOT: E8001
@@ -44,12 +46,31 @@ ensures return == 0 {
   return x + 1;
 }
 
+struct Pair {
+  x : i32,
+  y : i32,
+}
+
+fn sum(p : Pair) -> i32
+ensures return == p.x + p.y {
+  return p.x + p.y;
+}
+
+fn small() -> i32
+ensures return < 16 * 4 {
+  return 10;
+}
+
 fn main() -> i32 {
   let a = bounded(1);
   let b = byte(2u8);
   let c = top(3);
   let d = wraps_signed(127i8);
   let e = wraps_unsigned(255u8);
-  println!("{} {} {} {} {}", a, b, c, d, e);
+  let f = sum(Pair {
+    x : 1,
+    y : 2
+  });
+  println!("{} {} {} {} {} {} {}", a, b, c, d, e, f, small());
   return 0;
 }

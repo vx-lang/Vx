@@ -9,7 +9,10 @@
 //
 // `+`, `-`, `*` and negation wrap at the width of the type, so the prover cannot prove an
 // `ensures` that an overflow breaks. Each function returns a wrong value for the input in its
-// comment.
+// comment. In `hidden`, the arm's `u8` named `x` hides the parameter `x`: the range of one must
+// not meet the facts of the other, or the two contradict and any `ensures` holds.
+
+import core::option;
 
 // `double(1073741824)` returns -2147483648.
 fn double(a : i32) -> i32
@@ -34,7 +37,22 @@ ensures return > 0 {
   return -a;
 }
 
-fn main() -> i32 {
-  return double(1) + flip(-1) + (next(1u32) as i32);
+// `hidden(-1, Option<u8>::Some(5u8))` returns 1.
+fn hidden(x : i32, o : Option<u8>) -> i32
+requires x < 0
+ensures return > 100 {
+  match o {
+    Option<u8>::Some(x) => {
+      // CHECK: Error[E8001] at {{.*}}prover_sees_integer_overflow.vx:[[@LINE+1]]:{{.*}}'hidden' cannot prove postcondition
+      return 1;
+    }
+    Option<u8>::None => {
+      return 200;
+    }
+  }
 }
-// CHECK: 3 error(s) emitted
+
+fn main() -> i32 {
+  return double(1) + flip(-1) + (next(1u32) as i32) + hidden(-1, Option<u8>::None());
+}
+// CHECK: 4 error(s) emitted

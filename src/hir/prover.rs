@@ -14,13 +14,13 @@ use crate::syntax::*;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// The type of a name in a contract, when it is an integer the prover can bound.
-pub type IntTypeOf<'a> = &'a dyn Fn(&str) -> Option<ElementType>;
+/// The type of a name in a contract, when it is an integer, and whether its range is a fact.
+pub type IntTypeOf<'a> = &'a dyn Fn(&str) -> Option<(ElementType, bool)>;
 
 pub struct SmtProver {
     assertions: Vec<String>,
     declarations: std::collections::HashSet<String>,
-    /// The integer type of each declared name whose type is known. Its range is a fact.
+    /// The integer type of each declared name whose range is a fact.
     ranges: std::collections::HashMap<String, ElementType>,
 }
 
@@ -92,42 +92,55 @@ impl SmtProver {
     }
 
     /// Add `expr` as a fact. `type_of` gives the integer type of a name, so that the prover knows
-    /// its range.
+    /// the width of an operation on it, and its range.
     pub fn add_constraint(&mut self, expr: &Expr, type_of: IntTypeOf) -> Result<(), String> {
-        let smt_expr = self.lower_expr(expr, type_of)?;
+        let smt_expr = self.lower_expr(expr, type_of, None)?;
         self.assertions.push(smt_expr);
         Ok(())
     }
 
-    fn lower_expr(&mut self, expr: &Expr, type_of: IntTypeOf) -> Result<String, String> {
+    /// `expected` is the integer type that the context gives `expr`: in a contract, which the
+    /// checker does not type, `return == p.x + p.y` adds at the width of `return`.
+    fn lower_expr(
+        &mut self,
+        expr: &Expr,
+        type_of: IntTypeOf,
+        expected: Option<ElementType>,
+    ) -> Result<String, String> {
         match expr {
             Expr::Number(n) => Ok(n.value.to_string()),
             Expr::Identifier(id) => {
                 let name = id.name.replace(".", "_");
                 self.declarations.insert(name.clone());
-                // `return` is the returned value, whose operands bound it. A range on it would
-                // also make a wrong model of an operation prove anything.
-                if let Some(ty) = type_of(id.name.as_ref()).filter(|_| id.name.as_ref() != "return")
-                {
+                if let Some((ty, true)) = type_of(id.name.as_ref()) {
                     self.ranges.insert(name.clone(), ty);
                 }
                 Ok(name)
             }
             Expr::BinaryOp(b) => {
-                let lhs = self.lower_expr(&b.lhs, type_of)?;
-                let rhs = self.lower_expr(&b.rhs, type_of)?;
+                let ty = b
+                    .operand_ty
+                    .clone()
+                    .or_else(|| int_type(expr, type_of))
+                    .or(expected);
+                let lhs = self.lower_expr(&b.lhs, type_of, ty.clone())?;
+                let rhs = self.lower_expr(&b.rhs, type_of, ty.clone())?;
                 let op = match b.op {
                     BinaryOp::Add => "+",
                     BinaryOp::Sub => "-",
                     BinaryOp::Mul => "*",
                     _ => return Err(format!("the `{:?}` operator", b.op)),
                 };
-                let ty = b.operand_ty.clone().or_else(|| int_type(expr, type_of));
                 wrap(format!("({} {} {})", op, lhs, rhs), ty)
             }
             Expr::RelationalOp(r) => {
-                let lhs = self.lower_expr(&r.lhs, type_of)?;
-                let rhs = self.lower_expr(&r.rhs, type_of)?;
+                let side = r
+                    .operand_ty
+                    .clone()
+                    .or_else(|| int_type(&r.lhs, type_of))
+                    .or_else(|| int_type(&r.rhs, type_of));
+                let lhs = self.lower_expr(&r.lhs, type_of, side.clone())?;
+                let rhs = self.lower_expr(&r.rhs, type_of, side)?;
                 let op = match r.op {
                     RelationalOp::Eq => "=",
                     RelationalOp::NotEq => "distinct",
@@ -139,8 +152,8 @@ impl SmtProver {
                 Ok(format!("({} {} {})", op, lhs, rhs))
             }
             Expr::LogicalOp(l) => {
-                let lhs = self.lower_expr(&l.lhs, type_of)?;
-                let rhs = self.lower_expr(&l.rhs, type_of)?;
+                let lhs = self.lower_expr(&l.lhs, type_of, None)?;
+                let rhs = self.lower_expr(&l.rhs, type_of, None)?;
                 let op = match l.op {
                     LogicalOp::And => "and",
                     LogicalOp::Or => "or",
@@ -148,26 +161,30 @@ impl SmtProver {
                 Ok(format!("({} {} {})", op, lhs, rhs))
             }
             Expr::UnaryOp(u) => {
-                let inner = self.lower_expr(&u.expr, type_of)?;
+                let inner_expected = (u.op == UnaryOp::Neg).then_some(expected.clone()).flatten();
+                let inner = self.lower_expr(&u.expr, type_of, inner_expected)?;
                 match u.op {
                     UnaryOp::Not => Ok(format!("(not {})", inner)),
                     // A negative literal such as `-1000` is a constant, not an operation.
                     UnaryOp::Neg if matches!(*u.expr, Expr::Number(_)) => {
                         Ok(format!("(- {inner})"))
                     }
-                    UnaryOp::Neg => wrap(format!("(- {})", inner), int_type(&u.expr, type_of)),
+                    UnaryOp::Neg => wrap(
+                        format!("(- {})", inner),
+                        int_type(&u.expr, type_of).or(expected),
+                    ),
                 }
             }
             Expr::MemberAccess(m) => {
-                let base = self.lower_expr(&m.base, type_of)?;
+                let base = self.lower_expr(&m.base, type_of, None)?;
                 let field = m.member.replace(".", "_");
                 let name = format!("{}_{}", base, field);
                 self.declarations.insert(name.clone());
                 Ok(name)
             }
             Expr::IndexAccess(i) => {
-                let base = self.lower_expr(&i.base, type_of)?;
-                let index = self.lower_expr(&i.index, type_of)?;
+                let base = self.lower_expr(&i.base, type_of, None)?;
+                let index = self.lower_expr(&i.index, type_of, None)?;
                 // For now, treat array indexing as a flattened variable (e.g. a_0).
                 // Full theory of arrays would require (select a 0).
                 let name = format!("{}_{}", base, index);
@@ -219,7 +236,7 @@ impl SmtProver {
 fn int_type(e: &Expr, type_of: IntTypeOf) -> Option<ElementType> {
     match e {
         Expr::Number(n) => n.ty.clone(),
-        Expr::Identifier(id) => type_of(id.name.as_ref()),
+        Expr::Identifier(id) => type_of(id.name.as_ref()).map(|(ty, _)| ty),
         Expr::BinaryOp(b) => b
             .operand_ty
             .clone()

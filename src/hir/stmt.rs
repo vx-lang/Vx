@@ -2007,15 +2007,29 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// The integer type of the name `n` in a contract: a variable in scope, or `return`.
-    fn prover_int_type(&self, n: &str) -> Option<ElementType> {
-        let ty = if n == "return" {
-            self.current_return_type.clone()?
+    /// The integer type of the name `n` in a contract, a variable in scope or `return`, and
+    /// whether its range is a fact. Only a parameter's range is: a fact can be about another
+    /// variable of the same name, from a `let` or an arm that hides it, and a range of the
+    /// wrong type would contradict that fact and so prove anything. `return` is bounded by its
+    /// operands.
+    fn prover_int_type(&self, n: &str) -> Option<(ElementType, bool)> {
+        let (ty, ranged) = if n == "return" {
+            (self.current_return_type.clone()?, false)
         } else {
-            self.lookup(n)?.0.clone()
+            let ty = self.lookup(n)?.0.clone();
+            let param = self
+                .borrow
+                .current_params
+                .iter()
+                .find(|(p, _)| p.as_ref() == n);
+            let hidden = self.declared_vars.iter().any(|(v, _)| v.as_ref() == n);
+            let ranged = param.is_some_and(|(_, p)| *p == ty) && !hidden;
+            (ty, ranged)
         };
         match ty {
-            Type::Scalar(e) if e.int_bits().is_some() && e != ElementType::Bool => Some(e),
+            Type::Scalar(e) if e.int_bits().is_some() && e != ElementType::Bool => {
+                Some((e, ranged))
+            }
             _ => None,
         }
     }
