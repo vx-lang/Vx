@@ -4524,18 +4524,26 @@ impl<'r> Lowerer<'r> {
             .map(|f| (f.name.clone(), f.offset as u64, f.ty.clone()))
             .collect();
 
+        let not_in_layout = Decline::TypeNotModelled {
+            what: "a field not in the modelled layout",
+        };
+        if field_layouts
+            .iter()
+            .any(|(name, _, _)| !si.fields.iter().any(|(n, _)| n == name))
+        {
+            return Err(not_in_layout);
+        }
         let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
-        for (name, offset, _fty) in field_layouts {
+        // The fields are evaluated in the order the source writes them, not in declaration order.
+        for (name, init_expr) in &si.fields {
             // Scalar, pointer, or by-value nested-aggregate fields — a nested aggregate is stored as a
             // whole `!llvm.struct` value (`VecMap { iter: VecIter, f: Closure1 }`), the store type coming
             // from the layout's `field_tys` at emit (#242).
-            let (_, init_expr) = si
-                .fields
+            let offset = field_layouts
                 .iter()
-                .find(|(n, _)| n.as_ref() == name.as_ref())
-                .ok_or(Decline::TypeNotModelled {
-                    what: "a field not in the modelled layout",
-                })?;
+                .find(|(n, _, _)| n == name)
+                .map(|(_, offset, _)| *offset)
+                .ok_or(not_in_layout.clone())?;
             // The initializer already carries the field's declared type — the checker infers a literal
             // to the field type and rejects a genuine mismatch (no implicit conversion, #240).
             let mut v = self.lower_expr(init_expr)?;

@@ -1,0 +1,41 @@
+//===- struct_literal_fields_run_in_source_order.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A struct literal evaluates its fields in the order the source writes them, not in the order
+// the struct declares them (rule E1 in docs/discussions/borrow_check_sequence_points_for_calls.md).
+// `note` prints its first argument, so `order` lists the calls as they ran: `2 1` for the `let`,
+// then `4 3` for the assignment. Declaration order would print `1 2 3 4`.
+//
+// EXPECT: order=2 1 4 3 ; sum=10;
+
+struct P {
+  x : i32,
+  y : i32,
+}
+
+fn note(tag : i32, v : i32) -> i32 {
+  print!("{} ", tag);
+  return v;
+}
+
+fn main() -> i32 {
+  print!("order=");
+  let p = P {
+    y: note(2, 1),
+    x: note(1, 2)
+  };
+  let mut q = P {
+    x: 0,
+    y: 0
+  };
+  q = P {
+    y: note(4, 3),
+    x: note(3, 4)
+  };
+  print!("; sum={};", p.x + p.y + q.x + q.y);
+  return 0;
+}
