@@ -175,10 +175,11 @@ impl SmtProver {
                     ),
                 }
             }
+            // A field or an element is a name of its own, `|p.x|` or `|a[0]|`. The `|` quotes it
+            // in SMT, so it cannot be the name of a variable: `p_x` was both.
             Expr::MemberAccess(m) => {
                 let base = self.lower_expr(&m.base, type_of, None)?;
-                let field = m.member.replace(".", "_");
-                let name = format!("{}_{}", base, field);
+                let name = format!("|{}.{}|", base.replace('|', ""), m.member);
                 self.declarations.insert(name.clone());
                 Ok(name)
             }
@@ -187,7 +188,7 @@ impl SmtProver {
                 let index = self.lower_expr(&i.index, type_of, None)?;
                 // For now, treat array indexing as a flattened variable (e.g. a_0).
                 // Full theory of arrays would require (select a 0).
-                let name = format!("{}_{}", base, index);
+                let name = format!("|{}[{}]|", base.replace('|', ""), index.replace('|', ""));
                 self.declarations.insert(name.clone());
                 Ok(name)
             }
