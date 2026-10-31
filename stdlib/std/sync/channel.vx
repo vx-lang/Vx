@@ -26,6 +26,9 @@
 // The words of a channel are one array of `AtomicI64`: the counters below, and then the number of
 // each slot. A wait blocks the OS thread of the task (`std::sync::wait`). All waits of a channel
 // sleep on the word `WAKE`. Each change that can end a wait adds 1 to it and wakes the sleepers.
+//
+// `select` waits on several channels. It sleeps on one word of the runtime, which each event on
+// any channel also changes.
 //===----------------------------------------------------------------------===//
 import core::marker;
 import core::mem;
@@ -36,6 +39,12 @@ import core::result;
 import core::sync::atomic;
 import std::alloc;
 import std::sync::wait;
+import std::vec;
+
+extern {
+  /// The two words for `select`: the events on any channel, and the threads that sleep on them.
+  fn vx_any_channel_words() -> *mut AtomicI64;
+}
 
 // The number of the next `send`.
 const SENDS : i64 = 0;
@@ -59,6 +68,20 @@ const SLOTS : i64 = 7;
 enum RecvError {
   // Each `Sender` was dropped, and no value is left in the channel.
   Closed,
+}
+
+/// Why a `try_recv` gave no value.
+enum TryRecvError {
+  // No value is in the channel now.
+  Empty,
+  // Each `Sender` was dropped, and no value is left in the channel.
+  Closed,
+}
+
+/// The value that `select` received, and the index of its channel in the list.
+struct Selected<T> {
+  index : i32,
+  value : T,
 }
 
 /// A `send` to a channel whose `Receiver` was dropped. It gives the value back.
@@ -117,11 +140,16 @@ fn word(words : *mut AtomicI64, i : i64) -> &AtomicI64 {
   return unsafe { &words[i] };
 }
 
-/// Wake the threads that wait on a channel. Call it after the change.
+/// Wake the threads that wait on a channel, and each `select`. Call it after the change.
 fn notify(words : *mut AtomicI64) -> void {
   word(words, WAKE).fetch_add(1, AtomicOrdering::SeqCst);
   if word(words, SLEEPERS).load(AtomicOrdering::SeqCst) > 0 {
     wake_all(word(words, WAKE));
+  }
+  let any = unsafe { vx_any_channel_words() };
+  word(any, 0).fetch_add(1, AtomicOrdering::SeqCst);
+  if word(any, 1).load(AtomicOrdering::SeqCst) > 0 {
+    wake_all(word(any, 0));
   }
 }
 
@@ -204,6 +232,76 @@ Receiver<T> {
       seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
     }
     return Result<T, RecvError>::Err(RecvError::Closed);
+  }
+
+  /// The next value, if one is in the channel now. It does not wait. A channel has one
+  /// `Receiver`, so no other `recv` takes the receive number between the load and the store.
+  fn try_recv(self : &Receiver<T>) -> Result<T, TryRecvError> {
+    let words = self.words;
+    let k = word(words, RECVS).load(AtomicOrdering::SeqCst);
+    let slot = word(words, SLOTS + k % self.cap);
+    let closed = word(words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
+    if slot.load(AtomicOrdering::SeqCst) == 2 * k + 1 {
+      word(words, RECVS).store(k + 1, AtomicOrdering::SeqCst);
+      let data = self.data;
+      let value : T = unsafe { data[k % self.cap] };
+      slot.store(2 * (k + self.cap), AtomicOrdering::SeqCst);
+      notify(words);
+      return Result<T, TryRecvError>::Ok(value);
+    }
+    if closed {
+      return Result<T, TryRecvError>::Err(TryRecvError::Closed);
+    }
+    return Result<T, TryRecvError>::Err(TryRecvError::Empty);
+  }
+}
+
+/// The first value from any channel in `rs`. Wait while each open channel is empty. Give `Closed`
+/// when each channel is closed and empty. The search starts at a channel that changes with the
+/// events, so a busy channel does not hide the others.
+fn select<T : Send + Owned>(rs : &Vec<Receiver<T>>) -> Result<Selected<T>, RecvError> {
+  let any = unsafe { vx_any_channel_words() };
+  let n = rs.len();
+  let mut got = Option<Selected<T>>::None;
+  while n > 0 {
+    let seen = word(any, 0).load(AtomicOrdering::SeqCst);
+    // The count of events changes between calls, so it moves the start of the search.
+    let start = (seen % (n as i64)) as i32;
+    let mut open : i32 = 0;
+    let mut j : i32 = 0;
+    while j < n && got.is_none() {
+      let i = (start + j) % n;
+      match rs.get_ref(i).try_recv() {
+        Result<T, TryRecvError>::Ok(v) => {
+          got = Option<Selected<T>>::Some(Selected<T> {
+            index : i, value : v
+          });
+        }
+        Result<T, TryRecvError>::Err(e) => {
+          match e {
+            TryRecvError::Empty => {
+              open = open + 1;
+            }
+            TryRecvError::Closed => {}
+          }
+        }
+      }
+      j = j + 1;
+    }
+    if got.is_some() || open == 0 {
+      break;
+    }
+    word(any, 1).fetch_add(1, AtomicOrdering::SeqCst);
+    wait_while(word(any, 0), seen);
+    word(any, 1).fetch_sub(1, AtomicOrdering::SeqCst);
+  }
+  match got {
+    Option<Selected<T>>::Some(s) => {
+      return Result<Selected<T>, RecvError>::Ok(s);
+    }
+    Option<Selected<T>>::None => {
+      return Result<Selected<T>, RecvError>::Err(RecvError::Closed);
+    }
   }
 }
 

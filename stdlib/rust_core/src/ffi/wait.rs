@@ -67,3 +67,13 @@ pub unsafe extern "C" fn vx_wake_all(word: *const i64) {
     drop(b.lock.lock().unwrap_or_else(|e| e.into_inner()));
     b.cond.notify_all();
 }
+
+/// Two words for `select`, which waits on several channels at once. Each channel event adds 1 to
+/// the first word, and the second word counts the threads in a `select` that sleep on it.
+static ANY_CHANNEL: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
+
+/// The address of the two words for `select`.
+#[no_mangle]
+pub extern "C" fn vx_any_channel_words() -> *mut i64 {
+    ANY_CHANNEL.as_ptr() as *mut i64
+}
