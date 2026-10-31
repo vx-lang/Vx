@@ -420,13 +420,17 @@ impl TypeChecker<'_> {
         // statement too. A statement drops its value. The last value of a block does not.
         if place != Some(SpawnPlace::Let) {
             // A task that can fail needs a handle, so that its join gives the failure to the
-            // block. The type of a tail that names a variable of the task is not known here.
+            // block. The type of a tail that names a variable of the task is not known here, and
+            // the probe can report that variable as undefined. The check of the body below
+            // reports each real error of the tail, so the errors of the probe are dropped.
+            let errors = self.errors.len();
             let tail_ty = match &*expr {
                 Expr::TaskBlock(TaskBlockExpr {
                     ret: Some(tail), ..
                 }) => Some(self.operand_type(tail)),
                 _ => None,
             };
+            self.errors.inner.truncate(errors);
             if let Some((_, err)) = tail_ty.as_ref().and_then(result_parts) {
                 self.task_error(
                     DiagnosticCode::E3060,
