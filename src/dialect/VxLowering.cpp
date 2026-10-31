@@ -2164,6 +2164,48 @@ static void readCellsBeforeSpawns(ModuleOp module) {
   });
 }
 
+// The value from the code around a region that every `vx.yield` of the region
+// gives, or null if the region makes its value or yields none.
+static Value capturedSpawnResult(vx::SpawnOp spawn) {
+  if (spawn.getNumResults() != 1)
+    return Value();
+  Value value;
+  WalkResult r = spawn.getBody().walk([&](vx::YieldOp y) {
+    if (y.getNumOperands() == 0)
+      return WalkResult::advance();
+    if (y.getNumOperands() != 1 || (value && y.getOperand(0) != value))
+      return WalkResult::interrupt();
+    value = y.getOperand(0);
+    return WalkResult::advance();
+  });
+  if (r.wasInterrupted() || !value ||
+      spawn->isAncestor(value.getParentRegion()->getParentOp()))
+    return Value();
+  return value;
+}
+
+// A device region that yields a value from the code around it gives back the
+// value the host already has. So the spawn's result is that value, and the
+// region yields nothing. Without this, the region hands the value back through
+// a host stack slot, which a GPU cannot write, and the region runs on the host.
+static void forwardCapturedSpawnResults(ModuleOp module) {
+  SmallVector<vx::SpawnOp> spawns;
+  module.walk([&](vx::SpawnOp s) { spawns.push_back(s); });
+  for (vx::SpawnOp spawn : spawns) {
+    Value value = capturedSpawnResult(spawn);
+    if (spawn.getTopology() == 0 || !value)
+      continue;
+    spawn.getBody().walk([](vx::YieldOp y) { y->setOperands({}); });
+    OpBuilder builder(spawn);
+    auto bare = vx::SpawnOp::create(builder, spawn.getLoc(), TypeRange{},
+                                    spawn.getTopologyAttr());
+    bare->setDiscardableAttrs(spawn->getDiscardableAttrDictionary());
+    bare.getBody().takeBody(spawn.getBody());
+    spawn.getResult(0).replaceAllUsesWith(value);
+    spawn.erase();
+  }
+}
+
 /// The most static `.shared` storage a CUDA kernel can declare.
 static constexpr int64_t kMaxStaticSharedBytes = 48 * 1024;
 
@@ -2205,9 +2247,13 @@ static bool spawnRunsOnDevice(vx::SpawnOp spawn) {
     return false;
   auto module = spawn->getParentOfType<ModuleOp>();
   DeviceCallees callees;
+  // A region that yields a value it made hands it back through a host slot.
+  // A value from outside the region is given back by
+  // `forwardCapturedSpawnResults`.
+  bool forwarded = static_cast<bool>(capturedSpawnResult(spawn));
   WalkResult r = spawn.getBody().walk<WalkOrder::PreOrder>([&](Operation *op) {
-    // A region that yields a value hands it back through a host slot.
-    if (auto y = dyn_cast<vx::YieldOp>(op); y && y.getNumOperands() > 0)
+    if (auto y = dyn_cast<vx::YieldOp>(op);
+        y && y.getNumOperands() > 0 && !forwarded)
       return WalkResult::interrupt();
     // A fill becomes loops before the device clone is made.
     if (isa<linalg::FillOp>(op))
@@ -3942,6 +3988,9 @@ struct ConvertVxToStandardPass
     placeTransferFrees(getOperation());
     readCellsBeforeSpawns(getOperation());
     promoteBufferCells(getOperation());
+    // After the cells are promoted, so that a value the region reads from a
+    // cell is a plain value.
+    forwardCapturedSpawnResults(getOperation());
     // After the cells are promoted, so that most buffers a drop names are
     // plain values again.
     if (failed(placeDrops(getOperation()))) {
