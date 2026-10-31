@@ -33,6 +33,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <memory>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -58,14 +59,15 @@ struct NcclApi {
 };
 
 /// Loads NCCL from `path`. Returns null and sets `why` if it cannot.
-inline const NcclApi *load_nccl(const char *path, std::string *why) {
+inline std::unique_ptr<const NcclApi> load_nccl(const char *path,
+                                                std::string *why) {
   void *lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   if (!lib) {
     *why = std::string("Vx cannot load NCCL: ") + dlerror() +
            ". Install NCCL, or set VX_NCCL_LIB to the path of libnccl.so.2.";
     return nullptr;
   }
-  NcclApi *api = new NcclApi;
+  auto api = std::make_unique<NcclApi>();
   auto find = [&](auto &slot, const char *name) {
     slot = reinterpret_cast<std::remove_reference_t<decltype(slot)>>(
         dlsym(lib, name));
@@ -81,7 +83,6 @@ inline const NcclApi *load_nccl(const char *path, std::string *why) {
   find(api->AllGather, "ncclAllGather");
   find(api->GetErrorString, "ncclGetErrorString");
   if (!why->empty()) {
-    delete api;
     return nullptr;
   }
   return api;
@@ -274,7 +275,7 @@ private:
   }
 
   CollectiveDevice device_;
-  const NcclApi *api_ = nullptr;
+  std::unique_ptr<const NcclApi> api_;
   NcclComm comm_ = nullptr;
   int device_index_ = 0;
   int32_t rank_ = -1;
