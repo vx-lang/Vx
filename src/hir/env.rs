@@ -1931,6 +1931,11 @@ impl<'a> TypeChecker<'a> {
         self.consteval.comptime_depth = outer_comptime;
         self.drops_exit_function();
         Self::drop_spent_comptime_lambdas(&mut func.body);
+        // For real also inside a probe, as `check_block` checks the body: a generic instance
+        // made during a probe is not checked again.
+        let speculating = std::mem::replace(&mut self.speculating, false);
+        self.check_integer_literals_fit(&func.body);
+        self.speculating = speculating;
 
         self.seam.contracts = prev_contracts;
 
