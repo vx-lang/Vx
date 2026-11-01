@@ -9,9 +9,9 @@
 // printed times 10^6. Enzyme cannot differentiate the core::libm functions themselves, which
 // read the float's bits, so each is marked to be differentiated as its C function.
 //
-// CHECK-DAG: llvm.func {{(hidden )?}}@libm_sinh({{.*}}passthrough = {{\[\[}}"enzyme_math", "sinh"{{\]\]}}
-// CHECK-DAG: llvm.func {{(hidden )?}}@libm_cosh({{.*}}passthrough = {{\[\[}}"enzyme_math", "cosh"{{\]\]}}
-// CHECK-DAG: llvm.func {{(hidden )?}}@libm_tanh({{.*}}passthrough = {{\[\[}}"enzyme_math", "tanh"{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_sinh({{.*}}passthrough = {{\[\[}}"enzyme_math", "sinh"{{(\], \["probe-stack", "inline-asm")?}}{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_cosh({{.*}}passthrough = {{\[\[}}"enzyme_math", "cosh"{{(\], \["probe-stack", "inline-asm")?}}{{\]\]}}
+// CHECK-DAG: llvm.func {{(hidden )?}}@libm_tanh({{.*}}passthrough = {{\[\[}}"enzyme_math", "tanh"{{(\], \["probe-stack", "inline-asm")?}}{{\]\]}}
 // EXPECT: 1543080 1175201 419974
 import core::num;
 
