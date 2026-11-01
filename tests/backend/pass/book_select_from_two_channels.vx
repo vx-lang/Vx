@@ -1,0 +1,62 @@
+//===- book_select_from_two_channels.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on tasks (www/book/src/tasks.md): `select` takes each value from
+// whichever of two channels has one, until both are closed.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator cannot lower `Result<Selected<i64>, RecvError>`: its
+// two variants carry payloads of different kinds.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}from 0: 3 values, from 1: 3 values{{$}}
+
+// ANCHOR: program
+import std::sync::channel;
+import std::vec;
+
+fn send_three(tx : Sender<i64>) -> void {
+  let first : i64 = 0;
+  for i in first..3 {
+    match tx.send(i) {
+      Result<void, SendError<i64>>::Ok() => {}
+      Result<void, SendError<i64>>::Err(_e) => {}
+    }
+  }
+}
+
+fn main() -> i32 {
+  let (tx0, rx0) = channel<i64>(1);
+  let (tx1, rx1) = channel<i64>(1);
+  let mut rs = Vec<Receiver<i64>>::new();
+  rs.push(rx0);
+  rs.push(rx1);
+  let mut counts : Tensor<i64, [2]> = [0, 0];
+  tasks {
+    spawn {
+      send_three(tx0);
+    };
+    spawn {
+      send_three(tx1);
+    };
+    let mut open = true;
+    while open {
+      match select(&rs) {
+        Result<Selected<i64>, RecvError>::Ok(s) => {
+          counts[s.index] = counts[s.index] + 1;
+        }
+        // Both channels are closed and empty.
+        Result<Selected<i64>, RecvError>::Err(_e) => {
+          open = false;
+        }
+      }
+    }
+  };
+  println!("from 0: {} values, from 1: {} values", counts[0], counts[1]);
+  return 0;
+}
+// ANCHOR_END: program

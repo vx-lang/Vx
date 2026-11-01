@@ -1,0 +1,39 @@
+//===- book_mutex_guards_a_total.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on tasks (www/book/src/tasks.md): four tasks add to one total
+// that a `Mutex` guards.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}total 20000{{$}}
+
+// ANCHOR: program
+import std::sync::mutex;
+
+fn add_to(total : &Mutex<i64>, n : i32) -> void {
+  for _i in 0..n {
+    // The guard unlocks the `Mutex` when it is dropped, at the end of each pass.
+    let mut guard = total.lock();
+    let value = guard.get();
+    *value = *value + 1;
+  }
+}
+
+fn main() -> i32 {
+  let total = Mutex<i64>::new(0);
+  tasks {
+    for _t in 0..4 {
+      spawn {
+        add_to(&total, 5000);
+      };
+    }
+  };
+  println!("total {}", total.into_inner());
+  return 0;
+}
+// ANCHOR_END: program
