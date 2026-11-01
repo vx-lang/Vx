@@ -266,3 +266,34 @@ jobs:
 
       - name: Run tests (debug)
         run: cargo test --workspace --verbose
+
+  # The task stack switch in stdlib/rust_core is assembly, one version for each CPU. This job
+  # runs the Rust core tests for aarch64 under qemu-user, and builds the macOS aarch64 library,
+  # so that a change to the aarch64 version cannot pass unseen. It needs no LLVM.
+  rust-core-aarch64:
+    name: Rust core tests on aarch64 (qemu)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -L /usr/aarch64-linux-gnu
+    defaults:
+      run:
+        working-directory: stdlib/rust_core
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu, aarch64-apple-darwin
+
+      - name: Install qemu-user and the aarch64 linker
+        run: sudo apt-get update && sudo apt-get install -y qemu-user gcc-aarch64-linux-gnu
+
+      - name: Run tests (aarch64 Linux)
+        run: cargo test --target aarch64-unknown-linux-gnu --verbose
+
+      - name: Build the library (aarch64 macOS)
+        run: cargo rustc --lib --target aarch64-apple-darwin --crate-type staticlib --verbose
