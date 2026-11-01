@@ -96,9 +96,14 @@ pub extern "C" fn vx_cancel_on() {
     });
 }
 
-/// Swaps the current mark of this thread with `mark`. The shared runtime gives each fiber its own.
-pub(crate) fn swap_current_mark(mark: &mut Option<Arc<CancelMark>>) {
+/// Swaps the current mark and the marks put aside of this thread with these. The shared runtime
+/// gives each fiber its own.
+pub(crate) fn swap_marks(
+    mark: &mut Option<Arc<CancelMark>>,
+    put_aside: &mut Vec<Option<Arc<CancelMark>>>,
+) {
     CURRENT.with(|c| std::mem::swap(&mut *c.borrow_mut(), mark));
+    PUT_ASIDE.with(|p| std::mem::swap(&mut *p.borrow_mut(), put_aside));
 }
 
 /// The tasks of one `tasks` block.

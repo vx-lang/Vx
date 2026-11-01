@@ -43,6 +43,8 @@ const WOKEN: u8 = 3;
 #[derive(Default)]
 pub(crate) struct TaskLocals {
     pub(crate) mark: Option<Arc<CancelMark>>,
+    /// The marks that `vx_cancel_off` put aside. A `drop` can park between the off and the on.
+    pub(crate) put_aside: Vec<Option<Arc<CancelMark>>>,
     pub(crate) line: Vec<u8>,
     pub(crate) to_stderr: bool,
 }
@@ -50,7 +52,7 @@ pub(crate) struct TaskLocals {
 impl TaskLocals {
     /// Swaps these values with the values of this thread.
     fn swap_with_thread(&mut self) {
-        crate::ffi::tasks::swap_current_mark(&mut self.mark);
+        crate::ffi::tasks::swap_marks(&mut self.mark, &mut self.put_aside);
         lines::swap_with_thread(&mut self.line, &mut self.to_stderr);
     }
 }
@@ -583,5 +585,84 @@ mod tests {
             vx_tasks_end(group);
         }
         assert_eq!(p.turn.load(Ordering::SeqCst), 0);
+    }
+
+    struct Drops {
+        first_off: AtomicI64,
+        second_off: AtomicI64,
+        first_on: AtomicI64,
+        /// 1 when a task got its own mark back from `vx_cancel_on`.
+        first_kept: AtomicI64,
+        second_kept: AtomicI64,
+    }
+
+    /// The address of the current mark of this thread, or 0.
+    fn current_mark() -> usize {
+        let (mut mark, mut put_aside) = (None, Vec::new());
+        crate::ffi::tasks::swap_marks(&mut mark, &mut put_aside);
+        let address = mark.as_ref().map_or(0, |m| Arc::as_ptr(m) as usize);
+        crate::ffi::tasks::swap_marks(&mut mark, &mut put_aside);
+        address
+    }
+
+    extern "C" fn first_drop(env: *mut u8) {
+        let d = unsafe { &**(env as *const *const Drops) };
+        let mine = current_mark();
+        crate::ffi::tasks::vx_cancel_off();
+        open(&d.first_off);
+        wait_for(&d.second_off);
+        crate::ffi::tasks::vx_cancel_on();
+        d.first_kept.store(
+            (mine != 0 && current_mark() == mine) as i64,
+            Ordering::SeqCst,
+        );
+        open(&d.first_on);
+    }
+
+    extern "C" fn second_drop(env: *mut u8) {
+        let d = unsafe { &**(env as *const *const Drops) };
+        wait_for(&d.first_off);
+        let mine = current_mark();
+        crate::ffi::tasks::vx_cancel_off();
+        open(&d.second_off);
+        wait_for(&d.first_on);
+        crate::ffi::tasks::vx_cancel_on();
+        d.second_kept.store(
+            (mine != 0 && current_mark() == mine) as i64,
+            Ordering::SeqCst,
+        );
+    }
+
+    #[test]
+    fn each_task_gets_its_own_mark_back_after_a_drop_that_parks() {
+        let _watchdog = Watchdog::new("each_task_gets_its_own_mark_back_after_a_drop_that_parks");
+        let sched = Scheduler::start(1);
+        let d = Drops {
+            first_off: AtomicI64::new(0),
+            second_off: AtomicI64::new(0),
+            first_on: AtomicI64::new(0),
+            first_kept: AtomicI64::new(0),
+            second_kept: AtomicI64::new(0),
+        };
+        // Two blocks, so that the two tasks have different marks. Both tasks put their mark
+        // aside on the one worker, and then the first one takes its mark back.
+        let outer = tasks_begin(Some(sched));
+        unsafe {
+            vx_task_start(outer, first_drop, env_with(&d as *const Drops));
+            let inner = tasks_begin(Some(sched));
+            vx_task_start(inner, second_drop, env_with(&d as *const Drops));
+            vx_tasks_end(inner);
+            vx_tasks_end(outer);
+        }
+        assert_eq!(
+            d.first_kept.load(Ordering::SeqCst),
+            1,
+            "the first task got another mark back"
+        );
+        assert_eq!(
+            d.second_kept.load(Ordering::SeqCst),
+            1,
+            "the second task got another mark back"
+        );
     }
 }
