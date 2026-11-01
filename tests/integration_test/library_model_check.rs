@@ -13,6 +13,8 @@
 // holds the value, and `wake_all` wakes only the threads that wait on that word. The runtime can
 // also wake a thread early, which never hides a lost wake, so the model leaves that out.
 //
+// The search keeps a 128-bit hash of each state that it saw, not the state (`fingerprint`).
+//
 // A state in which no thread can move and some thread is not done is a lost wake or a deadlock.
 // Each value must end exactly once: received, given back by `send`, or dropped by the last end.
 // The values of each sender arrive in order. A slot is never written while it holds a value.
@@ -23,6 +25,7 @@
 //===----------------------------------------------------------------------===//
 
 use std::collections::HashSet;
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// A value that a step computes from the registers of its thread.
 #[derive(Clone, Debug)]
@@ -811,7 +814,9 @@ struct Thread {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct State {
-    words: Vec<i64>,
+    /// The shared words. Each value is small, and an `i16` keeps a state small: the search
+    /// stores millions of them.
+    words: Vec<i16>,
     ring: Vec<Option<i64>>,
     threads: Vec<Thread>,
     /// One bit for each value that ended.
@@ -855,6 +860,24 @@ struct Model {
     ring: usize,
 }
 
+/// A 128-bit hash of `s`. The search keeps this in place of each state that it saw, so that
+/// millions of states fit in the memory of a test machine. Two states with the same hash would
+/// hide one of them, but with a few million states the chance is about 1 in 10^25.
+fn fingerprint(s: &State) -> u128 {
+    let half = |salt: u8| {
+        let mut h = DefaultHasher::new();
+        salt.hash(&mut h);
+        s.hash(&mut h);
+        h.finish() as u128
+    };
+    (half(0) << 64) | half(1)
+}
+
+/// `v` as a shared word.
+fn narrow(v: i64) -> i16 {
+    i16::try_from(v).expect("a shared word of the model fits in an i16")
+}
+
 /// The bit of the value `v`, from sender `v / 100`.
 fn bit(v: i64) -> u64 {
     1u64 << ((v / 100) * 16 + v % 100)
@@ -863,7 +886,7 @@ fn bit(v: i64) -> u64 {
 impl Model {
     fn start(&self) -> State {
         State {
-            words: self.first_words.clone(),
+            words: self.first_words.iter().map(|&w| narrow(w)).collect(),
             ring: vec![None; self.ring],
             threads: self
                 .programs
@@ -915,15 +938,15 @@ impl Model {
             Step::Done => unreachable!("a thread that is done does not move"),
             Step::FetchAdd { dst, word, delta } => {
                 let w = word.eval(&regs) as usize;
-                let old = s.words[w];
-                s.words[w] = old + delta.eval(&regs);
+                let old = s.words[w] as i64;
+                s.words[w] = narrow(old + delta.eval(&regs));
                 s.threads[t].regs[*dst] = old;
             }
             Step::Load { dst, word } => {
-                s.threads[t].regs[*dst] = s.words[word.eval(&regs) as usize];
+                s.threads[t].regs[*dst] = s.words[word.eval(&regs) as usize] as i64;
             }
             Step::Store { word, val } => {
-                s.words[word.eval(&regs) as usize] = val.eval(&regs);
+                s.words[word.eval(&regs) as usize] = narrow(val.eval(&regs));
             }
             Step::WaitWhile {
                 word,
@@ -932,7 +955,7 @@ impl Model {
             } => {
                 let w = word.eval(&regs);
                 let cancelled = or_cancel.is_some_and(|m| s.words[m as usize] != 0);
-                if s.words[w as usize] == val.eval(&regs) && !cancelled {
+                if s.words[w as usize] as i64 == val.eval(&regs) && !cancelled {
                     s.threads[t].waits_on = Some(w);
                 }
             }
@@ -1053,7 +1076,7 @@ impl Model {
     fn check(&self) -> Result<usize, Found> {
         let mut seen = HashSet::new();
         let start = self.start();
-        seen.insert(start.clone());
+        seen.insert(fingerprint(&start));
         let mut stack = vec![start];
         while let Some(s) = stack.pop() {
             let mut moved = false;
@@ -1064,7 +1087,7 @@ impl Model {
                     Ok(true) => moved = true,
                     Err(what) => return Err(found(what, &s)),
                 }
-                if seen.insert(next.clone()) {
+                if seen.insert(fingerprint(&next)) {
                     stack.push(next);
                 }
             }
