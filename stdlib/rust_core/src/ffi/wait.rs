@@ -19,7 +19,8 @@
 //===----------------------------------------------------------------------===//
 
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const BUCKETS: usize = 64;
 
@@ -71,6 +72,47 @@ pub unsafe extern "C" fn vx_wait_while_or_cancel(word: *const i64, value: i64) {
     if atomic.load(Ordering::SeqCst) == value && crate::ffi::tasks::vx_cancelled() == 0 {
         drop(b.cond.wait(guard).unwrap_or_else(|e| e.into_inner()));
     }
+}
+
+/// Nanoseconds since the first call, on a clock that never goes back. A time limit is a
+/// deadline on this clock.
+#[no_mangle]
+pub extern "C" fn vx_clock_ns() -> i64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_nanos() as i64
+}
+
+/// `vx_wait_while`, or `vx_wait_while_or_cancel` when `or_cancel` is not 0, that also returns
+/// at the deadline `deadline_ns` of `vx_clock_ns`. The caller reads the clock again.
+///
+/// # Safety
+///
+/// As for `vx_wait_while`.
+#[no_mangle]
+pub unsafe extern "C" fn vx_wait_while_until(
+    word: *const i64,
+    value: i64,
+    deadline_ns: i64,
+    or_cancel: i32,
+) {
+    let b = bucket(word);
+    let guard = b.lock.lock().unwrap_or_else(|e| e.into_inner());
+    let atomic = unsafe { &*(word as *const AtomicI64) };
+    if atomic.load(Ordering::SeqCst) != value
+        || (or_cancel != 0 && crate::ffi::tasks::vx_cancelled() != 0)
+    {
+        return;
+    }
+    let now = vx_clock_ns();
+    if now >= deadline_ns {
+        return;
+    }
+    let left = Duration::from_nanos((deadline_ns - now) as u64);
+    drop(
+        b.cond
+            .wait_timeout(guard, left)
+            .unwrap_or_else(|e| e.into_inner()),
+    );
 }
 
 /// Wake each thread that waits on the word at `word`. Call it after the change to the word.

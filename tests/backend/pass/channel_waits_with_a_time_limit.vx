@@ -1,0 +1,89 @@
+//===- channel_waits_with_a_time_limit.vx - Vx Compiler -----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `recv_for` on an empty channel gives `TimedOut` after its time limit. `send_for` on a full
+// channel gives its value back with `timed_out` set. The `send_for` already had its place after
+// the value 1, so a later `try_recv` passes that place, and the value 3 arrives after 1.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator cannot lower `Result<i64, RecvError>`: its two
+// variants carry payloads of different kinds.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}recv_for gave TimedOut{{$}}
+// CHECK: {{^}}it waited at least 0.05 seconds: true{{$}}
+// CHECK: {{^}}send_for gave back 2, timed out true, cancelled false{{$}}
+// CHECK: {{^}}recv gave 1{{$}}
+// CHECK: {{^}}try_recv found no value{{$}}
+// CHECK: {{^}}recv gave 3{{$}}
+
+import std::sync::channel;
+import std::sync::wait;
+
+fn say(e : RecvError) -> void {
+  match e {
+    RecvError::Closed => {
+      println!("recv gave Closed");
+    }
+    RecvError::Cancelled => {
+      println!("recv gave Cancelled");
+    }
+    RecvError::TimedOut => {
+      println!("recv_for gave TimedOut");
+    }
+  }
+}
+
+fn show_recv(r : Result<i64, RecvError>) -> void {
+  match r {
+    Result<i64, RecvError>::Ok(v) => {
+      println!("recv gave {}", v);
+    }
+    Result<i64, RecvError>::Err(e) => {
+      say(e);
+    }
+  }
+}
+
+fn send_now(tx : &Sender<i64>, v : i64) -> void {
+  match tx.send(v) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(_e) => {
+      println!("the send of {} did not send", v);
+    }
+  }
+}
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(1);
+  let start = clock_ns();
+  show_recv(rx.recv_for(0.05));
+  let waited = clock_ns() - start >= 50000000;
+  println!("it waited at least 0.05 seconds: {}", waited);
+
+  send_now(&tx, 1);
+  match tx.send_for(2, 0.05) {
+    Result<void, SendError<i64>>::Ok() => {
+      println!("send_for sent 2");
+    }
+    Result<void, SendError<i64>>::Err(e) => {
+      println!("send_for gave back {}, timed out {}, cancelled {}", e.value, e.timed_out, e.cancelled);
+    }
+  }
+  show_recv(rx.recv());
+  match rx.try_recv() {
+    Result<i64, TryRecvError>::Ok(v) => {
+      println!("try_recv gave {}", v);
+    }
+    Result<i64, TryRecvError>::Err(_e) => {
+      println!("try_recv found no value");
+    }
+  }
+  send_now(&tx, 3);
+  show_recv(rx.recv());
+  return 0;
+}

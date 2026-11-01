@@ -406,7 +406,8 @@ For example, a slot of a KV cache must go back to its pool when a task is cancel
 guard for the slot works.
 
 - A wait in a `drop` must have a time limit. Cancellation cannot stop it, so a wait for a peer
-  that is gone would never end.
+  that is gone would never end. `send_for` and `recv_for` take one, and `wait_while_until` is
+  the wait under them. The compiler does not check this yet.
 - A `tasks` block inside a `drop` does not get the cancel of the task outside it.
 
 **F7. Leaving a `tasks` block early.** `return` or `break` out of the code of a `tasks` block
