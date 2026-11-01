@@ -12,15 +12,17 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::integration_test::runtime_test_build;
+
 #[test]
 fn counts_are_kept_for_the_next_launch_without_being_shared() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let source = root.join("tests/runtime/arrival_counts_test.cpp");
     let binary = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("arrival_counts_test");
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
-    let build = Command::new(&cxx)
-        .args(["-std=c++17", "-O1", "-Wall", "-Werror", "-pthread"])
+    let build = runtime_test_build::command(&cxx, "c++17")
+        .arg("-pthread")
         .arg(&source)
         .arg("-o")
         .arg(&binary)

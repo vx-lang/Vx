@@ -21,6 +21,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::integration_test::runtime_test_build;
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -30,10 +32,9 @@ fn a_worker_name_resolves_to_a_machine() {
     let root = repo_root();
     let source = root.join("tests/runtime/manifest_test.cpp");
     let binary = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("manifest_test");
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
-    let build = Command::new(&cxx)
-        .args(["-std=c++17", "-O1", "-Wall", "-Werror"])
+    let build = runtime_test_build::command(&cxx, "c++17")
         .arg(&source)
         .arg("-o")
         .arg(&binary)
@@ -110,9 +111,8 @@ int main(int argc, char **argv) {{
         names.push(format!("SMEM_dev{i}"));
     }
 
-    let cxx = std::env::var("CC").unwrap_or_else(|_| "clang".to_string());
-    let build = Command::new(&cxx)
-        .args(["-std=c11", "-O1", "-Wall", "-Werror"])
+    let cxx = runtime_test_build::cc();
+    let build = runtime_test_build::command(&cxx, "c11")
         .arg(&source)
         .arg("-o")
         .arg(&binary)

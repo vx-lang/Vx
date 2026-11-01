@@ -12,6 +12,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::integration_test::runtime_test_build;
+
 #[test]
 fn an_affine_kernel_on_a_view_gives_the_right_elements() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -25,10 +27,9 @@ fn an_affine_kernel_on_a_view_gives_the_right_elements() {
     }
 
     let binary = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("npu_affine_views_test");
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
-    let build = Command::new(&cxx)
+    let cxx = runtime_test_build::cxx();
+    let build = runtime_test_build::command(&cxx, "c++17")
         .current_dir(&root)
-        .args(["-std=c++17", "-O1", "-Wall", "-Werror"])
         // build.rs allows the deprecated CBLAS calls in npu_dispatch.mm too.
         .args(["-Wno-deprecated-declarations", "-fobjc-arc"])
         .arg("-DVX_ENABLE_CPU_FALLBACK")
