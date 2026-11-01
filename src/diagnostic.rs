@@ -136,6 +136,9 @@ pub enum DiagnosticCode {
     /// write. The closure keeps the value that it copied, so it does not see the write. A later
     /// release makes this an error (K4).
     W1034,
+    /// A `match` arm in a `loop` or `while` can take `Cancelled` from a wait and stays in the
+    /// loop. In a cancelled task each wait gives `Cancelled` at once, so the loop never ends (F4).
+    W1035,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
@@ -352,7 +355,8 @@ pub enum DiagnosticCode {
     /// literals and other `const`s. A `const` table holds a list of number literals, and is
     /// read one number at a time, as `TABLE[i]`.
     E3044,
-    /// A number literal that does not fit `usize`, which holds 0 up to the largest `i64`.
+    /// An integer literal that does not fit its type, such as `300` for a `u8`. A `usize`
+    /// holds 0 up to the largest `i64`.
     E3045,
     /// A `for` loop over a tensor that is not a variable or a flat array literal, such as one a
     /// function call returns, or a nested array literal. The loop reads the tensor by index, so
@@ -691,6 +695,10 @@ pub enum DiagnosticCode {
     E8008,
     /// A loop invariant that the prover cannot show to hold after a pass through the loop body
     E8009,
+    /// An `mlir!` block whose `dialects` list does not match its body: the body uses an
+    /// operation of a dialect that the list does not name, or the list names something that
+    /// is not a dialect. The list is what the block says it uses, so it must be right.
+    E8010,
 }
 
 impl std::fmt::Display for DiagnosticCode {

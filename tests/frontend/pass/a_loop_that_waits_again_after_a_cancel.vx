@@ -1,0 +1,211 @@
+//===- a_loop_that_waits_again_after_a_cancel.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Warning --implicit-check-not=Error
+//
+// In a cancelled task, each wait gives `Cancelled` at once. A `loop` or `while` whose arm takes
+// `Cancelled` and does not leave the loop then never ends, so the compiler warns about the arm.
+// An arm that leaves the loop, gives the error a name, or changes the condition of its `while`
+// gets no warning. So does a `for` loop, a `while` that changes its condition on every pass, and
+// a `match` on an error that cannot be `Cancelled`.
+
+import std::sync::channel;
+
+// CHECK: Warning[W1035] at {{.*}}a_loop_that_waits_again_after_a_cancel.vx:[[@LINE+8]]:7: this arm can take 'Cancelled' and stays in the loop
+fn recv_in_a_loop(rx : &Receiver<i64>) -> i64 {
+  let mut total : i64 = 0;
+  loop {
+    match rx.recv() {
+      Result<i64, RecvError>::Ok(v) => {
+        total = total + v;
+      }
+      Result<i64, RecvError>::Err(_e) => {
+        println!("no value");
+      }
+    }
+    if total > 10 {
+      break;
+    }
+  }
+  return total;
+}
+
+// `SendError` says `cancelled` in a field. A `while` is a loop too, and so is a `_` arm.
+// CHECK: Warning[W1035] at {{.*}}a_loop_that_waits_again_after_a_cancel.vx:[[@LINE+8]]:7: this arm can take 'Cancelled'
+fn send_in_a_while(tx : &Sender<i64>) -> void {
+  let mut sent : i64 = 0;
+  while sent < 3 {
+    match tx.send(sent) {
+      Result<void, SendError<i64>>::Ok() => {
+        sent = sent + 1;
+      }
+      _ => {
+        println!("not sent");
+      }
+    }
+  }
+}
+
+// CHECK: Warning[W1035] at {{.*}}a_loop_that_waits_again_after_a_cancel.vx:[[@LINE+7]]:7: this arm can take 'Cancelled'
+fn select_in_a_loop(rs : &Vec<Receiver<i64>>) -> void {
+  loop {
+    match select(rs) {
+      Result<Selected<i64>, RecvError>::Ok(s) => {
+        println!("channel {} gave {}", s.index, s.value);
+      }
+      Result<Selected<i64>, RecvError>::Err(_) => {
+        println!("no value");
+      }
+    }
+  }
+}
+
+fn leaves_with_break(rx : &Receiver<i64>) -> void {
+  loop {
+    match rx.recv() {
+      Result<i64, RecvError>::Ok(v) => {
+        println!("{}", v);
+      }
+      Result<i64, RecvError>::Err(_e) => {
+        break;
+      }
+    }
+  }
+}
+
+fn leaves_with_a_break_in_an_if(tx : &Sender<i64>, stop : bool) -> void {
+  loop {
+    match tx.send(1) {
+      Result<void, SendError<i64>>::Ok() => {}
+      Result<void, SendError<i64>>::Err(_e) => {
+        if stop {
+          break;
+        }
+        println!("not sent");
+      }
+    }
+  }
+}
+
+fn names_the_error(tx : &Sender<i64>) -> void {
+  loop {
+    match tx.send(1) {
+      Result<void, SendError<i64>>::Ok() => {}
+      Result<void, SendError<i64>>::Err(e) => {
+        println!("cancelled {}", e.cancelled);
+      }
+    }
+  }
+}
+
+// The arm sets the condition of the `while` to false, so the loop ends.
+fn clears_the_condition(rx : &Receiver<i64>) -> void {
+  let mut open = true;
+  while open {
+    match rx.recv() {
+      Result<i64, RecvError>::Ok(v) => {
+        println!("{}", v);
+      }
+      Result<i64, RecvError>::Err(_e) => {
+        open = false;
+      }
+    }
+  }
+}
+
+// Each pass adds 1 to `round`, so the `while` ends after 3 passes.
+fn counts_every_pass(rx : &Receiver<i64>) -> void {
+  let mut round : i64 = 0;
+  while round < 3 {
+    match rx.recv() {
+      Result<i64, RecvError>::Ok(v) => {
+        println!("{}", v);
+      }
+      Result<i64, RecvError>::Err(_e) => {
+        println!("no value");
+      }
+    }
+    round = round + 1;
+  }
+}
+
+fn recv_in_a_for_loop(rx : &Receiver<i64>) -> void {
+  for _i in 0..3 {
+    match rx.recv() {
+      Result<i64, RecvError>::Ok(v) => {
+        println!("{}", v);
+      }
+      Result<i64, RecvError>::Err(_e) => {
+        println!("no value");
+      }
+    }
+  }
+}
+
+enum HalfError {
+  Odd,
+}
+
+fn half(x : i64) -> Result<i64, HalfError> {
+  if x % 2 == 0 {
+    return Result<i64, HalfError>::Ok(x / 2);
+  }
+  return Result<i64, HalfError>::Err(HalfError::Odd);
+}
+
+fn an_error_that_is_not_a_cancel() -> void {
+  let mut x : i64 = 7;
+  while x > 0 {
+    match half(x) {
+      Result<i64, HalfError>::Ok(h) => {
+        x = h;
+      }
+      Result<i64, HalfError>::Err(_e) => {
+        x = x - 1;
+      }
+    }
+  }
+}
+
+// The task body is not in the loop: the task waits once.
+fn a_task_in_a_loop() -> void {
+  loop {
+    let (tx, rx) = channel<i64>(1);
+    tasks {
+      spawn {
+        let r = rx;
+        match r.recv() {
+          Result<i64, RecvError>::Ok(v) => {
+            println!("{}", v);
+          }
+          Result<i64, RecvError>::Err(_e) => {
+            println!("no value");
+          }
+        }
+      };
+      drop(tx);
+    };
+    break;
+  }
+}
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(4);
+  recv_in_a_loop(&rx);
+  send_in_a_while(&tx);
+  let rs = Vec<Receiver<i64>>::new();
+  select_in_a_loop(&rs);
+  leaves_with_break(&rx);
+  leaves_with_a_break_in_an_if(&tx, true);
+  names_the_error(&tx);
+  clears_the_condition(&rx);
+  counts_every_pass(&rx);
+  recv_in_a_for_loop(&rx);
+  an_error_that_is_not_a_cancel();
+  a_task_in_a_loop();
+  return 0;
+}

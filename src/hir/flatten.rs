@@ -575,8 +575,12 @@ enum PendingDrop {
         flag: Option<Symbol>,
         field: bool,
     },
-    /// A `Drop` impl's `drop` to call, as the statement that calls it.
-    Call(Box<Statement>),
+    /// The statement that runs a drop: a `Drop` impl's `drop` (`calls_drop`), or a `match` on
+    /// an enum whose arms hold more drops.
+    Call {
+        stmt: Box<Statement>,
+        calls_drop: bool,
+    },
 }
 
 impl<'r> Lowerer<'r> {
@@ -1008,7 +1012,10 @@ impl<'r> Lowerer<'r> {
     /// `Statement::Drop`: free the owner now, or once the next statement has its value.
     fn lower_drop(&mut self, d: &crate::syntax::DropStmt) -> Lowered<()> {
         let drop = if let Some(stmt) = d.call_statement() {
-            PendingDrop::Call(Box::new(stmt))
+            PendingDrop::Call {
+                stmt: Box::new(stmt),
+                calls_drop: d.call.is_some(),
+            }
         } else if let Some(place) = d.expr.as_deref() {
             let v = self.lower_expr(place)?;
             if !matches!(v.ty, LoweredTy::Tensor { .. }) {
@@ -1047,7 +1054,18 @@ impl<'r> Lowerer<'r> {
     fn emit_drop(&mut self, d: PendingDrop) -> Lowered<()> {
         let (reg, flag, field) = match d {
             PendingDrop::Tensor { reg, flag, field } => (reg, flag, field),
-            PendingDrop::Call(stmt) => return self.lower_stmt_inner(&stmt),
+            // A `Drop` impl runs with cancellation off (F6), so a `send` or a wait in it can
+            // finish.
+            PendingDrop::Call { stmt, calls_drop } => {
+                if calls_drop {
+                    self.emit_effect(Opcode::CancelOff, Register(0), Register(0), 0);
+                }
+                self.lower_stmt_inner(&stmt)?;
+                if calls_drop {
+                    self.emit_effect(Opcode::CancelOn, Register(0), Register(0), 0);
+                }
+                return Ok(());
+            }
         };
         let field_bit = if field { TENSOR_DROP_FIELD } else { 0 };
         let Some(flag) = flag else {
@@ -4627,18 +4645,26 @@ impl<'r> Lowerer<'r> {
             .map(|f| (f.name.clone(), f.offset as u64, f.ty.clone()))
             .collect();
 
+        let not_in_layout = Decline::TypeNotModelled {
+            what: "a field not in the modelled layout",
+        };
+        if field_layouts
+            .iter()
+            .any(|(name, _, _)| !si.fields.iter().any(|(n, _)| n == name))
+        {
+            return Err(not_in_layout);
+        }
         let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
-        for (name, offset, _fty) in field_layouts {
+        // The fields are evaluated in the order the source writes them, not in declaration order.
+        for (name, init_expr) in &si.fields {
             // Scalar, pointer, or by-value nested-aggregate fields — a nested aggregate is stored as a
             // whole `!llvm.struct` value (`VecMap { iter: VecIter, f: Closure1 }`), the store type coming
             // from the layout's `field_tys` at emit (#242).
-            let (_, init_expr) = si
-                .fields
+            let offset = field_layouts
                 .iter()
-                .find(|(n, _)| n.as_ref() == name.as_ref())
-                .ok_or(Decline::TypeNotModelled {
-                    what: "a field not in the modelled layout",
-                })?;
+                .find(|(n, _, _)| n == name)
+                .map(|(_, offset, _)| *offset)
+                .ok_or(not_in_layout.clone())?;
             // The initializer already carries the field's declared type — the checker infers a literal
             // to the field type and rejects a genuine mismatch (no implicit conversion, #240).
             let mut v = self.lower_expr(init_expr)?;

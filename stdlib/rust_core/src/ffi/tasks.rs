@@ -73,6 +73,27 @@ impl CancelMark {
 thread_local! {
     /// The mark of the innermost block whose task or code this thread runs.
     static CURRENT: RefCell<Option<Arc<CancelMark>>> = const { RefCell::new(None) };
+    /// The marks that `vx_cancel_off` put aside, innermost last.
+    static PUT_ASIDE: RefCell<Vec<Option<Arc<CancelMark>>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Before a `drop`: this thread runs with no mark until `vx_cancel_on`, so no wait gives
+/// `Cancelled` (F6). A `tasks` block in the `drop` gets a mark with no parent.
+#[no_mangle]
+pub extern "C" fn vx_cancel_off() {
+    let mark = CURRENT.with(|c| c.borrow_mut().take());
+    PUT_ASIDE.with(|p| p.borrow_mut().push(mark));
+}
+
+/// After a `drop`: the mark that `vx_cancel_off` put aside comes back.
+#[no_mangle]
+pub extern "C" fn vx_cancel_on() {
+    let mark = PUT_ASIDE.with(|p| p.borrow_mut().pop());
+    let mark = mark.expect("vx_cancel_on comes after vx_cancel_off");
+    CURRENT.with(|c| {
+        assert!(c.borrow().is_none(), "a tasks block in a drop did not end");
+        *c.borrow_mut() = mark;
+    });
 }
 
 /// Swaps the current mark of this thread with `mark`. The shared runtime gives each fiber its own.

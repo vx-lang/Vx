@@ -46,7 +46,8 @@ pub(crate) enum Moved {
 #[derive(Clone)]
 struct Owner {
     name: String,
-    is_param: bool,
+    /// What gave it to its block, `the function` or `the arm`; `None` for a `let`.
+    given_by: Option<&'static str>,
     /// The statement that declares it in its block; `None` for a parameter.
     decl: Option<usize>,
     /// A raw pointer was taken from it: dropped at the end of its block, not its last use.
@@ -257,8 +258,10 @@ impl BlockUseList {
 #[derive(Clone, Default)]
 pub(crate) struct DropFrames {
     frames: Vec<FrameKind>,
-    /// Owners to add to the next block: a function's parameters that need dropping.
+    /// Owners to add to the next block: a function's parameters, or the names a `match` arm
+    /// binds by value, that need dropping. `pending_by` is what gave them.
     pending: Vec<(String, usize, Vec<GluePart>)>,
+    pending_by: &'static str,
     /// The names moved by the statement being checked. A `return t` moves `t` on its way out.
     moved_now: HashSet<String>,
     /// Makes the names of the locals the rewrite adds unique.
@@ -727,6 +730,26 @@ impl<'a> TypeChecker<'a> {
             .into_iter()
             .map(|(p, glue)| (p, scope, glue))
             .collect();
+        d.pending_by = "the function";
+    }
+
+    /// A `match` arm takes the value it matched: the names it binds own their parts of it, and
+    /// the arm's block drops them, as a function body drops its parameters.
+    pub(crate) fn drops_bind_arm(&mut self, names: &[crate::symbol::Symbol]) {
+        let scope = self.scopes.len() - 1;
+        let mut pending = Vec::new();
+        for name in names {
+            let Some(ty) = self.lookup(name).map(|(t, _)| t.clone()) else {
+                continue;
+            };
+            let glue = self.drops_glue(&ty);
+            if !glue.is_empty() {
+                pending.push((name.to_string(), scope, glue));
+            }
+        }
+        let d = &mut self.borrow.drops;
+        d.pending = pending;
+        d.pending_by = "the arm";
     }
 
     pub(crate) fn drops_exit_function(&mut self) {
@@ -777,11 +800,12 @@ impl<'a> TypeChecker<'a> {
 
     pub(crate) fn drops_enter_block(&mut self, body: &[Statement], value: Option<&Expr>) {
         let d = &mut self.borrow.drops;
+        let given_by = d.pending_by;
         let owners = std::mem::take(&mut d.pending)
             .into_iter()
             .map(|(name, scope, glue)| Owner {
                 name,
-                is_param: true,
+                given_by: Some(given_by),
                 decl: None,
                 to_block_end: glue.iter().any(GluePart::calls),
                 scope,
@@ -858,7 +882,7 @@ impl<'a> TypeChecker<'a> {
         if let Some(FrameKind::Block { owners, stmt, .. }) = self.borrow.drops.frames.last_mut() {
             owners.push(Owner {
                 name: name.to_string(),
-                is_param: false,
+                given_by: None,
                 decl: Some(*stmt),
                 to_block_end: glue.iter().any(GluePart::calls),
                 scope,
@@ -1469,14 +1493,16 @@ impl<'a> TypeChecker<'a> {
                         );
                         Some(i)
                     }
-                    None if owner.is_param => {
-                        self.drops_print(owner, "at the start of the function".to_string());
-                        None
-                    }
-                    None => {
-                        self.drops_print(owner, "where it is made".to_string());
-                        owner.decl
-                    }
+                    None => match owner.given_by {
+                        Some(by) => {
+                            self.drops_print(owner, format!("at the start of {by}"));
+                            None
+                        }
+                        None => {
+                            self.drops_print(owner, "where it is made".to_string());
+                            owner.decl
+                        }
+                    },
                 }
             };
             let stmts = owner_drop(owner);

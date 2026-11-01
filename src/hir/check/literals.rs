@@ -227,9 +227,7 @@ impl<'a> TypeChecker<'a> {
     /// type. A suffixed literal already carries its type and is returned unchanged.
     pub(crate) fn check_number_literal(&mut self, n: &mut NumberExpr) -> Type {
         if let Some(el) = &n.ty {
-            let el = el.clone();
-            self.check_usize_literal(n, &el);
-            return Type::Scalar(el);
+            return Type::Scalar(el.clone());
         }
         let elem = self
             .expected_type
@@ -237,7 +235,6 @@ impl<'a> TypeChecker<'a> {
             .and_then(|t| expected_numeric_elem(t, &n.value))
             .unwrap_or_else(|| crate::parser::expr::default_number_elem(&n.value));
         n.ty = Some(elem.clone());
-        self.check_usize_literal(n, &elem);
         Type::Scalar(elem)
     }
 
@@ -268,26 +265,53 @@ impl<'a> TypeChecker<'a> {
         })
     }
 
-    /// A `usize` never has its top bit set, which is what lets its arithmetic be marked as
-    /// never wrapping, so a literal past the largest `i64` is refused rather than stored.
-    pub(crate) fn check_usize_literal(&mut self, n: &NumberExpr, elem: &ElementType) {
-        if *elem != ElementType::USize
-            || self.speculating
-            || elem.accepts_integer_literal(n.value.as_ref()) != Some(false)
-        {
-            return;
-        }
-        self.errors.error_with_code(
-            crate::diagnostic::DiagnosticCode::E3045,
-            format!(
-                "{} does not fit `usize`, which holds 0 up to {}",
-                n.value,
-                i64::MAX
-            ),
+    /// E3045 for each integer literal in `body` that its type cannot hold. Without it, the
+    /// code generators kept the low bits, so `let x : i32 = 3000000000` held -1294967296.
+    ///
+    /// It runs once the body is checked, because a literal can change type after it is first
+    /// checked: a literal argument takes the type of its parameter only when the call is
+    /// resolved. A literal under a `-` is read with it, so `-128` fits an `i8`, though `128`
+    /// does not. A `usize` never has its top bit set, which is what lets its arithmetic be
+    /// marked as never wrapping.
+    pub(crate) fn check_integer_literals_fit(&mut self, body: &[Statement]) {
+        let mut found: Vec<(String, ElementType, Span)> = Vec::new();
+        let mut negated: std::collections::HashSet<*const NumberExpr> = Default::default();
+        crate::syntax::visit_exprs(body, &mut |e| match e {
+            Expr::UnaryOp(u) if u.op == UnaryOp::Neg => {
+                if let Expr::Number(n) = &*u.expr {
+                    negated.insert(n as *const NumberExpr);
+                    // `-` on a `usize` has its own error, E3030.
+                    if let Some(ty) = n.ty.as_ref().filter(|t| **t != ElementType::USize) {
+                        found.push((format!("-{}", n.value), ty.clone(), u.span));
+                    }
+                }
+            }
+            Expr::Number(n) if !negated.contains(&(n as *const NumberExpr)) => {
+                if let Some(ty) = &n.ty {
+                    found.push((n.value.to_string(), ty.clone(), n.span));
+                }
+            }
+            _ => {}
+        });
+        for (text, ty, span) in found {
+            if ty.accepts_integer_literal(&text) != Some(false) {
+                continue;
+            }
+            let message = if ty == ElementType::USize {
+                format!(
+                    "{text} does not fit `usize`, which holds 0 up to {}",
+                    i64::MAX
+                )
+            } else {
+                format!("{text} does not fit `{ty}`")
+            };
             // A number literal has no span of its own: spans take part in comparing types,
-            // and a literal is also a tensor dimension.
-            None,
-        );
+            // and a literal is also a tensor dimension. The `-` before one has a span.
+            let at = (span != Span::default())
+                .then(|| crate::diagnostic::SourceSpan::from_ast_span(&span));
+            self.errors
+                .error_with_code(crate::diagnostic::DiagnosticCode::E3045, message, at);
+        }
     }
 
     /// The tensor an operand denotes, seen through the wrappers that do not

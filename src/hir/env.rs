@@ -132,6 +132,10 @@ pub struct GlobalAstEnv<'a> {
     /// entry means `AnyParam` — today's conservative behaviour. See `crate::hir::provenance`.
     pub return_provenances:
         HashMap<crate::symbol::Symbol, crate::hir::provenance::ReturnProvenance>,
+    /// The same summary for each method, under [`crate::hir::provenance::method_key`].
+    pub method_provenances: HashMap<String, crate::hir::provenance::ReturnProvenance>,
+    /// The struct and enum declarations that a summary reads.
+    pub decls: crate::hir::provenance::Decls<'a>,
     /// This compilation's transfer-cost graph: the built-in memory-space edges plus every declared
     /// topology's, with the all-pairs shortest-path matrix precomputed.
     ///
@@ -169,6 +173,8 @@ impl<'a> GlobalAstEnv<'a> {
             transfer_impls: Vec::new(),
             externs: Vec::new(),
             return_provenances: HashMap::new(),
+            method_provenances: HashMap::new(),
+            decls: Default::default(),
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
             consts: HashMap::new(),
         };
@@ -288,20 +294,31 @@ impl<'a> GlobalAstEnv<'a> {
                         ),
                     );
                     env.syntax_functions.insert(func.name.clone(), func);
-                    // Summarize the return provenance while the body is present. Signature-stripped
-                    // callers (production) leave this empty and refill via
-                    // `annotate_return_provenances` from the full modules.
-                    if !func.body.is_empty() {
-                        env.return_provenances.insert(
-                            func.name.clone(),
-                            crate::hir::provenance::compute_return_provenance(func),
-                        );
-                    }
                 }
             }
         }
-        let funcs: Vec<&Function> = env.syntax_functions.values().copied().collect();
-        crate::hir::provenance::refine_through_calls(&funcs, &mut env.return_provenances);
+        // Summarize the return provenance while the bodies are present. Signature-stripped
+        // callers (production) refill the free functions via `annotate_return_provenances`.
+        env.decls = crate::hir::provenance::Decls::new(
+            env.structs.values().copied(),
+            env.enums.values().copied(),
+        );
+        let decls = &env.decls;
+        let funcs: Vec<&Function> = env
+            .syntax_functions
+            .values()
+            .copied()
+            .chain(env.generic_functions.values().map(|(f, _)| *f))
+            .collect();
+        let mut functions = crate::hir::provenance::provenance_map(funcs.iter().copied(), decls);
+        crate::hir::provenance::refine_through_calls(&funcs, decls, &mut functions);
+        let methods = crate::hir::provenance::method_provenance_map(
+            env.impls.values().flatten().copied(),
+            decls,
+            &functions,
+        );
+        env.return_provenances = functions;
+        env.method_provenances = methods;
         // Build the transfer-cost graph once, now that `topologies` is populated. It used to be
         // built inside `TypeChecker::new` -- that is, once per *function* -- where it ran the
         // all-pairs shortest-path precompute twice (once in `default()`, once in
@@ -338,18 +355,23 @@ impl<'a> GlobalAstEnv<'a> {
     /// precision. Idempotent — overwrites any existing entry. A function whose summary cannot be
     /// computed (no body) is left absent, i.e. conservative `AnyParam` at lookup.
     pub fn annotate_return_provenances(&mut self, modules: &[Program]) {
-        for module in modules {
-            for func in &module.functions {
-                if func.generics.is_empty() && !func.body.is_empty() {
-                    self.return_provenances.insert(
-                        func.name.clone(),
-                        crate::hir::provenance::compute_return_provenance(func),
-                    );
-                }
-            }
-        }
         let funcs: Vec<&Function> = modules.iter().flat_map(|m| m.functions.iter()).collect();
-        crate::hir::provenance::refine_through_calls(&funcs, &mut self.return_provenances);
+        self.return_provenances
+            .extend(crate::hir::provenance::provenance_map(
+                funcs.iter().copied(),
+                &self.decls,
+            ));
+        crate::hir::provenance::refine_through_calls(
+            &funcs,
+            &self.decls,
+            &mut self.return_provenances,
+        );
+        // A method that calls a free function reads the summaries just made.
+        self.method_provenances = crate::hir::provenance::method_provenance_map(
+            self.impls.values().flatten().copied(),
+            &self.decls,
+            &self.return_provenances,
+        );
     }
 
     /// Fill [`GlobalAstEnv::comptime_bodies`] from modules that still carry bodies.
@@ -403,6 +425,18 @@ impl<'a> GlobalAstEnv<'a> {
     pub fn return_provenance_of(&self, name: &str) -> crate::hir::provenance::ReturnProvenance {
         self.return_provenances
             .get(name)
+            .copied()
+            .unwrap_or(crate::hir::provenance::ReturnProvenance::AnyParam)
+    }
+
+    /// The summary for the method `method` of the impl `ib`, or the conservative default.
+    pub fn method_provenance_of(
+        &self,
+        ib: &ImplBlock,
+        method: &str,
+    ) -> crate::hir::provenance::ReturnProvenance {
+        self.method_provenances
+            .get(&crate::hir::provenance::method_key(ib, method))
             .copied()
             .unwrap_or(crate::hir::provenance::ReturnProvenance::AnyParam)
     }
@@ -508,6 +542,11 @@ pub struct TypeChecker<'a> {
     /// statement `match` whose arms yield nothing has no value rather than the function's
     /// return type. Every expression check takes it back to `false` on entry.
     pub(crate) value_unused: bool,
+    /// The `loop`s and `while`s around the code being checked, in this function, task or
+    /// closure, innermost last, for W1035. `None` for a `while` whose body changes its condition
+    /// on every pass. Otherwise the variables that the condition reads: an arm that changes one
+    /// can end the loop.
+    pub(crate) cancel_loops: Vec<Option<Vec<String>>>,
     /// The variables that closures in `let`s copied, for W1034.
     pub(crate) closure_copies: Vec<crate::hir::check::closure_copies::ClosureCopy>,
     /// The `let` being checked, when its value is a closure.
@@ -599,6 +638,7 @@ impl<'a> TypeChecker<'a> {
             unreadable_reported: Default::default(),
             indexed_name: None,
             value_unused: false,
+            cancel_loops: Vec::new(),
             closure_copies: Vec::new(),
             let_closure: None,
             checking_assign_lhs: false,
@@ -1818,7 +1858,9 @@ impl<'a> TypeChecker<'a> {
             );
         }
 
-        let prev_constraints = self.consteval.constraints.clone();
+        // A function's proofs start from its own `requires`. A generic instance is checked from
+        // inside its caller, and the caller's facts are about the caller's variables.
+        let prev_constraints = std::mem::take(&mut self.consteval.constraints);
         self.check_atomic_contract(func);
         // An atomic clause is for the race proof, not for the prover.
         let proved: Vec<Expr> = func
@@ -1883,6 +1925,7 @@ impl<'a> TypeChecker<'a> {
         let prev_borrows = self.borrow.take();
         let prev_shadowed = self.borrow.take_shadowed();
         let prev_closure_copies = std::mem::take(&mut self.closure_copies);
+        let prev_cancel_loops = std::mem::take(&mut self.cancel_loops);
         let prev_borrowers = self.borrow.take_borrowers();
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
@@ -1931,6 +1974,11 @@ impl<'a> TypeChecker<'a> {
         self.consteval.comptime_depth = outer_comptime;
         self.drops_exit_function();
         Self::drop_spent_comptime_lambdas(&mut func.body);
+        // For real also inside a probe, as `check_block` checks the body: a generic instance
+        // made during a probe is not checked again.
+        let speculating = std::mem::replace(&mut self.speculating, false);
+        self.check_integer_literals_fit(&func.body);
+        self.speculating = speculating;
 
         self.seam.contracts = prev_contracts;
 
@@ -2056,6 +2104,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.restore(prev_borrows);
         self.borrow.restore_shadowed(prev_shadowed);
         self.closure_copies = prev_closure_copies;
+        self.cancel_loops = prev_cancel_loops;
         self.borrow.restore_borrowers(prev_borrowers);
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;

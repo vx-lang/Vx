@@ -1,0 +1,144 @@
+//===- a_result_holds_the_borrows_its_arguments_hold.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A result that may point where a reference in an argument points holds the borrows that the
+// argument holds. Each function here changes what such a result points at while the result is
+// still in use. The checker refuses each change, as in Rust.
+import std::vec;
+
+struct Holder {
+  r : &i64,
+}
+
+fn get(h : &Holder) -> &i64 {
+  return h.r;
+}
+
+// Stores `b` in `h`, and then reads it back out of `h`.
+fn put_and_get(h : &mut Holder, b : &i64) -> &i64 {
+  h.r = b;
+  return h.r;
+}
+
+struct Outer {
+  inner : &Holder,
+}
+
+fn get_through_two(o : &Outer) -> &i64 {
+  return (*o.inner).r;
+}
+
+// `x` points into the buffer of `a`, which a `push` can move.
+fn push_while_an_item_is_used() -> i64 {
+  let mut a = Vec<i64>::new();
+  a.push(1i64);
+  let mut it = a.iter();
+  let x = it.next().unwrap();
+  // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:{{.*}}Cannot borrow 'a' as mutable because it is also borrowed as immutable.
+  a.push(2i64);
+  return *x;
+}
+
+// `map` takes `it` by value, and `m` holds the borrow of `a` that `it` held.
+fn push_while_a_map_is_used() -> i64 {
+  let mut a = Vec<i64>::new();
+  a.push(1i64);
+  let it = a.iter();
+  let mut m = it.map(|r : &i64| *r * 2i64);
+  // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:{{.*}}Cannot borrow 'a' as mutable because it is also borrowed as immutable.
+  a.push(2i64);
+  return m.next().unwrap();
+}
+
+// `p` points at `it`, and `it` holds the borrow of `a`. `x` holds it too.
+fn push_while_an_item_through_a_reference_is_used() -> i64 {
+  let mut a = Vec<i64>::new();
+  a.push(1i64);
+  let mut it = a.iter();
+  let p = &mut it;
+  let x = p.next().unwrap();
+  // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:{{.*}}Cannot borrow 'a' as mutable because it is also borrowed as immutable.
+  a.push(2i64);
+  return *x;
+}
+
+// `next` of `iter_mut` reads an item through a `&mut` field, so the item keeps the iterator
+// borrowed.
+// Otherwise two calls could give two `&mut` to one element.
+fn two_mutable_items_at_once() -> i64 {
+  let mut a = Vec<i64>::new();
+  a.push(1i64);
+  a.push(5i64);
+  let mut it = a.iter_mut();
+  let x = it.next().unwrap();
+  // CHECK: Error[E4004] at {{.*}}.vx:[[@LINE+1]]:{{.*}}Cannot borrow 'it' because it is already borrowed as mutable.
+  let y = it.next().unwrap();
+  *x = 2i64;
+  return *y;
+}
+
+// `get_ref` reads through the raw pointer field of `a`, so `r` points into `a`.
+fn push_while_an_element_is_used() -> i64 {
+  let mut a = Vec<i64>::new();
+  a.push(1i64);
+  let r = a.get_ref(0);
+  // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:{{.*}}Cannot borrow 'a' as mutable because it is also borrowed as immutable.
+  a.push(2i64);
+  return *r;
+}
+
+// `r` points where `h.r` points, which is `one`.
+fn assign_what_a_read_reference_points_at() -> i64 {
+  let mut one = 1i64;
+  let h = Holder {
+    r : &one
+  };
+  let r = get(&h);
+  // CHECK: Error[E4009] at {{.*}}.vx:[[@LINE+1]]:{{.*}}`one` is assigned while it is borrowed
+  one = 3i64;
+  return *r;
+}
+
+// `put_and_get` returns what it stored in `h`, which is `y`.
+fn assign_what_a_stored_reference_points_at() -> i64 {
+  let x = 1i64;
+  let mut y = 2i64;
+  let mut h = Holder {
+    r : &x
+  };
+  let r = put_and_get(&mut h, &y);
+  // CHECK: Error[E4009] at {{.*}}.vx:[[@LINE+1]]:{{.*}}`y` is assigned while it is borrowed
+  y = 5i64;
+  return *r;
+}
+
+// `o` borrows `h`, and `h` holds the borrow of `one`. `r` holds it too.
+fn assign_what_a_reference_two_levels_down_points_at() -> i64 {
+  let mut one = 1i64;
+  let h = Holder {
+    r : &one
+  };
+  let o = Outer {
+    inner : &h
+  };
+  let r = get_through_two(&o);
+  // CHECK: Error[E4009] at {{.*}}.vx:[[@LINE+1]]:{{.*}}`one` is assigned while it is borrowed
+  one = 3i64;
+  return *r;
+}
+
+fn main() -> i32 {
+  let total = push_while_an_item_is_used() + push_while_a_map_is_used()
+  + push_while_an_item_through_a_reference_is_used() + two_mutable_items_at_once()
+  + push_while_an_element_is_used() + assign_what_a_read_reference_points_at()
+  + assign_what_a_stored_reference_points_at()
+  + assign_what_a_reference_two_levels_down_points_at();
+  return total as i32;
+}
+// CHECK: 8 error(s) emitted

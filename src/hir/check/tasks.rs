@@ -98,7 +98,7 @@ struct Failure {
 }
 
 /// The `T` and `E` of core's `Result<T, E>`. The compiler knows `Result` by its name.
-fn result_parts(ty: &Type) -> Option<(Type, Type)> {
+pub(crate) fn result_parts(ty: &Type) -> Option<(Type, Type)> {
     let Type::GenericInstance(base, args) = ty else {
         return None;
     };
@@ -208,7 +208,12 @@ impl TypeChecker<'_> {
         };
         match tb.kind {
             TaskBlockKind::Tasks => self.check_tasks_block(expr, consume),
-            TaskBlockKind::Spawn => self.check_spawn(expr, consume),
+            TaskBlockKind::Spawn => {
+                let loops = std::mem::take(&mut self.cancel_loops);
+                let ty = self.check_spawn(expr, consume);
+                self.cancel_loops = loops;
+                ty
+            }
         }
     }
 

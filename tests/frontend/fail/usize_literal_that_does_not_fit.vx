@@ -16,15 +16,15 @@ fn take(n : usize) -> usize {
 }
 
 fn main() -> i32 {
-  // CHECK: Error[E3045] in {{.*}}usize_literal_that_does_not_fit.vx: 9223372036854775808 does not fit `usize`, which holds 0 up to 9223372036854775807
+  // CHECK-DAG: Error[E3045] in {{.*}}usize_literal_that_does_not_fit.vx: 9223372036854775808 does not fit `usize`, which holds 0 up to 9223372036854775807
   let typed : usize = 9223372036854775808;
-  // CHECK: Error[E3045] in {{.*}}usize_literal_that_does_not_fit.vx: 9223372036854775809 does not fit `usize`
+  // CHECK-DAG: Error[E3045] in {{.*}}usize_literal_that_does_not_fit.vx: 9223372036854775809 does not fit `usize`
   let suffixed = 9223372036854775809usize;
-  // CHECK: Error[E3045] in {{.*}}usize_literal_that_does_not_fit.vx: 18446744073709551615 does not fit `usize`
+  // CHECK-DAG: Error[E3045] in {{.*}}usize_literal_that_does_not_fit.vx: 18446744073709551615 does not fit `usize`
   let passed = take(18446744073709551615);
   let a : usize = 3;
   let b : i64 = 4;
-  // CHECK: Error[E3004]{{.*}}Type mismatch in binary operation: usize vs i64
+  // CHECK-DAG: Error[E3004]{{.*}}Type mismatch in binary operation: usize vs i64
   let mixed = a + b;
   return 0;
 }

@@ -1,0 +1,86 @@
+//===- a_drop_runs_with_cancellation_off.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A task holds a `SlotGuard`, whose `drop` sends its slot back to a pool. The code of the block
+// returns early, which cancels the task while it waits in `recv`. Then the task drops the guard.
+// A `drop` runs with cancellation off, so the `send` in it works and the slot is not lost.
+// After the `drop`, the task sees the cancel again.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator runs each task to its end at its `spawn`. A task
+// that waits for a later task then waits forever.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}the recv gave no value, cancelled true{{$}}
+// CHECK: {{^}}in the drop, cancelled false{{$}}
+// CHECK: {{^}}the drop sent slot 4 back{{$}}
+// CHECK: {{^}}after the drop, cancelled true{{$}}
+// CHECK: {{^}}the pool got slot 4{{$}}
+
+import std::sync::channel;
+import std::sync::wait;
+
+struct SlotGuard {
+  slot : i64,
+  pool : Sender<i64>,
+}
+
+impl Drop for SlotGuard {
+  fn drop(self : &mut SlotGuard) -> void {
+    println!("in the drop, cancelled {}", cancelled());
+    match self.pool.send(self.slot) {
+      Result<void, SendError<i64>>::Ok() => {
+        println!("the drop sent slot {} back", self.slot);
+      }
+      Result<void, SendError<i64>>::Err(e) => {
+        println!("the drop lost slot {}, cancelled {}", e.value, e.cancelled);
+      }
+    }
+  }
+}
+
+fn use_slot(guard : SlotGuard, work : Receiver<i64>) -> void {
+  match work.recv() {
+    Result<i64, RecvError>::Ok(v) => {
+      println!("the recv gave {}", v);
+    }
+    Result<i64, RecvError>::Err(_e) => {
+      println!("the recv gave no value, cancelled {}", cancelled());
+    }
+  }
+  drop(guard);
+  println!("after the drop, cancelled {}", cancelled());
+}
+
+fn leave_early(guard : SlotGuard) -> i64 {
+  let (keep, work) = channel<i64>(1);
+  tasks {
+    spawn {
+      use_slot(guard, work);
+    };
+    return 7;
+  };
+  drop(keep);
+  return 0;
+}
+
+fn main() -> i32 {
+  let (pool, slots) = channel<i64>(2);
+  let guard = SlotGuard {
+    slot : 4, pool : pool
+  };
+  leave_early(guard);
+  match slots.recv() {
+    Result<i64, RecvError>::Ok(v) => {
+      println!("the pool got slot {}", v);
+    }
+    Result<i64, RecvError>::Err(_e) => {
+      println!("the pool got no slot");
+    }
+  }
+  return 0;
+}
