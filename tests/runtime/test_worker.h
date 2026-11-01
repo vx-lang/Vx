@@ -29,7 +29,7 @@
 namespace vx_test {
 
 // Its memory, its region table, and the arena a published result comes from.
-vx_remote_region worker_regions[16];
+vx_remote_region worker_regions[64];
 vx_remote_table worker_table;
 uint8_t worker_arena[8 * 1024 * 1024];
 size_t worker_arena_used;

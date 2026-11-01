@@ -28,6 +28,11 @@
 //   * A 2x2 view with padded rows. The client must copy only the elements from
 //     the view's first element to its last, in both directions. The view ends
 //     at a page that cannot be read, so a longer copy crashes the test.
+//   * Two views that share memory: one buffer passed twice, and the even and
+//     the odd columns of one tensor. The kernel doubles the first view. The
+//     copy back of the second view must not undo that.
+//   * An empty view at the end of a buffer on the worker. Its handle is one
+//     past the end of the buffer, so the client must stage one element for it.
 //
 // More cases call vx_memref_view_bytes directly in a child process. A view
 // with an element type the runtime cannot copy, a negative size, a negative
@@ -35,7 +40,8 @@
 //
 // The fake worker does not load the image. It runs a fixed function in its
 // place: out1[i] = 2 * in[i] and out2[i] = in[i] + 100. For the views it
-// doubles each element of the view.
+// doubles each element of the view. For two views it doubles each element of
+// the first one.
 //
 // Driven by tests/integration_test/remote_kernel_output_test.rs.
 //
@@ -129,6 +135,23 @@ int run_view_kernel(const vx_wire_arg *args, int64_t num_args) {
   return 1;
 }
 
+// The stand-in for a kernel on two rank-1 f32 views. It doubles each element
+// of the first view and does not touch the second.
+int run_double_first_kernel(const vx_wire_arg *args, int64_t num_args) {
+  if (num_args != 2 || args[0].rank != 1 || args[1].rank != 1 ||
+      !resolve_f32(args[1].handle)) {
+    return 0;
+  }
+  float *first = resolve_f32(args[0].handle);
+  if (!first) {
+    return 0;
+  }
+  for (int64_t i = 0; i < args[0].sizes[0]; ++i) {
+    first[i * args[0].strides[0]] *= 2;
+  }
+  return 1;
+}
+
 void run_worker(int fd) {
   worker_reset();
 
@@ -168,6 +191,9 @@ void run_worker(int fd) {
       if (ok) {
         if (strcmp((const char *)d.payload, "vx_gpu_kernel_view") == 0) {
           ok = run_view_kernel(args, d.num_args);
+        } else if (strcmp((const char *)d.payload,
+                          "vx_gpu_kernel_double_first") == 0) {
+          ok = run_double_first_kernel(args, d.num_args);
         } else if (vx_payload_field(d.payload, (size_t)d.payload_len,
                                     "image=")) {
           ok = run_fake_kernel(args, d.num_args);
@@ -421,6 +447,64 @@ void test_a_broadcast_view_copies_one_row(int fd) {
   }
 }
 
+const char kDoubleFirstPayload[] = "vx_gpu_kernel_double_first\0abi=1\0"
+                                   "topo=500\0format=ptx\0image=not-real-ptx\0";
+
+// Dispatch the kernel that doubles the first of two rank-1 views of `data`.
+int dispatch_two_views(int fd, float *data, int64_t offset0, int64_t stride0,
+                       int64_t offset1, int64_t stride1) {
+  Desc1 first = {data, data, offset0, {4}, {stride0}};
+  Desc1 second = {data, data, offset1, {4}, {stride1}};
+  void *p_first = &first, *p_second = &second;
+  void *device_args[2] = {&p_first, &p_second};
+  const int32_t tags[2] = {VX_ABI_MEMREF_TAG(VX_DTYPE_F32, 1),
+                           VX_ABI_MEMREF_TAG(VX_DTYPE_F32, 1)};
+  vx_wire_arg args[2];
+  return vx_remote_dispatch(fd, kDoubleFirstPayload,
+                            sizeof(kDoubleFirstPayload), device_args, tags, 2,
+                            args, host_scratch, sizeof(host_scratch));
+}
+
+void test_views_that_share_memory_keep_the_result(int fd) {
+  // One buffer, passed as the first view and as the second view.
+  float same[4] = {1, 2, 3, 4};
+  const float same_after[4] = {2, 4, 6, 8};
+  check(dispatch_two_views(fd, same, 0, 1, 0, 1) == 1,
+        "the dispatch of one buffer passed twice succeeds");
+  for (int i = 0; i < 4; ++i) {
+    char what[64];
+    snprintf(what, sizeof(what), "buffer passed twice: element %d == %g", i,
+             (double)same_after[i]);
+    check(same[i] == same_after[i], what);
+  }
+
+  // A 2x4 tensor. The first view is the even columns, elements 0, 2, 4 and 6.
+  // The second view is the odd columns. Each view's bytes cover elements of
+  // the other.
+  float columns[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+  const float columns_after[8] = {2, 2, 6, 4, 10, 6, 14, 8};
+  check(dispatch_two_views(fd, columns, 0, 2, 1, 2) == 1,
+        "the dispatch of the even and the odd columns succeeds");
+  for (int i = 0; i < 8; ++i) {
+    char what[64];
+    snprintf(what, sizeof(what), "even and odd columns: element %d == %g", i,
+             (double)columns_after[i]);
+    check(columns[i] == columns_after[i], what);
+  }
+}
+
+void test_an_empty_view_at_the_end_of_a_worker_buffer(int fd) {
+  float four[4] = {1, 2, 3, 4};
+  uint64_t resident = vx_remote_transfer(fd, four, sizeof(four), VX_DTYPE_F32,
+                                         host_scratch, sizeof(host_scratch));
+  check(resident != 0, "the buffer was placed on the worker");
+  // A 0x4 view that starts at element 4, one past the end of the buffer.
+  check(dispatch_view(fd, (float *)(uintptr_t)resident, 4, 0, 4, 4) == 1,
+        "the dispatch of an empty view at the end of a worker buffer "
+        "succeeds");
+  check(vx_remote_free(fd, resident), "the worker buffer is freed");
+}
+
 // The exit code of a child that called abort(). The child catches SIGABRT and
 // exits, so the system writes no crash report or core dump.
 const int kAborted = 86;
@@ -555,6 +639,8 @@ int main() {
   test_an_empty_view_stages_one_element(sv[0]);
   test_a_transposed_view_copies_all_it_reaches(sv[0]);
   test_a_broadcast_view_copies_one_row(sv[0]);
+  test_views_that_share_memory_keep_the_result(sv[0]);
+  test_an_empty_view_at_the_end_of_a_worker_buffer(sv[0]);
   test_a_view_the_runtime_cannot_copy_stops_the_program();
   test_a_broken_view_stops_the_program();
   test_a_view_whose_span_overflows_stops_the_program();

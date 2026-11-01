@@ -39,6 +39,7 @@
 #include "vx_manifest.h"
 #include "vx_remote_region.h"
 #include "vx_transport.h"
+#include "vx_view_copy.h"
 #include "vx_wire.h"
 
 #include <netdb.h>
@@ -205,61 +206,38 @@ static inline int vx_remote_fetch(int fd, uint64_t handle, void *dst,
   return rc == VX_TRANSPORT_OK && got == nbytes;
 }
 
-/// A view in local memory that a dispatch copied to the worker for one call.
+/// The most buffers one dispatch stages onto the worker.
+#define VX_REMOTE_MAX_STAGED 64
+
+/// Bytes in local memory that a dispatch copied to the worker for one call.
 typedef struct {
   uint64_t handle; /* the worker's copy */
-  void *host;      /* the view's first element in local memory */
+  void *host;      /* the first byte in local memory, NULL for an empty view */
   uint64_t bytes;  /* the bytes to copy back, 0 for an empty view */
 } vx_remote_staged;
 
-/// Fill `out` with the view `desc`, whose argument tag is `tag`. A view in
-/// local memory is first staged onto the worker, and is recorded in `staged`.
-/// Returns 0 on failure.
-static inline int vx_remote_stage_view(int fd, const void *desc, int32_t tag,
-                                       vx_wire_arg *out,
-                                       vx_remote_staged *staged,
-                                       int64_t *num_staged, uint8_t *scratch,
-                                       size_t scratch_len) {
+/// Stage one zero element of type `elem` for an empty view. A worker cannot
+/// hold 0 bytes, and a handle at the end of a region names no byte in it. The
+/// kernel never reads the element, and nothing is copied back.
+static inline uint64_t vx_remote_stage_empty(int fd, int32_t elem,
+                                             vx_remote_staged *staged,
+                                             int64_t *num_staged,
+                                             uint8_t *scratch,
+                                             size_t scratch_len) {
   static const uint8_t zero[VX_DTYPE_MAX_BYTES] = {0};
-  int32_t rank = (int32_t)VX_ABI_RANK(tag);
-  int32_t elem = (int32_t)VX_ABI_ELEM(tag);
-  const int64_t *sizes;
-  const int64_t *strides;
-  uint64_t handle;
-
-  if (!desc || rank < 0 || rank > VX_ABI_MAX_RANK) {
+  vx_remote_staged *s;
+  if (*num_staged == VX_REMOTE_MAX_STAGED) {
     return 0;
   }
-  sizes = vx_memref_sizes(desc);
-  strides = vx_memref_strides(desc, rank);
-  handle = (uint64_t)(uintptr_t)vx_memref_data(desc, elem);
-
-  if (!vx_remote_addr_is_handle(handle)) {
-    /* Stage every element from the first one the view reaches to the last one,
-       so its strides still mean what they said on the worker. A worker cannot
-       hold 0 bytes, so an empty view gets one zero element the kernel never
-       reads. */
-    vx_remote_staged *s = &staged[*num_staged];
-    s->host = (void *)(uintptr_t)handle;
-    s->bytes = vx_memref_view_bytes(sizes, strides, rank, elem);
-    s->handle = s->bytes ? vx_remote_transfer(fd, s->host, s->bytes, elem,
-                                              scratch, scratch_len)
-                         : vx_remote_transfer(fd, zero, vx_dtype_bytes(elem),
-                                              elem, scratch, scratch_len);
-    if (s->handle == 0) {
-      return 0;
-    }
-    handle = s->handle;
+  s = &staged[*num_staged];
+  s->host = NULL;
+  s->bytes = 0;
+  s->handle = vx_remote_transfer(fd, zero, vx_dtype_bytes(elem), elem, scratch,
+                                 scratch_len);
+  if (s->handle != 0) {
     ++*num_staged;
   }
-
-  out->handle = handle;
-  out->rank = rank;
-  for (int32_t d = 0; d < rank; ++d) {
-    out->sizes[d] = sizes[d];
-    out->strides[d] = strides[d];
-  }
-  return 1;
+  return s->handle;
 }
 
 /// Turn a local argument list into wire arguments.
@@ -289,16 +267,30 @@ static inline int vx_remote_free(int fd, uint64_t handle);
 /// rather than as a TRANSFER and a FREE around it, which trades three round
 /// trips for a longer message. Left undone deliberately: it is an optimisation
 /// of something that works, and the wire does not have to change for it.
+///
+/// Views in local memory are staged with vx_view_copy.h. Views that share
+/// memory share one buffer on the worker, so a kernel that writes one of them
+/// changes the other, as it does locally. Each such buffer also comes back
+/// once, so an old copy of one view cannot overwrite the result in another.
 static inline int vx_remote_encode_args(int fd, void **device_args,
                                         const int32_t *arg_tags,
                                         int64_t num_args, vx_wire_arg *out,
                                         vx_remote_staged *staged,
                                         int64_t *num_staged, uint8_t *scratch,
                                         size_t scratch_len) {
+  vx_view_copy views[VX_REMOTE_MAX_STAGED];
+  vx_copy_span spans[VX_REMOTE_MAX_STAGED];
+  int64_t view_arg[VX_REMOTE_MAX_STAGED]; /* the argument of each view */
+  int64_t num_views = 0, num_spans = 0, bad = 0, first_span;
+
   *num_staged = 0;
   for (int64_t i = 0; i < num_args; ++i) {
     int32_t tag = arg_tags[i];
     int32_t kind = VX_ABI_KIND(tag);
+    int32_t rank = (int32_t)VX_ABI_RANK(tag);
+    int32_t elem = (int32_t)VX_ABI_ELEM(tag);
+    const void *desc;
+    uint64_t data;
     memset(&out[i], 0, sizeof(out[i]));
     out[i].tag = tag;
 
@@ -308,41 +300,101 @@ static inline int vx_remote_encode_args(int fd, void **device_args,
          buffer reached through the indirection it lives in, which has to travel
          like any other operand or the worker decodes a result of shape 0x0. */
       const void *outer = *(const void **)device_args[i];
-      const void *inner = outer ? vx_memref_aligned(outer) : NULL;
-      void *held = inner ? vx_memref_aligned(inner) : NULL;
-      if (!held) {
+      desc = outer ? vx_memref_aligned(outer) : NULL;
+      if (!desc || !vx_memref_aligned(desc)) {
         continue;
       }
-      if (!vx_remote_stage_view(fd, inner, tag, &out[i], staged, num_staged,
-                                scratch, scratch_len)) {
-        return 0;
-      }
-      continue;
-    }
-    if (kind != VX_ABI_KIND_MEMREF) {
+    } else if (kind != VX_ABI_KIND_MEMREF) {
       size_t n = vx_dtype_bytes(kind);
       if (n == 0 || n > sizeof(out[i].scalar)) {
         return 0;
       }
       memcpy(out[i].scalar, device_args[i], n);
       continue;
+    } else {
+      desc = *(const void **)device_args[i];
     }
 
-    if (!vx_remote_stage_view(fd, *(const void **)device_args[i], tag, &out[i],
-                              staged, num_staged, scratch, scratch_len)) {
+    if (!desc || rank < 0 || rank > VX_ABI_MAX_RANK ||
+        num_views == VX_REMOTE_MAX_STAGED) {
+      return 0;
+    }
+    out[i].rank = rank;
+    for (int32_t d = 0; d < rank; ++d) {
+      out[i].sizes[d] = vx_memref_sizes(desc)[d];
+      out[i].strides[d] = vx_memref_strides(desc, rank)[d];
+    }
+
+    data = (uint64_t)(uintptr_t)vx_memref_data(desc, elem);
+    if (!vx_remote_addr_is_handle(data)) {
+      views[num_views].desc = (void *)desc;
+      views[num_views].rank = rank;
+      views[num_views].elem = elem;
+      view_arg[num_views++] = i;
+    } else if (vx_memref_view_bytes(out[i].sizes, out[i].strides, rank, elem) ==
+               0) {
+      /* An empty view of a buffer on the worker. Its handle can be one past
+         the end of the buffer, which the worker refuses. */
+      out[i].handle = vx_remote_stage_empty(fd, elem, staged, num_staged,
+                                            scratch, scratch_len);
+      if (out[i].handle == 0) {
+        return 0;
+      }
+    } else {
+      out[i].handle = data;
+    }
+  }
+
+  /* Stage every byte from the first element a view reaches to the last one,
+     so its strides still mean what they said on the worker. */
+  if (!vx_view_copy_plan(views, num_views, spans, &num_spans, &bad)) {
+    fprintf(stderr,
+            "[Vx remote] FATAL: argument %lld has the offset %lld, and its "
+            "view does not fit in the address space\n",
+            (long long)view_arg[bad],
+            (long long)vx_memref_offset(views[bad].desc));
+    return 0;
+  }
+  if (*num_staged + num_spans > VX_REMOTE_MAX_STAGED) {
+    return 0;
+  }
+  first_span = *num_staged;
+  for (int64_t s = 0; s < num_spans; ++s) {
+    vx_remote_staged *st = &staged[*num_staged];
+    int32_t elem = 0; /* the element type of the span's first view */
+    for (int64_t v = 0; v < num_views && elem == 0; ++v) {
+      elem = views[v].span == s ? views[v].elem : 0;
+    }
+    st->host = (void *)spans[s].start;
+    st->bytes = spans[s].bytes;
+    st->handle =
+        vx_remote_transfer(fd, st->host, st->bytes, elem, scratch, scratch_len);
+    if (st->handle == 0) {
+      return 0;
+    }
+    ++*num_staged;
+  }
+  for (int64_t v = 0; v < num_views; ++v) {
+    vx_wire_arg *a = &out[view_arg[v]];
+    a->handle = views[v].span < 0
+                    ? vx_remote_stage_empty(fd, views[v].elem, staged,
+                                            num_staged, scratch, scratch_len)
+                    : staged[first_span + views[v].span].handle + views[v].at;
+    if (a->handle == 0) {
       return 0;
     }
   }
   return 1;
 }
 
-/// The record of the view this call staged as `handle`, or NULL when the
-/// handle names a buffer that the program placed on the worker.
+/// The record of the staged bytes that hold `handle`, or NULL when the handle
+/// names a buffer that the program placed on the worker.
 static inline const vx_remote_staged *
 vx_remote_find_staged(const vx_remote_staged *staged, int64_t num_staged,
                       uint64_t handle) {
   for (int64_t s = 0; s < num_staged; ++s) {
-    if (staged[s].handle == handle) {
+    uint64_t bytes = staged[s].bytes ? staged[s].bytes : 1;
+    if (handle >= staged[s].handle && handle - staged[s].handle < bytes) {
       return &staged[s];
     }
   }
@@ -371,7 +423,7 @@ static inline int vx_remote_dispatch(int fd, const void *payload,
   int32_t status = -1;
   int64_t count = 0;
 
-  vx_remote_staged staged[64];
+  vx_remote_staged staged[VX_REMOTE_MAX_STAGED];
   int64_t num_staged = 0;
 
   if (!vx_remote_encode_args(fd, device_args, arg_tags, num_args, args, staged,
@@ -448,12 +500,8 @@ static inline int vx_remote_dispatch(int fd, const void *payload,
          arguments it writes, so every buffer this call staged is read back.
          An input comes back unchanged, which costs one fetch. Routing sends
          this kind of dispatch only when it has no publication slot. */
-      for (int64_t i = 0; i < num_args; ++i) {
-        const vx_remote_staged *s =
-            args[i].handle != 0
-                ? vx_remote_find_staged(staged, num_staged, args[i].handle)
-                : NULL;
-        if (s && !vx_remote_fetch_staged(fd, s)) {
+      for (int64_t s = 0; s < num_staged; ++s) {
+        if (!vx_remote_fetch_staged(fd, &staged[s])) {
           return 0;
         }
       }

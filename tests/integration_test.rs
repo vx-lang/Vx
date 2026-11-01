@@ -58,6 +58,7 @@ mod integration_test {
     // It links with `cc -shared` and loads `.so` files.
     #[cfg(target_os = "linux")]
     mod two_kernel_libraries_in_one_process;
+    mod view_copy_test;
     mod vx_api_diff;
     mod wire_test;
     mod working_set_peak_test;
