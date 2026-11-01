@@ -25,6 +25,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::integration_test::runtime_test_build;
+
 /// A placed kernel with no library equivalent, compiled the way
 /// `device_image_test.rs` compiles it: through the binary, because the payload
 /// is text in the emitted LLVM IR and both codegen paths have to agree on it.
@@ -79,10 +81,9 @@ fn the_payload_helpers_are_checked_on_the_host() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let source = root.join("tests/runtime/payload_test.cpp");
     let binary = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("payload_test");
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
-    let build = Command::new(&cxx)
-        .args(["-std=c++17", "-O1", "-Wall", "-Werror"])
+    let build = runtime_test_build::command(&cxx, "c++17")
         .arg(&source)
         .arg("-o")
         .arg(&binary)

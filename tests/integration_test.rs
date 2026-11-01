@@ -50,6 +50,7 @@ mod integration_test {
     mod remote_kernel_output_test;
     mod remote_region_test;
     mod resolution_test;
+    mod runtime_test_build;
     mod shipped_programs_compile;
     mod solver_policy_test;
     mod traffic_test;

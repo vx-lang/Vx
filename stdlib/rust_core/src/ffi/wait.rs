@@ -126,3 +126,42 @@ static ANY_CHANNEL: [AtomicI64; 2] = [AtomicI64::new(0), AtomicI64::new(0)];
 pub extern "C" fn vx_any_channel_words() -> *mut i64 {
     ANY_CHANNEL.as_ptr() as *mut i64
 }
+
+/// The send numbers that a cancelled `send` left without a value, with the address of the words
+/// of their channel. The `recv` of such a number passes it. A cancel is rare, so one lock for all
+/// channels is enough.
+static SKIPS: Mutex<Vec<(usize, i64)>> = Mutex::new(Vec::new());
+
+fn skips() -> std::sync::MutexGuard<'static, Vec<(usize, i64)>> {
+    SKIPS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A cancelled `send` of the channel at `words` left the send number `k` without a value.
+#[no_mangle]
+pub extern "C" fn vx_channel_skip(words: *mut i64, k: i64) {
+    let mut s = skips();
+    assert!(
+        !s.contains(&(words as usize, k)),
+        "a send number was skipped twice"
+    );
+    s.push((words as usize, k));
+}
+
+/// 1 when a cancelled `send` left the send number `k` without a value, and then forget it.
+#[no_mangle]
+pub extern "C" fn vx_channel_take_skip(words: *mut i64, k: i64) -> i32 {
+    let mut s = skips();
+    match s.iter().position(|&e| e == (words as usize, k)) {
+        Some(i) => {
+            s.swap_remove(i);
+            1
+        }
+        None => 0,
+    }
+}
+
+/// The channel at `words` is freed. Forget each of its numbers that no `recv` passed.
+#[no_mangle]
+pub extern "C" fn vx_channel_forget_skips(words: *mut i64) {
+    skips().retain(|&(w, _)| w != words as usize);
+}

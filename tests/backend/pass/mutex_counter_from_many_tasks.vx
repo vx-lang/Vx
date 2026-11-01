@@ -9,14 +9,11 @@
 // adds 1. The read and the write of the counter are not atomic, so without the lock two tasks
 // would read the same value and one add would get lost. The count must be 80000.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator runs each task to its end at its `spawn`. A task
-// that waits for a later task then waits forever.
-//
-// The second RUN line runs the same program on the shared runtime, with one worker thread
+// The third RUN line runs the same program on the shared runtime, with one worker thread
 // for all the tasks.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}count 80000{{$}}
 

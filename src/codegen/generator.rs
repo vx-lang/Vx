@@ -106,6 +106,9 @@ pub struct MeliorGenerator<'c> {
     /// The open `tasks` blocks that can fail: the block after each, which takes the value of
     /// the block, and the type `Result<U, E>` of that value.
     pub tasks_leaves: Vec<(*const melior::ir::Block<'c>, syntax::Type)>,
+    /// Set inside a `tasks` block that runs its tasks one after another, at their `spawn`s: a
+    /// block that can fail, or that a `return`, `break` or `continue` leaves.
+    pub tasks_inline: bool,
     pub continue_blocks: Vec<*const melior::ir::Block<'c>>,
     pub allocs: std::collections::HashSet<String>,
     /// One frame per block being lowered: what each name a `let` in the block shadows meant
@@ -863,6 +866,7 @@ impl<'c> MeliorGenerator<'c> {
             in_spawn: false,
             break_blocks: Vec::new(),
             tasks_leaves: Vec::new(),
+            tasks_inline: false,
             continue_blocks: Vec::new(),
             allocs: std::collections::HashSet::new(),
             blocks: Vec::new(),
