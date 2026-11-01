@@ -29,6 +29,9 @@
 //
 // `select` waits on several channels. It sleeps on one word of the runtime, which each event on
 // any channel also changes.
+//
+// A cancelled `send` that has its send number but wrote no value puts the number in a skip set of
+// the runtime. The `recv` of that number passes it, and frees the slot for the next `send`.
 //===----------------------------------------------------------------------===//
 import core::marker;
 import core::mem;
@@ -44,6 +47,12 @@ import std::vec;
 extern {
   /// The two words for `select`: the events on any channel, and the threads that sleep on them.
   fn vx_any_channel_words() -> *mut AtomicI64;
+  /// The skip set: a cancelled `send` left the send number `k` of the channel at `words` empty.
+  fn vx_channel_skip(words : *mut AtomicI64, k : i64) -> void;
+  /// 1 when `k` is in the skip set. It also takes `k` out of the set.
+  fn vx_channel_take_skip(words : *mut AtomicI64, k : i64) -> i32;
+  /// Take each number of the channel at `words` out of the skip set.
+  fn vx_channel_forget_skips(words : *mut AtomicI64) -> void;
 }
 
 // The number of the next `send`.
@@ -61,8 +70,10 @@ const ENDS : i64 = 4;
 const WAKE : i64 = 5;
 // The threads that sleep on `WAKE`, so that an event with no sleeper costs no call.
 const SLEEPERS : i64 = 6;
+// The numbers of this channel in the skip set, so that a `recv` with no cancel costs no call.
+const SKIPS : i64 = 7;
 // The number of slot 0. The other slots follow it.
-const SLOTS : i64 = 7;
+const SLOTS : i64 = 8;
 
 /// Why a `recv` or a `select` gave no value.
 enum RecvError {
@@ -159,7 +170,7 @@ fn notify(words : *mut AtomicI64) -> void {
 
 /// Sleep until an event on the channel, unless one came after `seen` was read from `WAKE`. With
 /// `can_cancel`, a cancel of the `tasks` block also ends the sleep.
-fn sleep(words : *mut AtomicI64, seen : i64, can_cancel : bool) -> void {
+fn wait_for_event(words : *mut AtomicI64, seen : i64, can_cancel : bool) -> void {
   word(words, SLEEPERS).fetch_add(1, AtomicOrdering::SeqCst);
   if can_cancel {
     wait_while_or_cancel(word(words, WAKE), seen);
@@ -183,6 +194,9 @@ fn release<T>(words : *mut AtomicI64, data : *mut T, cap : i64) -> void {
     }
     k = k + 1;
   }
+  if word(words, SKIPS).load(AtomicOrdering::SeqCst) > 0 {
+    unsafe { vx_channel_forget_skips(words); }
+  }
   let w : *mut i8 = words;
   let d : *mut i8 = data;
   dealloc(w, 8);
@@ -194,9 +208,8 @@ Sender<T> {
   /// Send `v`. Wait while the channel is full. When the `Receiver` was dropped, or the `tasks`
   /// block of this task was cancelled, give `v` back.
   ///
-  /// A cancel stops a `send` only before it takes its place in the ring. A place that no value
-  /// fills would stop the `recv` of that place, and each later one. After it has a place, the
-  /// `send` waits for room, or gives `v` back when the `Receiver` is dropped.
+  /// A `send` that has its place in the ring and is cancelled puts the number of its place in
+  /// the skip set. The `recv` of that place passes it.
   fn send(self : &Sender<T>, v : T) -> Result<void, SendError<T>> {
     if cancelled() {
       return Result<void, SendError<T>>::Err(SendError<T> {
@@ -215,7 +228,15 @@ Sender<T> {
         notify(words);
         return Result<void, SendError<T>>::Ok();
       }
-      sleep(words, seen, false);
+      if cancelled() {
+        unsafe { vx_channel_skip(words, k); }
+        word(words, SKIPS).fetch_add(1, AtomicOrdering::SeqCst);
+        notify(words);
+        return Result<void, SendError<T>>::Err(SendError<T> {
+          value : v, cancelled : true
+        });
+      }
+      wait_for_event(words, seen, true);
       seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
     }
     return Result<void, SendError<T>>::Err(SendError<T> {
@@ -224,17 +245,32 @@ Sender<T> {
   }
 }
 
+/// When a cancelled `send` left the receive number `k` empty, pass it: free its slot for the
+/// `send` `cap` places later. The caller then reads the receive number again.
+fn pass_a_skip(words : *mut AtomicI64, cap : i64, k : i64) -> bool {
+  if word(words, SKIPS).load(AtomicOrdering::SeqCst) == 0 {
+    return false;
+  }
+  if unsafe { vx_channel_take_skip(words, k) } == 0 {
+    return false;
+  }
+  word(words, SKIPS).fetch_sub(1, AtomicOrdering::SeqCst);
+  word(words, RECVS).store(k + 1, AtomicOrdering::SeqCst);
+  word(words, SLOTS + k % cap).store(2 * (k + cap), AtomicOrdering::SeqCst);
+  notify(words);
+  return true;
+}
+
 impl<T>
 Receiver<T> {
   /// The next value. Wait while the channel is empty. When each `Sender` was dropped and no value
   /// is left, give `Closed`. When the `tasks` block of this task was cancelled, give `Cancelled`.
   ///
-  /// A channel has one `Receiver`, so `recv` takes its receive number only when it takes a value.
-  /// A cancel can then stop it at any time and leave no place in the ring empty.
+  /// A channel has one `Receiver`, so `recv` takes its receive number only when it takes a value
+  /// or passes a skipped one. A cancel can then stop it at any time and leave no place empty.
   fn recv(self : &Receiver<T>) -> Result<T, RecvError> {
     let words = self.words;
-    let k = word(words, RECVS).load(AtomicOrdering::SeqCst);
-    let slot = word(words, SLOTS + k % self.cap);
+    let mut k = word(words, RECVS).load(AtomicOrdering::SeqCst);
     let mut seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
     let mut why = RecvError::Closed;
     loop {
@@ -242,6 +278,7 @@ Receiver<T> {
         why = RecvError::Cancelled;
         break;
       }
+      let slot = word(words, SLOTS + k % self.cap);
       // Read `SENDERS` before the slot, as the model does. The `send` with the number `k` comes
       // before the drop of its `Sender`, so a closed channel shows its value.
       let closed = word(words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
@@ -253,10 +290,14 @@ Receiver<T> {
         notify(words);
         return Result<T, RecvError>::Ok(value);
       }
-      if closed {
-        break;
+      if pass_a_skip(words, self.cap, k) {
+        k = k + 1;
+      } else {
+        if closed {
+          break;
+        }
+        wait_for_event(words, seen, true);
       }
-      sleep(words, seen, true);
       seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
     }
     return Result<T, RecvError>::Err(why);
@@ -266,16 +307,23 @@ Receiver<T> {
   /// `Receiver`, so no other `recv` takes the receive number between the load and the store.
   fn try_recv(self : &Receiver<T>) -> Result<T, TryRecvError> {
     let words = self.words;
-    let k = word(words, RECVS).load(AtomicOrdering::SeqCst);
-    let slot = word(words, SLOTS + k % self.cap);
-    let closed = word(words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
-    if slot.load(AtomicOrdering::SeqCst) == 2 * k + 1 {
-      word(words, RECVS).store(k + 1, AtomicOrdering::SeqCst);
-      let data = self.data;
-      let value : T = unsafe { data[k % self.cap] };
-      slot.store(2 * (k + self.cap), AtomicOrdering::SeqCst);
-      notify(words);
-      return Result<T, TryRecvError>::Ok(value);
+    let mut k = word(words, RECVS).load(AtomicOrdering::SeqCst);
+    let mut closed = false;
+    loop {
+      let slot = word(words, SLOTS + k % self.cap);
+      closed = word(words, SENDERS).load(AtomicOrdering::SeqCst) == 0;
+      if slot.load(AtomicOrdering::SeqCst) == 2 * k + 1 {
+        word(words, RECVS).store(k + 1, AtomicOrdering::SeqCst);
+        let data = self.data;
+        let value : T = unsafe { data[k % self.cap] };
+        slot.store(2 * (k + self.cap), AtomicOrdering::SeqCst);
+        notify(words);
+        return Result<T, TryRecvError>::Ok(value);
+      }
+      if !pass_a_skip(words, self.cap, k) {
+        break;
+      }
+      k = k + 1;
     }
     if closed {
       return Result<T, TryRecvError>::Err(TryRecvError::Closed);
