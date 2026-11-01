@@ -479,7 +479,7 @@ fn sender(ch: Chan, id: i64, count: i64, mark: i64, b: Breaks) -> Vec<Step> {
         sleep(&mut a, ch, None, b);
     } else {
         // A cancelled `send` with a place puts its number in the skip set, so that the `recv`
-        // passes it.
+        // passes it. A `send_for` whose time ran out takes the same path.
         let wait = a.label();
         a.push(Step::Load {
             dst: T,
