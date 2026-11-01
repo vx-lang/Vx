@@ -30,10 +30,11 @@ fn main() -> i32 {
   // CHECK: 1 1
   println!("{} {}", n, *s);
   a.push(5i64);
-  a.push(*a.get_ref(0));
+  // The buffer is full, so this push moves it. The argument copies `a[1]` before the push.
+  a.push(*a.get_ref(1));
   let m = count(&a, 0i64);
   a.push(7i64);
-  // CHECK-NEXT: 3 4
-  println!("{} {}", m, a.len());
+  // CHECK-NEXT: 3 4 5
+  println!("{} {} {}", m, a.len(), *a.get_ref(2));
   return 0;
 }
