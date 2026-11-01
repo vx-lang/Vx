@@ -1091,6 +1091,7 @@ impl<'a> TypeChecker<'a> {
                 };
                 // A `match` on a reference moves nothing. Its names are parts of a value that
                 // someone else owns, and so are the names of a `match` on one of them.
+                self.warn_wait_again_after_cancel(&expr_ty, arms);
                 let behind_ref = matches!(expr_ty, Type::Borrow { .. })
                     || matches!(&**match_expr, Expr::Identifier(id)
                         if self.is_bound_behind_ref(id.name.as_ref()));

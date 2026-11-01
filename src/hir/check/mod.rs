@@ -21,6 +21,7 @@ pub mod across_proof;
 pub mod atomic_contracts;
 pub mod autodiff;
 pub mod calls;
+pub mod cancel_loops;
 pub mod capacity_fold;
 pub mod closure_copies;
 pub mod control;

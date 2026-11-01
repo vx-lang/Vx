@@ -508,6 +508,11 @@ pub struct TypeChecker<'a> {
     /// statement `match` whose arms yield nothing has no value rather than the function's
     /// return type. Every expression check takes it back to `false` on entry.
     pub(crate) value_unused: bool,
+    /// The `loop`s and `while`s around the code being checked, in this function, task or
+    /// closure, innermost last, for W1035. `None` for a `while` whose body changes its condition
+    /// on every pass. Otherwise the variables that the condition reads: an arm that changes one
+    /// can end the loop.
+    pub(crate) cancel_loops: Vec<Option<Vec<String>>>,
     /// The variables that closures in `let`s copied, for W1034.
     pub(crate) closure_copies: Vec<crate::hir::check::closure_copies::ClosureCopy>,
     /// The `let` being checked, when its value is a closure.
@@ -599,6 +604,7 @@ impl<'a> TypeChecker<'a> {
             unreadable_reported: Default::default(),
             indexed_name: None,
             value_unused: false,
+            cancel_loops: Vec::new(),
             closure_copies: Vec::new(),
             let_closure: None,
             checking_assign_lhs: false,
@@ -1883,6 +1889,7 @@ impl<'a> TypeChecker<'a> {
         let prev_borrows = self.borrow.take();
         let prev_shadowed = self.borrow.take_shadowed();
         let prev_closure_copies = std::mem::take(&mut self.closure_copies);
+        let prev_cancel_loops = std::mem::take(&mut self.cancel_loops);
         let prev_borrowers = self.borrow.take_borrowers();
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
@@ -2056,6 +2063,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.restore(prev_borrows);
         self.borrow.restore_shadowed(prev_shadowed);
         self.closure_copies = prev_closure_copies;
+        self.cancel_loops = prev_cancel_loops;
         self.borrow.restore_borrowers(prev_borrowers);
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;
