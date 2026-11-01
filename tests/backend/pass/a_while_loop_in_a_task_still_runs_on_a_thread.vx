@@ -1,0 +1,36 @@
+//===- a_while_loop_in_a_task_still_runs_on_a_thread.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The first task loops until the second task sets a flag. The two tasks must run at the same
+// time. If the first task ran to its end before the second one started, the program would hang.
+//
+// The parser makes a `while` into a `loop` with a `break`. The older code generator runs a
+// `tasks` block in place when its own code can leave it, and it once took the `break` of a
+// `while` in a task for such an exit.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}the first task saw the flag{{$}}
+
+import core::sync::atomic;
+
+fn main() -> i32 {
+  let flag = AtomicI64::new(0);
+  tasks {
+    spawn {
+      let mut seen = flag.load(AtomicOrdering::Acquire);
+      while seen == 0 {
+        seen = flag.load(AtomicOrdering::Acquire);
+      }
+    };
+    spawn {
+      flag.store(1, AtomicOrdering::Release);
+    };
+  };
+  println!("the first task saw the flag");
+  return 0;
+}
