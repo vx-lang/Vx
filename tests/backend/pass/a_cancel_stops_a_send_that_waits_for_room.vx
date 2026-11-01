@@ -1,0 +1,95 @@
+//===- a_cancel_stops_a_send_that_waits_for_room.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The channel has room for 1 value. A task sends 1, which fills it, and then sends 2, which
+// waits for room. The code of the block returns early. That cancels the task and joins it,
+// while `main` still holds the `Receiver`. The cancel must stop the waiting `send`, or the join
+// waits forever.
+//
+// The cancelled `send` already had its place in the channel, after the value 1. A later `recv`
+// must pass that place: the value 3 then arrives after 1.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator runs each task to its end at its `spawn`. A task
+// that waits for a later task then waits forever.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}send gave back 2, cancelled true{{$}}
+// CHECK: {{^}}leave_early gave 7{{$}}
+// CHECK: {{^}}recv gave 1{{$}}
+// CHECK: {{^}}recv gave 3{{$}}
+
+import core::sync::atomic;
+import std::sync::channel;
+import std::time;
+
+fn send_two(tx : Sender<i64>) -> void {
+  match tx.send(1) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(_e) => {
+      println!("the first send did not send");
+    }
+  }
+  match tx.send(2) {
+    Result<void, SendError<i64>>::Ok() => {
+      println!("send gave Ok");
+    }
+    Result<void, SendError<i64>>::Err(e) => {
+      println!("send gave back {}, cancelled {}", e.value, e.cancelled);
+    }
+  }
+}
+
+// Wait until the second `send` has its place. It reads the count of sends inside the channel.
+fn wait_for_two_sends(rx : &Receiver<i64>) -> void {
+  while word(rx.words, SENDS).load(AtomicOrdering::SeqCst) < 2 {
+    sleep(0.001);
+  }
+}
+
+fn leave_early(rx : &Receiver<i64>, tx : Sender<i64>) -> i64 {
+  tasks {
+    spawn {
+      send_two(tx);
+    };
+    wait_for_two_sends(rx);
+    return 7;
+  };
+  return 0;
+}
+
+fn receive_two(rx : Receiver<i64>) -> void {
+  for _i in 0..2 {
+    match rx.recv() {
+      Result<i64, RecvError>::Ok(v) => {
+        println!("recv gave {}", v);
+      }
+      Result<i64, RecvError>::Err(_e) => {
+        println!("recv gave no value");
+      }
+    }
+  }
+}
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(1);
+  let tx2 = tx.clone();
+  let left = leave_early(&rx, tx);
+  println!("leave_early gave {}", left);
+  tasks {
+    spawn {
+      receive_two(rx);
+    };
+    match tx2.send(3) {
+      Result<void, SendError<i64>>::Ok() => {}
+      Result<void, SendError<i64>>::Err(_e) => {
+        println!("the send of 3 did not send");
+      }
+    }
+  };
+  return 0;
+}

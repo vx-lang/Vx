@@ -13,6 +13,8 @@
 // holds the value, and `wake_all` wakes only the threads that wait on that word. The runtime can
 // also wake a thread early, which never hides a lost wake, so the model leaves that out.
 //
+// The search keeps a 128-bit hash of each state that it saw, not the state (`fingerprint`).
+//
 // A state in which no thread can move and some thread is not done is a lost wake or a deadlock.
 // Each value must end exactly once: received, given back by `send`, or dropped by the last end.
 // The values of each sender arrive in order. A slot is never written while it holds a value.
@@ -23,6 +25,7 @@
 //===----------------------------------------------------------------------===//
 
 use std::collections::HashSet;
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// A value that a step computes from the registers of its thread.
 #[derive(Clone, Debug)]
@@ -94,12 +97,28 @@ enum Step {
         val: E,
     },
     /// Block while `word` holds `val`. The check and the block are one step, as under the lock of
-    /// the bucket in the runtime. With `or_cancel`, also do not block when `CANCEL` is set, as
-    /// `vx_wait_while_or_cancel` does.
+    /// the bucket in the runtime. With `or_cancel`, also do not block when that cancel mark is
+    /// set, as `vx_wait_while_or_cancel` does.
     WaitWhile {
         word: E,
         val: E,
-        or_cancel: bool,
+        or_cancel: Option<i64>,
+    },
+    /// Put the send number in register `k` into the skip set of the channel at `chan`, as
+    /// `vx_channel_skip` does under its lock.
+    SkipAdd {
+        chan: i64,
+        k: usize,
+    },
+    /// Take the send number in register `k` out of the skip set. `dst` is 1 when it was there.
+    SkipTake {
+        dst: usize,
+        chan: i64,
+        k: usize,
+    },
+    /// Remove each number of the channel at `chan` from the skip set.
+    SkipForget {
+        chan: i64,
     },
     WakeAll {
         word: E,
@@ -207,6 +226,12 @@ struct Breaks {
     unlock_wakes_none: bool,
     /// The wait of a `recv` does not read the cancel under the lock of its bucket.
     wait_ignores_cancel: bool,
+    /// A cancel does not stop a `send` that has its place, as before the skip set.
+    send_keeps_its_place: bool,
+    /// `recv` does not look in the skip set.
+    recv_ignores_skips: bool,
+    /// `recv` passes a skipped number but does not free its slot for the `send` `cap` later.
+    skip_keeps_the_slot: bool,
 }
 
 // The words of a channel, as in `channel.vx`.
@@ -217,15 +242,19 @@ const RECEIVER: i64 = 3;
 const ENDS: i64 = 4;
 const WAKE: i64 = 5;
 const SLEEPERS: i64 = 6;
-const SLOTS: i64 = 7;
+const SKIPS: i64 = 7;
+const SLOTS: i64 = 8;
 
 // The two words for `select`, after the words of every channel.
 const ANY_EVENTS: i64 = 40;
 const ANY_SLEEPERS: i64 = 41;
 
-// The cancel mark of the `tasks` block of the threads. In the runtime it is per block, and
-// `vx_cancelled` reads it.
+// The cancel mark of the `tasks` block of most threads. `vx_cancelled` reads it.
 const CANCEL: i64 = 42;
+// The cancel mark of a second block, which no thread cancels.
+const OTHER_BLOCK: i64 = 43;
+// The count of words before the ring.
+const WORDS: usize = 44;
 
 /// One channel: where its words start, where its slots start in the ring memory, and its room.
 #[derive(Clone, Copy)]
@@ -316,9 +345,9 @@ fn notify(a: &mut Asm, ch: Chan, b: Breaks) {
     a.here(skip);
 }
 
-/// `sleep` in `channel.vx`: wait for an event after `SEEN`, and read `WAKE` again. With
+/// `wait_for_event` in `channel.vx`: wait for an event after `SEEN`, and read `WAKE` again. With
 /// `can_cancel`, a cancel also ends the wait.
-fn sleep(a: &mut Asm, ch: Chan, can_cancel: bool, b: Breaks) {
+fn sleep(a: &mut Asm, ch: Chan, mark: Option<i64>, b: Breaks) {
     a.push(Step::FetchAdd {
         dst: T,
         word: ch.w(SLEEPERS),
@@ -327,7 +356,7 @@ fn sleep(a: &mut Asm, ch: Chan, can_cancel: bool, b: Breaks) {
     a.push(Step::WaitWhile {
         word: ch.w(WAKE),
         val: r(SEEN),
-        or_cancel: can_cancel && !b.wait_ignores_cancel,
+        or_cancel: if b.wait_ignores_cancel { None } else { mark },
     });
     a.push(Step::FetchAdd {
         dst: T,
@@ -342,13 +371,13 @@ fn sleep(a: &mut Asm, ch: Chan, can_cancel: bool, b: Breaks) {
 
 /// `release` in `channel.vx`: the last end drops the values that no `recv` took.
 fn release(a: &mut Asm, ch: Chan, b: Breaks) {
-    let done = a.label();
+    let (done, not_last) = (a.label(), a.label());
     a.push(Step::FetchAdd {
         dst: T,
         word: ch.w(ENDS),
         delta: c(-1),
     });
-    a.jump_if(r(T), Cmp::Ne, c(1), done);
+    a.jump_if(r(T), Cmp::Ne, c(1), not_last);
     a.push(Step::Load {
         dst: K,
         word: ch.w(RECVS),
@@ -383,11 +412,21 @@ fn release(a: &mut Asm, ch: Chan, b: Breaks) {
     });
     a.jump(top);
     a.here(done);
+    // The numbers of cancelled sends that no `recv` passed.
+    let none_left = a.label();
+    a.push(Step::Load {
+        dst: T,
+        word: ch.w(SKIPS),
+    });
+    a.jump_if(r(T), Cmp::Eq, c(0), none_left);
+    a.push(Step::SkipForget { chan: ch.base });
+    a.here(none_left);
+    a.here(not_last);
 }
 
-/// A task that sends `count` values with its own `Sender`, and then drops it. Sender `id`
-/// sends the values `id * 100 + 1` and on.
-fn sender(ch: Chan, id: i64, count: i64, b: Breaks) -> Vec<Step> {
+/// A task in the block with the cancel mark `mark` that sends `count` values with its own
+/// `Sender`, and then drops it. Sender `id` sends the values `id * 100 + 1` and on.
+fn sender(ch: Chan, id: i64, count: i64, mark: i64, b: Breaks) -> Vec<Step> {
     let mut a = Asm::new();
     let (top, retry, sleeping, gave_back, next, drop) = (
         a.label(),
@@ -400,10 +439,9 @@ fn sender(ch: Chan, id: i64, count: i64, b: Breaks) -> Vec<Step> {
     a.push(Step::Set { dst: J, val: c(1) });
     a.here(top);
     a.jump_if(r(J), Cmp::Gt, c(count), drop);
-    // A cancel stops a `send` only before it takes its place.
     a.push(Step::Load {
         dst: T,
-        word: c(CANCEL),
+        word: c(mark),
     });
     a.jump_if(r(T), Cmp::Ne, c(0), gave_back);
     a.push(Step::FetchAdd {
@@ -437,7 +475,31 @@ fn sender(ch: Chan, id: i64, count: i64, b: Breaks) -> Vec<Step> {
     notify(&mut a, ch, b);
     a.jump(next);
     a.here(sleeping);
-    sleep(&mut a, ch, false, b);
+    if b.send_keeps_its_place {
+        sleep(&mut a, ch, None, b);
+    } else {
+        // A cancelled `send` with a place puts its number in the skip set, so that the `recv`
+        // passes it.
+        let wait = a.label();
+        a.push(Step::Load {
+            dst: T,
+            word: c(mark),
+        });
+        a.jump_if(r(T), Cmp::Eq, c(0), wait);
+        a.push(Step::SkipAdd {
+            chan: ch.base,
+            k: K,
+        });
+        a.push(Step::FetchAdd {
+            dst: T,
+            word: ch.w(SKIPS),
+            delta: c(1),
+        });
+        notify(&mut a, ch, b);
+        a.jump(gave_back);
+        a.here(wait);
+        sleep(&mut a, ch, Some(mark), b);
+    }
     a.jump(retry);
     a.here(gave_back);
     a.push(Step::EndsNow {
@@ -475,9 +537,45 @@ fn drop_receiver(a: &mut Asm, ch: Chan, b: Breaks) {
     release(a, ch, b);
 }
 
-/// A task that calls `recv` until it gives `Closed` or `Cancelled`, or `limit` times, and then
-/// drops the `Receiver`. `recv` takes its receive number only when it takes a value.
-fn receiver(ch: Chan, limit: i64, b: Breaks) -> Vec<Step> {
+/// The part of `recv` and `try_recv` that passes the number in `K` when a cancelled `send` put
+/// it in the skip set. It then goes to `next`, which reads the receive number again.
+fn pass_a_skip(a: &mut Asm, ch: Chan, next: usize, b: Breaks) {
+    let no_skip = a.label();
+    a.push(Step::Load {
+        dst: T,
+        word: ch.w(SKIPS),
+    });
+    a.jump_if(r(T), Cmp::Eq, c(0), no_skip);
+    a.push(Step::SkipTake {
+        dst: T,
+        chan: ch.base,
+        k: K,
+    });
+    a.jump_if(r(T), Cmp::Eq, c(0), no_skip);
+    a.push(Step::FetchAdd {
+        dst: T,
+        word: ch.w(SKIPS),
+        delta: c(-1),
+    });
+    a.push(Step::Store {
+        word: ch.w(RECVS),
+        val: add(r(K), c(1)),
+    });
+    if !b.skip_keeps_the_slot {
+        a.push(Step::Store {
+            word: ch.slot_word(K),
+            val: ch.taken(K, b),
+        });
+    }
+    notify(a, ch, b);
+    a.jump(next);
+    a.here(no_skip);
+}
+
+/// A task in the block with the cancel mark `mark` that calls `recv` until it gives `Closed` or
+/// `Cancelled`, or `limit` times, and then drops the `Receiver`. `recv` takes its receive number
+/// only when it takes a value or passes a cancelled send.
+fn receiver(ch: Chan, limit: i64, mark: i64, b: Breaks) -> Vec<Step> {
     let mut a = Asm::new();
     let (top, retry, not_full, closed) = (a.label(), a.label(), a.label(), a.label());
     a.push(Step::Set { dst: J, val: c(0) });
@@ -494,7 +592,7 @@ fn receiver(ch: Chan, limit: i64, b: Breaks) -> Vec<Step> {
     a.here(retry);
     a.push(Step::Load {
         dst: T,
-        word: c(CANCEL),
+        word: c(mark),
     });
     a.jump_if(r(T), Cmp::Ne, c(0), closed);
     if !b.senders_after_slot {
@@ -537,8 +635,11 @@ fn receiver(ch: Chan, limit: i64, b: Breaks) -> Vec<Step> {
     });
     a.jump(top);
     a.here(not_full);
+    if !b.recv_ignores_skips {
+        pass_a_skip(&mut a, ch, top, b);
+    }
     a.jump_if(r(CLOSED), Cmp::Eq, c(0), closed);
-    sleep(&mut a, ch, true, b);
+    sleep(&mut a, ch, Some(mark), b);
     a.jump(retry);
     a.here(closed);
     drop_receiver(&mut a, ch, b);
@@ -561,7 +662,8 @@ fn selector(chans: [Chan; 2], b: Breaks) -> Vec<Step> {
         val: c(0),
     });
     for ch in chans {
-        let (empty, after) = (a.label(), a.label());
+        let (again, empty, after) = (a.label(), a.label(), a.label());
+        a.here(again);
         a.push(Step::Load {
             dst: K,
             word: ch.w(RECVS),
@@ -594,6 +696,9 @@ fn selector(chans: [Chan; 2], b: Breaks) -> Vec<Step> {
         });
         a.jump(top);
         a.here(empty);
+        if !b.recv_ignores_skips {
+            pass_a_skip(&mut a, ch, again, b);
+        }
         a.jump_if(r(CLOSED), Cmp::Eq, c(0), after);
         a.push(Step::Set {
             dst: OPEN,
@@ -610,7 +715,7 @@ fn selector(chans: [Chan; 2], b: Breaks) -> Vec<Step> {
     a.push(Step::WaitWhile {
         word: c(ANY_EVENTS),
         val: r(SEEN),
-        or_cancel: false,
+        or_cancel: None,
     });
     a.push(Step::FetchAdd {
         dst: T,
@@ -658,7 +763,7 @@ fn locker(count: i64, b: Breaks) -> Vec<Step> {
     a.push(Step::WaitWhile {
         word: c(SERVING),
         val: r(SEEN),
-        or_cancel: false,
+        or_cancel: None,
     });
     a.push(Step::FetchAdd {
         dst: T,
@@ -709,7 +814,9 @@ struct Thread {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct State {
-    words: Vec<i64>,
+    /// The shared words. Each value is small, and an `i16` keeps a state small: the search
+    /// stores millions of them.
+    words: Vec<i16>,
     ring: Vec<Option<i64>>,
     threads: Vec<Thread>,
     /// One bit for each value that ended.
@@ -717,6 +824,8 @@ struct State {
     /// The last value received from each sender, by sender id.
     last: [i64; 4],
     in_lock: u8,
+    /// The skip set of each channel: (where its words start, a send number), in order.
+    skips: Vec<(i64, i64)>,
 }
 
 /// A bug that the search found, and where each thread was in the state before it.
@@ -751,6 +860,24 @@ struct Model {
     ring: usize,
 }
 
+/// A 128-bit hash of `s`. The search keeps this in place of each state that it saw, so that
+/// millions of states fit in the memory of a test machine. Two states with the same hash would
+/// hide one of them, but with a few million states the chance is about 1 in 10^25.
+fn fingerprint(s: &State) -> u128 {
+    let half = |salt: u8| {
+        let mut h = DefaultHasher::new();
+        salt.hash(&mut h);
+        s.hash(&mut h);
+        h.finish() as u128
+    };
+    (half(0) << 64) | half(1)
+}
+
+/// `v` as a shared word.
+fn narrow(v: i64) -> i16 {
+    i16::try_from(v).expect("a shared word of the model fits in an i16")
+}
+
 /// The bit of the value `v`, from sender `v / 100`.
 fn bit(v: i64) -> u64 {
     1u64 << ((v / 100) * 16 + v % 100)
@@ -759,7 +886,7 @@ fn bit(v: i64) -> u64 {
 impl Model {
     fn start(&self) -> State {
         State {
-            words: self.first_words.clone(),
+            words: self.first_words.iter().map(|&w| narrow(w)).collect(),
             ring: vec![None; self.ring],
             threads: self
                 .programs
@@ -773,6 +900,7 @@ impl Model {
             ended: 0,
             last: [0; 4],
             in_lock: 0,
+            skips: Vec::new(),
         }
     }
 
@@ -810,15 +938,15 @@ impl Model {
             Step::Done => unreachable!("a thread that is done does not move"),
             Step::FetchAdd { dst, word, delta } => {
                 let w = word.eval(&regs) as usize;
-                let old = s.words[w];
-                s.words[w] = old + delta.eval(&regs);
+                let old = s.words[w] as i64;
+                s.words[w] = narrow(old + delta.eval(&regs));
                 s.threads[t].regs[*dst] = old;
             }
             Step::Load { dst, word } => {
-                s.threads[t].regs[*dst] = s.words[word.eval(&regs) as usize];
+                s.threads[t].regs[*dst] = s.words[word.eval(&regs) as usize] as i64;
             }
             Step::Store { word, val } => {
-                s.words[word.eval(&regs) as usize] = val.eval(&regs);
+                s.words[word.eval(&regs) as usize] = narrow(val.eval(&regs));
             }
             Step::WaitWhile {
                 word,
@@ -826,8 +954,8 @@ impl Model {
                 or_cancel,
             } => {
                 let w = word.eval(&regs);
-                let cancelled = *or_cancel && s.words[CANCEL as usize] != 0;
-                if s.words[w as usize] == val.eval(&regs) && !cancelled {
+                let cancelled = or_cancel.is_some_and(|m| s.words[m as usize] != 0);
+                if s.words[w as usize] as i64 == val.eval(&regs) && !cancelled {
                     s.threads[t].waits_on = Some(w);
                 }
             }
@@ -870,6 +998,21 @@ impl Model {
                 }
             }
             Step::Leave => s.in_lock -= 1,
+            Step::SkipAdd { chan, k } => {
+                let e = (*chan, regs[*k]);
+                if s.skips.contains(&e) {
+                    return Err(format!("the send number {} was skipped twice", e.1));
+                }
+                s.skips.push(e);
+                s.skips.sort();
+            }
+            Step::SkipTake { dst, chan, k } => {
+                let e = (*chan, regs[*k]);
+                let had = s.skips.contains(&e);
+                s.skips.retain(|x| *x != e);
+                s.threads[t].regs[*dst] = had as i64;
+            }
+            Step::SkipForget { chan } => s.skips.retain(|x| x.0 != *chan),
             Step::Set { dst, val } => s.threads[t].regs[*dst] = val.eval(&regs),
             Step::If { a, cmp, b, to } => {
                 let (a, b) = (a.eval(&regs), b.eval(&regs));
@@ -923,6 +1066,9 @@ impl Model {
         if s.ring.iter().any(|v| v.is_some()) {
             return Err("the channel was freed with a value still in it".to_string());
         }
+        if !s.skips.is_empty() {
+            return Err("the channel was freed with a number still in its skip set".to_string());
+        }
         Ok(())
     }
 
@@ -930,7 +1076,7 @@ impl Model {
     fn check(&self) -> Result<usize, Found> {
         let mut seen = HashSet::new();
         let start = self.start();
-        seen.insert(start.clone());
+        seen.insert(fingerprint(&start));
         let mut stack = vec![start];
         while let Some(s) = stack.pop() {
             let mut moved = false;
@@ -941,7 +1087,7 @@ impl Model {
                     Ok(true) => moved = true,
                     Err(what) => return Err(found(what, &s)),
                 }
-                if seen.insert(next.clone()) {
+                if seen.insert(fingerprint(&next)) {
                     stack.push(next);
                 }
             }
@@ -993,9 +1139,11 @@ fn channel_model(cap: i64, senders: i64, count: i64, limit: i64, b: Breaks) -> M
         ring: 0,
         cap,
     };
-    let mut programs: Vec<Vec<Step>> = (1..=senders).map(|id| sender(ch, id, count, b)).collect();
-    programs.push(receiver(ch, limit, b));
-    let mut words = vec![0; (CANCEL + 1) as usize];
+    let mut programs: Vec<Vec<Step>> = (1..=senders)
+        .map(|id| sender(ch, id, count, CANCEL, b))
+        .collect();
+    programs.push(receiver(ch, limit, CANCEL, b));
+    let mut words = vec![0; WORDS];
     words[SENDERS as usize] = senders;
     words[RECEIVER as usize] = 1;
     words[ENDS as usize] = senders + 1;
@@ -1030,9 +1178,12 @@ fn select_model(cap: i64, count: i64, b: Breaks) -> Model {
             cap,
         },
     ];
-    let mut programs = vec![sender(chans[0], 1, count, b), sender(chans[1], 2, count, b)];
+    let mut programs = vec![
+        sender(chans[0], 1, count, CANCEL, b),
+        sender(chans[1], 2, count, CANCEL, b),
+    ];
     programs.push(selector(chans, b));
-    let mut words = vec![0; (CANCEL + 1) as usize];
+    let mut words = vec![0; WORDS];
     for ch in chans {
         words[(ch.base + SENDERS) as usize] = 1;
         words[(ch.base + RECEIVER) as usize] = 1;
@@ -1083,6 +1234,9 @@ const NONE: Breaks = Breaks {
     senders_after_slot: false,
     unlock_wakes_none: false,
     wait_ignores_cancel: false,
+    send_keeps_its_place: false,
+    recv_ignores_skips: false,
+    skip_keeps_the_slot: false,
 };
 
 #[test]
@@ -1233,33 +1387,108 @@ fn leaving_block_with_the_receiver(ch: Chan, sender: usize, b: Breaks) -> Vec<St
     a.finish()
 }
 
-/// Not fixed yet. A `send` that has its place waits for room, and a cancel does not stop it. When
-/// the code of the block holds the `Receiver` and leaves the block, it joins the sender first and
-/// drops the `Receiver` after. Then neither can move. This test passes while the hang is there.
-#[test]
-fn a_send_that_has_its_place_still_hangs_when_the_block_with_the_receiver_leaves() {
+/// One sender task sends 2 values with room 1. The code of the block holds the `Receiver` and
+/// leaves the block at any point: it cancels, joins the sender, and drops the `Receiver` last.
+fn block_with_the_receiver_model(b: Breaks) -> Model {
     let ch = Chan {
         base: 0,
         ring: 0,
         cap: 1,
     };
-    let mut words = vec![0; (CANCEL + 1) as usize];
+    let mut words = vec![0; WORDS];
     words[SENDERS as usize] = 1;
     words[RECEIVER as usize] = 1;
     words[ENDS as usize] = 2;
-    let model = Model {
+    Model {
         programs: vec![
-            sender(ch, 1, 2, NONE),
-            leaving_block_with_the_receiver(ch, 0, NONE),
+            sender(ch, 1, 2, CANCEL, b),
+            leaving_block_with_the_receiver(ch, 0, b),
         ],
         senders: vec![(1, 2)],
-        allowed: vec![End::Received, End::GivenBack, End::Dropped],
+        allowed: vec![End::GivenBack, End::Dropped],
         first_words: words,
         ring: 1,
+    }
+}
+
+#[test]
+fn a_cancel_stops_a_send_that_has_its_place() {
+    holds(
+        "a send that has its place, and a block with the Receiver that leaves",
+        block_with_the_receiver_model(NONE),
+    );
+}
+
+#[test]
+fn the_search_finds_a_send_that_keeps_its_place_after_a_cancel() {
+    let b = Breaks {
+        send_keeps_its_place: true,
+        ..NONE
     };
     finds(
-        "a send that has its place, and a block that leaves",
-        model,
+        "the send keeps its place",
+        block_with_the_receiver_model(b),
         "nothing can wake it",
     );
+}
+
+/// Room 1. Sender 1 sends 2 values in a block that its code cancels at any point. Sender 2 sends
+/// 1 value, and the receiver receives until `Closed`, both in another block. So the `recv`
+/// must pass each place that a cancelled `send` left, and free its slot for the next `send`.
+fn skip_model(b: Breaks) -> Model {
+    let ch = Chan {
+        base: 0,
+        ring: 0,
+        cap: 1,
+    };
+    let mut cancel = Asm::new();
+    cancel.push(Step::Store {
+        word: c(CANCEL),
+        val: c(1),
+    });
+    cancel.push(Step::WakeEvery);
+    cancel.push(Step::Join { thread: 0 });
+    cancel.push(Step::Done);
+    let mut words = vec![0; WORDS];
+    words[SENDERS as usize] = 2;
+    words[RECEIVER as usize] = 1;
+    words[ENDS as usize] = 3;
+    Model {
+        programs: vec![
+            sender(ch, 1, 2, CANCEL, b),
+            sender(ch, 2, 1, OTHER_BLOCK, b),
+            receiver(ch, i64::MAX, OTHER_BLOCK, b),
+            cancel.finish(),
+        ],
+        senders: vec![(1, 2), (2, 1)],
+        allowed: vec![End::Received, End::GivenBack],
+        first_words: words,
+        ring: 1,
+    }
+}
+
+#[test]
+fn a_recv_passes_the_place_of_a_cancelled_send() {
+    holds(
+        "a cancelled send and a recv in another block",
+        skip_model(NONE),
+    );
+}
+
+#[test]
+fn the_search_finds_a_recv_that_does_not_look_in_the_skip_set() {
+    let b = Breaks {
+        recv_ignores_skips: true,
+        ..NONE
+    };
+    finds("recv ignores skips", skip_model(b), "nothing can wake it");
+}
+
+#[test]
+fn the_search_finds_a_skip_that_does_not_free_its_slot() {
+    let b = Breaks {
+        skip_keeps_the_slot: true,
+        ..NONE
+    };
+    finds("skip keeps the slot", skip_model(b), "nothing can wake it");
 }
