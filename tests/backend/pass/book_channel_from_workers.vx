@@ -1,0 +1,58 @@
+//===- book_channel_from_workers.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on tasks (www/book/src/tasks.md): four tasks send squares on one
+// channel, and the code of the block receives them until the channel is closed.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}got 40 values, sum 20540{{$}}
+
+// ANCHOR: program
+import std::sync::channel;
+
+fn send_squares(tx : Sender<i64>, from : i64) -> void {
+  for i in from..from + 10 {
+    match tx.send(i * i) {
+      Result<void, SendError<i64>>::Ok() => {}
+      Result<void, SendError<i64>>::Err(_e) => {
+        println!("the receiver is gone");
+      }
+    }
+  }
+}
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(4);
+  let mut count : i64 = 0;
+  let mut sum : i64 = 0;
+  tasks {
+    for w in 0..4 {
+      let mine = tx.clone();
+      spawn {
+        send_squares(mine, (w as i64) * 10);
+      };
+    }
+    // The channel closes when the last `Sender` is dropped.
+    drop(tx);
+    let mut open = true;
+    while open {
+      match rx.recv() {
+        Result<i64, RecvError>::Ok(v) => {
+          count = count + 1;
+          sum = sum + v;
+        }
+        Result<i64, RecvError>::Err(_e) => {
+          open = false;
+        }
+      }
+    }
+  };
+  println!("got {} values, sum {}", count, sum);
+  return 0;
+}
+// ANCHOR_END: program
