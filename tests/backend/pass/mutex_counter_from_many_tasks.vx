@@ -13,7 +13,11 @@
 // Only because the older code generator runs each task to its end at its `spawn`. A task
 // that waits for a later task then waits forever.
 //
+// The second RUN line runs the same program on the shared runtime, with one worker thread
+// for all the tasks.
+//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}count 80000{{$}}
 
 import std::sync::mutex;

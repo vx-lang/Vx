@@ -16,21 +16,26 @@
 // word before it calls `vx_wake_all`, which takes the same lock. So a wake can never come
 // between the read and the sleep, and no wake is lost.
 //
+// A task of the shared runtime (sched.rs) does not sleep: it parks. Under the lock it goes on
+// the list of fibers of the bucket, and a wake puts each fiber of the list back on the queue.
+//
 //===----------------------------------------------------------------------===//
 
+use crate::ffi::sched::{self, FiberRef};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Condvar, Mutex};
 
 const BUCKETS: usize = 64;
 
 struct Bucket {
-    lock: Mutex<()>,
+    /// The fibers that park on a word of this bucket.
+    lock: Mutex<Vec<FiberRef>>,
     cond: Condvar,
 }
 
 static TABLE: [Bucket; BUCKETS] = [const {
     Bucket {
-        lock: Mutex::new(()),
+        lock: Mutex::new(Vec::new()),
         cond: Condvar::new(),
     }
 }; BUCKETS];
@@ -40,20 +45,38 @@ fn bucket(word: *const i64) -> &'static Bucket {
     &TABLE[(word as usize >> 3) % BUCKETS]
 }
 
-/// Sleep while the atomic word at `word` holds `value`. The call can return early, when another
-/// word of the same bucket changes. So the caller reads its word again and loops.
+/// Sleep while the atomic word at `word` holds `value`. A task of the shared runtime parks in
+/// place of the sleep. The call can return early, when another word of the same bucket changes.
+/// So the caller reads its word again and loops.
 ///
 /// # Safety
 ///
 /// `word` points to a live, 8-byte aligned `i64` that other threads change only atomically.
 #[no_mangle]
 pub unsafe extern "C" fn vx_wait_while(word: *const i64, value: i64) {
+    wait(word, value, false);
+}
+
+/// Sleeps or parks while the word holds `value`, and with `or_cancel`, while the block of this
+/// task or thread was not cancelled.
+unsafe fn wait(word: *const i64, value: i64, or_cancel: bool) {
     let b = bucket(word);
-    let guard = b.lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut fibers = b.lock.lock().unwrap_or_else(|e| e.into_inner());
     let atomic = unsafe { &*(word as *const AtomicI64) };
-    if atomic.load(Ordering::SeqCst) == value {
-        drop(b.cond.wait(guard).unwrap_or_else(|e| e.into_inner()));
+    if atomic.load(Ordering::SeqCst) != value
+        || (or_cancel && crate::ffi::tasks::vx_cancelled() != 0)
+    {
+        return;
     }
+    let fiber = sched::current_fiber();
+    if fiber.is_null() {
+        drop(b.cond.wait(fibers).unwrap_or_else(|e| e.into_inner()));
+        return;
+    }
+    sched::will_park(fiber);
+    fibers.push(FiberRef(fiber));
+    drop(fibers);
+    sched::park();
 }
 
 /// As `vx_wait_while`, and also return when the block of this thread was cancelled. The cancel
@@ -65,12 +88,7 @@ pub unsafe extern "C" fn vx_wait_while(word: *const i64, value: i64) {
 /// As for `vx_wait_while`.
 #[no_mangle]
 pub unsafe extern "C" fn vx_wait_while_or_cancel(word: *const i64, value: i64) {
-    let b = bucket(word);
-    let guard = b.lock.lock().unwrap_or_else(|e| e.into_inner());
-    let atomic = unsafe { &*(word as *const AtomicI64) };
-    if atomic.load(Ordering::SeqCst) == value && crate::ffi::tasks::vx_cancelled() == 0 {
-        drop(b.cond.wait(guard).unwrap_or_else(|e| e.into_inner()));
-    }
+    wait(word, value, true);
 }
 
 /// Wake each thread that waits on the word at `word`. Call it after the change to the word.
@@ -80,17 +98,22 @@ pub unsafe extern "C" fn vx_wait_while_or_cancel(word: *const i64, value: i64) {
 /// `word` is an address that `vx_wait_while` may have been called with. It is not read.
 #[no_mangle]
 pub unsafe extern "C" fn vx_wake_all(word: *const i64) {
-    let b = bucket(word);
-    drop(b.lock.lock().unwrap_or_else(|e| e.into_inner()));
-    b.cond.notify_all();
+    wake(bucket(word));
 }
 
 /// Wake each thread that waits on any word. A cancel uses it: each wait reads its word again,
 /// and a wait that can be cancelled then sees the cancel.
 pub(crate) fn wake_every_thread() {
     for b in &TABLE {
-        drop(b.lock.lock().unwrap_or_else(|e| e.into_inner()));
-        b.cond.notify_all();
+        wake(b);
+    }
+}
+
+fn wake(b: &Bucket) {
+    let fibers = std::mem::take(&mut *b.lock.lock().unwrap_or_else(|e| e.into_inner()));
+    b.cond.notify_all();
+    for fiber in fibers {
+        sched::wake(fiber);
     }
 }
 
