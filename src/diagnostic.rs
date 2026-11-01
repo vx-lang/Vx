@@ -425,6 +425,10 @@ pub enum DiagnosticCode {
     /// `let h = spawn { .. };`, and a join in its own block that always runs after the `spawn`.
     /// The block must give a `Result<U, E>` with the same `E`.
     E3060,
+    /// An impl of a trait does not write a method that the trait requires: one the trait
+    /// declares with no default body. A call to that method would otherwise fail where it is
+    /// called, with "method not found", though the fault is in the impl.
+    E3061,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
