@@ -425,6 +425,10 @@ pub enum DiagnosticCode {
     /// `let h = spawn { .. };`, and a join in its own block that always runs after the `spawn`.
     /// The block must give a `Result<U, E>` with the same `E`.
     E3060,
+    /// An impl of a trait does not write a method that the trait requires: one the trait
+    /// declares with no default body. A call to that method would otherwise fail where it is
+    /// called, with "method not found", though the fault is in the impl.
+    E3061,
     /// A struct literal that writes its fields in an order other than the struct's declaration.
     /// The fields run in the order the source writes them, so `P { y : f(), x : g() }` would run
     /// `f` before `g` and store `y` before `x`. Write the fields in the order the struct declares

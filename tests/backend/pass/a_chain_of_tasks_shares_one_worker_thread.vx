@@ -1,0 +1,77 @@
+//===- a_chain_of_tasks_shares_one_worker_thread.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two tasks wait for each other. The first task sends 1 to 1000 to the second task, which
+// sends each value times 2 to the code of the block. Each channel has room for one value.
+//
+// The second RUN line runs both tasks on one worker thread of the shared runtime. When the
+// first task waits for room, it must park and give the thread to the second task. A wait that
+// blocked the thread would hang here.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator runs each task to its end at its `spawn`. A task
+// that waits for a later task then waits forever.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}count 1000 sum 1001000{{$}}
+
+import std::sync::channel;
+
+fn main() -> i32 {
+  let (to_second, from_first) = channel<i64>(1);
+  let (to_block, from_second) = channel<i64>(1);
+  let mut count : i64 = 0;
+  let mut sum : i64 = 0;
+  tasks {
+    // Each task moves the ends of the channels that it uses.
+    spawn {
+      let first_out = to_second;
+      let first : i64 = 1;
+      for i in first..1001 {
+        match first_out.send(i) {
+          Result<void, SendError<i64>>::Ok() => {}
+          Result<void, SendError<i64>>::Err(_) => {
+            panic("the second task is gone");
+          }
+        }
+      }
+    };
+    spawn {
+      let second_in = from_first;
+      let second_out = to_block;
+      for _i in 0..1000 {
+        match second_in.recv() {
+          Result<i64, RecvError>::Ok(v) => {
+            match second_out.send(v * 2) {
+              Result<void, SendError<i64>>::Ok() => {}
+              Result<void, SendError<i64>>::Err(_) => {
+                panic("the code of the block is gone");
+              }
+            }
+          }
+          Result<i64, RecvError>::Err(_) => {
+            panic("the first task is gone");
+          }
+        }
+      }
+    };
+    for _i in 0..1000 {
+      match from_second.recv() {
+        Result<i64, RecvError>::Ok(v) => {
+          count = count + 1;
+          sum = sum + v;
+        }
+        Result<i64, RecvError>::Err(_) => {
+          panic("the second task is gone");
+        }
+      }
+    }
+  };
+  println!("count {} sum {}", count, sum);
+  return 0;
+}
