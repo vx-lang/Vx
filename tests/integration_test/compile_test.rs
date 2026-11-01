@@ -983,6 +983,9 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
     if source.contains("// REQUIRES: thread-sanitizer") && !has_thread_sanitizer() {
         return Ok(());
     }
+    if source.contains("// REQUIRES: x86_64") && !cfg!(target_arch = "x86_64") {
+        return Ok(());
+    }
 
     let run_lines: Vec<&str> = source
         .lines()

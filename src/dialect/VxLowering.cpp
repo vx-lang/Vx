@@ -6780,6 +6780,37 @@ struct HideProgramSymbolsPass
   }
 };
 
+// Each function the program defines probes each page of its stack frame
+// before it uses it. A task stack has one guard page below it
+// (waiting_tasks_channels_and_task_errors.md, W3), and a frame larger than a
+// page could otherwise reach past the guard page into other memory.
+struct ProbeStackPass
+    : public PassWrapper<ProbeStackPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ProbeStackPass)
+
+  llvm::StringRef getArgument() const override { return "vx-probe-stack"; }
+
+  llvm::StringRef getDescription() const override {
+    return "Makes each function probe the pages of its stack frame";
+  }
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    MLIRContext *ctx = module.getContext();
+    Attribute probe = ArrayAttr::get(ctx, {StringAttr::get(ctx, "probe-stack"),
+                                           StringAttr::get(ctx, "inline-asm")});
+    for (auto func : module.getOps<LLVM::LLVMFuncOp>()) {
+      if (func.isExternal())
+        continue;
+      llvm::SmallVector<Attribute> attrs;
+      if (ArrayAttr passthrough = func.getPassthroughAttr())
+        attrs.append(passthrough.begin(), passthrough.end());
+      attrs.push_back(probe);
+      func.setPassthroughAttr(ArrayAttr::get(ctx, attrs));
+    }
+  }
+};
+
 // Upstream's `inline` pass inlines every call it can. A function that calls
 // another three times, which calls another three times, and so on, then holds
 // 3^depth copies of the innermost one, and compile time grows the same way.
@@ -6861,6 +6892,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<HideProgramSymbolsPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<ProbeStackPass>();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<OrderRelaxedReadsPass>();
