@@ -17,7 +17,7 @@ the test suite has one, a program that triggers it.
 - [Warnings](#warnings) — `W1001`–`W1035` (26 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3060` (59 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3062` (60 codes)
 - [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4015` (15 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6035` (35 codes)
@@ -156,6 +156,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3058`](/errors/E3058/) | A `return`, `break` or `continue` that leaves a task, or a task that joins another task. The last expression of a task body is its result. A task cannot join another task yet. Join both tasks in the `tasks` block. |
 | [`E3059`](/errors/E3059/) | An `extern` declaration of `malloc`, `calloc`, `realloc`, `aligned_alloc` or `free` whose type is not C's. The compiler calls these functions too, and it can share only a declaration of C's type. A size is a 64-bit integer: `usize`, `i64` or `u64`. A pointer is a raw pointer to host memory. `free` returns nothing. |
 | [`E3060`](/errors/E3060/) | A task that can fail, used in a way that could lose its failure. A task whose body gives `Result<T, E>` can fail, and its `join()` gives the `T`. When the task failed, the join leaves the `tasks` block, and the block gives the `Err`. So the task needs a handle, `let h = spawn { .. };`, and a join in its own block that always runs after the `spawn`. The block must give a `Result<U, E>` with the same `E`. |
+| [`E3062`](/errors/E3062/) | A struct literal that writes its fields in an order other than the struct's declaration. The fields run in the order the source writes them, so `P { y : f(), x : g() }` would run `f` before `g` and store `y` before `x`. Write the fields in the order the struct declares them. |
 
 ## Borrow/Ownership Errors
 
@@ -260,4 +261,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-170 diagnostics.
+172 diagnostics.

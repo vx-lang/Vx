@@ -55,7 +55,7 @@ fn main() -> i32 {
     let _y = ((a as f64) * 3.0) as f32;
     // CHECK: Error[E6026] at {{.*}}f64_built_inside_a_device_region.vx:[[@LINE+1]]:5: this expression has element type f64
     d = d * 2.0;
-    // CHECK: Error[E6026] at {{.*}}f64_built_inside_a_device_region.vx:[[@LINE+1]]:5: a value in this statement has element type f64
+    // CHECK: Error[E6026] at {{.*}}f64_built_inside_a_device_region.vx:[[@LINE+1]]:14: this expression has element type f64
     let _p = P {
       v: 1.0
     };
