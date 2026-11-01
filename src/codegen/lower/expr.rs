@@ -2015,10 +2015,156 @@ impl<'c> LowerToMelior<'c> for UnsafeBlockExpr {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let depth = gen.open_block();
-        let lowered = lower_unsafe_block(self, gen, block);
+        let lowered = match self.task {
+            Some(kind) => lower_task_block(self, kind, gen, block),
+            None => lower_unsafe_block(self, gen, block),
+        };
         gen.close_blocks_to(depth);
         lowered
     }
+}
+
+/// A `tasks` block or a task body. It becomes a `vx.spawn` region with the topology of its kind,
+/// as on the flat code generator, and `VxLowering` runs each task on a thread of its own.
+/// A `tasks` block that can fail, or that a `return`, `break` or `continue` leaves, still runs
+/// its tasks one after another at their `spawn`s.
+fn lower_task_block<'c>(
+    this: &UnsafeBlockExpr,
+    kind: syntax::TaskBlockKind,
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let (region, outer_inline) = match kind {
+        syntax::TaskBlockKind::Tasks => {
+            // A trailing `if` is the value of the block, so look at the value too.
+            let tail: Vec<syntax::Statement> = this
+                .ret
+                .iter()
+                .map(|e| {
+                    syntax::Statement::ExprStmt(syntax::ExprStmtStmt::new(
+                        (**e).clone(),
+                        false,
+                        this.span,
+                    ))
+                })
+                .collect();
+            let inline = this.fails_as.is_some()
+                || crate::hir::flatten::has_tasks_exit(&this.stmts)
+                || leaves_the_block(&this.stmts, false)
+                || leaves_the_block(&tail, false);
+            (!inline, std::mem::replace(&mut gen.tasks_inline, inline))
+        }
+        syntax::TaskBlockKind::Spawn => (!gen.tasks_inline, gen.tasks_inline),
+    };
+    let lowered = if region {
+        lower_task_region(this, kind, gen, block)
+    } else {
+        lower_unsafe_block(this, gen, block)
+    };
+    gen.tasks_inline = outer_inline;
+    lowered
+}
+
+/// Whether `stmts` hold a `return`, or a `break` or `continue` that is not in a loop of their
+/// own (`in_loop`).
+fn leaves_the_block(stmts: &[syntax::Statement], in_loop: bool) -> bool {
+    use syntax::Statement as S;
+    stmts.iter().any(|s| match s {
+        S::Return(_) => true,
+        S::Break(_) | S::Continue(_) => !in_loop,
+        S::Loop(l) => leaves_the_block(&l.body, true),
+        S::ForLoop(l) => leaves_the_block(&l.body, true),
+        _ => {
+            let mut found = false;
+            syntax::visit_exprs(std::slice::from_ref(s), &mut |e| match e {
+                Expr::If(i) => {
+                    found |= leaves_the_block(&i.then_block, in_loop)
+                        || i.else_block
+                            .as_deref()
+                            .is_some_and(|b| leaves_the_block(b, in_loop));
+                }
+                Expr::Match(m) => {
+                    found |= m.arms.iter().any(|a| leaves_the_block(&a.body, in_loop));
+                }
+                // A `return` in an inner `tasks` block leaves this one too. A task body has none.
+                Expr::UnsafeBlock(u) if u.task != Some(syntax::TaskBlockKind::Spawn) => {
+                    found |= leaves_the_block(&u.stmts, in_loop);
+                }
+                _ => {}
+            });
+            found
+        }
+    })
+}
+
+fn lower_task_region<'c>(
+    this: &UnsafeBlockExpr,
+    kind: syntax::TaskBlockKind,
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let location = gen.loc();
+    let wants_value = this.ret.is_some() && gen.expected_type != Some(gen.none_ty);
+    let region = melior::ir::Region::new();
+    let mut body = region.append_block(melior::ir::Block::new(&[]));
+    let mut reached_end = true;
+    for stmt in &this.stmts {
+        match gen.generate_statement(stmt, body)? {
+            Some(b) => body = b,
+            None => {
+                // The region still needs a last block that yields.
+                body = super::dead_continuation(body);
+                reached_end = false;
+                break;
+            }
+        }
+    }
+    let mut result_types = Vec::new();
+    let mut yielded = Vec::new();
+    {
+        if let Some(ret_expr) = this.ret.as_ref().filter(|_| reached_end) {
+            let waiting = std::mem::take(&mut gen.queued_drops);
+            let (val, ty, cur) = gen.generate_expr(ret_expr, body)?;
+            gen.queued_drops.extend(waiting);
+            body = gen.run_queued_drops(cur)?;
+            if wants_value {
+                result_types.push(ty);
+                yielded.push(val);
+            }
+        }
+        body.append_operation(
+            OperationBuilder::new("vx.yield", location)
+                .add_operands(&yielded)
+                .build()?,
+        );
+    }
+    let topology = match kind {
+        syntax::TaskBlockKind::Tasks => crate::arch::TASKS_BLOCK_DISPATCH_ID,
+        syntax::TaskBlockKind::Spawn => crate::arch::TASK_DISPATCH_ID,
+    };
+    let spawn = block.append_operation(
+        OperationBuilder::new("vx.spawn", location)
+            .add_attributes(&[(
+                Identifier::new(gen.context, "topology"),
+                IntegerAttribute::new(gen.i32_ty, topology as i64).into(),
+            )])
+            .add_regions([region])
+            .add_results(&result_types)
+            .build()?,
+    );
+    if let Some(&ty) = result_types.first() {
+        return Ok((spawn.result(0)?.into(), ty, block));
+    }
+    let zero = block.append_operation(
+        OperationBuilder::new("arith.constant", location)
+            .add_results(&[gen.i32_ty])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                IntegerAttribute::new(gen.i32_ty, 0).into(),
+            )])
+            .build()?,
+    );
+    Ok((zero.result(0)?.into(), gen.i32_ty, block))
 }
 
 fn lower_unsafe_block<'c>(
@@ -5264,7 +5410,8 @@ fn lower_clone_call<'c>(
             sizes.push(block.append_operation(dim).result(0)?.into());
         }
     }
-    let dst_ty = Type::parse(gen.context, &format!("memref<{}x{elem}>", parts.join("x")))
+    let dims: String = parts.iter().map(|d| format!("{d}x")).collect();
+    let dst_ty = Type::parse(gen.context, &format!("memref<{dims}{elem}>"))
         .ok_or_else(|| format!("clone of a tensor with no memref type: {src_str}"))?;
     if let Some(slot) = nrvo_slot.filter(|s| s.r#type() == dst_ty) {
         let copy = OperationBuilder::new("memref.copy", gen.loc())

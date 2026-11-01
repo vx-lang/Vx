@@ -1,0 +1,52 @@
+//===- thread_sanitizer_reports_a_data_race.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two tasks add 1 to the same `i64` through a raw pointer, with no lock. The struct that holds
+// the pointer claims `Sync` with `unsafe impl`, so the compiler cannot see the race. With
+// `--sanitize=thread`, the program reports it when it runs, and fails.
+//
+// REQUIRES: thread-sanitizer
+// RUN: not vxc --sanitize=thread %s 2>&1 | FileCheck %s
+// CHECK: WARNING: ThreadSanitizer: data race
+// CHECK: {{#0 bump}}
+//
+// The sanitizer works only when vxc runs the program.
+// RUN: not vxc --sanitize=thread --action emit-mlir %s 2>&1 | FileCheck %s --check-prefix=NO-RUN
+// NO-RUN: --sanitize=thread works only when vxc runs the program
+
+import core::marker;
+
+struct Shared {
+  p : *mut i64,
+}
+
+unsafe impl Send for Shared {}
+unsafe impl Sync for Shared {}
+
+fn bump(s : &Shared) -> void {
+  let p = s.p;
+  for i in 0..1000 {
+    unsafe { *p = *p + 1; }
+  }
+}
+
+fn main() -> i32 {
+  let mut n : i64 = 0;
+  let s = Shared {
+    p : (&mut n) as *mut i64
+  };
+  tasks {
+    spawn {
+      bump(&s);
+    };
+    spawn {
+      bump(&s);
+    };
+  };
+  println!("done");
+  return 0;
+}

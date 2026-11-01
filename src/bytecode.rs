@@ -327,6 +327,13 @@ pub enum Opcode {
     /// Leaves the innermost `Spawn` region from its middle, with no value. It ends its block, as
     /// `Ret` does.
     RegionExit = 74,
+    /// At the end of a task whose value is an `Err`: cancels the `tasks` block of the task (F3).
+    TaskFailed = 75,
+    /// Before the call of a `Drop` impl: turns cancellation off for this thread until `CancelOn`
+    /// (F6). A wait in the `drop` then cannot give `Cancelled`.
+    CancelOff = 76,
+    /// After the call of a `Drop` impl: turns cancellation back on.
+    CancelOn = 77,
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.

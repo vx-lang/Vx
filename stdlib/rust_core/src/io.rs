@@ -39,6 +39,19 @@ pub(crate) mod lines {
         TO_STDERR.with(|flag| flag.set(on));
     }
 
+    /// Swaps the line and the stderr flag of this thread with these. The shared runtime gives
+    /// each fiber its own, so that the lines of two fibers on one thread do not mix.
+    pub(crate) fn swap_with_thread(line: &mut Vec<u8>, to_stderr: &mut bool) {
+        LINE.with(|l| std::mem::swap(&mut *l.borrow_mut(), line));
+        TO_STDERR.with(|flag| *to_stderr = flag.replace(*to_stderr));
+    }
+
+    /// Takes what this thread keeps of its line.
+    #[cfg(test)]
+    pub(crate) fn take_line() -> Vec<u8> {
+        LINE.with(|l| std::mem::take(&mut *l.borrow_mut()))
+    }
+
     pub(crate) fn task_started() {
         RUNNING_TASKS.fetch_add(1, Ordering::SeqCst);
     }

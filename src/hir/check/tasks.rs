@@ -98,7 +98,7 @@ struct Failure {
 }
 
 /// The `T` and `E` of core's `Result<T, E>`. The compiler knows `Result` by its name.
-fn result_parts(ty: &Type) -> Option<(Type, Type)> {
+pub(crate) fn result_parts(ty: &Type) -> Option<(Type, Type)> {
     let Type::GenericInstance(base, args) = ty else {
         return None;
     };
@@ -208,7 +208,12 @@ impl TypeChecker<'_> {
         };
         match tb.kind {
             TaskBlockKind::Tasks => self.check_tasks_block(expr, consume),
-            TaskBlockKind::Spawn => self.check_spawn(expr, consume),
+            TaskBlockKind::Spawn => {
+                let loops = std::mem::take(&mut self.cancel_loops);
+                let ty = self.check_spawn(expr, consume);
+                self.cancel_loops = loops;
+                ty
+            }
         }
     }
 
@@ -264,6 +269,7 @@ impl TypeChecker<'_> {
         expr: &mut Expr,
         ret: Option<Expr>,
         fails_as: Option<Type>,
+        cancels_on_err: Option<Type>,
     ) {
         if self.speculating {
             return;
@@ -280,6 +286,7 @@ impl TypeChecker<'_> {
             generated: true,
             task: Some(tb.kind),
             fails_as,
+            cancels_on_err,
         });
     }
 
@@ -321,7 +328,7 @@ impl TypeChecker<'_> {
         self.tasks.handles.retain(|h| h.depth < scope_len - 1);
         self.pop_scope();
         let fails_as = self.check_block_failures(&failures, &ty, &expr.span());
-        self.task_block_to_plain_block(expr, None, fails_as);
+        self.task_block_to_plain_block(expr, None, fails_as, None);
         ty
     }
 
@@ -396,7 +403,7 @@ impl TypeChecker<'_> {
                 self.task_error(DiagnosticCode::E3056, message.to_string(), &span);
                 let ty = self.check_task_body(expr, consume, |_| {});
                 self.pop_scope();
-                self.task_block_to_plain_block(expr, None, None);
+                self.task_block_to_plain_block(expr, None, None, None);
                 // A handle all the same, so that its `join()` reports nothing more.
                 if place == Some(SpawnPlace::Let) {
                     let id = format!("{TASK_PREFIX}{}", self.tasks.next_id);
@@ -420,13 +427,17 @@ impl TypeChecker<'_> {
         // statement too. A statement drops its value. The last value of a block does not.
         if place != Some(SpawnPlace::Let) {
             // A task that can fail needs a handle, so that its join gives the failure to the
-            // block. The type of a tail that names a variable of the task is not known here.
+            // block. The type of a tail that names a variable of the task is not known here, and
+            // the probe can report that variable as undefined. The check of the body below
+            // reports each real error of the tail, so the errors of the probe are dropped.
+            let errors = self.errors.len();
             let tail_ty = match &*expr {
                 Expr::TaskBlock(TaskBlockExpr {
                     ret: Some(tail), ..
                 }) => Some(self.operand_type(tail)),
                 _ => None,
             };
+            self.errors.inner.truncate(errors);
             if let Some((_, err)) = tail_ty.as_ref().and_then(result_parts) {
                 self.task_error(
                     DiagnosticCode::E3060,
@@ -558,6 +569,9 @@ impl TypeChecker<'_> {
             });
         }
 
+        // A task that can fail cancels its block when it ends with an `Err` (F3).
+        let cancels_on_err =
+            (place == Some(SpawnPlace::Let) && result_parts(&ty).is_some()).then(|| ty.clone());
         // A `let` of a task with no result holds a `bool` that nothing reads.
         let mut ret = None;
         if place == Some(SpawnPlace::Let) {
@@ -569,7 +583,7 @@ impl TypeChecker<'_> {
         } else {
             ty = Type::Struct("void".into(), None);
         }
-        self.task_block_to_plain_block(expr, ret, None);
+        self.task_block_to_plain_block(expr, ret, None, cancels_on_err);
         ty
     }
 

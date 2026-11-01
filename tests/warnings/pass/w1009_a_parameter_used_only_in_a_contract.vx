@@ -8,7 +8,7 @@
 
 // `blocks` is in both contracts.
 fn slot(b : i32, off : i32, blocks : i32) -> i32
-requires b >= 0 && b < blocks && off >= 0 && off < 16
+requires b >= 0 && b < blocks && blocks < 1000 && off >= 0 && off < 16
 ensures return >= 0 && return < 16 * blocks
 {
   return 16 * b + off;

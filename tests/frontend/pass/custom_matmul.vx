@@ -38,7 +38,7 @@ fn distributed_matmul(a : Tensor<f32, [?, ?]>, b : Tensor<f32, [?, ?]>) -> Tenso
   let local_a = transfer(a, Memory::NPU_HBM);
   let local_b = transfer(b, Memory::NPU_HBM);
   spawn on(Topology::NPU[0]) {
-    let result = local_a;
+    let result = local_a.clone();
     // Testing the compiler frontend syntax parsing and typechecking without
     // custom_matmul to avoid cross-device implicit coercion errors.
   }

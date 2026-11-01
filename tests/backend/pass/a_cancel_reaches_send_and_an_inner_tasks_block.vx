@@ -1,0 +1,73 @@
+//===- a_cancel_reaches_send_and_an_inner_tasks_block.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The code of a `tasks` block returns early, which cancels its tasks. One task has a `tasks`
+// block of its own, whose task waits in `recv`: the cancel reaches it too. After that, the outer
+// task sees `cancelled()`, and its `send` gives the value back as cancelled.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator runs the tasks of a `tasks` block that a `return`
+// leaves one after another, at their `spawn`s. A task that waits for a later task then waits
+// forever.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}the inner recv gave no value{{$}}
+// CHECK: {{^}}cancelled true{{$}}
+// CHECK: {{^}}send gave back 5, cancelled true{{$}}
+// CHECK: {{^}}leave gave 7{{$}}
+
+import std::sync::channel;
+import std::sync::wait;
+
+fn wait_inside(rx : Receiver<i64>) -> void {
+  match rx.recv() {
+    Result<i64, RecvError>::Ok(v) => {
+      println!("the inner recv gave {}", v);
+    }
+    Result<i64, RecvError>::Err(_e) => {
+      println!("the inner recv gave no value");
+    }
+  }
+}
+
+fn outer_task(rx : Receiver<i64>, tx : Sender<i64>) -> void {
+  tasks {
+    spawn {
+      wait_inside(rx);
+    };
+  };
+  println!("cancelled {}", cancelled());
+  match tx.send(5) {
+    Result<void, SendError<i64>>::Ok() => {
+      println!("send gave Ok");
+    }
+    Result<void, SendError<i64>>::Err(e) => {
+      println!("send gave back {}, cancelled {}", e.value, e.cancelled);
+    }
+  }
+}
+
+fn leave(early : bool) -> i64 {
+  let (keep, rx) = channel<i64>(1);
+  let (tx, _rx2) = channel<i64>(1);
+  tasks {
+    spawn {
+      outer_task(rx, tx);
+    };
+    if early {
+      return 7;
+    }
+    drop(keep);
+  };
+  return 0;
+}
+
+fn main() -> i32 {
+  let v = leave(true);
+  println!("leave gave {}", v);
+  return 0;
+}

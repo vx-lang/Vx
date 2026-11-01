@@ -499,6 +499,9 @@ pub struct UnsafeBlockExpr {
     /// A `tasks` block with a task that can fail: the type of the block, `Result<U, E>`. A
     /// `join()` of a task that failed leaves the block with an `Err` of this type.
     pub fails_as: Option<Type>,
+    /// A task body whose value is this `Result` type. When it ends with an `Err`, it cancels its
+    /// `tasks` block (F3).
+    pub cancels_on_err: Option<Type>,
 }
 impl UnsafeBlockExpr {
     pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -509,6 +512,7 @@ impl UnsafeBlockExpr {
             generated: false,
             task: None,
             fails_as: None,
+            cancels_on_err: None,
         }
     }
 }
@@ -1511,6 +1515,7 @@ impl Expr {
                 generated: e.generated,
                 task: e.task,
                 fails_as: e.fails_as.as_ref().map(|t| t.substitute(mapping)),
+                cancels_on_err: e.cancels_on_err.as_ref().map(|t| t.substitute(mapping)),
             }),
             Expr::StructInit(e) => {
                 let mut new_name = e.name.clone();

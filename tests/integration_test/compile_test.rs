@@ -19,6 +19,48 @@ use std::sync::{Mutex, Once};
 static INIT_RAYON: Once = Once::new();
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
+/// The time limit of one RUN line of a backend test.
+const RUN_LINE_SECONDS: u32 = 300;
+
+/// Whether the machine has the `timeout` command.
+fn has_timeout() -> bool {
+    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HAS.get_or_init(|| {
+        std::process::Command::new("timeout")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    })
+}
+
+/// Whether clang can link a program with ThreadSanitizer. Linux packages ship its runtime
+/// apart from clang, in `libclang-rt-<version>-dev`.
+fn has_thread_sanitizer() -> bool {
+    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HAS.get_or_init(|| {
+        let Ok(dir) = tempfile::tempdir() else {
+            return false;
+        };
+        let src = dir.path().join("t.c");
+        if fs::write(&src, "int main(void) { return 0; }\n").is_err() {
+            return false;
+        }
+        let clang = std::env::var("CLANG_PATH").unwrap_or_else(|_| "clang".to_string());
+        std::process::Command::new(clang)
+            .arg("-fsanitize=thread")
+            .arg(&src)
+            .arg("-o")
+            .arg(dir.path().join("t"))
+            .output()
+            .is_ok_and(|o| o.status.success())
+    })
+}
+
+/// `s` as one word for bash, in single quotes.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn init_rayon() {
     INIT_RAYON.call_once(|| {
         let cores = std::thread::available_parallelism()
@@ -938,6 +980,12 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
     if source.contains("// REQUIRES: macos") && !cfg!(target_os = "macos") {
         return Ok(());
     }
+    if source.contains("// REQUIRES: thread-sanitizer") && !has_thread_sanitizer() {
+        return Ok(());
+    }
+    if source.contains("// REQUIRES: x86_64") && !cfg!(target_arch = "x86_64") {
+        return Ok(());
+    }
 
     let run_lines: Vec<&str> = source
         .lines()
@@ -999,9 +1047,18 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
         // pipefail, because a RUN line fails if any stage fails. A shell reports only the
         // last stage, so a compiler that crashed would still pass whenever its stderr
         // happened to satisfy the CHECK lines.
+        // A test of tasks or channels that hangs fails after the time limit, and does not stop
+        // the whole run. `timeout` signals its whole process group, so the compiled program
+        // stops too. A machine with no `timeout` (macOS) runs the line with no limit.
+        let line = format!("set -o pipefail; {}", cmd);
+        let line = if has_timeout() {
+            format!("timeout {RUN_LINE_SECONDS} bash -c {}", shell_quote(&line))
+        } else {
+            line
+        };
         let output = std::process::Command::new("bash")
             .arg("-c")
-            .arg(format!("set -o pipefail; {}", cmd))
+            .arg(line)
             .env("PATH", &path_var)
             .env("RUST_BACKTRACE", "1")
             // A RUN line without `--legacy-codegen` tests the default code generator. If that
@@ -1018,6 +1075,13 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
             continue;
         }
 
+        if output.status.code() == Some(124) && has_timeout() {
+            return Err(format!(
+                "RUN line did not finish in {RUN_LINE_SECONDS} seconds for {:?}:\n  {}",
+                path,
+                cmd.trim()
+            ));
+        }
         if !output.status.success() {
             return Err(format!(
                 "RUN line failed for {:?}:\n  {}\nStdout:\n{}\nStderr:\n{}",

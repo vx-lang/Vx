@@ -18,6 +18,10 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
+    // `it.next().unwrap()` on a `VecIter<i64>`: the flat path declines `Option<&i64>::unwrap`
+    // ("a non-scalar default return").
+    "backend/pass/a_result_read_through_a_reference_field_points_where_the_field_points.vx",
+    "backend/pass/an_iterator_item_does_not_keep_the_iterator_borrowed.vx",
     // A `match` through a reference to an enum, one of them with a payload: the flat path does
     // not lower a match over a borrowed enum or an enum that carries a payload.
     "backend/pass/match_on_a_reference_to_an_enum.vx",
@@ -121,16 +125,11 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/bounds_with_type_arguments.vx",
     // A closure passed to a generic function: the flat emitter has no path for the call yet.
     "warnings/pass/w1001_a_called_local_is_used.vx",
-    // "An enum with no modelled instance layout": `Option` of a tuple.
-    "backend/pass/tuple_in_an_option.vx",
     // Same decline again: two chains whose `Map`s differ, for a name clash in the AST path.
     "backend/pass/generic_struct_instances_nested.vx",
     // A generic struct, `Cap<Count>`, which the flat path declines as "a struct with no GID".
     // The projections are resolved by the checker, before either code generator runs.
     "backend/pass/associated_type_projection.vx",
-    // The flat path declines `main` as "a callee return type", since `wrap` and `some_pair`
-    // answer with a generic struct and a generic enum. The answers come from the AST path.
-    "backend/pass/nested_generic_names_in_generic_fns.vx",
     // `and_then` calls a closure that answers a `Result`, which the flat path declines as "an
     // indirect callee returning a non-scalar". The answers come from the AST path.
     "backend/pass/core_result.vx",
@@ -196,6 +195,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // inside a branch or loop"). The kernel has to write `c` for `c` to be passed as a slot,
     // which is what the file checks.
     "optimizations/pass/dispatch_abi_tags.vx",
+    // `t = ..` inside the value of `t[1] = ..`: the flat path declines "a tensor given a new
+    // value inside a branch or loop". The file checks the AST path.
+    "backend/pass/assignment_reads_the_tensor_variable_at_the_write.vx",
 ];
 
 /// Every `.vx` file under `dir`, recursively, sorted for a stable report.
@@ -377,6 +379,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/a_kernel_tells_ptxas_its_block_size.vx",   // needs --machine
             "optimizations/pass/atomic_orders_and_fence_scopes_in_ptx.vx", // needs --machine
             "optimizations/pass/code_after_the_blocks_in_a_kernel_for_emit_ptx.vx", // needs --machine
+            "optimizations/pass/gpu_region_that_ends_in_a_value_runs_on_the_gpu.vx", // needs --machine
             "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
             "frontend/pass/packages/import_from_a_package.vx", // needs --package
         ];

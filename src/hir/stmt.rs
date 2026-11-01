@@ -567,6 +567,9 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.bind_view(name.as_ref(), *_is_mut, expr, &binding_ty, span);
+        if !self.borrow.views.contains_key(name.as_ref()) {
+            self.check_spawn_capture_moved(expr);
+        }
         if !self.speculating && !Self::views_foreign_memory(expr) {
             self.drops_note_owner(name.as_ref(), &binding_ty);
         }
@@ -1178,7 +1181,10 @@ impl<'a> TypeChecker<'a> {
             binds: None,
             evaluates: None,
         };
+        self.cancel_loops
+            .push(crate::hir::check::cancel_loops::loop_exits(body));
         self.check_loop_body(body, return_type, header);
+        self.cancel_loops.pop();
         self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
@@ -1331,8 +1337,8 @@ impl<'a> TypeChecker<'a> {
         self.checking_assign_lhs = false;
         let temporary_place = matches!(lhs, Expr::Dereference(d)
             if matches!(*d.expr, Expr::FunctionCall(_) | Expr::MethodCall(_)));
-        // Rust evaluates the value before the place it goes into, so the place's mutable borrow is
-        // only reserved while the right-hand side is checked: `v[i] = v[i] + 1` reads `v` there.
+        // The place runs before the value, so its mutable borrow is only reserved while the
+        // right-hand side is checked: `v[i] = v[i] + 1` reads `v` there.
         let lhs_borrows = temporary_place.then(|| {
             let added = self.borrow.added_since(&before_lhs);
             self.borrow.reserve(&added)
@@ -2007,6 +2013,33 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The integer type of the name `n` in a contract, a variable in scope or `return`, and
+    /// whether its range is a fact. Only a parameter's range is: a fact can be about another
+    /// variable of the same name, from a `let` or an arm that hides it, and a range of the
+    /// wrong type would contradict that fact and so prove anything. `return` is bounded by its
+    /// operands.
+    fn prover_int_type(&self, n: &str) -> Option<(ElementType, bool)> {
+        let (ty, ranged) = if n == "return" {
+            (self.current_return_type.clone()?, false)
+        } else {
+            let ty = self.lookup(n)?.0.clone();
+            let param = self
+                .borrow
+                .current_params
+                .iter()
+                .find(|(p, _)| p.as_ref() == n);
+            let hidden = self.declared_vars.iter().any(|(v, _)| v.as_ref() == n);
+            let ranged = param.is_some_and(|(_, p)| *p == ty) && !hidden;
+            (ty, ranged)
+        };
+        match ty {
+            Type::Scalar(e) if e.int_bits().is_some() && e != ElementType::Bool => {
+                Some((e, ranged))
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn prove_expr(&mut self, expr: &Expr) -> bool {
         let mut prover = hir::prover::SmtProver::new();
         // Each call becomes a fresh name, and the callee's `ensures` become facts about it.
@@ -2022,7 +2055,7 @@ impl<'a> TypeChecker<'a> {
         // A fact the prover cannot express is left out, so it knows less and proves less. Say so,
         // or a later "cannot prove" has no visible cause.
         for constraint in constraints.iter().chain(&facts) {
-            if let Err(what) = prover.add_constraint(constraint) {
+            if let Err(what) = prover.add_constraint(constraint, &|n| self.prover_int_type(n)) {
                 self.errors.push_warning(format!(
                     "the prover ignores a condition here: it cannot reason about {what}"
                 ));
@@ -2035,7 +2068,10 @@ impl<'a> TypeChecker<'a> {
             expr: Box::new(goal),
             span: Span::default(),
         });
-        if prover.add_constraint(&negated_expr).is_err() {
+        if prover
+            .add_constraint(&negated_expr, &|n| self.prover_int_type(n))
+            .is_err()
+        {
             return false;
         }
 

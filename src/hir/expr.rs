@@ -357,7 +357,14 @@ impl<'a> TypeChecker<'a> {
                 }
                 ty
             }
-            Expr::IndexAccess(..) => self.check_indexaccess_expr(expr, consume),
+            Expr::IndexAccess(..) => {
+                // The type that the context expects is the element's. The base and the index
+                // have types of their own: in `let b : i8 = t[200]`, `200` is not an `i8`.
+                let expected = self.expected_type.take();
+                let ty = self.check_indexaccess_expr(expr, consume);
+                self.expected_type = expected;
+                ty
+            }
             Expr::MethodCall(..) => match self.check_task_join(expr, consume && !value_unused) {
                 Some(ty) => ty,
                 None => self.check_methodcall_expr(expr, consume),
@@ -408,7 +415,12 @@ impl<'a> TypeChecker<'a> {
                 self.check_match_expr(expr, consume)
             }
             Expr::VecMacro(..) => self.check_vecmacro_expr(expr),
-            Expr::Closure(..) => self.check_closure_expr(expr, consume),
+            Expr::Closure(..) => {
+                let loops = std::mem::take(&mut self.cancel_loops);
+                let ty = self.check_closure_expr(expr, consume);
+                self.cancel_loops = loops;
+                ty
+            }
             Expr::AsCast(e) => self.check_ascast_expr(e, consume),
             Expr::Print(p) => {
                 for arg in &mut p.args {
@@ -430,6 +442,7 @@ impl<'a> TypeChecker<'a> {
                     self.check_expr_type_flag(arg_expr, consume);
                 }
                 self.check_atomic_block(e);
+                self.check_block_dialects(e);
                 // Typecheck clobbers. The block writes to each of them, so each one changes.
                 for clobber in &mut e.clobbers {
                     self.record_change(clobber);

@@ -1,0 +1,65 @@
+//===- select_wakes_for_one_value.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// In each of 3000 rounds, `select` waits on two empty channels. A task sends one value on the
+// second channel, and then waits for a reply. So the send is the only event until `select`
+// returns, and that one event must wake it. A lost wake would hang the test.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator cannot lower `Result<Selected<i64>, RecvError>`: its
+// two variants carry payloads of different kinds.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}sum 4501500{{$}}
+
+import std::sync::channel;
+import std::vec;
+
+fn send_then_wait(tx : Sender<i64>, reply : Receiver<i64>, v : i64) -> void {
+  match tx.send(v) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(_e) => {}
+  }
+  match reply.recv() {
+    Result<i64, RecvError>::Ok(_r) => {}
+    Result<i64, RecvError>::Err(_e) => {}
+  }
+}
+
+fn main() -> i32 {
+  let mut sum : i64 = 0;
+  let mut round : i64 = 1;
+  while round <= 3000 {
+    let (_tx0, rx0) = channel<i64>(1);
+    let (tx1, rx1) = channel<i64>(1);
+    let (reply_tx, reply_rx) = channel<i64>(1);
+    let mut rs = Vec<Receiver<i64>>::new();
+    rs.push(rx0);
+    rs.push(rx1);
+    let got = tasks {
+      spawn {
+        send_then_wait(tx1, reply_rx, round);
+      };
+      let mut v : i64 = 0;
+      match select(&rs) {
+        Result<Selected<i64>, RecvError>::Ok(s) => {
+          v = s.value;
+        }
+        Result<Selected<i64>, RecvError>::Err(_e) => {}
+      }
+      match reply_tx.send(0) {
+        Result<void, SendError<i64>>::Ok() => {}
+        Result<void, SendError<i64>>::Err(_e) => {}
+      }
+      v
+    };
+    sum = sum + got;
+    round = round + 1;
+  }
+  println!("sum {}", sum);
+  return 0;
+}

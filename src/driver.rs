@@ -217,6 +217,11 @@ pub struct DriverOptions {
     #[arg(long = "disable-llvm-optimizations")]
     pub disable_llvm_optimizations: bool,
 
+    /// `--sanitize=thread`: build the program with LLVM's ThreadSanitizer, which reports each
+    /// data race when the program runs. Only when `vxc` runs the program (`run-jit`).
+    #[arg(long = "sanitize", value_name = "SANITIZER", value_parser = ["thread"])]
+    pub sanitize: Option<String>,
+
     /// `-fauto-schedule-levels`: an `across` loop on an arch that cannot launch its levels runs
     /// as a plain `for` that carries its level as metadata for MLIR and LLVM. The default,
     /// `-fno-auto-schedule-levels`, makes such a loop an error.
@@ -268,6 +273,11 @@ impl DriverOptions {
     /// Whether `-fweak-relaxed-atomics` is on.
     pub fn weak_relaxed_atomics(&self) -> bool {
         self.feature("weak-relaxed-atomics")
+    }
+
+    /// Whether `--sanitize=thread` is on.
+    pub fn thread_sanitizer(&self) -> bool {
+        self.sanitize.as_deref() == Some("thread")
     }
 }
 
@@ -341,6 +351,13 @@ impl CompilerDriver {
     pub fn execute(&self) -> Result<(), String> {
         if self.options.inputs.is_empty() {
             return Err("No input files provided".to_string());
+        }
+        if self.options.thread_sanitizer() && self.options.action != Action::RunJit {
+            return Err(
+                "--sanitize=thread works only when vxc runs the program. Remove --action, or \
+                 use --action run-jit"
+                    .to_string(),
+            );
         }
         if self.options.inputs.len() == 1 {
             return self.execute_one();
@@ -659,6 +676,7 @@ impl CompilerDriver {
                 self.options.program_args.clone(),
                 self.options.opt_level,
                 self.options.disable_llvm_optimizations,
+                self.options.thread_sanitizer(),
             )
             .map_err(|e| e.to_string())?;
             print_program_output(&out);
@@ -1167,7 +1185,11 @@ impl CompilerDriver {
         // and space obligations resolve against THIS compilation's machine file, which
         // the library never saw. Reviewed and reproduced: an imported lowering that
         // fails every lowering check compiled clean before this loop.
-        for p in other_asts.values_mut() {
+        // The modules in the order of their paths, not the hash order of `other_asts`: the order of
+        // the checks is the order of the generic instances, and so of the generated functions.
+        let mut modules: Vec<&mut crate::syntax::Program> = other_asts.values_mut().collect();
+        modules.sort_by(|a, b| a.module_path.cmp(&b.module_path));
+        for p in modules.iter_mut() {
             for t in &mut p.transfer_impls {
                 checker.seam.lowering_edge = Some((
                     t.from.clone(),
@@ -1180,7 +1202,7 @@ impl CompilerDriver {
                 checker.seam.lowering_edge = None;
             }
         }
-        for p in other_asts.values() {
+        for p in &modules {
             checker.check_transfer_impl_bodies(&p.transfer_impls);
         }
 
@@ -1198,7 +1220,7 @@ impl CompilerDriver {
             String,
             (String, Vec<crate::diagnostic::Diagnostic>),
         > = std::collections::BTreeMap::new();
-        for p in other_asts.values_mut() {
+        for p in modules.iter_mut() {
             for f in &mut p.functions {
                 if f.generics.is_empty() {
                     let before = checker.errors.len();
@@ -1658,6 +1680,7 @@ impl CompilerDriver {
                     self.options.program_args.clone(),
                     self.options.opt_level,
                     self.options.disable_llvm_optimizations,
+                    self.options.thread_sanitizer(),
                 )
                 .map_err(|e| e.to_string())?;
                 print_program_output(&out);
@@ -1706,6 +1729,7 @@ impl CompilerDriver {
                         temp_dir.path(),
                         self.options.opt_level,
                         self.options.disable_llvm_optimizations,
+                        false,
                     )?;
                     std::fs::copy(&obj, &output_path)
                         .map_err(|e| format!("could not write '{}': {e}", output_path.display()))?;
@@ -2139,6 +2163,8 @@ fn get_optimization_pipeline(
         // A function the program defines is not exported, so a `fn write` cannot replace
         // libc's `write` for the runtime library. See the pass.
         passes.push("vx-hide-program-symbols".to_string());
+        // A frame larger than a page cannot reach past the guard page of a stack.
+        passes.push("vx-probe-stack".to_string());
         // Each relaxed atomic read becomes an acquire read, unless `-fweak-relaxed-atomics`.
         passes.push("vx-order-relaxed-reads".to_string());
     }

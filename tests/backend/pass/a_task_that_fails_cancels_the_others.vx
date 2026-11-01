@@ -1,0 +1,112 @@
+//===- a_task_that_fails_cancels_the_others.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Task `waiter` waits in `recv`, and the code of the block holds the `Sender`. Task `failing`
+// ends with an `Err` at once. That cancels the block, so the `recv` gives `Cancelled` and
+// `waiter` ends. The code joins `waiter` first: without the cancel, that join would wait
+// forever. The join of `failing` then ends the block with its `Err`.
+//
+// A task that ends with `Ok` cancels nothing. After the join of task `fast`, the code sends 5,
+// and `waiter` receives it: the second block gives 5 + 1.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator runs the tasks of a `tasks` block that can fail one
+// after another, at their `spawn`s. A task that waits for a later task then waits forever.
+//
+// The second RUN line runs the same program on the shared runtime, with one worker thread
+// for all the tasks.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}the waiter saw Cancelled{{$}}
+// CHECK: {{^}}the block failed with 3{{$}}
+// CHECK: {{^}}the block gave 6{{$}}
+
+import core::result;
+import std::sync::channel;
+
+fn wait_for_one(rx : Receiver<i64>) -> Result<i64, i32> {
+  let mut got : i64 = 0;
+  match rx.recv() {
+    Result<i64, RecvError>::Ok(v) => {
+      got = v;
+    }
+    Result<i64, RecvError>::Err(_e) => {
+      println!("the waiter saw Cancelled");
+    }
+  }
+  return Result<i64, i32>::Ok(got);
+}
+
+fn fail_now() -> Result<i64, i32> {
+  return Result<i64, i32>::Err(3);
+}
+
+fn run() -> Result<i64, i32> {
+  let (tx, rx) = channel<i64>(1);
+  let total : Result<i64, i32> = tasks {
+    let waiter = spawn {
+      wait_for_one(rx)
+    };
+    let failing = spawn {
+      fail_now()
+    };
+    let w = waiter.join();
+    let f = failing.join();
+    drop(tx);
+    Result<i64, i32>::Ok(w + f)
+  };
+  return total;
+}
+
+fn send_one(tx : &Sender<i64>, v : i64) -> void {
+  match tx.send(v) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(_e) => {
+      println!("the send did not send");
+    }
+  }
+}
+
+fn quick() -> Result<i64, i32> {
+  return Result<i64, i32>::Ok(1);
+}
+
+fn run_ok() -> Result<i64, i32> {
+  let (tx, rx) = channel<i64>(1);
+  let total : Result<i64, i32> = tasks {
+    let waiter = spawn {
+      wait_for_one(rx)
+    };
+    let fast = spawn {
+      quick()
+    };
+    let q = fast.join();
+    send_one(&tx, 5);
+    let w = waiter.join();
+    drop(tx);
+    Result<i64, i32>::Ok(w + q)
+  };
+  return total;
+}
+
+fn report(r : Result<i64, i32>) -> void {
+  match r {
+    Result<i64, i32>::Ok(v) => {
+      println!("the block gave {}", v);
+    }
+    Result<i64, i32>::Err(e) => {
+      println!("the block failed with {}", e);
+    }
+  }
+}
+
+fn main() -> i32 {
+  report(run());
+  report(run_ok());
+  return 0;
+}

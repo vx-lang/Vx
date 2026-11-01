@@ -511,6 +511,24 @@ pub(crate) fn struct_instance_ty<'c>(
     gen.lower_type(&syntax::Type::GenericInstance(Box::new(nominal), args))
 }
 
+/// Whether evaluating `e` runs no code: a variable, a field of one, or what one points at.
+fn runs_no_code(e: &Expr) -> bool {
+    match e {
+        Expr::Identifier(_) => true,
+        Expr::MemberAccess(m) => runs_no_code(&m.base),
+        Expr::Dereference(d) => runs_no_code(&d.expr),
+        _ => false,
+    }
+}
+
+/// The tensor that `t[i][j]` indexes: `t`.
+fn index_base(mut e: &Expr) -> &Expr {
+    while let Expr::IndexAccess(ix) = e {
+        e = &ix.base;
+    }
+    e
+}
+
 /// Do `dst = a @ b`'s three tensors have statically agreeing rank-2 shapes?
 ///
 /// Only then is the destination known to be the size of the product, which is what makes
@@ -710,6 +728,38 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             }
         }
 
+        // The code in the place runs before the value: the indices of `t[i]`, and a call that the
+        // place goes through. A variable in the place is read at the write, so a value that
+        // gives `t` a new tensor stores into the new one.
+        let mut place_indices = None;
+        let mut element_place = None;
+        let mut deref_place = None;
+        let mut block = block;
+        match lhs {
+            Expr::IndexAccess(_) if !lhs_is_a_row && !runs_no_code(index_base(lhs)) => {
+                let (base_val, base_ty, indices, b) =
+                    gen.flatten_indices(lhs, block).ok_or_else(|| {
+                        LowerError::from("the place of an assignment has no lowering".to_string())
+                    })?;
+                element_place = Some((base_val, base_ty, indices));
+                block = b;
+            }
+            Expr::IndexAccess(_) => {
+                let (values, b) = gen.index_values(lhs, block).ok_or_else(|| {
+                    LowerError::from("an index of an assignment has no lowering".to_string())
+                })?;
+                place_indices = Some(values);
+                block = b;
+            }
+            Expr::Dereference(d) if !runs_no_code(&d.expr) => {
+                let (ptr_val, ptr_ty, b) =
+                    crate::codegen::lower::expr::deref_target(gen, d.expr.as_ref(), block)?;
+                deref_place = Some((ptr_val, ptr_ty));
+                block = b;
+            }
+            _ => {}
+        }
+
         // With no type from the target, the value has no expected type. It must not keep the
         // `none` of a statement around the assignment, such as a `spawn on` region.
         let prev_expected = gen.expected_type;
@@ -721,7 +771,10 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
         // elementwise op). Lower the LHS partial index to its S1 row view (a reinterpret_cast'd
         // rank-1 memref aliasing `o`) and `vector.store` the result back into it.
         if rhs_ty.to_string().starts_with("vector<") {
-            let (dst, _dst_ty, block) = gen.generate_expr(lhs, block)?;
+            gen.place_indices = place_indices.take();
+            let lowered = gen.generate_expr(lhs, block);
+            gen.place_indices = None;
+            let (dst, _dst_ty, block) = lowered?;
             let index_ty = Type::index(gen.context);
             let c0_op = OperationBuilder::new("arith.constant", gen.loc())
                 .add_attributes(&[(
@@ -778,17 +831,24 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             span: _,
         }) = lhs
         {
-            if let Some((base_val, base_ty, indices, new_b)) = gen.flatten_indices(
-                &syntax::Expr::IndexAccess(syntax::IndexAccessExpr {
-                    base: base.clone(),
-                    index: match lhs {
-                        Expr::IndexAccess(i) => i.index.clone(),
-                        _ => unreachable!(),
-                    },
-                    span: Span::default(),
-                }),
-                block,
-            ) {
+            let place = match element_place {
+                Some((base_val, base_ty, indices)) => Some((base_val, base_ty, indices, block)),
+                None => {
+                    gen.place_indices = place_indices.take();
+                    gen.flatten_indices(
+                        &syntax::Expr::IndexAccess(syntax::IndexAccessExpr {
+                            base: base.clone(),
+                            index: match lhs {
+                                Expr::IndexAccess(i) => i.index.clone(),
+                                _ => unreachable!(),
+                            },
+                            span: Span::default(),
+                        }),
+                        block,
+                    )
+                }
+            };
+            if let Some((base_val, base_ty, indices, new_b)) = place {
                 let base_ty_str = base_ty.to_string();
                 if base_ty_str.starts_with("!llvm.ptr") {
                     let i64_ty = gen.i64_ty;
@@ -862,8 +922,10 @@ impl<'c> LowerToMelior<'c> for AssignStmt {
             // assignment fell through to the no-op tail below and was **silently dropped** (`Box`'s
             // `*p = val` never wrote, so a read-back saw uninitialized memory). The store type comes
             // from the RHS value, so there's no pointee-type guesswork. (#242)
-            let (ptr_val, ptr_ty, new_b) =
-                crate::codegen::lower::expr::deref_target(gen, d.expr.as_ref(), block)?;
+            let (ptr_val, ptr_ty, new_b) = match deref_place {
+                Some((ptr_val, ptr_ty)) => (ptr_val, ptr_ty, block),
+                None => crate::codegen::lower::expr::deref_target(gen, d.expr.as_ref(), block)?,
+            };
             // `*t = v` with `t : &mut Tensor<..>`: the new tensor's elements are copied into the
             // tensor `t` refers to.
             if matches!(

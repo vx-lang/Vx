@@ -136,6 +136,9 @@ pub enum DiagnosticCode {
     /// write. The closure keeps the value that it copied, so it does not see the write. A later
     /// release makes this an error (K4).
     W1034,
+    /// A `match` arm in a `loop` or `while` can take `Cancelled` from a wait and stays in the
+    /// loop. In a cancelled task each wait gives `Cancelled` at once, so the loop never ends (F4).
+    W1035,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
@@ -352,7 +355,8 @@ pub enum DiagnosticCode {
     /// literals and other `const`s. A `const` table holds a list of number literals, and is
     /// read one number at a time, as `TABLE[i]`.
     E3044,
-    /// A number literal that does not fit `usize`, which holds 0 up to the largest `i64`.
+    /// An integer literal that does not fit its type, such as `300` for a `u8`. A `usize`
+    /// holds 0 up to the largest `i64`.
     E3045,
     /// A `for` loop over a tensor that is not a variable or a flat array literal, such as one a
     /// function call returns, or a nested array literal. The loop reads the tensor by index, so
@@ -389,8 +393,8 @@ pub enum DiagnosticCode {
     /// that holds a raw pointer, and the compiler cannot check the claim. Write
     /// `unsafe impl Send for Handle {}`.
     E3053,
-    /// `unsafe impl` of a trait other than `Send` or `Sync`, or of no trait at all. Only those two
-    /// traits make a claim that the compiler cannot check. Remove `unsafe`.
+    /// `unsafe impl` of a trait other than `Send`, `Sync` or `Owned`, or of no trait at all. Only
+    /// those three traits make a claim that the compiler cannot check. Remove `unsafe`.
     E3054,
     /// A task takes a value that is not `Send`, or reads a variable whose type is not `Sync`.
     /// A task that moves a value, copies it or writes it needs `Send`. A task that reads a
@@ -486,6 +490,11 @@ pub enum DiagnosticCode {
     /// or `continue` that leaves two `tasks` blocks waits only for the tasks of the inner one, so
     /// it cannot drop a value from outside the inner block yet.
     E4014,
+    /// A `spawn` region that moves a value from the code around it: `let x = t;` or `f(t)`
+    /// with a parameter that takes `t` by value, where `t` is declared before the region. The
+    /// region only borrows what it uses, and the function drops `t` after the region. Borrow it
+    /// (`&t`), or clone it (`t.clone()`).
+    E4015,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block. `Tensor<..>::uninit()` is one: its elements
@@ -690,6 +699,10 @@ pub enum DiagnosticCode {
     E8008,
     /// A loop invariant that the prover cannot show to hold after a pass through the loop body
     E8009,
+    /// An `mlir!` block whose `dialects` list does not match its body: the body uses an
+    /// operation of a dialect that the list does not name, or the list names something that
+    /// is not a dialect. The list is what the block says it uses, so it must be right.
+    E8010,
 }
 
 impl std::fmt::Display for DiagnosticCode {

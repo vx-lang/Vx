@@ -16,7 +16,7 @@ fn main() -> i32 {
     // has to supply.
     // CHECK-SAME: GPU[0] sees only [GPU_HBM]
     // CHECK-SAME: insert an explicit transfer to GPU_HBM
-    let invalid = t_npu;
+    let invalid = t_npu.clone();
   }
 
   return 0;

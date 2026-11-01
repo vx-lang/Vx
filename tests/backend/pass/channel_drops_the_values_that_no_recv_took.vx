@@ -1,0 +1,67 @@
+//===- channel_drops_the_values_that_no_recv_took.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// When both ends of a channel are dropped, the channel drops each value that no `recv` took.
+// Three values go in, one `recv` takes the first, and the other two are dropped with the
+// channel. Each `Noisy` value prints its number when it is dropped.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator cannot lower `Result<Noisy, RecvError>`: its two
+// variants carry payloads of different kinds.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}took 1{{$}}
+// CHECK-NEXT: {{^}}drop 1{{$}}
+// CHECK-NEXT: {{^}}ends dropped{{$}}
+// CHECK-NEXT: {{^}}drop 2{{$}}
+// CHECK-NEXT: {{^}}drop 3{{$}}
+// CHECK-NEXT: {{^}}done{{$}}
+
+import core::mem;
+import std::sync::channel;
+
+struct Noisy {
+  n : i64,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("drop {}", self.n);
+  }
+}
+
+fn put(tx : &Sender<Noisy>, n : i64) -> void {
+  match tx.send(Noisy {
+    n : n
+  }) {
+    Result<void, SendError<Noisy>>::Ok() => {}
+    Result<void, SendError<Noisy>>::Err(_) => {
+      panic("the receiver is gone");
+    }
+  }
+}
+
+fn main() -> i32 {
+  let (tx, rx) = channel<Noisy>(4);
+  put(&tx, 1);
+  put(&tx, 2);
+  put(&tx, 3);
+  match rx.recv() {
+    Result<Noisy, RecvError>::Ok(v) => {
+      println!("took {}", v.n);
+      drop(v);
+    }
+    Result<Noisy, RecvError>::Err(_) => {
+      panic("the channel closed early");
+    }
+  }
+  drop(rx);
+  println!("ends dropped");
+  drop(tx);
+  println!("done");
+  return 0;
+}

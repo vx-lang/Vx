@@ -21,6 +21,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::integration_test::runtime_test_build;
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -30,10 +32,9 @@ fn a_dispatch_runs_on_the_far_side_and_comes_back() {
     let root = repo_root();
     let source = root.join("tests/runtime/loopback_test.cpp");
     let binary = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("loopback_test");
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
-    let build = Command::new(&cxx)
-        .args(["-std=c++17", "-O1", "-Wall", "-Werror"])
+    let build = runtime_test_build::command(&cxx, "c++17")
         .arg(&source)
         .arg("-o")
         .arg(&binary)

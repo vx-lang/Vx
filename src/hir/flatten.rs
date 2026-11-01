@@ -108,7 +108,7 @@ fn comptime_survivor(e: &crate::syntax::IfExpr) -> Option<&[Statement]> {
 /// Whether the body of a `tasks` block has a `return`, `break` or `continue` that leaves it.
 /// The checker puts a wait for the tasks before each one. A wait of a `tasks` block inside
 /// this one also counts.
-fn has_tasks_exit(stmts: &[Statement]) -> bool {
+pub(crate) fn has_tasks_exit(stmts: &[Statement]) -> bool {
     let mut found = false;
     crate::syntax::visit_exprs(stmts, &mut |e| found |= crate::syntax::is_tasks_wait(e));
     found
@@ -460,6 +460,9 @@ struct Lowerer<'r> {
     tasks_exits: Vec<TasksExits>,
     /// For the next `lower_region`: a slot that the region's last value is stored into.
     region_tail_slot: Option<Register>,
+    /// The `Result` type of the next task region, when its task can fail. An `Err` value at its
+    /// end cancels its `tasks` block (F3).
+    region_cancels_on_err: Option<Type>,
     /// Tensor-type side table `GID -> (element, shape)`, recorded as tensor-typed values are emitted.
     /// Tensor GIDs are content hashes, so codegen recovers a tensor's memref shape from here rather
     /// than by inverting the GID (which is impossible). Committed onto the worker.
@@ -572,8 +575,12 @@ enum PendingDrop {
         flag: Option<Symbol>,
         field: bool,
     },
-    /// A `Drop` impl's `drop` to call, as the statement that calls it.
-    Call(Box<Statement>),
+    /// The statement that runs a drop: a `Drop` impl's `drop` (`calls_drop`), or a `match` on
+    /// an enum whose arms hold more drops.
+    Call {
+        stmt: Box<Statement>,
+        calls_drop: bool,
+    },
 }
 
 impl<'r> Lowerer<'r> {
@@ -588,6 +595,7 @@ impl<'r> Lowerer<'r> {
             loop_stack: Vec::new(),
             tasks_exits: Vec::new(),
             region_tail_slot: None,
+            region_cancels_on_err: None,
             tensor_types: Vec::new(),
             strings: Vec::new(),
             ast_types: HashMap::new(),
@@ -1004,7 +1012,10 @@ impl<'r> Lowerer<'r> {
     /// `Statement::Drop`: free the owner now, or once the next statement has its value.
     fn lower_drop(&mut self, d: &crate::syntax::DropStmt) -> Lowered<()> {
         let drop = if let Some(stmt) = d.call_statement() {
-            PendingDrop::Call(Box::new(stmt))
+            PendingDrop::Call {
+                stmt: Box::new(stmt),
+                calls_drop: d.call.is_some(),
+            }
         } else if let Some(place) = d.expr.as_deref() {
             let v = self.lower_expr(place)?;
             if !matches!(v.ty, LoweredTy::Tensor { .. }) {
@@ -1043,7 +1054,18 @@ impl<'r> Lowerer<'r> {
     fn emit_drop(&mut self, d: PendingDrop) -> Lowered<()> {
         let (reg, flag, field) = match d {
             PendingDrop::Tensor { reg, flag, field } => (reg, flag, field),
-            PendingDrop::Call(stmt) => return self.lower_stmt_inner(&stmt),
+            // A `Drop` impl runs with cancellation off (F6), so a `send` or a wait in it can
+            // finish.
+            PendingDrop::Call { stmt, calls_drop } => {
+                if calls_drop {
+                    self.emit_effect(Opcode::CancelOff, Register(0), Register(0), 0);
+                }
+                self.lower_stmt_inner(&stmt)?;
+                if calls_drop {
+                    self.emit_effect(Opcode::CancelOn, Register(0), Register(0), 0);
+                }
+                return Ok(());
+            }
         };
         let field_bit = if field { TENSOR_DROP_FIELD } else { 0 };
         let Some(flag) = flag else {
@@ -2663,7 +2685,7 @@ impl<'r> Lowerer<'r> {
                                     .ok_or(Decline::TypeNotModelled {
                                         what: "an enum payload type that is not laid out",
                                     })?;
-                                let lty = lowered_ty(&payload_type, self.registry).ok_or(
+                                let lty = self.payload_lowered_ty(&payload_type).ok_or(
                                     Decline::TypeNotModelled {
                                         what: "an enum payload type that is not modelled",
                                     },
@@ -3540,6 +3562,7 @@ impl<'r> Lowerer<'r> {
         };
         let exits = kind == crate::syntax::TaskBlockKind::Tasks && has_tasks_exit(&u.stmts);
         if !exits {
+            self.region_cancels_on_err = u.cancels_on_err.clone();
             return self.lower_region(
                 id as u32 as u64,
                 launch,
@@ -3663,6 +3686,82 @@ impl<'r> Lowerer<'r> {
         }
     }
 
+    /// At the end of a task that can fail: when its value `v`, of the `Result` type `ty`, is an
+    /// `Err`, call `vx_task_failed`, which cancels the task's `tasks` block (F3).
+    fn cancel_on_err(&mut self, ty: &Type, tail: &Expr, v: &Val) -> Lowered<()> {
+        let (nominal, args) = match ty {
+            Type::GenericInstance(base, args) => (base.as_ref(), args.as_slice()),
+            other => (other, &[][..]),
+        };
+        let not_modelled = |what| Decline::TypeNotModelled { what };
+        let (base, declaration) = self
+            .registry
+            .aggregate_identities()
+            .resolve_base(nominal.into())
+            .ok_or(not_modelled("the Result of a task that can fail"))?;
+        let (gid, offsets) = self
+            .enum_instance_layout_of(declaration, args)
+            .ok_or(not_modelled("the layout of the Result of a task"))?;
+        let tag_off = *offsets
+            .first()
+            .ok_or(not_modelled("the tag of the Result of a task"))?;
+        let err =
+            self.registry
+                .enum_data
+                .get(base.as_ref())
+                .and_then(|d| d.variants.iter().position(|(n, _)| n.as_ref() == "Err"))
+                .ok_or(not_modelled("the Err variant of the Result of a task"))? as u64;
+        // A construction is a slot already. Any other value goes to a slot, to read its tag.
+        let slot = match v.ty {
+            LoweredTy::Aggregate(_) if construction_tail(tail) => v.reg,
+            LoweredTy::Aggregate(_) => {
+                let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
+                self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
+                slot.reg
+            }
+            _ => return Err(not_modelled("a Result of a task that is not an aggregate")),
+        };
+        let tag = self.emit_value(
+            Opcode::FieldLoad,
+            slot,
+            Register(0),
+            ElementType::I32,
+            tag_off,
+        );
+        let err = self.emit_value(
+            Opcode::Const,
+            Register(0),
+            Register(0),
+            ElementType::I32,
+            err,
+        );
+        let cond = self.emit_value(
+            Opcode::Cmp,
+            tag.reg,
+            err.reg,
+            ElementType::Bool,
+            rel_code(&RelationalOp::Eq),
+        );
+        let failed_b = self.new_block();
+        let next_b = self.new_block();
+        self.emit_effect(
+            Opcode::CondBr,
+            cond.reg,
+            Register(0),
+            pack_targets(failed_b, next_b),
+        );
+        self.emit_effect(
+            Opcode::BlockStart,
+            Register(0),
+            Register(0),
+            failed_b as u64,
+        );
+        self.emit_effect(Opcode::TaskFailed, Register(0), Register(0), 0);
+        self.emit_effect(Opcode::Br, Register(0), Register(0), next_b as u64);
+        self.emit_effect(Opcode::BlockStart, Register(0), Register(0), next_b as u64);
+        Ok(())
+    }
+
     /// The `Err` arm of the join of a task that failed: the block's value is `Err(value)`, and
     /// the code leaves the block.
     fn lower_tasks_leave(&mut self, value: &Expr, span: crate::syntax::Span) -> Lowered<()> {
@@ -3697,6 +3796,7 @@ impl<'r> Lowerer<'r> {
         offer_parallel: bool,
     ) -> Lowered<Option<Val>> {
         let tail_slot = self.region_tail_slot.take();
+        let cancels_on_err = self.region_cancels_on_err.take();
         self.emit_effect(Opcode::Spawn, Register(0), Register(0), imm);
         if launch.across {
             self.emit_effect(Opcode::AcrossRegion, Register(0), Register(0), 0);
@@ -3778,6 +3878,9 @@ impl<'r> Lowerer<'r> {
             // The drops that wait for the value, as in a plain block.
             let waiting = std::mem::take(&mut self.queued_drops);
             let v = self.lower_expr(tail)?;
+            if let Some(ty) = &cancels_on_err {
+                self.cancel_on_err(ty, tail, &v)?;
+            }
             self.queued_drops.extend(waiting);
             self.run_queued_drops()?;
             self.close_blocks_to(depth);
@@ -4101,6 +4204,18 @@ impl<'r> Lowerer<'r> {
         }
     }
 
+    /// The lowered type of an enum payload. A generic struct instance, such as `SendError<i64>`,
+    /// has no registry layout of its own, so it gets its concrete layout here.
+    fn payload_lowered_ty(&mut self, ty: &Type) -> Option<LoweredTy> {
+        if let Some(lty) = lowered_ty(ty, self.registry) {
+            return Some(lty);
+        }
+        match ty {
+            Type::GenericInstance(..) => self.resolve_concrete_layout(ty).map(LoweredTy::Aggregate),
+            _ => None,
+        }
+    }
+
     fn payload_metadata(&self, mut ty: Type) -> Option<crate::layout::GeneratedPayloadLayout> {
         self.registry
             .aggregate_identities()
@@ -4417,8 +4532,12 @@ impl<'r> Lowerer<'r> {
         let mut variants = Vec::new();
         for (_, types) in &data.variants {
             let mut payloads = Vec::new();
+            // A `void` payload, as in `Ok` of `Result<void, E>`, holds nothing.
             for ty in types {
                 let ty = ty.substitute(&mapping);
+                if crate::syntax::types::is_void_ty(&ty) {
+                    continue;
+                }
                 let (size, align, _) = self.payload_field(&ty)?;
                 payloads.push((size, align));
             }
@@ -4458,7 +4577,9 @@ impl<'r> Lowerer<'r> {
                 .map(|(_, types)| {
                     types
                         .iter()
-                        .map(|ty| self.payload_metadata(ty.substitute(&mapping)))
+                        .map(|ty| ty.substitute(&mapping))
+                        .filter(|ty| !crate::syntax::types::is_void_ty(ty))
+                        .map(|ty| self.payload_metadata(ty))
                         .collect::<Option<Vec<_>>>()
                 })
                 .collect::<Option<Vec<_>>>()?;
@@ -4524,18 +4645,26 @@ impl<'r> Lowerer<'r> {
             .map(|f| (f.name.clone(), f.offset as u64, f.ty.clone()))
             .collect();
 
+        let not_in_layout = Decline::TypeNotModelled {
+            what: "a field not in the modelled layout",
+        };
+        if field_layouts
+            .iter()
+            .any(|(name, _, _)| !si.fields.iter().any(|(n, _)| n == name))
+        {
+            return Err(not_in_layout);
+        }
         let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
-        for (name, offset, _fty) in field_layouts {
+        // The fields are evaluated in the order the source writes them, not in declaration order.
+        for (name, init_expr) in &si.fields {
             // Scalar, pointer, or by-value nested-aggregate fields — a nested aggregate is stored as a
             // whole `!llvm.struct` value (`VecMap { iter: VecIter, f: Closure1 }`), the store type coming
             // from the layout's `field_tys` at emit (#242).
-            let (_, init_expr) = si
-                .fields
+            let offset = field_layouts
                 .iter()
-                .find(|(n, _)| n.as_ref() == name.as_ref())
-                .ok_or(Decline::TypeNotModelled {
-                    what: "a field not in the modelled layout",
-                })?;
+                .find(|(n, _, _)| n == name)
+                .map(|(_, offset, _)| *offset)
+                .ok_or(not_in_layout.clone())?;
             // The initializer already carries the field's declared type — the checker infers a literal
             // to the field type and rejects a genuine mismatch (no implicit conversion, #240).
             let mut v = self.lower_expr(init_expr)?;
@@ -6130,6 +6259,16 @@ impl<'r> Lowerer<'r> {
                 if let Some(Expr::Match(m)) = r.expr.as_ref().filter(|expr| {
                     matches!(expr, Expr::Match(m) if !crate::syntax::expr::match_yields_a_value(m))
                 }) {
+                    // A `void` function that ends in a `match`: its arms give no value.
+                    if self.ret_void {
+                        self.lower_match(m)?;
+                        if !self.block_terminated() {
+                            self.run_value_drops()?;
+                            self.drop_temps_here(None);
+                            self.emit_ret(None)?;
+                        }
+                        return Ok(());
+                    }
                     if !self.value_drops.is_empty() {
                         return Err(Decline::Unsupported {
                             what: "a drop waiting for the value of a returned match",

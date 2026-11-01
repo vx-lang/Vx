@@ -1,0 +1,85 @@
+//===- select_takes_values_from_three_channels.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Three tasks each send the numbers 1 to 1000 on a channel of their own, with room for 2. The
+// code of the block puts the three `Receiver`s in a list and calls `select` until it gives
+// `Closed`. Each value must arrive once, and the values of each channel in the order they were
+// sent. `select` gives `Closed` only after the last task ends.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator cannot lower `Result<Selected<i64>, RecvError>`: its
+// two variants carry payloads of different kinds.
+//
+// The second RUN line runs the same program on the shared runtime, with one worker thread
+// for all the tasks.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}channel 0 count 1000 out of order 0{{$}}
+// CHECK: {{^}}channel 1 count 1000 out of order 0{{$}}
+// CHECK: {{^}}channel 2 count 1000 out of order 0{{$}}
+// CHECK: {{^}}closed{{$}}
+
+import std::sync::channel;
+import std::vec;
+
+fn send_all(tx : Sender<i64>) -> void {
+  let first : i64 = 1;
+  for v in first..1001 {
+    match tx.send(v) {
+      Result<void, SendError<i64>>::Ok() => {}
+      Result<void, SendError<i64>>::Err(_e) => {
+        println!("the receiver was dropped early");
+      }
+    }
+  }
+}
+
+fn main() -> i32 {
+  let (tx0, rx0) = channel<i64>(2);
+  let (tx1, rx1) = channel<i64>(2);
+  let (tx2, rx2) = channel<i64>(2);
+  let mut rs = Vec<Receiver<i64>>::new();
+  rs.push(rx0);
+  rs.push(rx1);
+  rs.push(rx2);
+  let mut count : Tensor<i64, [3]> = [0, 0, 0];
+  let mut last : Tensor<i64, [3]> = [0, 0, 0];
+  let mut out_of_order : Tensor<i64, [3]> = [0, 0, 0];
+  tasks {
+    spawn {
+      send_all(tx0);
+    };
+    spawn {
+      send_all(tx1);
+    };
+    spawn {
+      send_all(tx2);
+    };
+    let mut open = true;
+    while open {
+      match select(&rs) {
+        Result<Selected<i64>, RecvError>::Ok(s) => {
+          let i = s.index;
+          count[i] = count[i] + 1;
+          if s.value != last[i] + 1 {
+            out_of_order[i] = out_of_order[i] + 1;
+          }
+          last[i] = s.value;
+        }
+        Result<Selected<i64>, RecvError>::Err(_e) => {
+          open = false;
+        }
+      }
+    }
+  };
+  for i in 0..3 {
+    println!("channel {} count {} out of order {}", i, count[i], out_of_order[i]);
+  }
+  println!("closed");
+  return 0;
+}

@@ -1,0 +1,54 @@
+//===- channel_recv_gives_closed_after_the_last_sender.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `recv` gives `Closed` only after each `Sender` was dropped and no value is left. Two
+// senders send one value each and are dropped. The first two `recv`s get the values, and the
+// third gets `Closed`. A fourth gets `Closed` too.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}got 10{{$}}
+// CHECK-NEXT: {{^}}got 20{{$}}
+// CHECK-NEXT: {{^}}closed{{$}}
+// CHECK-NEXT: {{^}}closed{{$}}
+
+import core::mem;
+import std::sync::channel;
+
+fn show(r : Result<i64, RecvError>) -> void {
+  match r {
+    Result<i64, RecvError>::Ok(v) => {
+      println!("got {}", v);
+    }
+    Result<i64, RecvError>::Err(_) => {
+      println!("closed");
+    }
+  }
+}
+
+fn main() -> i32 {
+  let (a, rx) = channel<i64>(4);
+  let b = a.clone();
+  match a.send(10) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(_) => {
+      panic("the receiver is gone");
+    }
+  }
+  drop(a);
+  match b.send(20) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(_) => {
+      panic("the receiver is gone");
+    }
+  }
+  drop(b);
+  show(rx.recv());
+  show(rx.recv());
+  show(rx.recv());
+  show(rx.recv());
+  return 0;
+}

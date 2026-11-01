@@ -15,9 +15,21 @@
 // the end of the block, `vx_tasks_end` joins each task that is not joined yet, and frees each
 // `env`.
 //
+// Each block has a cancel mark (F3 to F7 in waiting_tasks_channels_and_task_errors.md). The
+// threads of its tasks, and the thread that runs the code of the block, see it as their current
+// mark. A block in a task has the mark of the task's block as its parent, so a cancel reaches it.
+// A wait that can be cancelled asks `vx_cancelled`, and a cancel wakes each sleeping thread.
+//
+// With VX_TASK_RUNTIME=shared, a task is a fiber of the shared runtime in sched.rs, not a
+// thread. A join then waits on the word that says that the fiber ended.
+//
 //===----------------------------------------------------------------------===//
 
+use crate::ffi::sched::{self, Fiber, Scheduler};
 use crate::io::lines;
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 /// The function that a task runs.
@@ -25,7 +37,7 @@ pub type VxTaskFn = extern "C" fn(*mut u8);
 
 /// The stack of a task. The main thread of a Linux program gets 8 MiB, and a task runs the same
 /// kind of code.
-const TASK_STACK_BYTES: usize = 8 << 20;
+pub(crate) const TASK_STACK_BYTES: usize = 8 << 20;
 
 /// The environment of a task, which a thread can take. The compiled code makes sure that only
 /// the task uses it until the join.
@@ -33,18 +45,84 @@ struct Env(*mut u8);
 unsafe impl Send for Env {}
 
 struct Task {
-    /// `None` when the task ended and was joined, or when no thread could start and the task
-    /// ran on the thread that started it.
+    /// `None` when the task ended and was joined, or when it is a fiber.
     thread: Option<JoinHandle<()>>,
+    /// The task in the shared runtime.
+    fiber: Option<Box<Fiber>>,
     env: *mut u8,
+}
+
+/// The cancel mark of a `tasks` block.
+pub(crate) struct CancelMark {
+    set: AtomicBool,
+    /// The mark of the block that the block is in, when it is in a task or in the code of a block.
+    parent: Option<Arc<CancelMark>>,
+}
+
+impl CancelMark {
+    fn is_set(&self) -> bool {
+        self.set.load(Ordering::SeqCst) || self.parent.as_ref().is_some_and(|p| p.is_set())
+    }
+
+    fn cancel(&self) {
+        self.set.store(true, Ordering::SeqCst);
+        crate::ffi::wait::wake_every_thread();
+    }
+}
+
+thread_local! {
+    /// The mark of the innermost block whose task or code this thread runs.
+    static CURRENT: RefCell<Option<Arc<CancelMark>>> = const { RefCell::new(None) };
+    /// The marks that `vx_cancel_off` put aside, innermost last.
+    static PUT_ASIDE: RefCell<Vec<Option<Arc<CancelMark>>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Before a `drop`: this thread runs with no mark until `vx_cancel_on`, so no wait gives
+/// `Cancelled` (F6). A `tasks` block in the `drop` gets a mark with no parent.
+#[no_mangle]
+pub extern "C" fn vx_cancel_off() {
+    let mark = CURRENT.with(|c| c.borrow_mut().take());
+    PUT_ASIDE.with(|p| p.borrow_mut().push(mark));
+}
+
+/// After a `drop`: the mark that `vx_cancel_off` put aside comes back.
+#[no_mangle]
+pub extern "C" fn vx_cancel_on() {
+    let mark = PUT_ASIDE.with(|p| p.borrow_mut().pop());
+    let mark = mark.expect("vx_cancel_on comes after vx_cancel_off");
+    CURRENT.with(|c| {
+        assert!(c.borrow().is_none(), "a tasks block in a drop did not end");
+        *c.borrow_mut() = mark;
+    });
+}
+
+/// Swaps the current mark and the marks put aside of this thread with these. The shared runtime
+/// gives each fiber its own.
+pub(crate) fn swap_marks(
+    mark: &mut Option<Arc<CancelMark>>,
+    put_aside: &mut Vec<Option<Arc<CancelMark>>>,
+) {
+    CURRENT.with(|c| std::mem::swap(&mut *c.borrow_mut(), mark));
+    PUT_ASIDE.with(|p| std::mem::swap(&mut *p.borrow_mut(), put_aside));
 }
 
 /// The tasks of one `tasks` block.
 pub struct VxTaskGroup {
     tasks: Vec<Task>,
+    /// The shared runtime that runs the tasks, or `None` when each task gets its own thread.
+    sched: Option<&'static Scheduler>,
+    mark: Arc<CancelMark>,
+    /// The current mark of this thread before the block, which comes back at its end.
+    outer: Option<Arc<CancelMark>>,
 }
 
 fn wait(task: &mut Task) {
+    if let Some(fiber) = &task.fiber {
+        let done = &raw const fiber.done as *const i64;
+        while fiber.done.load(Ordering::SeqCst) == 0 {
+            unsafe { crate::ffi::wait::vx_wait_while(done, 0) };
+        }
+    }
     if let Some(thread) = task.thread.take() {
         // A Vx panic stops the program (T6). A Rust panic in a task is a bug of the runtime.
         if thread.join().is_err() {
@@ -57,7 +135,37 @@ fn wait(task: &mut Task) {
 /// The start of a `tasks` block.
 #[no_mangle]
 pub extern "C" fn vx_tasks_begin() -> *mut VxTaskGroup {
-    Box::into_raw(Box::new(VxTaskGroup { tasks: Vec::new() }))
+    tasks_begin(sched::program_scheduler())
+}
+
+pub(crate) fn tasks_begin(sched: Option<&'static Scheduler>) -> *mut VxTaskGroup {
+    let outer = CURRENT.with(|c| c.borrow().clone());
+    let mark = Arc::new(CancelMark {
+        set: AtomicBool::new(false),
+        parent: outer.clone(),
+    });
+    CURRENT.with(|c| *c.borrow_mut() = Some(mark.clone()));
+    Box::into_raw(Box::new(VxTaskGroup {
+        tasks: Vec::new(),
+        sched,
+        mark,
+        outer,
+    }))
+}
+
+/// Whether the block of this thread's task or code, or a block around it, was cancelled. A wait
+/// that can be cancelled then gives `Cancelled`.
+#[no_mangle]
+pub extern "C" fn vx_cancelled() -> i32 {
+    CURRENT.with(|c| c.borrow().as_ref().is_some_and(|m| m.is_set())) as i32
+}
+
+/// A task or the code of a block failed: cancel its block (F3).
+#[no_mangle]
+pub extern "C" fn vx_task_failed() {
+    if let Some(mark) = CURRENT.with(|c| c.borrow().clone()) {
+        mark.cancel();
+    }
 }
 
 /// A `spawn`: starts `run(env)` on a new thread, and returns the task's number in `group`.
@@ -73,25 +181,39 @@ pub unsafe extern "C" fn vx_task_start(
     env: *mut u8,
 ) -> i64 {
     let group = &mut *group;
-    let task_env = Env(env);
+    let mark = group.mark.clone();
     lines::task_started();
+    if let Some(sched) = group.sched {
+        group.tasks.push(Task {
+            thread: None,
+            fiber: Some(sched.spawn(run, env, Some(mark))),
+            env,
+        });
+        return (group.tasks.len() - 1) as i64;
+    }
+    let task_env = Env(env);
     let started = thread::Builder::new()
         .stack_size(TASK_STACK_BYTES)
         .spawn(move || {
             let task_env = task_env;
+            CURRENT.with(|c| *c.borrow_mut() = Some(mark));
             run(task_env.0);
             lines::task_ended();
         });
-    // With no thread, the task runs here, to its end. T7 allows that run.
+    // A task that waits for a later task, on a channel or a lock, would wait forever if it ran
+    // here. So with no thread, the program stops (W6 in waiting_tasks_channels_and_task_errors.md).
     let thread = match started {
-        Ok(thread) => Some(thread),
-        Err(_) => {
-            run(env);
-            lines::task_ended();
-            None
+        Ok(thread) => thread,
+        Err(e) => {
+            eprintln!("vx: the system could not start a thread for a task: {e}");
+            std::process::abort();
         }
     };
-    group.tasks.push(Task { thread, env });
+    group.tasks.push(Task {
+        thread: Some(thread),
+        fiber: None,
+        env,
+    });
     (group.tasks.len() - 1) as i64
 }
 
@@ -123,6 +245,8 @@ pub unsafe extern "C" fn vx_task_join(group: *mut VxTaskGroup, task: i64) {
 #[no_mangle]
 pub unsafe extern "C" fn vx_tasks_wait(group: *mut VxTaskGroup) {
     let group = &mut *group;
+    // Leaving the block early cancels its tasks, and then joins them (F7).
+    group.mark.cancel();
     for task in &mut group.tasks {
         wait(task);
     }
@@ -142,6 +266,8 @@ pub unsafe extern "C" fn vx_tasks_end(group: *mut VxTaskGroup) {
     for task in &group.tasks {
         libc::free(task.env as *mut libc::c_void);
     }
+    let outer = group.outer.take();
+    CURRENT.with(|c| *c.borrow_mut() = outer);
     lines::flush();
 }
 

@@ -43,5 +43,5 @@ fn process(t : Tensor<f32, [?, ?]>) -> Tensor<f32, [?, ?]> {
 // VXLLVM: llvm.mlir.global internal constant @[[S:[a-z0-9_]+]]_str("vx_npu_kernel_0\00{{[^"]*}}topo=100\00toponame=NPU[0]\00")
 // VXLLVM: %[[D:.*]] = llvm.mlir.addressof @[[S]]_str : !llvm.ptr
 // VXLLVM: llvm.call @vx_plugin_dispatch_async(%[[D]], %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) : (!llvm.ptr, i64, !llvm.ptr, !llvm.ptr, i64) -> i64
-// VXLLVM: @vx_npu_kernel_0(%arg0: {{.*}}) attributes {{.*}}llvm.emit_c_interface}
+// VXLLVM: @vx_npu_kernel_0(%arg0: {{.*}}) attributes {{.*}}llvm.emit_c_interface{{(, passthrough = \[\["probe-stack", "inline-asm"\]\])?}}}
 // VXLLVM-NOT: vx.launch

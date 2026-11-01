@@ -13,7 +13,7 @@ fn main() -> i32 {
     // CHECK-SAME: 't_npu' lives in NPU_HBM
     // CHECK-SAME: AccCore[0] sees only [Local_SRAM]
     // CHECK-SAME: insert an explicit transfer to Local_SRAM
-    let invalid = t_npu;
+    let invalid = t_npu.clone();
   }
 
   return 0;

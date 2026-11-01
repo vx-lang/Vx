@@ -31,6 +31,34 @@ jobs:
         with:
           restore: 'false'
 
+  # build.rs compiles runtime/cuda_dispatch.cpp only on a machine with a CUDA toolkit, and the
+  # test jobs have none. So this job installs the toolkit and compiles the plugin. It needs no GPU.
+  cuda-plugin:
+    name: Compile the CUDA plugin
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # The packages of the CUDA job in release.yml, which says why cuda-nvcc is needed.
+      - name: Install the CUDA toolkit
+        run: |
+          set -euo pipefail
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            cuda-cudart-dev-12-6 libcublas-dev-12-6 cuda-driver-dev-12-6 cuda-nvcc-12-6
+          test -f /usr/local/cuda/include/cuda_runtime.h || sudo ln -sfn /usr/local/cuda-12.6 /usr/local/cuda
+
+      # The command of build.rs, with warnings as errors.
+      - name: Compile runtime/cuda_dispatch.cpp
+        run: |
+          clang++ -std=c++17 -O3 -Wall -Wextra -Werror -shared -fPIC runtime/cuda_dispatch.cpp \
+            -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lffi -lcudart -lcublas -ldl \
+            -o "$RUNNER_TEMP/libvx_cuda_dispatch.so"
+
   test:
     name: Run Tests
     needs: llvm
@@ -264,5 +292,42 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
+      # The C and C++ programs in tests/runtime/ get AddressSanitizer and UndefinedBehaviorSanitizer
+      # here. Our LLVM has no sanitizer runtimes, so they use GCC.
       - name: Run tests (debug)
+        env:
+          VX_TEST_SANITIZERS: 1
+          VX_TEST_CXX: g++
+          VX_TEST_CC: gcc
         run: cargo test --workspace --verbose
+
+  # The task stack switch in stdlib/rust_core is assembly, one version for each CPU. This job
+  # runs the Rust core tests for aarch64 under qemu-user, and builds the macOS aarch64 library,
+  # so that a change to the aarch64 version cannot pass unseen. It needs no LLVM.
+  rust-core-aarch64:
+    name: Rust core tests on aarch64 (qemu)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -L /usr/aarch64-linux-gnu
+    defaults:
+      run:
+        working-directory: stdlib/rust_core
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu, aarch64-apple-darwin
+
+      - name: Install qemu-user and the aarch64 linker
+        run: sudo apt-get update && sudo apt-get install -y qemu-user gcc-aarch64-linux-gnu
+
+      - name: Run tests (aarch64 Linux)
+        run: cargo test --target aarch64-unknown-linux-gnu --verbose
+
+      - name: Build the library (aarch64 macOS)
+        run: cargo rustc --lib --target aarch64-apple-darwin --crate-type staticlib --verbose

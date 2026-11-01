@@ -46,7 +46,7 @@ fn main() -> i32 {
   let y = unsafe { Tensor<f32, [1024, 768]>::uninit() };
   let sy = transfer(y, Memory::W);
   spawn on(Topology::Dev) {
-    use_both(sx, sy);
+    use_both(&sx, &sy);
   }
   return 0;
 }

@@ -14,15 +14,15 @@ the test suite has one, a program that triggers it.
 
 ## Contents
 
-- [Warnings](#warnings) — `W1001`–`W1034` (25 codes)
+- [Warnings](#warnings) — `W1001`–`W1035` (26 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3061` (60 codes)
-- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4014` (14 codes)
+- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4015` (15 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6035` (35 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
-- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8009` (9 codes)
+- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8010` (10 codes)
 
 ## Warnings
 
@@ -55,6 +55,7 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1031`](/errors/W1031/) | A proof obligation could not be discharged because no SMT solver was available, so the property is **unverified** rather than proved. Distinct from W1027, which means the solver ran and found a violation. Emitted only under `VX_ALLOW_UNVERIFIED`; without it a missing solver is an error, because silence used to be indistinguishable from success (Vx#374). |
 | [`W1033`](/errors/W1033/) | The loop of a `spawn` region runs on one thread although each pass writes only memory of its own, so its passes could run at the same time. The warning points at what stops it: a call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass writes, bounds not known when compiling, and the like. A region that calls `barrier()` asks for blocks and threads, so it is warned about whenever it runs on one thread, with the first thing that stopped the split: two threads that may write the same element, a `break` out of a loop that holds a `barrier()`, a write to block-shared memory with no `barrier()` after it, and the like. |
 | [`W1034`](/errors/W1034/) | The program writes a variable that a closure copied, and uses the closure after the write. The closure keeps the value that it copied, so it does not see the write. A later release makes this an error (K4). |
+| [`W1035`](/errors/W1035/) | A `match` arm in a `loop` or `while` can take `Cancelled` from a wait and stays in the loop. In a cancelled task each wait gives `Cancelled` at once, so the loop never ends (F4). |
 
 ## Parser Errors
 
@@ -139,7 +140,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3042`](/errors/E3042/) | A bound on a type parameter, `T : Name`, where no trait called `Name` is declared or imported. Usually a misspelling or a missing `import`. |
 | [`E3043`](/errors/E3043/) | A `for` loop over a reference to a type with no method to iterate it by. The loop calls `iter()` for `for x in &c` and `iter_mut()` for `for x in &mut c`, as Rust's collections do, so the type needs the one the loop asks for. |
 | [`E3044`](/errors/E3044/) | A top-level `const` whose value is not known while compiling, or does not fit its declared type. A `const` holds a number or a `bool`: a literal, or arithmetic on literals and other `const`s. A `const` table holds a list of number literals, and is read one number at a time, as `TABLE[i]`. |
-| [`E3045`](/errors/E3045/) | A number literal that does not fit `usize`, which holds 0 up to the largest `i64`. |
+| [`E3045`](/errors/E3045/) | An integer literal that does not fit its type, such as `300` for a `u8`. A `usize` holds 0 up to the largest `i64`. |
 | [`E3046`](/errors/E3046/) | A `for` loop over a tensor that is not a variable or a flat array literal, such as one a function call returns, or a nested array literal. The loop reads the tensor by index, so it needs a name: bind the tensor with `let` first. |
 | [`E3047`](/errors/E3047/) | A `reshape` call the compiler cannot check: the new shape has a different number of elements than the tensor (without `PadMode::Pad` or `PadMode::Trim`), a size is not known while compiling, or the arguments are not a shape such as `[4, 4]` and an optional `PadMode`. |
 | [`E3048`](/errors/E3048/) | An `if` with no `else` whose value is used, as in `let u = if c { .. };`. When the condition is false there is no branch to give a value. Add an `else`, or use the `if` as a statement. |
@@ -148,7 +149,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3051`](/errors/E3051/) | A `match` pattern that names a variant of another enum than the value matched, such as `Other::Red` in a `match` on a `Color`. Write the variant with the matched value's enum. |
 | [`E3052`](/errors/E3052/) | Arithmetic on fp8 or fp4 values (`f8e4m3`, `f8e5m2` or `f4e2m1`) with no written result type, as in `print(a * b)`. The compiler computes in f32 and rounds once to the written type, so the program must write it: `let c : f32 = a * b;`. Also `+=` and the other compound operators on these values, and any operator on tensors of them. |
 | [`E3053`](/errors/E3053/) | An impl of `Send` or `Sync` with no `unsafe`, as in `impl Send for Handle {}`. The compiler derives both from the fields, and a raw pointer is neither. An impl claims one for a type that holds a raw pointer, and the compiler cannot check the claim. Write `unsafe impl Send for Handle {}`. |
-| [`E3054`](/errors/E3054/) | `unsafe impl` of a trait other than `Send` or `Sync`, or of no trait at all. Only those two traits make a claim that the compiler cannot check. Remove `unsafe`. |
+| [`E3054`](/errors/E3054/) | `unsafe impl` of a trait other than `Send`, `Sync` or `Owned`, or of no trait at all. Only those three traits make a claim that the compiler cannot check. Remove `unsafe`. |
 | [`E3055`](/errors/E3055/) | A task takes a value that is not `Send`, or reads a variable whose type is not `Sync`. A task that moves a value, copies it or writes it needs `Send`. A task that reads a variable in place shares it with the code around the task, so it needs `Sync`. The error names the field that makes the type fail. |
 | [`E3056`](/errors/E3056/) | `spawn { .. }` outside a `tasks { .. }` block. The end of the `tasks` block waits for each task, so a task cannot outlive the variables it uses. A `spawn` in a closure, or directly in another task, is outside the block too. Put the `spawn` in a `tasks` block of its own. |
 | [`E3057`](/errors/E3057/) | A task handle used in a way other than `h.join()`, or a `spawn` that is not the value of a `let` or a statement of its own. A task must not leave its `tasks` block, so the program cannot return a handle, store it, or pass it to a function. Write `let h = spawn { .. };` and later `h.join()`. |
@@ -177,6 +178,7 @@ Raised by the borrow checker and the linear-type rules. These rule out use-after
 | [`E4012`](/errors/E4012/) | A call to the `drop` method of a `Drop` impl by hand: `x.drop()`. `drop` runs when the value is dropped, so calling it as well would run it twice. Write `drop(x)`, from `core::mem`, to drop a value early. |
 | [`E4013`](/errors/E4013/) | A field moved out of a value that must keep it: `let x = p.a` where `p`'s type implements `Drop`, whose `drop` needs every field, or `let x = make().a`, where the value has no name and drops all its fields at the end of the statement. Borrow the field (`&p.a`), clone it, or bind the value to a variable first. |
 | [`E4014`](/errors/E4014/) | A task that can still run when a variable that it uses ends or changes. A task in a loop that the same pass does not join runs at the same time as the next pass, so it must not write a variable from outside the loop, or read one that the loop writes. A task must not use a variable that ends before its `tasks` block, such as one of the loop body. Join the task in the same block: `let h = spawn { .. };` and then `h.join();`. A `return`, `break` or `continue` that leaves two `tasks` blocks waits only for the tasks of the inner one, so it cannot drop a value from outside the inner block yet. |
+| [`E4015`](/errors/E4015/) | A `spawn` region that moves a value from the code around it: `let x = t;` or `f(t)` with a parameter that takes `t` by value, where `t` is declared before the region. The region only borrows what it uses, and the function drops `t` after the region. Borrow it (`&t`), or clone it (`t.clone()`). |
 
 ## Safety Errors
 
@@ -255,7 +257,8 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | [`E8007`](/errors/E8007/) | An access clause that does not hold: an `atomic(t)` whose body uses `t` without an atomic operation, or a `writes_only()` whose body may write memory |
 | [`E8008`](/errors/E8008/) | A loop invariant that the prover cannot show to hold when the loop starts |
 | [`E8009`](/errors/E8009/) | A loop invariant that the prover cannot show to hold after a pass through the loop body |
+| [`E8010`](/errors/E8010/) | An `mlir!` block whose `dialects` list does not match its body: the body uses an operation of a dialect that the list does not name, or the list names something that is not a dialect. The list is what the block says it uses, so it must be right. |
 
 ______________________________________________________________________
 
-169 diagnostics.
+172 diagnostics.

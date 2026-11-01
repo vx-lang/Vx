@@ -1,0 +1,30 @@
+//===- gpu_region_that_ends_in_a_value_runs_on_the_gpu.vx --------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `spawn` region that ends in a tensor runs on the GPU. The compiler makes
+// the tensor in GPU memory before the region, so the PTX kernel stores 1.0
+// (bits 1065353216) into global memory. Then `transfer` copies the tensor from
+// the GPU to the host.
+//
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// RUN: vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s
+// CHECK: toponame=Device{{.*}}image={{.*}}.entry vx_npu_kernel_0({{.*}}st.global.b32 {{.*}}1065353216;
+// CHECK: llvm.call @vx_plugin_dispatch_async(
+// CHECK: llvm.call @vx_plugin_transfer_device_to_host(
+
+fn main() -> i32 {
+  let t = spawn on(Topology::Device) {
+    let mut x = Tensor<f32, [1024]>::fill(0.0);
+    for i in 0..1024 {
+      x[i] = 1.0;
+    }
+    x
+  };
+  let h = transfer(t, Memory::CPU_DRAM);
+  print(h[0]);
+  return 0;
+}

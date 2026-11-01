@@ -11,7 +11,7 @@
 //
 // CHECK-DAG: Error[E3053]: `impl Send for Handle` must be `unsafe impl`: the compiler derives `Send` from the fields, and cannot check this claim
 // CHECK-DAG: Error[E3053]: `impl Sync for Handle` must be `unsafe impl`
-// CHECK-DAG: Error[E3054]: `unsafe impl Describe for Handle`: only `Send` and `Sync` take `unsafe impl`. Remove `unsafe`
+// CHECK-DAG: Error[E3054]: `unsafe impl Describe for Handle`: only `Send`, `Sync` and `Owned` take `unsafe impl`. Remove `unsafe`
 // CHECK-DAG: Error[E3054]: `unsafe impl Handle`: an impl with no trait cannot be `unsafe`
 
 import core::marker;

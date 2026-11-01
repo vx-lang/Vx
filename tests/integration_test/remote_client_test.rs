@@ -23,6 +23,8 @@
 use std::path::PathBuf;
 use std::process::{Child, Command};
 
+use crate::integration_test::runtime_test_build;
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -38,8 +40,7 @@ impl Drop for Worker {
 }
 
 fn compile(cxx: &str, sources: &[PathBuf], out: &PathBuf, extra: &[String]) {
-    let mut cmd = Command::new(cxx);
-    cmd.args(["-std=c++17", "-O1", "-Wall", "-Werror"]);
+    let mut cmd = runtime_test_build::command(cxx, "c++17");
     for s in sources {
         cmd.arg(s);
     }
@@ -107,7 +108,7 @@ fn ffi_flags() -> Vec<String> {
 fn a_dispatch_reaches_a_worker_process_over_tcp() {
     let root = repo_root();
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
     let worker_bin = tmp.join("vx-worker-test");
     compile(
@@ -184,7 +185,7 @@ fn a_dispatch_reaches_a_worker_process_over_tcp() {
 fn a_placed_tensor_can_be_read_home_from_a_worker() {
     let root = repo_root();
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
     let worker_bin = tmp.join("vx-worker-readback");
     compile(
@@ -332,7 +333,7 @@ fn main() -> i32 {
 fn a_handoff_between_two_workers_moves_the_data() {
     let root = repo_root();
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
     let worker_bin = tmp.join("vx-worker-handoff");
     compile(
@@ -484,7 +485,7 @@ fn main() -> i32 {
 fn a_backend_refuses_an_address_that_belongs_to_another_machine() {
     let root = repo_root();
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
     let bin = tmp.join("routing_refusal_test");
     compile(

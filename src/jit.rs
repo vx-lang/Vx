@@ -383,18 +383,39 @@ pub fn execute_mlir(
         program_args,
         opt_level,
         disable_llvm_optimizations,
+        false,
     )?;
     Ok(format!("{}{}", out.stdout, out.stderr))
 }
 
+/// The LLVM IR with each defined function marked `sanitize_thread`. The ThreadSanitizer pass
+/// checks only the functions that carry the mark, and the code generators set no marks.
+fn mark_for_thread_sanitizer(llvmir: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(llvmir);
+    let mut out = String::with_capacity(text.len() + 1024);
+    for line in text.lines() {
+        match line.strip_suffix(" {") {
+            Some(head) if line.starts_with("define ") => {
+                out.push_str(head);
+                out.push_str(" sanitize_thread {");
+            }
+            _ => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    out.into_bytes()
+}
+
 /// Compile MLIR text to a native object file in `temp_dir`, the way `run-jit` builds a program:
 /// `mlir-translate`, then `opt` (with the Enzyme plugin when the program calls `grad`, `vjp`
-/// or `jvp`), then `llc`. Answers the object's path.
+/// or `jvp`), then `llc`. Answers the object's path. With `thread_sanitizer`, `opt` also adds
+/// the checks of ThreadSanitizer, and the program must be linked with `-fsanitize=thread`.
 pub fn compile_mlir_to_object(
     mlir_src: &str,
     temp_dir: &std::path::Path,
     opt_level: u8,
     disable_llvm_optimizations: bool,
+    thread_sanitizer: bool,
 ) -> Result<String, String> {
     let temp_mlir = temp_dir.join("input.mlir").to_string_lossy().into_owned();
     let temp_ll = temp_dir.join("input.ll").to_string_lossy().into_owned();
@@ -414,10 +435,12 @@ pub fn compile_mlir_to_object(
     mlir_translate_cmd.args(["--mlir-to-llvmir", &temp_mlir]);
     let mlir_translate_out = run_cmd(mlir_translate_cmd, "mlir-translate")?;
 
+    let mut llvmir = mlir_translate_out.stdout;
+    if thread_sanitizer {
+        llvmir = mark_for_thread_sanitizer(&llvmir);
+    }
     let mut llvmir_file = File::create(&temp_ll).map_err(|e| e.to_string())?;
-    llvmir_file
-        .write_all(&mlir_translate_out.stdout)
-        .map_err(|e| e.to_string())?;
+    llvmir_file.write_all(&llvmir).map_err(|e| e.to_string())?;
 
     let temp_opt_ll = temp_dir.join("opt.ll").to_string_lossy().into_owned();
     let mut opt_args = vec![];
@@ -437,13 +460,14 @@ pub fn compile_mlir_to_object(
 
     let mut passes = format!("default<O{}>", actual_opt_level);
 
-    if let Some(enzyme_lib) =
-        enzyme_plugin_for(&mlir_translate_out.stdout, std::env::var("ENZYME_LIB").ok())?
-    {
+    if let Some(enzyme_lib) = enzyme_plugin_for(&llvmir, std::env::var("ENZYME_LIB").ok())? {
         opt_args.push(format!("-load-pass-plugin={}", enzyme_lib));
         passes.push_str(",enzyme");
     }
 
+    if thread_sanitizer {
+        passes.push_str(",tsan-module,function(tsan)");
+    }
     opt_args.push(format!("-passes={}", passes));
     opt_args.push("-S".to_string());
     opt_args.push(temp_ll.clone());
@@ -483,6 +507,7 @@ pub fn execute_mlir_streams(
     program_args: Vec<String>,
     opt_level: u8,
     disable_llvm_optimizations: bool,
+    thread_sanitizer: bool,
 ) -> Result<ProgramOutput, String> {
     let temp_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
 
@@ -491,6 +516,7 @@ pub fn execute_mlir_streams(
         temp_dir.path(),
         opt_level,
         disable_llvm_optimizations,
+        thread_sanitizer,
     )?;
 
     let lib_npu = dispatch_library_path();
@@ -624,6 +650,9 @@ pub fn execute_mlir_streams(
     }
 
     clang_cmd.arg("-lm");
+    if thread_sanitizer {
+        clang_cmd.arg("-fsanitize=thread");
+    }
 
     run_cmd(clang_cmd, "clang")?;
 

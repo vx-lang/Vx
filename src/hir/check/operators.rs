@@ -198,7 +198,16 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_ascast_expr(&mut self, expr: &mut AsCastExpr, consume: bool) -> Type {
+        // The type that the context expects is the cast's, not the operand's. An integer
+        // literal keeps its own type: `255 as i8` casts the `i32` 255, and is -1. A float
+        // literal takes the float type the cast names: `0.1 as f64` is the `f64` 0.1.
+        let operand_expected = match &expr.target_ty {
+            Type::Scalar(e) if e.is_float() => Some(expr.target_ty.clone()),
+            _ => None,
+        };
+        let expected = std::mem::replace(&mut self.expected_type, operand_expected);
         let source_ty = self.check_expr_type_flag(&mut expr.expr, consume);
+        self.expected_type = expected;
         let target_ty = expr.target_ty.clone();
         expr.source_ty = Some(source_ty.clone());
 
