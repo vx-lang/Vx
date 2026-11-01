@@ -10,11 +10,8 @@
 // so the senders often wait for room. The code drops its own `Sender`, so `recv` gives `Closed`
 // after the last task ends. Each value arrives once: 8000 values with the sum 8 * 500500.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator runs each task to its end at its `spawn`. A task
-// that waits for a later task then waits forever.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}count 8000 sum 4004000{{$}}
 
 import core::mem;
