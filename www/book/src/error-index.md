@@ -14,7 +14,7 @@ the test suite has one, a program that triggers it.
 
 ## Contents
 
-- [Warnings](#warnings) — `W1001`–`W1034` (25 codes)
+- [Warnings](#warnings) — `W1001`–`W1035` (26 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3060` (59 codes)
@@ -55,6 +55,7 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1031`](/errors/W1031/) | A proof obligation could not be discharged because no SMT solver was available, so the property is **unverified** rather than proved. Distinct from W1027, which means the solver ran and found a violation. Emitted only under `VX_ALLOW_UNVERIFIED`; without it a missing solver is an error, because silence used to be indistinguishable from success (Vx#374). |
 | [`W1033`](/errors/W1033/) | The loop of a `spawn` region runs on one thread although each pass writes only memory of its own, so its passes could run at the same time. The warning points at what stops it: a call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass writes, bounds not known when compiling, and the like. A region that calls `barrier()` asks for blocks and threads, so it is warned about whenever it runs on one thread, with the first thing that stopped the split: two threads that may write the same element, a `break` out of a loop that holds a `barrier()`, a write to block-shared memory with no `barrier()` after it, and the like. |
 | [`W1034`](/errors/W1034/) | The program writes a variable that a closure copied, and uses the closure after the write. The closure keeps the value that it copied, so it does not see the write. A later release makes this an error (K4). |
+| [`W1035`](/errors/W1035/) | A `match` arm in a `loop` or `while` can take `Cancelled` from a wait and stays in the loop. In a cancelled task each wait gives `Cancelled` at once, so the loop never ends (F4). |
 
 ## Parser Errors
 
@@ -259,4 +260,4 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 
 ______________________________________________________________________
 
-169 diagnostics.
+170 diagnostics.

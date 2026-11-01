@@ -136,6 +136,9 @@ pub enum DiagnosticCode {
     /// write. The closure keeps the value that it copied, so it does not see the write. A later
     /// release makes this an error (K4).
     W1034,
+    /// A `match` arm in a `loop` or `while` can take `Cancelled` from a wait and stays in the
+    /// loop. In a cancelled task each wait gives `Cancelled` at once, so the loop never ends (F4).
+    W1035,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token

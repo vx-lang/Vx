@@ -388,8 +388,11 @@ each wait fails at once, and the loop never ends. Dropping a `Cancelled` is not 
 
 - The program must use the `Result` of each wait that can be cancelled.
 - The compiler warns when an arm that matches `Cancelled` can reach the same wait again without
-  leaving the loop. An arm matches `Cancelled` by name, by `_`, or by `Err(_)`. It is a warning,
-  not an error, because the check cannot follow every call.
+  leaving the loop (W1035). An arm matches `Cancelled` by `_`, by `Err(_)`, or by a name that
+  starts with `_`. An arm that gives the error a used name can check it. An arm that changes the
+  condition of its `while` can end the loop. A `while` whose body changes its condition in a
+  statement of its own ends after some passes, and so does a `for` loop. It is a warning, not an
+  error, because the check cannot follow every call.
 - F9 reports the exact case at run time.
 
 **F5. I/O that still owns a buffer.** A cancelled I/O wait does not return until the kernel

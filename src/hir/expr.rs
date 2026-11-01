@@ -415,7 +415,12 @@ impl<'a> TypeChecker<'a> {
                 self.check_match_expr(expr, consume)
             }
             Expr::VecMacro(..) => self.check_vecmacro_expr(expr),
-            Expr::Closure(..) => self.check_closure_expr(expr, consume),
+            Expr::Closure(..) => {
+                let loops = std::mem::take(&mut self.cancel_loops);
+                let ty = self.check_closure_expr(expr, consume);
+                self.cancel_loops = loops;
+                ty
+            }
             Expr::AsCast(e) => self.check_ascast_expr(e, consume),
             Expr::Print(p) => {
                 for arg in &mut p.args {

@@ -1181,7 +1181,10 @@ impl<'a> TypeChecker<'a> {
             binds: None,
             evaluates: None,
         };
+        self.cancel_loops
+            .push(crate::hir::check::cancel_loops::loop_exits(body));
         self.check_loop_body(body, return_type, header);
+        self.cancel_loops.pop();
         self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
