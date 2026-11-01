@@ -421,6 +421,17 @@ impl CompilerDriver {
 
     /// Compile the one input in `options`: the path every run ends in, once per input.
     fn execute_one(&self) -> Result<(), String> {
+        // run-jit builds and runs in one step; it never writes `-o`. Saying nothing
+        // made readers think `vxc prog.vx -o out` produced an executable (#2296).
+        if self.options.action == Action::RunJit {
+            if let Some(out) = &self.options.output {
+                return Err(format!(
+                    "-o '{}' is not used with run-jit (the default action), which builds and runs the program without writing a file; pass --action emit-obj to write an object, or omit -o to run",
+                    out.display()
+                ));
+            }
+        }
+
         let main_file = &self.options.inputs[0];
         let filename = main_file.to_string_lossy().to_string();
 
@@ -2469,5 +2480,18 @@ mod tests {
             Ok(None),
             "unparseable MLIR did not hand the compile back to the sequential driver"
         );
+    }
+
+    /// `run-jit` (the default) never writes `-o`. Refusing it beats silently
+    /// ignoring the flag (#2296).
+    #[test]
+    fn run_jit_refuses_minus_o() {
+        let driver = driver_for(&["vxc", "prog.vx", "-o", "out"]);
+        let err = driver.execute().expect_err("run-jit must refuse -o");
+        assert!(
+            err.contains("is not used with run-jit"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains("out"), "error should name the path: {err}");
     }
 }
