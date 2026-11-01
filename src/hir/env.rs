@@ -23,7 +23,7 @@
 //
 //===----------------------------------------------------------------------===//
 use crate::syntax::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -144,6 +144,10 @@ pub struct GlobalAstEnv<'a> {
     /// Top-level `const` items of every module, by name. A use of one is replaced by its value
     /// where the checker resolves the name.
     pub consts: HashMap<crate::symbol::Symbol, &'a crate::syntax::ConstDecl>,
+    /// Non-generic impl methods that already received a dedicated `check_function` pass.
+    /// A call rewrites the body for emission and must drop a second copy of each diagnostic
+    /// only for these; an imported method is checked only when used, so it stays out (#1825).
+    pub impl_methods_checked_directly: HashSet<crate::symbol::Symbol>,
 }
 
 impl<'a> GlobalAstEnv<'a> {
@@ -171,6 +175,7 @@ impl<'a> GlobalAstEnv<'a> {
             return_provenances: HashMap::new(),
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
             consts: HashMap::new(),
+            impl_methods_checked_directly: HashSet::new(),
         };
 
         // Where each trait impl was first written, to report a second one for the same type.
@@ -337,6 +342,31 @@ impl<'a> GlobalAstEnv<'a> {
     /// free functions; the entry points call this with the full pre-strip modules to restore
     /// precision. Idempotent — overwrites any existing entry. A function whose summary cannot be
     /// computed (no body) is left absent, i.e. conservative `AnyParam` at lookup.
+    /// Record the non-generic impl methods that this compilation checks in a dedicated pass.
+    /// Call sites that re-check a body for emission consult this set before discarding diagnostics.
+    pub fn note_impl_methods_checked_directly(&mut self, impls: &[crate::syntax::decl::ImplBlock]) {
+        for ib in impls {
+            if !ib.generics.is_empty() {
+                continue;
+            }
+            let copied = &ib.copied_defaults;
+            for f in ib
+                .methods
+                .iter()
+                .filter(|f| !copied.contains(&f.name) && f.generics.is_empty())
+            {
+                let mangled = crate::syntax::types::mangle_method(
+                    &ib.target_type,
+                    ib.trait_name.as_ref(),
+                    &ib.trait_args,
+                    f.name.as_ref(),
+                );
+                self.impl_methods_checked_directly
+                    .insert(crate::symbol::Symbol::from(mangled.as_str()));
+            }
+        }
+    }
+
     pub fn annotate_return_provenances(&mut self, modules: &[Program]) {
         for module in modules {
             for func in &module.functions {

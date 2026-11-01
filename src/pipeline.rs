@@ -206,6 +206,16 @@ fn run_frontend_on(
     // strips them, so an `assert` calling a function in the same module had nothing to walk.
     // Only what a `comptime` block or an `assert` can reach is copied.
     timed("comptime_bodies", || env.annotate_comptime_bodies(&modules));
+    // Impl methods that receive their own FunctionCheck. OnlyEntry: entry module only —
+    // imported methods keep call-site diagnostics (imported_errors does not cover methods).
+    timed("impl_methods_noted", || {
+        for m in modules.iter().filter(|m| match &reported {
+            Reported::EveryModule => true,
+            Reported::OnlyEntry(name) => m.module_path == *name,
+        }) {
+            env.note_impl_methods_checked_directly(&m.impls);
+        }
+    });
 
     // Before any body: a body checked against an ambiguous declaration table has been checked
     // against a coin flip.
