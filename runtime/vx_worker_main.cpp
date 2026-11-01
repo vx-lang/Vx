@@ -263,13 +263,20 @@ int serve_dispatch(const vx_wire_dispatch *d, const vx_wire_arg *args,
        caller will report it. This is that report, and until it existed the
        message was "an argument named no live region" with no way to tell an
        operand that was never sent from one that was freed too early. */
-    log_line("[Vx worker] refused: an argument named no live region\n");
+    log_line("[Vx worker] refused: an argument named no live region, or its "
+             "view does not fit in its region\n");
     for (int64_t i = 0; i < d->num_args; ++i) {
       vx_remote_ref ref;
-      if (args[i].handle != 0 &&
-          !vx_remote_resolve(&g_table, args[i].handle, &ref)) {
+      if (args[i].handle == 0) {
+        continue;
+      }
+      if (!vx_remote_resolve(&g_table, args[i].handle, &ref)) {
         log_line("[Vx worker]   arg %lld: handle %llx is not one this worker "
                  "minted or still holds\n",
+                 (long long)i, (unsigned long long)args[i].handle);
+      } else if (!vx_agent_view_fits(&args[i], &ref)) {
+        log_line("[Vx worker]   arg %lld: the view at handle %llx reaches past "
+                 "the end of its region\n",
                  (long long)i, (unsigned long long)args[i].handle);
       }
     }
