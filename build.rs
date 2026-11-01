@@ -663,12 +663,15 @@ fn main() {
         .expect("Failed to run mlir-tblgen for op defs");
     assert!(status.success(), "mlir-tblgen failed");
     println!("cargo:rerun-if-changed=src/dialect/VxLowering.cpp");
+    println!("cargo:rerun-if-changed=src/dialect/SpirvKernelArgs.cpp");
+    println!("cargo:rerun-if-changed=src/dialect/SpirvKernelArgs.h");
     println!("cargo:rerun-if-changed=src/dialect/vx-opt.cpp");
     println!("cargo:rerun-if-changed=src/dialect/NarrowFloats.cpp");
 
     // Compile the dialect
     let dialect_obj_path = PathBuf::from(&out_dir).join("VxDialect.o");
     let lowering_obj_path = PathBuf::from(&out_dir).join("VxLowering.o");
+    let spirv_args_obj_path = PathBuf::from(&out_dir).join("SpirvKernelArgs.o");
     let vx_opt_obj_path = PathBuf::from(&out_dir).join("vx-opt.o");
     let narrow_floats_obj_path = PathBuf::from(&out_dir).join("NarrowFloats.o");
     let dialect_lib_path = PathBuf::from(&out_dir).join("libvx_dialect.a");
@@ -689,6 +692,17 @@ fn main() {
         .expect("Failed to execute cxx for VxDialect");
     assert!(status.success(), "clang++ compilation failed for VxDialect");
 
+    // The SPIR-V device image is written by LLVM's SPIR-V code generator, and the functions
+    // that register it exist only in an LLVM built with that target. CI's LLVM builds the host
+    // target and NVPTX, not SPIRV, so the calls need to be behind this define or the file does
+    // not compile there. `llvm-config` is how the build script already asks LLVM about itself.
+    let llvm_targets_built = Command::new("llvm-config")
+        .arg("--targets-built")
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        .unwrap_or_default();
+    let llvm_has_spirv_target = llvm_targets_built.split_whitespace().any(|t| t == "SPIRV");
+
     let mut lowering_cmd = Command::new(&cxx);
     lowering_cmd.args([
         "-c",
@@ -699,6 +713,9 @@ fn main() {
         &format!("-I{}", out_dir), // to find the generated .inc files
         "-Iinclude",               // to find VxDialect.h
     ]);
+    if llvm_has_spirv_target {
+        lowering_cmd.arg("-DVX_LLVM_HAS_SPIRV_TARGET");
+    }
     lowering_cmd.args(&llvm_cxxflags_vec);
     let status = lowering_cmd
         .status()
@@ -706,6 +723,26 @@ fn main() {
     assert!(
         status.success(),
         "clang++ compilation failed for VxLowering"
+    );
+
+    let mut spirv_args_cmd = Command::new(&cxx);
+    spirv_args_cmd.args([
+        "-c",
+        "src/dialect/SpirvKernelArgs.cpp",
+        "-o",
+        spirv_args_obj_path.to_str().unwrap(),
+        "-std=c++17",
+        &format!("-I{}", out_dir), // to find the generated .inc files
+        "-Iinclude",               // to find vx_hardware_runtime.h
+        "-Isrc/dialect",           // to find SpirvKernelArgs.h
+    ]);
+    spirv_args_cmd.args(&llvm_cxxflags_vec);
+    let status = spirv_args_cmd
+        .status()
+        .expect("Failed to execute cxx for SpirvKernelArgs");
+    assert!(
+        status.success(),
+        "clang++ compilation failed for SpirvKernelArgs"
     );
 
     let mut vxopt_cmd = Command::new(&cxx);
@@ -747,6 +784,7 @@ fn main() {
         dialect_lib_path.to_str().unwrap(),
         dialect_obj_path.to_str().unwrap(),
         lowering_obj_path.to_str().unwrap(),
+        spirv_args_obj_path.to_str().unwrap(),
         vx_opt_obj_path.to_str().unwrap(),
         narrow_floats_obj_path.to_str().unwrap(),
     ]);

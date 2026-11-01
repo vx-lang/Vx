@@ -1406,7 +1406,8 @@ impl CompilerDriver {
         let context = melior::Context::new();
         let emit_diagnostics = self.options.emit_backend_diagnostics;
         context.attach_diagnostic_handler(move |diagnostic| {
-            // Errors always; anything quieter only when asked for.
+            // Errors and warnings always. Notes and remarks only when asked
+            // for.
             //
             // This dropped everything unless `--emit-backend-diagnostics` was
             // passed, which is right for the notes and remarks a pass pipeline
@@ -1424,7 +1425,17 @@ impl CompilerDriver {
                         | melior::diagnostic::DiagnosticSeverity::Warning
                 )
             {
-                eprintln!("{}", diagnostic);
+                // MLIR's C printer writes the message alone -- no location, no
+                // severity -- so a warning would arrive looking exactly like an
+                // error. Say which it is. Errors keep the text they had.
+                if matches!(
+                    diagnostic.severity(),
+                    melior::diagnostic::DiagnosticSeverity::Warning
+                ) {
+                    eprintln!("Warning: {}", diagnostic);
+                } else {
+                    eprintln!("{}", diagnostic);
+                }
             }
             true
         });

@@ -75,15 +75,18 @@ case "$(uname -m)" in
     *) echo "Unsupported CPU: $(uname -m)" >&2; exit 1 ;;
 esac
 
-# Only what Vx runs is built: no tests, examples or benchmarks, code generation for the host and
-# for NVIDIA GPUs, and no optional system libraries that a user's machine would then need too.
+# Only what Vx runs is built: no tests, examples or benchmarks, code generation for the host, for
+# NVIDIA GPUs (--emit-ptx) and for SPIR-V device images, and no optional system libraries that a
+# user's machine would then need too. SPIRV is its own target name in LLVM, and leaving it out
+# takes the SPIR-V device image with it: the compiler then builds, but every SPIR-V test reports
+# that the LLVM it links has no SPIR-V target.
 echo "Building LLVM, MLIR and clang with $JOBS jobs (log: $BUILD/llvm.log)..."
 mkdir -p "$BUILD/llvm"
 cmake -S "$SRC/llvm-project/llvm" -B "$BUILD/llvm" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$INSTALL" \
     -DLLVM_ENABLE_PROJECTS="mlir;clang" \
-    -DLLVM_TARGETS_TO_BUILD="$HOST_TARGET;NVPTX" \
+    -DLLVM_TARGETS_TO_BUILD="$HOST_TARGET;NVPTX;SPIRV" \
     -DLLVM_INCLUDE_TESTS=OFF \
     -DLLVM_INCLUDE_EXAMPLES=OFF \
     -DLLVM_INCLUDE_BENCHMARKS=OFF \

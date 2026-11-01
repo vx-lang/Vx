@@ -1,0 +1,64 @@
+//===- spirv_device_image_local_array.vx - a scratch array is refused -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A scratch array a placed region keeps for itself is a `memref.alloca`, and a
+// memref value is the one thing the SPIR-V device image has no form for: it
+// arrives at the SPIR-V backend as a descriptor struct, whose pointer fields
+// the backend rebuilds as `i8*` while the pointers stored into them are
+// `float*`, and SPIR-V's typed pointers then refuse the composite.
+//
+// The SPIR-V argument flattening rewrites a kernel's memref *arguments* and the
+// views made from them, so no descriptor is built for those. A scratch array is
+// neither, and rather than fold it into something that compiles and computes
+// the wrong address, the flattening declines and names the op. `mem2reg`
+// promotes the rank-0 slots a loop keeps its bounds in, so the loop counters
+// reach this stage as SSA values. A rank-1 buffer indexed at run time does not
+// promote and stops here.
+//
+// The refusal is fatal on purpose. Dropping the twin silently would run the
+// region on the host while its author believes it runs on the card, and
+// carrying on would put the same refusal at the far end of a dispatch, where
+// the cause is no longer legible.
+//
+// RUN: not vxc %s --emit-llvm 2>&1 | FileCheck %s
+// CHECK: cannot compile this device kernel: a memref reaches `memref.alloca`
+// CHECK-SAME: which the SPIR-V argument flattening does not lower
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<f32, [4]>::uninit() };
+  let mut o = unsafe { Tensor<f32, [4]>::uninit() };
+  for i in 0..4 {
+    a[i] = ((i + 1) as f32);
+    o[i] = 0.0;
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    // A rank-1 buffer of the region's own, indexed at run time.
+    let mut scratch : Tensor<f32, [4]> = [1.0, 1.0, 1.0, 1.0];
+    for i in 0..4 {
+      scratch[i] = ad[i] * 2.0;
+    }
+    for i in 0..4 {
+      od[i] = scratch[i];
+    }
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

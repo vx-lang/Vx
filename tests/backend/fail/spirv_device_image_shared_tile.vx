@@ -1,0 +1,62 @@
+//===- spirv_device_image_shared_tile.vx - a shared tile is refused -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A static tile placed in `Memory::SMEM` becomes real shared storage in the
+// device clone: the alloca turns into a module-level `memref.global` in
+// address space 3, and its uses read it back with `memref.get_global`. That is
+// what NVPTX renders as a `.shared` declaration, and it is refused here for the
+// same reason a scratch array is: the SPIR-V argument flattening addresses a
+// kernel's tensors through the flat launch arguments, and a memref value it did
+// not build -- a global's -- has no such form yet.
+//
+// So a tiled kernel compiles for `nvptx64` and stops with this message for
+// `spirv64`. The message names the op, which is the difference between a
+// limitation a reader can act on and a kernel that silently runs on the host.
+//
+// RUN: not vxc %s --emit-llvm 2>&1 | FileCheck %s
+// CHECK: cannot compile this device kernel: a memref reaches `memref.get_global`
+// CHECK-SAME: which the SPIR-V argument flattening does not lower
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Memory SMEM {
+  within: Memory::GPU_HBM, capacity: 228 KiB, bandwidth: 128 B/cyc,
+  granule: 1 KiB, managed: explicit, scope: sm
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM, Memory::SMEM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s,
+  transfer Memory::GPU_HBM -> Memory::SMEM
+}
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  let mut o = unsafe { Tensor<f32, [2, 2]>::uninit() };
+  for i in 0..2 {
+    for d in 0..2 {
+      a[i][d] = ((i + d) as f32) * 0.5;
+      o[i][d] = 0.0;
+    }
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    let tile = transfer(ad, Memory::SMEM);
+    for i in 0..2 {
+      for d in 0..2 {
+        od[i][d] = tile[i][d] * 2.0;
+      }
+    }
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

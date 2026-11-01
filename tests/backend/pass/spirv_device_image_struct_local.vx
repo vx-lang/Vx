@@ -1,0 +1,61 @@
+//===- spirv_device_image_struct_local.vx - a struct local on the device --*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A struct-valued local inside a placed region still compiles to a device
+// image.
+//
+// The flat emitter gives such a local an `llvm.alloca` slot and reads and
+// writes it with `llvm.getelementptr`/`llvm.store`/`llvm.load`. Those are
+// `llvm` ops, and the device pipeline takes them now: an `llvm.alloca` in
+// address space 0 becomes SPIR-V `Function` storage, and the accesses around it
+// lower through the flattening like any other address arithmetic. So this
+// region keeps its twin, the payload carries a SPIR-V module, and the values
+// are the ones the host path computes.
+//
+// device_image_test.rs asserts the image and that `spirv-val` accepts it.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: vx.spawn topology({{[0-9]+}}) {
+// CHECK: } {arch = "spirv64"
+// EXPECT: [4,  6,  8,  10]
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+struct Pair {
+  a : f32,
+  b : f32,
+}
+
+fn main() -> i32 {
+  let mut o = unsafe { Tensor<f32, [4]>::uninit() };
+  for i in 0..4 {
+    o[i] = 0.0;
+  }
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..4 {
+      // A struct local: one field is written, then read back.
+      let mut p : Pair = Pair {
+        a : ((i + 1) as f32), b : 2.0
+      };
+      p.a = p.a + 1.0;
+      od[i] = p.a * p.b;
+    }
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

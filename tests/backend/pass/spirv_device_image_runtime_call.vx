@@ -1,0 +1,60 @@
+//===- spirv_device_image_runtime_call.vx - a runtime call stays at home ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A placed region that calls the runtime keeps the region on the host, and the
+// compiler says so.
+//
+// A device kernel can call only functions the device can run -- no `extern`, no
+// runtime entry point, no recursion -- so the outliner brings a kernel's callees
+// into the device module when it can and leaves the region alone when it
+// cannot. `print` is the runtime, so nothing can come along: the region runs on
+// the host, the printed value and the tensor come out right, one thread at a
+// time, and before this warning the payload simply carried no image and said
+// nothing about it.
+//
+// The message names the callee, not the call: `print_f32` is what the author
+// wrote.
+//
+// device_image_test.rs asserts the warning and the absent image.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK: vx.spawn topology({{[0-9]+}}) {
+// CHECK: } {arch = "spirv64"
+// The host runs the region, so both printfs happen: the constant the region
+// asks for, then the tensor the region computed.
+// EXPECT: 4321
+// EXPECT: [2,  4,  6,  8]
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut o = unsafe { Tensor<f32, [4]>::uninit() };
+  for i in 0..4 {
+    o[i] = 0.0;
+  }
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    for i in 0..4 {
+      od[i] = ((i + 1) as f32) * 2.0;
+    }
+    // A call the device cannot make. Its argument is a constant, so the body
+    // holds no `llvm` op before this and the warning names the callee.
+    print(4321.0);
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}

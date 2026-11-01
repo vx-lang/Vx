@@ -1,5 +1,6 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#include "SpirvKernelArgs.h"
 #include "VxDialect.h"
 #include "mlir/Analysis/CallGraph.h"
 #include "mlir/Analysis/Liveness.h"
@@ -39,6 +40,7 @@
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Target/LLVM/NVVM/Target.h"
 #include "mlir/Target/LLVMIR/Dialect/All.h"
+#include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Inliner.h"
@@ -51,9 +53,16 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/IR/LegacyPassManager.h"
+#include "llvm/IR/Module.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetOptions.h"
 
 #include <atomic>
 
@@ -1627,8 +1636,8 @@ static void fillToDeviceLoops(linalg::FillOp fill) {
   bool across = kernel && kernel->hasAttr("vx.across");
   if (shared && !everyThread && !across)
     fill->getParentOp()->emitWarning()
-        << "Warning: a GPU region sets shared memory to zero in a branch or a "
-           "loop, so the compiler adds no barrier after it. Another thread "
+        << "a GPU region sets shared memory to zero in a branch or a loop, so "
+           "the compiler adds no barrier after it. Another thread "
            "can write the memory before the zero fill ends. Make the shared "
            "tensor at the start of the region.";
   bool sync = shared && everyThread && !across;
@@ -2078,16 +2087,23 @@ static bool collectDeviceCallees(Operation *op, ModuleOp module, bool inCallee,
 
 /// The device-image pipelines a kernel's declared `arch:` can select.
 ///
-/// `None` is not an error: a topology Vx cannot compile for still type-checks.
-/// A row and its pipeline land together: a row without one would clone a body
-/// into a `gpu.module` that nothing compiles (docs/gpu_backends.md, item 1).
-enum class DevicePipeline { None, Nvptx };
+/// `None` is not an error -- `applegpu` reaches its device through the plugin
+/// ABI, so a topology Vx cannot compile for still type-checks. A row and its
+/// pipeline land together: a row without one would clone a body into a
+/// `gpu.module` that nothing compiles (docs/gpu_backends.md, item 1).
+///
+/// `nvptx64` selects the NVVM pipeline in `deviceImageOf`, and `spirv64` the
+/// SPIR-V pipeline in `spirvImageOf`. The second is what the Intel Arc's
+/// machine file declares (fleet/arc-a770.vx).
+enum class DevicePipeline { None, Nvptx, Spirv };
 
 /// The pipeline a declared architecture names, `None` for one Vx has no
 /// pipeline for.
 static DevicePipeline pipelineForArch(StringRef arch) {
   if (arch == "nvptx64")
     return DevicePipeline::Nvptx;
+  if (arch == "spirv64")
+    return DevicePipeline::Spirv;
   return DevicePipeline::None;
 }
 
@@ -2124,6 +2140,8 @@ static StringRef archNameOfPipeline(DevicePipeline pipeline) {
   switch (pipeline) {
   case DevicePipeline::Nvptx:
     return "nvptx64";
+  case DevicePipeline::Spirv:
+    return "spirv64";
   case DevicePipeline::None:
     // A kernel with no pipeline gets no device twin, so no refusal names it as
     // one of the architectures a program compiled for.
@@ -2209,15 +2227,59 @@ static void forwardCapturedSpawnResults(ModuleOp module) {
 /// The most static `.shared` storage a CUDA kernel can declare.
 static constexpr int64_t kMaxStaticSharedBytes = 48 * 1024;
 
+/// Whether `op` mentions a memref whose elements are themselves memrefs -- a
+/// buffer holding a descriptor, which is the shape the AST codegen's output
+/// slot has (`memref<memref<2x2xf32>>`, which a kernel loads a descriptor out
+/// of). The SPIR-V pipeline's flat argument list is pointers and scalars and
+/// has no form for one.
+static bool mentionsMemrefCell(Operation *op) {
+  auto isCell = [](Type type) {
+    auto memref = dyn_cast<MemRefType>(type);
+    return memref && isa<BaseMemRefType>(memref.getElementType());
+  };
+  return llvm::any_of(op->getOperandTypes(), isCell) ||
+         llvm::any_of(op->getResultTypes(), isCell);
+}
+
+/// Whether `op` is a branch that hands an `index` value to its destination
+/// block, which is how the AST code generator writes a loop counter.
+///
+/// The SPIR-V conversion turns `index` into a 64-bit integer in the operations
+/// it rewrites, but not in a branch's block arguments, and refuses the module
+/// with "type mismatch for bb argument #0 of successor #0". The flat code
+/// generator counts its loops in `i32` and is not affected.
+static bool carriesIndexBlockArgument(Operation *op) {
+  auto branch = dyn_cast<BranchOpInterface>(op);
+  if (!branch)
+    return false;
+  for (Block *successor : branch->getSuccessors())
+    for (BlockArgument arg : successor->getArguments())
+      if (isa<IndexType>(arg.getType()))
+        return true;
+  return false;
+}
+
 /// Whether `op`, in the body of a placed region, can run on the device.
 /// A call or a constant table is added to `callees` when it can come along.
 static bool runsOnDevice(Operation *op, ModuleOp module,
-                         DeviceCallees &callees) {
+                         DevicePipeline pipeline, DeviceCallees &callees) {
   // Rewritten to `gpu.return` and `gpu.barrier` in the device clone (Vx#379).
   // A `vx.launch_dim` leaves the region when it is outlined.
   if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp,
           vx::LaneReduceOp, vx::LaneArgmaxOp>(op))
     return true;
+  // A memref CELL -- a buffer holding a memref descriptor, which is the shape
+  // the AST codegen's output slot has -- has no SPIR-V form: the flat argument
+  // list is pointers and scalars, so a descriptor read out of device memory
+  // would have to be rebuilt field by field. NVPTX compiles the shape, so this
+  // is the SPIR-V arm alone, and the region keeps the host path, which
+  // computes the right answer.
+  if (pipeline == DevicePipeline::Spirv && mentionsMemrefCell(op))
+    return false;
+  // A loop the AST code generator wrote as a branch with an `index` block
+  // argument cannot become a SPIR-V image (see `carriesIndexBlockArgument`).
+  if (pipeline == DevicePipeline::Spirv && carriesIndexBlockArgument(op))
+    return false;
   // A DYNAMIC shared-memory tile cannot become a `.shared` global (those
   // need a static shape), and leaving the alloca as-is ships a kernel that
   // faults: measured on an A100 as ILLEGAL_ADDRESS, because the stack slot
@@ -2243,7 +2305,8 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
 /// rules `materializeGpuKernels` applies to it later.
 static bool spawnRunsOnDevice(vx::SpawnOp spawn) {
   // No pipeline compiles the region, so it gets no device twin.
-  if (pipelineOfKernel(spawn, spawn.getTopology()) == DevicePipeline::None)
+  const DevicePipeline pipeline = pipelineOfKernel(spawn, spawn.getTopology());
+  if (pipeline == DevicePipeline::None)
     return false;
   auto module = spawn->getParentOfType<ModuleOp>();
   DeviceCallees callees;
@@ -2267,8 +2330,9 @@ static bool spawnRunsOnDevice(vx::SpawnOp spawn) {
                  ? WalkResult::advance()
                  : WalkResult::interrupt();
     }
-    return runsOnDevice(op, module, callees) ? WalkResult::advance()
-                                             : WalkResult::interrupt();
+    return runsOnDevice(op, module, pipeline, callees)
+               ? WalkResult::advance()
+               : WalkResult::interrupt();
   });
   return !r.wasInterrupted();
 }
@@ -3437,8 +3501,19 @@ struct ConvertVxToStandardPass
         return;
       // A kernel that hands back a value writes it into a host stack slot,
       // which a GPU cannot address; the runtime runs it on the host instead.
-      if (k->hasAttr("vx.result_slot"))
+      //
+      // The check above let this kernel through, so a pipeline had claimed it
+      // and a device image was expected. Say so rather than drop the twin in
+      // silence: without the message a program that returns a value out of a
+      // placed region quietly runs at home while its author believes it runs on
+      // the card.
+      if (k->hasAttr("vx.result_slot")) {
+        k.emitWarning()
+            << "this kernel hands a value back through a host stack slot, "
+               "which a device cannot address, and the region will run on "
+               "the host instead";
         return;
+      }
       // Only a body the device pipeline can actually compile.
       //
       // Two things get excluded, for two different reasons, and both are
@@ -3476,7 +3551,7 @@ struct ConvertVxToStandardPass
       // Outer ops first, so that a blocker is the op the program wrote, such
       // as a `linalg.matmul`, and not the `linalg.yield` inside it.
       k.getBody().walk<WalkOrder::PreOrder>([&](Operation *op) {
-        if (runsOnDevice(op, module, callees[k]))
+        if (runsOnDevice(op, module, pipelineOfKernel(k, topo), callees[k]))
           return WalkResult::advance();
         blocker = op;
         return WalkResult::interrupt();
@@ -3484,6 +3559,28 @@ struct ConvertVxToStandardPass
       if (!blocker) {
         kernels.push_back(k);
         return;
+      }
+      // A memref cell is the AST code generator's shape for a kernel's tensors:
+      // a buffer holding a descriptor, which the SPIR-V flat argument list has
+      // no form for. Say so rather than drop the twin in silence, because the
+      // region keeps the host path and its author would otherwise believe it
+      // runs on the card.
+      if (pipelineOfKernel(k, topo) == DevicePipeline::Spirv && blocker) {
+        if (mentionsMemrefCell(blocker)) {
+          k.emitWarning()
+              << "this kernel cannot become a SPIR-V device image because its "
+                 "body holds a memref of memrefs (`memref<memref<...>>`), and "
+                 "the region will run on the host instead";
+          return;
+        }
+        if (carriesIndexBlockArgument(blocker)) {
+          k.emitWarning()
+              << "this kernel cannot become a SPIR-V device image because a "
+                 "branch in its body carries an `index` value between blocks, "
+                 "and the SPIR-V conversion cannot take that, so the region "
+                 "will run on the host instead";
+          return;
+        }
       }
       // Say so, or a program meant for the GPU runs on the CPU in silence. A
       // `linalg` op is the matmul that the plugin sends to cuBLAS, on purpose.
@@ -3508,9 +3605,10 @@ struct ConvertVxToStandardPass
         signalPassFailure();
         return;
       }
-      // The driver prints the message as it is, with no source position.
-      k.emitWarning() << "Warning: a GPU region runs on the CPU, because the "
-                         "GPU code generator cannot take "
+      // The driver prints the message as it is, with no source position, and
+      // puts the word "Warning" in front of it.
+      k.emitWarning() << "a GPU region runs on the CPU, because the GPU code "
+                         "generator cannot take "
                       << what << ".";
     });
     if (kernels.empty())
@@ -4504,15 +4602,30 @@ struct FreeOpLowering : public OpRewritePattern<vx::FreeOp> {
   }
 };
 
+/// One device image, and the format name the payload reports for it.
+///
+/// `format` is what the payload's `format=` entry says: `ptx` for NVVM's text
+/// and `spirv` for the SPIR-V pipeline's binary. A text image rides in the
+/// payload's `image=` entry. A binary one cannot -- its first word holds NUL
+/// bytes, which would end that entry early -- and rides in the section after
+/// the text part (`vx_payload_section` in include/vx_hardware_runtime.h).
+struct DeviceImage {
+  std::string format;
+  std::string bytes;
+
+  /// Whether the image can ride in a NUL-terminated `image=` entry.
+  bool isText() const { return format == "ptx"; }
+};
+
 struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
   const LLVMTypeConverter &typeConverter;
   /// Kernel name -> device image, for the kernels that have one. Owned by the
   /// pass; empty for a host launch, and empty everywhere until #251.
-  const llvm::StringMap<std::string> *deviceImages;
+  const llvm::StringMap<DeviceImage> *deviceImages;
   const llvm::StringMap<int64_t> *dynamicShared;
 
   LaunchOpLowering(const LLVMTypeConverter &typeConverter, MLIRContext *context,
-                   const llvm::StringMap<std::string> *deviceImages,
+                   const llvm::StringMap<DeviceImage> *deviceImages,
                    const llvm::StringMap<int64_t> *dynamicShared)
       : OpRewritePattern<vx::LaunchOp>(context), typeConverter(typeConverter),
         deviceImages(deviceImages), dynamicShared(dynamicShared) {}
@@ -4638,24 +4751,27 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     //
     // A dispatch names a kernel; a plugin that does not recognise the name has
     // nothing to run, which is why a region that is not a classified matmul is
-    // refused rather than executed. This is the kernel, as PTX, so that a
-    // plugin which cannot recognise it can still load and launch it (#251).
+    // refused rather than executed. This is the kernel, as an image a plugin
+    // which cannot recognise it can still load and launch (#251).
     //
     // In the payload because that is the one channel that already reaches every
     // plugin. The alternative -- another argument on vx_plugin_dispatch_async
     // -- changes the ABI in five backends for a field four of them ignore, and
     // changes it again the first time something else needs carrying.
     //
-    // The blob's encoding survives it: PTX is text with no NUL, so it is one
-    // entry like any other and vx_payload_field walks past it unchanged.
-    // deviceImageOf checks that, rather than trusting it.
+    // `format=` says what the image is, and the answer decides how it rides:
+    // PTX is text with no NUL, so it is one `image=` entry like any other and
+    // vx_payload_field walks past it unchanged, while a binary image -- SPIR-V
+    // -- holds NUL bytes in its first word and rides in the section after the
+    // entries (vx_payload_section reads it). Neither producer writes a NUL it
+    // did not mean: deviceImageOf refuses one in PTX rather than trusting it.
     //
     // Last, because a reader dumping a payload should meet the small fields
     // first, and because this is the only entry measured in kilobytes.
     //
     // It costs a dispatch nothing: the blob is a constant global, one per
     // kernel, so a launch passes a pointer and a length however large the image
-    // is. It costs the object file one copy of the PTX in .rodata.
+    // is. It costs the object file one copy of the image in .rodata.
     // The bytes of dynamic shared memory that the launch passes.
     if (dynamicShared) {
       auto bytes = dynamicShared->find(callee);
@@ -4668,13 +4784,29 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
       auto image = deviceImages->find(callee);
       if (image != deviceImages->end()) {
         // What the image is, before the image itself: a dispatch library that
-        // meets a format it does not know refuses instead of guessing, and the
-        // section below is unreadable without knowing which it is.
-        payload += "format=ptx";
+        // meets a format it does not know refuses instead of guessing.
+        payload += "format=";
+        payload += image->second.format;
         payload.push_back('\0');
-        payload += "image=";
-        payload += image->second;
-        payload.push_back('\0');
+        if (image->second.isText()) {
+          // PTX is text with no NUL, so it is one entry like any other and
+          // vx_payload_field walks past it unchanged.
+          payload += "image=";
+          payload += image->second.bytes;
+          payload.push_back('\0');
+        } else {
+          // A binary image cannot be an entry: its first word holds NUL bytes,
+          // so it would end its own entry and every entry after it. It rides
+          // in the section instead -- an empty entry ending the text part, the
+          // image's length as a little-endian 64-bit number, then the bytes.
+          // See vx_payload_text_end and vx_payload_section in
+          // include/vx_hardware_runtime.h.
+          payload.push_back('\0');
+          uint64_t size = image->second.bytes.size();
+          for (int i = 0; i < 8; ++i)
+            payload.push_back(static_cast<char>((size >> (8 * i)) & 0xff));
+          payload += image->second.bytes;
+        }
       }
     }
 
@@ -5219,8 +5351,8 @@ static void markKernelBuffers(gpu::GPUModuleOp original, ModuleOp device) {
 /// is itself in the middle of converting. And a failure in here cannot then
 /// leave the host module half-lowered -- the copy is what gets damaged.
 ///
-/// Returns the empty string on failure, with `error` naming the stage.
-static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
+/// Returns an empty image on failure, with `error` naming the stage.
+static DeviceImage deviceImageOf(gpu::GPUModuleOp gpuModule,
                                  std::string &error) {
   MLIRContext *context = gpuModule.getContext();
 
@@ -5268,7 +5400,7 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
       if (failed(SymbolTable::replaceAllSymbolUses(
               f, StringAttr::get(context, fixed), copy))) {
         error = "renaming " + name.str() + " for PTX";
-        return "";
+        return {};
       }
       table.setSymbolName(f, fixed);
     }
@@ -5401,13 +5533,200 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
             " device objects for one target";
     return {};
   }
-  // A NUL would truncate the payload entry this ends up in, and PTX is text, so
-  // one cannot appear unless the serializer stopped producing assembly.
+  // PTX is text, so a NUL means the serializer stopped producing assembly. It
+  // is still worth saying rather than shipping: `format=ptx` promises a
+  // NUL-terminated entry, and an image that broke that promise would truncate
+  // its own payload.
   if (image.find('\0') != std::string::npos) {
     error = "the device image is not text (it contains a NUL)";
     return {};
   }
-  return image;
+  return DeviceImage{"ptx", std::move(image)};
+}
+
+/// The SPIR-V target, registered once per process.
+///
+/// Nothing registers a target for us: `llc` makes these same calls for itself.
+/// They exist only when the linked LLVM was built with the SPIR-V target, which
+/// is not every LLVM -- CI's builds the host target and NVPTX only, for
+/// `--emit-ptx` -- so `build.rs` defines `VX_LLVM_HAS_SPIRV_TARGET` only when
+/// `llvm-config --targets-built` lists it. Without the target there is nothing
+/// to register, and `serializeSpirv` says so instead of writing an image.
+static void registerSpirvTarget() {
+#ifdef VX_LLVM_HAS_SPIRV_TARGET
+  static const bool registered = [] {
+    LLVMInitializeSPIRVTargetInfo();
+    LLVMInitializeSPIRVTarget();
+    LLVMInitializeSPIRVTargetMC();
+    LLVMInitializeSPIRVAsmPrinter();
+    return true;
+  }();
+  (void)registered;
+#endif
+}
+
+/// Write an LLVM module out as a SPIR-V object, in this process.
+///
+/// This is what `llc -mtriple=spirv64-unknown-unknown -filetype=obj` does,
+/// with the target machine asked for directly instead of through a command
+/// line: the same backend, from the LLVM this compiler is already linked
+/// against, so producing an image needs no external tool.
+static LogicalResult serializeSpirv(std::unique_ptr<llvm::Module> module,
+                                    std::string &image, std::string &error) {
+  registerSpirvTarget();
+
+  const llvm::Triple triple("spirv64-unknown-unknown");
+  std::string lookupError;
+  const llvm::Target *target =
+      llvm::TargetRegistry::lookupTarget(triple, lookupError);
+  if (!target) {
+#ifdef VX_LLVM_HAS_SPIRV_TARGET
+    error = "the linked LLVM has no SPIR-V target: " + lookupError;
+#else
+    error =
+        "this LLVM was built without the SPIR-V target, so it cannot make a "
+        "device image";
+#endif
+    return failure();
+  }
+
+  llvm::TargetOptions options;
+  std::unique_ptr<llvm::TargetMachine> machine(target->createTargetMachine(
+      triple, /*CPU=*/"", /*Features=*/"", options, std::nullopt));
+  if (!machine) {
+    error = "the SPIR-V target machine could not be created";
+    return failure();
+  }
+
+  module->setTargetTriple(triple);
+  module->setDataLayout(machine->createDataLayout());
+
+  llvm::SmallVector<char, 0> buffer;
+  llvm::raw_svector_ostream stream(buffer);
+  llvm::legacy::PassManager codegen;
+  if (machine->addPassesToEmitFile(codegen, stream, nullptr,
+                                   llvm::CodeGenFileType::ObjectFile)) {
+    error = "the SPIR-V target cannot write an object file";
+    return failure();
+  }
+  codegen.run(*module);
+  if (buffer.empty()) {
+    error = "the SPIR-V backend produced an empty image";
+    return failure();
+  }
+  image.assign(buffer.begin(), buffer.end());
+  return success();
+}
+
+/// Compile a `gpu.module` to a SPIR-V module.
+///
+/// The pipeline `scripts/tools/spirv_module_check.sh` runs by hand on a `.vx`
+/// file, moved into the compiler. It is the route the slice-4 investigation
+/// established (docs/implementation_plans/xpu_backend_plan.md): the two
+/// SPIR-V-dialect conversions were measured and lost something Vx has -- a CFG,
+/// private stack slots, or the descriptor ABI, which
+/// `convert-gpu-to-spirv` replaces with an `rtarray` -- so the kernel goes
+/// through the LLVM dialect's SPIR-V flavour and LLVM's own SPIR-V backend
+/// instead.
+///
+/// Five stages, in this order, and the order is load-bearing:
+///
+/// 1. `mem2reg`, so the kernel's parallel-loop counters stop being
+///    `memref<i32>` slots. A slot is a memref value, and a memref value is what
+///    SPIR-V rejects (measured: 5480 bytes to 4328, and the storage-class error
+///    goes with the slots).
+/// 2. `flattenSpirvKernelArgs`, which gives the kernel the flat argument list
+///    the launch ABI already passes. This is the stage that makes the module
+///    valid: SPIR-V's typed pointers reject the descriptor struct a memref
+///    argument otherwise becomes.
+/// 3. `convert-gpu-to-llvm-spv` with 64-bit indices -- the ABI's sizes and
+///    strides are `i64`, and without the flag they come out `i32`.
+/// 4. The kernel moves up to module scope and the module names the SPIR-V
+///    triple. `gpu.module` is not translatable, and the target the serializers
+///    read is the module's.
+/// 5. `convert-to-llvm`, then the LLVM IR, then LLVM's SPIR-V backend writes
+///    the image -- in this process, from the LLVM already linked, so compiling
+///    a `.vx` file needs no external `llc`.
+///
+/// An empty image on failure, with `error` naming the stage.
+static DeviceImage spirvImageOf(gpu::GPUModuleOp gpuModule,
+                                std::string &error) {
+  MLIRContext *context = gpuModule.getContext();
+
+  // The device kernel's own dialect translations, exactly as `deviceImageOf`
+  // needs them: nothing registers them for us in this process.
+  DialectRegistry registry;
+  registerAllToLLVMIRTranslations(registry);
+  context->appendDialectRegistry(registry);
+
+  // A copy in a module of its own, for the same reason `deviceImageOf` takes
+  // one: these passes are not scoped to device code, and a failure in here must
+  // not leave the host program half-converted.
+  OwningOpRef<ModuleOp> device = ModuleOp::create(gpuModule.getLoc());
+  device->getBody()->push_back(gpuModule->clone());
+
+  PassManager promote(context, ModuleOp::getOperationName());
+  promote.addPass(createMem2Reg());
+  if (failed(promote.run(*device))) {
+    error = "the mem2reg pass failed";
+    return {};
+  }
+
+  auto kernels = device->getOps<gpu::GPUModuleOp>();
+  if (kernels.empty()) {
+    error = "the device module vanished in the pipeline";
+    return {};
+  }
+  if (failed(flattenSpirvKernelArgs(*kernels.begin(), error)))
+    return {};
+
+  PassManager toSpv(context, ModuleOp::getOperationName());
+  toSpv.nest<gpu::GPUModuleOp>().addPass(createSCFToControlFlowPass());
+  ConvertGpuOpsToLLVMSPVOpsOptions spvOptions;
+  spvOptions.use64bitIndex = true;
+  toSpv.nest<gpu::GPUModuleOp>().addPass(
+      createConvertGpuOpsToLLVMSPVOps(spvOptions));
+  if (failed(toSpv.run(*device))) {
+    error = "the gpu-to-llvm-spv pass failed";
+    return {};
+  }
+
+  // The kernels leave the gpu.module for module scope: a `gpu.module` is a
+  // symbol table of its own and is not translatable, and the target triple and
+  // data layout that decide how the module serializes are module attributes.
+  auto wrappers = device->getOps<gpu::GPUModuleOp>();
+  if (wrappers.empty()) {
+    error = "the device module vanished in the pipeline";
+    return {};
+  }
+  gpu::GPUModuleOp wrapper = *wrappers.begin();
+  device->getBody()->getOperations().splice(device->getBody()->end(),
+                                            wrapper.getBody()->getOperations());
+  wrapper.erase();
+  ModuleOp spirvModule = *device;
+  spirvModule->setAttr(LLVM::LLVMDialect::getTargetTripleAttrName(),
+                       StringAttr::get(context, "spirv64-unknown-unknown"));
+
+  PassManager toLLVM(context, ModuleOp::getOperationName());
+  toLLVM.addPass(createConvertToLLVMPass());
+  toLLVM.addPass(createReconcileUnrealizedCastsPass());
+  if (failed(toLLVM.run(*device))) {
+    error = "the convert-to-llvm pass failed";
+    return {};
+  }
+
+  llvm::LLVMContext llvmContext;
+  std::unique_ptr<llvm::Module> llvmModule =
+      translateModuleToLLVMIR(*device, llvmContext, "vx_spirv");
+  if (!llvmModule) {
+    error = "the SPIR-V module did not translate to LLVM IR";
+    return {};
+  }
+
+  std::string image;
+  if (failed(serializeSpirv(std::move(llvmModule), image, error)))
+    return {};
+  return DeviceImage{"spirv", std::move(image)};
 }
 
 // `VX_CTRL_LOCAL_DEVICE` in include/vx_hardware_runtime.h.
@@ -5715,7 +6034,7 @@ struct ConvertVxToLLVMPass
       getOperation().walk(
           [&](vx::KernelOp k) { kernelsByName[k.getSymName()] = k; });
 
-    llvm::StringMap<std::string> deviceImages;
+    llvm::StringMap<DeviceImage> deviceImages;
     llvm::StringMap<int64_t> dynamicShared;
     for (gpu::GPUModuleOp m : deviceModules) {
       // One image per module, and every kernel in it is an entry point: a
@@ -5780,8 +6099,12 @@ struct ConvertVxToLLVMPass
         return;
       }
 
+      // `--emit-ptx` writes a PTX image and the manifest of its kernels. A
+      // SPIR-V image is binary and has no file of its own yet, so this arm
+      // leaves it unexported rather than writing its bytes into a `.ptx`.
+      const bool exportingPtx = exporting && *pipeline == DevicePipeline::Nvptx;
       llvm::json::Array exported;
-      if (exporting) {
+      if (exportingPtx) {
         FailureOr<llvm::json::Array> kernels = nameKernelsForExport(module, m);
         if (failed(kernels)) {
           signalPassFailure();
@@ -5790,10 +6113,13 @@ struct ConvertVxToLLVMPass
         exported = std::move(*kernels);
       }
       std::string error;
-      std::string image;
+      DeviceImage image;
       switch (*pipeline) {
       case DevicePipeline::Nvptx:
         image = deviceImageOf(m, error);
+        break;
+      case DevicePipeline::Spirv:
+        image = spirvImageOf(m, error);
         break;
       case DevicePipeline::None:
         llvm_unreachable("the pipeline was checked to be present above");
@@ -5803,7 +6129,7 @@ struct ConvertVxToLLVMPass
       // for a reason that has nothing to do with the refusal -- the kernel is
       // missing, and the message says the region is unroutable. The compile is
       // the place where the cause is still legible.
-      if (image.empty()) {
+      if (image.bytes.empty()) {
         m.emitError("cannot compile this device kernel: ") << error;
         signalPassFailure();
         return;
@@ -5815,14 +6141,14 @@ struct ConvertVxToLLVMPass
         if (auto bytes = f->getAttrOfType<IntegerAttr>("vx.dynamic_shared"))
           dynamicShared[f.getName()] = bytes.getInt();
       });
-      if (exporting) {
+      if (exportingPtx) {
         llvm::json::Object manifest{{"target", deviceChip(m)},
                                     {"kernels", std::move(exported)}};
         std::string text;
         llvm::raw_string_ostream os(text);
         os << llvm::formatv("{0:2}", llvm::json::Value(std::move(manifest)));
         module->setAttr("vx.exported_ptx",
-                        StringAttr::get(&getContext(), image));
+                        StringAttr::get(&getContext(), image.bytes));
         module->setAttr("vx.exported_kernels",
                         StringAttr::get(&getContext(), text));
       }
