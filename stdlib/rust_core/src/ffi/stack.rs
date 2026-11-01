@@ -326,6 +326,11 @@ mod arch {
     }
 }
 
+// To run these tests for aarch64 on an x86_64 machine, install qemu-user and
+// gcc-aarch64-linux-gnu, and set:
+//   CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+//   CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER="qemu-aarch64 -L /usr/aarch64-linux-gnu"
+// Then run `cargo test --lib --target aarch64-unknown-linux-gnu stack` in stdlib/rust_core.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,10 +349,13 @@ mod tests {
         task_result: u64,
     }
 
-    /// Keeps six values live across each call of `between`. They need more registers than a
-    /// call may change, so a register that the switch does not keep changes the result.
-    fn six_values(rounds: u64, mut between: impl FnMut()) -> u64 {
+    /// Keeps six integers and eight floats live across each call of `between`. They need more
+    /// registers than a call may change, so a register that the switch does not keep changes
+    /// the result. The floats need d8 to d15 on aarch64.
+    fn live_values(rounds: u64, mut between: impl FnMut()) -> u64 {
         let (mut a, mut b, mut c, mut d, mut e, mut f) = (1u64, 2u64, 3u64, 5u64, 7u64, 11u64);
+        let (mut g, mut h, mut i, mut j) = (1.5f64, 2.5f64, 3.5f64, 4.5f64);
+        let (mut k, mut l, mut m, mut n) = (5.5f64, 6.5f64, 7.5f64, 8.5f64);
         for r in 0..rounds {
             a = a.wrapping_mul(31).wrapping_add(r);
             b = b.rotate_left(7) ^ a;
@@ -355,18 +363,29 @@ mod tests {
             d ^= c.rotate_right(11);
             e = e.wrapping_sub(d) ^ r;
             f = f.wrapping_mul(5).wrapping_add(e);
+            let t = (r % 7) as f64;
+            g = g * 0.75 + t;
+            h = h * 0.5 + g;
+            i = i * 0.25 + h;
+            j = j * 0.125 + i;
+            k = k * 0.75 - j;
+            l = l * 0.5 - k;
+            m = m * 0.25 - l;
+            n = n * 0.125 - m;
             between();
         }
+        let floats = [g, h, i, j, k, l, m, n].map(f64::to_bits);
         [a, b, c, d, e, f]
-            .iter()
-            .fold(0, |h, v| h.wrapping_mul(1_000_003) ^ v)
+            .into_iter()
+            .chain(floats)
+            .fold(0, |hash, v| hash.wrapping_mul(1_000_003) ^ v)
     }
 
     unsafe extern "C" fn count_rounds(arg: *mut u8) -> ! {
         let s = arg as *mut Switches;
         let local = 0u8;
         (*s).local_at = &local as *const u8 as usize;
-        (*s).task_result = six_values((*s).rounds, || switch(&raw mut (*s).task, (*s).test));
+        (*s).task_result = live_values((*s).rounds, || switch(&raw mut (*s).task, (*s).test));
         switch(&raw mut (*s).task, (*s).test);
         unreachable!("nothing continues a task that ended");
     }
@@ -388,7 +407,7 @@ mod tests {
         let p = &raw mut s;
         let test_result = unsafe {
             (*p).task = start_on(&stack, count_rounds, p as *mut u8);
-            six_values(rounds + 1, || switch(&raw mut (*p).test, (*p).task))
+            live_values(rounds + 1, || switch(&raw mut (*p).test, (*p).task))
         };
         assert!(
             (s.stack_bottom..s.stack_top).contains(&s.local_at),
@@ -396,12 +415,12 @@ mod tests {
         );
         assert_eq!(
             s.task_result,
-            six_values(rounds, || ()),
+            live_values(rounds, || ()),
             "the task lost a value"
         );
         assert_eq!(
             test_result,
-            six_values(rounds + 1, || ()),
+            live_values(rounds + 1, || ()),
             "the test lost a value"
         );
         pool.give_back(stack);
@@ -453,40 +472,59 @@ mod tests {
         );
         pool.give_back(stack);
     }
+
+    /// The rounding mode: x86_64 keeps it in MXCSR, and aarch64 in FPCR.
     #[cfg(target_arch = "x86_64")]
-    fn mxcsr() -> u32 {
-        let mut csr: u32 = 0;
-        unsafe { core::arch::asm!("stmxcsr [{}]", in(reg) &mut csr) };
-        csr
+    mod fp {
+        pub const DEFAULT: u64 = 0x1F80;
+        pub const ROUND_TOWARD_ZERO: u64 = 0x6000;
+
+        pub fn control() -> u64 {
+            let mut csr: u32 = 0;
+            unsafe { core::arch::asm!("stmxcsr [{}]", in(reg) &mut csr) };
+            csr as u64
+        }
+
+        pub fn set_control(csr: u64) {
+            let csr = csr as u32;
+            unsafe { core::arch::asm!("ldmxcsr [{}]", in(reg) &csr) };
+        }
     }
 
-    #[cfg(target_arch = "x86_64")]
-    fn set_mxcsr(csr: u32) {
-        unsafe { core::arch::asm!("ldmxcsr [{}]", in(reg) &csr) };
+    #[cfg(target_arch = "aarch64")]
+    mod fp {
+        pub const DEFAULT: u64 = 0;
+        pub const ROUND_TOWARD_ZERO: u64 = 0b11 << 22;
+
+        pub fn control() -> u64 {
+            let fpcr: u64;
+            unsafe { core::arch::asm!("mrs {}, fpcr", out(reg) fpcr) };
+            fpcr
+        }
+
+        pub fn set_control(fpcr: u64) {
+            unsafe { core::arch::asm!("msr fpcr, {}", in(reg) fpcr) };
+        }
     }
 
-    /// The MXCSR value that a new task saw, and the stack pointers of the switch.
-    #[cfg(target_arch = "x86_64")]
+    /// The rounding mode that a new task saw, and the stack pointers of the switch.
     struct Rounding {
         test: *mut u8,
         task: *mut u8,
-        task_saw: u32,
+        task_saw: u64,
     }
 
-    #[cfg(target_arch = "x86_64")]
     unsafe extern "C" fn read_rounding(arg: *mut u8) -> ! {
         let r = arg as *mut Rounding;
-        (*r).task_saw = mxcsr();
+        (*r).task_saw = fp::control();
         switch(&raw mut (*r).task, (*r).test);
         unreachable!("nothing continues a task that ended");
     }
 
-    /// The rounding mode is in MXCSR. A task starts with the default, and a switch keeps the
-    /// rounding mode of each stack.
-    #[cfg(target_arch = "x86_64")]
+    /// A task starts with the default rounding mode, and a switch keeps the rounding mode of
+    /// each stack.
     #[test]
     fn each_stack_keeps_its_own_rounding_mode() {
-        const ROUND_TOWARD_ZERO: u32 = 0x6000;
         let pool = StackPool::new(STACK_BYTES);
         let stack = pool.take().expect("a stack");
         let mut r = Rounding {
@@ -495,21 +533,22 @@ mod tests {
             task_saw: 0,
         };
         let p = &raw mut r;
-        let before = mxcsr();
-        set_mxcsr(before | ROUND_TOWARD_ZERO);
+        let before = fp::control();
+        fp::set_control(before | fp::ROUND_TOWARD_ZERO);
         unsafe {
             (*p).task = start_on(&stack, read_rounding, p as *mut u8);
             switch(&raw mut (*p).test, (*p).task);
         }
-        let after = mxcsr();
-        set_mxcsr(before);
+        let after = fp::control();
+        fp::set_control(before);
         assert_eq!(
-            r.task_saw, 0x1F80,
-            "a new task did not start with the default MXCSR"
+            r.task_saw,
+            fp::DEFAULT,
+            "a new task did not start with the default rounding mode"
         );
         assert_eq!(
             after,
-            before | ROUND_TOWARD_ZERO,
+            before | fp::ROUND_TOWARD_ZERO,
             "the switch back lost the rounding mode"
         );
         pool.give_back(stack);
