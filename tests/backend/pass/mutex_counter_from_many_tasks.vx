@@ -9,11 +9,8 @@
 // adds 1. The read and the write of the counter are not atomic, so without the lock two tasks
 // would read the same value and one add would get lost. The count must be 80000.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator runs each task to its end at its `spawn`. A task
-// that waits for a later task then waits forever.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}count 80000{{$}}
 
 import std::sync::mutex;

@@ -108,7 +108,7 @@ fn comptime_survivor(e: &crate::syntax::IfExpr) -> Option<&[Statement]> {
 /// Whether the body of a `tasks` block has a `return`, `break` or `continue` that leaves it.
 /// The checker puts a wait for the tasks before each one. A wait of a `tasks` block inside
 /// this one also counts.
-fn has_tasks_exit(stmts: &[Statement]) -> bool {
+pub(crate) fn has_tasks_exit(stmts: &[Statement]) -> bool {
     let mut found = false;
     crate::syntax::visit_exprs(stmts, &mut |e| found |= crate::syntax::is_tasks_wait(e));
     found
