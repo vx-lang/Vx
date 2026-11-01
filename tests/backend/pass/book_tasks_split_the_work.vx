@@ -1,0 +1,43 @@
+//===- book_tasks_split_the_work.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on tasks (www/book/src/tasks.md): two tasks each add half of a
+// vector that they borrow from `main`, and the block adds the two results.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}total 5050{{$}}
+
+// ANCHOR: program
+import std::vec;
+
+fn sum_range(v : &Vec<i64>, from : i32, to : i32) -> i64 {
+  let mut sum : i64 = 0;
+  for i in from..to {
+    sum = sum + *v.get_ref(i);
+  }
+  return sum;
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i64>::new();
+  for i in 1..101 {
+    v.push(i as i64);
+  }
+  let total = tasks {
+    let low = spawn {
+      sum_range(&v, 0, 50)
+    };
+    let high = spawn {
+      sum_range(&v, 50, 100)
+    };
+    low.join() + high.join()
+  };
+  println!("total {}", total);
+  return 0;
+}
+// ANCHOR_END: program

@@ -11,10 +11,14 @@
 // sent. `select` gives `Closed` only after the last task ends.
 //
 // REQUIRES: flat-codegen
-// Only because the older code generator runs each task to its end at its `spawn`. A task
-// that waits for a later task then waits forever.
+// Only because the older code generator cannot lower `Result<Selected<i64>, RecvError>`: its
+// two variants carry payloads of different kinds.
+//
+// The second RUN line runs the same program on the shared runtime, with one worker thread
+// for all the tasks.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}channel 0 count 1000 out of order 0{{$}}
 // CHECK: {{^}}channel 1 count 1000 out of order 0{{$}}
 // CHECK: {{^}}channel 2 count 1000 out of order 0{{$}}

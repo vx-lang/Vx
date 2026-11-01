@@ -14,10 +14,14 @@
 // and `waiter` receives it: the second block gives 5 + 1.
 //
 // REQUIRES: flat-codegen
-// Only because the older code generator runs each task to its end at its `spawn`. A task
-// that waits for a later task then waits forever.
+// Only because the older code generator runs the tasks of a `tasks` block that can fail one
+// after another, at their `spawn`s. A task that waits for a later task then waits forever.
+//
+// The second RUN line runs the same program on the shared runtime, with one worker thread
+// for all the tasks.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}the waiter saw Cancelled{{$}}
 // CHECK: {{^}}the block failed with 3{{$}}
 // CHECK: {{^}}the block gave 6{{$}}

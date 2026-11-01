@@ -2163,6 +2163,8 @@ fn get_optimization_pipeline(
         // A function the program defines is not exported, so a `fn write` cannot replace
         // libc's `write` for the runtime library. See the pass.
         passes.push("vx-hide-program-symbols".to_string());
+        // A frame larger than a page cannot reach past the guard page of a stack.
+        passes.push("vx-probe-stack".to_string());
         // Each relaxed atomic read becomes an acquire read, unless `-fweak-relaxed-atomics`.
         passes.push("vx-order-relaxed-reads".to_string());
     }

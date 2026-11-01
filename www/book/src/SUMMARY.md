@@ -14,6 +14,7 @@
 - [Vx for Rust programmers](for-rust-programmers.md)
 - [Control flow](control-flow.md)
 - [Ownership and borrowing](ownership.md)
+- [Tasks and channels](tasks.md)
 - [Generics and traits](generics.md)
 - [Compile-time evaluation](comptime.md)
 - [Contracts and verification](contracts.md)

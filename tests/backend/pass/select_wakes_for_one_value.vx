@@ -10,8 +10,8 @@
 // returns, and that one event must wake it. A lost wake would hang the test.
 //
 // REQUIRES: flat-codegen
-// Only because the older code generator runs each task to its end at its `spawn`. A task
-// that waits for a later task then waits forever.
+// Only because the older code generator cannot lower `Result<Selected<i64>, RecvError>`: its
+// two variants carry payloads of different kinds.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}sum 4501500{{$}}

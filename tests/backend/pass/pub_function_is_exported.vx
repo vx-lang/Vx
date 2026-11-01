@@ -13,8 +13,8 @@
 // RUN: vxc %s --emit-llvm --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=W1002
 // EXPECT: 1
 
-// CHECK-DAG: llvm.func @add_one({{.*}}) -> i32 {
-// CHECK-DAG: llvm.func hidden @increment({{.*}}) -> i32 attributes {dso_local} {
+// CHECK-DAG: llvm.func @add_one({{.*}}) -> i32 attributes {passthrough = {{\[\[}}"probe-stack", "inline-asm"{{\]\]}}} {
+// CHECK-DAG: llvm.func hidden @increment({{.*}}) -> i32 attributes {dso_local, passthrough = {{\[\[}}"probe-stack", "inline-asm"{{\]\]}}} {
 
 pub fn add_one(x : i32) -> i32 {
   return increment(x);
