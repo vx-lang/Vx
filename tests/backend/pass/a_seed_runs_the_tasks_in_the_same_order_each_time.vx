@@ -1,0 +1,75 @@
+//===- a_seed_runs_the_tasks_in_the_same_order_each_time.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Three tasks send two numbers each to a channel with room for one value. So the tasks often
+// wait for room, and the order of the numbers depends on which task runs first.
+//
+// With VX_TASK_SEED, all tasks run on one thread, and the seed picks the next task. The same
+// seed gives the same order each time. The SEED1 lines check the order with seed 1, on two
+// runs. The SEED2 lines check that seed 2 gives another order. A new runtime or channel can
+// change these orders.
+//
+// The last two RUN lines check the messages for a seed that is not a number, and for a seed
+// together with a count of worker threads.
+//
+// RUN: env VX_TASK_SEED=1 vxc %s 2>&1 | FileCheck %s --check-prefix=SEED1
+// RUN: env VX_TASK_SEED=1 vxc %s 2>&1 | FileCheck %s --check-prefix=SEED1
+// RUN: env VX_TASK_SEED=2 vxc %s 2>&1 | FileCheck %s --check-prefix=SEED2
+// RUN: env VX_TASK_SEED=one not vxc %s 2>&1 | FileCheck %s --check-prefix=WORD
+// RUN: env VX_TASK_SEED=1 VX_TASK_WORKERS=2 not vxc %s 2>&1 | FileCheck %s --check-prefix=WORKERS
+//
+// SEED1: {{^}}got 31{{$}}
+// SEED1-NEXT: {{^}}got 32{{$}}
+// SEED1-NEXT: {{^}}got 21{{$}}
+// SEED1-NEXT: {{^}}got 11{{$}}
+// SEED1-NEXT: {{^}}got 22{{$}}
+// SEED1-NEXT: {{^}}got 12{{$}}
+//
+// SEED2: {{^}}got 21{{$}}
+// SEED2-NEXT: {{^}}got 22{{$}}
+// SEED2-NEXT: {{^}}got 31{{$}}
+// SEED2-NEXT: {{^}}got 32{{$}}
+// SEED2-NEXT: {{^}}got 11{{$}}
+// SEED2-NEXT: {{^}}got 12{{$}}
+//
+// WORD: vx: VX_TASK_SEED must be a number, not 'one'
+// WORKERS: vx: VX_TASK_SEED runs the tasks on one thread, so VX_TASK_WORKERS must not be set
+
+import core::mem;
+import std::sync::channel;
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(1);
+  tasks {
+    let one : i64 = 1;
+    for task in one..4 {
+      let t = tx.clone();
+      spawn {
+        for k in one..3 {
+          match t.send(task * 10 + k) {
+            Result<void, SendError<i64>>::Ok() => {}
+            Result<void, SendError<i64>>::Err(_) => {
+              panic("the receiver is gone");
+            }
+          }
+        }
+      };
+    }
+    drop(tx);
+    loop {
+      match rx.recv() {
+        Result<i64, RecvError>::Ok(v) => {
+          println!("got {}", v);
+        }
+        Result<i64, RecvError>::Err(_) => {
+          break;
+        }
+      }
+    }
+  };
+  return 0;
+}

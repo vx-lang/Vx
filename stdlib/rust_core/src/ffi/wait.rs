@@ -85,6 +85,13 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
         deadlock::watch();
     }
     if fiber.is_null() {
+        // With a seed, this thread runs the ready tasks. The check is under the lock of the
+        // bucket, and a task that gets ready wakes each bucket, so no wake is lost.
+        if let Some(sched) = sched::scheduler_here().filter(|s| s.has_ready()) {
+            drop(fibers);
+            sched.run_one_here();
+            return;
+        }
         match left {
             Some(left) => drop(
                 b.cond

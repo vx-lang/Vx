@@ -102,6 +102,8 @@ struct Worker {
 thread_local! {
     /// The worker that this thread runs, or null on a thread that is not a worker.
     static WORKER: Cell<*mut Worker> = const { Cell::new(std::ptr::null_mut()) };
+    /// The scheduler with a seed whose tasks this thread runs.
+    static HERE: Cell<Option<&'static Scheduler>> = const { Cell::new(None) };
     /// The Vx functions that foreign code called on this thread and that did not return yet.
     static CALLBACKS: Cell<u32> = const { Cell::new(0) };
 }
@@ -122,6 +124,11 @@ pub(crate) struct Scheduler {
     max_workers: usize,
     /// The monitor wrote the message about the limit.
     told_limit: AtomicBool,
+    /// With a seed, the scheduler has no workers. The thread that waits runs the ready tasks,
+    /// and it picks each one at random from this state.
+    random: Option<AtomicU64>,
+    /// A thread took the scheduler with a seed as its own.
+    has_home: AtomicBool,
 }
 
 impl Scheduler {
@@ -129,7 +136,7 @@ impl Scheduler {
     /// `max_workers`. It lives until the program ends.
     pub(crate) fn start(workers: usize, max_workers: usize) -> &'static Scheduler {
         assert!(workers > 0 && max_workers >= workers);
-        let sched = Scheduler::without_workers(max_workers);
+        let sched = Scheduler::without_workers(max_workers, None);
         for _ in 0..workers {
             sched.add_worker();
         }
@@ -139,7 +146,7 @@ impl Scheduler {
         sched
     }
 
-    fn without_workers(max_workers: usize) -> &'static Scheduler {
+    fn without_workers(max_workers: usize, seed: Option<u64>) -> &'static Scheduler {
         Box::leak(Box::new(Scheduler {
             ready: Mutex::new(VecDeque::new()),
             has_ready: Condvar::new(),
@@ -150,7 +157,33 @@ impl Scheduler {
             workers: AtomicUsize::new(0),
             max_workers,
             told_limit: AtomicBool::new(false),
+            random: seed.map(AtomicU64::new),
+            has_home: AtomicBool::new(false),
         }))
+    }
+
+    /// A scheduler with no workers, whose tasks run on the thread that waits for them. The same
+    /// seed gives the same order of tasks each time. A task that blocks in a foreign call blocks
+    /// all of them.
+    /// The first thread that starts a `tasks` block on it runs its tasks.
+    pub(crate) fn start_with_seed(seed: u64) -> &'static Scheduler {
+        Scheduler::without_workers(0, Some(seed))
+    }
+
+    /// With a seed: this thread runs the tasks, when no other thread does.
+    pub(crate) fn take_home(&'static self) {
+        if self.random.is_some() && !self.has_home.swap(true, Ordering::SeqCst) {
+            HERE.with(|h| h.set(Some(self)));
+        }
+    }
+
+    /// The next number of a splitmix64 sequence.
+    fn next_random(random: &AtomicU64) -> u64 {
+        let mut z = random.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::SeqCst);
+        z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
     }
 
     fn add_worker(&'static self) {
@@ -186,12 +219,22 @@ impl Scheduler {
     fn push(&self, fiber: FiberRef) {
         self.ready.lock().unwrap().push_back(fiber);
         self.has_ready.notify_one();
+        // The thread that runs the tasks of a seed can wait on any word.
+        if self.random.is_some() {
+            crate::ffi::wait::wake_every_thread();
+        }
     }
 
     fn pop(&self) -> FiberRef {
         let mut ready = self.ready.lock().unwrap();
         loop {
-            if let Some(fiber) = ready.pop_front() {
+            let next = match &self.random {
+                Some(random) if !ready.is_empty() => {
+                    (Scheduler::next_random(random) % ready.len() as u64) as usize
+                }
+                _ => 0,
+            };
+            if let Some(fiber) = ready.remove(next) {
                 self.switches.fetch_add(1, Ordering::SeqCst);
                 self.running.fetch_add(1, Ordering::SeqCst);
                 return fiber;
@@ -213,38 +256,63 @@ impl Scheduler {
         let worker: *mut Worker = &raw mut worker;
         WORKER.with(|w| w.set(worker));
         loop {
-            let FiberRef(fiber) = self.pop();
-            unsafe {
-                (*fiber).state.store(RUNNING, Ordering::SeqCst);
-                (*fiber).locals.swap_with_thread();
-                (*worker).running = fiber;
-                stack::switch(&raw mut (*worker).sp, (*fiber).sp);
-                (*fiber).locals.swap_with_thread();
-                match (*worker).why {
-                    Why::Parked => {
-                        let parked = (*fiber).state.compare_exchange(
-                            PARKING,
-                            PARKED,
-                            Ordering::SeqCst,
-                            Ordering::SeqCst,
-                        );
-                        // A wake came before the switch, and it left the fiber to this worker.
-                        if parked.is_err() {
-                            self.push(FiberRef(fiber));
-                        }
-                    }
-                    Why::Ended => {
-                        self.stacks.give_back((*fiber).stack.take().unwrap());
-                        // After this store, a join can free the fiber. Its address is all that
-                        // the wake needs.
-                        let done = &raw const (*fiber).done as *const i64;
-                        (*fiber).done.store(1, Ordering::SeqCst);
-                        crate::ffi::wait::vx_wake_all(done);
-                    }
+            let fiber = self.pop();
+            unsafe { self.run(worker, fiber) };
+        }
+    }
+
+    /// Runs `fiber` on this thread until it parks or ends.
+    unsafe fn run(&'static self, worker: *mut Worker, FiberRef(fiber): FiberRef) {
+        (*fiber).state.store(RUNNING, Ordering::SeqCst);
+        (*fiber).locals.swap_with_thread();
+        (*worker).running = fiber;
+        stack::switch(&raw mut (*worker).sp, (*fiber).sp);
+        (*fiber).locals.swap_with_thread();
+        match (*worker).why {
+            Why::Parked => {
+                let parked = (*fiber).state.compare_exchange(
+                    PARKING,
+                    PARKED,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
+                // A wake came before the switch, and it left the fiber to this worker.
+                if parked.is_err() {
+                    self.push(FiberRef(fiber));
                 }
             }
-            self.running.fetch_sub(1, Ordering::SeqCst);
+            Why::Ended => {
+                self.stacks.give_back((*fiber).stack.take().unwrap());
+                // After this store, a join can free the fiber. Its address is all that the wake
+                // needs.
+                let done = &raw const (*fiber).done as *const i64;
+                (*fiber).done.store(1, Ordering::SeqCst);
+                crate::ffi::wait::vx_wake_all(done);
+            }
         }
+        self.running.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn has_ready(&self) -> bool {
+        !self.ready.lock().unwrap().is_empty()
+    }
+
+    /// Runs one ready task on this thread, which is not a worker, until the task parks or ends.
+    /// Only a scheduler with a seed does this, and only on its own thread. The caller saw a ready
+    /// task.
+    pub(crate) fn run_one_here(&'static self) {
+        assert!(self.random.is_some() && current_fiber().is_null());
+        // Only this thread takes tasks off the queue, so it still has one.
+        let fiber = self.pop();
+        let mut worker = Worker {
+            sp: std::ptr::null_mut(),
+            running: std::ptr::null_mut(),
+            why: Why::Ended,
+        };
+        let worker: *mut Worker = &raw mut worker;
+        WORKER.with(|w| w.set(worker));
+        unsafe { self.run(worker, fiber) };
+        WORKER.with(|w| w.set(std::ptr::null_mut()));
     }
 
     /// True when no fiber runs and none is ready. Each fiber that did not end then waits on a
@@ -314,9 +382,32 @@ const MAX_WORKERS: usize = 256;
 
 /// The scheduler of the program, when VX_TASK_RUNTIME=shared. It starts with VX_TASK_WORKERS
 /// worker threads, or one for each CPU. The monitor adds workers up to VX_TASK_MAX_WORKERS.
+///
+/// With VX_TASK_SEED, the tasks run on the first thread that starts a `tasks` block, in an order
+/// that the seed gives. The deadlock watcher can make the scheduler first, so this is not the
+/// thread that makes it.
 pub(crate) fn program_scheduler() -> Option<&'static Scheduler> {
     static SCHED: OnceLock<Option<&'static Scheduler>> = OnceLock::new();
     *SCHED.get_or_init(|| {
+        if let Ok(seed) = std::env::var("VX_TASK_SEED") {
+            let Ok(seed) = seed.parse::<u64>() else {
+                eprintln!("vx: VX_TASK_SEED must be a number, not '{seed}'");
+                std::process::abort();
+            };
+            if std::env::var("VX_TASK_RUNTIME").is_ok_and(|v| v != "shared") {
+                eprintln!("vx: VX_TASK_SEED needs VX_TASK_RUNTIME=shared, or no VX_TASK_RUNTIME");
+                std::process::abort();
+            }
+            for other in ["VX_TASK_WORKERS", "VX_TASK_MAX_WORKERS"] {
+                if std::env::var(other).is_ok() {
+                    eprintln!(
+                        "vx: VX_TASK_SEED runs the tasks on one thread, so {other} must not be set"
+                    );
+                    std::process::abort();
+                }
+            }
+            return Some(Scheduler::start_with_seed(seed));
+        }
         let shared = std::env::var("VX_TASK_RUNTIME").is_ok_and(|v| v == "shared");
         shared.then(|| {
             let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
@@ -370,6 +461,16 @@ pub(crate) fn fiber_that_can_park() -> *mut Fiber {
         std::ptr::null_mut()
     } else {
         current_fiber()
+    }
+}
+
+/// The scheduler with a seed whose tasks this thread runs when it waits.
+pub(crate) fn scheduler_here() -> Option<&'static Scheduler> {
+    // A task in a callback waits on the thread, and it cannot run other tasks.
+    if current_fiber().is_null() {
+        HERE.with(|h| h.get())
+    } else {
+        None
     }
 }
 
@@ -952,7 +1053,7 @@ mod tests {
     #[test]
     fn all_parked_is_false_while_a_task_is_ready() {
         // No worker takes the task off the queue.
-        let sched = Scheduler::without_workers(1);
+        let sched = Scheduler::without_workers(1, None);
         let s = Spin {
             gate: AtomicI64::new(0),
             waits: AtomicI64::new(0),
@@ -1049,5 +1150,110 @@ mod tests {
             );
             vx_tasks_end(group);
         }
+    }
+
+    struct Order {
+        tasks: usize,
+        arrived: AtomicUsize,
+        gate: AtomicI64,
+        seen: Mutex<Vec<usize>>,
+        threads: Mutex<HashSet<std::thread::ThreadId>>,
+    }
+
+    struct Numbered {
+        order: *const Order,
+        number: usize,
+    }
+
+    /// Notes its number, waits until each task arrived, and notes its number again.
+    extern "C" fn arrive_then_note(env: *mut u8) {
+        let n = unsafe { &**(env as *const *const Numbered) };
+        let o = unsafe { &*n.order };
+        o.threads
+            .lock()
+            .unwrap()
+            .insert(std::thread::current().id());
+        o.seen.lock().unwrap().push(n.number);
+        if o.arrived.fetch_add(1, Ordering::SeqCst) + 1 == o.tasks {
+            open(&o.gate);
+        } else {
+            wait_for(&o.gate);
+        }
+        o.seen.lock().unwrap().push(100 + n.number);
+    }
+
+    /// The order in which 8 tasks run with `seed`, and the threads that they ran on.
+    fn order_with_seed(seed: u64) -> (Vec<usize>, HashSet<std::thread::ThreadId>) {
+        // The scheduler comes from this thread, as the deadlock watcher can make it. The thread
+        // that starts the `tasks` block runs the tasks.
+        let sched = Scheduler::start_with_seed(seed);
+        let order = std::thread::spawn(move || {
+            let o = Order {
+                tasks: 8,
+                arrived: AtomicUsize::new(0),
+                gate: AtomicI64::new(0),
+                seen: Mutex::new(Vec::new()),
+                threads: Mutex::new(HashSet::new()),
+            };
+            let numbered: Vec<Numbered> = (0..o.tasks)
+                .map(|number| Numbered { order: &o, number })
+                .collect();
+            let group = tasks_begin(Some(sched));
+            unsafe {
+                for n in &numbered {
+                    vx_task_start(group, arrive_then_note, env_with(n as *const Numbered));
+                }
+                vx_tasks_end(group);
+            }
+            let mut threads = o.threads.into_inner().unwrap();
+            threads.insert(std::thread::current().id());
+            (o.seen.into_inner().unwrap(), threads)
+        });
+        order.join().unwrap()
+    }
+
+    #[test]
+    fn a_seed_gives_the_same_order_each_time() {
+        let _watchdog = Watchdog::new("a_seed_gives_the_same_order_each_time");
+        let (first, first_threads) = order_with_seed(1);
+        let (again, _) = order_with_seed(1);
+        let (other, _) = order_with_seed(2);
+        assert_eq!(first.len(), 16);
+        assert_eq!(first, again, "the same seed gave another order");
+        assert_ne!(first, other, "two seeds gave the same order");
+        assert_eq!(
+            first_threads.len(),
+            1,
+            "a task ran on a thread other than the one that waits"
+        );
+    }
+
+    extern "C" fn wait_for_the_timer(env: *mut u8) {
+        let word = unsafe { &**(env as *const *const AtomicI64) };
+        let deadline = crate::ffi::wait::vx_clock_ns() + 20_000_000;
+        while crate::ffi::wait::vx_clock_ns() < deadline {
+            unsafe { crate::ffi::wait::vx_wait_while_until(word.as_ptr(), 0, deadline, 0) };
+        }
+    }
+
+    #[test]
+    fn a_task_that_the_timer_wakes_runs_with_a_seed() {
+        // The timer thread makes the task ready. The thread that waits must see it.
+        let _watchdog = Watchdog::new("a_task_that_the_timer_wakes_runs_with_a_seed");
+        std::thread::spawn(|| {
+            let sched = Scheduler::start_with_seed(1);
+            let word = AtomicI64::new(0);
+            let group = tasks_begin(Some(sched));
+            unsafe {
+                vx_task_start(
+                    group,
+                    wait_for_the_timer,
+                    env_with(&word as *const AtomicI64),
+                );
+                vx_tasks_end(group);
+            }
+        })
+        .join()
+        .unwrap();
     }
 }
