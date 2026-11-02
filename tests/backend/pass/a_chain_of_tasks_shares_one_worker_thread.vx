@@ -8,16 +8,16 @@
 // Two tasks wait for each other. The first task sends 1 to 1000 to the second task, which
 // sends each value times 2 to the code of the block. Each channel has room for one value.
 //
-// The second RUN line runs both tasks on one worker thread of the shared runtime. When the
-// first task waits for room, it must park and give the thread to the second task. A wait that
-// blocked the thread would hang here.
+// The second RUN line runs both tasks on one worker thread of the shared runtime, and lets
+// the runtime add no other worker. When the first task waits for room, it must park and give
+// the thread to the second task. A wait that blocked the thread would hang here.
 //
 // REQUIRES: flat-codegen
 // Only because the older code generator runs each task to its end at its `spawn`. A task
 // that waits for a later task then waits forever.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
-// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 VX_TASK_MAX_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}count 1000 sum 1001000{{$}}
 
 import std::sync::channel;
