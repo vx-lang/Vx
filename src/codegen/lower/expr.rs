@@ -2026,8 +2026,8 @@ impl<'c> LowerToMelior<'c> for UnsafeBlockExpr {
 
 /// A `tasks` block or a task body. It becomes a `vx.spawn` region with the topology of its kind,
 /// as on the flat code generator, and `VxLowering` runs each task on a thread of its own.
-/// A `tasks` block that can fail, or that a `return`, `break` or `continue` leaves, still runs
-/// its tasks one after another at their `spawn`s.
+/// A `tasks` block that can fail still runs its tasks one after another at their `spawn`s. So
+/// does a block with a value or a return slot that a `return`, `break` or `continue` leaves.
 fn lower_task_block<'c>(
     this: &UnsafeBlockExpr,
     kind: syntax::TaskBlockKind,
@@ -2048,21 +2048,245 @@ fn lower_task_block<'c>(
                     ))
                 })
                 .collect();
-            let inline = this.fails_as.is_some()
-                || crate::hir::flatten::has_tasks_exit(&this.stmts)
+            let exits = crate::hir::flatten::has_tasks_exit(&this.stmts)
                 || leaves_the_block(&this.stmts, false)
                 || leaves_the_block(&tail, false);
+            let inline = this.fails_as.is_some() || (exits && !can_leave_a_region(this, gen));
             (!inline, std::mem::replace(&mut gen.tasks_inline, inline))
         }
         syntax::TaskBlockKind::Spawn => (!gen.tasks_inline, gen.tasks_inline),
     };
-    let lowered = if region {
-        lower_task_region(this, kind, gen, block)
-    } else {
+    let lowered = if !region {
         lower_unsafe_block(this, gen, block)
+    } else if kind == syntax::TaskBlockKind::Tasks {
+        lower_tasks_block_with_exits(this, gen, block)
+    } else {
+        lower_task_region(this, kind, gen, block)
     };
     gen.tasks_inline = outer_inline;
     lowered
+}
+
+/// What an exit from a `tasks` block does after the block ends.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum TasksExitKind {
+    Return,
+    Break,
+    Continue,
+}
+
+/// A `tasks` block that runs on threads. An exit from it writes its number to `code` and leaves
+/// the region. After the region, the code reads `code` and does what the exit does. It is 0 when
+/// the region ends at its end. The flat code generator does the same.
+pub(crate) struct TasksExits<'c> {
+    /// `break_blocks.len()` at the block: a `break` of one of these loops leaves the block.
+    loops: usize,
+    /// A `memref<i32>`.
+    code: Value<'c, 'c>,
+    /// A slot for the value of a `return`, in a function that returns one.
+    ret: Option<Value<'c, 'c>>,
+    /// Each exit, in the order of their numbers, from 1.
+    exits: Vec<TasksExitKind>,
+}
+
+/// Whether a `tasks` block with an exit can still run its tasks on threads. Its exits must
+/// keep a value of the function in a slot, and the block itself must have no value.
+fn can_leave_a_region(this: &UnsafeBlockExpr, gen: &MeliorGenerator) -> bool {
+    let wants_value = this.ret.is_some() && gen.expected_type != Some(gen.none_ty);
+    let scalar_return = gen.current_return_type.is_none_or(|t| {
+        let s = t.to_string();
+        t == gen.none_ty
+            || matches!(s.as_str(), "f16" | "bf16" | "f32" | "f64")
+            || s == "index"
+            || (s.starts_with('i') && s[1..].parse::<u32>().is_ok())
+    });
+    !wants_value && !gen.in_spawn && gen.current_return_slot.is_none() && scalar_return
+}
+
+/// Whether a `return` (`loop_exit` false), or a `break` or `continue` of the innermost loop
+/// (true), here leaves the region of a `tasks` block.
+pub(crate) fn leaving_tasks(gen: &MeliorGenerator, loop_exit: bool) -> bool {
+    gen.tasks_exits
+        .last()
+        .is_some_and(|t| !loop_exit || gen.break_blocks.len() <= t.loops)
+}
+
+fn constant_i32<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    value: i64,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let op = OperationBuilder::new("arith.constant", gen.loc())
+        .add_results(&[gen.i32_ty])
+        .add_attributes(&[(
+            Identifier::new(gen.context, "value"),
+            IntegerAttribute::new(gen.i32_ty, value).into(),
+        )])
+        .build()?;
+    Ok(block.append_operation(op).result(0)?.into())
+}
+
+/// Leaves the region of the innermost `tasks` block by the exit `kind`.
+pub(crate) fn emit_tasks_exit<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    kind: TasksExitKind,
+) -> Result<(), LowerError> {
+    let t = gen
+        .tasks_exits
+        .last_mut()
+        .expect("an exit leaves an open tasks block");
+    t.exits.push(kind);
+    let (slot, number) = (t.code, t.exits.len() as i64);
+    let number = constant_i32(gen, block, number)?;
+    block.append_operation(
+        OperationBuilder::new("memref.store", gen.loc())
+            .add_operands(&[number, slot])
+            .build()?,
+    );
+    block.append_operation(OperationBuilder::new("vx.yield", gen.loc()).build()?);
+    Ok(())
+}
+
+/// The function returns `val`. In the region of a `tasks` block, `val` waits in a slot until the
+/// block ends.
+pub(crate) fn emit_func_return<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    val: Option<Value<'c, 'c>>,
+) -> Result<(), LowerError> {
+    if !leaving_tasks(gen, false) {
+        let ret = OperationBuilder::new("func.return", gen.loc())
+            .add_operands(val.as_slice())
+            .build()?;
+        block.append_operation(ret);
+        return Ok(());
+    }
+    let slot = gen.tasks_exits.last().and_then(|t| t.ret);
+    match (val, slot) {
+        (Some(val), Some(slot)) => {
+            block.append_operation(
+                OperationBuilder::new("memref.store", gen.loc())
+                    .add_operands(&[val, slot])
+                    .build()?,
+            );
+        }
+        (None, _) => {}
+        (Some(_), None) => panic!("a tasks block with a return of a value has a slot for it"),
+    }
+    emit_tasks_exit(gen, block, TasksExitKind::Return)
+}
+
+/// A `tasks` block that runs on threads, with the slots and the code after the region that its
+/// exits need.
+fn lower_tasks_block_with_exits<'c>(
+    this: &UnsafeBlockExpr,
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let alloca = |gen: &MeliorGenerator<'c>, ty: Type<'c>| -> Result<Value<'c, 'c>, LowerError> {
+        let memref_ty = format!("memref<{ty}>");
+        let memref_ty = Type::parse(gen.context, &memref_ty)
+            .ok_or_else(|| LowerError::ParseType(memref_ty.clone()))?;
+        let op = OperationBuilder::new("memref.alloca", gen.loc())
+            .add_results(&[memref_ty])
+            .build()?;
+        Ok(block.append_operation(op).result(0)?.into())
+    };
+    let code = alloca(gen, gen.i32_ty)?;
+    let zero = constant_i32(gen, block, 0)?;
+    block.append_operation(
+        OperationBuilder::new("memref.store", gen.loc())
+            .add_operands(&[zero, code])
+            .build()?,
+    );
+    let ret = match gen.current_return_type {
+        Some(t) if t != gen.none_ty => Some(alloca(gen, t)?),
+        _ => None,
+    };
+    gen.tasks_exits.push(TasksExits {
+        loops: gen.break_blocks.len(),
+        code,
+        ret,
+        exits: Vec::new(),
+    });
+    let lowered = lower_task_region(this, syntax::TaskBlockKind::Tasks, gen, block);
+    let exits = gen.tasks_exits.pop().expect("pushed above").exits;
+    let (val, ty, mut block) = lowered?;
+    // The tasks ended. Each exit that left the region goes on here.
+    for (i, kind) in exits.into_iter().enumerate() {
+        let taken = block.append_operation(
+            OperationBuilder::new("memref.load", gen.loc())
+                .add_operands(&[code])
+                .add_results(&[gen.i32_ty])
+                .build()?,
+        );
+        let number = constant_i32(gen, block, i as i64 + 1)?;
+        let cond = block.append_operation(
+            OperationBuilder::new("arith.cmpi", gen.loc())
+                .add_operands(&[taken.result(0)?.into(), number])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "predicate"),
+                    IntegerAttribute::new(gen.i64_ty, 0).into(),
+                )])
+                .add_results(&[gen.i1_ty])
+                .build()?,
+        );
+        let region = block
+            .parent_region()
+            .expect("a block being lowered into always sits in a region");
+        let exit_b = region.append_block(melior::ir::Block::new(&[]));
+        let next_b = region.append_block(melior::ir::Block::new(&[]));
+        block.append_operation(
+            OperationBuilder::new("cf.cond_br", gen.loc())
+                .add_operands(&[cond.result(0)?.into()])
+                .add_successors(&[&exit_b, &next_b])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "operandSegmentSizes"),
+                    melior::ir::attribute::DenseI32ArrayAttribute::new(gen.context, &[1, 0, 0])
+                        .into(),
+                )])
+                .build()?,
+        );
+        match kind {
+            TasksExitKind::Return => {
+                let v = match ret {
+                    Some(slot) => Some(
+                        exit_b
+                            .append_operation(
+                                OperationBuilder::new("memref.load", gen.loc())
+                                    .add_operands(&[slot])
+                                    .add_results(&[gen.current_return_type.expect("a slot")])
+                                    .build()?,
+                            )
+                            .result(0)?
+                            .into(),
+                    ),
+                    None => None,
+                };
+                emit_func_return(gen, exit_b, v)?;
+            }
+            TasksExitKind::Break | TasksExitKind::Continue => {
+                if leaving_tasks(gen, true) {
+                    emit_tasks_exit(gen, exit_b, kind)?;
+                } else {
+                    let targets = match kind {
+                        TasksExitKind::Break => &gen.break_blocks,
+                        _ => &gen.continue_blocks,
+                    };
+                    let target: &melior::ir::Block<'c> =
+                        unsafe { &**targets.last().expect("an exit of a loop is in a loop") };
+                    exit_b.append_operation(
+                        OperationBuilder::new("cf.br", gen.loc())
+                            .add_successors(&[target])
+                            .build()?,
+                    );
+                }
+            }
+        }
+        block = next_b;
+    }
+    Ok((val, ty, block))
 }
 
 /// Whether `stmts` hold a `return`, or a `break` or `continue` that is not in a loop of their
@@ -2255,8 +2479,8 @@ fn lower_unsafe_block<'c>(
 }
 
 /// A `tasks` block that can fail. Its last value, and the failure of a join that leaves it,
-/// both go to the block after it, which takes the value of the block. The tasks of this code
-/// generator run one after another, so nothing waits.
+/// both go to the block after it, which takes the value of the block. Its tasks run one after
+/// another, so nothing waits.
 fn lower_failing_tasks_block<'c>(
     this: &UnsafeBlockExpr,
     fails_as: &syntax::Type,
