@@ -574,11 +574,16 @@ macro_rules! instantiate_file_ffi {
 }
 
 /// Macro to instantiate C-ABI compatible FFI wrappers for `std::net::TcpStream`.
+///
+/// Each socket is non-blocking. A call that would block runs again through `$when_ready`, as
+/// `$when_ready(fd, write, call)`, which waits until the socket is ready (`ffi/io.rs`).
 #[macro_export]
 macro_rules! instantiate_tcp_stream_ffi {
-    () => {
+    ($when_ready:path) => {
         use std::io::{Read, Write};
+        use std::os::fd::AsRawFd;
 
+        /// Connects. The connect itself still blocks the thread.
         #[no_mangle]
         pub extern "C" fn vx_tcp_stream_connect(
             c_addr: *const std::ffi::c_char,
@@ -587,11 +592,11 @@ macro_rules! instantiate_tcp_stream_ffi {
                 return std::ptr::null_mut();
             }
             let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
-            if let Ok(stream) = std::net::TcpStream::connect(addr_str.as_ref()) {
-                let boxed: Box<std::net::TcpStream> = Box::new(stream);
-                Box::into_raw(boxed) as *mut std::ffi::c_void
-            } else {
-                std::ptr::null_mut()
+            match std::net::TcpStream::connect(addr_str.as_ref())
+                .and_then(|s| s.set_nonblocking(true).map(|()| s))
+            {
+                Ok(stream) => Box::into_raw(Box::new(stream)) as *mut std::ffi::c_void,
+                Err(_) => std::ptr::null_mut(),
             }
         }
 
@@ -606,7 +611,8 @@ macro_rules! instantiate_tcp_stream_ffi {
             }
             let stream = unsafe { &mut *(ptr as *mut std::net::TcpStream) };
             let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len as usize) };
-            stream.read(buf_slice).unwrap_or(0) as u64
+            let fd = stream.as_raw_fd();
+            $when_ready(fd, false, || stream.read(buf_slice)).unwrap_or(0) as u64
         }
 
         #[no_mangle]
@@ -620,7 +626,8 @@ macro_rules! instantiate_tcp_stream_ffi {
             }
             let stream = unsafe { &mut *(ptr as *mut std::net::TcpStream) };
             let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
-            stream.write(buf_slice).unwrap_or(0) as u64
+            let fd = stream.as_raw_fd();
+            $when_ready(fd, true, || stream.write(buf_slice)).unwrap_or(0) as u64
         }
 
         #[no_mangle]
@@ -633,9 +640,11 @@ macro_rules! instantiate_tcp_stream_ffi {
 }
 
 /// Macro to instantiate C-ABI compatible FFI wrappers for `std::net::UdpSocket`.
+///
+/// `$when_ready` is as for `instantiate_tcp_stream_ffi`.
 #[macro_export]
 macro_rules! instantiate_udp_socket_ffi {
-    () => {
+    ($when_ready:path) => {
         #[no_mangle]
         pub extern "C" fn vx_udp_socket_bind(
             c_addr: *const std::ffi::c_char,
@@ -644,11 +653,11 @@ macro_rules! instantiate_udp_socket_ffi {
                 return std::ptr::null_mut();
             }
             let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
-            if let Ok(socket) = std::net::UdpSocket::bind(addr_str.as_ref()) {
-                let boxed: Box<std::net::UdpSocket> = Box::new(socket);
-                Box::into_raw(boxed) as *mut std::ffi::c_void
-            } else {
-                std::ptr::null_mut()
+            match std::net::UdpSocket::bind(addr_str.as_ref())
+                .and_then(|s| s.set_nonblocking(true).map(|()| s))
+            {
+                Ok(socket) => Box::into_raw(Box::new(socket)) as *mut std::ffi::c_void,
+                Err(_) => std::ptr::null_mut(),
             }
         }
 
@@ -663,8 +672,9 @@ macro_rules! instantiate_udp_socket_ffi {
             }
             let socket = unsafe { &mut *(ptr as *mut std::net::UdpSocket) };
             let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len as usize) };
+            let fd = std::os::fd::AsRawFd::as_raw_fd(socket);
             // Note: We ignore the peer address for simplicity in the FFI.
-            socket.recv(buf_slice).unwrap_or(0) as u64
+            $when_ready(fd, false, || socket.recv(buf_slice)).unwrap_or(0) as u64
         }
 
         #[no_mangle]
@@ -685,7 +695,9 @@ macro_rules! instantiate_udp_socket_ffi {
             let socket = unsafe { &mut *(ptr as *mut std::net::UdpSocket) };
             let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
             let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
-            socket.send_to(buf_slice, addr_str.as_ref()).unwrap_or(0) as u64
+            let fd = std::os::fd::AsRawFd::as_raw_fd(socket);
+            $when_ready(fd, true, || socket.send_to(buf_slice, addr_str.as_ref())).unwrap_or(0)
+                as u64
         }
 
         #[no_mangle]
@@ -698,9 +710,11 @@ macro_rules! instantiate_udp_socket_ffi {
 }
 
 /// Macro to instantiate C-ABI compatible FFI wrappers for `std::net::TcpListener`.
+///
+/// `$when_ready` is as for `instantiate_tcp_stream_ffi`.
 #[macro_export]
 macro_rules! instantiate_tcp_listener_ffi {
-    () => {
+    ($when_ready:path) => {
         #[no_mangle]
         pub extern "C" fn vx_tcp_listener_bind(
             c_addr: *const std::ffi::c_char,
@@ -709,11 +723,11 @@ macro_rules! instantiate_tcp_listener_ffi {
                 return std::ptr::null_mut();
             }
             let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
-            if let Ok(listener) = std::net::TcpListener::bind(addr_str.as_ref()) {
-                let boxed: Box<std::net::TcpListener> = Box::new(listener);
-                Box::into_raw(boxed) as *mut std::ffi::c_void
-            } else {
-                std::ptr::null_mut()
+            match std::net::TcpListener::bind(addr_str.as_ref())
+                .and_then(|l| l.set_nonblocking(true).map(|()| l))
+            {
+                Ok(listener) => Box::into_raw(Box::new(listener)) as *mut std::ffi::c_void,
+                Err(_) => std::ptr::null_mut(),
             }
         }
 
@@ -725,11 +739,13 @@ macro_rules! instantiate_tcp_listener_ffi {
                 return std::ptr::null_mut();
             }
             let listener = unsafe { &mut *(ptr as *mut std::net::TcpListener) };
-            if let Ok((stream, _)) = listener.accept() {
-                let boxed: Box<std::net::TcpStream> = Box::new(stream);
-                Box::into_raw(boxed) as *mut std::ffi::c_void
-            } else {
-                std::ptr::null_mut()
+            let fd = std::os::fd::AsRawFd::as_raw_fd(listener);
+            // On Linux, a stream from `accept` does not keep the flag of the listener.
+            match $when_ready(fd, false, || listener.accept())
+                .and_then(|(s, _)| s.set_nonblocking(true).map(|()| s))
+            {
+                Ok(stream) => Box::into_raw(Box::new(stream)) as *mut std::ffi::c_void,
+                Err(_) => std::ptr::null_mut(),
             }
         }
 
