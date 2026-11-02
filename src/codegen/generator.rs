@@ -276,8 +276,8 @@ pub(crate) enum WaitingDrop<'c> {
         flag: Option<crate::symbol::Symbol>,
         field: bool,
     },
-    /// The statement that calls a `Drop` impl's `drop`.
-    Call(Box<Statement>),
+    /// The statement that runs a drop, and whether it calls a `Drop` impl's `drop`.
+    Call(Box<Statement>, bool),
 }
 
 impl<'c> MeliorGenerator<'c> {
@@ -1559,11 +1559,12 @@ impl<'c> MeliorGenerator<'c> {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
         if let Some(stmt) = d.call_statement() {
+            let drop = WaitingDrop::Call(Box::new(stmt), d.call.is_some());
             if d.after_value {
-                self.queued_drops.push(WaitingDrop::Call(Box::new(stmt)));
+                self.queued_drops.push(drop);
                 return Ok(Some(block));
             }
-            return self.generate_statement_inner(&stmt, block);
+            return self.emit_waiting_drop(drop, block).map(Some);
         }
         // The tensor itself, or a tensor field of a struct being dropped.
         let place = d.expr.as_deref().cloned().unwrap_or_else(|| {
@@ -1602,9 +1603,20 @@ impl<'c> MeliorGenerator<'c> {
                 self.emit_drop(buffer, flag, field, block)?;
                 Ok(block)
             }
-            WaitingDrop::Call(stmt) => self
-                .generate_statement_inner(&stmt, block)?
-                .ok_or_else(|| LowerError::from("a drop ended its block".to_string())),
+            // A `Drop` impl runs with cancellation off (F6), so a `send` or a wait in it can
+            // finish.
+            WaitingDrop::Call(stmt, calls_drop) => {
+                if calls_drop {
+                    crate::codegen::lower::call_runtime_void(self, block, "vx_cancel_off")?;
+                }
+                let block = self
+                    .generate_statement_inner(&stmt, block)?
+                    .ok_or_else(|| LowerError::from("a drop ended its block".to_string()))?;
+                if calls_drop {
+                    crate::codegen::lower::call_runtime_void(self, block, "vx_cancel_on")?;
+                }
+                Ok(block)
+            }
         }
     }
 
