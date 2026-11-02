@@ -285,6 +285,15 @@ timeout, which is an error in the task. In `TimeoutExample.lean`, `wait_ends` sh
 fair run, such a wait ends, whatever the other nodes do. `no_timeout_hangs` shows a fair run in
 which a wait with no timeout never ends.
 
+`Scheduler.lean` models the ready queue of the shared runtime (`sched.rs`). A worker takes the
+fiber at the front, and a wake or a spawn puts a fiber at the back. `queue_bound` shows that the
+workers take a fiber at the position `p` within `(p + 1) * B` points, if they take some fiber
+within `B` points while the queue is not empty. `fifo_fair` turns this into the fairness that `Cpu.finishes`
+needs: the run is weakly fair to a thread while it does not wait. A fiber that waits is parked and
+does not spin, and `Cpu.finishes` does not need its spin. `Cpu.finishes_fifo` is W7 on this
+scheduler, with no fairness hypothesis on the threads. `lifo_starves` shows that a queue with a
+push to the front can keep a fiber from running forever.
+
 The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
 `run_lean.py` checks that Lean and `vx.cat` agree on the 13 tests without scopes and barriers:
 
@@ -390,3 +399,6 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   tell it from a thread that is done.
 - `Cpu.finishes` takes its three conditions as hypotheses on the run. The proofs that the waits of
   `tasks` and of channels meet them are not done yet. A thread with a `loop` is not covered.
+- `fifo_fair` takes three facts of the runtime as hypotheses. The workers take a fiber within `B`
+  points. A wake puts a fiber that can continue on the queue. A fiber that a worker takes makes a
+  step. No model of the workers, the monitor thread or `wait.rs` proves them.
