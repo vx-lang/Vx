@@ -23,6 +23,8 @@
 //   `MaybeUninit`            wants a value that may not hold a `T` yet.
 //   `discriminant`           wants to read an enum's tag as a value.
 
+import core::ptr;
+
 /// The size of `T` in bytes.
 fn size_of<T>() -> i64 {
   return sizeof<T>();
@@ -30,18 +32,20 @@ fn size_of<T>() -> i64 {
 
 /// Each value ends up where the other one was.
 ///
-/// Through raw pointers, as Rust's does: `*a` cannot move a value out from behind a
-/// reference, and nothing is dropped, since each value is moved, not copied.
+/// Through raw pointers and `core::ptr::read`, as Rust's does: `*a` cannot move a value out
+/// from behind a reference, and nothing is dropped, since each value is moved, not copied.
 fn swap<T>(a : &mut T, b : &mut T) -> void {
   let pa = a as *mut T;
   let pb = b as *mut T;
-  unsafe { let t = *pa; *pa = *pb; *pb = t; }
+  let t = unsafe { read(pa as *const T) };
+  unsafe { *pa = read(pb as *const T); }
+  unsafe { *pb = t; }
 }
 
 /// `src` goes in, and what was there comes back. Through a raw pointer, as `swap`.
 fn replace<T>(dest : &mut T, src : T) -> T {
   let p = dest as *mut T;
-  let old = unsafe { *p };
+  let old = unsafe { read(p as *const T) };
   unsafe { *p = src; }
   return old;
 }
