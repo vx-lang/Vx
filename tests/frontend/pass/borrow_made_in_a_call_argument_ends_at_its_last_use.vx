@@ -1,0 +1,40 @@
+//===- borrow_made_in_a_call_argument_ends_at_its_last_use.vx - Vx -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s 2>&1 | FileCheck %s
+//
+// A borrow that an argument stores in `s` ends at the last use of `s`. A borrow that the
+// argument uses only for the call ends with the call. After either one, `a` can change.
+
+import std::vec;
+
+fn count(v : &Vec<i64>, x : i64) -> i32 {
+  return v.len();
+}
+
+fn main() -> i32 {
+  let mut a = Vec<i64>::with_capacity(1);
+  a.push(1i64);
+  let zero : i64 = 0i64;
+  let mut s : &i64 = &zero;
+  let n = count(&a, if true {
+    s = a.get_ref(0);
+    0i64
+  } else {
+    0i64
+  });
+  // CHECK: 1 1
+  println!("{} {}", n, *s);
+  a.push(5i64);
+  // The buffer is full, so this push moves it. The argument copies `a[1]` before the push.
+  a.push(*a.get_ref(1));
+  let m = count(&a, 0i64);
+  a.push(7i64);
+  // CHECK-NEXT: 3 4 5
+  println!("{} {} {}", m, a.len(), *a.get_ref(2));
+  return 0;
+}
