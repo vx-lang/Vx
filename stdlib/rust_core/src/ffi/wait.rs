@@ -39,7 +39,7 @@ struct Waiters {
     /// The fibers that park on a word of this bucket, with the address of the word.
     fibers: Vec<(FiberRef, usize)>,
     /// The threads that sleep here with no time limit, which the deadlock watcher counts.
-    sleepers: i64,
+    sleepers: Vec<std::thread::ThreadId>,
     /// The scheduler of each fiber that sleeps here on its worker's thread, under a callback.
     /// The scheduler counts it as blocked, not the watcher.
     blocked: Vec<&'static sched::Scheduler>,
@@ -51,7 +51,7 @@ static TABLE: [Bucket; BUCKETS] = [const {
     Bucket {
         lock: Mutex::new(Waiters {
             fibers: Vec::new(),
-            sleepers: 0,
+            sleepers: Vec::new(),
             blocked: Vec::new(),
             wakes: 0,
         }),
@@ -130,7 +130,7 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
                         s.blocked();
                     }
                     None => {
-                        waiters.sleepers += 1;
+                        waiters.sleepers.push(std::thread::current().id());
                         deadlock::sleep_started();
                     }
                 }
@@ -148,7 +148,13 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
                             deadlock::progress();
                         }
                         None => {
-                            waiters.sleepers -= 1;
+                            let me = std::thread::current().id();
+                            let i = waiters
+                                .sleepers
+                                .iter()
+                                .position(|&t| t == me)
+                                .expect("a sleeping thread is on the list of its bucket");
+                            waiters.sleepers.swap_remove(i);
                             deadlock::sleep_ended(1);
                         }
                     }
@@ -257,7 +263,7 @@ fn wake(b: &Bucket, which: Fibers) {
     deadlock::progress();
     let mut waiters = b.lock.lock().unwrap_or_else(|e| e.into_inner());
     let fibers = take_fibers(&mut waiters, which);
-    deadlock::sleep_ended(std::mem::take(&mut waiters.sleepers));
+    deadlock::sleep_ended(std::mem::take(&mut waiters.sleepers).len() as i64);
     for s in std::mem::take(&mut waiters.blocked) {
         s.unblocked();
     }
@@ -496,30 +502,81 @@ pub extern "C" fn vx_channel_forget_skips(words: *mut i64) {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::thread::ThreadId;
+
+    // Other tests can wait on words of the same bucket at the same time. So each test counts
+    // only its own thread or its own scheduler.
+
+    /// How many times the thread `t` is on the list of sleepers of `b`.
+    fn sleeps(b: &Bucket, t: ThreadId) -> usize {
+        b.lock
+            .lock()
+            .unwrap()
+            .sleepers
+            .iter()
+            .filter(|&&x| x == t)
+            .count()
+    }
+
+    /// How many fibers of `s` are on the list of blocked fibers of `b`.
+    fn blocked_in(w: &Waiters, s: &sched::Scheduler) -> usize {
+        w.blocked.iter().filter(|&&x| std::ptr::eq(x, s)).count()
+    }
+
+    /// A thread that waits on `word` until it is not 0, and counts each wait in `rounds`.
+    fn sleeper(word: &Arc<AtomicI64>, rounds: &Arc<AtomicI64>) -> std::thread::JoinHandle<()> {
+        let (w, r) = (word.clone(), rounds.clone());
+        std::thread::spawn(move || {
+            while w.load(Ordering::SeqCst) == 0 {
+                r.fetch_add(1, Ordering::SeqCst);
+                unsafe { vx_wait_while(w.as_ptr(), 0) };
+            }
+        })
+    }
 
     #[test]
     fn a_wake_stops_counting_a_thread_before_the_thread_runs_again() {
         let word = Arc::new(AtomicI64::new(0));
-        let w = word.clone();
-        let sleeper = std::thread::spawn(move || {
-            while w.load(Ordering::SeqCst) == 0 {
-                unsafe { vx_wait_while(Arc::as_ptr(&w) as *const i64, 0) };
-            }
-        });
-        let b = bucket(Arc::as_ptr(&word) as *const i64);
-        while b.lock.lock().unwrap().sleepers == 0 {
+        let rounds = Arc::new(AtomicI64::new(0));
+        let sleeper = sleeper(&word, &rounds);
+        let me = sleeper.thread().id();
+        let b = bucket(word.as_ptr());
+        while sleeps(b, me) == 0 {
             std::thread::yield_now();
         }
         word.store(1, Ordering::SeqCst);
         wake(b, Fibers::All);
         // The sleeper needs this lock to come back from its wait, so it is still in it here.
-        let waiters = b.lock.lock().unwrap();
-        assert_eq!(
-            waiters.sleepers, 0,
-            "a woken thread still counts as waiting"
-        );
-        drop(waiters);
+        let counted = sleeps(b, me);
         sleeper.join().unwrap();
+        assert_eq!(counted, 0, "a woken thread still counts as waiting");
+    }
+
+    #[test]
+    fn a_thread_that_wakes_with_no_wake_counts_once() {
+        let word = Arc::new(AtomicI64::new(0));
+        let rounds = Arc::new(AtomicI64::new(0));
+        let sleeper = sleeper(&word, &rounds);
+        let me = sleeper.thread().id();
+        let b = bucket(word.as_ptr());
+        let asleep_in_round = |n| {
+            while rounds.load(Ordering::SeqCst) < n || sleeps(b, me) == 0 {
+                std::thread::yield_now();
+            }
+        };
+        asleep_in_round(1);
+        // A return of the condition variable with no wake, as the system may give.
+        drop(b.lock.lock().unwrap());
+        b.cond.notify_all();
+        asleep_in_round(2);
+        let counted = sleeps(b, me);
+        word.store(1, Ordering::SeqCst);
+        wake(b, Fibers::Of(word.as_ptr() as usize));
+        sleeper.join().unwrap();
+        assert_eq!(
+            counted, 1,
+            "a thread counted twice after a return with no wake"
+        );
     }
 
     /// A wake of a word must not take a fiber that parks on another word of the same bucket.
@@ -529,7 +586,7 @@ mod tests {
         let fiber = || FiberRef(std::ptr::null_mut());
         let mut waiters = Waiters {
             fibers: vec![(fiber(), 8), (fiber(), 16), (fiber(), 8)],
-            sleepers: 0,
+            sleepers: Vec::new(),
             blocked: Vec::new(),
             wakes: 0,
         };
@@ -550,63 +607,108 @@ mod tests {
     }
 
     struct Gate {
-        waits: AtomicI64,
+        rounds: AtomicI64,
         gate: AtomicI64,
+        thread: Mutex<Option<ThreadId>>,
     }
 
     /// As a Vx function that foreign code calls, and that waits for the gate.
     extern "C" fn wait_for_the_gate_in_a_callback(env: *mut u8) {
         // The runtime frees the environment, which holds the address of the gate.
         let g = unsafe { &**(env as *const *const Gate) };
+        *g.thread.lock().unwrap() = Some(std::thread::current().id());
         sched::vx_callback_enter();
-        g.waits.store(1, Ordering::SeqCst);
         while g.gate.load(Ordering::SeqCst) == 0 {
+            g.rounds.fetch_add(1, Ordering::SeqCst);
             unsafe { vx_wait_while(g.gate.as_ptr(), 0) };
         }
         sched::vx_callback_exit();
     }
 
-    #[test]
-    fn a_task_that_waits_in_a_callback_counts_as_parked_until_its_wake() {
+    /// Starts one task on its own scheduler with one worker. The task waits for the gate under
+    /// a callback.
+    fn start_a_task_in_a_callback(
+        g: &Gate,
+    ) -> (
+        &'static sched::Scheduler,
+        *mut crate::ffi::tasks::VxTaskGroup,
+    ) {
         let sched = sched::Scheduler::start(1, 1);
-        let g = Gate {
-            waits: AtomicI64::new(0),
-            gate: AtomicI64::new(0),
-        };
         let group = crate::ffi::tasks::tasks_begin(Some(sched));
         unsafe {
-            crate::ffi::tasks::vx_task_start(group, wait_for_the_gate_in_a_callback, {
-                let e = libc::malloc(std::mem::size_of::<*const Gate>()) as *mut *const Gate;
-                e.write(&g);
-                e as *mut u8
-            });
+            let e = libc::malloc(std::mem::size_of::<*const Gate>()) as *mut *const Gate;
+            e.write(g);
+            crate::ffi::tasks::vx_task_start(group, wait_for_the_gate_in_a_callback, e as *mut u8);
         }
+        (sched, group)
+    }
+
+    fn new_gate() -> Gate {
+        Gate {
+            rounds: AtomicI64::new(0),
+            gate: AtomicI64::new(0),
+            thread: Mutex::new(None),
+        }
+    }
+
+    #[test]
+    fn a_task_that_waits_in_a_callback_counts_as_parked_until_its_wake() {
+        let g = new_gate();
+        let (sched, group) = start_a_task_in_a_callback(&g);
         let b = bucket(g.gate.as_ptr());
-        // The task sleeps once it is on one of the two counts of the bucket.
-        let asleep = || {
-            let w = b.lock.lock().unwrap();
-            !w.blocked.is_empty() || w.sleepers > 0
-        };
-        while g.waits.load(Ordering::SeqCst) == 0 || !asleep() {
+        while blocked_in(&b.lock.lock().unwrap(), sched) == 0 {
             std::thread::yield_now();
         }
+        let worker = g.thread.lock().unwrap().expect("the task ran");
+        // The bucket lock keeps a wake from another test out while this test reads.
+        let w = b.lock.lock().unwrap();
         let parked_while_waiting = sched.all_parked();
-        let sleepers = b.lock.lock().unwrap().sleepers;
+        drop(w);
+        let worker_sleeps = sleeps(b, worker);
         g.gate.store(1, Ordering::SeqCst);
         wake(b, Fibers::Of(g.gate.as_ptr() as usize));
         // The task needs this lock to come back from its wait, so it is still in it here.
-        let waiters = b.lock.lock().unwrap();
+        let w = b.lock.lock().unwrap();
         let parked_after_the_wake = sched.all_parked();
-        drop(waiters);
+        drop(w);
         unsafe { crate::ffi::tasks::vx_tasks_end(group) };
         assert!(
             parked_while_waiting,
             "a task that waits in a callback did not count as parked"
         );
-        assert_eq!(sleepers, 0, "the watcher counted a worker's thread");
+        assert_eq!(worker_sleeps, 0, "the watcher counted a worker's thread");
         assert!(
             !parked_after_the_wake,
             "a woken task in a callback still counted as parked"
         );
+    }
+
+    #[test]
+    fn a_task_in_a_callback_that_wakes_with_no_wake_counts_once() {
+        let g = new_gate();
+        let (sched, group) = start_a_task_in_a_callback(&g);
+        let b = bucket(g.gate.as_ptr());
+        let asleep_in_round = |n| {
+            while g.rounds.load(Ordering::SeqCst) < n
+                || blocked_in(&b.lock.lock().unwrap(), sched) == 0
+            {
+                std::thread::yield_now();
+            }
+        };
+        asleep_in_round(1);
+        // A return of the condition variable with no wake, as the system may give.
+        drop(b.lock.lock().unwrap());
+        b.cond.notify_all();
+        asleep_in_round(2);
+        // The bucket lock keeps a wake from another test out while this test reads.
+        let w = b.lock.lock().unwrap();
+        let entries = blocked_in(&w, sched);
+        let parked = sched.all_parked();
+        drop(w);
+        g.gate.store(1, Ordering::SeqCst);
+        wake(b, Fibers::Of(g.gate.as_ptr() as usize));
+        unsafe { crate::ffi::tasks::vx_tasks_end(group) };
+        assert_eq!(entries, 1, "a task in a callback is on the list twice");
+        assert!(parked, "a task in a callback counted as blocked twice");
     }
 }
