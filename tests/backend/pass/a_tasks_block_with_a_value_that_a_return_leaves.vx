@@ -9,9 +9,7 @@
 // until the second task sets a flag, so the two tasks must run at the same time, or the program
 // hangs. After the block, the value or the `return` must take effect.
 //
-// Only the older code generator runs this program. The flat code generator declines a `tasks`
-// block with a value that a `return`, `break` or `continue` leaves.
-//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}doubled 7 -1{{$}}
 

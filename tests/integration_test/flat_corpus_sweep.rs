@@ -22,9 +22,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // ("a non-scalar default return").
     "backend/pass/a_result_read_through_a_reference_field_points_where_the_field_points.vx",
     "backend/pass/an_iterator_item_does_not_keep_the_iterator_borrowed.vx",
-    // A `tasks` block with a value that a `return` leaves: the flat path cannot type the last
-    // value of the block before its region, so it declines the block.
-    "backend/pass/a_tasks_block_with_a_value_that_a_return_leaves.vx",
     // A `match` through a reference to an enum, one of them with a payload: the flat path does
     // not lower a match over a borrowed enum or an enum that carries a payload.
     "backend/pass/match_on_a_reference_to_an_enum.vx",
