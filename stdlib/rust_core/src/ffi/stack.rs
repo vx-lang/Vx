@@ -455,6 +455,17 @@ pub(crate) fn turn_on_shadow_stacks() -> bool {
     r == 0
 }
 
+/// A test with shadow stacks found none. When VX_REQUIRE_SHADOW_STACKS is not empty, as in CI,
+/// the test fails. Otherwise it passes and says that it checked nothing.
+#[cfg(all(test, target_os = "linux", target_arch = "aarch64"))]
+pub(crate) fn found_no_shadow_stacks() {
+    let message = "this CPU or kernel has no shadow stacks, so the test checked nothing";
+    if std::env::var_os("VX_REQUIRE_SHADOW_STACKS").is_some_and(|v| !v.is_empty()) {
+        panic!("{message}, and VX_REQUIRE_SHADOW_STACKS is set");
+    }
+    eprintln!("{message}");
+}
+
 // To run these tests for aarch64 on an x86_64 machine, install qemu-user and
 // gcc-aarch64-linux-gnu, and set:
 //   CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
@@ -728,7 +739,7 @@ mod tests {
         let mut status = 0;
         unsafe { libc::waitpid(child, &mut status, 0) };
         if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == NO_SHADOW_STACKS {
-            eprintln!("this CPU or kernel has no shadow stacks, so the test checked nothing");
+            found_no_shadow_stacks();
             return;
         }
         assert!(

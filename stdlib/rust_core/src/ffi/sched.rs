@@ -747,7 +747,7 @@ mod tests {
         let mut status = 0;
         unsafe { libc::waitpid(child, &mut status, 0) };
         if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == NO_SHADOW_STACKS {
-            eprintln!("this CPU or kernel has no shadow stacks, so the test checked nothing");
+            crate::ffi::stack::found_no_shadow_stacks();
             return;
         }
         assert!(
