@@ -831,10 +831,11 @@ impl<'a> Parser<'a> {
         }))
     }
 
-    /// A primary expression, including a prefix `-` / `!` and any trailing `as` casts.
+    /// A primary expression, including prefix `-` / `!` / `*` / `&` / `&&` and any trailing `as` casts.
     ///
-    /// `as` binds after a prefix `-` or `!`, so `-x as T` is `(-x) as T`. Field access,
-    /// indexing and calls stay on the operand: `-x.f`, `-a[i]` and `-f()` are unchanged.
+    /// A prefix `-`, `!`, `*`, `&` or `&&` applies first, so `-x as T` is `(-x) as T` and
+    /// `*p as T` is `(*p) as T`. Field access, indexing and calls stay on the operand:
+    /// `-x.f`, `-a[i]` and `-f()` are unchanged.
     pub(crate) fn parse_primary_expr(&mut self) -> ParseResult<'a, Expr> {
         let expr = self.parse_prefixed_primary()?;
         self.parse_as_casts(expr)
@@ -878,7 +879,7 @@ impl<'a> Parser<'a> {
             };
             self.advance();
             let is_mut = self.match_token(&TokenType::Mut);
-            let inner = self.parse_primary_expr()?;
+            let inner = self.parse_prefixed_primary()?;
             return Ok(Expr::Borrow(BorrowExpr {
                 expr: Box::new(inner),
                 is_mut,
@@ -890,7 +891,7 @@ impl<'a> Parser<'a> {
             let (line, column) = (self.peek().line, self.peek().column);
             self.advance();
             let is_mut = self.match_token(&TokenType::Mut);
-            let inner = self.parse_primary_expr()?;
+            let inner = self.parse_prefixed_primary()?;
             return Ok(Expr::Borrow(BorrowExpr {
                 expr: Box::new(Expr::Borrow(BorrowExpr {
                     expr: Box::new(inner),
@@ -919,7 +920,7 @@ impl<'a> Parser<'a> {
                 expansion: self.expansion(),
             };
             self.advance();
-            let inner = self.parse_primary_expr()?;
+            let inner = self.parse_prefixed_primary()?;
             return Ok(Expr::Dereference(DereferenceExpr {
                 expr: Box::new(inner),
                 ty: None,
@@ -2567,6 +2568,39 @@ mod tests {
             assert!(matches!(&*inner, Expr::UnaryOp(u) if u.op == UnaryOp::Not));
         } else {
             panic!("Expected AsCast(UnaryOp(Not(_)), i32), got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_deref_then_as_cast() {
+        // `*p as T` is `(*p) as T`, not `*(p as T)`.
+        let expr = parse_expr("*p as i64");
+        if let Expr::AsCast(AsCastExpr {
+            expr: inner,
+            target_ty,
+            ..
+        }) = expr
+        {
+            assert_eq!(target_ty.to_string(), "i64");
+            assert!(matches!(&*inner, Expr::Dereference(_)));
+        } else {
+            panic!("Expected AsCast(Dereference(_), i64), got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_borrow_then_as_cast() {
+        let expr = parse_expr("&x as &i32");
+        if let Expr::AsCast(AsCastExpr {
+            expr: inner,
+            target_ty,
+            ..
+        }) = expr
+        {
+            assert_eq!(target_ty.to_string(), "&i32");
+            assert!(matches!(&*inner, Expr::Borrow(_)));
+        } else {
+            panic!("Expected AsCast(Borrow(_), &i32), got {:?}", expr);
         }
     }
 
