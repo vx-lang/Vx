@@ -1,0 +1,29 @@
+//===- i128_min_divided_by_u64_max.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// i128::MIN / (2^64 - 1) is not overflow. A 64-bit-only -1 constant made the
+// overflow guard treat this divisor as -1 and stop the program.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+//
+// CHECK: -9223372036854775808
+// CHECK-NEXT: ok
+
+fn div(a : i128, b : i128) -> i128 {
+  return a / b;
+}
+
+fn main() -> i32 {
+  let min = -170141183460469231731687303715884105727i128 - 1i128;
+  let u64_max_as_i128 = 18446744073709551615i128;
+  print(div(min, u64_max_as_i128));
+  println!("");
+  print!("ok");
+  println!("");
+  return 0;
+}

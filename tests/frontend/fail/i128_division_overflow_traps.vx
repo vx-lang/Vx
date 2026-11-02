@@ -1,0 +1,27 @@
+//===- i128_division_overflow_traps.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// RUN: not vxc %s -O2 2>&1 | FileCheck %s
+//
+// The smallest `i128` divided by -1 is one more than the largest `i128`, so it
+// stops the program. The overflow guard must use a full-width -1, not a 64-bit
+// ones constant.
+
+// CHECK: attempt to divide with overflow
+// CHECK-NOT: wrong answer
+fn div(a : i128, b : i128) -> i128 {
+  return a / b;
+}
+
+fn main() -> i32 {
+  // i128::MIN = -2^127
+  print(div(-170141183460469231731687303715884105727i128 - 1i128, -1i128));
+  print!(" wrong answer");
+  return 0;
+}

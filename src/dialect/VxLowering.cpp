@@ -8605,7 +8605,7 @@ struct CheckIntegerDivisionPass
         Value min = b.create<arith::ConstantOp>(
             loc, b.getIntegerAttr(ty, APInt::getSignedMinValue(ty.getWidth())));
         // ConstantIntOp(loc, ty, -1) only fills 64 bits; i128 needs the full
-        // width of ones or MIN/-1 misses the overflow guard (#2278).
+        // width of ones or MIN/-1 misses the overflow guard.
         Value minusOne = b.create<arith::ConstantOp>(
             loc, b.getIntegerAttr(ty, APInt::getAllOnes(ty.getWidth())));
         Value isMin =
