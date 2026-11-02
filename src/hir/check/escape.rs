@@ -129,6 +129,47 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
+    /// `return h.f`, where `f` is a `&mut` and `h` is a value of this function whose `drop` can
+    /// use what it holds. `h` is dropped as the function returns, so its `drop` could write
+    /// through the `&mut` while the caller still holds what was returned.
+    pub(crate) fn check_return_of_a_mut_held_by_a_dropped_value(
+        &mut self,
+        expr: &Expr,
+        span: &crate::syntax::Span,
+    ) {
+        let mut place = expr;
+        while let Expr::Borrow(BorrowExpr { expr: inner, .. })
+        | Expr::Dereference(DereferenceExpr { expr: inner, .. }) = place
+        {
+            place = inner;
+        }
+        let mut through_mut = false;
+        let mut part = place;
+        while let Expr::MemberAccess(m) = part {
+            through_mut |= matches!(
+                self.check_expr_type_probe(part),
+                Type::Borrow { is_mut: true, .. }
+            );
+            part = &m.base;
+        }
+        let Expr::Identifier(holder) = part else {
+            return;
+        };
+        if !through_mut || !self.borrow.drops.drop_reads_borrows(holder.name.as_ref()) {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E4005,
+            format!(
+                "this returns a reference that `{h}` holds in a `&mut`. `{h}` is dropped when \
+                 the function returns, and its `drop` can use that `&mut` while the reference is \
+                 still in use. Take `{h}` by reference, so it is not dropped here",
+                h = holder.name
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     pub(crate) fn report_frame_escape(&mut self, what: &str, span: &crate::syntax::Span) {
         self.errors.error_with_code(
             crate::diagnostic::DiagnosticCode::E4005,

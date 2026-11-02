@@ -1863,6 +1863,9 @@ impl<'a> TypeChecker<'a> {
                 span,
             );
         }
+        if !self.speculating && self.type_can_hold_reference(&ty) {
+            self.check_return_of_a_mut_held_by_a_dropped_value(expr, span);
+        }
 
         // Each `ensures` must hold here, from what is known on this path, with `return` standing
         // for this value.
