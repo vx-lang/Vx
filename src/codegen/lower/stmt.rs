@@ -19,7 +19,7 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         // Nothing to compute and nothing to convert, so emit the terminator and stop.
         let Some(expr) = expr else {
             let block = gen.run_value_drops(block)?;
-            block.append_operation(OperationBuilder::new("func.return", gen.loc()).build()?);
+            super::expr::emit_func_return(gen, block, None)?;
             return Ok(None);
         };
         gen.expected_type = gen.current_return_type;
@@ -42,7 +42,7 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         // the call has run, and there is no value to return.
         if !gen.in_spawn && gen.current_return_type == Some(gen.none_ty) {
             let block = gen.run_value_drops(block)?;
-            block.append_operation(OperationBuilder::new("func.return", gen.loc()).build()?);
+            super::expr::emit_func_return(gen, block, None)?;
             gen.has_returned = true;
             return Ok(None);
         }
@@ -116,6 +116,10 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         // Returning through a buffer the caller allocated: copy the result in and return nothing.
         // A `vx.return` is a spawn region's yield rather than the function's, so it is untouched.
         if let Some(slot) = gen.current_return_slot.filter(|_| !gen.in_spawn) {
+            assert!(
+                gen.tasks_exits.is_empty(),
+                "a tasks block in a function that returns through a slot runs in place"
+            );
             if val != slot {
                 let copy_op = OperationBuilder::new("memref.copy", gen.loc())
                     .add_operands(&[val, slot])
@@ -138,10 +142,14 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
             return Ok(None);
         }
         let block = gen.run_value_drops(block)?;
-        let ret_op = OperationBuilder::new(op_name, gen.loc())
-            .add_operands(&[val])
-            .build()?;
-        block.append_operation(ret_op);
+        if op_name == "func.return" {
+            super::expr::emit_func_return(gen, block, Some(val))?;
+        } else {
+            let ret_op = OperationBuilder::new(op_name, gen.loc())
+                .add_operands(&[val])
+                .build()?;
+            block.append_operation(ret_op);
+        }
         gen.has_returned = true;
         Ok(None)
     }

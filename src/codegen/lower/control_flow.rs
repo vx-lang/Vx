@@ -947,6 +947,10 @@ impl<'c> LowerToMelior<'c> for BreakStmt {
             );
             return Ok(None);
         }
+        if super::expr::leaving_tasks(gen, true) {
+            super::expr::emit_tasks_exit(gen, block, super::expr::TasksExitKind::Break)?;
+            return Ok(None);
+        }
         if let Some(&break_ptr) = gen.break_blocks.last() {
             let break_block: &melior::ir::Block<'c> = unsafe { &*break_ptr };
             block.append_operation(
@@ -968,6 +972,10 @@ impl<'c> LowerToMelior<'c> for ContinueStmt {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
+        if super::expr::leaving_tasks(gen, true) {
+            super::expr::emit_tasks_exit(gen, block, super::expr::TasksExitKind::Continue)?;
+            return Ok(None);
+        }
         if let Some(&continue_ptr) = gen.continue_blocks.last() {
             let continue_block: &melior::ir::Block<'c> = unsafe { &*continue_ptr };
             block.append_operation(

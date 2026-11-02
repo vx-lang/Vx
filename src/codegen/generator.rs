@@ -107,8 +107,11 @@ pub struct MeliorGenerator<'c> {
     /// the block, and the type `Result<U, E>` of that value.
     pub tasks_leaves: Vec<(*const melior::ir::Block<'c>, syntax::Type)>,
     /// Set inside a `tasks` block that runs its tasks one after another, at their `spawn`s: a
-    /// block that can fail, or that a `return`, `break` or `continue` leaves.
+    /// block that can fail, or an exit that `can_leave_a_region` cannot carry out of a region.
     pub tasks_inline: bool,
+    /// The open `tasks` blocks whose region a `return`, `break` or `continue` leaves,
+    /// innermost last.
+    pub(crate) tasks_exits: Vec<crate::codegen::lower::expr::TasksExits<'c>>,
     pub continue_blocks: Vec<*const melior::ir::Block<'c>>,
     pub allocs: std::collections::HashSet<String>,
     /// One frame per block being lowered: what each name a `let` in the block shadows meant
@@ -867,6 +870,7 @@ impl<'c> MeliorGenerator<'c> {
             break_blocks: Vec::new(),
             tasks_leaves: Vec::new(),
             tasks_inline: false,
+            tasks_exits: Vec::new(),
             continue_blocks: Vec::new(),
             allocs: std::collections::HashSet::new(),
             blocks: Vec::new(),
@@ -1815,9 +1819,16 @@ impl<'c> MeliorGenerator<'c> {
                     block,
                 ))
             }
-            // This code generator runs the tasks of a `tasks` block one after another, so at a
-            // `return` inside the block each task has ended. The value is never read.
+            // A `tasks` block that runs its tasks one after another needs no wait: at an exit,
+            // each task has ended. A block that runs them on threads waits for them. The value is
+            // never read.
             e if syntax::is_tasks_wait(e) => {
+                if !self.tasks_inline {
+                    block.append_operation(
+                        melior::ir::operation::OperationBuilder::new("vx.tasks_wait", self.loc())
+                            .build()?,
+                    );
+                }
                 let zero =
                     melior::ir::operation::OperationBuilder::new("arith.constant", self.loc())
                         .add_attributes(&[(

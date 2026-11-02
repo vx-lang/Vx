@@ -11,8 +11,7 @@
 // After the `drop`, the task sees the cancel again.
 //
 // REQUIRES: flat-codegen
-// Only because the older code generator runs each task to its end at its `spawn`. A task
-// that waits for a later task then waits forever.
+// Only because the older code generator does not turn cancellation off for a `drop`.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}the recv gave no value, cancelled true{{$}}
