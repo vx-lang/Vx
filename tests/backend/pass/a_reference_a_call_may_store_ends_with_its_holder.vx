@@ -1,0 +1,66 @@
+//===- a_reference_a_call_may_store_ends_with_its_holder.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A borrow that a call may store in another argument lasts until that argument's last use, and
+// a `&mut` whose target holds no reference, such as a `Vec<i64>`, stores none.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator cannot lower a `Vec<&i64>`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}h=2;{{$}}
+// CHECK-NEXT: {{^}}v=3;{{$}}
+// CHECK-NEXT: {{^}}y=5; z=6;{{$}}
+// CHECK-NEXT: {{^}}a=1; b=2;{{$}}
+
+import std::vec;
+
+struct Holder {
+  r : &i64,
+}
+
+fn set_r(h : &mut Holder, b : &i64) -> void {
+  h.r = b;
+}
+
+fn add_all(dst : &mut Vec<i64>, src : &Vec<i64>) -> void {
+  for i in 0..src.len() {
+    dst.push(*src.get_ref(i));
+  }
+}
+
+fn changed_after_the_last_use() -> void {
+  let x = 1i64;
+  let mut h = Holder {
+    r : &x
+  };
+  let mut y = 2i64;
+  set_r(&mut h, &y);
+  println!("h={};", *h.r);
+  y = 5i64;
+  let mut z = 3i64;
+  let mut v = Vec<&i64>::new();
+  v.push(&z);
+  println!("v={};", *v.get(0));
+  z = 6i64;
+  println!("y={}; z={};", y, z);
+}
+
+fn numbers_only() -> void {
+  let mut a = Vec<i64>::new();
+  let mut b = Vec<i64>::new();
+  b.push(4i64);
+  add_all(&mut a, &b);
+  b.push(5i64);
+  println!("a={}; b={};", a.len(), b.len());
+}
+
+fn main() -> i32 {
+  changed_after_the_last_use();
+  numbers_only();
+  return 0;
+}
