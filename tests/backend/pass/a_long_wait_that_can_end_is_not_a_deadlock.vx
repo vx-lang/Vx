@@ -1,0 +1,62 @@
+//===- a_long_wait_that_can_end_is_not_a_deadlock.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The runtime stops a program in which nothing can go on (a deadlock). Each wait here lasts
+// longer than the runtime looks before it reports one, but each wait can end:
+//
+// - The code of the block waits in a join while its task runs a loop for 0.5 seconds.
+// - The code of the block waits in a join while its task waits 0.5 seconds in `recv_for`.
+//
+// So the program must end normally. The second RUN line runs it on one worker thread of the
+// shared runtime.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=deadlock
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=deadlock
+// CHECK: {{^}}the loop ended{{$}}
+// CHECK: {{^}}recv_for gave no value{{$}}
+
+import std::sync::channel;
+import std::sync::wait;
+
+fn run_for_half_a_second() -> void {
+  let start = clock_ns();
+  while clock_ns() - start < 500000000 {}
+}
+
+fn wait_half_a_second(rx : Receiver<i64>) -> bool {
+  let mut no_value = false;
+  match rx.recv_for(0.5) {
+    Result<i64, RecvError>::Ok(_v) => {}
+    Result<i64, RecvError>::Err(_e) => {
+      no_value = true;
+    }
+  }
+  return no_value;
+}
+
+fn main() -> i32 {
+  tasks {
+    let h = spawn {
+      run_for_half_a_second();
+    };
+    h.join();
+  };
+  println!("the loop ended");
+  let (tx, rx) = channel<i64>(1);
+  let no_value = tasks {
+    let h = spawn {
+      wait_half_a_second(rx)
+    };
+    h.join()
+  };
+  // The sender lives until here, so the channel never closes.
+  let _keep = tx;
+  if no_value {
+    println!("recv_for gave no value");
+  }
+  return 0;
+}

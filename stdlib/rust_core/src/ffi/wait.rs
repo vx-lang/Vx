@@ -81,6 +81,9 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
         None => None,
     };
     let fiber = sched::current_fiber();
+    if left.is_none() {
+        deadlock::watch();
+    }
     if fiber.is_null() {
         match left {
             Some(left) => drop(
@@ -88,7 +91,9 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
                     .wait_timeout(fibers, left)
                     .unwrap_or_else(|e| e.into_inner()),
             ),
-            None => drop(b.cond.wait(fibers).unwrap_or_else(|e| e.into_inner())),
+            None => deadlock::while_waiting(|| {
+                drop(b.cond.wait(fibers).unwrap_or_else(|e| e.into_inner()))
+            }),
         }
         return;
     }
@@ -158,6 +163,7 @@ pub(crate) fn wake_every_thread() {
 }
 
 fn wake(b: &Bucket) {
+    deadlock::progress();
     let fibers = std::mem::take(&mut *b.lock.lock().unwrap_or_else(|e| e.into_inner()));
     b.cond.notify_all();
     for fiber in fibers {
@@ -181,8 +187,19 @@ mod timer {
         cond: Condvar,
     }
 
+    static TIMER: OnceLock<&'static Timer> = OnceLock::new();
+
+    /// Whether a deadline is still to come. Its wake can let a parked fiber go on.
+    pub(super) fn pending() -> bool {
+        TIMER.get().is_some_and(|t| {
+            !t.deadlines
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+        })
+    }
+
     fn timer() -> &'static Timer {
-        static TIMER: OnceLock<&'static Timer> = OnceLock::new();
         TIMER.get_or_init(|| {
             let t: &'static Timer = Box::leak(Box::new(Timer {
                 deadlines: Mutex::new(BinaryHeap::new()),
@@ -228,6 +245,100 @@ mod timer {
         }
     }
 }
+
+/// The deadlock report (F9 in docs/discussions/waiting_tasks_channels_and_task_errors.md). A
+/// watcher thread starts at the first wait with no time limit. On each tick, it looks for a
+/// program that cannot go on:
+///
+/// - no fiber of the shared runtime runs or is ready,
+/// - each Vx thread that is not a worker waits in this file or in the join of a task thread,
+/// - no deadline of the timer is to come,
+/// - and no wake, and no end of a wait, came since the last tick.
+///
+/// A thread in a foreign call or in I/O is not in a wait here, so it never looks stuck. When
+/// two ticks in a row see all of this, the program stops with a report.
+mod deadlock {
+    use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+    use std::sync::Once;
+    use std::time::Duration;
+
+    /// The Vx threads that are not workers: the main thread, and each task thread of the
+    /// runtime with one thread for each task. The monitor and the timer are not Vx threads.
+    static THREADS: AtomicI64 = AtomicI64::new(1);
+    /// The Vx threads that wait with no time limit.
+    static WAITING: AtomicI64 = AtomicI64::new(0);
+    /// Goes up at each wake and at each end of a wait.
+    static PROGRESS: AtomicU64 = AtomicU64::new(0);
+    static WATCHER: Once = Once::new();
+
+    const TICK: Duration = Duration::from_millis(100);
+
+    pub(crate) fn thread_started() {
+        THREADS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn thread_ended() {
+        THREADS.fetch_sub(1, Ordering::SeqCst);
+        progress();
+    }
+
+    pub(crate) fn progress() {
+        PROGRESS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Runs `wait`, a wait of this thread with no time limit, and counts the thread as waiting.
+    pub(crate) fn while_waiting<R>(wait: impl FnOnce() -> R) -> R {
+        watch();
+        WAITING.fetch_add(1, Ordering::SeqCst);
+        let r = wait();
+        WAITING.fetch_sub(1, Ordering::SeqCst);
+        progress();
+        r
+    }
+
+    /// Starts the watcher, once. The unit tests of this crate run on threads that the count
+    /// does not know, so they get no watcher.
+    pub(super) fn watch() {
+        if cfg!(test) {
+            return;
+        }
+        WATCHER.call_once(|| {
+            let started = std::thread::Builder::new()
+                .name("vx-deadlock".into())
+                .spawn(run);
+            if let Err(e) = started {
+                eprintln!("vx: the system could not start the deadlock watcher: {e}");
+                std::process::abort();
+            }
+        });
+    }
+
+    fn stuck() -> bool {
+        let fibers_parked = crate::ffi::sched::program_scheduler().is_none_or(|s| s.all_parked());
+        fibers_parked
+            && WAITING.load(Ordering::SeqCst) == THREADS.load(Ordering::SeqCst)
+            && !super::timer::pending()
+    }
+
+    fn run() {
+        let mut seen = None;
+        loop {
+            std::thread::sleep(TICK);
+            let progress = PROGRESS.load(Ordering::SeqCst);
+            let now = stuck().then_some(progress);
+            if now.is_some() && now == seen {
+                eprintln!(
+                    "vx: deadlock: each task of the program waits, and nothing can wake one. \
+                     The program stops."
+                );
+                std::process::abort();
+            }
+            seen = now;
+        }
+    }
+}
+
+pub(crate) use deadlock::{thread_ended, thread_started, while_waiting};
 
 /// Two words for `select`, which waits on several channels at once. Each channel event adds 1 to
 /// the first word, and the second word counts the threads in a `select` that sleep on it.

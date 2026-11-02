@@ -125,7 +125,7 @@ fn wait(task: &mut Task) {
     }
     if let Some(thread) = task.thread.take() {
         // A Vx panic stops the program (T6). A Rust panic in a task is a bug of the runtime.
-        if thread.join().is_err() {
+        if crate::ffi::wait::while_waiting(|| thread.join()).is_err() {
             eprintln!("vx: a task stopped with a panic of the runtime");
             std::process::abort();
         }
@@ -192,6 +192,7 @@ pub unsafe extern "C" fn vx_task_start(
         return (group.tasks.len() - 1) as i64;
     }
     let task_env = Env(env);
+    crate::ffi::wait::thread_started();
     let started = thread::Builder::new()
         .stack_size(TASK_STACK_BYTES)
         .spawn(move || {
@@ -199,6 +200,7 @@ pub unsafe extern "C" fn vx_task_start(
             CURRENT.with(|c| *c.borrow_mut() = Some(mark));
             run(task_env.0);
             lines::task_ended();
+            crate::ffi::wait::thread_ended();
         });
     // A task that waits for a later task, on a channel or a lock, would wait forever if it ran
     // here. So with no thread, the program stops (W6 in waiting_tasks_channels_and_task_errors.md).
