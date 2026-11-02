@@ -19,6 +19,10 @@ fn call_once<T>(
     call()
 }
 
+fn connect_and_block(addr: &str) -> std::io::Result<std::net::TcpStream> {
+    std::net::TcpStream::connect(addr)
+}
+
 // Report a failed check through the test's Result, with the expression that failed.
 macro_rules! check_eq {
     ($actual:expr, $expected:expr) => {{
@@ -56,7 +60,7 @@ mod stdio {
 }
 
 mod tcp {
-    instantiate_tcp_stream_ffi!(super::call_once);
+    instantiate_tcp_stream_ffi!(super::call_once, super::connect_and_block);
 
     #[test]
     fn rejects_invalid_lengths_then_transfers_one_byte() -> std::io::Result<()> {

@@ -577,13 +577,13 @@ macro_rules! instantiate_file_ffi {
 ///
 /// Each socket is non-blocking. A call that would block runs again through `$when_ready`, as
 /// `$when_ready(fd, write, call)`, which waits until the socket is ready (`ffi/io.rs`).
+/// `$connect(addr)` gives a connected non-blocking `std::net::TcpStream`.
 #[macro_export]
 macro_rules! instantiate_tcp_stream_ffi {
-    ($when_ready:path) => {
+    ($when_ready:path, $connect:path) => {
         use std::io::{Read, Write};
         use std::os::fd::AsRawFd;
 
-        /// Connects. The connect itself still blocks the thread.
         #[no_mangle]
         pub extern "C" fn vx_tcp_stream_connect(
             c_addr: *const std::ffi::c_char,
@@ -592,9 +592,7 @@ macro_rules! instantiate_tcp_stream_ffi {
                 return std::ptr::null_mut();
             }
             let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
-            match std::net::TcpStream::connect(addr_str.as_ref())
-                .and_then(|s| s.set_nonblocking(true).map(|()| s))
-            {
+            match $connect(addr_str.as_ref()) {
                 Ok(stream) => Box::into_raw(Box::new(stream)) as *mut std::ffi::c_void,
                 Err(_) => std::ptr::null_mut(),
             }
