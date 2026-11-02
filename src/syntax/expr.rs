@@ -502,6 +502,9 @@ pub struct UnsafeBlockExpr {
     /// A task body whose value is this `Result` type. When it ends with an `Err`, it cancels its
     /// `tasks` block (F3).
     pub cancels_on_err: Option<Type>,
+    /// A `tasks` block with a value: the type of that value, set by the checker. A code generator
+    /// keeps the value in a slot of this type when an exit can leave the block.
+    pub value_ty: Option<Type>,
 }
 impl UnsafeBlockExpr {
     pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -513,6 +516,7 @@ impl UnsafeBlockExpr {
             task: None,
             fails_as: None,
             cancels_on_err: None,
+            value_ty: None,
         }
     }
 }
@@ -1516,6 +1520,7 @@ impl Expr {
                 task: e.task,
                 fails_as: e.fails_as.as_ref().map(|t| t.substitute(mapping)),
                 cancels_on_err: e.cancels_on_err.as_ref().map(|t| t.substitute(mapping)),
+                value_ty: e.value_ty.as_ref().map(|t| t.substitute(mapping)),
             }),
             Expr::StructInit(e) => {
                 let mut new_name = e.name.clone();
