@@ -264,9 +264,12 @@ macro_rules! instantiate_string_ffi {
 }
 
 /// Macro to instantiate C-ABI compatible FFI wrappers for `std::fs::File`.
+///
+/// An open, a read or a write runs through `$off_the_worker(call)`, which runs `call` where a
+/// wait for the disk does not block other tasks (`ffi/io.rs`).
 #[macro_export]
 macro_rules! instantiate_file_ffi {
-    () => {
+    ($off_the_worker:path) => {
         use std::io::{Read, Seek, SeekFrom, Write};
 
         // Private to the bridge, but part of its i32 ABI. Keep these values in sync with
@@ -413,7 +416,7 @@ macro_rules! instantiate_file_ffi {
                 Err(_) => return std::ptr::null_mut(),
             };
 
-            if let Ok(file) = opts.open(path) {
+            if let Ok(file) = $off_the_worker(|| opts.open(path)) {
                 let boxed: Box<std::fs::File> = Box::new(file);
                 Box::into_raw(boxed) as *mut std::ffi::c_void
             } else {
@@ -432,7 +435,7 @@ macro_rules! instantiate_file_ffi {
             }
             let file = unsafe { &mut *(ptr as *mut std::fs::File) };
             let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len as usize) };
-            file.read(buf_slice).unwrap_or(0) as u64
+            $off_the_worker(|| file.read(buf_slice)).unwrap_or(0) as u64
         }
 
         #[no_mangle]
@@ -446,7 +449,7 @@ macro_rules! instantiate_file_ffi {
             }
             let file = unsafe { &mut *(ptr as *mut std::fs::File) };
             let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
-            file.write(buf_slice).unwrap_or(0) as u64
+            $off_the_worker(|| file.write(buf_slice)).unwrap_or(0) as u64
         }
 
         /// Zero is success, -1 is invalid arguments, and 1..=12 is a portable
@@ -475,7 +478,7 @@ macro_rules! instantiate_file_ffi {
             native_code: *mut i32,
             has_native_code: *mut bool,
         ) -> i32 {
-            unsafe {
+            $off_the_worker(|| unsafe {
                 vx_file_try_transfer(
                     ptr,
                     buffer,
@@ -491,7 +494,7 @@ macro_rules! instantiate_file_ffi {
                         file.read(bytes)
                     },
                 )
-            }
+            })
         }
 
         /// Uses the same status and output contract as `vx_file_try_read`.
@@ -509,7 +512,7 @@ macro_rules! instantiate_file_ffi {
             native_code: *mut i32,
             has_native_code: *mut bool,
         ) -> i32 {
-            unsafe {
+            $off_the_worker(|| unsafe {
                 vx_file_try_transfer(
                     ptr,
                     buffer,
@@ -522,7 +525,7 @@ macro_rules! instantiate_file_ffi {
                         file.write(bytes)
                     },
                 )
-            }
+            })
         }
 
         #[no_mangle]
