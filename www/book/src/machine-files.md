@@ -99,7 +99,7 @@ tuned away.
 ## Using one
 
 ```bash
-vxc --machine fleet/h100-sxm.vx program.vx -o program
+vxc --machine fleet/h100-sxm.vx program.vx
 ```
 
 `--machine` prepends the declarations to your compilation unit. They are visible to capacity and
@@ -110,7 +110,7 @@ and the program is an error, never a silent shadow.
 stages through host memory, declare the host too:
 
 ```bash
-vxc --machine fleet/h100-sxm.vx --host default program.vx -o program
+vxc --machine fleet/h100-sxm.vx --host default program.vx
 ```
 
 `--host default` means "the machine doing the compiling". A host file declares no `capacity`, on

@@ -438,7 +438,7 @@ impl CompilerDriver {
     /// Compile the one input in `options`: the path every run ends in, once per input.
     fn execute_one(&self) -> Result<(), String> {
         // run-jit builds and runs in one step; it never writes `-o`. Saying nothing
-        // made readers think `vxc prog.vx -o out` produced an executable (#2296).
+        // made readers think `vxc prog.vx -o out` produced an executable.
         if self.options.action == Action::RunJit {
             if let Some(out) = &self.options.output {
                 return Err(format!(
@@ -2554,7 +2554,7 @@ mod tests {
     }
 
     /// `run-jit` (the default) never writes `-o`. Refusing it beats silently
-    /// ignoring the flag (#2296).
+    /// ignoring the flag.
     #[test]
     fn run_jit_refuses_minus_o() {
         let driver = driver_for(&["vxc", "prog.vx", "-o", "out"]);
