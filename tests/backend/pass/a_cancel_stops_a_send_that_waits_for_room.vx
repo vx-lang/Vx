@@ -13,11 +13,8 @@
 // The cancelled `send` already had its place in the channel, after the value 1. A later `recv`
 // must pass that place: the value 3 then arrives after 1.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator runs each task to its end at its `spawn`. A task
-// that waits for a later task then waits forever.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}send gave back 2, cancelled true{{$}}
 // CHECK: {{^}}leave_early gave 7{{$}}
 // CHECK: {{^}}recv gave 1{{$}}
