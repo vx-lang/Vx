@@ -80,7 +80,7 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
         }
         None => None,
     };
-    let fiber = sched::current_fiber();
+    let fiber = sched::fiber_that_can_park();
     if left.is_none() {
         deadlock::watch();
     }
