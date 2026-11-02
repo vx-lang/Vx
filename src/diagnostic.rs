@@ -719,7 +719,7 @@ impl std::fmt::Display for DiagnosticCode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticLevel {
     Warning,
     Error,
@@ -1043,7 +1043,10 @@ impl DiagnosticsVec {
             let at = d.source_span.as_ref().map(|s| (s.line, s.column, s.length));
             let key = (d.level, d.code, at, d.message.as_ref());
             let already = self.inner[..start].iter().any(|prev| {
-                let prev_at = prev.source_span.as_ref().map(|s| (s.line, s.column, s.length));
+                let prev_at = prev
+                    .source_span
+                    .as_ref()
+                    .map(|s| (s.line, s.column, s.length));
                 (prev.level, prev.code, prev_at, prev.message.as_ref()) == key
             });
             if already {
