@@ -1423,6 +1423,47 @@ pub(crate) fn call_runtime_fn<'c>(
     Ok(call_op.result(0)?.into())
 }
 
+/// A call of the runtime function `fn_name`, which takes nothing and returns nothing.
+pub(crate) fn call_runtime_void<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    fn_name: &str,
+) -> Result<(), LowerError> {
+    if !gen.functions.contains_key(fn_name) {
+        let func_ty = Type::parse(gen.context, "() -> ()")
+            .ok_or_else(|| LowerError::ParseType("() -> ()".to_string()))?;
+        let func_decl = OperationBuilder::new("func.func", gen.loc())
+            .add_attributes(&[
+                (
+                    Identifier::new(gen.context, "sym_name"),
+                    StringAttribute::new(gen.context, fn_name).into(),
+                ),
+                (
+                    Identifier::new(gen.context, "function_type"),
+                    TypeAttribute::new(func_ty).into(),
+                ),
+                (
+                    Identifier::new(gen.context, "sym_visibility"),
+                    StringAttribute::new(gen.context, "private").into(),
+                ),
+            ])
+            .add_regions([melior::ir::Region::new()])
+            .build()?;
+        gen.module.body().append_operation(func_decl);
+        gen.functions
+            .insert(fn_name.to_string().into(), (gen.none_ty, Vec::new()));
+    }
+    block.append_operation(
+        OperationBuilder::new("func.call", gen.loc())
+            .add_attributes(&[(
+                Identifier::new(gen.context, "callee"),
+                FlatSymbolRefAttribute::new(gen.context, fn_name).into(),
+            )])
+            .build()?,
+    );
+    Ok(())
+}
+
 /// The eight `raw::` transfer-lowering primitives (#353), emitted in place.
 ///
 /// These are reachable only from an `impl transfer` body inlined at a transfer

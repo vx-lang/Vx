@@ -10,10 +10,8 @@
 // A `drop` runs with cancellation off, so the `send` in it works and the slot is not lost.
 // After the `drop`, the task sees the cancel again.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator does not turn cancellation off for a `drop`.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}the recv gave no value, cancelled true{{$}}
 // CHECK: {{^}}in the drop, cancelled false{{$}}
 // CHECK: {{^}}the drop sent slot 4 back{{$}}
