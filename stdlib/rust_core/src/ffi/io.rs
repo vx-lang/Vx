@@ -21,15 +21,21 @@
 // word after its wait returned. The call then gives an error. No kernel call still holds the
 // buffer of the caller at that point, so the cancel needs no more (F5).
 //
+// A file is not a socket: poll(2) says that a regular file is always ready, and then a read
+// still waits for the disk. So a fiber runs a file call on a helper thread, and parks until the
+// call ends. A cancel does not stop that wait, because the call still uses the buffer of the
+// caller (F5).
+//
 // poll(2) works the same on Linux and on macOS. epoll and kqueue can replace it when a program
 // waits on many sockets.
 //
 //===----------------------------------------------------------------------===//
 
-use crate::ffi::wait;
+use crate::ffi::{sched, wait};
+use std::collections::VecDeque;
 use std::os::fd::RawFd;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 
 /// Runs `call` until it does not give `WouldBlock` or `Interrupted`. Before each new try, it
 /// waits until `fd` is ready to read, or to write when `write` is set. A cancel of the block of
@@ -187,9 +193,102 @@ impl Poller {
     }
 }
 
-/// Whether a task or thread waits for a socket. Data from outside the program can wake it.
+/// Runs `call`. A fiber runs it on a helper thread, and parks until it ends, so that its worker
+/// can run other tasks. A thread that runs no fiber runs it itself.
+pub fn off_the_worker<T>(call: impl FnOnce() -> T) -> T {
+    if sched::fiber_that_can_park().is_null() {
+        return call();
+    }
+    let mut out = None;
+    let done = AtomicI64::new(0);
+    let job: Box<dyn FnOnce() + '_> = Box::new(|| out = Some(call()));
+    // The fiber waits below until the helper set `done`, so `call`, `out` and `done` live
+    // until the helper no longer uses them. The fiber does not run while the helper runs the
+    // call, so the call is the only code that uses what it captured.
+    let job: Box<dyn FnOnce() + Send + 'static> = unsafe { std::mem::transmute(job) };
+    let word = done.as_ptr() as usize;
+    BUSY.fetch_add(1, Ordering::SeqCst);
+    helpers().run(Box::new(move || {
+        // A panic would leave the fiber parked forever.
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
+            eprintln!("vx: a file call panicked on a helper thread. The program stops.");
+            std::process::abort();
+        }
+        BUSY.fetch_sub(1, Ordering::SeqCst);
+        unsafe {
+            (*(word as *const AtomicI64)).store(1, Ordering::SeqCst);
+            // The wake reads only the address, so the word can be gone by now.
+            wait::vx_wake_all(word as *const i64);
+        }
+    }));
+    while done.load(Ordering::SeqCst) == 0 {
+        unsafe { wait::vx_wait_while(done.as_ptr(), 0) };
+    }
+    out.expect("the helper ran the call")
+}
+
+/// The calls that helper threads run now.
+static BUSY: AtomicUsize = AtomicUsize::new(0);
+
+type Job = Box<dyn FnOnce() + Send>;
+
+/// Threads that run file calls for fibers. A thread stays when its call ends, and waits for
+/// the next one. There is one more thread when each one is busy.
+struct Helpers {
+    /// The calls that no thread took yet, and the count of threads that wait for one.
+    state: Mutex<(VecDeque<Job>, usize)>,
+    cond: Condvar,
+}
+
+static HELPERS: OnceLock<Helpers> = OnceLock::new();
+
+fn helpers() -> &'static Helpers {
+    HELPERS.get_or_init(|| Helpers {
+        state: Mutex::new((VecDeque::new(), 0)),
+        cond: Condvar::new(),
+    })
+}
+
+impl Helpers {
+    fn state(&self) -> MutexGuard<'_, (VecDeque<Job>, usize)> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn run(&'static self, job: Job) {
+        let mut s = self.state();
+        s.0.push_back(job);
+        // A thread that waits counts until it takes the lock again. So more calls than such
+        // threads means that one call has no thread.
+        if s.0.len() > s.1 {
+            std::thread::Builder::new()
+                .name("vx-file".into())
+                .spawn(move || self.serve())
+                .expect("the system could not start a thread for a file call");
+        }
+        drop(s);
+        self.cond.notify_one();
+    }
+
+    fn serve(&self) {
+        let mut s = self.state();
+        loop {
+            if let Some(job) = s.0.pop_front() {
+                drop(s);
+                job();
+                s = self.state();
+                continue;
+            }
+            s.1 += 1;
+            s = self.cond.wait(s).unwrap_or_else(|e| e.into_inner());
+            s.1 -= 1;
+        }
+    }
+}
+
+/// Whether a task or thread waits for a socket, or a helper runs a file call. The end of
+/// either can wake a task.
 pub(crate) fn pending() -> bool {
-    POLLER.get().is_some_and(|p| !p.waiting().is_empty())
+    BUSY.load(Ordering::SeqCst) > 0 || POLLER.get().is_some_and(|p| !p.waiting().is_empty())
 }
 
 fn poller() -> &'static Poller {
@@ -347,7 +446,7 @@ mod tests {
                 while seen.load(Ordering::SeqCst) == 0 {
                     if Instant::now() > end {
                         // Not `eprintln!`: the test captures it, and the abort loses it.
-                        let line = format!("{test} hangs: a wait for a socket did not end\n");
+                        let line = format!("{test} hangs: a wait for I/O did not end\n");
                         let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
                         std::process::abort();
                     }
@@ -571,5 +670,66 @@ mod tests {
         drop(listener);
         let stream = vx_tcp_stream_connect(address.as_ptr());
         assert!(stream.is_null(), "a refused connect gave a stream");
+    }
+
+    struct Fifo {
+        path: CString,
+        /// 1 after the reader opened the FIFO.
+        opened: AtomicI64,
+        got: AtomicI64,
+    }
+
+    /// An open of a FIFO to read waits until a writer opens it, and the read waits for data.
+    extern "C" fn read_the_fifo(env: *mut u8) {
+        let f = unsafe { &**(env as *const *const Fifo) };
+        let file = crate::io::vx_file_open(f.path.as_ptr(), 0);
+        f.opened.store(1, Ordering::SeqCst);
+        unsafe { vx_wake_all(f.opened.as_ptr()) };
+        let mut byte = 0u8;
+        if crate::io::vx_file_read(file, &mut byte, 1) == 1 {
+            f.got.store(byte as i64, Ordering::SeqCst);
+        }
+        crate::io::vx_file_drop(file);
+    }
+
+    extern "C" fn write_the_fifo(env: *mut u8) {
+        let f = unsafe { &**(env as *const *const Fifo) };
+        let file = crate::io::vx_file_open(f.path.as_ptr(), 1);
+        // The write comes after the reader opened, so the read of the reader waits.
+        while f.opened.load(Ordering::SeqCst) == 0 {
+            unsafe { vx_wait_while(f.opened.as_ptr(), 0) };
+        }
+        let byte = b'V';
+        assert_eq!(crate::io::vx_file_write(file, &byte, 1), 1);
+        crate::io::vx_file_drop(file);
+    }
+
+    /// On one worker, a task opens and reads a FIFO before the other task opens it to write,
+    /// and before it writes. The file calls of the reader must not block the worker.
+    #[test]
+    fn a_task_that_waits_for_a_file_lets_another_task_run_on_its_worker() {
+        let _watchdog =
+            Watchdog::new("a_task_that_waits_for_a_file_lets_another_task_run_on_its_worker");
+        let path = std::env::temp_dir().join(format!("vx-io-test-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let path = CString::new(path.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let f = Fifo {
+            path,
+            opened: AtomicI64::new(0),
+            got: AtomicI64::new(0),
+        };
+        let group = tasks_begin(Some(Scheduler::start(1, 1)));
+        unsafe {
+            vx_task_start(group, read_the_fifo, env_with(&f as *const Fifo));
+            vx_task_start(group, write_the_fifo, env_with(&f as *const Fifo));
+            vx_tasks_end(group);
+        }
+        unsafe { libc::unlink(f.path.as_ptr()) };
+        assert_eq!(
+            f.got.load(Ordering::SeqCst),
+            b'V' as i64,
+            "the reader did not get the byte"
+        );
     }
 }
