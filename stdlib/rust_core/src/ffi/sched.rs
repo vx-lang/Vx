@@ -113,6 +113,9 @@ pub(crate) struct Scheduler {
     switches: AtomicU64,
     /// The workers that wait for a ready task.
     idle: AtomicUsize,
+    /// The fibers that a worker runs now. A worker counts its fiber from the `pop` until the
+    /// fiber is on a queue or a bucket list again, or ended.
+    running: AtomicUsize,
     workers: AtomicUsize,
     max_workers: usize,
     /// The monitor wrote the message about the limit.
@@ -124,16 +127,7 @@ impl Scheduler {
     /// `max_workers`. It lives until the program ends.
     pub(crate) fn start(workers: usize, max_workers: usize) -> &'static Scheduler {
         assert!(workers > 0 && max_workers >= workers);
-        let sched: &'static Scheduler = Box::leak(Box::new(Scheduler {
-            ready: Mutex::new(VecDeque::new()),
-            has_ready: Condvar::new(),
-            stacks: StackPool::new(TASK_STACK_BYTES),
-            switches: AtomicU64::new(0),
-            idle: AtomicUsize::new(0),
-            workers: AtomicUsize::new(0),
-            max_workers,
-            told_limit: AtomicBool::new(false),
-        }));
+        let sched = Scheduler::without_workers(max_workers);
         for _ in 0..workers {
             sched.add_worker();
         }
@@ -141,6 +135,20 @@ impl Scheduler {
             start_thread("vx-monitor".to_string(), move || sched.monitor());
         }
         sched
+    }
+
+    fn without_workers(max_workers: usize) -> &'static Scheduler {
+        Box::leak(Box::new(Scheduler {
+            ready: Mutex::new(VecDeque::new()),
+            has_ready: Condvar::new(),
+            stacks: StackPool::new(TASK_STACK_BYTES),
+            switches: AtomicU64::new(0),
+            idle: AtomicUsize::new(0),
+            running: AtomicUsize::new(0),
+            workers: AtomicUsize::new(0),
+            max_workers,
+            told_limit: AtomicBool::new(false),
+        }))
     }
 
     fn add_worker(&'static self) {
@@ -183,6 +191,7 @@ impl Scheduler {
         loop {
             if let Some(fiber) = ready.pop_front() {
                 self.switches.fetch_add(1, Ordering::SeqCst);
+                self.running.fetch_add(1, Ordering::SeqCst);
                 return fiber;
             }
             self.idle.fetch_add(1, Ordering::SeqCst);
@@ -232,7 +241,17 @@ impl Scheduler {
                     }
                 }
             }
+            self.running.fetch_sub(1, Ordering::SeqCst);
         }
+    }
+
+    /// True when no fiber runs and none is ready. Each fiber that did not end then waits on a
+    /// bucket, and only a thread that is not a worker can wake it. With no fibers, it is true.
+    #[cfg_attr(not(test), expect(dead_code))]
+    pub(crate) fn all_parked(&self) -> bool {
+        // `pop` counts a fiber as running under this lock, so no fiber is between the two.
+        let ready = self.ready.lock().unwrap();
+        ready.is_empty() && self.running.load(Ordering::SeqCst) == 0
     }
 
     /// Starts `run(env)` as a fiber with the cancel mark `mark`. The caller frees the fiber after
@@ -845,5 +864,75 @@ mod tests {
             );
             assert_eq!(ran, 0, "a task ran with each worker blocked");
         }
+    }
+
+    struct Spin {
+        gate: AtomicI64,
+        waits: AtomicI64,
+        spins: AtomicI64,
+        stop: AtomicI64,
+    }
+
+    extern "C" fn wait_at_the_gate(env: *mut u8) {
+        let s = unsafe { &**(env as *const *const Spin) };
+        open(&s.waits);
+        wait_for(&s.gate);
+    }
+
+    extern "C" fn spin_until_stopped(env: *mut u8) {
+        let s = unsafe { &**(env as *const *const Spin) };
+        open(&s.spins);
+        while s.stop.load(Ordering::SeqCst) == 0 {
+            std::hint::spin_loop();
+        }
+    }
+
+    #[test]
+    fn all_parked_is_true_only_when_no_task_runs() {
+        let _watchdog = Watchdog::new("all_parked_is_true_only_when_no_task_runs");
+        let sched = Scheduler::start(2, 2);
+        let s = Spin {
+            gate: AtomicI64::new(0),
+            waits: AtomicI64::new(0),
+            spins: AtomicI64::new(0),
+            stop: AtomicI64::new(0),
+        };
+        let group = tasks_begin(Some(sched));
+        unsafe {
+            vx_task_start(group, wait_at_the_gate, env_with(&s as *const Spin));
+            vx_task_start(group, spin_until_stopped, env_with(&s as *const Spin));
+            wait_for(&s.waits);
+            wait_for(&s.spins);
+            let mut seen_while_spinning = false;
+            for _ in 0..100 {
+                seen_while_spinning |= sched.all_parked();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            s.stop.store(1, Ordering::SeqCst);
+            let seen_after = eventually(|| sched.all_parked());
+            open(&s.gate);
+            vx_tasks_end(group);
+            assert!(!seen_while_spinning, "a task that runs counted as parked");
+            assert!(seen_after, "a task that waits did not count as parked");
+        }
+    }
+
+    #[test]
+    fn all_parked_is_false_while_a_task_is_ready() {
+        // No worker takes the task off the queue.
+        let sched = Scheduler::without_workers(1);
+        let s = Spin {
+            gate: AtomicI64::new(0),
+            waits: AtomicI64::new(0),
+            spins: AtomicI64::new(0),
+            stop: AtomicI64::new(0),
+        };
+        let fiber = sched.spawn(wait_at_the_gate, env_with(&s as *const Spin), None);
+        assert!(
+            !sched.all_parked(),
+            "a task that is ready counted as parked"
+        );
+        // The queue still points at the fiber.
+        std::mem::forget(fiber);
     }
 }
