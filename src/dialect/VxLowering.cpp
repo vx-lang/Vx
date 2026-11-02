@@ -3213,9 +3213,30 @@ static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
       if (user != slotStore && !fn->isProperAncestor(user))
         slotUsers.push_back(user);
   b.setInsertionPoint(task);
-  auto start = LLVM::lookupOrCreateFn(b, module, "vx_task_start",
-                                      {ptrTy, ptrTy, ptrTy}, i64Ty);
+  auto start =
+      LLVM::lookupOrCreateFn(b, module, "vx_task_start_at",
+                             {ptrTy, ptrTy, ptrTy, ptrTy, i64Ty}, i64Ty);
   assert(succeeded(start) && "the runtime function has one declaration");
+  // Where the `spawn` is, so that an abort in the task can say it: the file
+  // from the module, and the line from the op. A line of 0 is not known.
+  Value file = LLVM::ZeroOp::create(b, loc, ptrTy);
+  if (auto source = module->getAttrOfType<StringAttr>("vx.source")) {
+    StringRef name = "__vx_source_file";
+    if (module.lookupSymbol<LLVM::GlobalOp>(name))
+      file = LLVM::AddressOfOp::create(b, loc, ptrTy, name);
+    else {
+      // A C string: the runtime reads it up to its 0.
+      std::string text = source.getValue().str();
+      text.push_back('\0');
+      file =
+          LLVM::createGlobalString(loc, b, name, text, LLVM::Linkage::Internal);
+    }
+  }
+  int64_t spawnLine = 0;
+  if (auto line = task->getAttrOfType<IntegerAttr>("vx.line"))
+    spawnLine = line.getInt();
+  Value lineValue =
+      LLVM::ConstantOp::create(b, loc, i64Ty, b.getI64IntegerAttr(spawnLine));
   Value null = LLVM::ZeroOp::create(b, loc, ptrTy);
   Value end = LLVM::GEPOp::create(b, loc, ptrTy, envType, null,
                                   ArrayRef<LLVM::GEPArg>{1});
@@ -3242,7 +3263,8 @@ static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
   Value fnPtr =
       UnrealizedConversionCastOp::create(b, loc, ptrTy, fnRef).getResult(0);
   Value index =
-      LLVM::CallOp::create(b, loc, *start, ValueRange{group, fnPtr, newEnv})
+      LLVM::CallOp::create(b, loc, *start,
+                           ValueRange{group, fnPtr, newEnv, file, lineValue})
           .getResult();
   LLVM::StoreOp::create(b, loc, group, field(b, newEnv, 0));
   LLVM::StoreOp::create(b, loc, index, field(b, newEnv, 1));

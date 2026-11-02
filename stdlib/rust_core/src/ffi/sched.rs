@@ -55,6 +55,7 @@ pub(crate) struct TaskLocals {
     pub(crate) put_aside: Vec<Option<Arc<CancelMark>>>,
     pub(crate) line: Vec<u8>,
     pub(crate) to_stderr: bool,
+    pub(crate) site: Option<crate::ffi::tasks::Site>,
 }
 
 impl TaskLocals {
@@ -62,6 +63,7 @@ impl TaskLocals {
     fn swap_with_thread(&mut self) {
         crate::ffi::tasks::swap_marks(&mut self.mark, &mut self.put_aside);
         lines::swap_with_thread(&mut self.line, &mut self.to_stderr);
+        crate::ffi::tasks::swap_site(&mut self.site);
     }
 }
 
@@ -341,11 +343,23 @@ impl Scheduler {
 
     /// Starts `run(env)` as a fiber with the cancel mark `mark`. The caller frees the fiber after
     /// `done` is 1.
+    #[cfg(test)]
     pub(crate) fn spawn(
         &'static self,
         run: VxTaskFn,
         env: *mut u8,
         mark: Option<Arc<CancelMark>>,
+    ) -> Box<Fiber> {
+        self.spawn_at(run, env, mark, None)
+    }
+
+    /// `spawn` for a task with the site `site`.
+    pub(crate) fn spawn_at(
+        &'static self,
+        run: VxTaskFn,
+        env: *mut u8,
+        mark: Option<Arc<CancelMark>>,
+        site: Option<crate::ffi::tasks::Site>,
     ) -> Box<Fiber> {
         let Some(stack) = self.stacks.take() else {
             eprintln!("vx: the system could not map a stack for a task");
@@ -360,6 +374,7 @@ impl Scheduler {
             state: AtomicU8::new(RUNNING),
             locals: TaskLocals {
                 mark,
+                site,
                 ..Default::default()
             },
             done: AtomicI64::new(0),
