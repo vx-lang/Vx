@@ -1,0 +1,29 @@
+//===- closure_returning_a_reference_from_outside.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure may return a reference that points outside its own call: into what a reference
+// parameter points at, or a reference made outside the closure, also with `return`.
+
+struct Slot {
+  v : i32,
+}
+
+fn main() -> i32 {
+  let s = Slot {
+    v : 4
+  };
+  let through_a_parameter = |q : &Slot| &q.v;
+  let x = 9;
+  let rx = &x;
+  let copied_reference = || rx;
+  let with_return = |c : bool| if c {
+    return rx;
+  } else {
+    rx
+  };
+  return *through_a_parameter(&s) + *copied_reference() + *with_return(true) - 22;
+}

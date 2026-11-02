@@ -1851,11 +1851,13 @@ impl<'a> TypeChecker<'a> {
         // Any value that can hold a reference is asked, not only a bare one: a `&local`
         // returned inside a struct, or a closure that uses a local, dangles the same way.
         self.check_view_return(expr, &ty, span);
+        // A `return` in a closure ends only the closure's call, not the function around it.
+        let closure_depth = self.mono.closure_depths.last().copied();
         if !self.speculating
             && self.type_can_hold_reference(&ty)
             && matches!(
                 self.ref_provenance_of(expr),
-                Some(crate::hir::env::RefProvenance::Local(_))
+                Some(crate::hir::env::RefProvenance::Local(d)) if closure_depth.is_none_or(|c| d >= c)
             )
         {
             self.report_frame_escape(
