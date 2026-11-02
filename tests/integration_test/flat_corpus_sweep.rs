@@ -18,9 +18,7 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
-    // `it.next().unwrap()` on a `VecIter<i64>`: the flat path declines `Option<&i64>::unwrap`
-    // ("a non-scalar default return").
-    "backend/pass/a_result_read_through_a_reference_field_points_where_the_field_points.vx",
+    // `VecIter<i64>::filter`: the flat path declines it ("a struct with no GID").
     "backend/pass/an_iterator_item_does_not_keep_the_iterator_borrowed.vx",
     // A `match` through a reference to an enum, one of them with a payload: the flat path does
     // not lower a match over a borrowed enum or an enum that carries a payload.
@@ -103,8 +101,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/closure_literal_in_a_for_header.vx",
     // `Vec::iter()` hands out `&T`: the flat path has no layout for `Option<&T>` and cannot
     // read through a `for` variable that is a reference (#889).
-    "backend/pass/closure_map.vx",
-    "backend/pass/vec_iter_is_core_iterator.vx",
     "backend/pass/vec_leaves_iter_names_free.vx",
     "backend/pass/vec_iter_hands_out_references.vx",
     "backend/pass/write_through_a_mutable_reference.vx",
