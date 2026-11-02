@@ -714,6 +714,50 @@ mod tests {
         assert_eq!(p.turn.load(Ordering::SeqCst), 0);
     }
 
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[test]
+    fn tasks_park_on_two_workers_with_shadow_stacks_on() {
+        const NO_SHADOW_STACKS: i32 = 77;
+        // As in the stack tests: the child turns shadow stacks on, and ends with `_exit`. Its
+        // workers start after that, so each one gets a shadow stack of its own.
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0, "fork failed");
+        if child == 0 {
+            if !crate::ffi::stack::turn_on_shadow_stacks() {
+                unsafe { libc::_exit(NO_SHADOW_STACKS) };
+            }
+            let sched = Scheduler::start(2, 2);
+            let p = PingPong {
+                turn: AtomicI64::new(0),
+                rounds: 2_000,
+            };
+            let group = tasks_begin(Some(sched));
+            unsafe {
+                vx_task_start(group, play_first, env_with(&p as *const PingPong));
+                vx_task_start(group, play_second, env_with(&p as *const PingPong));
+                vx_tasks_end(group);
+            }
+            let code = if p.turn.load(Ordering::SeqCst) == 0 {
+                0
+            } else {
+                1
+            };
+            unsafe { libc::_exit(code) };
+        }
+        let mut status = 0;
+        unsafe { libc::waitpid(child, &mut status, 0) };
+        if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == NO_SHADOW_STACKS {
+            eprintln!("this CPU or kernel has no shadow stacks, so the test checked nothing");
+            return;
+        }
+        assert!(
+            libc::WIFEXITED(status),
+            "the child stopped with signal {}: a switch broke a shadow stack",
+            libc::WTERMSIG(status)
+        );
+        assert_eq!(libc::WEXITSTATUS(status), 0, "a task lost its turn");
+    }
+
     struct Drops {
         first_off: AtomicI64,
         second_off: AtomicI64,
