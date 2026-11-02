@@ -40,6 +40,9 @@ struct Waiters {
     fibers: Vec<(FiberRef, usize)>,
     /// The threads that sleep here with no time limit, which the deadlock watcher counts.
     sleepers: i64,
+    /// The scheduler of each fiber that sleeps here on its worker's thread, under a callback.
+    /// The scheduler counts it as blocked, not the watcher.
+    blocked: Vec<&'static sched::Scheduler>,
     /// Goes up at each wake of the bucket.
     wakes: u64,
 }
@@ -49,6 +52,7 @@ static TABLE: [Bucket; BUCKETS] = [const {
         lock: Mutex::new(Waiters {
             fibers: Vec::new(),
             sleepers: 0,
+            blocked: Vec::new(),
             wakes: 0,
         }),
         cond: Condvar::new(),
@@ -117,12 +121,37 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
                 // runs it again. A woken thread can wait a long time for a CPU, and it must not
                 // look stuck then.
                 let seen = waiters.wakes;
-                waiters.sleepers += 1;
-                deadlock::sleep_started();
+                // A worker's thread is not a thread that the watcher counts. Its fiber, which
+                // cannot park under a callback, counts in its scheduler.
+                let blocked_in = sched::current_scheduler();
+                match blocked_in {
+                    Some(s) => {
+                        waiters.blocked.push(s);
+                        s.blocked();
+                    }
+                    None => {
+                        waiters.sleepers += 1;
+                        deadlock::sleep_started();
+                    }
+                }
                 let mut waiters = b.cond.wait(waiters).unwrap_or_else(|e| e.into_inner());
                 if waiters.wakes == seen {
-                    waiters.sleepers -= 1;
-                    deadlock::sleep_ended(1);
+                    match blocked_in {
+                        Some(s) => {
+                            let i = waiters
+                                .blocked
+                                .iter()
+                                .position(|&x| std::ptr::eq(x, s))
+                                .expect("a blocked fiber is on the list of its bucket");
+                            waiters.blocked.swap_remove(i);
+                            s.unblocked();
+                            deadlock::progress();
+                        }
+                        None => {
+                            waiters.sleepers -= 1;
+                            deadlock::sleep_ended(1);
+                        }
+                    }
                 }
             }
         }
@@ -229,6 +258,9 @@ fn wake(b: &Bucket, which: Fibers) {
     let mut waiters = b.lock.lock().unwrap_or_else(|e| e.into_inner());
     let fibers = take_fibers(&mut waiters, which);
     deadlock::sleep_ended(std::mem::take(&mut waiters.sleepers));
+    for s in std::mem::take(&mut waiters.blocked) {
+        s.unblocked();
+    }
     waiters.wakes = waiters.wakes.wrapping_add(1);
     drop(waiters);
     b.cond.notify_all();
@@ -498,6 +530,7 @@ mod tests {
         let mut waiters = Waiters {
             fibers: vec![(fiber(), 8), (fiber(), 16), (fiber(), 8)],
             sleepers: 0,
+            blocked: Vec::new(),
             wakes: 0,
         };
         assert_eq!(
@@ -514,5 +547,66 @@ mod tests {
         assert_eq!(words, [16], "a wake of a word took a fiber of another word");
         assert_eq!(take_fibers(&mut waiters, Fibers::All).len(), 1);
         assert!(waiters.fibers.is_empty());
+    }
+
+    struct Gate {
+        waits: AtomicI64,
+        gate: AtomicI64,
+    }
+
+    /// As a Vx function that foreign code calls, and that waits for the gate.
+    extern "C" fn wait_for_the_gate_in_a_callback(env: *mut u8) {
+        // The runtime frees the environment, which holds the address of the gate.
+        let g = unsafe { &**(env as *const *const Gate) };
+        sched::vx_callback_enter();
+        g.waits.store(1, Ordering::SeqCst);
+        while g.gate.load(Ordering::SeqCst) == 0 {
+            unsafe { vx_wait_while(g.gate.as_ptr(), 0) };
+        }
+        sched::vx_callback_exit();
+    }
+
+    #[test]
+    fn a_task_that_waits_in_a_callback_counts_as_parked_until_its_wake() {
+        let sched = sched::Scheduler::start(1, 1);
+        let g = Gate {
+            waits: AtomicI64::new(0),
+            gate: AtomicI64::new(0),
+        };
+        let group = crate::ffi::tasks::tasks_begin(Some(sched));
+        unsafe {
+            crate::ffi::tasks::vx_task_start(group, wait_for_the_gate_in_a_callback, {
+                let e = libc::malloc(std::mem::size_of::<*const Gate>()) as *mut *const Gate;
+                e.write(&g);
+                e as *mut u8
+            });
+        }
+        let b = bucket(g.gate.as_ptr());
+        // The task sleeps once it is on one of the two counts of the bucket.
+        let asleep = || {
+            let w = b.lock.lock().unwrap();
+            !w.blocked.is_empty() || w.sleepers > 0
+        };
+        while g.waits.load(Ordering::SeqCst) == 0 || !asleep() {
+            std::thread::yield_now();
+        }
+        let parked_while_waiting = sched.all_parked();
+        let sleepers = b.lock.lock().unwrap().sleepers;
+        g.gate.store(1, Ordering::SeqCst);
+        wake(b, Fibers::Of(g.gate.as_ptr() as usize));
+        // The task needs this lock to come back from its wait, so it is still in it here.
+        let waiters = b.lock.lock().unwrap();
+        let parked_after_the_wake = sched.all_parked();
+        drop(waiters);
+        unsafe { crate::ffi::tasks::vx_tasks_end(group) };
+        assert!(
+            parked_while_waiting,
+            "a task that waits in a callback did not count as parked"
+        );
+        assert_eq!(sleepers, 0, "the watcher counted a worker's thread");
+        assert!(
+            !parked_after_the_wake,
+            "a woken task in a callback still counted as parked"
+        );
     }
 }
