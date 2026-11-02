@@ -253,6 +253,7 @@ mod timer {
 /// - no fiber of the shared runtime runs or is ready,
 /// - each Vx thread that is not a worker waits in this file or in the join of a task thread,
 /// - no deadline of the timer is to come,
+/// - no fiber waits for a socket (io.rs),
 /// - and no wake, and no end of a wait, came since the last tick.
 ///
 /// A thread in a foreign call or in I/O is not in a wait here, so it never looks stuck. When
@@ -318,6 +319,7 @@ mod deadlock {
         fibers_parked
             && WAITING.load(Ordering::SeqCst) == THREADS.load(Ordering::SeqCst)
             && !super::timer::pending()
+            && !crate::ffi::io::pending()
     }
 
     fn run() {

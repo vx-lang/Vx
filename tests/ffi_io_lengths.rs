@@ -10,6 +10,15 @@
 
 include!("../stdlib/rust_core/src/ffi/macros.rs");
 
+// The sockets of these tests block, so a call never needs a second try.
+fn call_once<T>(
+    _fd: std::os::fd::RawFd,
+    _write: bool,
+    mut call: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    call()
+}
+
 // Report a failed check through the test's Result, with the expression that failed.
 macro_rules! check_eq {
     ($actual:expr, $expected:expr) => {{
@@ -47,7 +56,7 @@ mod stdio {
 }
 
 mod tcp {
-    instantiate_tcp_stream_ffi!();
+    instantiate_tcp_stream_ffi!(super::call_once);
 
     #[test]
     fn rejects_invalid_lengths_then_transfers_one_byte() -> std::io::Result<()> {
@@ -85,7 +94,7 @@ mod tcp {
 }
 
 mod udp {
-    instantiate_udp_socket_ffi!();
+    instantiate_udp_socket_ffi!(super::call_once);
 
     #[test]
     fn rejects_invalid_lengths_then_transfers_one_byte() -> std::io::Result<()> {
