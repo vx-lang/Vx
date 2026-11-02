@@ -36,7 +36,7 @@ def decode_escaped(text):
                 i += 2
                 continue
             # Two hex digits, no fewer: a trailing single digit is not an escape,
-            # and the Rust twin in device_image_test.rs reads it the same way.
+            # and the Rust equivalent in device_image_test.rs reads it the same way.
             digits = raw[i + 1 : i + 3]
             if len(digits) == 2:
                 try:

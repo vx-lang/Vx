@@ -6,18 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// The shape a real placed kernel has, and the one the SPIR-V argument
-// flattening has to survive: four rank-2 operands, a loop nest, and each row
-// read through a view. `spirv_device_image.vx` proves the mechanism on two
-// 2x2 tensors. This is the corpus shape `placed_kernel_four_operands.vx` has,
-// where four expansions and their accesses have to stay apart.
+// The shape a real placed kernel has: four rank-2 operands, a loop nest, and
+// each row read through a view. `spirv_device_image.vx` checks the mechanism on
+// two 2x2 tensors, and this checks that four operands and their views stay
+// apart.
 //
-// The loop counters live in stack slots (`{vx.parallel_init}` /
-// `{vx.parallel_bound}`), which are memref values until `mem2reg` promotes
-// them. A row view is a `memref.reinterpret_cast`, whose offset has to reach
-// the address arithmetic the flat arguments are addressed through.
-// device_image_test.rs decodes the payload's section and asserts the SPIR-V
-// magic, the kernel's name, and that `spirv-val` accepts the module.
+// The loop counters are stack slots until `mem2reg` promotes them, and a row
+// view is a `memref.reinterpret_cast`. device_image_test.rs checks the image.
 //
 // CHECK: vx.spawn topology({{[0-9]+}}) {
 // CHECK: } {arch = "spirv64"

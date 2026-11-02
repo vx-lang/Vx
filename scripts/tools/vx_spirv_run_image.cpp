@@ -23,7 +23,7 @@
 // compile-time constants of this fixture, so what it checks before `zeInit` is
 // also what it will hold -- four tensors, 512 bytes.
 //
-// Build and run: scripts/tools/vx_spirv_run_spike.sh
+// Build and run: scripts/tools/vx_spirv_run_image.sh
 
 #include <level_zero/ze_api.h>
 
@@ -105,7 +105,7 @@ int main(int argc, char **argv) {
   // The footprint is the four tensors the kernel's arguments describe, and it
   // is a compile-time constant. Checked against the ceiling before `zeInit` and
   // before anything is allocated, and printed on every run.
-  requireWithinCeiling("vx_spirv_run_spike", kFootprint, vramCeiling());
+  requireWithinCeiling("vx_spirv_run_image", kFootprint, vramCeiling());
   std::printf("footprint: %llu bytes of device memory (%llu tensors of %llu)\n",
               (unsigned long long)kFootprint, (unsigned long long)kOperands,
               (unsigned long long)kBytes);

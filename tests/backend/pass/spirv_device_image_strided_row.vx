@@ -6,30 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// The two shapes whose flat lowering reads a memref's own parts back by name:
-//
-//   - a row of a rank-3 tensor (`arow[j]` below) is a `strided_row`, built
-//     with `memref.extract_strided_metadata`;
-//   - a row of a run-time-shaped tensor (`drow` below) is a `dynamic_row`,
-//     built with `memref.dim`.
-//
-// The SPIR-V argument flattening used to refuse both -- it had no rewrite for
-// either op -- and the refusal was fatal: the whole compile failed instead of
-// the region taking the host path the way other unready shapes do. It now
-// rewrites them into the flat arguments' address arithmetic, so the kernel
-// stays on the device.
-//
-// device_image_test.rs decodes the payload's section and asserts the SPIR-V
-// magic, the kernel's name, and -- when spirv-val is installed -- that the
-// module validates.
-//
-// This file pins the source-level half: the spawn carries the declared arch,
-// and the program computes the same answer locally, where the region runs on
-// the host and the transfers are no-ops.
+// The two shapes whose flat lowering reads a memref's own parts back by name: a
+// row of a rank-3 tensor (`arow` below, with `memref.extract_strided_metadata`)
+// and a row of a run-time-shaped tensor (`drow` below, with `memref.dim`).
+// The SPIR-V argument flattening rewrites both into the flat arguments' address
+// arithmetic, so the kernel stays on the device, and this file checks the
+// answer the host path computes.
 //
 // Flat path only: the legacy code generator lowers a `memref.dim` of a row view
-// with the wrong number of indices, so the run-time-shaped row does not compile
-// there. Both shapes are the flat emitter's, so this is where they are pinned.
+// with the wrong number of indices. Both shapes are the flat emitter's.
 //
 // REQUIRES: flat-codegen
 // CHECK: vx.spawn topology({{[0-9]+}}) {

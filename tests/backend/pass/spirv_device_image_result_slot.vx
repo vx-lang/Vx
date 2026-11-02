@@ -7,16 +7,11 @@
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // A `spirv64` region that yields a value hands it back through a host stack
-// slot, which a device cannot address, so the kernel gets no SPIR-V image and
-// the compiler says so. This is the sibling of the memref-cell warning the
-// legacy path already gets. device_image_test.rs asserts both the missing
-// `format=spirv` entry and the warning text, which names the host stack slot.
+// slot, which a device cannot address, so the kernel gets no image and the
+// compiler says so. The region runs on the host and computes the same answer.
 //
-// This file pins the source-level half: the spawn carries the declared arch,
-// and the program still computes the right answer locally, where the region
-// runs on the host. device_image_test.rs is what asserts the warning text, and
-// warning goes to stderr, so a CHECK line for it here would be matched against
-// a stream whose two halves are not ordered.
+// Here: the spawn carries the arch and the answer is right. The warning and the
+// absent `format=spirv` entry are device_image_test.rs's business.
 //
 // CHECK: vx.spawn topology({{[0-9]+}}) {
 // CHECK: } {arch = "spirv64"

@@ -6,19 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
-// A USER-DECLARED topology whose machine model says `arch: spirv64` gets its
-// kernel compiled to a SPIR-V module, carried in the dispatch payload -- the
-// Intel Arc's architecture (fleet/arc-a770.vx).
+// A topology whose machine model says `arch: spirv64` gets its kernel compiled
+// to a SPIR-V module. The dispatch payload carries that image in its section,
+// after the entries, because the module's first word holds NUL bytes and would
+// end a text entry there.
 //
-// The image is binary and holds NUL bytes in its first word, so it cannot ride
-// in a NUL-terminated `image=` entry. It rides in the payload's section, after
-// the entries, with the length that says where it ends. device_image_test.rs
-// decodes that section and asserts the SPIR-V magic, the kernel's name in the
-// module, and -- when spirv-val is installed -- that the module validates.
-//
-// This file pins the source-level half: the spawn carries the declared arch,
-// and the program computes the same answer locally, where the region runs on
-// the host and the transfers are no-ops.
+// This file checks the source: the spawn carries the declared arch, and the
+// program computes the same answer locally. device_image_test.rs checks the
+// image itself.
 //
 // CHECK: vx.spawn topology({{[0-9]+}}) {
 // CHECK: } {arch = "spirv64"

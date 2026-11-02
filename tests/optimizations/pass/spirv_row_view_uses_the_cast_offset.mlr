@@ -1,0 +1,41 @@
+//===- spirv_row_view_uses_the_cast_offset.mlr - where a row starts --*- MLIR -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A row view of a sliced tensor argument starts at the cast's offset, not at
+// the offset the slice already carries.
+//
+// `memref.reinterpret_cast` replaces its source's offset. MemRefOps.td gives
+// the result descriptor `%dst.offset = %offset`, and says the cast behaves as
+// if the base buffer were passed directly, so a cast never builds on the
+// offset of the view it is made from. Adding that offset would read the row
+// `offset` elements past where the host reads it, for the same program.
+//
+// The kernel takes a source whose type says its offset is not known, which is
+// what a sliced tensor argument looks like, and asks for the row `%row` of it.
+// Its address is `%row` alone: the source's offset, the third flattened
+// parameter, is not part of it.
+//
+// RUN: vx-opt %s --pass-pipeline="builtin.module(gpu.module(vx-flatten-spirv-kernel-args))" | FileCheck %s
+// CHECK: gpu.func @row(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>, %arg2: i64, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: index, %arg8: index
+// CHECK: %[[ROW:[a-z0-9]+]] = arith.index_cast %arg7 : index to i64
+// CHECK-NOT: llvm.add %arg2
+// CHECK: %[[COL:[a-z0-9]+]] = arith.index_cast %arg8 : index to i64
+// CHECK: %[[STEP:[a-z0-9]+]] = llvm.mul %[[COL]], %{{[a-z0-9]+}} : i64
+// CHECK: %[[LINEAR:[a-z0-9]+]] = llvm.add %[[ROW]], %[[STEP]] : i64
+// CHECK: llvm.getelementptr inbounds %arg1[%[[LINEAR]]]
+
+module {
+  gpu.module @kernels {
+    gpu.func @row(%src: memref<2x4xf32, strided<[4, 1], offset: ?>>, %row: index, %col: index, %dst: memref<4xf32>) kernel {
+      %view = memref.reinterpret_cast %src to offset: [%row], sizes: [4], strides: [1] : memref<2x4xf32, strided<[4, 1], offset: ?>> to memref<4xf32, strided<[1], offset: ?>>
+      %value = memref.load %view[%col] : memref<4xf32, strided<[1], offset: ?>>
+      %out = memref.reinterpret_cast %dst to offset: [0], sizes: [4], strides: [1] : memref<4xf32> to memref<4xf32, strided<[1], offset: ?>>
+      memref.store %value, %out[%col] : memref<4xf32, strided<[1], offset: ?>>
+      gpu.return
+    }
+  }
+}

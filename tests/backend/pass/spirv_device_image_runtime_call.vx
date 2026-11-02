@@ -6,20 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 // A placed region that calls the runtime keeps the region on the host, and the
-// compiler says so.
+// compiler says so, naming the function it could not bring along.
 //
-// A device kernel can call only functions the device can run -- no `extern`, no
-// runtime entry point, no recursion -- so the outliner brings a kernel's callees
-// into the device module when it can and leaves the region alone when it
-// cannot. `print` is the runtime, so nothing can come along: the region runs on
-// the host, the printed value and the tensor come out right, one thread at a
-// time, and before this warning the payload simply carried no image and said
-// nothing about it.
-//
-// The message names the callee, not the call: `print_f32` is what the author
-// wrote.
-//
-// device_image_test.rs asserts the warning and the absent image.
+// A device kernel can call only what the device can run: no `extern`, no
+// runtime entry, no recursion. `print` is the runtime, so nothing can come
+// along, and the region runs on the host one thread at a time.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK: vx.spawn topology({{[0-9]+}}) {

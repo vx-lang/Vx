@@ -14,7 +14,7 @@
 //
 // The negative is as load-bearing as the positive. A classified matmul is left
 // at `linalg` level on purpose so the plugin can route it to cuBLAS, which
-// beats anything we would emit; giving it a device twin would be both wasted
+// beats anything we would emit; giving it a device copy would be both wasted
 // compile time and a worse kernel. That case broke six backend tests when the
 // image compile first landed, because the `gpu.func` for it was never
 // compilable and dropping it unexamined had hidden that. `test_backend` in
@@ -207,7 +207,7 @@ fn a_custom_topology_with_a_declared_arch_gets_a_device_image() {
     );
     // The visibility barrier, closed in #353: the builtin copy publishes the tile to every
     // lane before any lane reads it. Exactly one -- the count is what separates the
-    // builtin from a user lowering (see the user-lowering test below, which pins two).
+    // builtin from a user lowering (see the user-lowering test below, which checks two).
     assert_eq!(
         image.matches("bar.sync").count(),
         1,
@@ -643,7 +643,7 @@ fn a_strided_and_dynamic_row_kernel_gets_a_spirv_module_in_the_payload_section()
 /// `llvm.getelementptr`/`llvm.load`/`llvm.store`. The device pipeline takes
 /// those ops: a stack slot in address space 0 becomes SPIR-V `Function`
 /// storage, and the accesses around it lower through the flattening like any
-/// other address arithmetic. This test pins that, because the same fixture was
+/// other address arithmetic. This test checks that, because the same fixture was
 /// written when the gate refused every `llvm` op and kept such a region at
 /// home.
 #[test]
@@ -703,7 +703,7 @@ fn a_kernel_that_calls_the_runtime_says_it_runs_on_the_host() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("the call to 'print_f32'") && stderr.contains("runs on the CPU"),
-        "the compiler dropped this kernel's device twin without naming the \
+        "the compiler dropped this kernel's device copy without naming the \
          callee that kept it at home; stderr was:\n{stderr}"
     );
 }
@@ -739,8 +739,88 @@ fn a_yielding_spirv_region_says_it_runs_on_the_host() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("host stack slot") && stderr.contains("run on the host"),
-        "the compiler dropped this kernel's device twin without saying why, so \
+        "the compiler dropped this kernel's device copy without saying why, so \
          the author believes it runs on the card; stderr was:\n{stderr}"
+    );
+}
+
+/// A `spirv64` kernel that keeps a scratch array or a shared tile of its own
+/// gets no image, and the compile still succeeds: the region runs on the host.
+///
+/// Both of these used to stop the compile with "cannot compile this device
+/// kernel", which turned programs that run on the host into programs that do
+/// not build. Their fixtures check the warning and the result; this is the
+/// other half, that no image was written for either of them.
+#[test]
+fn a_kernel_the_spirv_path_cannot_image_still_compiles() {
+    for (name, reason) in [
+        (
+            "spirv_device_image_local_array.vx",
+            "it keeps a scratch buffer of its own",
+        ),
+        (
+            "spirv_device_image_shared_tile.vx",
+            "it keeps a tile in shared memory",
+        ),
+    ] {
+        let path = corpus(name);
+        let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
+            .arg(&path)
+            .arg("--emit-llvm")
+            .output()
+            .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
+        assert!(
+            out.status.success(),
+            "vxc failed on {name}, which runs on the host:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let ir = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !ir.contains("format=spirv"),
+            "{name} must have no SPIR-V image rather than one that is wrong"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains(reason) && stderr.contains("The region will run on the host instead"),
+            "the warning for {name} does not say why the region stays at \
+             home; stderr was:\n{stderr}"
+        );
+    }
+}
+
+/// The host-stack-slot warning belongs to the SPIR-V path alone.
+///
+/// A `spirv64` machine file is where an author expects a device image, so a
+/// kernel that cannot have one is news. The NVPTX path has never imaged a
+/// kernel that yields a value and has never said so, and one pipeline's
+/// warning must not arrive for the other pipeline's kernels.
+#[test]
+fn the_host_stack_slot_warning_is_spirv_only() {
+    let stderr_of = |name: &str| {
+        let path = corpus(name);
+        let out = Command::new(env!("CARGO_BIN_EXE_vxc"))
+            .arg(&path)
+            .arg("--emit-llvm")
+            .output()
+            .unwrap_or_else(|e| panic!("could not run vxc: {e}"));
+        assert!(
+            out.status.success(),
+            "vxc failed on {name}:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    let spirv = stderr_of("spirv_device_image_result_slot.vx");
+    assert!(
+        spirv.contains("host stack slot"),
+        "a `spirv64` region that yields a value must say why it stays at \
+         home; stderr was:\n{spirv}"
+    );
+
+    let nvptx = stderr_of("nvptx_device_image_result_slot.vx");
+    assert!(
+        !nvptx.contains("host stack slot"),
+        "a `nvptx64` region was told about a SPIR-V refusal; stderr was:\n{nvptx}"
     );
 }
 
@@ -753,8 +833,8 @@ fn a_yielding_spirv_region_says_it_runs_on_the_host() {
 /// block arguments, and refuses the module with "type mismatch for bb argument
 /// #0 of successor #0". So the kernel keeps the host path, which computes the
 /// right answer, one thread at a time, and never touches the card. That is a
-/// decision the program's author has to be able to see: before, the twin was
-/// simply absent and the output said nothing.
+/// decision the program's author has to be able to see: before, the device copy
+/// was simply absent and the output said nothing.
 ///
 /// The flat code generator, which is the default, counts in `i32` and does get
 /// a SPIR-V image for this same program. `spirv_device_image_loop_kernel.vx` is
@@ -783,7 +863,7 @@ fn a_legacy_compiled_spirv_kernel_says_it_runs_on_the_host() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("`index` value between blocks") && stderr.contains("run on the host"),
-        "the compiler dropped this kernel's device twin without saying why, so \
+        "the compiler dropped this kernel's device copy without saying why, so \
          the author believes it runs on the card; stderr was:\n{stderr}"
     );
 }
