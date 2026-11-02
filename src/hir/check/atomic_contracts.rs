@@ -229,6 +229,7 @@ impl crate::hir::TypeChecker<'_> {
             }
         }
         self.check_reads_only_contract(f, shown);
+        self.check_unnamed_tensors(f, shown);
         let clauses: Vec<&Expr> = f
             .ensures
             .iter()
@@ -454,6 +455,54 @@ impl crate::hir::TypeChecker<'_> {
         if names.is_empty() {
             return;
         }
+        for (name, at) in self.uses_that_may_write(f, &names) {
+            self.atomic_error(
+                format!(
+                    "`{shown}` says `reads_only({name})`, so it may only read an element or a \
+                     field of `{name}`, or pass it to an `mlir!` block with \
+                     `ensures : [reads_only({name})]`, or to a function that says `reads_only` \
+                     for that argument"
+                ),
+                at,
+            );
+        }
+    }
+
+    /// E8007 for a function with access clauses that may write a `&` tensor parameter that no
+    /// clause names. The race proof reads such an argument as a read, so the body may only
+    /// read it, as for `reads_only`.
+    fn check_unnamed_tensors(&mut self, f: &Function, shown: &str) {
+        let named: HashSet<&str> = f
+            .ensures
+            .iter()
+            .filter_map(|e| atomic_name(e).or_else(|| reads_only_name(e)))
+            .collect();
+        let names: HashSet<String> = f
+            .params
+            .iter()
+            .filter(|(p, ty)| shared_tensor(ty) && !named.contains(p.as_ref()))
+            .map(|(p, _)| p.as_ref().to_string())
+            .collect();
+        if names.is_empty() {
+            return;
+        }
+        for (name, at) in self.uses_that_may_write(f, &names) {
+            self.atomic_error(
+                format!(
+                    "no clause of `{shown}` names `{name}`, so it may only read an element or a \
+                     field of `{name}`, or pass it to an `mlir!` block with \
+                     `ensures : [reads_only({name})]`, or to a function that says `reads_only` \
+                     for that argument"
+                ),
+                at,
+            );
+        }
+    }
+
+    /// Each use of a name in `names` in the body of `f` that may write it. A use that only
+    /// reads is an element or a field of it, its length, or an argument of an `mlir!` block or
+    /// a function that says `reads_only` for it.
+    fn uses_that_may_write(&self, f: &Function, names: &HashSet<String>) -> Vec<(String, Span)> {
         let readers: HashMap<String, Vec<usize>> = self
             .known_functions()
             .map(|(n, g)| (n.as_ref().to_string(), reads_only_params(g)))
@@ -503,17 +552,7 @@ impl crate::hir::TypeChecker<'_> {
                 }
             }
         });
-        for (name, at) in bad {
-            self.atomic_error(
-                format!(
-                    "`{shown}` says `reads_only({name})`, so it may only read an element or a \
-                     field of `{name}`, or pass it to an `mlir!` block with \
-                     `ensures : [reads_only({name})]`, or to a function that says `reads_only` \
-                     for that argument"
-                ),
-                at,
-            );
-        }
+        bad
     }
 
     /// E8007 for a function `f` that says `writes_only()`. It takes nothing that reaches the
