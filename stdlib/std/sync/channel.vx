@@ -181,8 +181,9 @@ fn notify(words : *mut AtomicI64) -> void {
 
 /// Sleep until an event on the channel, unless one came after `seen` was read from `WAKE`. A
 /// cancel of the `tasks` block and the clock reaching `deadline` also end the sleep.
-fn wait_for_event(words : *mut AtomicI64, seen : i64, deadline : i64) -> void {
+fn wait_for_event(words : *mut AtomicI64, seen : i64, deadline : i64, what : i32) -> void {
   word(words, SLEEPERS).fetch_add(1, AtomicOrdering::SeqCst);
+  waiting_for(what);
   wait_while_until(word(words, WAKE), seen, deadline, true);
   word(words, SLEEPERS).fetch_sub(1, AtomicOrdering::SeqCst);
 }
@@ -255,7 +256,7 @@ Sender<T> {
           value : v, cancelled : was_cancelled, timed_out : !was_cancelled
         });
       }
-      wait_for_event(words, seen, deadline);
+      wait_for_event(words, seen, deadline, WAIT_IN_SEND);
       seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
     }
     return Result<void, SendError<T>>::Err(SendError<T> {
@@ -329,7 +330,7 @@ Receiver<T> {
           why = RecvError::TimedOut;
           break;
         }
-        wait_for_event(words, seen, deadline);
+        wait_for_event(words, seen, deadline, WAIT_IN_RECV);
       }
       seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
     }
@@ -407,6 +408,7 @@ fn select<T : Send + Owned>(rs : &Vec<Receiver<T>>) -> Result<Selected<T>, RecvE
       break;
     }
     word(any, 1).fetch_add(1, AtomicOrdering::SeqCst);
+    waiting_for(WAIT_IN_SELECT);
     wait_while_or_cancel(word(any, 0), seen);
     word(any, 1).fetch_sub(1, AtomicOrdering::SeqCst);
   }

@@ -53,6 +53,8 @@ struct Task {
     /// The task in the shared runtime.
     fiber: Option<Box<Fiber>>,
     env: *mut u8,
+    /// Where the task started, so that the deadlock report can name the task that a join waits for.
+    site: Option<Site>,
 }
 
 /// The cancel mark of a `tasks` block.
@@ -140,6 +142,30 @@ fn site_of_spawn(file: *const c_char, line: i64) -> Option<Site> {
     Some(text.into())
 }
 
+/// The file and line of the `spawn` of the task with the site `site`.
+pub(crate) fn spawn_line(site: &Site) -> String {
+    let text = String::from_utf8_lossy(site);
+    let first = text.lines().next().unwrap_or_default();
+    first.rsplit(" at ").next().unwrap_or_default().to_string()
+}
+
+/// The file and the line of each `spawn` of the site `site`, the innermost first, to sort sites
+/// by their lines.
+pub(crate) fn site_key(site: &Site) -> Vec<(String, u64)> {
+    String::from_utf8_lossy(site)
+        .lines()
+        .filter_map(|l| {
+            let (file, line) = l.rsplit(" at ").next()?.rsplit_once(':')?;
+            Some((file.to_string(), line.parse().ok()?))
+        })
+        .collect()
+}
+
+/// The site of the task that this thread runs now.
+pub(crate) fn current_site() -> Option<Site> {
+    SITE.with(|s| s.borrow().clone())
+}
+
 /// Writes the site of this thread to standard error. A signal handler may call it: it uses only
 /// a `Cell` and `write`.
 pub(crate) fn write_site() {
@@ -163,6 +189,7 @@ fn wait(task: &mut Task) {
     if let Some(fiber) = &task.fiber {
         let done = &raw const fiber.done as *const i64;
         while fiber.done.load(Ordering::SeqCst) == 0 {
+            crate::ffi::wait::waiting_for_join(task.site.clone());
             unsafe { crate::ffi::wait::vx_wait_while(done, 0) };
         }
     }
@@ -175,6 +202,7 @@ fn wait(task: &mut Task) {
             .expect("a task thread has a done word");
         let done = Arc::as_ptr(thread_done) as *const i64;
         while thread_done.load(Ordering::SeqCst) == 0 {
+            crate::ffi::wait::waiting_for_join(task.site.clone());
             unsafe { crate::ffi::wait::vx_wait_while(done, 0) };
         }
         // A Vx panic stops the program (T6). A Rust panic in a task is a bug of the runtime.
@@ -260,12 +288,14 @@ pub unsafe extern "C" fn vx_task_start_at(
         group.tasks.push(Task {
             thread: None,
             thread_done: None,
-            fiber: Some(sched.spawn_at(run, env, Some(mark), site)),
+            fiber: Some(sched.spawn_at(run, env, Some(mark), site.clone())),
             env,
+            site,
         });
         return (group.tasks.len() - 1) as i64;
     }
     let task_env = Env(env);
+    let own_site = site.clone();
     let thread_done = Arc::new(AtomicI64::new(0));
     let done = thread_done.clone();
     crate::ffi::wait::thread_started();
@@ -298,6 +328,7 @@ pub unsafe extern "C" fn vx_task_start_at(
         thread_done: Some(thread_done),
         fiber: None,
         env,
+        site: own_site,
     });
     (group.tasks.len() - 1) as i64
 }

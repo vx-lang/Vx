@@ -61,6 +61,7 @@ Mutex<T> {
     let mut now = self.serving.load(AtomicOrdering::SeqCst);
     while now != ticket {
       self.sleepers.fetch_add(1, AtomicOrdering::SeqCst);
+      waiting_for(WAIT_IN_LOCK);
       wait_while(&self.serving, now);
       self.sleepers.fetch_sub(1, AtomicOrdering::SeqCst);
       now = self.serving.load(AtomicOrdering::SeqCst);
