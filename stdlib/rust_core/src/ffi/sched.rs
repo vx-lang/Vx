@@ -18,8 +18,12 @@
 // belongs to the task. So the worker swaps it in before the switch to a task, and out after.
 //
 // The runtime is used only when VX_TASK_RUNTIME=shared, with VX_TASK_WORKERS worker threads or
-// one for each CPU. It has no monitor yet (W8), so a task that blocks in a foreign call holds
-// its worker.
+// one for each CPU.
+//
+// A task that blocks in a foreign call, or runs a long loop with no wait, holds its worker
+// (W8). So a monitor thread looks at the scheduler on each tick. When tasks are ready, no worker
+// is idle, and no worker switched to a task since the last tick, it starts one more worker. The
+// workers stay until the program ends. VX_TASK_MAX_WORKERS limits their count.
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,8 +32,12 @@ use crate::ffi::tasks::{CancelMark, VxTaskFn, TASK_STACK_BYTES};
 use crate::io::lines;
 use std::cell::Cell;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::Duration;
+
+/// How often the monitor looks at the workers.
+const TICK: Duration = Duration::from_millis(10);
 
 // The states of a fiber.
 const RUNNING: u8 = 0;
@@ -101,26 +109,68 @@ pub(crate) struct Scheduler {
     ready: Mutex<VecDeque<FiberRef>>,
     has_ready: Condvar,
     stacks: StackPool,
+    /// The count of switches from a worker to a task. The monitor reads it as the progress.
+    switches: AtomicU64,
+    /// The workers that wait for a ready task.
+    idle: AtomicUsize,
+    workers: AtomicUsize,
+    max_workers: usize,
+    /// The monitor wrote the message about the limit.
+    told_limit: AtomicBool,
 }
 
 impl Scheduler {
-    /// A scheduler with `workers` worker threads. It lives until the program ends.
-    pub(crate) fn start(workers: usize) -> &'static Scheduler {
+    /// A scheduler with `workers` worker threads, and a monitor that can add workers up to
+    /// `max_workers`. It lives until the program ends.
+    pub(crate) fn start(workers: usize, max_workers: usize) -> &'static Scheduler {
+        assert!(workers > 0 && max_workers >= workers);
         let sched: &'static Scheduler = Box::leak(Box::new(Scheduler {
             ready: Mutex::new(VecDeque::new()),
             has_ready: Condvar::new(),
             stacks: StackPool::new(TASK_STACK_BYTES),
+            switches: AtomicU64::new(0),
+            idle: AtomicUsize::new(0),
+            workers: AtomicUsize::new(0),
+            max_workers,
+            told_limit: AtomicBool::new(false),
         }));
-        for i in 0..workers {
-            let started = std::thread::Builder::new()
-                .name(format!("vx-worker-{i}"))
-                .spawn(move || sched.work());
-            if let Err(e) = started {
-                eprintln!("vx: the system could not start a worker thread: {e}");
-                std::process::abort();
-            }
+        for _ in 0..workers {
+            sched.add_worker();
+        }
+        if max_workers > workers {
+            start_thread("vx-monitor".to_string(), move || sched.monitor());
         }
         sched
+    }
+
+    fn add_worker(&'static self) {
+        let i = self.workers.fetch_add(1, Ordering::SeqCst);
+        start_thread(format!("vx-worker-{i}"), move || self.work());
+    }
+
+    /// The loop of the monitor thread.
+    fn monitor(&'static self) {
+        let mut last = self.switches.load(Ordering::SeqCst);
+        loop {
+            std::thread::sleep(TICK);
+            let now = self.switches.load(Ordering::SeqCst);
+            let stuck = now == last
+                && self.idle.load(Ordering::SeqCst) == 0
+                && !self.ready.lock().unwrap().is_empty();
+            last = now;
+            if !stuck {
+                continue;
+            }
+            let workers = self.workers.load(Ordering::SeqCst);
+            if workers < self.max_workers {
+                self.add_worker();
+            } else if !self.told_limit.swap(true, Ordering::SeqCst) {
+                eprintln!(
+                    "vx: tasks wait to run, and all {workers} worker threads are busy. \
+                     VX_TASK_MAX_WORKERS sets the limit."
+                );
+            }
+        }
     }
 
     fn push(&self, fiber: FiberRef) {
@@ -132,9 +182,12 @@ impl Scheduler {
         let mut ready = self.ready.lock().unwrap();
         loop {
             if let Some(fiber) = ready.pop_front() {
+                self.switches.fetch_add(1, Ordering::SeqCst);
                 return fiber;
             }
+            self.idle.fetch_add(1, Ordering::SeqCst);
             ready = self.has_ready.wait(ready).unwrap();
+            self.idle.fetch_sub(1, Ordering::SeqCst);
         }
     }
 
@@ -215,25 +268,48 @@ impl Scheduler {
     }
 }
 
-/// The scheduler of the program, when VX_TASK_RUNTIME=shared. It has VX_TASK_WORKERS worker
-/// threads, or one for each CPU.
+fn start_thread(name: String, run: impl FnOnce() + Send + 'static) {
+    if let Err(e) = std::thread::Builder::new().name(name).spawn(run) {
+        eprintln!("vx: the system could not start a thread for the tasks: {e}");
+        std::process::abort();
+    }
+}
+
+/// The count that the environment variable `name` gives, or `default`.
+fn count_setting(name: &str, default: usize) -> usize {
+    match std::env::var(name) {
+        Ok(n) => match n.parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                eprintln!("vx: {name} must be a number above 0, not '{n}'");
+                std::process::abort();
+            }
+        },
+        Err(_) => default,
+    }
+}
+
+/// The most workers that the monitor starts when no VX_TASK_MAX_WORKERS is set.
+const MAX_WORKERS: usize = 256;
+
+/// The scheduler of the program, when VX_TASK_RUNTIME=shared. It starts with VX_TASK_WORKERS
+/// worker threads, or one for each CPU. The monitor adds workers up to VX_TASK_MAX_WORKERS.
 pub(crate) fn program_scheduler() -> Option<&'static Scheduler> {
     static SCHED: OnceLock<Option<&'static Scheduler>> = OnceLock::new();
     *SCHED.get_or_init(|| {
         let shared = std::env::var("VX_TASK_RUNTIME").is_ok_and(|v| v == "shared");
         shared.then(|| {
             let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
-            let workers = match std::env::var("VX_TASK_WORKERS") {
-                Ok(n) => match n.parse::<usize>() {
-                    Ok(n) if n > 0 => n,
-                    _ => {
-                        eprintln!("vx: VX_TASK_WORKERS must be a number above 0, not '{n}'");
-                        std::process::abort();
-                    }
-                },
-                Err(_) => cpus,
-            };
-            Scheduler::start(workers)
+            let workers = count_setting("VX_TASK_WORKERS", cpus);
+            let max_workers = count_setting("VX_TASK_MAX_WORKERS", MAX_WORKERS.max(workers));
+            if max_workers < workers {
+                eprintln!(
+                    "vx: VX_TASK_MAX_WORKERS ({max_workers}) is less than VX_TASK_WORKERS \
+                     ({workers})"
+                );
+                std::process::abort();
+            }
+            Scheduler::start(workers, max_workers)
         })
     })
 }
@@ -392,7 +468,7 @@ mod tests {
     fn a_thousand_tasks_wait_at_the_same_time_on_two_threads() {
         let _watchdog = Watchdog::new("a_thousand_tasks_wait_at_the_same_time_on_two_threads");
         const TASKS: usize = 1000;
-        let sched = Scheduler::start(2);
+        let sched = Scheduler::start(2, 2);
         let crowd = Crowd {
             arrived: AtomicUsize::new(0),
             gate: AtomicI64::new(0),
@@ -446,7 +522,7 @@ mod tests {
     #[test]
     fn each_task_keeps_its_own_line_on_one_thread() {
         let _watchdog = Watchdog::new("each_task_keeps_its_own_line_on_one_thread");
-        let sched = Scheduler::start(1);
+        let sched = Scheduler::start(1, 1);
         let l = Lines {
             first_parked: AtomicI64::new(0),
             second_done: AtomicI64::new(0),
@@ -490,7 +566,7 @@ mod tests {
     #[test]
     fn a_cancel_wakes_a_parked_task() {
         let _watchdog = Watchdog::new("a_cancel_wakes_a_parked_task");
-        let sched = Scheduler::start(1);
+        let sched = Scheduler::start(1, 1);
         let c = Cancel {
             never: AtomicI64::new(0),
             parked: AtomicI64::new(0),
@@ -527,7 +603,7 @@ mod tests {
     #[test]
     fn a_task_runs_at_the_same_time_as_the_code_after_its_spawn() {
         let _watchdog = Watchdog::new("a_task_runs_at_the_same_time_as_the_code_after_its_spawn");
-        let sched = Scheduler::start(1);
+        let sched = Scheduler::start(1, 1);
         let p = Pair {
             task_arrived: AtomicI64::new(0),
             test_arrived: AtomicI64::new(0),
@@ -573,7 +649,7 @@ mod tests {
     #[test]
     fn two_tasks_pass_a_turn_back_and_forth_without_a_lost_wake() {
         let _watchdog = Watchdog::new("two_tasks_pass_a_turn_back_and_forth_without_a_lost_wake");
-        let sched = Scheduler::start(2);
+        let sched = Scheduler::start(2, 2);
         let p = PingPong {
             turn: AtomicI64::new(0),
             rounds: 20_000,
@@ -636,7 +712,7 @@ mod tests {
     #[test]
     fn each_task_gets_its_own_mark_back_after_a_drop_that_parks() {
         let _watchdog = Watchdog::new("each_task_gets_its_own_mark_back_after_a_drop_that_parks");
-        let sched = Scheduler::start(1);
+        let sched = Scheduler::start(1, 1);
         let d = Drops {
             first_off: AtomicI64::new(0),
             second_off: AtomicI64::new(0),
@@ -664,5 +740,110 @@ mod tests {
             1,
             "the second task got another mark back"
         );
+    }
+
+    /// A pipe. A read from it blocks the OS thread until a write, as a foreign call can.
+    struct Pipe([libc::c_int; 2]);
+
+    impl Pipe {
+        fn new() -> Pipe {
+            let mut ends = [0; 2];
+            assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+            Pipe(ends)
+        }
+
+        fn read(&self) {
+            let mut byte = 0u8;
+            let n = unsafe { libc::read(self.0[0], (&raw mut byte).cast(), 1) };
+            assert_eq!(n, 1);
+        }
+
+        fn write(&self) {
+            let byte = 1u8;
+            let n = unsafe { libc::write(self.0[1], (&raw const byte).cast(), 1) };
+            assert_eq!(n, 1);
+        }
+    }
+
+    impl Drop for Pipe {
+        fn drop(&mut self) {
+            unsafe {
+                libc::close(self.0[0]);
+                libc::close(self.0[1]);
+            }
+        }
+    }
+
+    struct Blocked {
+        pipe: Pipe,
+        ran: AtomicI64,
+    }
+
+    extern "C" fn read_the_pipe(env: *mut u8) {
+        let b = unsafe { &**(env as *const *const Blocked) };
+        b.pipe.read();
+    }
+
+    extern "C" fn write_the_pipe(env: *mut u8) {
+        let b = unsafe { &**(env as *const *const Blocked) };
+        b.ran.store(1, Ordering::SeqCst);
+        b.pipe.write();
+    }
+
+    #[test]
+    fn the_monitor_adds_a_worker_when_a_task_blocks_its_thread() {
+        let _watchdog = Watchdog::new("the_monitor_adds_a_worker_when_a_task_blocks_its_thread");
+        let sched = Scheduler::start(1, 2);
+        let b = Blocked {
+            pipe: Pipe::new(),
+            ran: AtomicI64::new(0),
+        };
+        let group = tasks_begin(Some(sched));
+        unsafe {
+            vx_task_start(group, read_the_pipe, env_with(&b as *const Blocked));
+            // The second task runs only on a second worker, because the first one blocks in
+            // `read` until this task writes.
+            vx_task_start(group, write_the_pipe, env_with(&b as *const Blocked));
+            vx_tasks_end(group);
+        }
+        assert_eq!(sched.workers.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn the_monitor_adds_no_worker_past_the_limit() {
+        let _watchdog = Watchdog::new("the_monitor_adds_no_worker_past_the_limit");
+        let sched = Scheduler::start(1, 2);
+        let (first, second) = (
+            Blocked {
+                pipe: Pipe::new(),
+                ran: AtomicI64::new(0),
+            },
+            Blocked {
+                pipe: Pipe::new(),
+                ran: AtomicI64::new(0),
+            },
+        );
+        let group = tasks_begin(Some(sched));
+        unsafe {
+            vx_task_start(group, read_the_pipe, env_with(&first as *const Blocked));
+            vx_task_start(group, read_the_pipe, env_with(&second as *const Blocked));
+            // Both workers block, so this task waits to run.
+            vx_task_start(group, write_the_pipe, env_with(&first as *const Blocked));
+            let told = eventually(|| sched.told_limit.load(Ordering::SeqCst));
+            std::thread::sleep(10 * TICK);
+            let workers = sched.workers.load(Ordering::SeqCst);
+            let ran = first.ran.load(Ordering::SeqCst);
+            // The test writes to both pipes. The third task then runs, and it writes too.
+            first.pipe.write();
+            second.pipe.write();
+            vx_tasks_end(group);
+            first.pipe.read();
+            assert!(told, "the monitor did not tell about the limit");
+            assert_eq!(
+                workers, 2,
+                "the monitor started more workers than the limit"
+            );
+            assert_eq!(ran, 0, "a task ran with each worker blocked");
+        }
     }
 }
