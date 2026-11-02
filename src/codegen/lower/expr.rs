@@ -2066,35 +2066,81 @@ fn lower_task_block<'c>(
 }
 
 /// Whether `stmts` hold a `return`, or a `break` or `continue` that is not in a loop of their
-/// own (`in_loop`).
+/// own (`in_loop`). A task body and a closure are not part of the block, so the walk skips them.
 fn leaves_the_block(stmts: &[syntax::Statement], in_loop: bool) -> bool {
     use syntax::Statement as S;
     stmts.iter().any(|s| match s {
         S::Return(_) => true,
         S::Break(_) | S::Continue(_) => !in_loop,
         S::Loop(l) => leaves_the_block(&l.body, true),
-        S::ForLoop(l) => leaves_the_block(&l.body, true),
-        _ => {
-            let mut found = false;
-            syntax::visit_exprs(std::slice::from_ref(s), &mut |e| match e {
-                Expr::If(i) => {
-                    found |= leaves_the_block(&i.then_block, in_loop)
-                        || i.else_block
-                            .as_deref()
-                            .is_some_and(|b| leaves_the_block(b, in_loop));
-                }
-                Expr::Match(m) => {
-                    found |= m.arms.iter().any(|a| leaves_the_block(&a.body, in_loop));
-                }
-                // A `return` in an inner `tasks` block leaves this one too. A task body has none.
-                Expr::UnsafeBlock(u) if u.task != Some(syntax::TaskBlockKind::Spawn) => {
-                    found |= leaves_the_block(&u.stmts, in_loop);
-                }
-                _ => {}
-            });
-            found
-        }
+        S::ForLoop(l) => expr_leaves(&l.iterable, in_loop) || leaves_the_block(&l.body, true),
+        S::LetDecl(l) => expr_leaves(&l.expr, in_loop),
+        S::ExprStmt(e) => expr_leaves(&e.expr, in_loop),
+        S::Assign(a) => expr_leaves(&a.lhs, in_loop) || expr_leaves(&a.rhs, in_loop),
+        S::CompoundAssign(a) => expr_leaves(&a.lhs, in_loop) || expr_leaves(&a.rhs, in_loop),
+        S::Assert(a) => expr_leaves(&a.expr, in_loop),
+        S::MacroCall(_) | S::Drop(_) | S::Error(_) => false,
     })
+}
+
+/// [`leaves_the_block`] for one expression.
+fn expr_leaves(e: &Expr, in_loop: bool) -> bool {
+    let any = |es: &[Expr]| es.iter().any(|e| expr_leaves(e, in_loop));
+    let block = |stmts: &[syntax::Statement], ret: &Option<Box<Expr>>| {
+        leaves_the_block(stmts, in_loop) || ret.as_deref().is_some_and(|r| expr_leaves(r, in_loop))
+    };
+    match e {
+        // A task body: a `return` in it ends only the task.
+        Expr::UnsafeBlock(u) if u.task == Some(syntax::TaskBlockKind::Spawn) => false,
+        Expr::SpawnOn(_) | Expr::Closure(_) => false,
+        // A `return` in an inner `tasks` block leaves this one too.
+        Expr::UnsafeBlock(u) => block(&u.stmts, &u.ret),
+        Expr::TaskBlock(b) => b.kind != syntax::TaskBlockKind::Spawn && block(&b.stmts, &b.ret),
+        Expr::ComptimeBlock(b) => block(&b.stmts, &b.ret),
+        Expr::If(i) => {
+            expr_leaves(&i.cond, in_loop)
+                || leaves_the_block(&i.then_block, in_loop)
+                || i.else_block
+                    .as_deref()
+                    .is_some_and(|b| leaves_the_block(b, in_loop))
+        }
+        Expr::Match(m) => {
+            expr_leaves(&m.expr, in_loop)
+                || m.arms.iter().any(|a| leaves_the_block(&a.body, in_loop))
+        }
+        Expr::Identifier(_)
+        | Expr::Number(_)
+        | Expr::StringLiteral(_)
+        | Expr::TransferPredicate(_)
+        | Expr::MemorySpace(_)
+        | Expr::Topology(_)
+        | Expr::MacroCall(_)
+        | Expr::SizeOf(_)
+        | Expr::InlineMlir(_) => false,
+        Expr::EnumVariant(v) => v.payload.as_deref().is_some_and(any),
+        Expr::Transfer(t) => expr_leaves(&t.expr, in_loop),
+        Expr::FunctionCall(c) => any(&c.args),
+        Expr::IndirectCall(c) => expr_leaves(&c.callee, in_loop) || any(&c.args),
+        Expr::Array(a) => any(&a.elements),
+        Expr::MemberAccess(m) => expr_leaves(&m.base, in_loop),
+        Expr::IndexAccess(i) => expr_leaves(&i.base, in_loop) || expr_leaves(&i.index, in_loop),
+        Expr::MethodCall(m) => expr_leaves(&m.base, in_loop) || any(&m.args),
+        Expr::BinaryOp(b) => expr_leaves(&b.lhs, in_loop) || expr_leaves(&b.rhs, in_loop),
+        Expr::RelationalOp(r) => expr_leaves(&r.lhs, in_loop) || expr_leaves(&r.rhs, in_loop),
+        Expr::LogicalOp(l) => expr_leaves(&l.lhs, in_loop) || expr_leaves(&l.rhs, in_loop),
+        Expr::UnaryOp(u) => expr_leaves(&u.expr, in_loop),
+        Expr::Borrow(b) => expr_leaves(&b.expr, in_loop),
+        Expr::Dereference(d) => expr_leaves(&d.expr, in_loop),
+        Expr::StructInit(s) => s.fields.iter().any(|(_, e)| expr_leaves(e, in_loop)),
+        Expr::Range(r) => expr_leaves(&r.start, in_loop) || expr_leaves(&r.end, in_loop),
+        Expr::Grad(g) => any(&g.args),
+        Expr::Vjp(v) => any(&v.args) || expr_leaves(&v.cotangent, in_loop),
+        Expr::Jvp(j) => any(&j.args) || expr_leaves(&j.tangent, in_loop),
+        Expr::VecMacro(v) => any(&v.elements),
+        Expr::AsCast(c) => expr_leaves(&c.expr, in_loop),
+        Expr::Print(p) => any(&p.args),
+        Expr::Println(p) => any(&p.args),
+    }
 }
 
 fn lower_task_region<'c>(
