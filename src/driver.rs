@@ -2162,6 +2162,8 @@ fn get_optimization_pipeline(
         // `lift-cf-to-scf` leaves `ub.poison` placeholders behind; nothing else lowers them.
         passes.push("convert-ub-to-llvm".to_string());
         passes.push("reconcile-unrealized-casts".to_string());
+        // After the memref descriptors are LLVM values. See the pass.
+        passes.push("vx-lifetime-markers-on-allocas".to_string());
         // A function the program defines is not exported, so a `fn write` cannot replace
         // libc's `write` for the runtime library. See the pass.
         passes.push("vx-hide-program-symbols".to_string());
