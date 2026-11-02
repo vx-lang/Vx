@@ -256,7 +256,7 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | [`E8004`](/errors/E8004/) | Compile-time evaluation exceeded the call-depth limit |
 | [`E8005`](/errors/E8005/) | Compile-time evaluation ran more loop iterations than the budget allows. A loop whose end condition is never reached is the usual cause; without this it hung the compiler. |
 | [`E8006`](/errors/E8006/) | A call does not meet the called function's precondition (`requires`) |
-| [`E8007`](/errors/E8007/) | An access clause that does not hold: an `atomic(t)` whose body uses `t` without an atomic operation, or a `writes_only()` whose body may write memory |
+| [`E8007`](/errors/E8007/) | An access clause that does not hold: an `atomic(t)` whose body uses `t` without an atomic operation, a `reads_only(t)` whose body may write `t`, or a `writes_only()` whose body may write memory |
 | [`E8008`](/errors/E8008/) | A loop invariant that the prover cannot show to hold when the loop starts |
 | [`E8009`](/errors/E8009/) | A loop invariant that the prover cannot show to hold after a pass through the loop body |
 | [`E8010`](/errors/E8010/) | An `mlir!` block whose `dialects` list does not match its body: the body uses an operation of a dialect that the list does not name, or the list names something that is not a dialect. The list is what the block says it uses, so it must be right. |
