@@ -15,6 +15,9 @@
 // An atomic access, through a call or an `mlir!` block with an `atomic(t)` clause, races with no
 // other atomic access. A tensor that the loop changes atomically has only atomic accesses.
 //
+// Two accesses whose index forms differ by a number are apart when that number, as one more
+// digit, keeps the form a mixed-radix number: `2 * j` and `2 * j + 1` never meet.
+//
 // An access in `if v == c`, where `v` is the loop's variable and `c` a number, is made by one
 // pass only. Two such accesses with the same `c` are made by the same pass, so they never race.
 //
@@ -630,6 +633,14 @@ impl Proof<'_> {
 
     /// Whether two passes that compute `form` to the same value are the same pass.
     fn fixes_own(&self, form: &Affine) -> bool {
+        self.fixes_own_with(form, None)
+    }
+
+    /// As `fixes_own`, for two forms that differ by the constant `gap`: `form` and
+    /// `form + gap`. The gap is one more digit, `gap * d` with `d` 0 or 1. So two passes never
+    /// meet when the passes and the digit together are a mixed-radix number, as for
+    /// `out[2 * j]` and `out[2 * j + 1]`, or `out[j]` and `out[j + 32]` with `j` below 32.
+    fn fixes_own_with(&self, form: &Affine, gap: Option<i64>) -> bool {
         if !form.terms.contains_key(&self.own) {
             return false;
         }
@@ -648,6 +659,9 @@ impl Proof<'_> {
                 (c.abs(), span)
             })
             .collect();
+        if let Some(gap) = gap {
+            digits.push((gap, Some(2)));
+        }
         // For equal coefficients, a smaller range goes first, and a range of unknown size last.
         digits.sort_by_key(|&(c, span)| (c, span.unwrap_or(i64::MAX)));
         let last = digits.len() - 1;
@@ -704,9 +718,19 @@ impl Proof<'_> {
                     if w.pass.is_some() && w.pass == other.pass {
                         continue;
                     }
-                    let apart = w.indices.iter().zip(&other.indices).any(|(x, y)| {
-                        matches!((x, y), (Some(x), Some(y)) if x == y && self.fixes_own(x))
-                    });
+                    let apart = w
+                        .indices
+                        .iter()
+                        .zip(&other.indices)
+                        .any(|(x, y)| match (x, y) {
+                            (Some(x), Some(y)) if x == y => self.fixes_own(x),
+                            (Some(x), Some(y)) if x.terms == y.terms => x
+                                .constant
+                                .checked_sub(y.constant)
+                                .and_then(i64::checked_abs)
+                                .is_some_and(|gap| self.fixes_own_with(x, Some(gap))),
+                            _ => false,
+                        });
                     if apart {
                         continue;
                     }
@@ -718,7 +742,9 @@ impl Proof<'_> {
                     } else if other.write {
                         format!(
                             "two passes of this {level} loop may write the same element of \
-                             `{name}`: the writes must use the same index that fixes `{own}`"
+                             `{name}`: the writes must use the same index that fixes `{own}`, \
+                             or indices that no two passes make equal, such as `2 * {own}` and \
+                             `2 * {own} + 1`"
                         )
                     } else {
                         format!(
