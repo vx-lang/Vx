@@ -102,6 +102,8 @@ struct Worker {
 thread_local! {
     /// The worker that this thread runs, or null on a thread that is not a worker.
     static WORKER: Cell<*mut Worker> = const { Cell::new(std::ptr::null_mut()) };
+    /// The Vx functions that foreign code called on this thread and that did not return yet.
+    static CALLBACKS: Cell<u32> = const { Cell::new(0) };
 }
 
 /// The ready queue and its workers.
@@ -338,6 +340,37 @@ unsafe extern "C" fn fiber_entry(arg: *mut u8) -> ! {
     lines::task_ended();
     to_worker(Why::Ended);
     unreachable!("nothing continues a task that ended");
+}
+
+/// Foreign code calls a Vx function. Until `vx_callback_exit`, a wait of the task blocks its
+/// thread and does not park. A parked task can continue on another thread, and the foreign
+/// frames under the callback can keep state that belongs to this thread.
+///
+/// The count belongs to the thread, not to the task: a task parks only when the count is 0.
+#[no_mangle]
+pub extern "C" fn vx_callback_enter() {
+    CALLBACKS.with(|c| c.set(c.get() + 1));
+}
+
+/// The Vx function that foreign code called returns.
+#[no_mangle]
+pub extern "C" fn vx_callback_exit() {
+    CALLBACKS.with(|c| {
+        assert!(
+            c.get() > 0,
+            "vx_callback_exit comes after vx_callback_enter"
+        );
+        c.set(c.get() - 1);
+    });
+}
+
+/// The fiber that can park on this thread now, or null. A fiber under a callback cannot park.
+pub(crate) fn fiber_that_can_park() -> *mut Fiber {
+    if CALLBACKS.with(|c| c.get()) > 0 {
+        std::ptr::null_mut()
+    } else {
+        current_fiber()
+    }
 }
 
 /// The fiber that this thread runs, or null on a thread that runs no fiber.
@@ -933,5 +966,88 @@ mod tests {
         );
         // The queue still points at the fiber.
         std::mem::forget(fiber);
+    }
+
+    struct Callback {
+        waits: AtomicI64,
+        gate: AtomicI64,
+        ran: AtomicI64,
+    }
+
+    /// As a Vx function that foreign code calls, and that waits.
+    extern "C" fn wait_in_a_callback(env: *mut u8) {
+        let c = unsafe { &**(env as *const *const Callback) };
+        vx_callback_enter();
+        open(&c.waits);
+        wait_for(&c.gate);
+        vx_callback_exit();
+    }
+
+    extern "C" fn wait_after_a_callback(env: *mut u8) {
+        let c = unsafe { &**(env as *const *const Callback) };
+        vx_callback_enter();
+        vx_callback_exit();
+        wait_for(&c.gate);
+    }
+
+    extern "C" fn run_and_open_the_gate(env: *mut u8) {
+        let c = unsafe { &**(env as *const *const Callback) };
+        c.ran.store(1, Ordering::SeqCst);
+        open(&c.gate);
+    }
+
+    #[test]
+    fn a_task_in_a_callback_waits_on_its_thread() {
+        let _watchdog = Watchdog::new("a_task_in_a_callback_waits_on_its_thread");
+        let sched = Scheduler::start(1, 1);
+        let c = Callback {
+            waits: AtomicI64::new(0),
+            gate: AtomicI64::new(0),
+            ran: AtomicI64::new(0),
+        };
+        let group = tasks_begin(Some(sched));
+        unsafe {
+            vx_task_start(group, wait_in_a_callback, env_with(&c as *const Callback));
+            vx_task_start(
+                group,
+                run_and_open_the_gate,
+                env_with(&c as *const Callback),
+            );
+            wait_for(&c.waits);
+            std::thread::sleep(10 * TICK);
+            let ran = c.ran.load(Ordering::SeqCst);
+            open(&c.gate);
+            vx_tasks_end(group);
+            assert_eq!(
+                ran, 0,
+                "a task in a callback parked, and gave its thread away"
+            );
+        }
+    }
+
+    #[test]
+    fn a_task_parks_again_after_its_callback_returns() {
+        // With one worker, the second task opens the gate only when the first task parks.
+        let _watchdog = Watchdog::new("a_task_parks_again_after_its_callback_returns");
+        let sched = Scheduler::start(1, 1);
+        let c = Callback {
+            waits: AtomicI64::new(0),
+            gate: AtomicI64::new(0),
+            ran: AtomicI64::new(0),
+        };
+        let group = tasks_begin(Some(sched));
+        unsafe {
+            vx_task_start(
+                group,
+                wait_after_a_callback,
+                env_with(&c as *const Callback),
+            );
+            vx_task_start(
+                group,
+                run_and_open_the_gate,
+                env_with(&c as *const Callback),
+            );
+            vx_tasks_end(group);
+        }
     }
 }

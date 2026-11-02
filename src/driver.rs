@@ -2078,7 +2078,9 @@ fn get_optimization_pipeline(
     let mut passes = vec![];
 
     if opt_level > 0 || llvm_lower {
-        // First, so that the lowerings below reuse a program's own `malloc` and `free` rather
+        // Before the task lowering takes the address of each task body. See the pass.
+        passes.push("vx-count-callbacks".to_string());
+        // Before the lowerings, so that they reuse a program's own `malloc` and `free` rather
         // than declare a second one. See the pass.
         passes.push("vx-libc-externs-to-llvm".to_string());
         passes.push("convert-vx-to-standard".to_string());

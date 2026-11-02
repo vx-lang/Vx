@@ -6536,6 +6536,87 @@ struct CheckIntegerDivisionPass
   }
 };
 
+// A task that parks can continue on another thread. Foreign code that calls a
+// Vx function can keep state that belongs to its thread, so the task must stay
+// on its thread until the Vx function returns
+// (waiting_tasks_channels_and_task_errors.md, W9).
+//
+// Foreign code gets a Vx function only as a function value. The compiler does
+// not know where a value goes, so each function value points to a wrapper. The
+// wrapper calls `vx_callback_enter` and `vx_callback_exit` around the function.
+// A direct call does not use the wrapper. The function value that autodiff
+// gives to Enzyme stays as it is.
+//
+// The pass runs first, before the task lowering takes the address of each
+// task body.
+struct CountCallbacksPass
+    : public PassWrapper<CountCallbacksPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CountCallbacksPass)
+
+  llvm::StringRef getArgument() const override { return "vx-count-callbacks"; }
+
+  llvm::StringRef getDescription() const override {
+    return "Makes each function value tell the runtime when its function "
+           "starts and returns";
+  }
+
+  static bool isEnzymeCall(Operation *user) {
+    auto call = dyn_cast<func::CallOp>(user);
+    return call && call.getCallee().starts_with("__enzyme_");
+  }
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    MLIRContext *ctx = module.getContext();
+    SmallVector<func::ConstantOp> values;
+    for (auto fn : module.getOps<func::FuncOp>())
+      fn.walk([&](func::ConstantOp c) { values.push_back(c); });
+    auto runtimeFn = [&](llvm::StringRef name) {
+      if (auto fn = module.lookupSymbol<func::FuncOp>(name))
+        return fn;
+      OpBuilder b = OpBuilder::atBlockBegin(module.getBody());
+      auto fn = func::FuncOp::create(b, module.getLoc(), name,
+                                     FunctionType::get(ctx, {}, {}));
+      fn.setPrivate();
+      return fn;
+    };
+    llvm::StringMap<func::FuncOp> wrappers;
+    for (func::ConstantOp value : values) {
+      auto target = module.lookupSymbol<func::FuncOp>(value.getValue());
+      if (!target || target.isExternal() ||
+          llvm::all_of(value->getUsers(), isEnzymeCall))
+        continue;
+      func::FuncOp &wrapper = wrappers[target.getSymName()];
+      if (!wrapper) {
+        func::FuncOp enter = runtimeFn("vx_callback_enter");
+        func::FuncOp exit = runtimeFn("vx_callback_exit");
+        // The location of `target` can name its debug-info subprogram, and
+        // LLVM refuses two functions with one subprogram.
+        Location loc = UnknownLoc::get(ctx);
+        OpBuilder b(target);
+        b.setInsertionPointAfter(target);
+        wrapper = func::FuncOp::create(
+            b, loc, (target.getSymName() + ".from_foreign").str(),
+            target.getFunctionType());
+        wrapper.setPrivate();
+        if (ArrayAttr args = target.getAllArgAttrs())
+          wrapper.setAllArgAttrs(args);
+        if (ArrayAttr results = target.getAllResultAttrs())
+          wrapper.setAllResultAttrs(results);
+        Block *entry = wrapper.addEntryBlock();
+        b.setInsertionPointToStart(entry);
+        func::CallOp::create(b, loc, enter, ValueRange{});
+        auto call = func::CallOp::create(b, loc, target, entry->getArguments());
+        func::CallOp::create(b, loc, exit, ValueRange{});
+        func::ReturnOp::create(b, loc, call.getResults());
+      }
+      value.setValueAttr(FlatSymbolRefAttr::get(wrapper.getSymNameAttr()));
+    }
+    if (wrappers.empty())
+      markAllAnalysesPreserved();
+  }
+};
+
 // A program can declare a C function that a lowering also calls: `malloc` and
 // `free` for a heap buffer or a task, `aligned_alloc` for an aligned buffer,
 // `realloc` for `vx.heap_grow`.
@@ -6898,6 +6979,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<OrderRelaxedReadsPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<CountCallbacksPass>();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<LibcExternsToLLVMPass>();
