@@ -71,8 +71,9 @@ every expression that is not listed in E2:
 - binary operators, including comparisons: the left operand, then the right one.
 - `a[i]`: the base, then the index, then the read.
 - `s.f`, `*e`, `-e`, `!e`, `e as T`: the operand, then the operation.
-- struct, tuple and array literals: the fields or elements **in the order the source writes
-  them**, not in declaration order.
+- struct, tuple and array literals: the fields or elements in the order the source writes them.
+  A struct literal must write its fields in declaration order (E3062), so the two orders are the
+  same. In C++, an initializer list in another order than the members is a common bug.
 - `return e`, `break e`: the operand, then the jump.
 - `print!` and `println!`: all arguments left to right, then the output. The output of one call
   is never split by the evaluation of an argument.

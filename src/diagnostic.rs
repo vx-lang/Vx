@@ -429,6 +429,11 @@ pub enum DiagnosticCode {
     /// declares with no default body. A call to that method would otherwise fail where it is
     /// called, with "method not found", though the fault is in the impl.
     E3061,
+    /// A struct literal that writes its fields in an order other than the struct's declaration.
+    /// The fields run in the order the source writes them, so `P { y : f(), x : g() }` would run
+    /// `f` before `g` and store `y` before `x`. Write the fields in the order the struct declares
+    /// them.
+    E3062,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

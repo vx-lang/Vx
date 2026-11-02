@@ -677,8 +677,9 @@ impl<'a> TypeChecker<'a> {
                 name,
                 fields,
                 type_id,
-                span: _,
+                span: literal_span,
             }) => {
+                let literal_span = *literal_span;
                 let resolved_name = name.clone();
                 let mut base_name = resolved_name.clone();
                 let mut generic_args = Vec::new();
@@ -799,58 +800,12 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
 
-                    // Check missing fields and type mismatch
-                    for (expected_name, raw_expected_type) in &struct_fields {
-                        let expected_type = &raw_expected_type.substitute(&mapping);
-                        let mut found = false;
-                        for (f_name, f_expr) in fields.iter_mut() {
-                            if f_name == expected_name {
-                                found = true;
-                                // The field's type is the expected type of what initializes it,
-                                // so `Counter { n : 0 }` writes a `u64` zero into a `u64` field
-                                // rather than an `i32` one the field then refuses.
-                                let f_type = self.check_expr_expecting(
-                                    f_expr,
-                                    Some(expected_type.clone()),
-                                    consume,
-                                );
-                                self.check_view_stored(
-                                    &format!("the field `{expected_name}`"),
-                                    f_expr,
-                                    &f_type,
-                                );
-                                if let (Expr::Identifier(id), Some(holder)) =
-                                    (&*f_expr, self.current_assignment_target.clone())
-                                {
-                                    self.borrow.copy_borrows(
-                                        id.name.as_ref(),
-                                        &holder,
-                                        self.scopes.len(),
-                                    );
-                                    self.reborrow_mut_variable(id.name.as_ref(), &holder);
-                                }
-                                if f_type != Type::Unknown
-                                    && !self.is_assignable(expected_type, &f_type)
-                                    && !self.speculating
-                                {
-                                    self.errors.push(format!(
-                                            "Type mismatch in struct initialization for field '{}'. Expected {}, got {}",
-                                            expected_name, expected_type, f_type
-                                        ));
-                                }
-                                break;
-                            }
-                        }
-                        if !found && !self.speculating {
-                            self.errors.push(format!(
-                                "Missing field '{}' in initialization of struct '{}'",
-                                expected_name, resolved_name
-                            ));
-                        }
-                    }
-                    // Check extra fields
+                    // The fields run in the order the source writes them, so they are checked in
+                    // that order. That order must also be the declaration order (E3062).
+                    let mut previous: Option<usize> = None;
                     for (f_name, f_expr) in fields.iter_mut() {
-                        if !struct_fields.iter().any(|(n, _)| n == f_name) {
+                        let Some(index) = struct_fields.iter().position(|(n, _)| n == f_name)
+                        else {
                             if !self.speculating {
                                 self.errors.push(format!(
                                     "Struct '{}' has no field '{}'",
@@ -858,6 +813,61 @@ impl<'a> TypeChecker<'a> {
                                 ));
                             }
                             self.check_expr_type_flag(f_expr, consume); // evaluate to find errors
+                            continue;
+                        };
+                        if let Some(prev) = previous.filter(|&p| index < p) {
+                            if !self.speculating {
+                                let order: Vec<&str> =
+                                    struct_fields.iter().map(|(n, _)| n.as_ref()).collect();
+                                self.errors.error_with_code(
+                                    crate::diagnostic::DiagnosticCode::E3062,
+                                    format!(
+                                        "the field `{f_name}` comes after `{}`, but \
+                                         `{base_name}` declares `{f_name}` first. Write the \
+                                         fields in the order of the declaration: {}",
+                                        struct_fields[prev].0,
+                                        order.join(", ")
+                                    ),
+                                    // A number literal has no position, so the literal's is used.
+                                    Some(crate::diagnostic::SourceSpan::from_ast_span(
+                                        &Some(f_expr.span())
+                                            .filter(|s| s.line > 0)
+                                            .unwrap_or(literal_span),
+                                    )),
+                                );
+                            }
+                        }
+                        previous = Some(previous.map_or(index, |p| p.max(index)));
+                        let expected_type = &struct_fields[index].1.substitute(&mapping);
+                        // The field's type is the expected type of what initializes it, so
+                        // `Counter { n : 0 }` writes a `u64` zero into a `u64` field rather than
+                        // an `i32` one the field then refuses.
+                        let f_type =
+                            self.check_expr_expecting(f_expr, Some(expected_type.clone()), consume);
+                        self.check_view_stored(&format!("the field `{f_name}`"), f_expr, &f_type);
+                        if let (Expr::Identifier(id), Some(holder)) =
+                            (&*f_expr, self.current_assignment_target.clone())
+                        {
+                            self.borrow
+                                .copy_borrows(id.name.as_ref(), &holder, self.scopes.len());
+                            self.reborrow_mut_variable(id.name.as_ref(), &holder);
+                        }
+                        if f_type != Type::Unknown
+                            && !self.is_assignable(expected_type, &f_type)
+                            && !self.speculating
+                        {
+                            self.errors.push(format!(
+                                "Type mismatch in struct initialization for field '{}'. Expected {}, got {}",
+                                f_name, expected_type, f_type
+                            ));
+                        }
+                    }
+                    for (expected_name, _) in &struct_fields {
+                        if !fields.iter().any(|(n, _)| n == expected_name) && !self.speculating {
+                            self.errors.push(format!(
+                                "Missing field '{}' in initialization of struct '{}'",
+                                expected_name, resolved_name
+                            ));
                         }
                     }
                 } else {

@@ -716,7 +716,7 @@ impl<'a> Parser<'a> {
                     name: call_name.into(),
                     fields,
                     type_id: None,
-                    span: Span::default(),
+                    span,
                 }))
             } else if self.match_token(&TokenType::DoubleColon) {
                 self.parse_enum_variant_expr(&mut call_name, parsed_type_args)

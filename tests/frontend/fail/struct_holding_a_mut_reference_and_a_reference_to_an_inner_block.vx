@@ -50,7 +50,7 @@ fn given_when_the_struct_is_built() -> i32 {
   if true {
     let l : Vec<i32> = Vec<i32>::new();
     // CHECK-NOT: Error
-    // CHECK: Error[E4005] at {{.*}}struct_holding_a_mut_reference_and_a_reference_to_an_inner_block.vx:[[# @LINE + 2]]:13: this value holds a `&mut` to a variable of an outer block and a reference to a variable of an inner block
+    // CHECK: Error[E4005] at {{.*}}struct_holding_a_mut_reference_and_a_reference_to_an_inner_block.vx:[[# @LINE + 1]]:14: this value holds a `&mut` to a variable of an outer block and a reference to a variable of an inner block
     let _q = Leak {
       out : &mut me_out, val : &l
     };
@@ -93,7 +93,7 @@ fn given_by_a_call() -> i32 {
 fn mut_reference_into_the_caller(out : &mut &Vec<i32>) -> i32 {
   let l : Vec<i32> = Vec<i32>::new();
   // CHECK-NOT: Error
-  // CHECK: Error[E4005] at {{.*}}struct_holding_a_mut_reference_and_a_reference_to_an_inner_block.vx:[[# @LINE + 2]]:11: this value holds a `&mut` to memory the caller owns and a reference to a variable of this function. A write through the `&mut` can store that reference where it outlives the function
+  // CHECK: Error[E4005] at {{.*}}struct_holding_a_mut_reference_and_a_reference_to_an_inner_block.vx:[[# @LINE + 1]]:12: this value holds a `&mut` to memory the caller owns and a reference to a variable of this function. A write through the `&mut` can store that reference where it outlives the function
   let _q = Leak {
     out : out, val : &l
   };

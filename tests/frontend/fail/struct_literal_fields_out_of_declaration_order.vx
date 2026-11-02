@@ -1,0 +1,55 @@
+//===- struct_literal_fields_out_of_declaration_order.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A struct literal must write its fields in the order the struct declares them (E3062).
+// The fields run in the order the source writes them, so a different order is easy to misread.
+
+import std::vec;
+
+struct Pair {
+  x : i32,
+  y : i32,
+}
+
+struct Moved {
+  n : i32,
+  v : Vec<i64>,
+}
+
+struct Holds {
+  r : &i64,
+  n : i32,
+}
+
+fn grow(v : &mut Vec<i64>) -> i32 {
+  v.push(2i64);
+  return v.len();
+}
+
+fn main() -> i32 {
+  let mut a = Vec<i64>::with_capacity(1);
+  a.push(1i64);
+  // CHECK: Error[E3062] at {{.*}}.vx:[[@LINE+1]]:11: the field `x` comes after `y`, but `Pair` declares `x` first. Write the fields in the order of the declaration: x, y
+  let p = Pair {
+    y : 1, x : 2
+  };
+  let b = Vec<i64>::new();
+  // CHECK: Error[E3062] at {{.*}}.vx:[[@LINE+1]]:11: the field `n` comes after `v`
+  let m = Moved {
+    v : b, n : 0
+  };
+  // `grow` runs first, and then the borrow of `a`.
+  // CHECK: Error[E3062] at {{.*}}.vx:[[@LINE+2]]:29: the field `r` comes after `n`
+  let h = Holds {
+    n : grow(&mut a), r : a.get_ref(0)
+  };
+  println!("{} {} {}", p.x, m.n, h.n);
+  return 0;
+}
+// CHECK: 3 error(s) emitted
