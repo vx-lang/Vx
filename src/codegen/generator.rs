@@ -107,7 +107,7 @@ pub struct MeliorGenerator<'c> {
     /// the block, and the type `Result<U, E>` of that value.
     pub tasks_leaves: Vec<(*const melior::ir::Block<'c>, syntax::Type)>,
     /// Set inside a `tasks` block that runs its tasks one after another, at their `spawn`s: a
-    /// block that can fail, or an exit that `can_leave_a_region` cannot carry out of a region.
+    /// block that can fail, or that an exit leaves, when `region_value_slot` declines it.
     pub tasks_inline: bool,
     /// The open `tasks` blocks whose region a `return`, `break` or `continue` leaves,
     /// innermost last.

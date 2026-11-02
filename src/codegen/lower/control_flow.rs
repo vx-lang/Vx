@@ -927,6 +927,21 @@ impl<'c> LowerToMelior<'c> for BreakStmt {
         // The `Err` arm of the join of a task that failed: the block after the `tasks` block
         // takes the failure as the value of the block.
         if let Some(value) = &self.tasks_value {
+            if let Some((slot, fails_as)) = super::expr::region_failure_slot(gen) {
+                let failure = crate::syntax::Expr::EnumVariant(crate::syntax::failure_of(
+                    &fails_as,
+                    (**value).clone(),
+                    self.span,
+                ));
+                let (val, _, block) = gen.generate_expr(&failure, block)?;
+                block.append_operation(
+                    OperationBuilder::new("llvm.store", gen.loc())
+                        .add_operands(&[val, slot])
+                        .build()?,
+                );
+                super::expr::emit_tasks_exit(gen, block, super::expr::TasksExitKind::Leave)?;
+                return Ok(None);
+            }
             let (after_ptr, fails_as) = gen
                 .tasks_leaves
                 .last()
