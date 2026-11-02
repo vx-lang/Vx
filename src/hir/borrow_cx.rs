@@ -63,6 +63,10 @@ pub(crate) struct BorrowCx {
     shadowed: Vec<(usize, Symbol, Vec<BorrowRecord>)>,
     /// Where each owned tensor is dropped. See `check/drops.rs`.
     pub(crate) drops: crate::hir::check::drops::DropFrames,
+    /// The borrows that an assignment stored in its holder during the statement being checked,
+    /// `w.r = a.get_ref(0)` inside a call's argument. A call whose result goes to another part of
+    /// that holder, `w.n = f(..)`, keeps them.
+    stored: Vec<(Symbol, BorrowRecord)>,
     /// The tasks that have started and that nothing has joined yet. A task holds its borrows
     /// until then, also where no statement names it. See `check/tasks.rs`.
     running_tasks: HashSet<String>,
@@ -117,6 +121,7 @@ impl Default for BorrowCx {
             borrowers_ever: HashMap::new(),
             drops: Default::default(),
             running_tasks: HashSet::new(),
+            stored: Vec::new(),
         }
     }
 }
@@ -433,15 +438,67 @@ impl BorrowCx {
         prev: &[BorrowRecord],
         call_target: Option<&str>,
     ) {
+        // Each record an assignment stored stays once. The holder's block may have moved it
+        // since, so its depth is not compared.
+        let mut stored: Vec<&BorrowRecord> = self
+            .stored
+            .iter()
+            .filter(|(b, _)| b.as_ref() == base)
+            .map(|(_, s)| s)
+            .collect();
         if let Some(list) = self.active_borrows.get_mut(base) {
             list.retain(|r| {
-                prev.contains(r)
+                if prev.contains(r)
                     || r.borrower_name.is_some() && r.borrower_name.as_deref() != call_target
+                {
+                    return true;
+                }
+                let same = |s: &&BorrowRecord| {
+                    s.borrower_name == r.borrower_name && s.path == r.path && s.is_mut == r.is_mut
+                };
+                match stored.iter().position(same) {
+                    Some(i) => {
+                        stored.swap_remove(i);
+                        true
+                    }
+                    None => false,
+                }
             });
             if list.is_empty() {
                 self.active_borrows.remove(base);
             }
         }
+    }
+
+    /// [`Self::added_since`], counting copies: a record that is now in the table twice, and was
+    /// once before, was added once.
+    pub(crate) fn added_copies_since(
+        &self,
+        before: &HashMap<Symbol, Vec<BorrowRecord>>,
+    ) -> Vec<(Symbol, BorrowRecord)> {
+        let mut added = Vec::new();
+        for (base, list) in &self.active_borrows {
+            let mut old: Vec<&BorrowRecord> = before.get(base).into_iter().flatten().collect();
+            for r in list {
+                match old.iter().position(|o| *o == r) {
+                    Some(i) => {
+                        old.swap_remove(i);
+                    }
+                    None => added.push((base.clone(), r.clone())),
+                }
+            }
+        }
+        added
+    }
+
+    /// Note `records` as stored by an assignment in the statement being checked.
+    pub(crate) fn note_stored(&mut self, records: Vec<(Symbol, BorrowRecord)>) {
+        self.stored.extend(records);
+    }
+
+    /// The statement ends, and with it what [`Self::note_stored`] noted.
+    pub(crate) fn clear_stored(&mut self) {
+        self.stored.clear();
     }
 
     /// The records added since `before`, a [`Self::snapshot`].
