@@ -290,7 +290,8 @@ static inline int vx_remote_encode_args(int fd, void **device_args,
     int32_t rank = (int32_t)VX_ABI_RANK(tag);
     int32_t elem = (int32_t)VX_ABI_ELEM(tag);
     const void *desc;
-    uint64_t data;
+    uint64_t data, bytes = 0;
+    int32_t dim = 0;
     memset(&out[i], 0, sizeof(out[i]));
     out[i].tag = tag;
 
@@ -331,10 +332,12 @@ static inline int vx_remote_encode_args(int fd, void **device_args,
       views[num_views].rank = rank;
       views[num_views].elem = elem;
       view_arg[num_views++] = i;
-    } else if (vx_memref_view_bytes(out[i].sizes, out[i].strides, rank, elem) ==
-               0) {
+    } else if (vx_memref_view_span(out[i].sizes, out[i].strides, rank, elem,
+                                   &bytes, &dim) == VX_VIEW_OK &&
+               bytes == 0) {
       /* An empty view of a buffer on the worker. Its handle can be one past
-         the end of the buffer, which the worker refuses. */
+         the end of the buffer, which the worker refuses. A view with no size
+         keeps its handle, and the worker decides. */
       out[i].handle = vx_remote_stage_empty(fd, elem, staged, num_staged,
                                             scratch, scratch_len);
       if (out[i].handle == 0) {
@@ -353,7 +356,7 @@ static inline int vx_remote_encode_args(int fd, void **device_args,
             "view does not fit in the address space\n",
             (long long)view_arg[bad],
             (long long)vx_memref_offset(views[bad].desc));
-    return 0;
+    abort();
   }
   if (*num_staged + num_spans > VX_REMOTE_MAX_STAGED) {
     return 0;

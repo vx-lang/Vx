@@ -33,10 +33,13 @@
 //     copy back of the second view must not undo that.
 //   * An empty view at the end of a buffer on the worker. Its handle is one
 //     past the end of the buffer, so the client must stage one element for it.
+//   * A view on the worker with element type code 0. The client must send its
+//     handle unchanged.
 //
-// More cases call vx_memref_view_bytes directly in a child process. A view
-// with an element type the runtime cannot copy, a negative size, a negative
-// stride, or a span that does not fit in 64 bits must stop the program.
+// More cases run in a child process. A view with an element type the runtime
+// cannot copy, a negative size, a negative stride, or a span that does not fit
+// in 64 bits must stop the program. So must a dispatch of a view with the
+// offset -1.
 //
 // The fake worker does not load the image. It runs a fixed function in its
 // place: out1[i] = 2 * in[i] and out2[i] = in[i] + 100. For the views it
@@ -511,11 +514,9 @@ const int kAborted = 86;
 
 void exit_on_abort(int) { _exit(kAborted); }
 
-// Calls vx_memref_view_bytes in a child process. Returns true when the child
-// called abort() and printed `message`.
-bool view_bytes_stops_with(int32_t rank, const int64_t *sizes,
-                           const int64_t *strides, const char *message,
-                           int32_t elem = VX_DTYPE_F32) {
+// Runs `body` in a child process. Returns true when the child called abort()
+// and printed `message`.
+template <typename Body> bool stops_with(Body body, const char *message) {
   int pipe_fds[2];
   if (pipe(pipe_fds) != 0) {
     return false;
@@ -527,7 +528,7 @@ bool view_bytes_stops_with(int32_t rank, const int64_t *sizes,
   if (pid == 0) {
     signal(SIGABRT, exit_on_abort);
     dup2(pipe_fds[1], STDERR_FILENO);
-    vx_memref_view_bytes(sizes, strides, rank, elem);
+    body();
     _exit(0);
   }
   close(pipe_fds[1]);
@@ -545,6 +546,14 @@ bool view_bytes_stops_with(int32_t rank, const int64_t *sizes,
          strstr(out, message) != nullptr;
 }
 
+// Calls vx_memref_view_bytes in a child process.
+bool view_bytes_stops_with(int32_t rank, const int64_t *sizes,
+                           const int64_t *strides, const char *message,
+                           int32_t elem = VX_DTYPE_F32) {
+  return stops_with([&] { vx_memref_view_bytes(sizes, strides, rank, elem); },
+                    message);
+}
+
 bool vector_stops_with(int64_t size, int64_t stride, const char *message,
                        int32_t elem = VX_DTYPE_F32) {
   return view_bytes_stops_with(1, &size, &stride, message, elem);
@@ -558,6 +567,48 @@ void test_a_view_the_runtime_cannot_copy_stops_the_program() {
                           "code 0",
                           0),
         "a view with element type code 0 stops the program");
+}
+
+void test_a_worker_view_of_index_elements_keeps_its_handle(int fd) {
+  // The client cannot size an element of code 0, but a view on the worker is
+  // not copied. So the client sends its handle, and the worker decides.
+  float four[4] = {1, 2, 3, 4};
+  uint64_t resident = vx_remote_transfer(fd, four, sizeof(four), VX_DTYPE_F32,
+                                         host_scratch, sizeof(host_scratch));
+  check(resident != 0, "the buffer was placed on the worker");
+  Desc1 d = vector_of_four((void *)(uintptr_t)resident);
+  void *p = &d;
+  void *device_args[1] = {&p};
+  const int32_t tags[1] = {VX_ABI_MEMREF_TAG(0, 1)};
+  vx_wire_arg args[1];
+  vx_remote_staged staged[VX_REMOTE_MAX_STAGED];
+  int64_t num_staged = 0;
+  check(vx_remote_encode_args(fd, device_args, tags, 1, args, staged,
+                              &num_staged, host_scratch,
+                              sizeof(host_scratch)) == 1,
+        "the client encodes a worker view with element type code 0");
+  check(args[0].handle == resident,
+        "the worker view with element type code 0 keeps its handle");
+  check(vx_remote_free(fd, resident), "the worker buffer is freed");
+}
+
+void test_a_view_outside_the_address_space_stops_the_program() {
+  // The plan refuses a negative offset. The client must stop, and must not
+  // run the region on this machine with that view.
+  check(stops_with(
+            [] {
+              float four[4] = {1, 2, 3, 4};
+              Desc1 d = {four, four, -1, {2}, {1}};
+              void *p = &d;
+              void *device_args[1] = {&p};
+              const int32_t tags[1] = {VX_ABI_MEMREF_TAG(VX_DTYPE_F32, 1)};
+              vx_wire_arg args[1];
+              vx_remote_dispatch(-1, kKernelPayload, sizeof(kKernelPayload),
+                                 device_args, tags, 1, args, host_scratch,
+                                 sizeof(host_scratch));
+            },
+            "argument 0 has the offset -1, and its view does not fit"),
+        "a view with the offset -1 stops the program");
 }
 
 void test_a_broken_view_stops_the_program() {
@@ -642,6 +693,8 @@ int main() {
   test_views_that_share_memory_keep_the_result(sv[0]);
   test_an_empty_view_at_the_end_of_a_worker_buffer(sv[0]);
   test_a_view_the_runtime_cannot_copy_stops_the_program();
+  test_a_worker_view_of_index_elements_keeps_its_handle(sv[0]);
+  test_a_view_outside_the_address_space_stops_the_program();
   test_a_broken_view_stops_the_program();
   test_a_view_whose_span_overflows_stops_the_program();
   // Last, because the code before the fix crashes on it.

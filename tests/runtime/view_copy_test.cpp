@@ -15,6 +15,7 @@
 //   * The even and the odd columns of one tensor overlap, so they get one
 //     copy. A write to the even columns comes back.
 //   * One tensor passed twice gets one copy.
+//   * One descriptor passed twice, with an offset, gets its offset back.
 //   * The last row of a large tensor gets a copy of that row only.
 //   * A descriptor that the region publishes from a view gets device memory
 //     back, with its own offset.
@@ -184,6 +185,21 @@ void test_a_tensor_passed_twice_gets_one_copy() {
   check_elements(device, after, 4, "one tensor twice");
 }
 
+void test_one_descriptor_passed_twice_gets_its_offset_back() {
+  // Both arguments are the same descriptor. The second view sees the
+  // descriptor after the first view pointed it at the copy.
+  float device[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+  Desc1 row1 = vector_view(device, 4, 4, 1);
+  Call call;
+  check(call.copy_in({&row1, &row1}),
+        "the plan for one descriptor twice succeeds");
+  check(call.num_spans == 1, "one descriptor passed twice gets one copy");
+  call.copy_out({&row1, &row1});
+  check(row1.aligned == device && row1.allocated == device,
+        "after the call, the descriptor points at device memory");
+  check(row1.offset == 4, "after the call, the descriptor has the offset 4");
+}
+
 void test_the_last_row_copies_only_that_row() {
   std::vector<float> device(1024 * 4, 1.0f);
   Desc1 last = vector_view(device.data(), 1023 * 4, 4, 1);
@@ -263,6 +279,7 @@ int main() {
   test_two_rows_get_one_copy_each();
   test_interleaved_columns_get_one_copy();
   test_a_tensor_passed_twice_gets_one_copy();
+  test_one_descriptor_passed_twice_gets_its_offset_back();
   test_the_last_row_copies_only_that_row();
   test_a_published_view_gets_device_memory_back();
   test_an_empty_view_keeps_its_descriptor();
