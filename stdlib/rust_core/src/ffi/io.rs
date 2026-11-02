@@ -13,7 +13,8 @@
 // until the socket is ready, and then tries the call again. The caller puts its socket on the
 // list of one poller thread, and waits on a word of its stack (wait.rs): a fiber parks, and a
 // thread sleeps. The poller calls poll(2) on the sockets of the list. When one is ready, it
-// sets the word and wakes the caller.
+// sets the word and wakes the caller. A connect starts on a non-blocking socket, and waits
+// until the socket is ready to write.
 //
 // A cancel stops the wait (F4). The caller takes its socket off the list before it returns,
 // and the poller sets a word only under the lock of the list. So the poller cannot write to a
@@ -65,6 +66,94 @@ fn wait_ready(fd: RawFd, write: bool) -> bool {
         unsafe { wait::vx_wait_while_or_cancel(ready.as_ptr(), 0) };
     }
     true
+}
+
+/// Connects to `addr`, written as `host:port`, and tries each address of the host in turn. The
+/// wait for each connection is as for `when_ready`. The lookup of a host name still blocks the
+/// thread.
+pub fn connect(addr: &str) -> std::io::Result<std::net::TcpStream> {
+    let mut last = std::io::Error::other("the host has no address");
+    for a in std::net::ToSocketAddrs::to_socket_addrs(addr)? {
+        match connect_to(a) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+fn connect_to(addr: std::net::SocketAddr) -> std::io::Result<std::net::TcpStream> {
+    let (family, storage, len) = socket_address(addr);
+    let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // The stream closes the socket on each error below.
+    let stream = unsafe { <std::net::TcpStream as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    stream.set_nonblocking(true)?;
+    let started = unsafe { libc::connect(fd, (&raw const storage).cast(), len) };
+    if started == 0 {
+        return Ok(stream);
+    }
+    let e = std::io::Error::last_os_error();
+    // After EINTR, the connection goes on as after EINPROGRESS.
+    if !matches!(
+        e.raw_os_error(),
+        Some(libc::EINPROGRESS) | Some(libc::EINTR)
+    ) {
+        return Err(e);
+    }
+    loop {
+        if !wait_ready(fd, true) {
+            return Err(std::io::Error::other("the wait was cancelled"));
+        }
+        if let Some(e) = stream.take_error()? {
+            return Err(e);
+        }
+        // A wait can return early. The connection is made once the socket has a peer.
+        if stream.peer_addr().is_ok() {
+            return Ok(stream);
+        }
+    }
+}
+
+/// The C form of `addr`: its family, a `sockaddr_storage` that holds it, and its length.
+fn socket_address(addr: std::net::SocketAddr) -> (i32, libc::sockaddr_storage, libc::socklen_t) {
+    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let len = match addr {
+        std::net::SocketAddr::V4(a) => {
+            let mut sin: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+            sin.sin_family = libc::AF_INET as libc::sa_family_t;
+            sin.sin_port = a.port().to_be();
+            sin.sin_addr.s_addr = u32::from_ne_bytes(a.ip().octets());
+            #[cfg(target_os = "macos")]
+            {
+                sin.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
+            }
+            unsafe { (&raw mut storage).cast::<libc::sockaddr_in>().write(sin) };
+            std::mem::size_of::<libc::sockaddr_in>()
+        }
+        std::net::SocketAddr::V6(a) => {
+            let mut sin6: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
+            sin6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+            sin6.sin6_port = a.port().to_be();
+            sin6.sin6_flowinfo = a.flowinfo();
+            sin6.sin6_addr.s6_addr = a.ip().octets();
+            sin6.sin6_scope_id = a.scope_id();
+            #[cfg(target_os = "macos")]
+            {
+                sin6.sin6_len = std::mem::size_of::<libc::sockaddr_in6>() as u8;
+            }
+            unsafe { (&raw mut storage).cast::<libc::sockaddr_in6>().write(sin6) };
+            std::mem::size_of::<libc::sockaddr_in6>()
+        }
+    };
+    let family = match addr {
+        std::net::SocketAddr::V4(_) => libc::AF_INET,
+        std::net::SocketAddr::V6(_) => libc::AF_INET6,
+    };
+    (family, storage, len as libc::socklen_t)
 }
 
 struct Poller {
@@ -239,10 +328,18 @@ mod tests {
     }
 
     /// Stops the test program when a test runs longer than 10 seconds, and names the test.
-    struct Watchdog(std::sync::Arc<AtomicI64>);
+    /// It also makes the tests that hold one run one at a time, because a test looks at the
+    /// whole list of the poller.
+    struct Watchdog {
+        done: std::sync::Arc<AtomicI64>,
+        _turn: std::sync::MutexGuard<'static, ()>,
+    }
+
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
     impl Watchdog {
         fn new(test: &'static str) -> Watchdog {
+            let turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
             let done = std::sync::Arc::new(AtomicI64::new(0));
             let seen = done.clone();
             std::thread::spawn(move || {
@@ -257,13 +354,13 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(10));
                 }
             });
-            Watchdog(done)
+            Watchdog { done, _turn: turn }
         }
     }
 
     impl Drop for Watchdog {
         fn drop(&mut self) {
-            self.0.store(1, Ordering::SeqCst);
+            self.done.store(1, Ordering::SeqCst);
         }
     }
 
@@ -298,6 +395,8 @@ mod tests {
     /// later, so the accept and the read each find nothing at first.
     #[test]
     fn a_thread_that_waits_for_a_socket_gets_the_data_that_comes_later() {
+        let _watchdog =
+            Watchdog::new("a_thread_that_waits_for_a_socket_gets_the_data_that_comes_later");
         let any_port = CString::new("127.0.0.1:0").unwrap();
         let listener = vx_tcp_listener_bind(any_port.as_ptr());
         assert!(!listener.is_null(), "the test could not listen");
@@ -390,5 +489,87 @@ mod tests {
     #[test]
     fn a_cancel_stops_a_task_thread_that_waits_for_a_socket() {
         a_cancel_stops_a_read("a_cancel_stops_a_task_thread_that_waits_for_a_socket", None);
+    }
+
+    struct Dial {
+        address: CString,
+        /// 1 when the connect gave a stream, 0 when it gave null.
+        connected: AtomicI64,
+        other_ran: AtomicI64,
+    }
+
+    extern "C" fn connect_to_a_full_listener(env: *mut u8) {
+        let d = unsafe { &**(env as *const *const Dial) };
+        let stream = vx_tcp_stream_connect(d.address.as_ptr());
+        d.connected
+            .store(!stream.is_null() as i64, Ordering::SeqCst);
+        vx_tcp_stream_drop(stream);
+    }
+
+    extern "C" fn note_that_it_ran(env: *mut u8) {
+        let d = unsafe { &**(env as *const *const Dial) };
+        d.other_ran.store(1, Ordering::SeqCst);
+    }
+
+    /// Whether a caller waits to write, as a connect does.
+    fn waits_to_write() -> bool {
+        super::POLLER
+            .get()
+            .is_some_and(|p| p.waiting().iter().any(|&(_, e, _)| e == libc::POLLOUT))
+    }
+
+    /// Linux drops a new connection to a listener whose queue of connections is full. So a
+    /// connect to it waits. On one worker, the other task must still run, and leaving the
+    /// block early must stop the connect.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_task_that_connects_parks_and_a_cancel_stops_it() {
+        let _watchdog = Watchdog::new("a_task_that_connects_parks_and_a_cancel_stops_it");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&listener);
+        // A queue of one connection, and one connection that fills it.
+        assert_eq!(unsafe { libc::listen(fd, 0) }, 0);
+        let _first = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let d = Dial {
+            address: CString::new(listener.local_addr().unwrap().to_string()).unwrap(),
+            connected: AtomicI64::new(-1),
+            other_ran: AtomicI64::new(0),
+        };
+        let group = tasks_begin(Some(Scheduler::start(1, 1)));
+        unsafe {
+            vx_task_start(
+                group,
+                connect_to_a_full_listener,
+                env_with(&d as *const Dial),
+            );
+            vx_task_start(group, note_that_it_ran, env_with(&d as *const Dial));
+            let end = Instant::now() + Duration::from_secs(5);
+            while !(waits_to_write() && d.other_ran.load(Ordering::SeqCst) == 1) {
+                assert!(
+                    Instant::now() < end,
+                    "the connect did not wait, or the other task did not run"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            vx_tasks_wait(group);
+            vx_tasks_end(group);
+        }
+        assert_eq!(
+            d.connected.load(Ordering::SeqCst),
+            0,
+            "the cancelled connect did not give null"
+        );
+        assert!(!waits_to_write(), "the poller still waits for the connect");
+    }
+
+    /// A connect to a port where nothing listens gives null, after the wait for the socket.
+    #[test]
+    fn a_refused_connect_gives_null() {
+        let _watchdog = Watchdog::new("a_refused_connect_gives_null");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = CString::new(listener.local_addr().unwrap().to_string()).unwrap();
+        drop(listener);
+        let stream = vx_tcp_stream_connect(address.as_ptr());
+        assert!(stream.is_null(), "a refused connect gave a stream");
     }
 }
