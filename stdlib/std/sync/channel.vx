@@ -81,6 +81,8 @@ enum RecvError {
   Closed,
   // The `tasks` block of this task was cancelled.
   Cancelled,
+  // The time limit of `recv_for` ran out.
+  TimedOut,
 }
 
 /// Why a `try_recv` gave no value.
@@ -100,8 +102,11 @@ struct Selected<T> {
 /// A `send` that did not send. It gives the value back.
 struct SendError<T> {
   value : T,
-  // True when the `tasks` block of this task was cancelled. False when the `Receiver` was dropped.
+  // True when the `tasks` block of this task was cancelled.
   cancelled : bool,
+  // True when the time limit of `send_for` ran out. When both are false, the `Receiver` was
+  // dropped.
+  timed_out : bool,
 }
 
 /// The end of a channel that sends. Clone it to send from many tasks.
@@ -168,15 +173,11 @@ fn notify(words : *mut AtomicI64) -> void {
   }
 }
 
-/// Sleep until an event on the channel, unless one came after `seen` was read from `WAKE`. With
-/// `can_cancel`, a cancel of the `tasks` block also ends the sleep.
-fn wait_for_event(words : *mut AtomicI64, seen : i64, can_cancel : bool) -> void {
+/// Sleep until an event on the channel, unless one came after `seen` was read from `WAKE`. A
+/// cancel of the `tasks` block and the clock reaching `deadline` also end the sleep.
+fn wait_for_event(words : *mut AtomicI64, seen : i64, deadline : i64) -> void {
   word(words, SLEEPERS).fetch_add(1, AtomicOrdering::SeqCst);
-  if can_cancel {
-    wait_while_or_cancel(word(words, WAKE), seen);
-  } else {
-    wait_while(word(words, WAKE), seen);
-  }
+  wait_while_until(word(words, WAKE), seen, deadline, true);
   word(words, SLEEPERS).fetch_sub(1, AtomicOrdering::SeqCst);
 }
 
@@ -211,9 +212,20 @@ Sender<T> {
   /// A `send` that has its place in the ring and is cancelled puts the number of its place in
   /// the skip set. The `recv` of that place passes it.
   fn send(self : &Sender<T>, v : T) -> Result<void, SendError<T>> {
+    return self.send_until(v, NO_DEADLINE);
+  }
+
+  /// `send`, and give `v` back when it waited `seconds` for room. A `drop` runs with
+  /// cancellation off, so a `send` in a `drop` uses this to wait for a limited time.
+  fn send_for(self : &Sender<T>, v : T, seconds : f64) -> Result<void, SendError<T>> {
+    return self.send_until(v, deadline_after(seconds));
+  }
+
+  /// `send` until the deadline `deadline` of `clock_ns`.
+  fn send_until(self : &Sender<T>, v : T, deadline : i64) -> Result<void, SendError<T>> {
     if cancelled() {
       return Result<void, SendError<T>>::Err(SendError<T> {
-        value : v, cancelled : true
+        value : v, cancelled : true, timed_out : false
       });
     }
     let words = self.words;
@@ -228,19 +240,20 @@ Sender<T> {
         notify(words);
         return Result<void, SendError<T>>::Ok();
       }
-      if cancelled() {
+      let was_cancelled = cancelled();
+      if was_cancelled || past_deadline(deadline) {
         unsafe { vx_channel_skip(words, k); }
         word(words, SKIPS).fetch_add(1, AtomicOrdering::SeqCst);
         notify(words);
         return Result<void, SendError<T>>::Err(SendError<T> {
-          value : v, cancelled : true
+          value : v, cancelled : was_cancelled, timed_out : !was_cancelled
         });
       }
-      wait_for_event(words, seen, true);
+      wait_for_event(words, seen, deadline);
       seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
     }
     return Result<void, SendError<T>>::Err(SendError<T> {
-      value : v, cancelled : false
+      value : v, cancelled : false, timed_out : false
     });
   }
 }
@@ -269,6 +282,16 @@ Receiver<T> {
   /// A channel has one `Receiver`, so `recv` takes its receive number only when it takes a value
   /// or passes a skipped one. A cancel can then stop it at any time and leave no place empty.
   fn recv(self : &Receiver<T>) -> Result<T, RecvError> {
+    return self.recv_until(NO_DEADLINE);
+  }
+
+  /// `recv`, and give `TimedOut` when it waited `seconds` for a value.
+  fn recv_for(self : &Receiver<T>, seconds : f64) -> Result<T, RecvError> {
+    return self.recv_until(deadline_after(seconds));
+  }
+
+  /// `recv` until the deadline `deadline` of `clock_ns`.
+  fn recv_until(self : &Receiver<T>, deadline : i64) -> Result<T, RecvError> {
     let words = self.words;
     let mut k = word(words, RECVS).load(AtomicOrdering::SeqCst);
     let mut seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
@@ -296,7 +319,11 @@ Receiver<T> {
         if closed {
           break;
         }
-        wait_for_event(words, seen, true);
+        if past_deadline(deadline) {
+          why = RecvError::TimedOut;
+          break;
+        }
+        wait_for_event(words, seen, deadline);
       }
       seen = word(words, WAKE).load(AtomicOrdering::SeqCst);
     }

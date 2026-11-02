@@ -32,6 +32,9 @@ fn say(e : RecvError) -> void {
     RecvError::Cancelled => {
       println!("the recv gave Cancelled");
     }
+    RecvError::TimedOut => {
+      println!("the recv gave TimedOut");
+    }
   }
 }
 

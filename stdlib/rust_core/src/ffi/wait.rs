@@ -23,7 +23,8 @@
 
 use crate::ffi::sched::{self, FiberRef};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const BUCKETS: usize = 64;
 
@@ -54,12 +55,13 @@ fn bucket(word: *const i64) -> &'static Bucket {
 /// `word` points to a live, 8-byte aligned `i64` that other threads change only atomically.
 #[no_mangle]
 pub unsafe extern "C" fn vx_wait_while(word: *const i64, value: i64) {
-    wait(word, value, false);
+    wait(word, value, false, None);
 }
 
 /// Sleeps or parks while the word holds `value`, and with `or_cancel`, while the block of this
-/// task or thread was not cancelled.
-unsafe fn wait(word: *const i64, value: i64, or_cancel: bool) {
+/// task or thread was not cancelled. With a deadline of `vx_clock_ns`, it also returns at the
+/// deadline: a thread sleeps with a time limit, and a fiber asks the timer to wake its bucket.
+unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Option<i64>) {
     let b = bucket(word);
     let mut fibers = b.lock.lock().unwrap_or_else(|e| e.into_inner());
     let atomic = unsafe { &*(word as *const AtomicI64) };
@@ -68,14 +70,35 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool) {
     {
         return;
     }
+    let left = match deadline_ns {
+        Some(deadline) => {
+            let now = vx_clock_ns();
+            if now >= deadline {
+                return;
+            }
+            Some(Duration::from_nanos((deadline - now) as u64))
+        }
+        None => None,
+    };
     let fiber = sched::current_fiber();
     if fiber.is_null() {
-        drop(b.cond.wait(fibers).unwrap_or_else(|e| e.into_inner()));
+        match left {
+            Some(left) => drop(
+                b.cond
+                    .wait_timeout(fibers, left)
+                    .unwrap_or_else(|e| e.into_inner()),
+            ),
+            None => drop(b.cond.wait(fibers).unwrap_or_else(|e| e.into_inner())),
+        }
         return;
     }
     sched::will_park(fiber);
     fibers.push(FiberRef(fiber));
     drop(fibers);
+    // A wake of the bucket before the park leaves the fiber `WOKEN`, so the timer can fire now.
+    if let Some(deadline) = deadline_ns {
+        timer::wake_at(deadline, word);
+    }
     sched::park();
 }
 
@@ -88,7 +111,32 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool) {
 /// As for `vx_wait_while`.
 #[no_mangle]
 pub unsafe extern "C" fn vx_wait_while_or_cancel(word: *const i64, value: i64) {
-    wait(word, value, true);
+    wait(word, value, true, None);
+}
+
+/// Nanoseconds since the first call, on a clock that never goes back. A time limit is a
+/// deadline on this clock.
+#[no_mangle]
+pub extern "C" fn vx_clock_ns() -> i64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_nanos() as i64
+}
+
+/// `vx_wait_while`, or `vx_wait_while_or_cancel` when `or_cancel` is not 0, that also returns
+/// at the deadline `deadline_ns` of `vx_clock_ns`. The caller reads the clock again.
+/// It can return a little after the deadline, but never stays parked or asleep past it.
+///
+/// # Safety
+///
+/// As for `vx_wait_while`.
+#[no_mangle]
+pub unsafe extern "C" fn vx_wait_while_until(
+    word: *const i64,
+    value: i64,
+    deadline_ns: i64,
+    or_cancel: i32,
+) {
+    wait(word, value, or_cancel != 0, Some(deadline_ns));
 }
 
 /// Wake each thread that waits on the word at `word`. Call it after the change to the word.
@@ -114,6 +162,70 @@ fn wake(b: &Bucket) {
     b.cond.notify_all();
     for fiber in fibers {
         sched::wake(fiber);
+    }
+}
+
+/// One thread that wakes the bucket of a word at a deadline, for a fiber that parks with a time
+/// limit. The wake puts each fiber of the bucket back on the queue. Each caller of a wait loops,
+/// so the other fibers see a spurious wake and park again.
+mod timer {
+    use super::{bucket, vx_clock_ns, wake};
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    use std::sync::{Condvar, Mutex, OnceLock};
+    use std::time::Duration;
+
+    struct Timer {
+        /// The deadlines, the earliest first, with the address of the word of each.
+        deadlines: Mutex<BinaryHeap<Reverse<(i64, usize)>>>,
+        cond: Condvar,
+    }
+
+    fn timer() -> &'static Timer {
+        static TIMER: OnceLock<&'static Timer> = OnceLock::new();
+        TIMER.get_or_init(|| {
+            let t: &'static Timer = Box::leak(Box::new(Timer {
+                deadlines: Mutex::new(BinaryHeap::new()),
+                cond: Condvar::new(),
+            }));
+            std::thread::Builder::new()
+                .name("vx-timer".into())
+                .spawn(move || run(t))
+                .expect("the system could not start the timer thread");
+            t
+        })
+    }
+
+    /// Wakes the bucket of `word` at `deadline_ns`. The word is not read, so it can be freed.
+    pub(super) fn wake_at(deadline_ns: i64, word: *const i64) {
+        let t = timer();
+        let mut d = t.deadlines.lock().unwrap_or_else(|e| e.into_inner());
+        d.push(Reverse((deadline_ns, word as usize)));
+        t.cond.notify_one();
+    }
+
+    fn run(t: &'static Timer) {
+        let mut d = t.deadlines.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            let Some(&Reverse((deadline, word))) = d.peek() else {
+                d = t.cond.wait(d).unwrap_or_else(|e| e.into_inner());
+                continue;
+            };
+            let now = vx_clock_ns();
+            if now < deadline {
+                let left = Duration::from_nanos((deadline - now) as u64);
+                d = t
+                    .cond
+                    .wait_timeout(d, left)
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0;
+                continue;
+            }
+            d.pop();
+            drop(d);
+            wake(bucket(word as *const i64));
+            d = t.deadlines.lock().unwrap_or_else(|e| e.into_inner());
+        }
     }
 }
 
