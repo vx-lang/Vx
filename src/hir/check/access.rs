@@ -1714,6 +1714,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.record(
             from,
             BorrowRecord {
+                carried_from: None,
                 is_mut: true,
                 scope_depth: self.scopes.len(),
                 borrower_name: Some(holder.to_string()),
@@ -1802,6 +1803,7 @@ impl<'a> TypeChecker<'a> {
                                 self.borrow.record(
                                     &owner,
                                     BorrowRecord {
+                                        carried_from: None,
                                         is_mut: *is_mut,
                                         scope_depth: self.scopes.len(),
                                         borrower_name: self.current_assignment_target.clone(),
@@ -1813,6 +1815,7 @@ impl<'a> TypeChecker<'a> {
                         self.borrow.record(
                             &name,
                             BorrowRecord {
+                                carried_from: None,
                                 is_mut: *is_mut,
                                 scope_depth: self.scopes.len(),
                                 borrower_name: self.current_assignment_target.clone(),
@@ -2465,6 +2468,7 @@ impl<'a> TypeChecker<'a> {
             self.borrow.record(
                 base,
                 BorrowRecord {
+                    carried_from: None,
                     is_mut: record_is_mut,
                     scope_depth: self.scopes.len(),
                     borrower_name: self.current_assignment_target.clone(),

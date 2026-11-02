@@ -1,0 +1,69 @@
+//===- borrow_left_by_one_loop_pass_is_seen_by_the_next.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A borrow made on one pass of a loop is still held on the next pass, until the variable that
+// holds it gets a new value. Changing what it borrows on that next pass is an error.
+
+import std::vec;
+
+fn while_loop() -> i32 {
+  let mut x = 0;
+  let y = 100;
+  let mut seen : &i32 = &y;
+  let mut i = 0;
+  while i < 2 {
+    if i == 0 {
+      seen = &x;
+    } else {
+      // CHECK: Error[E4009] at {{.*}}.vx:[[@LINE+1]]:7: `x` is assigned while it is borrowed
+      x = 7;
+    }
+    i = i + 1;
+  }
+  return *seen;
+}
+
+fn for_loop_over_a_vector() -> i64 {
+  let mut v = Vec<i64>::with_capacity(1);
+  v.push(1i64);
+  let other : i64 = 2i64;
+  let mut seen : &i64 = &other;
+  let mut total = 0i64;
+  for i in 0..2 {
+    if i == 1 {
+      // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:9: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+      v.push(5i64);
+    }
+    total = total + *seen;
+    seen = v.get_ref(0);
+  }
+  return total;
+}
+
+fn read_on_the_next_pass() -> i32 {
+  let mut x = 0;
+  let y = 100;
+  let mut seen : &i32 = &y;
+  let mut total = 0;
+  for i in 0..3 {
+    total = total + *seen;
+    // CHECK: Error[E4009] at {{.*}}.vx:[[@LINE+1]]:5: `x` is assigned while it is borrowed
+    x = i;
+    if i == 0 {
+      seen = &x;
+    }
+  }
+  return total;
+}
+
+fn main() -> i32 {
+  return while_loop() + (for_loop_over_a_vector() as i32) + read_on_the_next_pass();
+}
+
+// CHECK: 3 error(s) emitted
