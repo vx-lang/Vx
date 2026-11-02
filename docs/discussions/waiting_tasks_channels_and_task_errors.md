@@ -443,6 +443,9 @@ of the block (F2). A `join()` of a task that failed leaves the block the same wa
   made the channel or the lock, the line of the wait, and the cycle of waits. The first two need
   the place of a call in the program inside the library, and Vx has no way to get it.
 - A task that gets `Cancelled` from many waits in a row: the line of the wait (F4).
+  Done in part: at the 1000th time that a task sees the cancel of its block, the runtime warns
+  once, with the `spawn` lines of the task. The line of the wait is not known, for the reason
+  above.
 
 ## 5. Admission
 

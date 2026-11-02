@@ -85,6 +85,8 @@ thread_local! {
     /// The bytes of `SITE`, for the handler of an abort. A signal handler must not touch a
     /// `RefCell`, so it reads this copy of the pointer.
     static SITE_BYTES: Cell<(*const u8, usize)> = const { Cell::new((std::ptr::null(), 0)) };
+    /// How many times `vx_cancelled` gave 1 to the task that this thread runs.
+    static CANCELS: Cell<u32> = const { Cell::new(0) };
     /// The mark of the innermost block whose task or code this thread runs.
     static CURRENT: RefCell<Option<Arc<CancelMark>>> = const { RefCell::new(None) };
     /// The marks that `vx_cancel_off` put aside, innermost last.
@@ -239,9 +241,30 @@ pub(crate) fn tasks_begin(sched: Option<&'static Scheduler>) -> *mut VxTaskGroup
 
 /// Whether the block of this thread's task or code, or a block around it, was cancelled. A wait
 /// that can be cancelled then gives `Cancelled`.
+///
+/// The mark stays, so a task that sees it many times is in a loop that waits again after each
+/// `Cancelled` (F4, F9). At the `CANCELS_TO_WARN`th time, a warning says which task it is.
 #[no_mangle]
 pub extern "C" fn vx_cancelled() -> i32 {
-    CURRENT.with(|c| c.borrow().as_ref().is_some_and(|m| m.is_set())) as i32
+    let set = CURRENT.with(|c| c.borrow().as_ref().is_some_and(|m| m.is_set()));
+    if set && CANCELS.with(|n| n.replace(n.get() + 1) + 1) == CANCELS_TO_WARN {
+        let site = current_site().map(|s| String::from_utf8_lossy(&s).into_owned());
+        eprint!(
+            "vx: warning: a task saw the cancel of its `tasks` block {CANCELS_TO_WARN} times. A \
+             loop may wait again after each `Cancelled`.\n{}",
+            site.unwrap_or_else(|| "  in the main code\n".to_string())
+        );
+    }
+    set as i32
+}
+
+/// See `vx_cancelled`.
+const CANCELS_TO_WARN: u32 = 1000;
+
+/// Swaps the count of `vx_cancelled` of this thread with `count`. The shared runtime gives each
+/// fiber its own.
+pub(crate) fn swap_cancels(count: &mut u32) {
+    CANCELS.with(|n| *count = n.replace(*count));
 }
 
 /// A task or the code of a block failed: cancel its block (F3).
