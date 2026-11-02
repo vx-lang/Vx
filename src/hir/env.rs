@@ -354,11 +354,6 @@ impl<'a> GlobalAstEnv<'a> {
         env
     }
 
-    /// Refill `return_provenances` from modules that still carry function bodies (#243). Production
-    /// pipelines build the env from *signature-stripped* modules, so `build` cannot summarize their
-    /// free functions; the entry points call this with the full pre-strip modules to restore
-    /// precision. Idempotent — overwrites any existing entry. A function whose summary cannot be
-    /// computed (no body) is left absent, i.e. conservative `AnyParam` at lookup.
     /// Record the non-generic impl methods that this compilation checks in a dedicated pass.
     /// Call sites that re-check a body for emission consult this set before discarding diagnostics.
     pub fn note_impl_methods_checked_directly(&mut self, impls: &[crate::syntax::decl::ImplBlock]) {
@@ -384,6 +379,11 @@ impl<'a> GlobalAstEnv<'a> {
         }
     }
 
+    /// Refill `return_provenances` from modules that still carry function bodies (#243). Production
+    /// pipelines build the env from *signature-stripped* modules, so `build` cannot summarize their
+    /// free functions; the entry points call this with the full pre-strip modules to restore
+    /// precision. Idempotent — overwrites any existing entry. A function whose summary cannot be
+    /// computed (no body) is left absent, i.e. conservative `AnyParam` at lookup.
     pub fn annotate_return_provenances(&mut self, modules: &[Program]) {
         let funcs: Vec<&Function> = modules.iter().flat_map(|m| m.functions.iter()).collect();
         self.return_provenances

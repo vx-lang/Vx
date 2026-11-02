@@ -1,0 +1,40 @@
+//===- a_method_that_calls_a_generic_with_a_type_error.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A method that calls a generic function whose body is wrong for the concrete
+// type must still report that error. The call re-check must not drop a
+// diagnostic that was not already reported.
+//
+// RUN: not vxc %s --emit-mlir 2>&1 | FileCheck %s
+// RUN: not vxc -j 2 %s --emit-mlir 2>&1 | FileCheck %s
+
+fn first<T>(x : T) -> bool {
+  // CHECK: Error[E3001] at {{.*}}a_method_that_calls_a_generic_with_a_type_error.vx:[[@LINE+1]]:{{.*}}
+  let b : bool = x;
+  return b;
+}
+
+struct S {
+  x : i32,
+}
+
+impl S {
+  fn go(self : &S) -> bool {
+    return first(self.x);
+  }
+}
+
+fn main() -> i32 {
+  let s = S {
+    x : 1
+  };
+  if s.go() {
+    print(1);
+  }
+  return 0;
+}
+// CHECK: 1 error(s) emitted

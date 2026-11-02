@@ -2928,9 +2928,10 @@ impl<'a> TypeChecker<'a> {
             // The body's own `let`s overwrite it, and the caller's `let` still needs it.
             let saved_target = self.current_assignment_target.take();
             // A method that already had a dedicated impl-method check is re-checked here
-            // so the body is rewritten for emission; drop those diagnostics so a call does
-            // not double-report. An imported method is not in that set: the call is its
-            // only check, so its diagnostics must be kept (#1825).
+            // so the body is rewritten for emission. Drop only diagnostics that are already
+            // reported (same code, place, message); keep new ones — e.g. a generic callee
+            // first checked at this call. An imported method is not in that set: the call
+            // is its only check, so its diagnostics must be kept.
             let already_checked_as_impl_method = mapping.is_empty()
                 && self
                     .env
@@ -2939,7 +2940,7 @@ impl<'a> TypeChecker<'a> {
             let start = self.errors.len();
             if already_checked_as_impl_method {
                 self.check_function(&mut func_to_check);
-                self.errors.discard_since(start);
+                self.errors.drop_already_reported_since(start);
             } else {
                 self.check_instance(generic_method, &mut func_to_check);
             }
