@@ -59,6 +59,104 @@ static TABLE: [Bucket; BUCKETS] = [const {
     }
 }; BUCKETS];
 
+/// A held lock of a bucket that ThreadSanitizer can see. This library is not built for it, so it
+/// does not see the futex under a `Mutex`. Without these calls, it took a `Vec` that one thread
+/// grew and another freed under the lock for a race.
+struct Held<'a> {
+    guard: Option<std::sync::MutexGuard<'a, Waiters>>,
+    b: &'a Bucket,
+}
+
+impl<'a> Held<'a> {
+    fn new(b: &'a Bucket) -> Held<'a> {
+        let guard = b.lock.lock().unwrap_or_else(|e| e.into_inner());
+        tsan::acquire(b);
+        Held {
+            guard: Some(guard),
+            b,
+        }
+    }
+
+    /// `Condvar::wait`, with no time limit or with the limit `left`.
+    fn wait(mut self, left: Option<Duration>) -> Held<'a> {
+        let guard = self.guard.take().expect("a held lock");
+        tsan::release(self.b);
+        let guard = match left {
+            Some(left) => {
+                self.b
+                    .cond
+                    .wait_timeout(guard, left)
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0
+            }
+            None => self.b.cond.wait(guard).unwrap_or_else(|e| e.into_inner()),
+        };
+        tsan::acquire(self.b);
+        Held {
+            guard: Some(guard),
+            b: self.b,
+        }
+    }
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        if self.guard.is_some() {
+            tsan::release(self.b);
+        }
+    }
+}
+
+impl std::ops::Deref for Held<'_> {
+    type Target = Waiters;
+    fn deref(&self) -> &Waiters {
+        self.guard.as_ref().expect("a held lock")
+    }
+}
+
+impl std::ops::DerefMut for Held<'_> {
+    fn deref_mut(&mut self) -> &mut Waiters {
+        self.guard.as_mut().expect("a held lock")
+    }
+}
+
+/// The calls of ThreadSanitizer that order two threads, when the program runs under it.
+mod tsan {
+    use std::sync::OnceLock;
+
+    type Hook = unsafe extern "C" fn(*const libc::c_void);
+
+    fn hooks() -> Option<(Hook, Hook)> {
+        static HOOKS: OnceLock<Option<(Hook, Hook)>> = OnceLock::new();
+        *HOOKS.get_or_init(|| {
+            let find =
+                |name: &std::ffi::CStr| unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) };
+            let (acquire, release) = (find(c"__tsan_acquire"), find(c"__tsan_release"));
+            if acquire.is_null() || release.is_null() {
+                return None;
+            }
+            unsafe {
+                Some((
+                    std::mem::transmute::<*mut libc::c_void, Hook>(acquire),
+                    std::mem::transmute::<*mut libc::c_void, Hook>(release),
+                ))
+            }
+        })
+    }
+
+    pub(super) fn acquire<T>(at: &T) {
+        if let Some((acquire, _)) = hooks() {
+            unsafe { acquire(at as *const T as *const libc::c_void) };
+        }
+    }
+
+    pub(super) fn release<T>(at: &T) {
+        if let Some((_, release)) = hooks() {
+            unsafe { release(at as *const T as *const libc::c_void) };
+        }
+    }
+}
+
 fn bucket(word: *const i64) -> &'static Bucket {
     // A word is 8-byte aligned, so the three low bits of its address are always 0.
     &TABLE[(word as usize >> 3) % BUCKETS]
@@ -81,7 +179,7 @@ pub unsafe extern "C" fn vx_wait_while(word: *const i64, value: i64) {
 /// deadline: a thread sleeps with a time limit, and a fiber asks the timer to wake its bucket.
 unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Option<i64>) {
     let b = bucket(word);
-    let mut waiters = b.lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut waiters = Held::new(b);
     let atomic = unsafe { &*(word as *const AtomicI64) };
     if atomic.load(Ordering::SeqCst) != value
         || (or_cancel && crate::ffi::tasks::vx_cancelled() != 0)
@@ -111,11 +209,7 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
             return;
         }
         match left {
-            Some(left) => drop(
-                b.cond
-                    .wait_timeout(waiters, left)
-                    .unwrap_or_else(|e| e.into_inner()),
-            ),
+            Some(left) => drop(waiters.wait(Some(left))),
             None => {
                 // The thread counts as waiting until a wake of the bucket, not until the OS
                 // runs it again. A woken thread can wait a long time for a CPU, and it must not
@@ -134,7 +228,7 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
                         deadlock::sleep_started();
                     }
                 }
-                let mut waiters = b.cond.wait(waiters).unwrap_or_else(|e| e.into_inner());
+                let mut waiters = waiters.wait(None);
                 if waiters.wakes == seen {
                     match blocked_in {
                         Some(s) => {
@@ -261,7 +355,7 @@ fn take_fibers(waiters: &mut Waiters, which: Fibers) -> Vec<FiberRef> {
 /// Wakes each thread of the bucket, and the fibers that `which` names.
 fn wake(b: &Bucket, which: Fibers) {
     deadlock::progress();
-    let mut waiters = b.lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut waiters = Held::new(b);
     let fibers = take_fibers(&mut waiters, which);
     deadlock::sleep_ended(std::mem::take(&mut waiters.sleepers).len() as i64);
     for s in std::mem::take(&mut waiters.blocked) {
@@ -656,14 +750,17 @@ mod tests {
         let g = new_gate();
         let (sched, group) = start_a_task_in_a_callback(&g);
         let b = bucket(g.gate.as_ptr());
-        while blocked_in(&b.lock.lock().unwrap(), sched) == 0 {
+        // Under one hold of the bucket lock, so that a wake from another test that uses the
+        // same bucket cannot come between the two reads.
+        let parked_while_waiting = loop {
+            let w = b.lock.lock().unwrap();
+            if blocked_in(&w, sched) != 0 {
+                break sched.all_parked();
+            }
+            drop(w);
             std::thread::yield_now();
-        }
+        };
         let worker = g.thread.lock().unwrap().expect("the task ran");
-        // The bucket lock keeps a wake from another test out while this test reads.
-        let w = b.lock.lock().unwrap();
-        let parked_while_waiting = sched.all_parked();
-        drop(w);
         let worker_sleeps = sleeps(b, worker);
         g.gate.store(1, Ordering::SeqCst);
         wake(b, Fibers::Of(g.gate.as_ptr() as usize));
