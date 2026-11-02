@@ -9,11 +9,8 @@
 // second channel, and then waits for a reply. So the send is the only event until `select`
 // returns, and that one event must wake it. A lost wake would hang the test.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator cannot lower `Result<Selected<i64>, RecvError>`: its
-// two variants carry payloads of different kinds.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}sum 4501500{{$}}
 
 import std::sync::channel;

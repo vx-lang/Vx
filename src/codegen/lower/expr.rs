@@ -4820,21 +4820,89 @@ pub(crate) fn enum_payload_slot_texts(struct_ty_text: &str) -> Vec<String> {
     if end <= start {
         return Vec::new();
     }
-    let mut slots = Vec::new();
-    let (mut depth, mut from) = (0i32, start);
-    for (i, c) in struct_ty_text[start..end].char_indices() {
+    split_top_level(&struct_ty_text[start..end])
+}
+
+/// Splits a list of types at the commas that are not inside a nested type.
+pub(crate) fn split_top_level(text: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let (mut depth, mut from) = (0i32, 0);
+    for (i, c) in text.char_indices() {
         match c {
             '<' | '(' => depth += 1,
             '>' | ')' => depth -= 1,
             ',' if depth == 0 => {
-                slots.push(struct_ty_text[from..start + i].trim().to_string());
-                from = start + i + 1;
+                parts.push(text[from..i].trim().to_string());
+                from = i + 1;
             }
             _ => {}
         }
     }
-    slots.push(struct_ty_text[from..end].trim().to_string());
-    slots
+    parts.push(text[from..].trim().to_string());
+    parts
+}
+
+/// The full spelling of a type printed inside an LLVM struct, where MLIR leaves out the
+/// `!llvm.` of a nested LLVM type.
+pub(crate) fn full_llvm_type_text(text: &str) -> String {
+    if ["struct<", "ptr", "func", "array<"]
+        .iter()
+        .any(|p| text.starts_with(p))
+    {
+        format!("!llvm.{text}")
+    } else {
+        text.to_string()
+    }
+}
+
+/// Reads the bits of `val` back as type `to`, through a stack slot of type `slot`. `slot` is
+/// an enum's byte slot, which is at least as large as either type. The stack slot goes at the
+/// start of the region being lowered, so a loop does not make a new one on each pass.
+pub(crate) fn reinterpret_through_memory<'c>(
+    gen: &MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    val: Value<'c, 'c>,
+    to: Type<'c>,
+    slot: Type<'c>,
+) -> Result<Value<'c, 'c>, LowerError> {
+    let entry = block
+        .parent_region()
+        .and_then(|r| r.first_block())
+        .ok_or_else(|| LowerError::from("a block outside any region".to_string()))?;
+    let one = entry.insert_operation(
+        0,
+        OperationBuilder::new("llvm.mlir.constant", gen.loc())
+            .add_results(&[gen.i32_ty])
+            .add_attributes(&[(
+                Identifier::new(gen.context, "value"),
+                IntegerAttribute::new(gen.i32_ty, 1).into(),
+            )])
+            .build()?,
+    );
+    let ptr: Value<'c, 'c> = entry
+        .insert_operation_after(
+            one,
+            OperationBuilder::new("llvm.alloca", gen.loc())
+                .add_operands(&[one.result(0)?.into()])
+                .add_results(&[gen.ptr_ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "elem_type"),
+                    TypeAttribute::new(slot).into(),
+                )])
+                .build()?,
+        )
+        .result(0)?
+        .into();
+    block.append_operation(
+        OperationBuilder::new("llvm.store", gen.loc())
+            .add_operands(&[val, ptr])
+            .build()?,
+    );
+    let load = OperationBuilder::new("llvm.load", gen.loc())
+        .add_operands(&[ptr])
+        .add_results(&[to])
+        .build()?;
+    Ok(block.append_operation(load).result(0)?.into())
 }
 
 /// Resizes an enum payload to the width of the slot that holds it.
@@ -4851,7 +4919,27 @@ pub(crate) fn fit_payload_to_slot_text<'c>(
     payload_ty: &Type<'c>,
     slot_text: &str,
 ) -> Result<Value<'c, 'c>, LowerError> {
-    let slot_text = slot_text.to_string();
+    let slot_text = full_llvm_type_text(slot_text);
+    // A byte slot holds payloads of different kinds. The payload goes in as its bits.
+    if slot_text.starts_with("!llvm.array<") && payload_ty.to_string() != slot_text {
+        if payload_ty.to_string().starts_with("memref<") {
+            return Err(LowerError::from(format!(
+                "the legacy code generator cannot put a {payload_ty} in an enum whose variants \
+                 carry different kinds of payload"
+            )));
+        }
+        let mut val = payload_val;
+        if *payload_ty == Type::index(gen.context) {
+            let cast = OperationBuilder::new("arith.index_cast", gen.loc())
+                .add_operands(&[val])
+                .add_results(&[gen.i64_ty])
+                .build()?;
+            val = block.append_operation(cast).result(0)?.into();
+        }
+        let slot_ty = Type::parse(gen.context, &slot_text)
+            .ok_or_else(|| LowerError::ParseType("Type::parse failed".to_string()))?;
+        return reinterpret_through_memory(gen, block, val, slot_ty, slot_ty);
+    }
     // Integers only. Reinterpreting an integer into a float slot would make a denormal
     // that a copy may flush to zero, which is the hazard
     // `tests/optimizations/pass/enum_payload_per_variant.vx` records.

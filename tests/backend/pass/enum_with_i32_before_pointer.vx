@@ -6,7 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 // Store and read an i32 and a pointer when the integer variant comes first.
-// REQUIRES: flat-codegen
 // EXPECT: 5 7
 
 struct Node {

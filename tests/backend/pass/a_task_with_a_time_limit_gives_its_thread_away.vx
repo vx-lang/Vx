@@ -8,15 +8,12 @@
 // The first task waits 0.2 seconds for a value that never comes. The second task runs during
 // that wait, and reads whether the first task's wait ended.
 //
-// The second RUN line runs both tasks on one worker thread of the shared runtime. There the
+// The last RUN line runs both tasks on one worker thread of the shared runtime. There the
 // waiting task must park and give the thread to the second task. The timer of the runtime
 // must then wake it at its time limit, or the program hangs.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator cannot lower `Result<i64, RecvError>`: its two
-// variants carry payloads of different kinds.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}the first task timed out: true{{$}}
 // CHECK: {{^}}the second task ran during the wait: true{{$}}
