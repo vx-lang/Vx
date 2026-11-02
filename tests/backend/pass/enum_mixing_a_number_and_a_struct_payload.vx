@@ -8,9 +8,6 @@
 // One enum whose variants carry a number, a struct wider than the number, or nothing. The
 // payload slot is shaped like the widest one, the struct, and each variant is stored and read
 // back at its own type: 4 from the struct, 7 from the number, 0 for `Nothing`.
-//
-// The legacy code generator gives an enum's payloads one typed slot, so it refuses this enum.
-// REQUIRES: flat-codegen
 // EXPECT: 4 7 0
 
 struct Point {

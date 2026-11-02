@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 // Preserve larger and more strongly aligned payloads through calls and returns.
 // Check both variant orders and a later payload field.
-// REQUIRES: flat-codegen
 // EXPECT: 119 120 139 140 -1 -2
 
 struct Wide {

@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 // Compile functions whose enum parameters contain pointers to host or GPU tensors.
 // Two functions use the same host tensor type.
-// REQUIRES: flat-codegen
 // EXPECT: 3
 
 enum Opt<T> {

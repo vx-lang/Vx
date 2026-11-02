@@ -9,11 +9,8 @@
 // channel gives its value back with `timed_out` set. The `send_for` already had its place after
 // the value 1, so a later `try_recv` passes that place, and the value 3 arrives after 1.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator cannot lower `Result<i64, RecvError>`: its two
-// variants carry payloads of different kinds.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}recv_for gave TimedOut{{$}}
 // CHECK: {{^}}it waited at least 0.05 seconds: true{{$}}
 // CHECK: {{^}}send_for gave back 2, timed out true, cancelled false{{$}}

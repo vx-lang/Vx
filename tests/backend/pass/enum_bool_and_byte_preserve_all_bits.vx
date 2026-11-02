@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Preserve each variant through copies, borrowed access, fields, calls, and returns.
-// REQUIRES: flat-codegen
 // EXPECT: 254 254 254 254 13 11 1 0
 
 enum Value<T> {

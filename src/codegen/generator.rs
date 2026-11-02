@@ -112,6 +112,10 @@ pub struct MeliorGenerator<'c> {
     /// The open `tasks` blocks whose region a `return`, `break` or `continue` leaves,
     /// innermost last.
     pub(crate) tasks_exits: Vec<crate::codegen::lower::expr::TasksExits<'c>>,
+    /// The lowered type of each variant's payload, by the enum's struct name, then the variant
+    /// and the position. A slot can be wider than a variant's payload, or a byte slot that
+    /// holds payloads of different kinds, so a `match` reads the payload back as this type.
+    pub(crate) enum_payloads: std::cell::RefCell<EnumPayloads>,
     pub continue_blocks: Vec<*const melior::ir::Block<'c>>,
     pub allocs: std::collections::HashSet<String>,
     /// One frame per block being lowered: what each name a `let` in the block shadows meant
@@ -265,6 +269,63 @@ pub(crate) fn is_float_text(ty_text: &str) -> bool {
         ty_text,
         "f4E2M1FN" | "f8E4M3FN" | "f8E5M2" | "f16" | "bf16" | "f32" | "f64"
     )
+}
+
+/// The lowered payload type of each enum variant: by the enum's struct name, then by the
+/// variant and the position.
+pub(crate) type EnumPayloads =
+    std::collections::HashMap<String, std::collections::HashMap<(String, usize), String>>;
+
+/// The byte size and alignment of a lowered LLVM type, laid out as C lays out a struct.
+/// `None` for a type this does not model.
+pub(crate) fn llvm_type_size_align(ty_text: &str) -> Option<(usize, usize)> {
+    let t = ty_text.trim();
+    let t = t.strip_prefix("!llvm.").unwrap_or(t);
+    if let Some(bits) = scalar_type_bits(t) {
+        let size = (bits as usize).div_ceil(8).next_power_of_two();
+        return Some((size, size));
+    }
+    if t == "index" || t == "ptr" || t.starts_with("ptr<") {
+        return Some((8, 8));
+    }
+    if let Some(inner) = t.strip_prefix("array<").and_then(|r| r.strip_suffix('>')) {
+        let (n, elem) = inner.split_once(" x ")?;
+        let (size, align) = llvm_type_size_align(elem)?;
+        return Some((n.trim().parse::<usize>().ok()? * size, align));
+    }
+    if t.starts_with("struct<") {
+        let open = t.find('(')?;
+        let fields = crate::codegen::lower::expr::split_top_level(&t[open + 1..t.rfind(')')?]);
+        let (mut offset, mut align) = (0usize, 1usize);
+        for f in fields.iter().filter(|f| !f.is_empty()) {
+            let (fsize, falign) = llvm_type_size_align(f)?;
+            offset = crate::layout::align_up(offset, falign) + fsize;
+            align = align.max(falign);
+        }
+        return Some((crate::layout::align_up(offset, align), align));
+    }
+    None
+}
+
+/// A slot of bytes that holds the payload of any of these variants, when their payloads are
+/// of different kinds: as large as the largest, and aligned as the most strictly aligned.
+fn enum_byte_slot(by_variant: &[(String, String)]) -> Result<String, LowerError> {
+    let (mut size, mut align) = (0usize, 1usize);
+    for (_, ty) in by_variant {
+        let (s, a) = llvm_type_size_align(ty).ok_or_else(|| {
+            LowerError::from(format!(
+                "the legacy code generator cannot put a payload of type {ty} in an enum whose \
+                 variants carry different kinds of payload"
+            ))
+        })?;
+        size = size.max(s);
+        align = align.max(a);
+    }
+    Ok(format!(
+        "!llvm.array<{} x i{}>",
+        crate::layout::align_up(size, align) / align,
+        align * 8
+    ))
 }
 
 /// A drop waiting for the value of the statement it precedes.
@@ -871,6 +932,7 @@ impl<'c> MeliorGenerator<'c> {
             tasks_leaves: Vec::new(),
             tasks_inline: false,
             tasks_exits: Vec::new(),
+            enum_payloads: Default::default(),
             continue_blocks: Vec::new(),
             allocs: std::collections::HashSet::new(),
             blocks: Vec::new(),
@@ -1988,9 +2050,11 @@ impl<'c> MeliorGenerator<'c> {
     /// when the caller has them.
     ///
     /// A payload with no width of its own -- a pointer, or a nested aggregate -- keeps
-    /// the old rule and takes the slot only if nothing else has claimed it.
+    /// the old rule and takes the slot only if nothing else has claimed it. When payloads of
+    /// different kinds meet at one position, such as a struct and a number, the slot is bytes.
     fn enum_payload_slot_ty(
         &self,
+        struct_name: &str,
         enum_def: &[(crate::symbol::Symbol, Option<Vec<syntax::Type>>)],
         mapping: Option<&std::collections::HashMap<crate::symbol::Symbol, syntax::Type>>,
     ) -> Result<String, LowerError> {
@@ -2011,7 +2075,9 @@ impl<'c> MeliorGenerator<'c> {
             // Numbers of different kinds, such as `i32` and `f32`, share an integer slot. A float
             // goes in as its bits; an integer in a float slot could read back as a denormal.
             let mut scalars: Vec<String> = Vec::new();
-            for (_v_name, payload) in enum_def {
+            let mut by_variant: Vec<(String, String)> = Vec::new();
+            let mut mixed = false;
+            for (v_name, payload) in enum_def {
                 let Some(types) = payload else { continue };
                 let Some(ty) = types.get(position) else {
                     continue;
@@ -2024,16 +2090,13 @@ impl<'c> MeliorGenerator<'c> {
                 if lowered.starts_with("memref<") {
                     lowered = "!llvm.ptr".to_string();
                 }
-                let is_struct = lowered.starts_with("!llvm.struct");
+                by_variant.push((v_name.to_string(), lowered.clone()));
+                let is_scalar = scalar_type_bits(&lowered).is_some();
                 if payload_ty_str != "none"
-                    && is_struct != payload_ty_str.starts_with("!llvm.struct")
-                    || is_struct && payload_ty_str != "none" && payload_ty_str != lowered
+                    && (is_scalar != scalar_type_bits(&payload_ty_str).is_some()
+                        || !is_scalar && payload_ty_str != lowered)
                 {
-                    return Err(LowerError::from(format!(
-                        "an enum whose variants carry different kinds of payload \
-                         ({payload_ty_str} and {lowered}) cannot be lowered by the legacy code \
-                         generator"
-                    )));
+                    mixed = true;
                 }
                 if scalar_type_bits(&lowered).is_some() && !scalars.contains(&lowered) {
                     scalars.push(lowered.clone());
@@ -2047,7 +2110,15 @@ impl<'c> MeliorGenerator<'c> {
                     _ => {}
                 }
             }
-            if scalars.len() > 1 && scalars.iter().any(|t| is_float_text(t)) {
+            let mut payloads = self.enum_payloads.borrow_mut();
+            let types = payloads.entry(struct_name.to_string()).or_default();
+            for (variant, ty) in &by_variant {
+                types.insert((variant.clone(), position), ty.clone());
+            }
+            drop(payloads);
+            if mixed {
+                payload_ty_str = enum_byte_slot(&by_variant)?;
+            } else if scalars.len() > 1 && scalars.iter().any(|t| is_float_text(t)) {
                 payload_ty_str = format!("i{widest}");
             }
             slots.push(payload_ty_str);
@@ -2117,7 +2188,7 @@ impl<'c> MeliorGenerator<'c> {
         name: &str,
         enum_def: &[(crate::symbol::Symbol, Option<Vec<syntax::Type>>)],
     ) -> Result<Type<'c>, LowerError> {
-        let payload_ty_str = self.enum_payload_slot_ty(enum_def, None)?;
+        let payload_ty_str = self.enum_payload_slot_ty(name, enum_def, None)?;
         Type::parse(
             self.context,
             &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str),
@@ -2301,10 +2372,12 @@ impl<'c> MeliorGenerator<'c> {
                                 mapping.insert("T".into(), ty_arg.clone());
                             }
                         }
-                        let payload_ty_str =
-                            self.enum_payload_slot_ty(&enum_def, Some(&mapping))?;
-
                         let args_str = self.type_args_name(args)?;
+                        let payload_ty_str = self.enum_payload_slot_ty(
+                            &format!("{name}_{args_str}"),
+                            &enum_def,
+                            Some(&mapping),
+                        )?;
 
                         format!(
                             "!llvm.struct<\"{}_{}\", (i32, {})>",

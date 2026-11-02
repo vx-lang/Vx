@@ -8,11 +8,8 @@
 // A program of the book chapter on tasks (www/book/src/tasks.md): `select` takes each value from
 // whichever of two channels has one, until both are closed.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator cannot lower `Result<Selected<i64>, RecvError>`: its
-// two variants carry payloads of different kinds.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}from 0: 3 values, from 1: 3 values{{$}}
 
 // ANCHOR: program
