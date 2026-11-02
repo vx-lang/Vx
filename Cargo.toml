@@ -48,8 +48,7 @@ rayon = "1.10"
 rstest = "0.19"
 
 [workspace]
-members = ["refactor_tool",
-    "stdlib/rust_core"
+members = ["stdlib/rust_core"
 , "vx-analyzer"
 , "vx-build-commit"]
 
