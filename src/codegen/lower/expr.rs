@@ -1843,6 +1843,7 @@ impl<'c> LowerToMelior<'c> for syntax::UnaryOpExpr {
         let syntax::UnaryOpExpr { op, expr, span: _ } = self;
         let (val, ty, block) = gen.generate_expr(expr, block)?;
         match op {
+            syntax::UnaryOp::Try => unreachable!("the checker turns `?` into a match"),
             syntax::UnaryOp::Not => {
                 let true_val_op = OperationBuilder::new("arith.constant", gen.loc())
                     .add_results(&[ty])

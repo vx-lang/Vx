@@ -49,6 +49,9 @@ pub enum LogicalOp {
 pub enum UnaryOp {
     Not,
     Neg,
+    /// `x?`: the value of an `Ok`, or the `Err` passed up unchanged. The checker turns it into a
+    /// `match`, so no later pass sees it.
+    Try,
 }
 
 #[derive(Debug, PartialEq, Clone)]
