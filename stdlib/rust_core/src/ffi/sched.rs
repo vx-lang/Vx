@@ -247,7 +247,6 @@ impl Scheduler {
 
     /// True when no fiber runs and none is ready. Each fiber that did not end then waits on a
     /// bucket, and only a thread that is not a worker can wake it. With no fibers, it is true.
-    #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) fn all_parked(&self) -> bool {
         // `pop` counts a fiber as running under this lock, so no fiber is between the two.
         let ready = self.ready.lock().unwrap();
