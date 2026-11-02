@@ -3582,9 +3582,13 @@ impl<'r> Lowerer<'r> {
                 Some((ty.clone(), lty))
             }
             _ if want_value => {
-                return Err(Decline::Unsupported {
-                    what: "a tasks block with a value and a return, break or continue inside",
-                })
+                let ty = u.value_ty.as_ref().ok_or(Decline::Unsupported {
+                    what: "a tasks block with a value of no recorded type and an exit inside",
+                })?;
+                let lty = self.lower_ty_synth(ty).ok_or(Decline::TypeNotModelled {
+                    what: "the type of a tasks block with a value and an exit inside",
+                })?;
+                Some((ty.clone(), lty))
             }
             _ => None,
         };

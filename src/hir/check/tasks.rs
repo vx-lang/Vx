@@ -270,6 +270,7 @@ impl TypeChecker<'_> {
         ret: Option<Expr>,
         fails_as: Option<Type>,
         cancels_on_err: Option<Type>,
+        value_ty: Option<Type>,
     ) {
         if self.speculating {
             return;
@@ -287,6 +288,7 @@ impl TypeChecker<'_> {
             task: Some(tb.kind),
             fails_as,
             cancels_on_err,
+            value_ty,
         });
     }
 
@@ -328,7 +330,10 @@ impl TypeChecker<'_> {
         self.tasks.handles.retain(|h| h.depth < scope_len - 1);
         self.pop_scope();
         let fails_as = self.check_block_failures(&failures, &ty, &expr.span());
-        self.task_block_to_plain_block(expr, None, fails_as, None);
+        let has_value = matches!(&*expr, Expr::TaskBlock(tb) if tb.ret.is_some())
+            && !crate::syntax::types::is_void_ty(&ty);
+        let value_ty = has_value.then(|| ty.clone());
+        self.task_block_to_plain_block(expr, None, fails_as, None, value_ty);
         ty
     }
 
@@ -403,7 +408,7 @@ impl TypeChecker<'_> {
                 self.task_error(DiagnosticCode::E3056, message.to_string(), &span);
                 let ty = self.check_task_body(expr, consume, |_| {});
                 self.pop_scope();
-                self.task_block_to_plain_block(expr, None, None, None);
+                self.task_block_to_plain_block(expr, None, None, None, None);
                 // A handle all the same, so that its `join()` reports nothing more.
                 if place == Some(SpawnPlace::Let) {
                     let id = format!("{TASK_PREFIX}{}", self.tasks.next_id);
@@ -583,7 +588,7 @@ impl TypeChecker<'_> {
         } else {
             ty = Type::Struct("void".into(), None);
         }
-        self.task_block_to_plain_block(expr, ret, None, cancels_on_err);
+        self.task_block_to_plain_block(expr, ret, None, cancels_on_err, None);
         ty
     }
 

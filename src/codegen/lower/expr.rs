@@ -2072,7 +2072,7 @@ fn lower_task_block<'c>(
         Some(slot) if kind == syntax::TaskBlockKind::Tasks => {
             lower_tasks_block_with_exits(this, gen, block, slot)
         }
-        Some(_) => lower_task_region(this, kind, gen, block, TailSlot::Yield, &mut None),
+        Some(_) => lower_task_region(this, kind, gen, block, None),
     };
     gen.tasks_inline = outer_inline;
     lowered
@@ -2122,31 +2122,17 @@ fn region_value_slot<'c>(
         // The value of a block that can fail is the first failure, so it always has one.
         return this.fails_as.is_none().then_some(ValueSlot::No);
     }
-    let Some(fails_as) = &this.fails_as else {
-        return Some(ValueSlot::AfterTheValue);
-    };
-    let ty = gen.lower_type(fails_as).ok()?;
-    (!gen.is_memref(&ty)).then_some(ValueSlot::Failure(ty))
+    let ty = this.fails_as.as_ref().or(this.value_ty.as_ref())?;
+    let ty = gen.lower_type(ty).ok()?;
+    (!gen.is_memref(&ty)).then_some(ValueSlot::Typed(ty))
 }
 
 /// Where a `tasks` block that runs on threads keeps its value, when an exit can leave it.
 pub(crate) enum ValueSlot<'c> {
     /// The block has no value.
     No,
-    /// A slot of this type, made before the region: a failed join writes to it too.
-    Failure(Type<'c>),
-    /// A slot made once the last value of the block has a type.
-    AfterTheValue,
-}
-
-/// What the region of a `tasks` block does with its last value.
-enum TailSlot<'c> {
-    /// It yields the value.
-    Yield,
-    /// It stores the value in this slot.
-    Store(Value<'c, 'c>),
-    /// It stores the value in a new slot, made at the end of this block before the region.
-    Make(melior::ir::BlockRef<'c, 'c>),
+    /// A slot of this type, made before the region. A failed join writes to it too.
+    Typed(Type<'c>),
 }
 
 /// Whether a `return` (`loop_exit` false), or a `break` or `continue` of the innermost loop
@@ -2341,9 +2327,9 @@ fn lower_tasks_block_with_exits<'c>(
         Some(t) if t != gen.none_ty => Some(llvm_slot(gen, block, t)?),
         _ => None,
     };
-    let mut value = match value_slot {
-        ValueSlot::Failure(ty) => Some((llvm_slot(gen, block, ty)?, ty)),
-        ValueSlot::No | ValueSlot::AfterTheValue => None,
+    let value = match value_slot {
+        ValueSlot::Typed(ty) => Some((llvm_slot(gen, block, ty)?, ty)),
+        ValueSlot::No => None,
     };
     gen.tasks_exits.push(TasksExits {
         loops: gen.break_blocks.len(),
@@ -2353,21 +2339,13 @@ fn lower_tasks_block_with_exits<'c>(
         leaves: gen.tasks_leaves.len(),
         exits: Vec::new(),
     });
-    let tail = match (&value_slot, value) {
-        (ValueSlot::AfterTheValue, _) => TailSlot::Make(block),
-        (_, Some((slot, _))) => TailSlot::Store(slot),
-        (_, None) => TailSlot::Yield,
-    };
-    let mut made = None;
     let lowered = lower_task_region(
         this,
         syntax::TaskBlockKind::Tasks,
         gen,
         block,
-        tail,
-        &mut made,
+        value.map(|(slot, _)| slot),
     );
-    value = value.or(made);
     let exits = gen.tasks_exits.pop().expect("pushed above").exits;
     let (mut val, mut ty, mut block) = lowered?;
     // The tasks ended. Each exit that left the region goes on here.
@@ -2544,14 +2522,13 @@ fn expr_leaves(e: &Expr, in_loop: bool) -> bool {
     }
 }
 
-/// `tail` says what the region does with its last value. A slot that it makes goes to `made`.
+/// `value_slot`: the region stores its last value there and yields nothing.
 fn lower_task_region<'c>(
     this: &UnsafeBlockExpr,
     kind: syntax::TaskBlockKind,
     gen: &mut MeliorGenerator<'c>,
     block: melior::ir::BlockRef<'c, 'c>,
-    tail: TailSlot<'c>,
-    made: &mut Option<(Value<'c, 'c>, Type<'c>)>,
+    value_slot: Option<Value<'c, 'c>>,
 ) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
     let location = gen.loc();
     let wants_value = this.ret.is_some() && gen.expected_type != Some(gen.none_ty);
@@ -2580,23 +2557,7 @@ fn lower_task_region<'c>(
             if this.cancels_on_err.is_some() && wants_value {
                 body = cancel_on_err(gen, body, val)?;
             }
-            let slot = match tail {
-                TailSlot::Yield => None,
-                TailSlot::Store(slot) => Some(slot),
-                TailSlot::Make(outer) if wants_value => {
-                    if gen.is_memref(&ty) {
-                        return Err(LowerError::from(
-                            "a tasks block whose value is a tensor, and that an exit leaves"
-                                .to_string(),
-                        ));
-                    }
-                    let slot = llvm_slot(gen, outer, ty)?;
-                    *made = Some((slot, ty));
-                    Some(slot)
-                }
-                TailSlot::Make(_) => None,
-            };
-            if let Some(slot) = slot {
+            if let Some(slot) = value_slot {
                 body.append_operation(
                     OperationBuilder::new("llvm.store", gen.loc())
                         .add_operands(&[val, slot])
