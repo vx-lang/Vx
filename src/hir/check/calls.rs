@@ -3107,6 +3107,7 @@ impl<'a> TypeChecker<'a> {
                 let receiver_root = self.changed_root(obj);
                 let mut base_ty = self.check_expr_type_flag(obj, false);
                 self.allow_cross_topology = prev_allow;
+                self.warn_wait_in_drop(&base_ty, _method, &method_span);
 
                 // Pre-infer closure argument types for specific intrinsics before type-checking them
                 let mut reduce_init_ty = None;

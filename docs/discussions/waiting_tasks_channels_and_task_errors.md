@@ -408,7 +408,8 @@ guard for the slot works.
 - A wait in a `drop` must have a time limit. Cancellation cannot stop it, so a wait for a peer
   that is gone would never end. `send_for` and `recv_for` take one, and `wait_while_until` is
   the wait under them. A task of the shared runtime parks for such a wait, and a timer thread
-  wakes it at the time limit. The compiler does not check this yet.
+  wakes it at the time limit. The compiler warns about a `send` or `recv` in a `drop` (W1036).
+  It does not look into the functions that the `drop` calls.
 - A `tasks` block inside a `drop` does not get the cancel of the task outside it.
 
 **F7. Leaving a `tasks` block early.** `return` or `break` out of the code of a `tasks` block

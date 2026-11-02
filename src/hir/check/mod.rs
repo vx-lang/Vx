@@ -25,6 +25,7 @@ pub mod cancel_loops;
 pub mod capacity_fold;
 pub mod closure_copies;
 pub mod control;
+pub mod drop_waits;
 pub mod drops;
 pub mod escape;
 pub mod imported_errors;

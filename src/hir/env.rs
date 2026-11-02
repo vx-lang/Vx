@@ -547,6 +547,8 @@ pub struct TypeChecker<'a> {
     /// on every pass. Otherwise the variables that the condition reads: an arm that changes one
     /// can end the loop.
     pub(crate) cancel_loops: Vec<Option<Vec<String>>>,
+    /// The function being checked is the `drop` of a `Drop` impl, for W1036.
+    pub(crate) in_drop: bool,
     /// The variables that closures in `let`s copied, for W1034.
     pub(crate) closure_copies: Vec<crate::hir::check::closure_copies::ClosureCopy>,
     /// The `let` being checked, when its value is a closure.
@@ -639,6 +641,7 @@ impl<'a> TypeChecker<'a> {
             indexed_name: None,
             value_unused: false,
             cancel_loops: Vec::new(),
+            in_drop: false,
             closure_copies: Vec::new(),
             let_closure: None,
             checking_assign_lhs: false,
@@ -1926,6 +1929,8 @@ impl<'a> TypeChecker<'a> {
         let prev_shadowed = self.borrow.take_shadowed();
         let prev_closure_copies = std::mem::take(&mut self.closure_copies);
         let prev_cancel_loops = std::mem::take(&mut self.cancel_loops);
+        let in_drop = self.is_drop_impl(func);
+        let prev_in_drop = std::mem::replace(&mut self.in_drop, in_drop);
         let prev_borrowers = self.borrow.take_borrowers();
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
@@ -2105,6 +2110,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.restore_shadowed(prev_shadowed);
         self.closure_copies = prev_closure_copies;
         self.cancel_loops = prev_cancel_loops;
+        self.in_drop = prev_in_drop;
         self.borrow.restore_borrowers(prev_borrowers);
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;

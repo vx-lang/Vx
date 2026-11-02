@@ -114,6 +114,10 @@ cancelled task gives `Cancelled` at once, and such a loop never ends.
 
 A `join()` and a `lock()` cannot be cancelled.
 
+A `drop` runs with cancellation off, so that a cleanup can finish. So a wait in a `drop` must
+have a time limit: `send_for(v, seconds)` and `recv_for(seconds)` give `timed_out` and `TimedOut`
+after it. The compiler warns about a `send` or `recv` in a `drop` (W1036).
+
 ## `select`
 
 `select(&receivers)` waits on a list of receivers, and takes the first value from any of them. It
