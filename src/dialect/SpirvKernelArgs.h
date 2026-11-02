@@ -2,12 +2,30 @@
 #define VX_SPIRV_KERNEL_ARGS_H
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Pass/Pass.h"
 #include "mlir/Support/LogicalResult.h"
 
+#include <memory>
+#include <optional>
 #include <string>
 
 namespace mlir {
 namespace vx {
+
+/// The reason a placed region cannot become a SPIR-V device image, in the words
+/// a warning gives its author, or nothing when it can.
+///
+/// `op` is an operation in the host form of a placed region, before the region
+/// is copied into a device module.
+///
+/// This is the one answer for the whole SPIR-V path. Two places ask it: the
+/// gate that decides whether a region gets an image, and the warning that tells
+/// the author why the region runs on the host. The flattening below is the
+/// other half of the same rule: it rewrites what this admits, and what it still
+/// cannot rewrite is a warning and a host run rather than a failed compile. The
+/// two used to carry a rule each, and the day they disagreed a program that
+/// used to run stopped compiling.
+std::optional<std::string> spirvRefusalOf(Operation *op);
 
 /// Rewrite every kernel in `gpuModule` to the flat argument list the launch
 /// ABI already passes, so the SPIR-V pipeline can compile it.
@@ -25,6 +43,10 @@ namespace vx {
 /// compiler is not running on.
 LogicalResult flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule,
                                      std::string &error);
+
+/// The flattening as a pass, for `vx-opt`, which is where the address
+/// arithmetic it builds can be read without a GPU.
+std::unique_ptr<Pass> createFlattenSpirvKernelArgsPass();
 
 } // namespace vx
 } // namespace mlir

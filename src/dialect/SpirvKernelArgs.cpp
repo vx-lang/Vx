@@ -12,7 +12,7 @@
 // pointers stored in them are `float*` or `i32*`. SPIR-V's typed pointers
 // reject the composite that puts one into the other. Measured on this machine
 // with scripts/tools/spirv_module_check.sh, for every kernel that keeps a
-// memref value -- so the device twin has to take the flat list instead.
+// memref value -- so the device kernel has to take the flat list instead.
 //
 // The flat list is not new. It is exactly what the launch ABI already passes
 // and what runtime/vx_kernel_launch.h counts: `allocated`, `aligned`, the
@@ -31,8 +31,10 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
+#include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -149,6 +151,41 @@ bool mentionsMemref(Operation *op) {
   return false;
 }
 
+/// Whether `op` mentions a memref whose elements are themselves memrefs -- a
+/// buffer that holds a descriptor, which is the shape the AST code generator
+/// gives a kernel's result slot. The flat argument list is pointers and scalars
+/// and has no form for one, and a descriptor read out of device memory would
+/// have to be rebuilt field by field.
+bool mentionsMemrefCell(Operation *op) {
+  auto isCell = [](Type type) {
+    auto memref = dyn_cast<MemRefType>(type);
+    return memref && isa<BaseMemRefType>(memref.getElementType());
+  };
+  return llvm::any_of(op->getOperandTypes(), isCell) ||
+         llvm::any_of(op->getResultTypes(), isCell);
+}
+
+/// Whether `op` is a branch that hands an `index` value to its destination
+/// block, which is how the AST code generator writes a loop counter.
+///
+/// The gpu -> llvm-spv conversion turns `index` into a 64-bit integer in the
+/// operations it rewrites, but not in a branch's block arguments, and refuses
+/// the module with "type mismatch for bb argument #0 of successor #0". The flat
+/// code generator counts its loops in `i32` and is not affected.
+bool carriesIndexBlockArgument(Operation *op) {
+  auto branch = dyn_cast<BranchOpInterface>(op);
+  if (!branch)
+    return false;
+  for (Block *successor : branch->getSuccessors())
+    for (BlockArgument arg : successor->getArguments())
+      if (isa<IndexType>(arg.getType()))
+        return true;
+  return false;
+}
+
+/// The address space of a tile in shared memory, which `Memory::SMEM` becomes.
+constexpr int64_t kSharedAddressSpace = 3;
+
 /// The linear element offset of an access to `view` at `indices`, as an
 /// `i64`: the view's offset plus `index * stride` per dimension.
 Value linearIndex(OpBuilder &builder, Location loc, const FlatView &view,
@@ -208,15 +245,17 @@ LogicalResult lowerLoad(memref::LoadOp load, const FlatView &view,
 /// Rewrite one `memref.reinterpret_cast` into the arithmetic its accesses will
 /// use.
 ///
-/// The cast's offset is added to the source's, and its sizes and strides
-/// replace the source's. That is what the frontend means by these casts: a row
-/// view names `index * row_size` relative to the memref it is made from. When
-/// the source is already a view of its own (`strided_row`), the frontend reads
-/// the source's offset, sizes and strides back out with
-/// `memref.extract_strided_metadata`, folds the row index into the offset, and
-/// makes the cast from the base buffer -- so the offset a launch passes for
-/// that tensor still reaches the address, which is what the `offset` argument
-/// in the ABI is for.
+/// The cast's offset replaces the source's, and its sizes and strides replace
+/// the source's. That is what the op means: `MemRefOps.td` says the result
+/// descriptor is the source's base with `%dst.offset = %offset`, so "it does
+/// not matter if you use %result1 or %arg0 as a source" -- a cast never builds
+/// on the offset of the view it is made from (`memref.subview` does, and the
+/// two differ there for that reason).
+///
+/// The frontend keeps to that: it writes an offset relative to the base buffer.
+/// A row of a view is built from `memref.extract_strided_metadata`'s base
+/// buffer, with the source's offset folded into the cast's, which is why the
+/// base-buffer view below starts at offset 0.
 ///
 /// The op is left in place for the caller to erase: its result still has uses
 /// until they have been rewritten, and erasing an op whose result is used
@@ -226,11 +265,14 @@ void lowerReinterpretCast(memref::ReinterpretCastOp cast, const FlatView &view,
   OpBuilder builder(cast);
   Location loc = cast.getLoc();
 
-  Value offset = view.offset;
-  for (OpFoldResult part : cast.getMixedOffsets())
-    offset = addI64(builder, loc, offset,
-                    asI64(builder, loc,
-                          getValueOrCreateConstantIndexOp(builder, loc, part)));
+  Value offset;
+  for (OpFoldResult part : cast.getMixedOffsets()) {
+    Value partValue = asI64(
+        builder, loc, getValueOrCreateConstantIndexOp(builder, loc, part));
+    offset = offset ? addI64(builder, loc, offset, partValue) : partValue;
+  }
+  if (!offset)
+    offset = constantI64(builder, loc, 0);
   SmallVector<Value, 4> sizes;
   for (OpFoldResult part : cast.getMixedSizes())
     sizes.push_back(asI64(builder, loc,
@@ -434,6 +476,40 @@ LogicalResult flattenKernel(gpu::GPUFuncOp func, std::string &error) {
 
 } // namespace
 
+std::optional<std::string> spirvRefusalOf(Operation *op) {
+  // A memref of memrefs, which the AST code generator writes for a kernel's
+  // result slot: the flat argument list is pointers and scalars.
+  if (mentionsMemrefCell(op))
+    return "its body holds a memref of memrefs (`memref<memref<...>>`), which "
+           "the flat argument list has no form for";
+  // A loop counter handed to the next block as an `index` block argument.
+  if (carriesIndexBlockArgument(op))
+    return "a branch in its body carries an `index` value between blocks, "
+           "which the SPIR-V conversion cannot take";
+  // A tile in shared memory. A static one becomes a `memref.global`, and a
+  // dynamic one is a stack slot that shared-typed loads then address: measured
+  // on an A100 as an illegal address. The flattening addresses the kernel's
+  // own arguments, and a global is not one of them yet.
+  if (auto alloca = dyn_cast<memref::AllocaOp>(op)) {
+    auto type = dyn_cast<MemRefType>(alloca.getType());
+    auto space =
+        type ? dyn_cast_or_null<IntegerAttr>(type.getMemorySpace()) : nullptr;
+    if (space && space.getInt() == kSharedAddressSpace)
+      return "it keeps a tile in shared memory (`Memory::SMEM`), and the "
+             "argument flattening has no form for shared storage yet";
+    // A slot `mem2reg` promotes is a loop counter, and the flattening never
+    // sees it. A buffer the region made is a memref value nothing built, which
+    // the flattening would refuse.
+    if (type && type.getRank() != 0)
+      return "it keeps a scratch buffer of its own (`memref.alloca`), and the "
+             "device image addresses only the kernel's arguments";
+  }
+  if (isa<memref::AllocOp>(op))
+    return "it allocates a buffer on the device (`memref.alloc`), and the "
+           "device image addresses only the kernel's arguments";
+  return std::nullopt;
+}
+
 LogicalResult flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule,
                                      std::string &error) {
   SmallVector<gpu::GPUFuncOp> kernels;
@@ -466,6 +542,44 @@ LogicalResult flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule,
     return WalkResult::advance();
   });
   return left.wasInterrupted() ? failure() : success();
+}
+
+namespace {
+/// The flattening as a pass, so `vx-opt` can show the arithmetic it builds.
+///
+/// The image is the only other place it appears, and reading an address out of
+/// a SPIR-V module is not a test anyone can write. Here the rewrite's output is
+/// MLIR with the addresses written out.
+struct FlattenSpirvKernelArgsPass
+    : public PassWrapper<FlattenSpirvKernelArgsPass,
+                         OperationPass<gpu::GPUModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(FlattenSpirvKernelArgsPass)
+
+  StringRef getArgument() const override {
+    return "vx-flatten-spirv-kernel-args";
+  }
+
+  StringRef getDescription() const override {
+    return "Rewrite a kernel's memref arguments into the launch ABI's flat "
+           "argument list";
+  }
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<LLVM::LLVMDialect>();
+  }
+
+  void runOnOperation() override {
+    std::string error;
+    if (succeeded(flattenSpirvKernelArgs(getOperation(), error)))
+      return;
+    getOperation().emitError() << error;
+    signalPassFailure();
+  }
+};
+} // namespace
+
+std::unique_ptr<Pass> createFlattenSpirvKernelArgsPass() {
+  return std::make_unique<FlattenSpirvKernelArgsPass>();
 }
 
 } // namespace vx

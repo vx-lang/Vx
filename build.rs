@@ -693,9 +693,10 @@ fn main() {
     assert!(status.success(), "clang++ compilation failed for VxDialect");
 
     // The SPIR-V device image is written by LLVM's SPIR-V code generator, and the functions
-    // that register it exist only in an LLVM built with that target. CI's LLVM builds the host
-    // target and NVPTX, not SPIRV, so the calls need to be behind this define or the file does
-    // not compile there. `llvm-config` is how the build script already asks LLVM about itself.
+    // that register it exist only in an LLVM built with that target. The LLVM that
+    // scripts/provision/build_llvm.sh builds has it, and an LLVM from elsewhere may not, so the
+    // calls need to be behind this define or the file does not compile there. `llvm-config` is
+    // how the build script already asks LLVM about itself.
     let llvm_targets_built = Command::new("llvm-config")
         .arg("--targets-built")
         .output()
