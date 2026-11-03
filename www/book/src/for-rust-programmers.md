@@ -19,8 +19,10 @@ lists what to change. Each item shows the Rust form and the Vx form.
   `self : &mut Self`, and `self` is `self : Self`. The type's own name works too:
   `self : &Point`.
 - **`#[track_caller]` is a parameter.** End the parameters with `at : Caller`
-  (`import core::panic;`). A call that leaves the argument out passes its own file and line, in
-  `at.file` and `at.line`. To report the line of your own caller, give your `at` to the call.
+  (`import core::panic;`). A call that leaves the argument out passes its own place, in
+  `at.location`: a `Location` with `file`, `line` and `column`. To report the place of your own
+  caller, give your `at` to the call. `Location::here()` is Rust's `Location::caller()` and
+  `file!()`, `line!()` and `column!()` in one.
 - **Closure parameters have types.** `|x| x + 1` is `| x : i64 | x + 1`.
 - **No `impl Trait` parameters.** `fn show(g : &impl Area)` is `fn show<T : Area>(g : &T)`.
 
