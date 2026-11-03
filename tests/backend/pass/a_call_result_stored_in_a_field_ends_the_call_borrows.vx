@@ -1,0 +1,36 @@
+//===- a_call_result_stored_in_a_field_ends_the_call_borrows.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `w.n = count(&a, ..)` borrows `a` only for the call when the result holds no reference, so
+// `a` can change after it while `w` is still used.
+
+// EXPECT: n=1; r=0;
+
+import std::vec;
+
+struct W {
+  n : i32,
+  r : &i64,
+}
+
+fn count(v : &Vec<i64>, x : i64) -> i32 {
+  return v.len();
+}
+
+fn main() -> i32 {
+  let mut a = Vec<i64>::with_capacity(1);
+  a.push(1i64);
+  let zero : i64 = 0i64;
+  let mut w = W {
+    n : 0,
+    r : &zero
+  };
+  w.n = count(&a, 0i64);
+  a.push(5i64);
+  println!("n={}; r={};", w.n, *w.r);
+  return 0;
+}

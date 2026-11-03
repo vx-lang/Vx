@@ -18,6 +18,9 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
+    // A `return` of a tensor from inside a `tasks` block: the flat path declines it ("a return
+    // of a value of this type from inside a tasks block"). The file is about the AST path.
+    "backend/pass/a_return_of_a_tensor_leaves_a_tasks_block.vx",
     // `VecIter<i64>::filter`: the flat path declines it ("a struct with no GID").
     "backend/pass/an_iterator_item_does_not_keep_the_iterator_borrowed.vx",
     // A `match` through a reference to an enum, one of them with a payload: the flat path does
@@ -358,6 +361,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/element_atomics_in_across_loops.vx",              // needs --machine
             "optimizations/pass/float_atomics_in_across_loops.vx",                // needs --machine
             "optimizations/pass/scoped_fences_in_across_loops.vx",                // needs --machine
+            "optimizations/pass/reads_only_calls_in_across_loops.vx",             // needs --machine
             "optimizations/pass/code_after_the_blocks_runs_in_the_last_pass.vx",  // needs --machine
             "optimizations/pass/gpu_image_keeps_only_the_kernels.vx",             // needs --machine
             "optimizations/pass/across_kernels_that_pass_the_checks.vx",          // needs --machine

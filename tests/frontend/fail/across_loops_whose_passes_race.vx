@@ -227,6 +227,68 @@ pub fn coefficient_that_wraps(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32)
   return;
 }
 
+// Only lane 0 writes `out[b]`, but every lane reads it, so a lane may read it while lane 0 writes.
+pub fn lane_zero_writes_and_every_lane_reads(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..32 across lanes {
+        if l == 0 {
+          out[b] = 1.0;
+        }
+        // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}a pass of this lane loop may read an element of `out` that another pass writes
+        let _y = out[b];
+      }
+    }
+  }
+  return;
+}
+
+// Lane 0 and lane 1 both write `out[b]`.
+pub fn two_lanes_write_one_element(out : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..32 across lanes {
+        if l == 0 {
+          out[b] = 1.0;
+        }
+        if l == 1 {
+          // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this lane loop may write the same element of `out`: the writes must use the same index
+          out[b] = 2.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// Lane `j` writes `j + 16`, which lane `j + 16` also writes.
+pub fn halves_that_overlap(out : &mut Tensor<f32, [?, 64], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for j in 0..32 across lanes {
+        out[b][j] = 1.0;
+        // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this lane loop may write the same element of `out`: the writes must use the same index that fixes `j`, or indices that no two passes make equal
+        out[b][j + 16] = 2.0;
+      }
+    }
+  }
+  return;
+}
+
+// Lane `j` writes `2 * j + 2`, which lane `j + 1` writes as `2 * j`.
+pub fn pairs_that_overlap(out : &mut Tensor<f32, [?, 66], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for j in 0..32 across lanes {
+        out[b][2 * j] = 1.0;
+        // CHECK: Error[E6032] at {{.*}}across_loops_whose_passes_race.vx:[[# @LINE + 1]]:{{.*}}two passes of this lane loop may write the same element of `out`
+        out[b][2 * j + 2] = 2.0;
+      }
+    }
+  }
+  return;
+}
+
 fn main() -> i32 {
   return 0;
 }

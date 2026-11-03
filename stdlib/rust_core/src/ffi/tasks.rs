@@ -139,6 +139,9 @@ pub extern "C" fn vx_tasks_begin() -> *mut VxTaskGroup {
 }
 
 pub(crate) fn tasks_begin(sched: Option<&'static Scheduler>) -> *mut VxTaskGroup {
+    if let Some(sched) = sched {
+        sched.take_home();
+    }
     let outer = CURRENT.with(|c| c.borrow().clone());
     let mark = Arc::new(CancelMark {
         set: AtomicBool::new(false),

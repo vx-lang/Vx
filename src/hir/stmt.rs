@@ -224,6 +224,9 @@ impl<'a> TypeChecker<'a> {
 
             self.warn_if_declared_twice(&body[i], &mut declared);
             self.check_statement(&mut body[i], return_type, true);
+            if is_function_body {
+                self.borrow.clear_stored();
+            }
             match &body[i] {
                 Statement::Return(_) | Statement::Break(_) | Statement::Continue(_)
                     if !terminated =>
@@ -1414,10 +1417,20 @@ impl<'a> TypeChecker<'a> {
                 self.borrow.forget(&held);
             }
         }
+        let before_rhs = self.borrow.snapshot();
         let mut rhs_ty =
             self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume && !copies_into_tensor);
         rhs_ty = crate::hir::check::operators::round_narrow_arithmetic(rhs, rhs_ty, Some(&lhs_ty));
-        self.current_assignment_target = None;
+        // What the value left in the target is stored there, not borrowed only for a call.
+        if let Some(target) = self.current_assignment_target.take() {
+            let stored: Vec<_> = self
+                .borrow
+                .added_copies_since(&before_rhs)
+                .into_iter()
+                .filter(|(_, r)| r.borrower_name.as_deref() == Some(target.as_str()))
+                .collect();
+            self.borrow.note_stored(stored);
+        }
         // `*r = &mut y`, with `r` bound to `&mut x`: `r` reaches the borrows `x` now holds.
         if let (Some(var), Expr::Dereference(d)) = (self.store_target_var_of(lhs), &*lhs) {
             if let Expr::Identifier(r) = &*d.expr {

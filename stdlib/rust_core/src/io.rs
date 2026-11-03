@@ -15,7 +15,7 @@
 
 use crate::{instantiate_file_ffi, instantiate_stdio_ffi};
 
-instantiate_file_ffi!();
+instantiate_file_ffi!(crate::ffi::io::off_the_worker);
 instantiate_stdio_ffi!();
 
 /// While a task runs, each thread keeps what it prints until a newline, and then writes the

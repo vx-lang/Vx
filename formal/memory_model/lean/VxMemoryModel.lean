@@ -43,4 +43,6 @@ import VxMemoryModel.Deadlock
 import VxMemoryModel.CpuDeadlock
 import VxMemoryModel.DeadlockExample
 import VxMemoryModel.Finish
+import VxMemoryModel.Scheduler
+import VxMemoryModel.Select
 import VxMemoryModel.TimeoutExample
