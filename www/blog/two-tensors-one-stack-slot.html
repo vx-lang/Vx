@@ -3,18 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Two tensors, one stack slot</title>
+<title>Stack coloring enabled by lifetime markers</title>
 <meta name="author" content="Aditya Kumar">
 <meta name="description" content="LLVM gives two local arrays one stack slot when lifetime markers show that they are not in use at the same time. C++ and Rust end each lifetime at the end of a scope. Vx ends it at the last use of a tensor, so the same function needs 4 KB of stack in Vx and 8 KB in C++ and Rust.">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
-<meta property="og:title" content="Two tensors, one stack slot">
+<meta property="og:title" content="Stack coloring enabled by lifetime markers">
 <meta property="og:description" content="The pass that merges stack slots is the same in clang, rustc and vxc. The difference is where each lifetime ends: at the end of a scope, or after the last use.">
 <meta property="og:type" content="article">
 <meta property="article:published_time" content="2026-11-02T18:00:00Z">
 <meta property="og:url" content="https://vxlang.org/blog/two-tensors-one-stack-slot.html">
 <meta property="og:image" content="https://vxlang.org/cards/blog-two-tensors-one-stack-slot.png">
-<meta property="og:image:alt" content="Two tensors, one stack slot.">
+<meta property="og:image:alt" content="Stack coloring enabled by lifetime markers.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://vxlang.org/cards/blog-two-tensors-one-stack-slot.png">
 
@@ -40,7 +40,7 @@
 
 <article class="post">
 
-<h1>Two tensors, one stack slot</h1>
+<h1>Stack coloring enabled by lifetime markers</h1>
 <p class="post-meta">Aditya Kumar &middot; 2 November 2026</p>
 
 <blockquote class="tldr"><strong>TL;DR</strong> — A function needs one stack slot for each local

@@ -9,7 +9,7 @@
   <author><name>Aditya Kumar</name></author>
 
   <entry>
-    <title>Two tensors, one stack slot</title>
+    <title>Stack coloring enabled by lifetime markers</title>
     <link href="https://vxlang.org/blog/two-tensors-one-stack-slot.html"/>
     <id>https://vxlang.org/blog/two-tensors-one-stack-slot.html</id>
     <updated>2026-11-02T18:00:00Z</updated>
