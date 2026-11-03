@@ -124,7 +124,7 @@ event and the reason. An error about a missing fact can then say why the fact is
 | `requires valid(p, n)` of the function | At the start of the body: `Valid(bp, 0, n)`. `bp` is the base of the parameter `p`. |
 | `requires initialized(p, n)` of the function | At the start of the body: `Init(bp, 0, n)`. |
 | `requires !overlaps(p, q, n)` of the function | At the start of the body: `Apart(bp, 0, bq, 0, n)`. |
-| `ensures valid(p, n)` of a call | When the call returns: `Valid(b, k, k + n)`. The argument for `p` has the base `b` and the offset `k`. In `n`, each parameter stands for the value of its argument before the call. For `return`, `b` is the new base of the result, and `k` is 0. |
+| `ensures valid(p, n)` of a call | When the call returns: `Valid(b, k, k + n)`. The argument for `p` has the base `b` and the offset `k`. In `n`, each parameter stands for the value of its argument before the call, and `return` stands for the result. When `p` is `return`, `b` is the new base of the result, and `k` is 0. |
 | `ensures initialized(p, n)` and `ensures !overlaps(p, q, n)` of a call | In the same way. |
 | A pointer made from a reference, when the checker knows where the reference points (section 3) | `Valid(b, 0, 1)` and `Init(b, 0, 1)`. A reference is valid and points at a value. |
 | `assume valid(p, n)` in an `unsafe` block | `Valid(b, k, k + n)` for the base and offset of `p`. The same for the other two functions. |
@@ -166,10 +166,13 @@ A fact whose base has other memory ends at these events:
 | A call, or an `mlir!` block, with an argument that can free memory | `v.push(1i64)`, `dealloc(p, 8i64)`, `g(p)` where `g` has no `!frees(p)` |
 | An assignment to a place of a type with a drop | `*b = Box::new(2i64)` frees the old box. |
 | The drop of a value of a type with a drop | A local `Vec` at the end of its block |
-| A `spawn` whose task captures an argument that can free memory | The task can free memory at any point until the join. So from the `spawn` to the join, the checker keeps no fact about other memory, also a fact that starts in that time. |
+| A `spawn` whose task captures an argument that can free memory | The task can free memory at any point until its `join()` or the end of its `tasks` block. So in that time, the checker keeps no fact about other memory, also a fact that starts in that time. |
 
 A call of a closure also gets the values that the closure captures, as arguments. So a closure
-that captures `&mut v` can free memory, also when the call passes only an `i64`.
+that captures `&mut v` can free memory, also when the call passes only an `i64`. A closure value
+whose type does not show what it captures, such as `||->i32`, is an argument that can free memory.
+`Closure1` and the other closure structs of `core::ops` keep their captured values behind the raw
+pointer `env`, so they are such arguments already.
 
 The pointer functions of `core::ptr` are no event: `offset`, `add`, `sub`, their `_mut` forms,
 `eq`, `is_null` and `null`. They only compute an address. The checker trusts their `mlir!` bodies,
@@ -214,6 +217,7 @@ It infers `!frees(p)` when the body uses each value that it follows only in thes
 - It writes an element or a field of a type without a drop through it.
 - It computes `offset(p, k)` or compares two pointers.
 - It gives it as an argument for a parameter that has `!frees`.
+- It names it in an `assume`.
 - It returns it.
 
 A read of a value of a type with a drop is a move. The body can then drop the value and free the
@@ -287,12 +291,16 @@ prover models. A safe function can use it for a fact that comes from an invarian
 as `Vec::as_mut_ptr` does in the next section.
 
 **A function value has no clauses.** So a safe function with a pointer `requires` cannot become a
-function value in v1 (open question 4). For the same reason, an impl of a trait method cannot add a
-pointer `requires` that the trait method does not have. A call through a trait bound reads only the
-clauses of the trait. A `pub fn` can be called from C, which proves nothing. The audit lists each
-`pub fn` with a pointer `requires`.
+function value in v1 (open question 4). A call through a function value adds no fact, and each
+argument that can free memory makes it an event. For the same reason, an impl of a trait method
+cannot add a pointer `requires` that the trait method does not have. A call through a trait bound
+reads only the clauses of the trait, so it uses only a `!frees` that the trait method states. The
+checker checks each impl body against that `!frees` by the rules of section 5. A `pub fn` can be
+called from C, which proves nothing. The audit lists each `pub fn` with a pointer `requires`.
 
 ## 8. Examples
+
+### A sum over part of a buffer
 
 <!-- vx-doctest: skip (proposed syntax) -->
 
@@ -328,6 +336,8 @@ requires 0i64 <= k && k <= n
 
 Without `!frees(p)` on `sum`, the first call ends both facts. Then the second call gets E8006, and
 the message names the first call as the event.
+
+### A vector
 
 <!-- vx-doctest: skip (proposed syntax) -->
 
@@ -389,6 +399,8 @@ The `assume` in `as_mut_ptr` is true only when `data` is not null. Today `vec_al
 for a buffer of 0 bytes, for example for `Vec::with_capacity(0)`. So `Vec` must first keep an
 aligned pointer that is not null for an empty buffer, as the `Vec` of Rust does.
 
+### A pointer to a local variable
+
 <!-- vx-doctest: skip (proposed syntax) -->
 
 ```vx
@@ -410,6 +422,232 @@ fn read_one(v : &mut Vec<i64>) -> i64 {
 
 - `p` points at the local memory of `x`, with `Valid(b, 0, 1)`. The push can free other memory
   only, so the fact stays, and the call compiles in safe code.
+
+### A buffer that a read fills
+
+The `Valid` fact of a buffer covers all of the buffer. A read gives an `Init` fact only for the
+bytes that it wrote. The result of the read connects the two facts.
+
+<!-- vx-doctest: skip (proposed syntax) -->
+
+```vx
+extern "C" {
+  // The count of bytes that it read, or 0 at the end of the input or on an error.
+  safe fn c_read_some(fd : i32, buf : *mut u8, cap : i64) -> i64
+  requires valid(buf, cap)
+  ensures 0i64 <= return && return <= cap
+  ensures initialized(buf, return)
+  ensures !frees(buf);
+}
+
+fn read_and_check(fd : i32, buf : *mut u8, cap : i64) -> i64
+requires valid(buf, cap)
+{
+  let got = c_read_some(fd, buf, cap);
+  let read_part = checksum(buf as *const u8, got);
+  let whole = checksum(buf as *const u8, cap);
+  return read_part + whole;
+}
+```
+
+`checksum` has the clauses of `sum`, for `u8`.
+
+1. At the start, `buf` has the base `b` and the fact `Valid(b, 0, cap)`. It has no `Init` fact,
+   so a `checksum` before the read gets E8006.
+1. The read proves `valid(buf, cap)`. Its `!frees(buf)` keeps the `Valid` fact. Its `ensures`
+   give the prover `0 <= got && got <= cap`, and they give the tracker `Init(b, 0, got)`.
+1. `checksum(buf, got)` compiles. The goal for `valid` is `0 <= got && got <= cap`. The goal for
+   `initialized` is `0 <= got && got <= got`.
+1. `checksum(buf, cap)` gets E8006. The goal for `initialized` needs `cap <= got`, and the prover
+   cannot prove it. The bytes after `got` hold no value yet.
+
+The C function `read` returns -1 on an error. `c_read_some` returns 0 instead, because
+`initialized` is false for a negative length. The checker trusts the `ensures` of an `extern`
+function, and the audit lists it. A second read into `offset_mut(buf, got)` gives a second `Init`
+fact. The checker does not join two ranges (section 11), so a checksum of both parts needs two
+calls.
+
+### Allocation and free
+
+The memory from `alloc` holds no values. A call of `dealloc` ends each fact about other memory.
+
+<!-- vx-doctest: skip (proposed syntax) -->
+
+```vx
+fn alloc_i64(n : i64) -> *mut i64
+requires n > 0i64
+ensures valid(return, n)
+{
+  let p : *mut i64 = alloc(vec_bytes(n, 8i64), 16i64);
+  if is_null_mut(p) {
+    panic("out of memory");
+  }
+  unsafe {
+    assume valid(p, n);
+  }
+  return p;
+}
+
+fn fill_zero(p : *mut i64, n : i64) -> void
+requires valid(p, n)
+ensures initialized(p, n)
+{
+  for i in 0i64..n {
+    unsafe {
+      p[i] = 0i64;
+    }
+  }
+  unsafe {
+    assume initialized(p, n);
+  }
+}
+
+fn alloc_and_free(n : i64) -> i64
+requires n > 0i64
+{
+  let p = alloc_i64(n);
+  fill_zero(p, n);
+  let s = sum(p as *const i64, n);
+  let bytes : *mut i8 = p;
+  dealloc(bytes, 16i64);
+  return s + sum(p as *const i64, n);
+}
+```
+
+1. `alloc_i64` checks for null and then states its fact with an `assume`. The `assume` is the
+   promise of its author: `alloc` gave `8 * n` bytes at an alignment of 16.
+1. In `alloc_and_free`, the call of `alloc_i64` gets only an `i64`, so it is no event. `p` gets a
+   new base `b` with `Valid(b, 0, n)`. It has no `Init` fact, because the memory holds no values
+   yet. So a `sum(p, n)` at this point gets E8006.
+1. `fill_zero` only writes `p[i]` and names `p` in an `assume`. So the compiler infers `!frees(p)`,
+   and the call ends no fact. Its `ensures` gives `Init(b, 0, n)`, and the first `sum` compiles.
+1. The `let` with the type `*mut i8` is a cast to another element type, so `bytes` has a new base.
+   `dealloc(bytes, 16i64)` gets a raw pointer, so it is an event. It ends each fact about other
+   memory, also the facts about `p`. The checker does not need to know that `bytes` and `p` hold
+   the same address.
+1. The second `sum` gets E8006, with a note on the line of the `dealloc`.
+
+`fill_zero` needs an `assume`, because a write gives no `Init` fact in v1 (section 11).
+
+### A pointer in a field: lists and copies
+
+<!-- vx-doctest: skip (proposed syntax) -->
+
+```vx
+struct Node {
+  value : i64,
+  next : *const Node,
+}
+
+fn value_of(n : *const Node) -> i64
+requires valid(n, 1i64)
+requires initialized(n, 1i64)
+{
+  return unsafe { (*n).value };
+}
+
+fn second_value(head : *const Node) -> i64
+requires valid(head, 1i64)
+requires initialized(head, 1i64)
+{
+  let next = unsafe { (*head).next };
+  return value_of(next);
+}
+```
+
+- `value_of(next)` gets E8006. `next` is a pointer read from memory, so it gets a new base with
+  no facts (section 3).
+- The facts about `head` say that the field `next` holds a value of its type. Any address is such
+  a value, also null or the address of a node that the program freed. So no fact about `head`
+  passes to `next`.
+- A copy or a clone of a struct copies its pointer fields. A read of a field of the copy is a read
+  of memory too. So the copy gets no fact from the original, and a free through the original
+  leaves no false fact about the copy. The same is true for a pointer that the body stores in a
+  field and reads again.
+- Only an `ensures` or an `assume` gives a field a fact. For example, a list type can keep the
+  invariant that each `next` is null or points at a live node. Then a method can check for null
+  and state the fact with an `assume`.
+
+### Tasks and shared memory
+
+<!-- vx-doctest: skip (proposed syntax) -->
+
+```vx
+fn sum_while_a_task_pushes(v : &mut Vec<i64>) -> i64 {
+  let p = v.as_mut_ptr();
+  let n = v.len() as i64;
+  let mut s = 0i64;
+  tasks {
+    let h = spawn {
+      v.push(1i64);
+    };
+    s = sum(p as *const i64, n);
+    h.join();
+  }
+  return s;
+}
+```
+
+The task captures `v`, an argument that can free memory. So the `spawn` ends the facts about `p`,
+and `sum` gets E8006. Today, without the clauses of `sum`, this program compiles, because `p`
+holds no borrow of `v` (section 9). The push can move the buffer while `sum` reads it. A run with
+the elements 5 and 6 printed 7434. The sum of the elements is 11.
+
+What a fact promises, and what the programmer must still do:
+
+- A fact says that the memory is live and holds values at that point of the body. It assumes that
+  no other task frees the memory. The `spawn` rule of section 5 keeps that true for Vx tasks.
+  When the task captures an argument that can free memory, the parent keeps no fact about other
+  memory from the `spawn` to the `join()` or the end of the `tasks` block. A task body starts
+  with no fact of its parent (section 6).
+- A fact does not order the accesses of two tasks. `Valid` and `Init` do not say that no other
+  task writes the memory at the same time. `!overlaps` compares two ranges of one call only.
+- So the programmer must still synchronize the tasks. A raw pointer is not `Send`, so a task
+  cannot capture one (E3055). To share one, a program puts it in a type with an
+  `unsafe impl Send`. That type has a raw pointer in it, so a task that captures it ends the facts
+  of its parent about other memory too. The author of the impl, and of each `unsafe` access
+  through the pointer, must prevent a data race. A data race is two tasks that access one element
+  at the same time, when one of them writes it.
+- A thread that Vx did not start, such as a C thread, is outside the `spawn` rule. So an `extern`
+  function must not give a fact about memory that such a thread can free. This is the trust rule
+  of section 5.
+
+### Calls through a function value or a closure
+
+<!-- vx-doctest: skip (proposed syntax) -->
+
+```vx
+fn apply(f : fn(*const i64, i64) -> i64, p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let a = f(p, n);
+  return a + sum(p, n);
+}
+
+fn apply_closure(c : Closure1<i64, i64>, p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let call = c.func;
+  let a = call(c.env, n);
+  return a + sum(p, n);
+}
+```
+
+- In `apply`, the caller picks `f` at run time, so the checker does not know the callee. A
+  function value has no clauses, so `p` has no `!frees` in the call `f(p, n)`. So the call ends
+  the facts about `p`, and `sum` gets E8006 with a note on the line of `f(p, n)`. A choice such as
+  `let g = if fast { first } else { second };` gives a function value too.
+- `f` itself can free nothing. A `fn` value names a function and captures no values. A closure
+  cannot become a `fn` value: vxc refuses it as an argument, in a `let` and in a cast.
+- In `apply_closure`, `call(c.env, n)` gets `c.env`, a raw pointer. The closure can capture
+  `&mut v` for the vector that holds the buffer at `p`. So the call is an event, and `sum` gets
+  E8006.
+- The checker sees what a closure literal in the body captures. So after
+  `let times_k = | x : i64 | x * k;`, with `k : i64`, a call `times_k(2i64)` ends no fact.
+- `apply(sum, p, n)` is an error in v1, because `sum` has a pointer `requires` (section 7).
+- A call through a trait bound uses the clauses of the trait method (section 7).
 
 ## 9. The borrow checker and raw pointers today
 
