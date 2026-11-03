@@ -382,6 +382,10 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/gpu_region_that_ends_in_a_value_runs_on_the_gpu.vx", // needs --machine
             "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
             "frontend/pass/packages/import_from_a_package.vx", // needs --package
+            // needs --machine
+            "optimizations/pass/across_loops_get_a_launch_check_only_when_an_index_may_wrap.vx",
+            // needs --machine
+            "optimizations/pass/an_across_loop_whose_index_wraps_stops_at_the_launch.vx",
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {
             continue;
