@@ -134,6 +134,9 @@ pub struct GlobalAstEnv<'a> {
         HashMap<crate::symbol::Symbol, crate::hir::provenance::ReturnProvenance>,
     /// The same summary for each method, under [`crate::hir::provenance::method_key`].
     pub method_provenances: HashMap<String, crate::hir::provenance::ReturnProvenance>,
+    /// The parameters that each function says `!keeps` for, as bits. A function with none is
+    /// absent.
+    pub not_kept: HashMap<crate::symbol::Symbol, u32>,
     /// The struct and enum declarations that a summary reads.
     pub decls: crate::hir::provenance::Decls<'a>,
     /// This compilation's transfer-cost graph: the built-in memory-space edges plus every declared
@@ -174,6 +177,7 @@ impl<'a> GlobalAstEnv<'a> {
             externs: Vec::new(),
             return_provenances: HashMap::new(),
             method_provenances: HashMap::new(),
+            not_kept: HashMap::new(),
             decls: Default::default(),
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
             consts: HashMap::new(),
@@ -319,6 +323,16 @@ impl<'a> GlobalAstEnv<'a> {
         );
         env.return_provenances = functions;
         env.method_provenances = methods;
+        // A `!keeps` clause is in the signature, so a body that was stripped still has it.
+        env.not_kept = env
+            .syntax_functions
+            .values()
+            .map(|f| {
+                let bits = crate::hir::check::borrow_clauses::not_kept_params(f);
+                (f.name.clone(), bits)
+            })
+            .filter(|(_, bits)| *bits != 0)
+            .collect();
         // Build the transfer-cost graph once, now that `topologies` is populated. It used to be
         // built inside `TypeChecker::new` -- that is, once per *function* -- where it ran the
         // all-pairs shortest-path precompute twice (once in `default()`, once in

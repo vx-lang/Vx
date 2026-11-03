@@ -1,0 +1,92 @@
+//===- a_call_that_does_not_keep_a_reference_ends_its_borrow.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A call may store each reference it gets in each `&mut` it gets whose target can hold one. So
+// without a clause, `note(out, &local)` is refused: `out` outlives `local`. And after
+// `count(&mut h, &y)`, `h` keeps `y` borrowed. `ensures !keeps(x)` says that the call stores `x`
+// nowhere, so the borrow of `x` ends with the call.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator cannot lower a `Vec<&i64>`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}noted=8;{{$}}
+// CHECK-NEXT: {{^}}counted=3; y=5;{{$}}
+// CHECK-NEXT: {{^}}twice=16;{{$}}
+// CHECK-NEXT: {{^}}any=1;{{$}}
+
+import std::vec;
+
+struct Holder {
+  r : &i64,
+}
+
+fn note(out : &mut Vec<&i64>, x : &i64) -> i64
+ensures !keeps(x)
+{
+  if out.len() > 0 {
+    return *x + 1i64;
+  }
+  return *x;
+}
+
+fn count(h : &mut Holder, b : &i64) -> i64
+ensures !keeps(b)
+{
+  return *b + *h.r;
+}
+
+fn note_a_local(out : &mut Vec<&i64>) -> i64 {
+  let local = 7i64;
+  return note(out, &local);
+}
+
+// The clause holds because `note` keeps `x` nowhere either.
+fn note_twice(out : &mut Vec<&i64>, x : &i64) -> i64
+ensures !keeps(x)
+{
+  return note(out, x) + note(out, x);
+}
+
+fn note_a_local_twice(out : &mut Vec<&i64>) -> i64 {
+  let local = 7i64;
+  return note_twice(out, &local);
+}
+
+// A generic function keeps its clause for each type it is used with.
+fn note_any<T>(out : &mut Vec<&T>, _x : &T) -> i64
+ensures !keeps(_x)
+{
+  if out.len() > 0 {
+    return 1i64;
+  }
+  return 0i64;
+}
+
+fn note_a_local_of_any_type(out : &mut Vec<&i64>) -> i64 {
+  let local = 7i64;
+  return note_any(out, &local);
+}
+
+fn main() -> i32 {
+  let first = 1i64;
+  let mut out = Vec<&i64>::new();
+  out.push(&first);
+  println!("noted={};", note_a_local(&mut out));
+
+  let x = 1i64;
+  let mut h = Holder {
+    r : &x
+  };
+  let mut y = 2i64;
+  let counted = count(&mut h, &y);
+  y = 5i64;
+  println!("counted={}; y={};", counted, y);
+  println!("twice={};", note_a_local_twice(&mut out));
+  println!("any={};", note_a_local_of_any_type(&mut out));
+  return (*h.r) as i32 - 1;
+}

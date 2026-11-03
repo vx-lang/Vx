@@ -515,8 +515,10 @@ pub enum DiagnosticCode {
     E4015,
     /// A borrow clause that is not well formed, or one that the body does not keep. In
     /// `ensures !points_into(return, *p)` the result cannot point into the memory under `*p`, and
-    /// in `ensures !reaches(return, *p)` it also cannot point where a reference in `*p` points.
-    /// `p` is a reference parameter. Each borrow clause is an `ensures` of its own.
+    /// in `ensures !reaches(return, *p)` it also cannot point where a reference in `*p` points. In
+    /// `ensures !keeps(p)` the body stores `p`, or a reference read through it, nowhere that
+    /// outlives the call. `p` is a reference parameter. Each borrow clause is an `ensures` of its
+    /// own.
     E4016,
 
     // --- Safety Errors (E5xxx) ---

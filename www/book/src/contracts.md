@@ -230,6 +230,10 @@ Without the clause, `k = 7i64` is an error, because `r` keeps `k` borrowed.
 - `points_into(return, *p)`: the result can point into the memory under `*p`. That is `*p` itself,
   and the memory behind its `&mut` fields and raw pointer fields, such as the buffer of a `Vec`.
 - `reaches(return, *p)`: the result can also point where a reference in `*p` points.
+- `keeps(p)`: after the call, a place outside the call can hold `p`, or a reference read through
+  `p`. Without a clause, the compiler assumes that a call keeps each reference that it gets in each
+  `&mut` that it gets. So `ensures !keeps(x)` lets a caller pass a reference to a local together
+  with a `&mut` to memory that outlives the local.
 
 `p` is a reference parameter. A clause with `!` says that the relation does not hold, so the caller
 does not keep that borrow. The compiler checks each `!` clause against the body, and reports E4016

@@ -2858,6 +2858,10 @@ impl<'a> TypeChecker<'a> {
             crate::hir::provenance::compute_return_provenance_with(inst, &self.env.decls, &callee)
         };
         self.mono.return_provenances.insert(inst.name.clone(), prov);
+        let not_kept = crate::hir::check::borrow_clauses::not_kept_params(inst);
+        if not_kept != 0 {
+            self.mono.not_kept.insert(inst.name.clone(), not_kept);
+        }
     }
 
     /// Names a generic function's body by the function's name and where the body starts. Two

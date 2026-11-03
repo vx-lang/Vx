@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 //
-// A borrow clause is an `ensures` of its own, in the form `points_into(return, *p)` or
-// `reaches(return, *p)`, with or without `!`, where `p` is a reference parameter.
+// A borrow clause is an `ensures` of its own, in the form `points_into(return, *p)`,
+// `reaches(return, *p)` or `keeps(p)`, with or without `!`, where `p` is a reference parameter.
 
 struct Cursor {
   data : &i64,
@@ -43,7 +43,7 @@ ensures !reaches(return, *z)
   return a;
 }
 
-// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `reaches` needs a reference parameter after `*`, but `n` is `i64`
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `reaches` needs a reference parameter, but `n` is `i64`
 fn not_a_reference(a : &i64, n : i64) -> &i64
 ensures !reaches(return, *n)
 {
@@ -57,8 +57,16 @@ ensures !points_into(return, *c.data)
   return c.data;
 }
 
-// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `keeps` is not supported yet
-fn keeps_a_reference(a : &i64) -> i64
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `keeps` takes one reference parameter, as in `keeps(b)`
+fn keeps_two(a : &i64, b : &i64) -> i64
+ensures !keeps(a, b)
+{
+  return *a + *b;
+}
+
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+3]]:9: `keeps(a)` and `!keeps(a)` contradict each other
+fn keeps_and_not(a : &i64) -> i64
+ensures keeps(a)
 ensures !keeps(a)
 {
   return *a;
@@ -86,8 +94,8 @@ fn main() -> i32 {
   };
   let total = *in_requires(&x) + *inside_another_clause(&x, 1i64) + *not_about_the_result(&x, &x)
   + *no_such_parameter(&x) + *not_a_reference(&x, 1i64) + *about_a_field(&c)
-  + keeps_a_reference(&x) + no_reference(&x) + *contradicts(&x);
+  + keeps_two(&x, &x) + keeps_and_not(&x) + no_reference(&x) + *contradicts(&x);
   return total as i32;
 }
 
-// CHECK: 9 error(s) emitted
+// CHECK: 10 error(s) emitted

@@ -1,0 +1,75 @@
+//===- a_function_that_says_it_does_not_keep_a_reference_but_stores_it.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `ensures !keeps(b)` says that no place outside the call holds `b`, or a reference read through
+// `b`, after the call. The checker proves it against the body.
+
+import std::vec;
+
+struct Holder {
+  r : &i64,
+}
+
+struct Cursor {
+  data : &i64,
+}
+
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `set_r` says `!keeps(b)`, but the body can store `b`, or a reference read through it, where it outlives the call
+fn set_r(h : &mut Holder, b : &i64) -> void
+ensures !keeps(b)
+{
+  h.r = b;
+}
+
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `push_it` says `!keeps(b)`, but the body can store `b`
+fn push_it(v : &mut Vec<&i64>, b : &i64) -> void
+ensures !keeps(b)
+{
+  v.push(b);
+}
+
+// `c.data` is a reference read through `c`.
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `leak` says `!keeps(c)`, but the body can store `c`
+fn leak(h : &mut Holder, c : &Cursor) -> void
+ensures !keeps(c)
+{
+  h.r = c.data;
+}
+
+// A recursive function with no clause gives a result that the checker cannot follow.
+fn again(a : &i64) -> &i64 {
+  return again(a);
+}
+
+// The body stores `again(c)`, not `b`, but the checker cannot tell where that value points.
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `store_other` says `!keeps(b)`, but the checker cannot show it: the body can store a value that the checker cannot follow
+fn store_other(h : &mut Holder, b : &i64, c : &i64) -> i64
+ensures !keeps(b)
+{
+  h.r = again(c);
+  return *b;
+}
+
+fn main() -> i32 {
+  let x = 1i64;
+  let mut h = Holder {
+    r : &x
+  };
+  let mut v = Vec<&i64>::new();
+  let c = Cursor {
+    data : &x
+  };
+  set_r(&mut h, &x);
+  push_it(&mut v, &x);
+  leak(&mut h, &c);
+  let n = store_other(&mut h, &x, &x);
+  return (*h.r + n) as i32;
+}
+
+// CHECK: 4 error(s) emitted
