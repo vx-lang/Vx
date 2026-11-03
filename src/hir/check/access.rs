@@ -1763,6 +1763,7 @@ impl<'a> TypeChecker<'a> {
                     && self.check_expr_type_probe(inner).placement().is_some();
                 if *is_mut {
                     self.record_change(inner);
+                    self.note_a_change_to(inner);
                 }
                 let old_allow = self.allow_cross_topology;
                 self.allow_cross_topology |= borrows_placed;
