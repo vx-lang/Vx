@@ -2301,6 +2301,9 @@ pub(crate) struct FnEmit<'a> {
     /// of the element type rather than the rank-0 `memref` a never-borrowed scalar local uses. The
     /// scalar analogue of `pslot_of`, carrying the element so the load/store types match.
     pub(crate) sslot_of: Vec<Option<ElementType>>,
+    /// The memref type a *tensor slot* holds (a `memref<memref<..>>` alloca), for a tensor local
+    /// given a new value in a branch.
+    pub(crate) tslot_of: Vec<Option<String>>,
     /// The function body's MLIR text, appended to as the walk proceeds.
     /// The function's entry block, for allocations that must happen once.
     ///
@@ -2799,6 +2802,7 @@ pub fn emit_function_mlir(
         ptr_of: vec![false; hir.len()],
         pslot_of: vec![false; hir.len()],
         sslot_of: vec![None; hir.len()],
+        tslot_of: vec![None; hir.len()],
         entry: String::new(),
         body: String::new(),
         terminated: false,

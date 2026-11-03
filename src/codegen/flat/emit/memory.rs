@@ -100,6 +100,13 @@ impl FnEmit<'_> {
             ));
             self.names[idx] = n;
             self.pslot_of[idx] = true;
+        } else if let Some((elem, shape)) = self.ctx.tensors.get(&gid) {
+            // A tensor local: a rank-0 memref that holds its memref, as the AST codegen does.
+            let mt = tensor_memref_ty(elem, shape).ok_or(crate::emitter_gap!())?;
+            let n = format!("%v{idx}");
+            self.emit_slot(&format!("  {n} = memref.alloca() : memref<{mt}>\n"));
+            self.names[idx] = n;
+            self.tslot_of[idx] = Some(mt);
         } else {
             let agg = self.ctx.aggs.get(&gid).ok_or(Decline::TypeNotModelled {
                 what: "an aggregate slot with no struct type",
@@ -154,7 +161,21 @@ impl FnEmit<'_> {
             crate::bytecode::IMM_BLOCK_BOUND => " {vx.parallel_bbound}",
             _ => "",
         };
-        if let Some(&Some(agg_gid)) = self.agg_of.get(ins.operand1.0 as usize) {
+        if let Some(mt) = self
+            .tslot_of
+            .get(ins.operand1.0 as usize)
+            .cloned()
+            .flatten()
+        {
+            let src = self
+                .mem_of
+                .get(ins.operand2.0 as usize)
+                .cloned()
+                .flatten()
+                .ok_or(crate::emitter_gap!())?;
+            let val = self.cast_memref_value(&format!("ts{_idx}"), &val, &src, &mt)?;
+            self.body += &format!("  memref.store {val}, {slot}[] : memref<{mt}>\n");
+        } else if let Some(&Some(agg_gid)) = self.agg_of.get(ins.operand1.0 as usize) {
             let agg = self.ctx.aggs.get(&agg_gid).ok_or(crate::emitter_gap!())?;
             self.body += &format!(
                 "  llvm.store {val}, {slot} : {}, !llvm.ptr\n",
@@ -190,7 +211,21 @@ impl FnEmit<'_> {
         // A pointer slot loads back an `!llvm.ptr` value (`llvm.load`); an aggregate slot loads
         // the whole `!llvm.struct` value (`llvm.load`, #242 Vec<Vec<T>>); a scalar slot loads
         // its element from the rank-0 memref (`memref.load`). (#235)
-        if let Some(&Some(agg_gid)) = self.agg_of.get(ins.operand1.0 as usize) {
+        if let Some(mt) = self
+            .tslot_of
+            .get(ins.operand1.0 as usize)
+            .cloned()
+            .flatten()
+        {
+            let slot = self
+                .names
+                .get(ins.operand1.0 as usize)
+                .ok_or(crate::emitter_gap!())?;
+            let n = format!("%v{idx}");
+            self.body += &format!("  {n} = memref.load {slot}[] : memref<{mt}>\n");
+            self.names[idx] = n;
+            self.mem_of[idx] = Some(mt);
+        } else if let Some(&Some(agg_gid)) = self.agg_of.get(ins.operand1.0 as usize) {
             let agg = self.ctx.aggs.get(&agg_gid).ok_or(crate::emitter_gap!())?;
             let slot = self
                 .names
