@@ -124,10 +124,10 @@ after it. The compiler warns about a `send` or `recv` in a `drop` (W1036).
 
 ## `select`
 
-`select(&receivers)` waits on a list of receivers, and takes the first value from any of them. It
-gives the value and the index of its channel in the list. It gives `Closed` when each channel is
-closed and empty. A channel that always has a value does not hide the others
-(`book_select_from_two_channels.vx`):
+`Selector::new(receivers)` takes a list of receivers, and `select()` on it takes the first value
+from any of them. It gives the value and the index of its channel in the list. It gives `Closed`
+when each channel is closed and empty. Each search starts after the channel of the last value, so a
+channel that always has a value does not hide the others (`book_select_from_two_channels.vx`):
 
 ```rust
 {{#include ../../../tests/backend/pass/book_select_from_two_channels.vx:program}}
