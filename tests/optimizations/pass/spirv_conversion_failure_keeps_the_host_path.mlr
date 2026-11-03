@@ -15,8 +15,8 @@
 // on the host into one that does not compile at all.
 //
 // RUN: vx-opt %s --vx-to-llvm 2>&1 | FileCheck %s
-// CHECK: cannot become a `spirv64` device image: a memref reaches `memref.subview`
-// CHECK-SAME: The region will run on the host instead.
+// CHECK: cannot become a `spirv64` device image: it hands a tensor to `memref.subview`
+// CHECK-SAME: It will run on the host instead.
 
 module {
   func.func @main() -> i32 {

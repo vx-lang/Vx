@@ -16,7 +16,7 @@
 // purpose, because the backends do.
 //
 // RUN: not vx-opt %s --vx-to-llvm 2>&1 | FileCheck %s
-// CHECK: cannot compile this device kernel: the NVPTX pipeline failed
+// CHECK: cannot compile kernel `k`: the NVPTX pipeline failed
 // CHECK-NOT: will run on the host instead
 // A device image would name its target. None is emitted, because the compile
 // stopped first.

@@ -31,6 +31,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
@@ -136,9 +137,8 @@ void flatArgTypes(MLIRContext *ctx, MemRefType type,
     out.push_back(i64); // a stride per dimension
 }
 
-/// Whether `op` is a construct this rewrite cannot put in arithmetic. The
-/// caller names the op in the diagnostic, so a memref handed to a call reads
-/// as `func.call` rather than as a rule about memrefs.
+/// Whether `op` takes, returns or holds a memref value, which the flat
+/// argument list has no form for.
 bool mentionsMemref(Operation *op) {
   auto isMemref = [](Type t) { return isa<BaseMemRefType>(t); };
   if (llvm::any_of(op->getOperandTypes(), isMemref) ||
@@ -149,6 +149,18 @@ bool mentionsMemref(Operation *op) {
       if (llvm::any_of(block.getArgumentTypes(), isMemref))
         return true;
   return false;
+}
+
+/// Why a tensor on `op` stops the image, in words that say what the program
+/// does. A call is what a Vx program has: it passes its tensor to a helper, and
+/// the image has no way to pass one on.
+std::string memrefRefusal(Operation *op) {
+  if (auto call = dyn_cast<CallOpInterface>(op))
+    if (auto callee = dyn_cast<SymbolRefAttr>(call.getCallableForCallee()))
+      return "it passes a tensor to `" + callee.getLeafReference().str() +
+             "`, and a SPIR-V image cannot pass a tensor to a call yet";
+  return "it hands a tensor to `" + op->getName().getStringRef().str() +
+         "`, and a SPIR-V image cannot do that yet";
 }
 
 /// Whether `op` mentions a memref whose elements are themselves memrefs -- a
@@ -454,8 +466,7 @@ LogicalResult flattenKernel(gpu::GPUFuncOp func, std::string &error) {
       continue;
     }
     if (mentionsMemref(op)) {
-      error = "a memref reaches `" + op->getName().getStringRef().str() +
-              "`, which the SPIR-V argument flattening does not lower";
+      error = memrefRefusal(op);
       return failure();
     }
   }
@@ -535,8 +546,7 @@ LogicalResult flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule,
       return WalkResult::interrupt();
     }
     if (mentionsMemref(op)) {
-      error = "a memref reaches `" + op->getName().getStringRef().str() +
-              "` outside a flattened kernel";
+      error = memrefRefusal(op);
       return WalkResult::interrupt();
     }
     return WalkResult::advance();

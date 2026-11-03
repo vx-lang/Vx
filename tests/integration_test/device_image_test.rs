@@ -781,7 +781,7 @@ fn a_kernel_the_spirv_path_cannot_image_still_compiles() {
         );
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.contains(reason) && stderr.contains("The region will run on the host instead"),
+            stderr.contains(reason) && stderr.contains("It will run on the host instead"),
             "the warning for {name} does not say why the region stays at \
              home; stderr was:\n{stderr}"
         );

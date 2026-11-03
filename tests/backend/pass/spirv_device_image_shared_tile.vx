@@ -11,8 +11,8 @@
 // for `nvptx64`, where the tile becomes a `.shared` declaration.
 //
 // RUN: vxc %s --emit-llvm 2>&1 >/dev/null | FileCheck %s
-// CHECK: cannot become a SPIR-V device image: it keeps a tile in shared memory
-// CHECK-SAME: The region will run on the host instead.
+// CHECK: cannot become a `spirv64` device image: it keeps a tile in shared memory
+// CHECK-SAME: It will run on the host instead.
 // EXPECT: [[0,   1],
 // EXPECT:  [1,   2]]
 

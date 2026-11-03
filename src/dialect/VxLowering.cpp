@@ -35,6 +35,7 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/InitAllPasses.h"
+#include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -48,6 +49,7 @@
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "vx_hardware_runtime.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
@@ -207,19 +209,26 @@ static int32_t sourceTopologyOf(vx::TransferOp op) {
 /// either region. Rejecting it would be rejecting a program that cannot fault.
 ///
 /// So the question is not "is this placed on a device" but "would the host
-/// fallback load through a device pointer", and that is what a load or store
-/// in the body means. Walks nested regions, since the loads that matter are
-/// inside loops. A body that reaches memory only through a call is missed,
-/// which is the safe direction: this predicate exists to reject, and declining
-/// to reject something it has not understood is the error worth making.
+/// fallback read through a device pointer". A load or a store in the body
+/// answers yes, and walks nested regions, since the loads that matter are
+/// inside loops.
+///
+/// So does a call that takes a tensor: the helper does its loads and stores in
+/// its own body, which this walk does not see, and the host runs the helper
+/// just the same.
 static bool regionTouchesMemory(Region &body) {
   bool touches = false;
   body.walk([&](Operation *op) {
     StringRef name = op->getName().getStringRef();
-    if (name == "memref.load" || name == "memref.store" ||
-        name == "affine.load" || name == "affine.store" ||
-        name == "vector.load" || name == "vector.store" ||
-        name.starts_with("linalg.")) {
+    bool readsMemref = name == "memref.load" || name == "memref.store" ||
+                       name == "affine.load" || name == "affine.store" ||
+                       name == "vector.load" || name == "vector.store" ||
+                       name.starts_with("linalg.");
+    if (!readsMemref && isa<CallOpInterface>(op))
+      readsMemref = llvm::any_of(op->getOperandTypes(), [](Type type) {
+        return isa<BaseMemRefType>(type);
+      });
+    if (readsMemref) {
       touches = true;
       return WalkResult::interrupt();
     }
@@ -245,14 +254,10 @@ static bool hostCanRead(vx::TransferOp op) {
 /// The operand a host run of this region would read from device memory, or
 /// null when running it on the host is safe.
 ///
-/// Two facts make the host fallback unsafe: the region reaches memory, and one
-/// of the values it uses from outside came from a transfer into a space
-/// declared `managed: explicit`. Asked in two places, from this one answer: the
-/// check that runs before the conversion (`diagnoseUnrunnableSpawns`) and the
-/// device-image step, because a refusal found only there would otherwise turn
-/// the same region into a host run. `operands` are the values the region reads:
-/// the captures of a `vx.spawn` before it is outlined, and the operands of the
-/// `vx.launch` that replaced it afterwards. Both name the same transfers.
+/// `operands` are the values the region reads: the captures of a `vx.spawn`
+/// before it is outlined, and the operands of the `vx.launch` that replaced it
+/// afterwards. Both name the same transfers, and one answer serves the check
+/// before the conversion and the device-image step.
 static vx::TransferOp captureTheHostCannotRead(Region &body,
                                                ValueRange operands) {
   if (!regionTouchesMemory(body))
@@ -3512,9 +3517,11 @@ struct ConvertVxToStandardPass
           refusal = "it hands a value back through a host stack slot, which a "
                     "device cannot address";
         if (refusal) {
-          k.emitWarning() << "this kernel cannot become a SPIR-V device image: "
-                          << *refusal
-                          << ". The region will run on the host instead.";
+          k.emitWarning() << "kernel `" << k.getSymName()
+                          << "` cannot become a `"
+                          << archNameOfPipeline(pipeline)
+                          << "` device image: " << *refusal
+                          << ". It will run on the host instead.";
           return;
         }
       } else if (k->hasAttr("vx.result_slot")) {
@@ -3574,9 +3581,11 @@ struct ConvertVxToStandardPass
       // The region keeps the host path, which computes the right answer.
       if (pipeline == DevicePipeline::Spirv) {
         if (auto refusal = spirvRefusalOf(blocker)) {
-          k.emitWarning() << "this kernel cannot become a SPIR-V device image: "
-                          << *refusal
-                          << ". The region will run on the host instead.";
+          k.emitWarning() << "kernel `" << k.getSymName()
+                          << "` cannot become a `"
+                          << archNameOfPipeline(pipeline)
+                          << "` device image: " << *refusal
+                          << ". It will run on the host instead.";
           return;
         }
       }
@@ -6013,6 +6022,22 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
   return kernels;
 }
 
+/// The kernels of a device module, named for a message that has to say which
+/// image it is about: "kernel `k`", or "kernels `a` and `b`" when one image was
+/// compiled for several.
+static std::string namedKernels(gpu::GPUModuleOp m) {
+  SmallVector<StringRef> names;
+  m.walk([&](gpu::GPUFuncOp f) { names.push_back(f.getName()); });
+  assert(!names.empty() && "a device module with no kernel has no image");
+  std::string text = names.size() == 1 ? "kernel " : "kernels ";
+  for (auto [i, name] : llvm::enumerate(names)) {
+    if (i)
+      text += i + 1 == names.size() ? " and " : ", ";
+    text += "`" + name.str() + "`";
+  }
+  return text;
+}
+
 struct ConvertVxToLLVMPass
     : public PassWrapper<ConvertVxToLLVMPass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ConvertVxToLLVMPass)
@@ -6161,49 +6186,44 @@ struct ConvertVxToLLVMPass
         // cause -- the kernel is missing. The compile is the place where the
         // cause is still legible.
         if (exportingPtx || *pipeline == DevicePipeline::Nvptx) {
-          m.emitError("cannot compile this device kernel: ") << error;
+          m.emitError("cannot compile ") << namedKernels(m) << ": " << error;
           signalPassFailure();
           return;
         }
-        // A SPIR-V region keeps the host path the program already has: the
-        // launch carries no image, the host copy of the kernel runs, and the
-        // warning names the reason in the same words the gate above uses.
-        // The gate catches what it can name before anything is copied, and
-        // this catches what only the backend knows, such as a module LLVM's
-        // SPIR-V target refuses.
+        // A SPIR-V kernel keeps the host path the program already has: no
+        // image, the host copy runs, and the warning names the reason in the
+        // same words the check before the conversion uses.
         //
-        // The host path is only safe while the region's operands are host
-        // memory. A value transferred into a space declared
-        // `managed: explicit` is not -- the host would dereference device
-        // memory, which is silent corruption rather than a diagnostic. The
-        // check before the conversion refuses that pair already, but it runs
-        // before this step, so a refusal only the backend knows would slip
-        // past it. Ask the same question from the same helper (#251, #348).
-        llvm::StringMap<vx::LaunchOp> launchesByName;
+        // That is safe only while the kernel's operands are host memory. A
+        // value transferred into a space declared `managed: explicit` is not,
+        // and running on it would read device memory where the host cannot.
+        // The spawn is a `vx.launch` by now, so the check asks the launch's
+        // operands -- every launch of the kernel, because inlining can copy a
+        // function that holds one.
+        llvm::StringMap<SmallVector<vx::LaunchOp>> launchesByName;
         module.walk([&](vx::LaunchOp l) {
-          launchesByName[l.getCalleeAttr().getValue()] = l;
+          launchesByName[l.getCalleeAttr().getValue()].push_back(l);
         });
         bool unreadableOperands = false;
         m.walk([&](gpu::GPUFuncOp f) {
           vx::KernelOp kernel = kernelsByName.lookup(f.getName());
           if (!kernel)
             return;
-          vx::LaunchOp launch = launchesByName.lookup(f.getName());
-          if (!launch)
-            return;
-          vx::TransferOp xfer =
-              captureTheHostCannotRead(kernel.getBody(), launch.getOperands());
+          vx::TransferOp xfer = nullptr;
+          for (vx::LaunchOp launch : launchesByName.lookup(f.getName()))
+            if ((xfer = captureTheHostCannotRead(kernel.getBody(),
+                                                 launch.getOperands())))
+              break;
           if (!xfer)
             return;
           kernel.emitError()
-              << "this kernel cannot become a `"
+              << "kernel `" << f.getName() << "` cannot become a `"
               << archNameOfPipeline(*pipeline) << "` device image: " << error
-              << ", and its operands are in '" << spaceOfTransfer(xfer)
+              << ".\n  Its operands are in '" << spaceOfTransfer(xfer)
               << "', declared `managed: explicit` -- memory the host cannot "
-                 "read.\n"
-              << "  Running the region on the host instead would dereference "
+                 "read, so running the kernel on the host instead would read "
                  "device memory there.\n"
-              << "  Either the region must be one the target can compile, or "
+              << "  Either the kernel must be one the target can compile, or "
                  "its operands must stay in a space the host can read.";
           unreadableOperands = true;
         });
@@ -6216,9 +6236,9 @@ struct ConvertVxToLLVMPass
           if (!kernel)
             return;
           kernel.emitWarning()
-              << "this kernel cannot become a `"
+              << "kernel `" << f.getName() << "` cannot become a `"
               << archNameOfPipeline(*pipeline) << "` device image: " << error
-              << ". The region will run on the host instead.";
+              << ". It will run on the host instead.";
         });
         continue;
       }
