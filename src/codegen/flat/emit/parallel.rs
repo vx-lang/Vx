@@ -248,8 +248,9 @@ impl FnEmit<'_> {
                 Some(chip) => format!(", chip = \"{chip}\""),
                 None => String::new(),
             };
+            let offload = declared.offload;
             self.body += &format!(
-                "  }}) {{arch = \"{arch}\"{chip}, topology = {topo} : i32{name}{trip}{across}}} : () -> ({result_ty})\n"
+                "  }}) {{arch = \"{arch}\"{chip}, offload = {offload}, topology = {topo} : i32{name}{trip}{across}}} : () -> ({result_ty})\n"
             );
         } else {
             self.body += &format!(

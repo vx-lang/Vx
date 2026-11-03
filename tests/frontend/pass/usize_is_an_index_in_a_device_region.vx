@@ -84,12 +84,12 @@ fn main() -> i32 {
 // CHECK:        %c4_i64 = arith.constant 4 : i64
 // CHECK:        arith.cmpi ugt, %{{.*}} : i64
 // CHECK:        memref.store %cst, %arg0[%{{.*}}] : memref<?xf32>
-// CHECK:        } {arch = "spirv64", topology_name = "Narrow"}
+// CHECK:        } {arch = "spirv64", offload = false, topology_name = "Narrow"}
 // CHECK-LABEL: func.func @k(%arg0: memref<?xf32> {llvm.noalias}) attributes {vx.pub} {
 // CHECK:        vx.spawn topology({{[0-9]+}}) {
 // CHECK:        %c4_i64 = arith.constant 4 : i64
 // CHECK:        arith.cmpi ugt, %{{.*}} : i64
 // CHECK:        memref.store %cst, %arg0[%{{.*}}] : memref<?xf32>
 // CHECK:        vx.yield
-// CHECK:        } {arch = "spirv64", topology_name = "Hopper"
+// CHECK:        } {arch = "spirv64", offload = false, topology_name = "Hopper"
 // CHECK-NOT: Error
