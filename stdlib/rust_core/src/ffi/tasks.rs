@@ -28,7 +28,7 @@
 use crate::ffi::sched::{self, Fiber, Scheduler};
 use crate::io::lines;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
@@ -47,6 +47,8 @@ unsafe impl Send for Env {}
 struct Task {
     /// `None` when the task ended and was joined, or when it is a fiber.
     thread: Option<JoinHandle<()>>,
+    /// Set to 1, with a wake, as the last step of the task's thread.
+    thread_done: Arc<AtomicI64>,
     /// The task in the shared runtime.
     fiber: Option<Box<Fiber>>,
     env: *mut u8,
@@ -124,8 +126,14 @@ fn wait(task: &mut Task) {
         }
     }
     if let Some(thread) = task.thread.take() {
+        // The wait goes through `wait.rs`, so the deadlock watcher stops counting this thread
+        // as waiting at the wake, not when the OS runs it again.
+        let done = Arc::as_ptr(&task.thread_done) as *const i64;
+        while task.thread_done.load(Ordering::SeqCst) == 0 {
+            unsafe { crate::ffi::wait::vx_wait_while(done, 0) };
+        }
         // A Vx panic stops the program (T6). A Rust panic in a task is a bug of the runtime.
-        if crate::ffi::wait::while_waiting(|| thread.join()).is_err() {
+        if thread.join().is_err() {
             eprintln!("vx: a task stopped with a panic of the runtime");
             std::process::abort();
         }
@@ -189,12 +197,15 @@ pub unsafe extern "C" fn vx_task_start(
     if let Some(sched) = group.sched {
         group.tasks.push(Task {
             thread: None,
+            thread_done: Arc::default(),
             fiber: Some(sched.spawn(run, env, Some(mark))),
             env,
         });
         return (group.tasks.len() - 1) as i64;
     }
     let task_env = Env(env);
+    let thread_done = Arc::new(AtomicI64::new(0));
+    let done = thread_done.clone();
     crate::ffi::wait::thread_started();
     let started = thread::Builder::new()
         .stack_size(TASK_STACK_BYTES)
@@ -203,6 +214,10 @@ pub unsafe extern "C" fn vx_task_start(
             CURRENT.with(|c| *c.borrow_mut() = Some(mark));
             run(task_env.0);
             lines::task_ended();
+            // The wake comes before the count of threads goes down. So the joining thread
+            // never counts as waiting for a thread that the count no longer has.
+            done.store(1, Ordering::SeqCst);
+            unsafe { crate::ffi::wait::vx_wake_all(Arc::as_ptr(&done) as *const i64) };
             crate::ffi::wait::thread_ended();
         });
     // A task that waits for a later task, on a channel or a lock, would wait forever if it ran
@@ -216,6 +231,7 @@ pub unsafe extern "C" fn vx_task_start(
     };
     group.tasks.push(Task {
         thread: Some(thread),
+        thread_done,
         fiber: None,
         env,
     });

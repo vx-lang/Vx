@@ -29,14 +29,26 @@ use std::time::{Duration, Instant};
 const BUCKETS: usize = 64;
 
 struct Bucket {
-    /// The fibers that park on a word of this bucket.
-    lock: Mutex<Vec<FiberRef>>,
+    lock: Mutex<Waiters>,
     cond: Condvar,
+}
+
+struct Waiters {
+    /// The fibers that park on a word of this bucket.
+    fibers: Vec<FiberRef>,
+    /// The threads that sleep here with no time limit, which the deadlock watcher counts.
+    sleepers: i64,
+    /// Goes up at each wake of the bucket.
+    wakes: u64,
 }
 
 static TABLE: [Bucket; BUCKETS] = [const {
     Bucket {
-        lock: Mutex::new(Vec::new()),
+        lock: Mutex::new(Waiters {
+            fibers: Vec::new(),
+            sleepers: 0,
+            wakes: 0,
+        }),
         cond: Condvar::new(),
     }
 }; BUCKETS];
@@ -63,7 +75,7 @@ pub unsafe extern "C" fn vx_wait_while(word: *const i64, value: i64) {
 /// deadline: a thread sleeps with a time limit, and a fiber asks the timer to wake its bucket.
 unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Option<i64>) {
     let b = bucket(word);
-    let mut fibers = b.lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut waiters = b.lock.lock().unwrap_or_else(|e| e.into_inner());
     let atomic = unsafe { &*(word as *const AtomicI64) };
     if atomic.load(Ordering::SeqCst) != value
         || (or_cancel && crate::ffi::tasks::vx_cancelled() != 0)
@@ -95,18 +107,28 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
         match left {
             Some(left) => drop(
                 b.cond
-                    .wait_timeout(fibers, left)
+                    .wait_timeout(waiters, left)
                     .unwrap_or_else(|e| e.into_inner()),
             ),
-            None => deadlock::while_waiting(|| {
-                drop(b.cond.wait(fibers).unwrap_or_else(|e| e.into_inner()))
-            }),
+            None => {
+                // The thread counts as waiting until a wake of the bucket, not until the OS
+                // runs it again. A woken thread can wait a long time for a CPU, and it must not
+                // look stuck then.
+                let seen = waiters.wakes;
+                waiters.sleepers += 1;
+                deadlock::sleep_started();
+                let mut waiters = b.cond.wait(waiters).unwrap_or_else(|e| e.into_inner());
+                if waiters.wakes == seen {
+                    waiters.sleepers -= 1;
+                    deadlock::sleep_ended(1);
+                }
+            }
         }
         return;
     }
     sched::will_park(fiber);
-    fibers.push(FiberRef(fiber));
-    drop(fibers);
+    waiters.fibers.push(FiberRef(fiber));
+    drop(waiters);
     // A wake of the bucket before the park leaves the fiber `WOKEN`, so the timer can fire now.
     if let Some(deadline) = deadline_ns {
         timer::wake_at(deadline, word);
@@ -171,7 +193,11 @@ pub(crate) fn wake_every_thread() {
 
 fn wake(b: &Bucket) {
     deadlock::progress();
-    let fibers = std::mem::take(&mut *b.lock.lock().unwrap_or_else(|e| e.into_inner()));
+    let mut waiters = b.lock.lock().unwrap_or_else(|e| e.into_inner());
+    let fibers = std::mem::take(&mut waiters.fibers);
+    deadlock::sleep_ended(std::mem::take(&mut waiters.sleepers));
+    waiters.wakes = waiters.wakes.wrapping_add(1);
+    drop(waiters);
     b.cond.notify_all();
     for fiber in fibers {
         sched::wake(fiber);
@@ -258,7 +284,7 @@ mod timer {
 /// program that cannot go on:
 ///
 /// - no fiber of the shared runtime runs or is ready,
-/// - each Vx thread that is not a worker waits in this file or in the join of a task thread,
+/// - each Vx thread that is not a worker waits in this file, as the join of a task thread does,
 /// - no deadline of the timer is to come,
 /// - no fiber waits for a socket (io.rs),
 /// - and no wake, and no end of a wait, came since the last tick.
@@ -294,14 +320,17 @@ mod deadlock {
         PROGRESS.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// Runs `wait`, a wait of this thread with no time limit, and counts the thread as waiting.
-    pub(crate) fn while_waiting<R>(wait: impl FnOnce() -> R) -> R {
-        watch();
+    /// A thread starts to sleep with no time limit.
+    pub(super) fn sleep_started() {
         WAITING.fetch_add(1, Ordering::SeqCst);
-        let r = wait();
-        WAITING.fetch_sub(1, Ordering::SeqCst);
-        progress();
-        r
+    }
+
+    /// A wake ended the sleep of `n` threads, or one thread's sleep ended with no wake.
+    pub(super) fn sleep_ended(n: i64) {
+        if n > 0 {
+            WAITING.fetch_sub(n, Ordering::SeqCst);
+            progress();
+        }
     }
 
     /// Starts the watcher, once. The unit tests of this crate run on threads that the count
@@ -347,7 +376,7 @@ mod deadlock {
     }
 }
 
-pub(crate) use deadlock::{thread_ended, thread_started, while_waiting};
+pub(crate) use deadlock::{thread_ended, thread_started};
 
 /// Two words for `select`, which waits on several channels at once. Each channel event adds 1 to
 /// the first word, and the second word counts the threads in a `select` that sleep on it.
@@ -396,4 +425,35 @@ pub extern "C" fn vx_channel_take_skip(words: *mut i64, k: i64) -> i32 {
 #[no_mangle]
 pub extern "C" fn vx_channel_forget_skips(words: *mut i64) {
     skips().retain(|&(w, _)| w != words as usize);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn a_wake_stops_counting_a_thread_before_the_thread_runs_again() {
+        let word = Arc::new(AtomicI64::new(0));
+        let w = word.clone();
+        let sleeper = std::thread::spawn(move || {
+            while w.load(Ordering::SeqCst) == 0 {
+                unsafe { vx_wait_while(Arc::as_ptr(&w) as *const i64, 0) };
+            }
+        });
+        let b = bucket(Arc::as_ptr(&word) as *const i64);
+        while b.lock.lock().unwrap().sleepers == 0 {
+            std::thread::yield_now();
+        }
+        word.store(1, Ordering::SeqCst);
+        wake(b);
+        // The sleeper needs this lock to come back from its wait, so it is still in it here.
+        let waiters = b.lock.lock().unwrap();
+        assert_eq!(
+            waiters.sleepers, 0,
+            "a woken thread still counts as waiting"
+        );
+        drop(waiters);
+        sleeper.join().unwrap();
+    }
 }
