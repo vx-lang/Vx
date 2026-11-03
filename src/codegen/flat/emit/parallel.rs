@@ -351,6 +351,9 @@ impl FnEmit<'_> {
         if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
             add("subgroup");
         }
+        if ins.imm & crate::bytecode::LANE_REDUCE_OWN_ROW != 0 {
+            add("own_row");
+        }
         let v = format!("%v{idx}");
         if argmax {
             let i = self
