@@ -340,6 +340,10 @@ impl<'a> TypeChecker<'a> {
                 self.check_if_expr(expr, consume)
             }
             Expr::SizeOf(..) => Type::Scalar(ElementType::I64),
+            // A join that the check already wrote: a read of the handle.
+            Expr::FunctionCall(fc) if fc.name.as_ref() == crate::syntax::TASK_JOIN => {
+                self.check_expr_type_flag(&mut fc.args[0], consume)
+            }
             Expr::FunctionCall(..) => {
                 let ty = self.check_functioncall_expr(expr);
                 // A comptime lambda runs while compiling, so its calls fold here. With every

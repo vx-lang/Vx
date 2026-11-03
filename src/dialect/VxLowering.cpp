@@ -3380,6 +3380,11 @@ static LogicalResult lowerTasks(ModuleOp module) {
     op.emitError("a task outside a tasks block");
     return WalkResult::interrupt();
   });
+  // Each join waited for its task above, as a use of the task's value.
+  SmallVector<vx::TaskJoinOp> joins;
+  module.walk([&](vx::TaskJoinOp op) { joins.push_back(op); });
+  for (vx::TaskJoinOp op : joins)
+    op.erase();
   return failure(stray.wasInterrupted());
 }
 

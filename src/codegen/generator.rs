@@ -1896,6 +1896,18 @@ impl<'c> MeliorGenerator<'c> {
                     block,
                 ))
             }
+            // `h.join()`: a use of the task's value here, so that `VxLowering` waits for the task
+            // here. A task that runs in place has ended already.
+            e if syntax::task_join_handle(e).is_some() => {
+                let handle = syntax::task_join_handle(e).expect("matched above");
+                let (val, ty, block) = self.generate_expr(handle, block)?;
+                block.append_operation(
+                    melior::ir::operation::OperationBuilder::new("vx.task_join", self.loc())
+                        .add_operands(&[val])
+                        .build()?,
+                );
+                Ok((val, ty, block))
+            }
             // A `tasks` block that runs its tasks one after another needs no wait: at an exit,
             // each task has ended. A block that runs them on threads waits for them. The value is
             // never read.

@@ -130,6 +130,16 @@ def Vx_TasksWaitOp : Vx_Op<"tasks_wait", [MemoryEffects<[MemRead, MemWrite]>]> {
     let assemblyFormat = "attr-dict";
 }
 
+// `h.join()`: a use of the value of the task of `h`, or of the slot that holds it.
+// The lowering of the task waits for the task before each use of its value, so the
+// code after the join runs after the task. It reads and writes memory, so nothing
+// moves across it. The lowering erases it.
+def Vx_TaskJoinOp : Vx_Op<"task_join", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Waits for a task at its join.";
+    let arguments = (ins AnyType:$handle);
+    let assemblyFormat = "$handle attr-dict `:` type($handle)";
+}
+
 // A dispatch operation to execute an outlined kernel
 // The kernel may read and write any buffer it is given.
 def Vx_DispatchOp : Vx_Op<"dispatch", [MemoryEffects<[MemRead, MemWrite]>]> {

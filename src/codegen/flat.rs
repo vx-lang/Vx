@@ -2576,6 +2576,14 @@ impl<'a> FnEmit<'a> {
                 self.body += "  func.call @vx_cancel_on() : () -> ()\n";
                 Ok(())
             }
+            // `VxLowering` waits for the task before this use of its value, and erases it.
+            Opcode::TaskJoin => {
+                let r = ins.operand1.0 as usize;
+                let v = self.names.get(r).ok_or(crate::emitter_gap!())?.clone();
+                let ty = self.value_mlir_ty(r)?;
+                self.body += &format!("  \"vx.task_join\"({v}) : ({ty}) -> ()\n");
+                Ok(())
+            }
             // A way out of the region before its end. `VxLowering` sends each `vx.yield` of a
             // `tasks` block to the code after the block. An exit from a task gives the value of
             // the task, and the task stores it and ends.
