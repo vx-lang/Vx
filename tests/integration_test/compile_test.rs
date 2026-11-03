@@ -983,7 +983,13 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
     if source.contains("// REQUIRES: thread-sanitizer") && !has_thread_sanitizer() {
         return Ok(());
     }
-    if source.contains("// REQUIRES: x86_64") && !cfg!(target_arch = "x86_64") {
+    // A file with `// REQUIRES: x86_64` and `// REQUIRES: aarch64` lines runs on each machine it
+    // names. `%arch` in a RUN line becomes the name of the machine, so a file can check each one.
+    let arches: Vec<&str> = ["x86_64", "aarch64"]
+        .into_iter()
+        .filter(|arch| source.contains(&format!("// REQUIRES: {arch}")))
+        .collect();
+    if !arches.is_empty() && !arches.contains(&std::env::consts::ARCH) {
         return Ok(());
     }
 
@@ -1041,6 +1047,7 @@ fn run_lit_test(path: &Path) -> Result<(), String> {
             .unwrap()
             .1
             .trim()
+            .replace("%arch", std::env::consts::ARCH)
             .replace("%s", path.to_str().unwrap())
             .replace("%t", t_val.to_str().unwrap());
 
