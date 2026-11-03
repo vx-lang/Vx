@@ -1,0 +1,88 @@
+//===- the_compiler_finds_that_a_call_keeps_no_reference.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// No function here writes a borrow clause. The compiler finds from each body that the call stores
+// `x` nowhere, as `ensures !keeps(x)` would say. So `note(out, &local)` compiles although `out`
+// outlives `local`, and after `count(&mut h, &y)` the variable `y` is free. It finds this also
+// through a call of `note`, for an instance of a generic function, and for a method.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator cannot lower a `Vec<&i64>`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}noted=8; twice=16; any=1; method=8;{{$}}
+// CHECK-NEXT: {{^}}counted=3; y=5;{{$}}
+
+import std::vec;
+
+struct Holder {
+  r : &i64,
+}
+
+struct Table {
+  n : i64,
+}
+
+fn note(out : &mut Vec<&i64>, x : &i64) -> i64 {
+  if out.len() > 0 {
+    return *x + 1i64;
+  }
+  return *x;
+}
+
+fn note_twice(out : &mut Vec<&i64>, x : &i64) -> i64 {
+  return note(out, x) + note(out, x);
+}
+
+fn note_any<T>(out : &mut Vec<&T>, _x : &T) -> i64 {
+  if out.len() > 0 {
+    return 1i64;
+  }
+  return 0i64;
+}
+
+impl Table {
+  fn note(self : &Table, out : &mut Vec<&i64>, x : &i64) -> i64 {
+    if out.len() > 0 {
+      return *x + self.n;
+    }
+    return *x;
+  }
+}
+
+fn count(h : &mut Holder, b : &i64) -> i64 {
+  return *b + *h.r;
+}
+
+fn note_locals(out : &mut Vec<&i64>, t : &Table) -> void {
+  let local = 7i64;
+  let noted = note(out, &local);
+  let twice = note_twice(out, &local);
+  let any = note_any(out, &local);
+  let method = t.note(out, &local);
+  println!("noted={}; twice={}; any={}; method={};", noted, twice, any, method);
+}
+
+fn main() -> i32 {
+  let first = 1i64;
+  let mut out = Vec<&i64>::new();
+  out.push(&first);
+  let t = Table {
+    n : 1i64
+  };
+  note_locals(&mut out, &t);
+
+  let x = 1i64;
+  let mut h = Holder {
+    r : &x
+  };
+  let mut y = 2i64;
+  let counted = count(&mut h, &y);
+  y = 5i64;
+  println!("counted={}; y={};", counted, y);
+  return (*h.r) as i32 - 1;
+}
