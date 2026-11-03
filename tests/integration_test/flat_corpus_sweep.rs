@@ -228,6 +228,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             // needs --machine
             "optimizations/pass/two_tensors_in_a_gpu_kernel_share_local_memory.vx",
             // needs --machine
+            "optimizations/pass/apple_gpu_kernels_in_metal_shading_language.vx",
+            // needs --machine
             "optimizations/pass/the_cpu_workers_share_the_blocks_of_an_across_loop.vx",
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {

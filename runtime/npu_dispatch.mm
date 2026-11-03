@@ -568,6 +568,10 @@ extern "C" int vx_dispatch_ane_affine(float *out, float *x, float alpha,
 extern "C" {
 #include <dlfcn.h>
 
+int vx_metal_dispatch(const void *payload, size_t payload_size,
+                      void **device_args, const int32_t *arg_tags,
+                      int64_t num_args);
+
 // `space_access` is accepted and ignored: the Neural Engine's staging is host
 // memory this process can read, so a model claiming the host may read it is
 // telling the truth. Only a backend handing out memory the host cannot read has
@@ -618,6 +622,17 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   std::string kernel_str(kernel_name);
   assert(kernel_str.find("vx_npu_kernel_") == 0 &&
          "Expected kernel name to start with vx_npu_kernel_");
+
+  // A kernel that vxc compiled for the Apple GPU runs there
+  // (runtime/metal_dispatch.mm). With the GPU turned off, the host copy below
+  // runs instead.
+  const char *format =
+      vx_payload_field(binary_payload, payload_size, "format=");
+  if (format && strcmp(format, "msl") == 0 &&
+      vx_metal_dispatch(binary_payload, payload_size, device_args, arg_tags,
+                        num_args)) {
+    return 1;
+  }
 
   // A matmul the compiler recognised says so, and says which argument is which
   // (#325). That replaces what stood here: collect every memref argument, take

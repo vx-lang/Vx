@@ -49,6 +49,9 @@ pub enum Action {
     /// Write the program's GPU kernels as one PTX file, and a `.json` file beside it that
     /// gives each kernel's parameters (docs/lang/abi.md, section 3.5)
     EmitPtx,
+    /// Write the program's Apple GPU kernels as one Metal Shading Language file, and a `.json`
+    /// file beside it that gives each kernel's parameters
+    EmitMsl,
 }
 
 /// What `vxc --version` prints after the name: the package version, then the commit the
@@ -60,7 +63,7 @@ pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), vx_build_commit::co
 pub struct DriverOptions {
     /// Action to perform
     #[arg(short = 'a', long = "action", value_enum, default_value_t = Action::RunJit)]
-    #[arg(overrides_with_all = ["compile", "parse_only", "print_ast", "emit_mlir", "emit_llvm", "run_jit", "emit_interface", "emit_ptx"])]
+    #[arg(overrides_with_all = ["compile", "parse_only", "print_ast", "emit_mlir", "emit_llvm", "run_jit", "emit_interface", "emit_ptx", "emit_msl"])]
     pub action: Action,
 
     /// Output file. With several inputs, a directory that receives one output per input
@@ -99,6 +102,10 @@ pub struct DriverOptions {
     /// Write the GPU kernels as PTX (alias for --action emit-ptx)
     #[arg(long = "emit-ptx", overrides_with = "action")]
     pub emit_ptx: bool,
+
+    /// Write the Apple GPU kernels as Metal Shading Language (alias for --action emit-msl)
+    #[arg(long = "emit-msl", overrides_with = "action")]
+    pub emit_msl: bool,
 
     /// Link a precompiled `.vxlib` module interface: its function signatures resolve imported calls in
     /// the frontend (type + borrow check, incl. cross-module return provenance) and its portable
@@ -347,6 +354,8 @@ impl CompilerDriver {
             options.action = Action::EmitInterface;
         } else if options.emit_ptx {
             options.action = Action::EmitPtx;
+        } else if options.emit_msl {
+            options.action = Action::EmitMsl;
         } else if options.compile {
             options.action = Action::EmitObj;
         }
@@ -411,6 +420,7 @@ impl CompilerDriver {
             Action::EmitObj => "o",
             Action::EmitInterface => "vxlib",
             Action::EmitPtx => "ptx",
+            Action::EmitMsl => "metal",
             _ => return Ok(None),
         };
         if !out.is_dir() {
@@ -1527,7 +1537,7 @@ impl CompilerDriver {
                 &monomorphized_ast,
                 &module_syntaxes,
                 interfaces,
-                self.options.action == Action::EmitPtx,
+                matches!(self.options.action, Action::EmitPtx | Action::EmitMsl),
                 self.options.auto_schedule_levels(),
             )?
         };
@@ -1606,7 +1616,7 @@ impl CompilerDriver {
 
         let llvm_lower = matches!(
             self.options.action,
-            Action::EmitLlvm | Action::RunJit | Action::EmitObj | Action::EmitPtx
+            Action::EmitLlvm | Action::RunJit | Action::EmitObj | Action::EmitPtx | Action::EmitMsl
         );
         let pipeline_str = get_optimization_pipeline(
             self.options.opt_level,
@@ -1635,7 +1645,7 @@ impl CompilerDriver {
             }
         }
 
-        if self.options.action == Action::EmitPtx {
+        if matches!(self.options.action, Action::EmitPtx | Action::EmitMsl) {
             use melior::ir::operation::OperationMutLike;
             module
                 .as_operation_mut()
@@ -1716,10 +1726,11 @@ impl CompilerDriver {
                 .map_err(|e| e.to_string())?;
                 print_program_output(&out);
             }
-            Action::EmitPtx => {
+            Action::EmitPtx | Action::EmitMsl => {
+                let msl = self.options.action == Action::EmitMsl;
                 let ptx_path = self.options.output.clone().unwrap_or_else(|| {
                     let mut p = main_file.to_path_buf();
-                    p.set_extension("ptx");
+                    p.set_extension(if msl { "metal" } else { "ptx" });
                     p
                 });
                 let read = |name: &str| {
@@ -1728,12 +1739,16 @@ impl CompilerDriver {
                         .ok()
                         .map(|s| s.value().to_string())
                 };
-                let (Some(ptx), Some(manifest)) =
-                    (read("vx.exported_ptx"), read("vx.exported_kernels"))
-                else {
+                let image = if msl {
+                    "vx.exported_msl"
+                } else {
+                    "vx.exported_ptx"
+                };
+                let (Some(ptx), Some(manifest)) = (read(image), read("vx.exported_kernels")) else {
                     return Err(format!(
                         "{filename} has no GPU kernel to write. A GPU kernel is a `spawn on` \
-                         region whose topology has `arch: nvptx64`, and that can run on the GPU"
+                         region whose topology has `arch: {}`, and that can run on the GPU",
+                        if msl { "applegpu" } else { "nvptx64" }
                     ));
                 };
                 let json_path = ptx_path.with_extension("json");

@@ -74,6 +74,10 @@ using namespace mlir::vx;
 
 #define DEBUG_TYPE "vx-lowering"
 
+// The Metal Shading Language of a `gpu.module`'s kernels, for the Apple GPU
+// (src/dialect/MetalImage.cpp). Empty with `error` set on failure.
+std::string mslImageOf(gpu::GPUModuleOp gpuModule, std::string &error);
+
 namespace {
 
 // Classify what an outlined region computes, for plugins that route to vendor
@@ -3452,15 +3456,15 @@ static bool collectDeviceCallees(Operation *op, ModuleOp module, bool inCallee,
 
 /// The device-image pipelines a kernel's declared `arch:` can select.
 ///
-/// `None` is not an error -- `applegpu` reaches its device through the plugin
-/// ABI, so a topology Vx cannot compile for still type-checks. A row and its
-/// pipeline land together: a row without one would clone a body into a
-/// `gpu.module` that nothing compiles (docs/gpu_backends.md, item 1).
+/// `None` is not an error: a topology Vx cannot compile for still type-checks.
+/// A row and its pipeline land together: a row without one would clone a body
+/// into a `gpu.module` that nothing compiles (docs/gpu_backends.md, item 1).
 ///
-/// `nvptx64` selects the NVVM pipeline in `deviceImageOf`, and `spirv64` the
-/// SPIR-V pipeline in `spirvImageOf`. The second is what the Intel Arc's
-/// machine file declares (fleet/arc-a770.vx).
-enum class DevicePipeline { None, Nvptx, Spirv };
+/// `nvptx64` selects the NVVM pipeline in `deviceImageOf`, `spirv64` the
+/// SPIR-V pipeline in `spirvImageOf`, and `applegpu` the Metal Shading Language
+/// pipeline in `mslImageOf`. `spirv64` is what the Intel Arc's machine file
+/// declares (fleet/arc-a770.vx).
+enum class DevicePipeline { None, Nvptx, Spirv, Metal };
 
 /// The pipeline a declared architecture names, `None` for one Vx has no
 /// pipeline for.
@@ -3469,6 +3473,8 @@ static DevicePipeline pipelineForArch(StringRef arch) {
     return DevicePipeline::Nvptx;
   if (arch == "spirv64")
     return DevicePipeline::Spirv;
+  if (arch == "applegpu")
+    return DevicePipeline::Metal;
   return DevicePipeline::None;
 }
 
@@ -3479,9 +3485,8 @@ static DevicePipeline pipelineForArch(StringRef arch) {
 /// topology, whose descriptor declares no arch. The AST code generator stamps
 /// the attribute too, for a topology that declares one
 /// (src/codegen/lower/tensors.rs), so both code generators agree on which
-/// kernels ride the band. A declared arch with no row in the table --
-/// `applegpu` reaches its device through the plugin ABI, not through a device
-/// image -- answers `None`.
+/// kernels ride the band. A declared arch with no row in the table answers
+/// `None`.
 ///
 /// `materializeGpuKernels` asks this to decide whether a kernel gets a device
 /// copy, `spawnRunsOnDevice` asks it the same question about the `vx.spawn` the
@@ -3507,6 +3512,8 @@ static StringRef archNameOfPipeline(DevicePipeline pipeline) {
     return "nvptx64";
   case DevicePipeline::Spirv:
     return "spirv64";
+  case DevicePipeline::Metal:
+    return "applegpu";
   case DevicePipeline::None:
     // A kernel with no pipeline gets no device copy, so no refusal names it as
     // one of the architectures a program compiled for.
@@ -6114,23 +6121,24 @@ struct FreeOpLowering : public OpRewritePattern<vx::FreeOp> {
 
 /// One device image, and the format name the payload reports for it.
 ///
-/// `format` is what the payload's `format=` entry says: `ptx` for NVVM's text
-/// and `spirv` for the SPIR-V pipeline's binary. A text image goes in the
-/// payload's `image=` entry. A binary one cannot -- its first word holds NUL
-/// bytes, which would end that entry early -- and goes in the section after
-/// the text part (`vx_payload_section` in include/vx_hardware_runtime.h).
+/// `format` is what the payload's `format=` entry says: `ptx` for NVVM's text,
+/// `msl` for Metal Shading Language source, and `spirv` for the SPIR-V
+/// pipeline's binary. A text image goes in the payload's `image=` entry. A
+/// binary one cannot -- its first word holds NUL bytes, which would end that
+/// entry early -- and goes in the section after the text part
+/// (`vx_payload_section` in include/vx_hardware_runtime.h).
 struct DeviceImage {
   std::string format;
   std::string bytes;
 
   /// Whether the image can ride in a NUL-terminated `image=` entry.
-  bool isText() const { return format == "ptx"; }
+  bool isText() const { return format == "ptx" || format == "msl"; }
 };
 
 struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
   const LLVMTypeConverter &typeConverter;
   /// Kernel name -> device image, for the kernels that have one. Owned by the
-  /// pass; empty for a host launch, and empty everywhere until #251.
+  /// pass; empty for a host launch.
   const llvm::StringMap<DeviceImage> *deviceImages;
   const llvm::StringMap<int64_t> *dynamicShared;
 
@@ -6283,11 +6291,11 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     // changes it again the first time something else needs carrying.
     //
     // `format=` says what the image is, and the answer decides where it goes:
-    // PTX is text with no NUL, so it is one `image=` entry like any other and
-    // vx_payload_field walks past it unchanged, while a binary image -- SPIR-V
-    // -- holds NUL bytes in its first word and goes in the section after the
-    // entries (vx_payload_section reads it). Neither producer writes a NUL it
-    // did not mean: deviceImageOf refuses one in PTX rather than trusting it.
+    // PTX and MSL are text with no NUL, so each is one `image=` entry like any
+    // other and vx_payload_field walks past it unchanged, while a binary image
+    // -- SPIR-V -- holds NUL bytes in its first word and goes in the section
+    // after the entries (vx_payload_section reads it). deviceImageOf refuses a
+    // NUL in PTX rather than trusting it.
     //
     // Last, because a reader dumping a payload should meet the small fields
     // first, and because this is the only entry measured in kilobytes.
@@ -6312,8 +6320,10 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
         payload += image->second.format;
         payload.push_back('\0');
         if (image->second.isText()) {
-          // PTX is text with no NUL, so it is one entry like any other and
-          // vx_payload_field walks past it unchanged.
+          // PTX and MSL are text with no NUL, so each is one entry like any
+          // other and vx_payload_field walks past it unchanged.
+          assert(image->second.bytes.find('\0') == std::string::npos &&
+                 "a text device image holds no NUL");
           payload += "image=";
           payload += image->second.bytes;
           payload.push_back('\0');
@@ -7446,12 +7456,17 @@ static void declareLocalDevices(ModuleOp module) {
   }
 }
 
-/// For `--emit-ptx`: gives each kernel in `gpuModule` the name of the
-/// function that holds its region, and describes its parameters for a
-/// program that launches the kernel. Section 3.5 of `docs/lang/abi.md`
-/// gives the format.
+/// For `--emit-ptx` and `--emit-msl`: gives each kernel in `gpuModule` the
+/// name of the function that holds its region, and describes its parameters
+/// for a program that launches the kernel. Section 3.5 of `docs/lang/abi.md`
+/// gives the format. For MSL, `words` counts 32-bit words in the constant
+/// buffer (src/dialect/MetalImage.cpp), and each tensor is also one buffer.
 static FailureOr<llvm::json::Array>
-nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
+nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule,
+                     DevicePipeline pipeline) {
+  const bool msl = pipeline == DevicePipeline::Metal;
+  const std::string flag = msl ? "--emit-msl" : "--emit-ptx";
+  const std::string language = msl ? "MSL" : "PTX";
   llvm::StringMap<vx::KernelOp> kernelOf;
   module.walk([&](vx::KernelOp k) { kernelOf[k.getSymName()] = k; });
   SmallVector<gpu::GPUFuncOp> funcs;
@@ -7473,9 +7488,10 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
     auto names = fn ? fn->getAttrOfType<ArrayAttr>("vx.param_names") : nullptr;
     auto types = fn ? fn->getAttrOfType<ArrayAttr>("vx.param_types") : nullptr;
     if (!paramOf || !names || !types) {
-      f.emitError("--emit-ptx cannot name this GPU kernel, because the code "
-                  "generator did not record the function that holds it. Only "
-                  "the flat code generator records it");
+      f.emitError() << flag
+                    << " cannot name this GPU kernel, because the code "
+                       "generator did not record the function that holds it. "
+                       "Only the flat code generator records it";
       return failure();
     }
     assert(paramOf.size() == static_cast<int64_t>(f.getNumArguments()) &&
@@ -7488,22 +7504,24 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
       ptxName &= llvm::isAlnum(c) || c == '_';
     if (!ptxName) {
       emitError(loc) << "the GPU kernel in function '" << name
-                     << "' cannot have that name in PTX. Use a function name "
+                     << "' cannot have that name in " << language
+                     << ". Use a function name "
                         "that has only letters, digits and '_'";
       return failure();
     }
     if (!taken.insert(name).second) {
       emitError(loc) << "function '" << name
-                     << "' holds more than one GPU kernel. --emit-ptx gives "
-                        "a kernel the name of its function, so put each "
+                     << "' holds more than one GPU kernel. " << flag
+                     << " gives a kernel the name of its function, so put each "
                         "kernel in a function of its own";
       return failure();
     }
     Operation *other = SymbolTable::lookupSymbolIn(gpuModule, name);
     if (other && other != f.getOperation()) {
       emitError(loc) << "the GPU kernel in function '" << name
-                     << "' cannot have the name '" << name
-                     << "' in PTX, because the GPU code calls a function "
+                     << "' cannot have the name '" << name << "' in "
+                     << language
+                     << ", because the GPU code calls a function "
                         "with that name";
       return failure();
     }
@@ -7523,15 +7541,16 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
                                {"kind", "arrivals"},
                                {"element", "i32"},
                                {"rank", 1},
-                               {"words", 5},
+                               {"words", msl ? 4 : 5},
                                {"zero_before_first_launch", true}});
         continue;
       }
       if (argIndex < 0 || k < 0) {
         emitError(loc) << "the GPU kernel in function '" << name
                        << "' uses a value that is not a parameter of '" << name
-                       << "'. A kernel that --emit-ptx writes gets its "
-                          "inputs only from the parameters of its function";
+                       << "'. A kernel that " << flag
+                       << " writes gets its inputs only from the parameters of "
+                          "its function";
         return failure();
       }
       StringRef vxType = cast<StringAttr>(types[k]).getValue();
@@ -7546,16 +7565,16 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
         p["kind"] = "tensor";
         p["element"] = element;
         p["rank"] = m.getRank();
-        p["words"] = 3 + 2 * m.getRank();
+        p["words"] = (msl ? 2 : 3) + 2 * m.getRank();
       } else if (isa<IntegerType, FloatType, IndexType>(t)) {
         t.print(os);
         p["kind"] = "scalar";
         p["element"] = element;
-        p["words"] = 1;
+        p["words"] = msl && t.isInteger(64) ? 2 : 1;
       } else {
         emitError(loc) << "the GPU kernel in function '" << name
-                       << "' has a parameter of type " << t
-                       << ", which --emit-ptx cannot describe";
+                       << "' has a parameter of type " << t << ", which "
+                       << flag << " cannot describe";
         return failure();
       }
       params.push_back(std::move(p));
@@ -7599,10 +7618,11 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
           kernel->getAttrOfType<StringAttr>("vx.launch_block").getValue());
       llvm::json::Array gridSizes = sizes(grid.getValue());
       if (failedSize) {
-        emitError(loc) << "the GPU kernel in function '" << name
-                       << "' has a launch size that --emit-ptx cannot "
-                          "describe. A size can come from parameters and "
-                          "numbers, with + - * / and %";
+        emitError(loc)
+            << "the GPU kernel in function '" << name
+            << "' has a launch size that " << flag
+            << " cannot describe. A size can come from parameters and "
+               "numbers, with + - * / and %";
         return failure();
       }
       // The count of a group has one element for each block of the first axis.
@@ -7616,8 +7636,7 @@ nameKernelsForExport(ModuleOp module, gpu::GPUModuleOp gpuModule) {
           emitError(loc) << "the GPU kernel in function '" << name
                          << "' has code of a group whose outer loop of blocks "
                             "does not go over the whole first axis. For "
-                            "--emit-ptx, write it `for h in 0..n across "
-                            "blocks`";
+                         << flag << ", write it `for h in 0..n across blocks`";
           return failure();
         }
         if (llvm::json::Array *ps = entry.getArray("params"))
@@ -7689,8 +7708,8 @@ struct ConvertVxToLLVMPass
     getOperation().walk(
         [&](gpu::GPUModuleOp m) { deviceModules.push_back(m); });
 
-    // `--emit-ptx` sets this attribute. The driver then writes the image and
-    // the description of its kernels, and makes no program.
+    // `--emit-ptx` and `--emit-msl` set this attribute. The driver then writes
+    // the image and the description of its kernels, and makes no program.
     ModuleOp module = getOperation();
     bool exporting = module->hasAttr("vx.export_kernels");
     assert((!exporting || deviceModules.size() <= 1) &&
@@ -7769,13 +7788,16 @@ struct ConvertVxToLLVMPass
         return;
       }
 
-      // `--emit-ptx` writes a PTX image and the manifest of its kernels. A
-      // SPIR-V image is binary and has no file of its own yet, so this arm
-      // leaves it unexported rather than writing its bytes into a `.ptx`.
-      const bool exportingPtx = exporting && *pipeline == DevicePipeline::Nvptx;
+      // `--emit-ptx` and `--emit-msl` write a text image and the manifest of
+      // its kernels. A SPIR-V image is binary and has no file of its own yet,
+      // so this arm leaves it unexported rather than writing its bytes into a
+      // text file.
+      const bool exportingText =
+          exporting && *pipeline != DevicePipeline::Spirv;
       llvm::json::Array exported;
-      if (exportingPtx) {
-        FailureOr<llvm::json::Array> kernels = nameKernelsForExport(module, m);
+      if (exportingText) {
+        FailureOr<llvm::json::Array> kernels =
+            nameKernelsForExport(module, m, *pipeline);
         if (failed(kernels)) {
           signalPassFailure();
           return;
@@ -7788,6 +7810,9 @@ struct ConvertVxToLLVMPass
       case DevicePipeline::Nvptx:
         image = deviceImageOf(m, error);
         break;
+      case DevicePipeline::Metal:
+        image = DeviceImage{"msl", mslImageOf(m, error)};
+        break;
       case DevicePipeline::Spirv:
         image = spirvImageOf(m, error);
         break;
@@ -7795,13 +7820,13 @@ struct ConvertVxToLLVMPass
         llvm_unreachable("the pipeline was checked to be present above");
       }
       if (image.bytes.empty()) {
-        // `--emit-ptx` asked for this image, so a refusal is the answer. So is
-        // any NVPTX refusal: the program placed a kernel on an NVPTX device,
-        // and carrying on produces a program that compiles, dispatches, and is
-        // then refused at the far end for a reason that does not name the
-        // cause -- the kernel is missing. The compile is the place where the
-        // cause is still legible.
-        if (exportingPtx || *pipeline == DevicePipeline::Nvptx) {
+        // An NVPTX or Apple GPU refusal is fatal, and so is one that
+        // `--emit-ptx` or `--emit-msl` asked for. The program placed a kernel
+        // on that device, and carrying on produces a program that compiles,
+        // dispatches, and is then refused at the far end for a reason that
+        // does not name the cause -- the kernel is missing. The compile is the
+        // place where the cause is still legible.
+        if (*pipeline != DevicePipeline::Spirv) {
           m.emitError("cannot compile ") << namedKernels(m) << ": " << error;
           signalPassFailure();
           return;
@@ -7865,13 +7890,17 @@ struct ConvertVxToLLVMPass
         if (auto bytes = f->getAttrOfType<IntegerAttr>("vx.dynamic_shared"))
           dynamicShared[f.getName()] = bytes.getInt();
       });
-      if (exportingPtx) {
-        llvm::json::Object manifest{{"target", deviceChip(m)},
+      if (exportingText) {
+        std::string target = *pipeline == DevicePipeline::Metal
+                                 ? std::string("applegpu")
+                                 : deviceChip(m);
+        llvm::json::Object manifest{{"target", target},
                                     {"kernels", std::move(exported)}};
         std::string text;
         llvm::raw_string_ostream os(text);
         os << llvm::formatv("{0:2}", llvm::json::Value(std::move(manifest)));
-        module->setAttr("vx.exported_ptx",
+        module->setAttr(*pipeline == DevicePipeline::Metal ? "vx.exported_msl"
+                                                           : "vx.exported_ptx",
                         StringAttr::get(&getContext(), image.bytes));
         module->setAttr("vx.exported_kernels",
                         StringAttr::get(&getContext(), text));
