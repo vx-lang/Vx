@@ -548,6 +548,8 @@ static void useDeviceMathIn(Region &kernel, ModuleOp module,
   }
 }
 
+static void promoteOwnedBuffers(Region &region, RewriterBase &rewriter);
+
 // Put a kernel's own scratch on the stack.
 //
 // A `Tensor` declared inside the region -- a kernel's one scratch tile --
@@ -557,14 +559,17 @@ static void useDeviceMathIn(Region &kernel, ModuleOp module,
 // 64-byte scratch buffer. Nothing frees it either, so on the host path it leaks
 // once per dispatch.
 //
-// Only allocations in the entry block and with a static shape. An `alloca`
-// inside a loop grows the stack every iteration, which is a worse bug than the
-// one being fixed, and a dynamic extent is not a stack slot on a device at all.
-// A `dealloc` of one, which a drop writes, goes with it: the stack slot lives
-// until the kernel returns, which is no earlier than the `dealloc` was.
+// A small tensor that does not escape gets a stack slot with lifetime markers,
+// as on the host, so two tensors used one after the other share a slot.
+//
+// Any other allocation in the entry block with a static shape gets a slot for
+// the whole kernel, and its `dealloc` goes. Elsewhere it stays on the heap: the
+// analysis cannot tell where its lifetime ends, and a dynamic extent is not a
+// stack slot on a device at all.
 static void useStackScratchIn(Region &kernel, PatternRewriter &rewriter) {
   if (kernel.empty())
     return;
+  promoteOwnedBuffers(kernel, rewriter);
   SmallVector<memref::AllocOp> allocs;
   for (Operation &op : kernel.front())
     if (auto alloc = dyn_cast<memref::AllocOp>(&op))
@@ -2335,6 +2340,82 @@ static bool takesOwnership(func::CallOp call, unsigned i) {
   auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
       call, call.getCalleeAttr());
   return callee && callee.getArgAttr(i, "vx.owned");
+}
+
+// Marks where `buffer` starts or stops being used. The marker names the
+// buffer by its pointer, because the `llvm.alloca` comes later.
+// `vx-lifetime-markers-on-allocas` then puts the alloca in its place.
+template <typename Marker>
+static void markLifetime(OpBuilder &b, Location loc, Value buffer) {
+  Value index = memref::ExtractAlignedPointerAsIndexOp::create(b, loc, buffer);
+  Value address = arith::IndexCastOp::create(b, loc, b.getI64Type(), index);
+  Value ptr = LLVM::IntToPtrOp::create(
+      b, loc, LLVM::LLVMPointerType::get(b.getContext()), address);
+  Marker::create(b, loc, ptr);
+}
+
+// Under drops a heap buffer has a `memref.dealloc`, which upstream promotion
+// refuses, and a buffer passed by value is freed by the function that takes
+// it, which upstream promotion does not know. So a small buffer is promoted
+// here when nothing takes it by value, returns it or branches with it.
+//
+// Each dealloc becomes the end of the buffer's lifetime, and the place of the
+// allocation its start. The stack slot moves to the entry block later, so
+// LLVM can then give two buffers that are not used at the same time one
+// slot. A task stack has a fixed size, so this matters there.
+static void promoteOwnedBuffers(Region &region, RewriterBase &rewriter) {
+  SmallVector<memref::AllocOp> allocs;
+  region.walk([&](memref::AllocOp a) { allocs.push_back(a); });
+  for (memref::AllocOp alloc : allocs) {
+    MemRefType type = alloc.getType();
+    if (!type.hasStaticShape() || !type.getLayout().isIdentity() ||
+        !type.getElementType().isIntOrIndexOrFloat())
+      continue;
+    int64_t bits =
+        type.getNumElements() * type.getElementType().getIntOrFloatBitWidth();
+    if (bits > 4096 * 8)
+      continue;
+    SmallVector<Value> aliases{alloc.getResult()};
+    SmallVector<memref::DeallocOp> deallocs;
+    bool escapes = false;
+    for (size_t i = 0; i < aliases.size() && !escapes; ++i) {
+      for (OpOperand &use : aliases[i].getUses()) {
+        Operation *user = use.getOwner();
+        if (auto view = dyn_cast<ViewLikeOpInterface>(user);
+            view && view.getViewSource() == aliases[i]) {
+          aliases.push_back(user->getResult(0));
+        } else if (auto d = dyn_cast<memref::DeallocOp>(user)) {
+          deallocs.push_back(d);
+        } else if (auto call = dyn_cast<func::CallOp>(user)) {
+          escapes |= takesOwnership(call, use.getOperandNumber());
+        } else if (isa<func::ReturnOp, BranchOpInterface,
+                       RegionBranchTerminatorOpInterface,
+                       memref::ExtractAlignedPointerAsIndexOp>(user) ||
+                   llvm::any_of(user->getResultTypes(), [](Type t) {
+                     return isa<BaseMemRefType>(t);
+                   })) {
+          // A select or a region result can carry the buffer to a dealloc
+          // that this loop does not see.
+          escapes = true;
+        }
+      }
+    }
+    if (escapes)
+      continue;
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(alloc);
+    auto alloca = memref::AllocaOp::create(rewriter, alloc.getLoc(), type,
+                                           alloc.getAlignmentAttr());
+    markLifetime<LLVM::LifetimeStartOp>(rewriter, alloc.getLoc(),
+                                        alloca.getResult());
+    rewriter.replaceOp(alloc, alloca.getResult());
+    for (memref::DeallocOp d : deallocs) {
+      rewriter.setInsertionPoint(d);
+      markLifetime<LLVM::LifetimeEndOp>(rewriter, d.getLoc(),
+                                        alloca.getResult());
+      rewriter.eraseOp(d);
+    }
+  }
 }
 
 // Whether parameter `i` of the function `call` reaches takes a placed tensor
@@ -5220,6 +5301,8 @@ static void markKernelBuffers(gpu::GPUModuleOp original, ModuleOp device) {
 /// leave the host module half-lowered -- the copy is what gets damaged.
 ///
 /// Returns the empty string on failure, with `error` naming the stage.
+static std::unique_ptr<Pass> createLifetimeMarkersOnAllocasPass();
+
 static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
                                  std::string &error) {
   MLIRContext *context = gpuModule.getContext();
@@ -5299,6 +5382,9 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
   pm.addPass(createConvertVectorToLLVMPass());
   pm.addPass(createGpuToLLVMConversionPass());
   pm.addPass(createReconcileUnrealizedCastsPass());
+  // The host runs this pass after the device code is written, so the
+  // lifetime markers of a kernel's stack slots need it here.
+  pm.addPass(createLifetimeMarkersOnAllocasPass());
 
   PassManager toBinary(context, ModuleOp::getOperationName());
   GpuModuleToBinaryPassOptions binary;
@@ -6087,89 +6173,13 @@ struct PromoteBuffersToStackPass
     return reason;
   }
 
-  // Marks where `buffer` starts or stops being used. The marker names the
-  // buffer by its pointer, because the `llvm.alloca` comes later.
-  // `vx-lifetime-markers-on-allocas` then puts the alloca in its place.
-  template <typename Marker>
-  static void markLifetime(OpBuilder &b, Location loc, Value buffer) {
-    Value index =
-        memref::ExtractAlignedPointerAsIndexOp::create(b, loc, buffer);
-    Value address = arith::IndexCastOp::create(b, loc, b.getI64Type(), index);
-    Value ptr = LLVM::IntToPtrOp::create(
-        b, loc, LLVM::LLVMPointerType::get(b.getContext()), address);
-    Marker::create(b, loc, ptr);
-  }
-
-  // Under drops a heap buffer has a `memref.dealloc`, which upstream promotion
-  // refuses, and a buffer passed by value is freed by the function that takes
-  // it, which upstream promotion does not know. So a small buffer is promoted
-  // here when nothing takes it by value, returns it or branches with it.
-  //
-  // Each dealloc becomes the end of the buffer's lifetime, and the place of the
-  // allocation its start. The stack slot moves to the entry block later, so
-  // LLVM can then give two buffers that are not used at the same time one
-  // slot. A task stack has a fixed size, so this matters there.
-  static void promoteOwnedBuffers(func::FuncOp func) {
-    SmallVector<memref::AllocOp> allocs;
-    func.walk([&](memref::AllocOp a) { allocs.push_back(a); });
-    for (memref::AllocOp alloc : allocs) {
-      MemRefType type = alloc.getType();
-      if (!type.hasStaticShape() || !type.getLayout().isIdentity() ||
-          !type.getElementType().isIntOrIndexOrFloat())
-        continue;
-      int64_t bits =
-          type.getNumElements() * type.getElementType().getIntOrFloatBitWidth();
-      if (bits > 4096 * 8)
-        continue;
-      SmallVector<Value> aliases{alloc.getResult()};
-      SmallVector<memref::DeallocOp> deallocs;
-      bool escapes = false;
-      for (size_t i = 0; i < aliases.size() && !escapes; ++i) {
-        for (OpOperand &use : aliases[i].getUses()) {
-          Operation *user = use.getOwner();
-          if (auto view = dyn_cast<ViewLikeOpInterface>(user);
-              view && view.getViewSource() == aliases[i]) {
-            aliases.push_back(user->getResult(0));
-          } else if (auto d = dyn_cast<memref::DeallocOp>(user)) {
-            deallocs.push_back(d);
-          } else if (auto call = dyn_cast<func::CallOp>(user)) {
-            escapes |= takesOwnership(call, use.getOperandNumber());
-          } else if (isa<func::ReturnOp, BranchOpInterface,
-                         RegionBranchTerminatorOpInterface,
-                         memref::ExtractAlignedPointerAsIndexOp>(user) ||
-                     llvm::any_of(user->getResultTypes(), [](Type t) {
-                       return isa<BaseMemRefType>(t);
-                     })) {
-            // A select or a region result can carry the buffer to a dealloc
-            // that this loop does not see.
-            escapes = true;
-          }
-        }
-      }
-      if (escapes)
-        continue;
-      OpBuilder builder(alloc);
-      auto alloca = memref::AllocaOp::create(builder, alloc.getLoc(), type,
-                                             alloc.getAlignmentAttr());
-      markLifetime<LLVM::LifetimeStartOp>(builder, alloc.getLoc(),
-                                          alloca.getResult());
-      alloc.replaceAllUsesWith(alloca.getResult());
-      alloc.erase();
-      for (memref::DeallocOp d : deallocs) {
-        builder.setInsertionPoint(d);
-        markLifetime<LLVM::LifetimeEndOp>(builder, d.getLoc(),
-                                          alloca.getResult());
-        d.erase();
-      }
-    }
-  }
-
   void runOnOperation() override {
     func::FuncOp func = getOperation();
     if (reasonToKeepOnHeap(func))
       return;
     if (func->getParentOfType<ModuleOp>()->hasAttr("vx.drops")) {
-      promoteOwnedBuffers(func);
+      IRRewriter rewriter(func.getContext());
+      promoteOwnedBuffers(func.getBody(), rewriter);
       return;
     }
     OpPassManager pm(func::FuncOp::getOperationName());
@@ -6916,10 +6926,10 @@ struct ProbeStackPass
   }
 };
 
-// `vx-promote-buffers-to-stack` marks the lifetime of a stack buffer by its
-// pointer. LLVM wants the `alloca` itself, so this pass follows the pointer
-// back through the memref descriptor to the alloca. A marker that it cannot
-// follow is erased: with no markers, the buffer lives for the whole call.
+// `promoteOwnedBuffers` marks the lifetime of a stack buffer by its pointer.
+// LLVM wants the `alloca` itself, so this pass follows the pointer back through
+// the memref descriptor to the alloca. A marker that it cannot follow is
+// erased: with no markers, the buffer lives for the whole call.
 struct LifetimeMarkersOnAllocasPass
     : public PassWrapper<LifetimeMarkersOnAllocasPass,
                          OperationPass<ModuleOp>> {
@@ -6968,6 +6978,10 @@ struct LifetimeMarkersOnAllocasPass
     }
   }
 };
+
+static std::unique_ptr<Pass> createLifetimeMarkersOnAllocasPass() {
+  return std::make_unique<LifetimeMarkersOnAllocasPass>();
+}
 
 // Upstream's `inline` pass inlines every call it can. A function that calls
 // another three times, which calls another three times, and so on, then holds
@@ -7054,9 +7068,7 @@ void registerVxPasses() {
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<ProbeStackPass>();
   });
-  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
-    return std::make_unique<LifetimeMarkersOnAllocasPass>();
-  });
+  mlir::registerPass(createLifetimeMarkersOnAllocasPass);
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<OrderRelaxedReadsPass>();
   });
