@@ -75,8 +75,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/vec_iter_hands_out_references.vx",
     "backend/pass/write_through_a_mutable_reference.vx",
     "backend/pass/for_loop_over_a_reference_to_a_vec.vx",
-    // "A borrow of something that is not a tensor": the flat path does not model `&(&a)`.
-    "backend/pass/borrow_of_a_borrow.vx",
     // "A compound assignment to something other than a simple name" is not modelled.
     "backend/pass/compound_assignment_through_a_reference.vx",
     "backend/pass/core_iter_zip.vx",
@@ -87,9 +85,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/user_lowering_name_collisions.vx",
     "backend/pass/user_lowering_uncountable.vx",
     "backend/pass/user_lowering_waste.vx",
-    // `total_cmp` takes a reference to a number, which the flat path declines as "a borrow of
-    // something that is not a tensor". The answers come from the AST path.
-    "backend/pass/core_num_float_total_cmp.vx",
     "frontend/pass/closure_fat_ptr.vx",
     "frontend/pass/control_flow_rigorous.vx",
     // `c = c @ b`: the flat path writes a product into its destination, which here is also an
@@ -105,8 +100,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "frontend/pass/trait_topologies.vx",
     // A `for` loop over `v.iter()`: the flat path declines `Vec` iteration by reference.
     "frontend/pass/vec_iterator_borrow_ends_at_last_use.vx",
-    // `&&x` borrows a borrow, and the flat path declines a borrow of anything but a tensor.
-    "frontend/pass/warning_for_a_borrow_of_a_borrow.vx",
     // A parameter with run-time extents (Vx#409). It used to compile through the flat path
     // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
     // signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one function, plus
