@@ -201,6 +201,13 @@ need.
 **The compiler shows what it inferred.** `vxc` prints the inferred clauses of a function on request.
 A programmer can then copy a clause into the signature, to make it part of the contract.
 
+**A private function gets inferred clauses.** Each caller of a private function is in the same
+module and in the same compile. So when an edit to its body breaks a caller, the error appears at
+once, to the person who made the edit. Most functions are small private helpers, so inference saves
+the most clauses there. Vx has no private functions yet: the lexer reserves `pub`, and the parser
+does not use it. Until it does, each function gets inferred clauses. Open question 3 asks what a
+public function gets after that.
+
 Inference of `!keeps(b)` can follow later. The same walk over the syntax can find a body that stores
 `b` nowhere. It also stops at a method call.
 
@@ -429,12 +436,14 @@ for later:
 1. The error code for a body that breaks a clause. E8007 covers access clauses today. A code next to
    E4005 would keep the borrow errors in one family.
 1. A second argument for `keeps`, such as `!keeps(b, *h)`, to say where a call can keep `b`.
-1. Whether a public function of a library must write its clauses, so that an edit to its body
-   cannot change which callers compile. The review of this note suggested this rule: a public
-   function writes its clauses, it gets the default where it writes none, and only a private
-   function gets inferred clauses. Then the standard library must write
-   `!points_into(return, *self)` on `VecIter::next`, or `v.iter()` loses what #2431 gave it. Vx
-   has a `pub` keyword, but the standard library does not use it yet.
+1. What a public function of a library gets. An edit to its body can break callers in other
+   packages, and the author does not see those errors. One choice is that the function writes its
+   clauses and gets the default where it writes none. Then the standard library must write
+   `!points_into(return, *self)` on `VecIter::next`, or `v.iter()` loses what #2431 gave it. The
+   other choice keeps the inferred clauses, and a check warns when they change between two versions
+   of the package, as `cargo-semver-checks` does for Rust. The question matters once Vx has `pub`
+   functions and compiles packages separately. Today the standard library compiles with each
+   program.
 1. A form of `overlaps` for two lengths or two element types.
 1. A way to say that a result overlaps no memory that the caller can reach, as for an allocator.
    C has the `malloc` attribute for this.
