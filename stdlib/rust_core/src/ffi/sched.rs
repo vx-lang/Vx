@@ -120,6 +120,9 @@ pub(crate) struct Scheduler {
     /// The fibers that a worker runs now. A worker counts its fiber from the `pop` until the
     /// fiber is on a queue or a bucket list again, or ended.
     running: AtomicUsize,
+    /// The running fibers that wait on their worker's thread, because foreign code called the Vx
+    /// function they are in (W9). Only a wake can let one go on, so `all_parked` counts them.
+    blocked: AtomicUsize,
     workers: AtomicUsize,
     max_workers: usize,
     /// The monitor wrote the message about the limit.
@@ -154,6 +157,7 @@ impl Scheduler {
             switches: AtomicU64::new(0),
             idle: AtomicUsize::new(0),
             running: AtomicUsize::new(0),
+            blocked: AtomicUsize::new(0),
             workers: AtomicUsize::new(0),
             max_workers,
             told_limit: AtomicBool::new(false),
@@ -316,11 +320,23 @@ impl Scheduler {
     }
 
     /// True when no fiber runs and none is ready. Each fiber that did not end then waits on a
-    /// bucket, and only a thread that is not a worker can wake it. With no fibers, it is true.
+    /// bucket, parked or blocked on its thread, and only a thread that is not a worker can wake
+    /// it. With no fibers, it is true.
     pub(crate) fn all_parked(&self) -> bool {
         // `pop` counts a fiber as running under this lock, so no fiber is between the two.
         let ready = self.ready.lock().unwrap();
-        ready.is_empty() && self.running.load(Ordering::SeqCst) == 0
+        ready.is_empty()
+            && self.running.load(Ordering::SeqCst) == self.blocked.load(Ordering::SeqCst)
+    }
+
+    /// A running fiber starts to wait on its thread, under a callback.
+    pub(crate) fn blocked(&self) {
+        self.blocked.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// A wake ended the wait of a fiber on its thread, or the wait ended with no wake.
+    pub(crate) fn unblocked(&self) {
+        self.blocked.fetch_sub(1, Ordering::SeqCst);
     }
 
     /// Starts `run(env)` as a fiber with the cancel mark `mark`. The caller frees the fiber after
@@ -472,6 +488,12 @@ pub(crate) fn scheduler_here() -> Option<&'static Scheduler> {
     } else {
         None
     }
+}
+
+/// The scheduler of the fiber that this thread runs, if any.
+pub(crate) fn current_scheduler() -> Option<&'static Scheduler> {
+    let fiber = current_fiber();
+    (!fiber.is_null()).then(|| unsafe { (*fiber).sched })
 }
 
 /// The fiber that this thread runs, or null on a thread that runs no fiber.
