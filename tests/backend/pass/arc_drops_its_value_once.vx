@@ -1,0 +1,75 @@
+//===- arc_drops_its_value_once.vx - Vx Compiler ------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The drop of the last `Arc` drops the value in it, once. No drop before it drops the value. Four
+// tasks drop their clones first. When `try_unwrap` moves the value out, its new owner drops it,
+// also once.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=dropped
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error --implicit-check-not=dropped
+// CHECK: {{^}}the tasks read 28, count 1{{$}}
+// CHECK: {{^}}one owner is left, count 1{{$}}
+// CHECK: {{^}}dropped 7{{$}}
+// CHECK: {{^}}after the last drop{{$}}
+// CHECK: {{^}}moved out 8{{$}}
+// CHECK: {{^}}dropped 8{{$}}
+// CHECK: {{^}}end{{$}}
+
+import core::sync::atomic;
+import std::sync::arc;
+
+struct Noisy {
+  id : i64,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("dropped {}", self.id);
+  }
+}
+
+fn id_of(a : Arc<Noisy>) -> i64 {
+  return a.get().id;
+}
+
+fn move_out(a : Arc<Noisy>) -> void {
+  match a.try_unwrap() {
+    Result<Noisy, Arc<Noisy>>::Ok(v) => {
+      println!("moved out {}", v.id);
+    }
+    Result<Noisy, Arc<Noisy>>::Err(_back) => {
+      println!("another owner exists");
+    }
+  }
+}
+
+fn main() -> i32 {
+  let a = Arc<Noisy>::new(Noisy {
+    id : 7
+  });
+  let sum = AtomicI64::new(0);
+  tasks {
+    for t in 0..4 {
+      let c = a.clone();
+      spawn {
+        sum.fetch_add(id_of(c), AtomicOrdering::SeqCst);
+      };
+    }
+  };
+  println!("the tasks read {}, count {}", sum.load(AtomicOrdering::SeqCst), a.strong_count());
+  let b = a.clone();
+  drop(a);
+  println!("one owner is left, count {}", b.strong_count());
+  drop(b);
+  println!("after the last drop");
+
+  move_out(Arc<Noisy>::new(Noisy {
+    id : 8
+  }));
+  println!("end");
+  return 0;
+}

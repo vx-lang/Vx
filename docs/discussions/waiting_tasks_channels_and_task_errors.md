@@ -308,8 +308,10 @@ never continues. So `lock` parks the task (W4), and the lock belongs to a task, 
 (W9). `lock` cannot be cancelled (F4). It has the same model check as the channel.
 
 **M8. `Arc`.** #1864 also asks for `Arc`. A task borrows the locals of its parent (T5), so most
-programs need no reference count. `Arc` waits until a program needs data that lives longer than
-its `tasks` block.
+programs need no reference count. `std::sync::arc` has one for data that lives longer than its
+`tasks` block. It follows Rust's `Arc`: a clone adds 1 with `Relaxed`, a drop takes 1 away with
+`Release`, and the last drop runs an `Acquire` fence before it drops the value.
+`formal/memory_model/tests/arc_last_drop_*.litmus` check that order.
 
 ## 4. Errors from tasks (#1893)
 

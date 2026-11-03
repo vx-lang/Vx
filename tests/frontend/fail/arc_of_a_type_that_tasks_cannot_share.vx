@@ -1,0 +1,43 @@
+//===- arc_of_a_type_that_tasks_cannot_share.vx - Vx Compiler -----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// An `Arc<T>` can move into a task only when `T` is `Send` and `Sync`, as in Rust. An
+// `Arc<&i64>` holds a reference, so it is not `Owned`, and a channel cannot take it.
+
+import core::cell;
+import std::sync::arc;
+
+fn hold(_a : Arc<SharedCell<i64>>) -> void {
+}
+
+// CHECK: Error[E3055] at {{.*}}arc_of_a_type_that_tasks_cannot_share.vx:[[@LINE+5]]:5: the task moves 'c' into itself, so its type 'Arc<SharedCell<i64>>' must be `Send`: `unsafe impl Send for Arc<T>` needs `T : Sync`, and 'SharedCell<i64>' is never `Sync`
+fn move_an_arc_of_a_cell_into_a_task() -> void {
+  let a = Arc<SharedCell<i64>>::new(SharedCell<i64>::new(1));
+  tasks {
+    let c = a.clone();
+    spawn {
+      hold(c);
+    };
+  };
+}
+
+fn keep<T : Owned>(_v : T) -> void {
+}
+
+// CHECK: Error in {{.*}}arc_of_a_type_that_tasks_cannot_share.vx: Type 'Arc<&i64>' does not implement trait 'Owned' required by parameter 'T': `unsafe impl Owned for Arc<T>` needs `T : Owned`, and '&i64' is a reference, which is not `Owned`
+fn keep_an_arc_of_a_reference(x : &i64) -> void {
+  keep(Arc<&i64>::new(x));
+}
+
+fn main() -> i32 {
+  move_an_arc_of_a_cell_into_a_task();
+  let n = 5i64;
+  keep_an_arc_of_a_reference(&n);
+  return 0;
+}
