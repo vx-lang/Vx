@@ -21,9 +21,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // A `return` of a tensor from inside a `tasks` block: the flat path declines it ("a return
     // of a value of this type from inside a tasks block"). The file is about the AST path.
     "backend/pass/a_return_of_a_tensor_leaves_a_tasks_block.vx",
-    // A `match` through a reference to an enum, one of them with a payload: the flat path does
-    // not lower a match over a borrowed enum or an enum that carries a payload.
-    "backend/pass/match_on_a_reference_to_an_enum.vx",
     // `c as ||->i32`: the flat path declines a cast to the built-in closure type ("a cast to a
     // non-scalar"); the AST path compiles it.
     "backend/pass/returning_a_closure_that_uses_nothing.vx",
@@ -49,12 +46,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // `&mut arr[0]`: the flat path declines any borrow of a tensor element ("a borrow of
     // something that is not a tensor").
     "frontend/pass/two_mutable_borrows_one_after_the_other.vx",
-    // A function returning `Result<void, E>`: the flat path has no layout for a payload of type
-    // `void` ("a callee return type").
-    "backend/pass/result_with_a_void_success_type.vx",
-    // `Result<void, i32>`: the flat path has no layout for a `void` payload ("an enum payload
-    // type that is not modelled").
-    "backend/pass/result_of_void.vx",
     // `t = pass(t)` inside an `if`: on the flat path a tensor local is one register, so the
     // new value cannot leave the branch. The flat path used to read the wrong tensor after it.
     "frontend/pass/tensor_drops_written_into_the_program.vx",
