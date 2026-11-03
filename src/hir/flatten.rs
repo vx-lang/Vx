@@ -1803,6 +1803,12 @@ impl<'r> Lowerer<'r> {
                     let addr_gid = match &fty {
                         FieldTy::Nominal(gid) => Some(*gid),
                         FieldTy::Scalar(e) => Some(scalar_gid(e)),
+                        // A pointer field, such as the `*mut T` that `SharedCell<*mut T>` holds.
+                        FieldTy::Opaque
+                            if matches!(self.infer_ast_type(&b.expr), Some(Type::Pointer(..))) =>
+                        {
+                            Some(ptr_gid())
+                        }
                         _ => None,
                     };
                     if let Some(gid) = addr_gid {
@@ -6306,6 +6312,23 @@ impl<'r> Lowerer<'r> {
                                     .push("no arm of the match returned a value".to_string());
                                 self.emit_effect(Opcode::Abort, never.reg, Register(0), imm);
                                 self.emit_alloca(rty.clone())
+                            }
+                            // A null pointer, as `0 as *mut T` makes it.
+                            LoweredTy::Ptr => {
+                                let zero = self.emit_value(
+                                    Opcode::Const,
+                                    Register(0),
+                                    Register(0),
+                                    ElementType::I64,
+                                    0,
+                                );
+                                self.emit_typed(
+                                    Opcode::Cast,
+                                    zero.reg,
+                                    Register(0),
+                                    LoweredTy::Ptr,
+                                    0,
+                                )
                             }
                             _ => {
                                 return Err(Decline::TypeNotModelled {

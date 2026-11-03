@@ -1,0 +1,86 @@
+//===- core_sync_atomic_ptr.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `AtomicPtr<i32>` on one thread. Three pointers address `a` (1), `b` (2) and `c` (3), so
+// each operation prints the value its answer points to, then the value the atomic points to.
+// In order: `load` and `store`, `swap`, `compare_exchange` and `compare_exchange_weak`
+// that store and that do not, a write through `get_mut` and `as_ptr`, and `default` and
+// `from`. A `default` that is not null prints `null no`.
+//
+// EXPECT: load 1 | store 2 | swap 2 3 | ok 3 1 | err 1 1 | ok 1 2 | err 2 2 | get_mut 3 | as_ptr 1 | default null yes | from 2 |
+import core::sync::atomic;
+import core::ptr;
+
+fn show(p : *mut i32) -> i32 {
+  print(unsafe { *p });
+  return 0;
+}
+
+fn show_result(r : Result<*mut i32, *mut i32>, now : &AtomicPtr<i32>) -> i32 {
+  match r {
+    Result<*mut i32, *mut i32>::Ok(p) => {
+      print!("ok ");
+      let _ = show(p);
+    }
+    Result<*mut i32, *mut i32>::Err(p) => {
+      print!("err ");
+      let _ = show(p);
+    }
+  }
+  print!(" ");
+  let _ = show(now.load(AtomicOrdering::SeqCst));
+  print!(" | ");
+  return 0;
+}
+
+fn main() -> i32 {
+  let mut a : i32 = 1;
+  let mut b : i32 = 2;
+  let mut c : i32 = 3;
+  let pa = (&mut a) as *mut i32;
+  let pb = (&mut b) as *mut i32;
+  let pc = (&mut c) as *mut i32;
+
+  let mut x = AtomicPtr<i32>::new(pa);
+  print!("load ");
+  let _ = show(x.load(AtomicOrdering::Relaxed));
+  x.store(pb, AtomicOrdering::Release);
+  print!(" | store ");
+  let _ = show(x.load(AtomicOrdering::Acquire));
+  print!(" | swap ");
+  let _ = show(x.swap(pc, AtomicOrdering::AcqRel));
+  print!(" ");
+  let _ = show(x.load(AtomicOrdering::SeqCst));
+  print!(" | ");
+
+  let _ = show_result(x.compare_exchange(pc, pa, AtomicOrdering::SeqCst, AtomicOrdering::Relaxed), &x);
+  let _ = show_result(x.compare_exchange(pc, pb, AtomicOrdering::Acquire, AtomicOrdering::Acquire), &x);
+  let _ = show_result(x.compare_exchange_weak(pa, pb, AtomicOrdering::Release, AtomicOrdering::Relaxed), &x);
+  let _ = show_result(x.compare_exchange_weak(pa, pc, AtomicOrdering::AcqRel, AtomicOrdering::SeqCst), &x);
+
+  let r = x.get_mut();
+  *r = pc;
+  print!("get_mut ");
+  let _ = show(x.load(AtomicOrdering::SeqCst));
+  let q = x.as_ptr();
+  unsafe { *q = pa; }
+  print!(" | as_ptr ");
+  let _ = show(x.into_inner());
+
+  let d = AtomicPtr<i32>::default();
+  print!(" | default null ");
+  if is_null_mut(d.into_inner()) {
+    print!("yes");
+  } else {
+    print!("no");
+  }
+  print!(" | from ");
+  let f = AtomicPtr<i32>::from(pb);
+  let _ = show(f.into_inner());
+  println!(" |");
+  return 0;
+}

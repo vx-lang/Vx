@@ -729,9 +729,10 @@ pub fn substitute_type_name(
     name: &str,
     mapping: &std::collections::HashMap<Symbol, Type>,
 ) -> String {
-    // `&T` and `&mut T`: the reference stays, what it refers to is substituted.
+    // `&T`, `&mut T`, `*mut T` and `*const T`: the reference or pointer stays, what it refers
+    // to is substituted.
     let trimmed = name.trim();
-    for prefix in ["&mut ", "&"] {
+    for prefix in ["&mut ", "&", "*mut ", "*const "] {
         if let Some(rest) = trimmed.strip_prefix(prefix) {
             return format!("{prefix}{}", substitute_type_name(rest, mapping));
         }
