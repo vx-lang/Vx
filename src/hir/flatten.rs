@@ -1770,11 +1770,14 @@ impl<'r> Lowerer<'r> {
                     "sizeof<{}>() reached lowering with its type parameter unbound",
                     s.target_ty
                 );
+                // A generic instance (`Mutex<i64>`) has its own layout, so it is resolved
+                // here, not through its base struct.
                 let size = sizeof_bytes(&s.target_ty)
-                    .or_else(|| {
-                        agg_gid_of_ty(&s.target_ty, self.registry)
-                            .and_then(|g| self.layout_of(&g))
-                            .map(|d| d.size_bytes as u64)
+                    .or_else(|| match self.lower_ty_synth(&s.target_ty) {
+                        Some(LoweredTy::Aggregate(g)) => {
+                            self.layout_of(&g).map(|d| d.size_bytes as u64)
+                        }
+                        _ => None,
                     })
                     .unwrap_or(8);
                 Ok(self.emit_value(
@@ -4122,9 +4125,10 @@ impl<'r> Lowerer<'r> {
         lowered_ty(ty, self.registry)
     }
 
-    /// The element type behind a pointer, synthesizing an instance layout the free
-    /// `pointer_elem_ty` cannot: `*mut Option<i32>` is a `Vec<Option<i32>>`'s storage, and its
-    /// element is the enum instance's `{ tag, payload }`.
+    /// The element type behind a pointer, with an instance layout when the element needs one:
+    /// `*mut Option<i32>` is a `Vec<Option<i32>>`'s storage, and its element is the enum
+    /// instance's `{ tag, payload }`. A pointer to a pointer (`&&T`) has a bare `!llvm.ptr`
+    /// element.
     fn pointer_elem_synth(&mut self, ty: &Type) -> Option<LoweredTy> {
         let inner = match ty {
             Type::Pointer(inner, ..) | Type::Borrow { inner, .. } | Type::Ref(inner, ..) => {
@@ -5729,8 +5733,9 @@ impl<'r> Lowerer<'r> {
     /// non-tensor-index place.
     /// Lower `*p` as `p[0]`: a `PtrIndex` at a constant zero index — a value read (`is_place=false`)
     /// or an element place (`is_place=true`, consumed by a `PtrStore`). The pointee element type comes
-    /// from `p`'s AST type. Backs `let v = *p` / `*p = val` (`Box`'s heap cell). A non-pointer, or a
-    /// pointer whose element isn't a scalar/aggregate, declines. (#242)
+    /// from `p`'s AST type. Backs `let v = *p` / `*p = val` (`Box`'s heap cell). An element that is
+    /// a generic struct instance, such as `Mutex<i64>`, gets the layout of that instance. A
+    /// non-pointer, or a pointer whose element isn't a scalar/aggregate, declines. (#242)
     fn lower_ptr_deref(&mut self, ptr_expr: &Expr, is_place: bool) -> Lowered<Val> {
         let base = self.lower_expr(ptr_expr)?;
         if !matches!(base.ty, LoweredTy::Ptr) {
@@ -5738,17 +5743,16 @@ impl<'r> Lowerer<'r> {
                 what: "a dereference of something that is not a pointer",
             });
         }
-        let elem = pointer_elem_ty(
-            &self
-                .infer_ast_type(ptr_expr)
-                .ok_or(Decline::TypeNotModelled {
-                    what: "a pointer whose type cannot be inferred",
-                })?,
-            self.registry,
-        )
-        .ok_or(Decline::TypeNotModelled {
-            what: "a pointer element type that is not modelled",
-        })?;
+        let ptr_ty = self
+            .infer_ast_type(ptr_expr)
+            .ok_or(Decline::TypeNotModelled {
+                what: "a pointer whose type cannot be inferred",
+            })?;
+        let elem = self
+            .pointer_elem_synth(&ptr_ty)
+            .ok_or(Decline::TypeNotModelled {
+                what: "a pointer element type that is not modelled",
+            })?;
         let zero = self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0);
         Ok(self.emit_typed(
             Opcode::PtrIndex,
@@ -7571,26 +7575,6 @@ fn substitute_generics(fty: &Type, generics: &[Symbol], args: &[Type]) -> Type {
         mapping.insert(g.clone(), a.clone());
     }
     fty.substitute(&mapping)
-}
-
-/// The lowered element type of a raw pointer, for lowering a raw-pointer index `p[i]`:
-/// `*mut i32` -> `Scalar(i32)` (`Vec<i32>`'s `self.data[i]`), `*mut Vec<i32>` -> `Aggregate(gid)`
-/// (`Vec<Vec<i32>>`'s element, stored/loaded as a whole `!llvm.struct` by value). Only scalar and
-/// aggregate elements are modelled — a pointer-to-pointer or pointer-to-tensor element declines. (#242)
-fn pointer_elem_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy> {
-    let inner = match ty {
-        Type::Pointer(inner, ..) | Type::Borrow { inner, .. } | Type::Ref(inner, ..) => {
-            inner.as_ref()
-        }
-        _ => return None,
-    };
-    match lowered_ty(inner, registry)? {
-        // A pointer whose pointee is itself a pointer (`&&T`, `*mut *mut T`): the deref loads/stores a
-        // bare `!llvm.ptr` element. This is what makes a *materialized* nested reference (`&mut &mut i32`,
-        // whose `rr` is a real ptr-to-ptr rather than a symbolic place) deref through `PtrIndex`. (#278)
-        e @ (LoweredTy::Scalar(_) | LoweredTy::Aggregate(_) | LoweredTy::Ptr) => Some(e),
-        _ => None,
-    }
 }
 
 /// The layout GID of the aggregate a (borrow/pointer-to-)nominal type names, resolving a
