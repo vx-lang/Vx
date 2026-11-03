@@ -565,6 +565,76 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The arguments of a method call after its receiver, as `commit_reference_arg_reborrows`
+    /// handles a function call's: the result holds what an argument holds where `summary` says it
+    /// can reach it, a bare reference that it points through stays borrowed, and the borrow of an
+    /// argument that it cannot point into ends with the call. The receiver is slot 0 of
+    /// `summary`. `result` is whether the result is a `&mut`, and whether it holds a reference.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_method_arg_borrows(
+        &mut self,
+        receiver: &Expr,
+        args: &[Expr],
+        params: &[(crate::symbol::Symbol, Type)],
+        summary: &crate::hir::provenance::ReturnProvenance,
+        snapshots: &HashMap<String, Option<Vec<BorrowRecord>>>,
+        result: (bool, bool),
+        span: &Span,
+    ) {
+        let (result_is_mut, result_holds_ref) = result;
+        let target = self.current_assignment_target.clone();
+        let mut deriving: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if summary.includes(0) {
+            if let Some((base, _)) = Self::arg_reborrow_base(receiver) {
+                deriving.insert(base);
+            }
+        }
+        for (i, arg) in args.iter().enumerate() {
+            let slot = i + 1;
+            let Some((base, path)) = Self::arg_reborrow_base(arg) else {
+                continue;
+            };
+            let param = params.get(slot).map(|(_, ty)| ty);
+            if summary.includes(slot) {
+                deriving.insert(base.clone());
+                if let Some(pty @ Type::Borrow { .. }) = param {
+                    if !matches!(arg, Expr::Borrow(_))
+                        && self.is_reference_variable(&base.as_str().into())
+                    {
+                        let is_mut = Self::is_mut_ref(pty);
+                        self.track_reference_arg_borrow(
+                            &base,
+                            path,
+                            is_mut,
+                            result_is_mut || (result_holds_ref && is_mut),
+                            true,
+                            span,
+                        );
+                    }
+                }
+            }
+            if summary.holds(slot) {
+                if let Some(target) = &target {
+                    self.borrow
+                        .copy_borrows_through(&base, target, self.scopes.len());
+                }
+            }
+        }
+        for arg in args {
+            let Some((base, _)) = Self::arg_reborrow_base(arg) else {
+                continue;
+            };
+            if deriving.contains(&base) {
+                continue;
+            }
+            if let Some(snap) = snapshots.get(&base) {
+                let prev: &[BorrowRecord] = snap.as_deref().unwrap_or(&[]);
+                self.borrow
+                    .retain_present(base.as_str(), prev, target.as_deref());
+            }
+        }
+    }
+
     /// After the argument loop, decide which reference-argument reborrows persist past the call
     /// and revert the rest (#243). A reborrow outlives the call iff the callee returns a reference
     /// the argument's slot derives from; every other base is restored to the borrows it had before
@@ -3400,6 +3470,7 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
+                    let method_params = generic_method.params.clone();
                     let (ret_ty, func_call) = self.instantiate_method_call_rewrite(
                         generic_method,
                         mapping,
@@ -3469,6 +3540,17 @@ impl<'a> TypeChecker<'a> {
                             self.borrow
                                 .copy_borrows_through(&receiver, &target, self.scopes.len());
                         }
+                    }
+                    if returns_ref && !self.speculating {
+                        self.commit_method_arg_borrows(
+                            obj,
+                            args,
+                            &method_params,
+                            &summary,
+                            &borrowed_snapshots,
+                            (Self::is_mut_ref(&ret_ty), holds_ref),
+                            &method_span,
+                        );
                     }
                     *expr = func_call;
                     return ret_ty;

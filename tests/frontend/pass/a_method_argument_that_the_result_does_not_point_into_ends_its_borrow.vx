@@ -1,0 +1,36 @@
+//===- a_method_argument_that_the_result_does_not_point_into_ends_its_borrow.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The result of `count` points into the table and never into `*k`, as the return summary finds.
+// So, as after a function call, `k` is free to change while the result is in use.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}n=1; k=2;{{$}}
+
+struct Table {
+  n : i64,
+}
+
+impl Table {
+  fn count(self : &Table, k : &i64) -> &i64 {
+    if *k > 0 {
+      return &self.n;
+    }
+    return &self.n;
+  }
+}
+
+fn main() -> i32 {
+  let t = Table {
+    n : 1i64
+  };
+  let mut k = 1i64;
+  let r = t.count(&k);
+  k = 2i64;
+  println!("n={}; k={};", *r, k);
+  return 0;
+}
