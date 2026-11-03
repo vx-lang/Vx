@@ -24,7 +24,8 @@
 // A file is not a socket: poll(2) says that a regular file is always ready, and then a read
 // still waits for the disk. So a fiber runs a file call on a helper thread, and parks until the
 // call ends. A cancel does not stop that wait, because the call still uses the buffer of the
-// caller (F5).
+// caller (F5). The lookup of a host name also waits, for a DNS server, so it runs on a helper
+// thread too.
 //
 // poll(2) works the same on Linux and on macOS. epoll and kqueue can replace it when a program
 // waits on many sockets.
@@ -74,12 +75,21 @@ fn wait_ready(fd: RawFd, write: bool) -> bool {
     true
 }
 
+/// The addresses of `addr`, written as `host:port`. A fiber looks up the host on a helper
+/// thread, as for `off_the_worker`.
+pub fn lookup(addr: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
+    off_the_worker(|| {
+        #[cfg(test)]
+        tests::before_a_lookup(addr);
+        Ok(std::net::ToSocketAddrs::to_socket_addrs(addr)?.collect())
+    })
+}
+
 /// Connects to `addr`, written as `host:port`, and tries each address of the host in turn. The
-/// wait for each connection is as for `when_ready`. The lookup of a host name still blocks the
-/// thread.
+/// wait for each connection is as for `when_ready`.
 pub fn connect(addr: &str) -> std::io::Result<std::net::TcpStream> {
     let mut last = std::io::Error::other("the host has no address");
-    for a in std::net::ToSocketAddrs::to_socket_addrs(addr)? {
+    for a in lookup(addr)? {
         match connect_to(a) {
             Ok(stream) => return Ok(stream),
             Err(e) => last = e,
@@ -211,7 +221,7 @@ pub fn off_the_worker<T>(call: impl FnOnce() -> T) -> T {
     helpers().run(Box::new(move || {
         // A panic would leave the fiber parked forever.
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
-            eprintln!("vx: a file call panicked on a helper thread. The program stops.");
+            eprintln!("vx: a call panicked on a helper thread. The program stops.");
             std::process::abort();
         }
         BUSY.fetch_sub(1, Ordering::SeqCst);
@@ -232,7 +242,7 @@ static BUSY: AtomicUsize = AtomicUsize::new(0);
 
 type Job = Box<dyn FnOnce() + Send>;
 
-/// Threads that run file calls for fibers. A thread stays when its call ends, and waits for
+/// Threads that run file calls and host lookups for fibers. A thread stays when its call ends, and waits for
 /// the next one. There is one more thread when each one is busy.
 struct Helpers {
     /// The calls that no thread took yet, and the count of threads that wait for one.
@@ -261,9 +271,9 @@ impl Helpers {
         // threads means that one call has no thread.
         if s.0.len() > s.1 {
             std::thread::Builder::new()
-                .name("vx-file".into())
+                .name("vx-helper".into())
                 .spawn(move || self.serve())
-                .expect("the system could not start a thread for a file call");
+                .expect("the system could not start a helper thread");
         }
         drop(s);
         self.cond.notify_one();
@@ -285,7 +295,7 @@ impl Helpers {
     }
 }
 
-/// Whether a task or thread waits for a socket, or a helper runs a file call. The end of
+/// Whether a task or thread waits for a socket, or a helper runs a call. The end of
 /// either can wake a task.
 pub(crate) fn pending() -> bool {
     BUSY.load(Ordering::SeqCst) > 0 || POLLER.get().is_some_and(|p| !p.waiting().is_empty())
@@ -373,7 +383,8 @@ mod tests {
     use crate::ffi::wait::{vx_wait_while, vx_wake_all};
     use crate::net::{
         vx_tcp_listener_accept, vx_tcp_listener_bind, vx_tcp_listener_drop, vx_tcp_stream_connect,
-        vx_tcp_stream_drop, vx_tcp_stream_read, vx_tcp_stream_write,
+        vx_tcp_stream_drop, vx_tcp_stream_read, vx_tcp_stream_write, vx_udp_socket_bind,
+        vx_udp_socket_drop, vx_udp_socket_send_to,
     };
     use std::ffi::{c_void, CString};
     use std::sync::atomic::{AtomicI64, Ordering};
@@ -731,5 +742,146 @@ mod tests {
             b'V' as i64,
             "the reader did not get the byte"
         );
+    }
+
+    /// The address whose lookup is slow, and the words that the slow lookup uses.
+    static SLOW: Mutex<Option<String>> = Mutex::new(None);
+    static LOOKUP_STARTED: AtomicI64 = AtomicI64::new(0);
+    static LOOKUP_MAY_END: AtomicI64 = AtomicI64::new(0);
+
+    /// A lookup of the address in `SLOW` holds its OS thread until `LOOKUP_MAY_END` is set, as
+    /// a slow DNS server does. It does not park. On a worker, it blocks each task of the worker.
+    pub(super) fn before_a_lookup(addr: &str) {
+        if SLOW.lock().unwrap_or_else(|e| e.into_inner()).as_deref() != Some(addr) {
+            return;
+        }
+        LOOKUP_STARTED.store(1, Ordering::SeqCst);
+        unsafe { vx_wake_all(LOOKUP_STARTED.as_ptr()) };
+        while LOOKUP_MAY_END.load(Ordering::SeqCst) == 0 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Waits until the slow lookup started, and then lets it end.
+    extern "C" fn let_the_lookup_end(_env: *mut u8) {
+        while LOOKUP_STARTED.load(Ordering::SeqCst) == 0 {
+            unsafe { vx_wait_while(LOOKUP_STARTED.as_ptr(), 0) };
+        }
+        LOOKUP_MAY_END.store(1, Ordering::SeqCst);
+    }
+
+    struct Lookup {
+        address: CString,
+        /// 1 when the call that looked up `address` worked.
+        worked: AtomicI64,
+    }
+
+    fn lookup_of(env: *mut u8) -> &'static Lookup {
+        unsafe { &**(env as *const *const Lookup) }
+    }
+
+    /// On one worker, a task calls `call`, which looks up `address`, and the lookup is slow.
+    /// The lookup must not block the worker, so that the other task can let it end.
+    fn a_slow_lookup_lets_another_task_run(
+        test: &'static str,
+        address: String,
+        call: extern "C" fn(*mut u8),
+    ) {
+        let _watchdog = Watchdog::new(test);
+        *SLOW.lock().unwrap() = Some(address.clone());
+        LOOKUP_STARTED.store(0, Ordering::SeqCst);
+        LOOKUP_MAY_END.store(0, Ordering::SeqCst);
+        let l = Lookup {
+            address: CString::new(address).unwrap(),
+            worked: AtomicI64::new(0),
+        };
+        let group = tasks_begin(Some(Scheduler::start(1, 1)));
+        unsafe {
+            vx_task_start(group, call, env_with(&l as *const Lookup));
+            vx_task_start(group, let_the_lookup_end, std::ptr::null_mut());
+            vx_tasks_end(group);
+        }
+        *SLOW.lock().unwrap() = None;
+        assert_eq!(
+            l.worked.load(Ordering::SeqCst),
+            1,
+            "the call after the slow lookup did not work"
+        );
+    }
+
+    extern "C" fn connect_after_the_lookup(env: *mut u8) {
+        let l = lookup_of(env);
+        let stream = vx_tcp_stream_connect(l.address.as_ptr());
+        l.worked.store(!stream.is_null() as i64, Ordering::SeqCst);
+        vx_tcp_stream_drop(stream);
+    }
+
+    #[test]
+    fn a_task_that_looks_up_a_host_to_connect_parks() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        a_slow_lookup_lets_another_task_run(
+            "a_task_that_looks_up_a_host_to_connect_parks",
+            listener.local_addr().unwrap().to_string(),
+            connect_after_the_lookup,
+        );
+    }
+
+    extern "C" fn listen_after_the_lookup(env: *mut u8) {
+        let l = lookup_of(env);
+        let listener = vx_tcp_listener_bind(l.address.as_ptr());
+        l.worked.store(!listener.is_null() as i64, Ordering::SeqCst);
+        vx_tcp_listener_drop(listener);
+    }
+
+    #[test]
+    fn a_task_that_looks_up_a_host_to_listen_parks() {
+        a_slow_lookup_lets_another_task_run(
+            "a_task_that_looks_up_a_host_to_listen_parks",
+            "127.0.0.1:0".to_string(),
+            listen_after_the_lookup,
+        );
+    }
+
+    extern "C" fn bind_a_udp_socket_after_the_lookup(env: *mut u8) {
+        let l = lookup_of(env);
+        let socket = vx_udp_socket_bind(l.address.as_ptr());
+        l.worked.store(!socket.is_null() as i64, Ordering::SeqCst);
+        vx_udp_socket_drop(socket);
+    }
+
+    #[test]
+    fn a_task_that_looks_up_a_host_to_bind_a_udp_socket_parks() {
+        a_slow_lookup_lets_another_task_run(
+            "a_task_that_looks_up_a_host_to_bind_a_udp_socket_parks",
+            "127.0.0.1:0".to_string(),
+            bind_a_udp_socket_after_the_lookup,
+        );
+    }
+
+    /// Sends one byte to the address. Only the send looks up a host.
+    extern "C" fn send_after_the_lookup(env: *mut u8) {
+        let l = lookup_of(env);
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let socket = Box::into_raw(Box::new(sender)).cast();
+        let byte = b'V';
+        let sent = vx_udp_socket_send_to(socket, &byte, 1, l.address.as_ptr());
+        l.worked.store((sent == 1) as i64, Ordering::SeqCst);
+        vx_udp_socket_drop(socket);
+    }
+
+    #[test]
+    fn a_task_that_looks_up_a_host_to_send_parks() {
+        let receiver = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        a_slow_lookup_lets_another_task_run(
+            "a_task_that_looks_up_a_host_to_send_parks",
+            receiver.local_addr().unwrap().to_string(),
+            send_after_the_lookup,
+        );
+        let mut byte = 0u8;
+        assert_eq!(receiver.recv(std::slice::from_mut(&mut byte)).unwrap(), 1);
+        assert_eq!(byte, b'V', "the receiver did not get the byte");
     }
 }
