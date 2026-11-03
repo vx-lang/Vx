@@ -23,3 +23,11 @@ fn todo() -> ! {
 fn unimplemented() -> ! {
   panic("not implemented");
 }
+
+/// The place of a call in the program. A function that ends with a parameter of this type gets it
+/// filled by the compiler: a call that leaves the argument out passes the file and line of the
+/// call. A function that gives its own `Caller` to a call reports the line of its caller instead.
+struct Caller {
+  file : *const i8,
+  line : i32,
+}
