@@ -6393,6 +6393,7 @@ fn lower_lane_reduce<'c>(
             "a lane reduction takes arguments".to_string(),
         ));
     };
+    let sort = op.is_sort();
     let mut block = block;
     let mut operands = Vec::new();
     for tensor in tensors {
@@ -6414,12 +6415,30 @@ fn lower_lane_reduce<'c>(
     }
     let (count, count_ty, block) = gen.generate_expr(n, block)?;
     operands.push(gen.coerce_type(&block, count, count_ty, gen.i32_ty)?);
-    let kind = match op {
-        crate::hir::check::lanes::LaneOp::Sum => "sum",
-        crate::hir::check::lanes::LaneOp::Max | crate::hir::check::lanes::LaneOp::ArgMax => "max",
-    };
     let unit = melior::ir::attribute::Attribute::unit(gen.context);
     let mut attrs = vec![(Identifier::new(gen.context, "serial"), unit)];
+    if sort {
+        // `vx.lane_sort`, whose `lanes` only the GPU expansion reads.
+        let i64_ty = melior::ir::r#type::IntegerType::new(gen.context, 64).into();
+        attrs.push((
+            Identifier::new(gen.context, "lanes"),
+            IntegerAttribute::new(i64_ty, 1).into(),
+        ));
+        if op == crate::hir::check::lanes::LaneOp::SortDescending {
+            attrs.push((Identifier::new(gen.context, "descending"), unit));
+        }
+        let sort = OperationBuilder::new("vx.lane_sort", gen.loc())
+            .add_operands(&operands)
+            .add_attributes(&attrs)
+            .build()?;
+        block.append_operation(sort);
+        let v = constant_i32(gen, block, 0)?;
+        return Ok((v, gen.i32_ty, block));
+    }
+    let kind = match op {
+        crate::hir::check::lanes::LaneOp::Sum => "sum",
+        _ => "max",
+    };
     if !argmax {
         attrs.push((
             Identifier::new(gen.context, "kind"),

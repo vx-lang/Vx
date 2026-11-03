@@ -237,6 +237,19 @@ def Vx_LaneArgmaxOp : Vx_Op<"lane_argmax", [MemoryEffects<[MemRead, MemWrite]>]>
     let results = (outs I32:$result);
 }
 
+// `lanes::sort` and `lanes::sort_descending`: the first `count` elements of
+// `input`, an `i64` tensor whose size is a power of two, in order. The other
+// elements do not change. `lanes` is the number of lanes of the block, or 32 in
+// the code of a subgroup. The device clone expands it into a sorting network in
+// registers, and the host lowering and `serial` into loops. It reads and writes
+// memory so that nothing moves it past a use of `input` or into a branch.
+def Vx_LaneSortOp : Vx_Op<"lane_sort", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Sort the first elements of a tensor with the lanes.";
+    let arguments = (ins AnyMemRef:$input, I32:$count, I64Attr:$lanes,
+                     UnitAttr:$descending, UnitAttr:$subgroup,
+                     UnitAttr:$serial);
+}
+
 // The launch shape of a `vx.spawn` region with `across` loops (#252): the
 // blocks on grid axis 0 to 2, or the threads of a block (axis 3). The outlining passes the value after the kernel's arguments,
 // and the runtime reads it there.
