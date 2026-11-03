@@ -1251,7 +1251,8 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// A call that leaves out a last parameter of type `Caller` gets the place of the call:
-    /// `Caller { file : "<file>", line : <line> }`. `params` are the parameters after any receiver.
+    /// `Caller { location : Location { file : "<file>", line : <line>, column : <column> } }`.
+    /// `params` are the parameters after any receiver.
     pub(crate) fn fill_caller_arg(
         &self,
         params: &[Type],
@@ -1259,7 +1260,7 @@ impl<'a> TypeChecker<'a> {
         span: &crate::syntax::Span,
     ) -> bool {
         let wants = params.len() == args.len() + 1
-            && matches!(params.last(), Some(Type::Struct(n, None)) if n.as_ref() == "Caller");
+            && matches!(params.last(), Some(Type::Struct(n, _)) if n.as_ref() == "Caller");
         if !wants {
             return false;
         }
@@ -1269,22 +1270,29 @@ impl<'a> TypeChecker<'a> {
             .as_ref()
             .map(|f| f.to_string())
             .unwrap_or_default();
-        args.push(Expr::StructInit(crate::syntax::StructInitExpr {
-            name: "Caller".into(),
+        let number = |n: usize| {
+            Expr::Number(crate::syntax::NumberExpr::new(
+                n.to_string(),
+                Some(ElementType::I32),
+                *span,
+            ))
+        };
+        let location = Expr::StructInit(crate::syntax::StructInitExpr {
+            name: "Location".into(),
             fields: vec![
                 (
                     "file".into(),
                     Expr::StringLiteral(crate::syntax::StringLiteralExpr::new(file, *span)),
                 ),
-                (
-                    "line".into(),
-                    Expr::Number(crate::syntax::NumberExpr::new(
-                        span.line.to_string(),
-                        Some(ElementType::I32),
-                        *span,
-                    )),
-                ),
+                ("line".into(), number(span.line)),
+                ("column".into(), number(span.column)),
             ],
+            type_id: None,
+            span: *span,
+        });
+        args.push(Expr::StructInit(crate::syntax::StructInitExpr {
+            name: "Caller".into(),
+            fields: vec![("location".into(), location)],
             type_id: None,
             span: *span,
         }));

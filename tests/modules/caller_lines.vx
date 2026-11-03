@@ -8,12 +8,17 @@
 // A module for a_caller_parameter_gets_the_line_of_the_call.vx.
 import core::panic;
 
-/// Prints the file and the line of its call.
-fn here(what : i32, at : Caller) -> void {
-  println!("{} at {}:{}", what, at.file, at.line);
+/// Prints a place in the program.
+fn show(what : i32, l : Location) -> void {
+  println!("{} at {}:{}:{}", what, l.file, l.line, l.column);
 }
 
-/// Calls `here` from this module.
+/// Prints the place of its call.
+fn show_caller(what : i32, at : Caller) -> void {
+  show(what, at.location);
+}
+
+/// Calls `show_caller` from this module.
 fn from_the_module() -> void {
-  here(6);
+  show_caller(6);
 }
