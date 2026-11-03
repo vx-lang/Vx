@@ -1704,7 +1704,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
         if let Some(root) = assigned_root(lhs) {
-            self.neutralize_facts_mentioning(root.as_ref());
+            self.note_a_change_to_variable(root.to_string());
         }
         // Keep the compile-time value of the assigned variable in step with the assignment.
         // An assignment the evaluator cannot compute makes the variable unknown rather than

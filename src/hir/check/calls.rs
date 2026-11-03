@@ -3588,6 +3588,9 @@ impl<'a> TypeChecker<'a> {
                     {
                         self.changed_vars.extend(receiver_root.clone());
                     }
+                    if takes_mut_self {
+                        self.note_a_change_to(obj);
+                    }
                     // `x.drop()` would run `drop`, and `x` would be dropped again when its owner
                     // gives it up, as in Rust.
                     if ib.trait_name.as_deref() == Some("Drop") && !self.speculating {
@@ -3764,6 +3767,7 @@ impl<'a> TypeChecker<'a> {
                             // The tensor can be written through the pointer, so it changes.
                             if is_mut {
                                 self.changed_vars.extend(receiver_root.clone());
+                                self.note_a_change_to(obj);
                             }
                             base_ty = element_pointer(is_mut, el, place);
                         }

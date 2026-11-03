@@ -1,0 +1,112 @@
+//===- requires_of_a_call_after_code_that_cannot_change_the_argument.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A call keeps the facts about a variable that it cannot change: a call that gets `&` to it, a
+// `&self` method, or a call that gets the value of a field. A write through a reference to
+// another variable changes nothing here. A call that changes a variable meets its own
+// `requires` from the facts before the call.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E8006
+// CHECK: func.func @main
+
+struct Counter {
+  n : i64,
+}
+
+impl Counter {
+  fn peek(self : &Counter) -> i64 {
+    return self.n;
+  }
+}
+
+fn look(c : &Counter) -> i64 {
+  return c.n;
+}
+
+fn use_value(k : i64) -> i64 {
+  return k;
+}
+
+fn need(x : i64) -> i64
+requires x < 5i64
+{
+  return x;
+}
+
+fn reset(x : i64, c : &mut Counter) -> void
+requires x < 5i64
+{
+  c.n = x;
+}
+
+fn a_shared_borrow() -> i64 {
+  let c = Counter {
+    n : 0i64
+  };
+  if c.n < 5i64 {
+    look(&c);
+    return need(c.n);
+  }
+  return 0i64;
+}
+
+fn a_method_with_shared_self() -> i64 {
+  let c = Counter {
+    n : 0i64
+  };
+  if c.n < 5i64 {
+    c.peek();
+    return need(c.n);
+  }
+  return 0i64;
+}
+
+fn a_field_by_value(c : &mut Counter) -> i64
+requires c.n < 5i64
+{
+  use_value(c.n);
+  return need(c.n);
+}
+
+fn a_reference_to_another_variable() -> i64 {
+  let mut n = 0i64;
+  let mut m = 0i64;
+  if n < 5i64 {
+    let r = &mut m;
+    *r = 1000i64;
+    return need(n) + m;
+  }
+  return 0i64;
+}
+
+fn requires_met_before_the_call_changes_it() -> i64 {
+  let mut c = Counter {
+    n : 0i64
+  };
+  if c.n < 5i64 {
+    reset(c.n, &mut c);
+  }
+  return c.n;
+}
+
+fn loop_calls_a_shared_self_method() -> i64 {
+  let c = Counter {
+    n : 0i64
+  };
+  let mut total = 0i64;
+  if c.n < 5i64 {
+    for i in 0i64..3i64 {
+      total = total + need(c.n) + c.peek();
+    }
+  }
+  return total;
+}
+
+fn main() -> i32 {
+  return 0;
+}

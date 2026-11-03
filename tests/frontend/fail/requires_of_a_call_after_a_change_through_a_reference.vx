@@ -1,0 +1,164 @@
+//===- requires_of_a_call_after_a_change_through_a_reference.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Code can change a variable without an assignment to it: a call that gets `&mut` to it, a
+// `&mut self` method, a write through a reference or a raw pointer to it, or an `mlir!` block
+// that clobbers it. After such code, each call here can break the `requires` of `need` (E8006).
+// In a loop, the change on one pass can break the call on the next pass.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+struct Counter {
+  n : i64,
+}
+
+impl Counter {
+  fn bump_self(self : &mut Counter) -> void {
+    self.n = self.n + 10i64;
+  }
+}
+
+fn bump(c : &mut Counter) -> void {
+  c.n = c.n + 10i64;
+}
+
+fn need(x : i64) -> i64
+requires x < 5i64
+{
+  return x;
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+7]]:5: this call to 'need' may not meet its precondition `x < 5`
+fn a_call_gets_a_mut_reference() -> i64 {
+  let mut c = Counter {
+    n : 0i64
+  };
+  if c.n < 5i64 {
+    bump(&mut c);
+    need(c.n);
+  }
+  return c.n;
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+6]]:5: this call to 'need' may not meet its precondition `x < 5`
+fn a_write_through_a_local_reference() -> i64 {
+  let mut n = 0i64;
+  if n < 5i64 {
+    let r = &mut n;
+    *r = 1000i64;
+    need(n);
+  }
+  return n;
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+7]]:5: this call to 'need' may not meet its precondition `x < 5`
+fn a_method_with_mut_self() -> i64 {
+  let mut c = Counter {
+    n : 0i64
+  };
+  if c.n < 5i64 {
+    c.bump_self();
+    need(c.n);
+  }
+  return c.n;
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+5]]:10: this call to 'need' may not meet its precondition `x < 5`
+fn a_mut_reference_passed_on(c : &mut Counter) -> i64
+requires c.n < 5i64
+{
+  bump(c);
+  return need(c.n);
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+5]]:10: this call to 'need' may not meet its precondition `x < 5`
+fn a_mut_self_method_on_a_reference(c : &mut Counter) -> i64
+requires c.n < 5i64
+{
+  c.bump_self();
+  return need(c.n);
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+6]]:5: this call to 'need' may not meet its precondition `x < 5`
+fn a_clobber() -> i64 {
+  let mut n = 0i64;
+  if n < 5i64 {
+    let _w = mlir!(inputs : (), clobbers : [n], returns : void, dialects : []) {
+    };
+    need(n);
+  }
+  return n;
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+6]]:5: this call to 'need' may not meet its precondition `x < 5`
+fn a_raw_pointer_from_a_mut_reference() -> i64 {
+  let mut n = 0i64;
+  if n < 5i64 {
+    let p : *mut i64 = &mut n;
+    unsafe { *p = 1000i64; }
+    need(n);
+  }
+  return n;
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+7]]:7: this call to 'need' may not meet its precondition `x < 5`
+fn loop_passes_a_mut_reference() -> i64 {
+  let mut c = Counter {
+    n : 0i64
+  };
+  if c.n < 5i64 {
+    for i in 0i64..3i64 {
+      need(c.n);
+      bump(&mut c);
+    }
+  }
+  return c.n;
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+7]]:7: this call to 'need' may not meet its precondition `x < 5`
+fn loop_calls_a_mut_self_method() -> i64 {
+  let mut c = Counter {
+    n : 0i64
+  };
+  if c.n < 5i64 {
+    for i in 0i64..3i64 {
+      need(c.n);
+      c.bump_self();
+    }
+  }
+  return c.n;
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+5]]:5: this call to 'need' may not meet its precondition `x < 5`
+fn loop_passes_on_a_mut_parameter(c : &mut Counter) -> i64
+requires c.n < 5i64
+{
+  for i in 0i64..3i64 {
+    need(c.n);
+    bump(c);
+  }
+  return c.n;
+}
+
+// The checker checks the body of a generic function while it checks the call in `main`. The
+// assignment in the body still ends the fact `k < 5` at once.
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_after_a_change_through_a_reference.vx:[[@LINE+5]]:5: this call to 'need' may not meet its precondition `x < 5`
+fn assignment_in_a_generic_function<T>(_t : T) -> i64 {
+  let mut k = 0i64;
+  if k < 5i64 {
+    k = 1000i64;
+    need(k);
+  }
+  return k;
+}
+
+fn main() -> i32 {
+  assignment_in_a_generic_function(1i64);
+  return 0;
+}
+
+// CHECK: 11 error(s) emitted
