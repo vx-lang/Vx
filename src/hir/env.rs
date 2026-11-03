@@ -323,8 +323,9 @@ impl<'a> GlobalAstEnv<'a> {
         );
         env.return_provenances = functions;
         env.method_provenances = methods;
-        // A `!keeps` clause is in the signature, so a body that was stripped still has it.
-        env.not_kept = env
+        // A `!keeps` clause is in the signature, so a body that was stripped still has it. The
+        // walk adds what it proves from each body that is present.
+        let written = env
             .syntax_functions
             .values()
             .map(|f| {
@@ -333,6 +334,18 @@ impl<'a> GlobalAstEnv<'a> {
             })
             .filter(|(_, bits)| *bits != 0)
             .collect();
+        let plain: Vec<&Function> = env
+            .syntax_functions
+            .values()
+            .copied()
+            .filter(|f| f.generics.is_empty())
+            .collect();
+        env.not_kept = crate::hir::check::borrow_clauses::infer_not_kept_all(
+            &plain,
+            &env.decls,
+            &env.return_provenances,
+            written,
+        );
         // Build the transfer-cost graph once, now that `topologies` is populated. It used to be
         // built inside `TypeChecker::new` -- that is, once per *function* -- where it ran the
         // all-pairs shortest-path precompute twice (once in `default()`, once in
@@ -385,6 +398,17 @@ impl<'a> GlobalAstEnv<'a> {
             self.impls.values().flatten().copied(),
             &self.decls,
             &self.return_provenances,
+        );
+        let plain: Vec<&Function> = funcs
+            .iter()
+            .copied()
+            .filter(|f| f.generics.is_empty())
+            .collect();
+        self.not_kept = crate::hir::check::borrow_clauses::infer_not_kept_all(
+            &plain,
+            &self.decls,
+            &self.return_provenances,
+            std::mem::take(&mut self.not_kept),
         );
     }
 

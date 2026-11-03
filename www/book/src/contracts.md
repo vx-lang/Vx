@@ -232,8 +232,9 @@ Without the clause, `k = 7i64` is an error, because `r` keeps `k` borrowed.
 - `reaches(return, *p)`: the result can also point where a reference in `*p` points.
 - `keeps(p)`: after the call, a place outside the call can hold `p`, or a reference read through
   `p`. Without a clause, the compiler assumes that a call keeps each reference that it gets in each
-  `&mut` that it gets. So `ensures !keeps(x)` lets a caller pass a reference to a local together
-  with a `&mut` to memory that outlives the local.
+  `&mut` that it gets, unless it finds in the body that the call stores the reference nowhere. So
+  `ensures !keeps(x)` lets a caller pass a reference to a local together with a `&mut` to memory
+  that outlives the local, also where the compiler cannot follow the body.
 
 `p` is a reference parameter. A clause with `!` says that the relation does not hold, so the caller
 does not keep that borrow. The compiler checks each `!` clause against the body, and reports E4016

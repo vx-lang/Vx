@@ -2858,7 +2858,21 @@ impl<'a> TypeChecker<'a> {
             crate::hir::provenance::compute_return_provenance_with(inst, &self.env.decls, &callee)
         };
         self.mono.return_provenances.insert(inst.name.clone(), prov);
-        let not_kept = crate::hir::check::borrow_clauses::not_kept_params(inst);
+        // The walk of the checked body follows each call, so it proves more `!keeps` bits than
+        // the walk of the syntax could.
+        let inferred = {
+            let instances = &self.mono.return_provenances;
+            let functions = &self.env.return_provenances;
+            let callee = |name: &str| instances.get(name).or_else(|| functions.get(name)).copied();
+            let not_kept = |name: &str| self.not_kept_by(name);
+            crate::hir::check::borrow_clauses::inferred_not_kept(
+                inst,
+                &self.env.decls,
+                &callee,
+                &not_kept,
+            )
+        };
+        let not_kept = crate::hir::check::borrow_clauses::not_kept_params(inst) | inferred;
         if not_kept != 0 {
             self.mono.not_kept.insert(inst.name.clone(), not_kept);
         }

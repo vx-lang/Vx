@@ -251,6 +251,68 @@ pub(crate) fn not_kept_params(f: &Function) -> u32 {
         .fold(0, |bits, c| bits | 1 << c.param)
 }
 
+/// The `!keeps` bits of `f` that the walk proves from its body, for each reference parameter that
+/// no written `keeps` clause names: the body stores it nowhere. `not_kept` gives the bits known so
+/// far for each function that the body calls, and `callee` its summary.
+pub(crate) fn inferred_not_kept(
+    f: &Function,
+    decls: &crate::hir::provenance::Decls,
+    callee: &dyn Fn(&str) -> Option<ReturnProvenance>,
+    not_kept: &dyn Fn(&str) -> u32,
+) -> u32 {
+    if f.body.is_empty() || f.params.len() > 32 {
+        return 0;
+    }
+    let written = clauses(f)
+        .iter()
+        .filter(|c| c.relation == Relation::Keeps)
+        .fold(0u32, |bits, c| bits | 1 << c.param);
+    let candidates = f
+        .params
+        .iter()
+        .enumerate()
+        .filter(|(i, (_, ty))| matches!(ty, Type::Borrow { .. }) && written & (1 << i) == 0)
+        .fold(0u32, |bits, (i, _)| bits | 1 << i);
+    if candidates == 0 {
+        return 0;
+    }
+    let body = crate::hir::provenance::walk_body(f, decls, callee, not_kept);
+    if body.stored_anywhere {
+        return 0;
+    }
+    candidates & !body.stored
+}
+
+/// The `!keeps` bits of each function in `funcs`: its written ones, `written`, and those that the
+/// walk proves. A bit that the walk proves lets a caller's walk prove more, so the walk runs again
+/// until nothing changes. Each pass reads only bits proved before it, so each bit stays sound.
+pub(crate) fn infer_not_kept_all(
+    funcs: &[&Function],
+    decls: &crate::hir::provenance::Decls,
+    summaries: &std::collections::HashMap<crate::symbol::Symbol, ReturnProvenance>,
+    mut bits: std::collections::HashMap<crate::symbol::Symbol, u32>,
+) -> std::collections::HashMap<crate::symbol::Symbol, u32> {
+    for _ in 0..16 {
+        let mut changed = false;
+        for f in funcs {
+            let inferred = {
+                let callee = |name: &str| summaries.get(name).copied();
+                let not_kept = |name: &str| bits.get(name).copied().unwrap_or(0);
+                inferred_not_kept(f, decls, &callee, &not_kept)
+            };
+            let old = bits.get(&f.name).copied().unwrap_or(0);
+            if old | inferred != old {
+                bits.insert(f.name.clone(), old | inferred);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    bits
+}
+
 /// The summary of `f` with its written clauses. For each parameter that a written clause names,
 /// the written clauses replace the inferred ones. A clause that is not well formed adds nothing,
 /// and the checker reports it.
