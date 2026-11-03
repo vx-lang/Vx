@@ -882,6 +882,7 @@ impl CompilerDriver {
                     dtypes: None,
                     chip: None,
                     levels: None,
+                    offload: false,
                 },
             }],
             imports: Vec::new(),

@@ -987,6 +987,20 @@ impl<'a> TypeChecker<'a> {
     /// Whether a memory space is declared `managed: cached` (hardware-coherent), so an implicit
     /// cross-space use of a value there — or a relaxed transfer into it — is safe. Undeclared
     /// spaces are treated as `explicit` (the strict default), preserving the older behavior.
+    /// Whether the fleet may run `top` on a worker of another node (`offload: true`). Such a
+    /// worker does not share this node's memory, so `managed: cached` does not reach it.
+    pub(crate) fn topology_offloads(&self, top: &Topology) -> bool {
+        match top {
+            Topology::Custom(name) => self
+                .env
+                .topologies
+                .get(name)
+                .is_some_and(|d| d.descriptor.offload),
+            Topology::Slice(inner, ..) => self.topology_offloads(inner),
+            _ => false,
+        }
+    }
+
     pub(crate) fn space_is_cached(&self, space: &MemorySpace) -> bool {
         self.env.memories.values().any(|d| {
             d.managed == crate::syntax::Management::Cached
