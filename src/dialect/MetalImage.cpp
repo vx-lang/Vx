@@ -38,6 +38,8 @@
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/CFGToSCF.h"
+#include "mlir/Transforms/Inliner.h"
+#include "mlir/Transforms/InliningUtils.h"
 #include "mlir/Transforms/Mem2Reg.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/APFloat.h"
@@ -60,6 +62,17 @@ struct KernelToSCF : public ControlFlowToSCFTransformation {
                                                      OpBuilder &builder,
                                                      Region &) override {
     return gpu::ReturnOp::create(builder, loc, ValueRange{}).getOperation();
+  }
+};
+
+// The gpu dialect does not allow a function body in a `gpu.func`. So the
+// inliner pass leaves every call in a kernel.
+struct KernelInliner : public InlinerInterface {
+  KernelInliner(MLIRContext *context) : InlinerInterface(context) {}
+  bool isLegalToInline(Region *dest, Region *src, bool wouldBeCloned,
+                       IRMapping &mapping) const override {
+    return isa<gpu::GPUFuncOp>(dest->getParentOp()) ||
+           InlinerInterface::isLegalToInline(dest, src, wouldBeCloned, mapping);
   }
 };
 
@@ -1161,14 +1174,34 @@ LogicalResult structure(gpu::GPUModuleOp m, std::string &error) {
   MLIRContext *context = m.getContext();
   {
     PassManager pm(context, gpu::GPUModuleOp::getOperationName());
-    pm.addPass(createInlinerPass());
-    pm.addPass(createSymbolDCEPass());
     pm.addPass(createLowerAffinePass());
     pm.addPass(createSCFToControlFlowPass());
+    // This inlines a call from one function to another. The calls in a kernel
+    // come next.
+    pm.addPass(createInlinerPass());
     if (failed(pm.run(m))) {
       error = "inlining the functions that a kernel calls failed";
       return failure();
     }
+  }
+  // A call that stays here, for example a recursive one, is a printer error.
+  SmallVector<func::CallOp> calls;
+  for (gpu::GPUFuncOp f : m.getOps<gpu::GPUFuncOp>())
+    f.walk([&](func::CallOp call) { calls.push_back(call); });
+  SymbolTable symbols(m);
+  KernelInliner inliner(context);
+  InlinerConfig config;
+  for (func::CallOp call : calls) {
+    auto callee = symbols.lookup<func::FuncOp>(call.getCallee());
+    if (!callee || callee.isExternal())
+      continue;
+    Region &body = callee.getBody();
+    if (!body.hasOneBlock() &&
+        call->getParentOp()->mightHaveTrait<OpTrait::SingleBlock>())
+      continue;
+    if (succeeded(inlineCall(inliner, config.getCloneCallback(), call, callee,
+                             &body)))
+      call.erase();
   }
   // The lifetime of a stack slot means nothing to Metal.
   SmallVector<Operation *> markers;
@@ -1193,6 +1226,7 @@ LogicalResult structure(gpu::GPUModuleOp m, std::string &error) {
   }
   {
     PassManager pm(context, gpu::GPUModuleOp::getOperationName());
+    pm.addPass(createSymbolDCEPass());
     pm.addPass(createCanonicalizerPass());
     if (failed(pm.run(m))) {
       error = "simplifying a kernel failed";

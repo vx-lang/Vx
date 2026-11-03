@@ -1,7 +1,8 @@
 // Kernels for the Apple GPU run there, and again on the CPU with VX_METAL=0, which runs the
 // CPU copy of each kernel. Both runs must print the same numbers, to the last digit.
-// The kernels: a blur of the rows and the columns of an image, a matrix product that keeps
-// tiles in shared memory, and a brightness change of a BGRA frame, a u8 tensor with padded rows.
+// The kernels: a blur of the rows and the columns of an image, the image moved by part of a
+// pixel through calls to functions, a matrix product that keeps tiles in shared memory, and a
+// brightness change of a BGRA frame, a u8 tensor with padded rows.
 //
 // REQUIRES: macos
 // RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s --check-prefix=OUT
@@ -9,10 +10,11 @@
 // RUN: env VX_METAL=0 VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.cpu | FileCheck %s --check-prefix=OUT
 // RUN: FileCheck %s --check-prefix=CPU --input-file=%t.cpu
 //
-// Seven launches: three fill the inputs, and four are the kernels above.
+// Eight launches: three fill the inputs, and five are the kernels above.
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 96 x 1 x 1, block 256
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 96 x 1 x 1, block 256
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 300 x 1 x 1, block 256
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 96 x 1 x 1, block 256
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 40 x 1 x 1, block 256
@@ -21,6 +23,7 @@
 // CPU: Falling back to CPU libffi dispatch
 //
 // OUT: {{^}}blur 43195.65725585073{{$}}
+// OUT-NEXT: {{^}}shift 43210.20744516142{{$}}
 // OUT-NEXT: {{^}}product -4.6026072315871716{{$}}
 // OUT-NEXT: {{^}}frame 5157808{{$}}
 
@@ -64,6 +67,48 @@ pub fn blur_cols(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32,
           acc = acc + src[yy][x];
         }
         dst[y][x] = acc / 9.0;
+      }
+    }
+  }
+  return;
+}
+
+// a when t is 0, b when t is 1, and a mix of the two between.
+fn mix(a : f32, b : f32, t : f32) on Topology::Device -> f32
+ensures writes_only()
+{
+  return a + (b - a) * t;
+}
+
+// v, moved into 0..=hi.
+fn clamp_to(v : i32, hi : i32) on Topology::Device -> i32
+ensures writes_only()
+{
+  if v < 0 {
+    return 0;
+  }
+  if v > hi {
+    return hi;
+  }
+  return v;
+}
+
+// The pixel of t at row y and column x. A row or column outside t becomes the nearest edge.
+fn pixel(t : &Tensor<f32, [?, ?], Memory::HBM>, y : i32, x : i32, h : i32, w : i32) on Topology::Device -> f32
+ensures reads_only(t)
+{
+  return t[clamp_to(y, h - 1)][clamp_to(x, w - 1)];
+}
+
+// Each pixel of dst is src read a quarter of a pixel down and three quarters right, mixed from
+// the 4 nearest pixels of src.
+pub fn shift_image(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> void {
+  spawn on(Topology::Device) {
+    for y in 0..h across blocks {
+      for x in 0..w across lanes(256) {
+        let top = mix(pixel(src, y, x, h, w), pixel(src, y, x + 1, h, w), 0.75);
+        let bottom = mix(pixel(src, y + 1, x, h, w), pixel(src, y + 1, x + 1, h, w), 0.75);
+        dst[y][x] = mix(top, bottom, 0.25);
       }
     }
   }
@@ -152,6 +197,17 @@ fn main() -> i32 {
     }
   }
   println!("blur {}", sum);
+
+  let mut shifted = transfer(Tensor<f32, [96, 300]>::fill(0.0), Memory::HBM);
+  shift_image(&mut shifted, &image, 96, 300);
+  let shifted_host = transfer(shifted, Memory::CPU_DRAM);
+  let mut shift_sum : f64 = 0.0;
+  for y in 0..96 {
+    for x in 0..300 {
+      shift_sum = shift_sum + (shifted_host[y][x] as f64) * ((y * 300 + x) % 5 + 1) as f64;
+    }
+  }
+  println!("shift {}", shift_sum);
 
   let mut a = transfer(Tensor<f32, [256, 256]>::fill(0.0), Memory::HBM);
   let mut b = transfer(Tensor<f32, [256, 256]>::fill(0.0), Memory::HBM);
