@@ -1991,7 +1991,7 @@ fn memref_elem(memty: &str) -> Option<&str> {
 
 /// The dims prefix (`2x4x`) and element (`f32`) of a memref type string. `memref<2x4xf32> ->
 /// ("2x4x", "f32")`; a layout suffix (`, strided<…>`) is dropped.
-fn memref_lead_dims_and_elem(memty: &str) -> Option<(&str, &str)> {
+pub(crate) fn memref_lead_dims_and_elem(memty: &str) -> Option<(&str, &str)> {
     let inner = memty.strip_prefix("memref<")?;
     let inner = inner.split(',').next()?.trim_end_matches('>');
     let elem_start = inner.rfind('x').map(|i| i + 1).unwrap_or(0);
@@ -2486,6 +2486,7 @@ impl<'a> FnEmit<'a> {
             // the scalar return type. Reconstruct the function type `(arg types)->ret` from the actual
             // args, cast the pointer to it, and `func.call_indirect`. (#242)
             Opcode::CallIndirect => self.op_call_indirect(idx, ins),
+            Opcode::TensorElementAddress => self.op_tensor_element_address(idx, ins),
             Opcode::AutoDiff => self.op_autodiff(idx, ins),
             Opcode::TensorLoad => self.op_tensor_load(idx, ins),
             Opcode::TensorDim => self.op_tensor_dim(idx, ins),

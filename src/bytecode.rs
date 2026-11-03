@@ -342,6 +342,9 @@ pub enum Opcode {
     /// After the last use of a struct or enum: the lifetime of its slot `operand1` ends, so
     /// LLVM can give the slot's memory to another value.
     LifetimeEnd = 80,
+    /// The address of one tensor element, as a raw pointer: `&t[i]`. `operand1` is the element
+    /// place, a `TensorIndex` with `imm = 1`. The pointer points into the tensor's own buffer.
+    TensorElementAddress = 81,
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.
@@ -503,6 +506,7 @@ impl Opcode {
             49 => TensorReshape,
             50 => TensorTranspose,
             51 => TensorMap,
+            81 => TensorElementAddress,
             _ => return None,
         })
     }

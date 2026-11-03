@@ -947,6 +947,56 @@ impl FnEmit<'_> {
     // *place* (`imm = 1` → recorded for the following `TensorStore`). A sub-view result (a
     // tensor GID) rank-reduces the base to a row via `memref.reinterpret_cast` (contiguous
     // base only; a further sub-view of a strided row is deferred).
+    /// `&t[i]`: the element's address. A rank-1 memref puts element `i` at
+    /// `aligned + (offset + i * stride) * size`, which covers a strided row as well.
+    pub(crate) fn op_tensor_element_address(
+        &mut self,
+        idx: usize,
+        ins: &HirInstruction,
+    ) -> Lowered<()> {
+        let (base, ic, memty) = self
+            .place_of
+            .get(ins.operand1.0 as usize)
+            .cloned()
+            .flatten()
+            .ok_or(crate::emitter_gap!())?;
+        let (_, et) =
+            crate::codegen::flat::memref_lead_dims_and_elem(&memty).ok_or(crate::emitter_gap!())?;
+        let et = et.to_string();
+        let bytes = match et.as_str() {
+            "i8" | "i1" => 1,
+            "i16" | "f16" | "bf16" => 2,
+            "i32" | "f32" => 4,
+            "i64" | "f64" => 8,
+            _ => return Err(crate::emitter_gap!()),
+        };
+        let aligned = format!("%ea{idx}");
+        let meta = format!("%em{idx}");
+        let scaled = format!("%es{idx}");
+        let at = format!("%eo{idx}");
+        let size = format!("%ez{idx}");
+        let byte_offset = format!("%eb{idx}");
+        let address = format!("%ed{idx}");
+        let as_int = format!("%ei{idx}");
+        let n = format!("%v{idx}");
+        self.body += &format!(
+            "  {aligned} = memref.extract_aligned_pointer_as_index {base} : {memty} -> index\n"
+        );
+        self.body += &format!(
+            "  {meta}:4 = memref.extract_strided_metadata {base} : {memty} -> memref<{et}>, index, index, index\n"
+        );
+        self.body += &format!("  {scaled} = arith.muli {ic}, {meta}#3 : index\n");
+        self.body += &format!("  {at} = arith.addi {meta}#1, {scaled} : index\n");
+        self.body += &format!("  {size} = arith.constant {bytes} : index\n");
+        self.body += &format!("  {byte_offset} = arith.muli {at}, {size} : index\n");
+        self.body += &format!("  {address} = arith.addi {aligned}, {byte_offset} : index\n");
+        self.body += &format!("  {as_int} = arith.index_cast {address} : index to i64\n");
+        self.body += &format!("  {n} = llvm.inttoptr {as_int} : i64 to !llvm.ptr\n");
+        self.names[idx] = n;
+        self.ptr_of[idx] = true;
+        Ok(())
+    }
+
     pub(crate) fn op_tensor_index(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let result_gid = *self
             .types
