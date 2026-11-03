@@ -50,7 +50,9 @@ rustc end each lifetime at the end of a scope, so two arrays in one scope never 
 also emits no markers at <code>-O0</code>, or for a variable when a jump enters its scope after its
 declaration. Vx frees a tensor after its last use. Since
 <a href="https://github.com/vx-lang/Vx/pull/2507">#2507</a>, the lifetime of each tensor ends there
-too. For the same function, C++ and Rust use 8 KB of stack, and Vx uses 4 KB.</blockquote>
+too. For the same function, C++ and Rust use 8 KB of stack, and Vx uses 4 KB. On an H100, the
+stack of each GPU thread is in HBM. Since <a href="https://github.com/vx-lang/Vx/pull/2587">#2587</a>, a Vx
+kernel gives two tensors one slot there too.</blockquote>
 
 <p class="lede">A task in Vx runs on a stack of fixed size, so each frame on that stack must be
 small. vxc puts a small tensor on the stack. Until #2507, it gave each tensor its own slot for the
@@ -321,6 +323,114 @@ marker. The tensor then keeps its slot for the whole call, as before.</li>
 The test <code>two_tensors_used_one_after_the_other_share_a_stack_slot.vx</code> checks the markers
 in the IR, the frame size in the machine code, and the result.</p>
 
+<h2 id="on-an-h100-the-stack-is-in-hbm"><a href="#on-an-h100-the-stack-is-in-hbm">On an H100, the stack is in HBM</a></h2>
+
+<p>A GPU thread has a stack too. NVIDIA calls it local memory, and its guide says that &ldquo;local
+memory is off-chip&rdquo;. So the stack is in the device memory of the GPU, with the tensors of the
+program. On an H100, device memory is HBM (high-bandwidth memory). The driver makes the stack of
+each thread larger for a launch of a kernel that needs more. It does not make the stack smaller after
+the launch.</p>
+
+<p>Before <a href="https://github.com/vx-lang/Vx/pull/2587">#2587</a>, vxc gave a stack slot only
+to a tensor that a kernel makes before its first loop or <code>if</code>. That slot lived until the
+kernel returned. vxc took each other tensor from device <code>malloc</code>: a <code>malloc</code>
+that a kernel calls on the GPU.
+#2587 gives the tensors of a kernel stack slots and lifetime markers, as #2507 does for a
+function.</p>
+
+<p>Here is the program as a kernel. Each block has 256 lanes, and each lane makes its own two
+tensors. A lane in Vx is one thread of a block, which CUDA calls a thread. vxc does not accept a
+call such as <code>i64::from</code> in a lane loop, so the loop index cannot become an
+<code>i64</code>. So each tensor holds 1000 <code>i32</code> values: 4000 bytes, as in the CPU
+program.</p>
+
+<pre><code><span class="k">pub fn</span> <span class="f">in_each_lane</span>(out : &amp;<span class="k">mut</span> <span class="t">Tensor</span>&lt;<span class="t">i32</span>, [?], Memory::HBM&gt;, blocks : <span class="t">i32</span>) -&gt; <span class="t">void</span> {
+  <span class="k">spawn on</span>(Topology::Device) {
+    <span class="k">for</span> b <span class="k">in</span> <span class="n">0</span>..blocks <span class="k">across</span> blocks {
+      <span class="k">for</span> l <span class="k">in</span> <span class="n">0</span>..<span class="n">256</span> <span class="k">across</span> lanes {
+        <span class="k">let</span> t = b * <span class="n">256</span> + l;
+        <span class="k">let mut</span> first : <span class="t">Tensor</span>&lt;<span class="t">i32</span>, [<span class="n">1000</span>]&gt; = <span class="t">Tensor</span>&lt;<span class="t">i32</span>, [<span class="n">1000</span>]&gt;::<span class="f">fill</span>(<span class="n">0</span>);
+        <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">1000</span> {
+          first[i] = t * i % <span class="n">7</span>;
+        }
+        <span class="k">let mut</span> sum : <span class="t">i32</span> = <span class="n">0</span>;
+        <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">1000</span> {
+          sum = sum * <span class="n">3</span> + first[<span class="n">999</span> - i];
+        }
+        <span class="k">let mut</span> second : <span class="t">Tensor</span>&lt;<span class="t">i32</span>, [<span class="n">1000</span>]&gt; = <span class="t">Tensor</span>&lt;<span class="t">i32</span>, [<span class="n">1000</span>]&gt;::<span class="f">fill</span>(<span class="n">0</span>);
+        <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">1000</span> {
+          second[i] = sum * i % <span class="n">11</span>;
+        }
+        <span class="k">for</span> i <span class="k">in</span> <span class="n">0</span>..<span class="n">1000</span> {
+          sum = sum * <span class="n">5</span> + second[<span class="n">999</span> - i];
+        }
+        out[t] = sum;
+      }
+    }
+  }
+  <span class="k">return</span>;
+}</code></pre>
+
+<p>The CUDA kernel does the same work:</p>
+
+<pre><code><span class="k">#include</span> &lt;cstdint&gt;
+
+<span class="c">// Wrapping arithmetic, as in Vx. Signed overflow is undefined in C++.</span>
+<span class="k">__device__</span> <span class="t">int32_t</span> <span class="f">mul</span>(<span class="t">int32_t</span> a, <span class="t">int32_t</span> b) { <span class="k">return</span> <span class="t">int32_t</span>(<span class="t">uint32_t</span>(a) * <span class="t">uint32_t</span>(b)); }
+<span class="k">__device__</span> <span class="t">int32_t</span> <span class="f">add</span>(<span class="t">int32_t</span> a, <span class="t">int32_t</span> b) { <span class="k">return</span> <span class="t">int32_t</span>(<span class="t">uint32_t</span>(a) + <span class="t">uint32_t</span>(b)); }
+
+<span class="c">// The host launches it with blocks of 256 threads: in_each_lane&lt;&lt;&lt;blocks, 256&gt;&gt;&gt;(out).</span>
+<span class="k">__global__</span> <span class="t">void</span> <span class="f">in_each_lane</span>(<span class="t">int32_t</span> *out) {
+  <span class="t">int32_t</span> t = blockIdx.x * <span class="n">256</span> + threadIdx.x;
+  <span class="t">int32_t</span> first[<span class="n">1000</span>] = {};
+  <span class="k">for</span> (<span class="t">int32_t</span> i = <span class="n">0</span>; i &lt; <span class="n">1000</span>; i++)
+    first[i] = <span class="f">mul</span>(t, i) % <span class="n">7</span>;
+  <span class="t">int32_t</span> sum = <span class="n">0</span>;
+  <span class="k">for</span> (<span class="t">int32_t</span> i = <span class="n">0</span>; i &lt; <span class="n">1000</span>; i++)
+    sum = <span class="f">add</span>(<span class="f">mul</span>(sum, <span class="n">3</span>), first[<span class="n">999</span> - i]);
+  <span class="t">int32_t</span> second[<span class="n">1000</span>] = {};
+  <span class="k">for</span> (<span class="t">int32_t</span> i = <span class="n">0</span>; i &lt; <span class="n">1000</span>; i++)
+    second[i] = <span class="f">mul</span>(sum, i) % <span class="n">11</span>;
+  <span class="k">for</span> (<span class="t">int32_t</span> i = <span class="n">0</span>; i &lt; <span class="n">1000</span>; i++)
+    sum = <span class="f">add</span>(<span class="f">mul</span>(sum, <span class="n">5</span>), second[<span class="n">999</span> - i]);
+  out[t] = sum;
+}</code></pre>
+
+<p>The table gives the local memory of each thread. That is the size of the <code>.local</code> array
+that holds the stack of a thread in PTX, the assembly language of NVIDIA GPUs. The PTX is for an
+H100 (<code>sm_90</code>). I compiled each kernel to PTX but did not run it, because I have no
+GPU.</p>
+
+<div class="table-scroll">
+<table>
+<thead><tr><th>Kernel</th><th>Compiler</th><th><code>-O0</code></th><th><code>-O2</code></th></tr></thead>
+<tbody>
+<tr><td>CUDA: both arrays in one scope</td><td>clang 22.1.4</td><td>8032 bytes</td><td>8000 bytes</td></tr>
+<tr><td>CUDA: each array in its own scope</td><td>clang 22.1.4</td><td>8032 bytes</td><td>4000 bytes</td></tr>
+<tr><td>Vx: before #2587</td><td>vxc at 4ce0ffc4</td><td>none: <code>malloc</code> and <code>free</code> for each tensor</td><td>none: <code>malloc</code> and <code>free</code> for each tensor</td></tr>
+<tr><td>Vx: with #2587</td><td>vxc at 05bb8e7d</td><td>4000 bytes</td><td>4000 bytes</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Clang ends each lifetime at the end of a scope in CUDA too. So the two arrays share a slot only
+with an inner scope for each, and only at <code>-O2</code>. vxc compiles the device code at LLVM's
+<code>-O2</code> for each vxc level, so both of its columns are the same. HIP is the version of
+CUDA for AMD GPUs. For an AMD MI300 (<code>gfx942</code>), clang gives the HIP versions of the two
+CUDA kernels 8004 and 4004 bytes of scratch memory at <code>-O2</code>. Scratch memory is the name
+that AMD uses for local memory.</p>
+
+<p>Before #2587, each lane freed <code>first</code> before it allocated <code>second</code>, so a
+lane held 4000 bytes of the heap at a time. NVIDIA's guide says that the heap for device
+<code>malloc</code> holds 8 MB by default. When the heap has too little memory, <code>malloc</code>
+returns null. The Vx runtime does not set a larger heap. So at most about 2000 lanes can hold a
+tensor at the same time. An H100 runs up to 2048 threads on each of its 132 streaming
+multiprocessors (SMs).</p>
+
+<p>With #2587, the two tensors of a lane use the same 4000 bytes of local memory, one after the
+other. The lane calls no <code>malloc</code>. The test
+<code>two_tensors_in_a_gpu_kernel_share_local_memory.vx</code> checks this in the PTX.</p>
+
 <h2 id="what-it-does-not-do-yet"><a href="#what-it-does-not-do-yet">What it does not do yet</a></h2>
 
 <ul>
@@ -330,6 +440,8 @@ end of its scope, as Rust does.</li>
 <li>When a function passes a tensor by value to a call, that tensor stays on the heap.</li>
 <li>The older AST code generator keeps each tensor on the heap, so this change does not affect
 it.</li>
+<li>vxc generates device code only for NVIDIA GPUs (<code>nvptx64</code>). So the HIP kernels above
+have no Vx version yet.</li>
 </ul>
 
 <h2 id="the-pass-is-the-same"><a href="#the-pass-is-the-same">The pass is the same</a></h2>
@@ -337,13 +449,23 @@ it.</li>
 <p>Clang, rustc and vxc all use the same StackColoring pass. The pass keeps a slot reserved until
 the end of its marked lifetime. Clang and rustc end the lifetime of a local variable at the end of
 its scope. vxc ends the lifetime of a tensor at its last use, where its type checker already puts the
-drop. So a function needs fewer stack slots, and the stack of each task stays smaller.</p>
+drop. So a function needs fewer stack slots, and the stack of each task stays smaller. On an NVIDIA GPU,
+the same markers make the local memory of each thread smaller. On an H100, that memory is HBM.</p>
 
 <h2 id="sources"><a href="#sources">Sources</a></h2>
 
 <ul>
 <li><a href="https://github.com/vx-lang/Vx/pull/2507">vx-lang/Vx#2507</a>: the change, its test,
 and the checks that each part of it needs</li>
+<li><a href="https://github.com/vx-lang/Vx/pull/2587">vx-lang/Vx#2587</a>: the same change for
+a GPU kernel, and its test</li>
+<li><a href="https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html">CUDA C++ Best
+Practices Guide</a>, section 10.2.4: local memory is off-chip</li>
+<li><a href="https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__CTX.html">CUDA Driver API,
+<code>cuCtxSetLimit</code></a>: the driver makes the stack of each thread larger for a launch, and
+does not make it smaller after the launch</li>
+<li><a href="https://docs.nvidia.com/cuda/cuda-c-programming-guide/">CUDA C++ Programming Guide
+(legacy)</a>: the default heap of 8 MB for device <code>malloc</code></li>
 <li><a href="https://github.com/llvm/llvm-project/blob/main/llvm/lib/CodeGen/StackColoring.cpp">llvm/lib/CodeGen/StackColoring.cpp</a>:
 the pass that merges stack slots</li>
 <li><a href="https://github.com/llvm/llvm-project/blob/main/llvm/lib/CodeGen/TargetPassConfig.cpp">llvm/lib/CodeGen/TargetPassConfig.cpp</a>:
