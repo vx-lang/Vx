@@ -67,8 +67,8 @@ fn in_a_task_that_gives_no_result(n : i32) -> i32 {
   return r;
 }
 
-// CHECK-DAG: Error[E3063] at {{.*}}.vx:[[@LINE+2]]:28: a `?` cannot leave a closure yet
-fn in_a_closure(n : i32) -> Result<i32, i32> {
+// CHECK-DAG: Error[E3063] at {{.*}}.vx:[[@LINE+2]]:28: a `?` in a closure needs the type that the closure returns. Write it: `|..| -> Result<T, i32> { .. }`
+fn in_a_closure_with_no_written_type(n : i32) -> Result<i32, i32> {
   let f = |x : i32| plus(x)?;
   return Result<i32, i32>::Ok(f(n));
 }

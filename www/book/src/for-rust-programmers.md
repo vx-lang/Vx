@@ -41,8 +41,8 @@ lists what to change. Each item shows the Rust form and the Vx form.
 - **`?` does not convert the error.** `x?` passes the `Err` up unchanged, so its type must be
   the error type of the function. Use `.map_err(..)` to convert it. `?` takes only a `Result`.
 - **`?` in a `tasks` block fails the block**, not the function. The block gives that `Err`, and it
-  cancels its tasks. In a task, `?` ends the task, and the task fails. A `?` cannot leave a
-  closure yet.
+  cancels its tasks. In a task, `?` ends the task, and the task fails. In a closure, `?` needs
+  the closure's type written: `|x : i32| -> Result<i32, E> { .. }`.
 
 ## Printing
 

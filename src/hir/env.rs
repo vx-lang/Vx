@@ -500,6 +500,10 @@ pub struct TypeChecker<'a> {
     pub allow_cross_topology: bool,
     pub errors: crate::diagnostic::DiagnosticsVec,
     pub(crate) in_unsafe_block: bool,
+    /// The next block with a separate value is the body of a closure. Its value then gets the
+    /// type that a `return` of the closure gave, after the statements, which reset
+    /// `expected_type`.
+    pub(crate) closure_body_next: bool,
     /// Inside the body of an `unsafe fn`, whose caller keeps the promises the body cannot check.
     pub(crate) in_unsafe_fn: bool,
     /// Inside an `unsafe` block someone wrote, not only one the compiler made for `vec![..]`.
@@ -630,6 +634,7 @@ impl<'a> TypeChecker<'a> {
             scopes: vec![HashMap::new()],
             errors: crate::diagnostic::DiagnosticsVec::new(),
             in_unsafe_block: false,
+            closure_body_next: false,
             in_unsafe_fn: false,
             in_written_unsafe_block: false,
             unsafe_op_seen: false,
