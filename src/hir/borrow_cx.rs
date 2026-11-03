@@ -169,7 +169,7 @@ impl BorrowCx {
     /// around it can see that variable. A loop body that names a variable from outside it
     /// answers yes too, because its next pass names it again.
     pub(crate) fn is_variable_used_after(&self, name: &str) -> bool {
-        if self.is_running_task(name) {
+        if self.is_running_task(name) || self.drops.drop_reads_borrows(name) {
             return true;
         }
         let blocks = self.block_liveness.iter().zip(&self.current_stmt_idx);

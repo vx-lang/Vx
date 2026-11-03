@@ -52,6 +52,8 @@ struct Owner {
     decl: Option<usize>,
     /// A raw pointer was taken from it: dropped at the end of its block, not its last use.
     to_block_end: bool,
+    /// Its drop can read a reference it holds, so what it borrows stays borrowed until then.
+    drop_reads_borrows: bool,
     /// The scope it was declared in: a move from the same scope is certain.
     scope: usize,
     moved: Moved,
@@ -260,12 +262,31 @@ pub(crate) struct DropFrames {
     frames: Vec<FrameKind>,
     /// Owners to add to the next block: a function's parameters, or the names a `match` arm
     /// binds by value, that need dropping. `pending_by` is what gave them.
-    pending: Vec<(String, usize, Vec<GluePart>)>,
+    pending: Vec<(String, usize, Vec<GluePart>, bool)>,
     pending_by: &'static str,
     /// The names moved by the statement being checked. A `return t` moves `t` on its way out.
     moved_now: HashSet<String>,
     /// Makes the names of the locals the rewrite adds unique.
     counter: usize,
+}
+
+impl DropFrames {
+    /// Whether `name` is a live value whose drop at the end of its block can read a reference
+    /// it holds: that drop is a use of what it borrows.
+    pub(crate) fn drop_reads_borrows(&self, name: &str) -> bool {
+        for f in self.frames.iter().rev() {
+            match f {
+                FrameKind::Function { .. } | FrameKind::Spawn => return false,
+                FrameKind::Loop | FrameKind::Tasks => {}
+                FrameKind::Block { owners, .. } => {
+                    if let Some(o) = owners.iter().rev().find(|o| o.name == name) {
+                        return o.drop_reads_borrows && o.moved != Moved::Yes;
+                    }
+                }
+            }
+        }
+        false
+    }
 }
 
 fn printing_requested() -> bool {
@@ -691,10 +712,10 @@ impl<'a> TypeChecker<'a> {
     /// A function or closure body begins. `params` are its parameters taken by value.
     pub(crate) fn drops_enter_function(&mut self, params: Vec<(String, Type)>, body: &[Statement]) {
         let scope = self.scopes.len() - 1;
-        let params: Vec<(String, Vec<GluePart>)> = params
+        let params: Vec<(String, Vec<GluePart>, bool)> = params
             .into_iter()
-            .map(|(name, ty)| (name, self.drops_glue(&ty)))
-            .filter(|(_, glue)| !glue.is_empty())
+            .map(|(name, ty)| (name, self.drops_glue(&ty), self.drop_reads_a_reference(&ty)))
+            .filter(|(_, glue, _)| !glue.is_empty())
             .collect();
         let already = body.iter().any(|s| {
             let mut uses = HashSet::new();
@@ -706,7 +727,7 @@ impl<'a> TypeChecker<'a> {
         d.frames.push(FrameKind::Function { rewrite });
         d.pending = params
             .into_iter()
-            .map(|(p, glue)| (p, scope, glue))
+            .map(|(p, glue, reads)| (p, scope, glue, reads))
             .collect();
         d.pending_by = "the function";
     }
@@ -722,7 +743,8 @@ impl<'a> TypeChecker<'a> {
             };
             let glue = self.drops_glue(&ty);
             if !glue.is_empty() {
-                pending.push((name.to_string(), scope, glue));
+                let reads = self.drop_reads_a_reference(&ty);
+                pending.push((name.to_string(), scope, glue, reads));
             }
         }
         let d = &mut self.borrow.drops;
@@ -781,11 +803,12 @@ impl<'a> TypeChecker<'a> {
         let given_by = d.pending_by;
         let owners = std::mem::take(&mut d.pending)
             .into_iter()
-            .map(|(name, scope, glue)| Owner {
+            .map(|(name, scope, glue, drop_reads_borrows)| Owner {
                 name,
                 given_by: Some(given_by),
                 decl: None,
                 to_block_end: glue.iter().any(GluePart::calls),
+                drop_reads_borrows,
                 scope,
                 moved: Moved::No,
                 moved_at: None,
@@ -857,12 +880,14 @@ impl<'a> TypeChecker<'a> {
             return;
         }
         let scope = self.scopes.len() - 1;
+        let drop_reads_borrows = self.drop_reads_a_reference(ty);
         if let Some(FrameKind::Block { owners, stmt, .. }) = self.borrow.drops.frames.last_mut() {
             owners.push(Owner {
                 name: name.to_string(),
                 given_by: None,
                 decl: Some(*stmt),
                 to_block_end: glue.iter().any(GluePart::calls),
+                drop_reads_borrows,
                 scope,
                 moved: Moved::No,
                 moved_at: None,
@@ -1059,6 +1084,40 @@ impl<'a> TypeChecker<'a> {
 
     /// Whether `name` is an owner, and whether its value was moved. Read before an assignment
     /// to it clears the mark.
+    /// Whether dropping a `ty` can run a `drop` that reads a reference the value holds. A
+    /// reference behind a type's own raw pointer, as in `Vec<&i32>`, counts only when the
+    /// element has a `drop` of its own that can read it, as Rust's `#[may_dangle]` allows.
+    pub(crate) fn drop_reads_a_reference(&mut self, ty: &Type) -> bool {
+        self.drop_reads_a_reference_in(ty, &mut HashSet::new())
+    }
+
+    fn drop_reads_a_reference_in(&mut self, ty: &Type, seen: &mut HashSet<String>) -> bool {
+        let parts = match ty {
+            Type::Pointer(inner, ..) | Type::Verified(inner) | Type::Pinned(inner, _) => {
+                return self.drop_reads_a_reference_in(inner, seen);
+            }
+            Type::Struct(name, _) | Type::Enum(name, _) => self.declared_part_types(name, &[]),
+            Type::GenericInstance(base, args) => match &**base {
+                Type::Struct(name, _) | Type::Enum(name, _) => self.declared_part_types(name, args),
+                _ => return false,
+            },
+            _ => return false,
+        };
+        if !seen.insert(ty.to_string()) {
+            return false;
+        }
+        if self.drops_impl_call(ty).is_some()
+            && parts
+                .iter()
+                .any(|p| !matches!(p, Type::Pointer(..)) && self.type_can_hold_reference(p))
+        {
+            return true;
+        }
+        parts
+            .iter()
+            .any(|p| self.drop_reads_a_reference_in(p, seen))
+    }
+
     pub(crate) fn drops_owner_state(&self, name: &str) -> Option<Moved> {
         self.drops_owner(name).map(|o| o.moved)
     }
