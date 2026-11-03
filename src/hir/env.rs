@@ -2040,6 +2040,7 @@ impl<'a> TypeChecker<'a> {
         let speculating = std::mem::replace(&mut self.speculating, false);
         self.check_integer_literals_fit(&func.body);
         self.check_borrow_clauses(func);
+        self.check_pointer_clauses(func);
         self.print_proved_borrow_clauses(func);
         self.speculating = speculating;
 

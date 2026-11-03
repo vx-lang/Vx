@@ -729,6 +729,11 @@ pub enum DiagnosticCode {
     /// operation of a dialect that the list does not name, or the list names something that
     /// is not a dialect. The list is what the block says it uses, so it must be right.
     E8010,
+    /// A pointer clause that is not well formed: `requires valid(p, n)`, `requires
+    /// initialized(p, n)` or `requires !overlaps(p, q, n)`, where `p` and `q` are raw pointer
+    /// parameters. The checker cannot prove one at a call yet, so only an `unsafe fn` may have
+    /// one, and each clause is a `requires` of its own.
+    E8011,
 }
 
 impl std::fmt::Display for DiagnosticCode {
