@@ -727,12 +727,16 @@ impl<'a> TypeChecker<'a> {
                 ret: ret_expr,
                 span,
                 generated,
+                closure_body,
                 ..
             }) => {
                 let block_span = *span;
-                let written = !*generated;
+                let closure_body = *closure_body;
+                // The block body of a closure is a plain block: it allows nothing more than the
+                // code around the closure.
+                let written = !*generated && !closure_body;
                 let prev_unsafe = self.in_unsafe_block;
-                self.in_unsafe_block = true;
+                self.in_unsafe_block = prev_unsafe || !closure_body;
                 // A block the compiler made is transparent here: what it holds counts for the
                 // written block around it.
                 let prev_written = self.in_written_unsafe_block;
@@ -780,10 +784,14 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.push_scope();
                 self.value_unused = unused;
+                // A `return` of the closure, or its written return type, gives the last value of
+                // its body its type, as the return type of a function does.
+                self.closure_body_next = closure_body;
                 let ret_ty = match ret_expr {
                     Some(r) => self.check_expr_block_with_value(stmts, r, unused, consume),
                     None => self.check_expr_block(stmts, None, consume),
                 };
+                self.closure_body_next = false;
                 self.pop_scope();
                 if written {
                     // An error inside may hide the operation that needed `unsafe`, so only a
@@ -1306,6 +1314,51 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The end of a closure with a block body, whose `return` or written type gives `returned`:
+    /// its last value, of type `ty`, must have that type, and it must not end with no value.
+    fn check_closure_end(&mut self, body: &Expr, ty: &Type, returned: &Type, span: &Span) {
+        if *ty == Type::Unknown || crate::syntax::is_never_ty(ty) {
+            return;
+        }
+        // Only a block body can end in another way than its value: a `comptime` body returns.
+        let Expr::UnsafeBlock(u) = body else {
+            return;
+        };
+        if !u.closure_body {
+            return;
+        }
+        let message = match body {
+            Expr::UnsafeBlock(u) if u.ret.is_none() => {
+                let functions = &self.env.functions;
+                let never = |name: &str| {
+                    functions
+                        .get(name)
+                        .is_some_and(|f| crate::syntax::is_never_ty(&f.0))
+                };
+                let exits = crate::syntax::block_always_exits(&u.stmts, &never);
+                (!exits && !crate::syntax::types::is_void_ty(returned)).then(|| {
+                    format!(
+                        "this closure returns '{returned}', so its body must end with a value \
+                         of that type or with a `return`"
+                    )
+                })
+            }
+            _ => (!self.is_assignable(returned, ty)).then(|| {
+                format!(
+                    "this closure returns '{returned}', so its last value must have that type. \
+                     It gives '{ty}'"
+                )
+            }),
+        };
+        if let Some(message) = message {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3002,
+                message,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        }
+    }
+
     pub(crate) fn check_closure_expr(&mut self, expr: &mut Expr, _consume: bool) -> Type {
         match expr {
             Expr::Closure(e) => {
@@ -1325,7 +1378,10 @@ impl<'a> TypeChecker<'a> {
                 self.mono.closure_captures_stack.push(HashMap::new());
 
                 let old_ret = self.current_return_type.take();
-                self.current_return_type = Some(Type::Unknown);
+                // `|x| -> T { .. }` returns `T`. Otherwise the first `return` gives the type.
+                self.current_return_type = Some(e.ret_ty.clone().unwrap_or(Type::Unknown));
+                // An `ensures` of the function is not about a `return` of the closure.
+                let outer_ensures = std::mem::take(&mut self.consteval.current_ensures);
 
                 self.push_scope();
                 for (name, ty) in &cloned_params {
@@ -1354,11 +1410,15 @@ impl<'a> TypeChecker<'a> {
                 self.consteval.closure_body_depth -= 1;
                 self.consteval.comptime_depth = outer_comptime;
 
+                self.consteval.current_ensures = outer_ensures;
                 let mut ret_ty = expr_ret_ty;
-                if let Some(inferred) = &self.current_return_type {
-                    if *inferred != Type::Unknown {
-                        ret_ty = inferred.clone();
-                    }
+                if let Some(returned) = self
+                    .current_return_type
+                    .clone()
+                    .filter(|t| *t != Type::Unknown)
+                {
+                    self.check_closure_end(&b, &ret_ty, &returned, &e.span);
+                    ret_ty = returned;
                 }
                 if !self.speculating
                     && self.type_can_hold_reference(&ret_ty)

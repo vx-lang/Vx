@@ -508,6 +508,9 @@ pub struct UnsafeBlockExpr {
     /// A `tasks` block with a value: the type of that value, set by the checker. A code generator
     /// keeps the value in a slot of this type when an exit can leave the block.
     pub value_ty: Option<Type>,
+    /// The program wrote this block as the body of a closure, `|x| { .. }`. It is a plain block,
+    /// so the code in it cannot do what needs `unsafe`.
+    pub closure_body: bool,
 }
 impl UnsafeBlockExpr {
     pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -520,6 +523,7 @@ impl UnsafeBlockExpr {
             fails_as: None,
             cancels_on_err: None,
             value_ty: None,
+            closure_body: false,
         }
     }
 }
@@ -1546,6 +1550,7 @@ impl Expr {
                 fails_as: e.fails_as.as_ref().map(|t| t.substitute(mapping)),
                 cancels_on_err: e.cancels_on_err.as_ref().map(|t| t.substitute(mapping)),
                 value_ty: e.value_ty.as_ref().map(|t| t.substitute(mapping)),
+                closure_body: e.closure_body,
             }),
             Expr::StructInit(e) => {
                 let mut new_name = e.name.clone();

@@ -151,6 +151,8 @@ impl<'a> TypeChecker<'a> {
         consume: bool,
     ) -> Type {
         let has_value = value.is_some();
+        // Taken here, so that a block inside this one does not see it.
+        let closure_body = std::mem::take(&mut self.closure_body_next);
         let tail = tail.or(value.as_ref().map(|(v, _)| &**v));
         Self::name_loop_literals(stmts);
         self.hoist_spawn_allocations(stmts);
@@ -253,7 +255,14 @@ impl<'a> TypeChecker<'a> {
             self.borrow.set_stmt(stmts.len());
             self.drops_set_stmt(stmts.len());
             self.value_unused = unused;
-            self.check_expr_type_flag(value, consume)
+            let outer = self.expected_type.clone();
+            let returned = self.current_return_type.clone();
+            if let Some(t) = returned.filter(|t| closure_body && *t != Type::Unknown) {
+                self.expected_type = Some(t);
+            }
+            let ty = self.check_expr_type_flag(value, consume);
+            self.expected_type = outer;
+            ty
         });
         if let Some(ty) = type_at_end {
             ret_ty = ty;

@@ -440,8 +440,9 @@ pub enum DiagnosticCode {
     E3062,
     /// A `?` that cannot pass its error up. `x?` takes a `Result<T, E>`. It gives the `T` of an
     /// `Ok`, and it passes an `Err` up unchanged: to the function, which must return a
-    /// `Result<_, E>` with the same `E`, or to its task or `tasks` block, which must give one. `?`
-    /// does not convert the error. `.map_err(..)` converts it.
+    /// `Result<_, E>` with the same `E`, to its closure, which must return one, or to its task or
+    /// `tasks` block, which must give one. A `?` in a closure needs the closure's type written,
+    /// `|x| -> Result<T, E> { .. }`. `?` does not convert the error. `.map_err(..)` converts it.
     E3063,
 
     // --- Borrow/Ownership Errors (E4xxx) ---

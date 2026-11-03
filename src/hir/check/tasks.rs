@@ -305,6 +305,7 @@ impl TypeChecker<'_> {
             fails_as,
             cancels_on_err,
             value_ty,
+            closure_body: false,
         });
     }
 
@@ -452,19 +453,22 @@ impl TypeChecker<'_> {
         let fn_ret = self.current_return_type.clone().unwrap_or(Type::Unknown);
         let refused = match target {
             Some(Frame::Tasks { .. } | Frame::Spawn { .. }) => None,
-            None if closures > 0 => Some((
+            // The closure's type comes from its body, which the `?` is in.
+            None if closures > 0 && fn_ret == Type::Unknown => Some((
                 DiagnosticCode::E3063,
-                "a `?` cannot leave a closure yet. Use a `match`, or call a function that uses \
-                 `?`"
-                .to_string(),
+                format!(
+                    "a `?` in a closure needs the type that the closure returns. Write it: \
+                     `|..| -> Result<T, {err_ty}> {{ .. }}`"
+                ),
             )),
             None if result_parts(&fn_ret).is_some_and(|(_, e)| e == err_ty) => None,
             None => Some((
                 DiagnosticCode::E3063,
                 format!(
-                    "this `?` passes up an error of type '{err_ty}', so the function must return \
-                     a `Result<_, {err_ty}>`. It returns '{fn_ret}'. `?` does not convert the \
-                     error: use `.map_err(..)` for that"
+                    "this `?` passes up an error of type '{err_ty}', so the {} must return a \
+                     `Result<_, {err_ty}>`. It returns '{fn_ret}'. `?` does not convert the \
+                     error: use `.map_err(..)` for that",
+                    if closures > 0 { "closure" } else { "function" }
                 ),
             )),
         };
