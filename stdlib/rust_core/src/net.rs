@@ -17,5 +17,5 @@
 use crate::{instantiate_tcp_listener_ffi, instantiate_tcp_stream_ffi, instantiate_udp_socket_ffi};
 
 instantiate_tcp_stream_ffi!(crate::ffi::io::when_ready, crate::ffi::io::connect);
-instantiate_udp_socket_ffi!(crate::ffi::io::when_ready);
-instantiate_tcp_listener_ffi!(crate::ffi::io::when_ready);
+instantiate_udp_socket_ffi!(crate::ffi::io::when_ready, crate::ffi::io::lookup);
+instantiate_tcp_listener_ffi!(crate::ffi::io::when_ready, crate::ffi::io::lookup);

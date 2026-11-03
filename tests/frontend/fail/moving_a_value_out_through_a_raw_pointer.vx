@@ -1,0 +1,45 @@
+//===- moving_a_value_out_through_a_raw_pointer.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `*p` and `p[0]` read by value through a raw pointer would move the value out while its
+// owner still drops it, so it would be dropped twice (E4008).
+
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:29:20: this moves a value of type `Noisy` out from behind a raw pointer
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:35:21: this moves a value of type `Noisy` out from behind a raw pointer
+// CHECK: 2 error(s) emitted
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("d{} ", self.id);
+  }
+}
+
+fn read_with_a_star(p : *const Noisy) -> i32 {
+  let mut k = 0;
+  unsafe { let v = *p; k = v.id; }
+  return k;
+}
+
+fn read_with_an_index(p : *const Noisy) -> i32 {
+  let mut k = 0;
+  unsafe { let v = p[0]; k = v.id; }
+  return k;
+}
+
+fn main() -> i32 {
+  let o = Noisy {
+    id: 3
+  };
+  let p = (&o) as *const Noisy;
+  return read_with_a_star(p) + read_with_an_index(p);
+}

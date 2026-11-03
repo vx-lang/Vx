@@ -744,6 +744,29 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `*p` or `p[i]` read by value through a raw pointer: the value stays with its owner, so
+    /// moving it out would drop it twice. An `unsafe fn` such as `core::ptr::read` may, for its
+    /// caller.
+    fn refuse_move_through_raw_pointer(&mut self, inner: &Type, consume: bool, span: &Span) {
+        if !consume
+            || self.checking_assign_lhs
+            || self.speculating
+            || self.in_unsafe_fn
+            || self.drops_glue(inner).is_empty()
+        {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E4008,
+            format!(
+                "this moves a value of type `{inner}` out from behind a raw pointer, and its \
+                 owner still drops it; clone it, or use `core::ptr::read` and make sure only one \
+                 of the two is dropped"
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     /// A raw-pointer access needs an unsafe context: nothing here knows the address is valid,
     /// or that anything lives at it. `*p`, `p[i]` and `p.field` are one operation with three
     /// spellings, so they answer to one rule.
@@ -1610,9 +1633,10 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                if let Type::Pointer(..) = &base {
+                if let Type::Pointer(inner, _, _) = &base {
                     self.require_unsafe_raw_access("Indexing a raw pointer", &ix_span);
                     self.check_pointer_target_is_visible(&base, "Indexing a raw pointer", &ix_span);
+                    self.refuse_move_through_raw_pointer(inner, consume, &ix_span);
                 }
                 if let Type::Pointer(inner, _, _) = base {
                     *inner
@@ -1714,6 +1738,7 @@ impl<'a> TypeChecker<'a> {
         self.borrow.record(
             from,
             BorrowRecord {
+                carried_from: None,
                 is_mut: true,
                 scope_depth: self.scopes.len(),
                 borrower_name: Some(holder.to_string()),
@@ -1802,6 +1827,7 @@ impl<'a> TypeChecker<'a> {
                                 self.borrow.record(
                                     &owner,
                                     BorrowRecord {
+                                        carried_from: None,
                                         is_mut: *is_mut,
                                         scope_depth: self.scopes.len(),
                                         borrower_name: self.current_assignment_target.clone(),
@@ -1813,6 +1839,7 @@ impl<'a> TypeChecker<'a> {
                         self.borrow.record(
                             &name,
                             BorrowRecord {
+                                carried_from: None,
                                 is_mut: *is_mut,
                                 scope_depth: self.scopes.len(),
                                 borrower_name: self.current_assignment_target.clone(),
@@ -2021,7 +2048,7 @@ impl<'a> TypeChecker<'a> {
                 if let Some((base, _path)) = Self::extract_base_and_path(&b.expr) {
                     match self.borrow.current_params.get(base.as_str()) {
                         Some(pty) if Self::is_ref_type(pty) => Some(RefProvenance::External),
-                        _ => Some(RefProvenance::Local(self.scope_depth_of(&base))),
+                        _ => Some(RefProvenance::Local(self.frame_depth_of(&base))),
                     }
                 } else if self.drops_frees_borrowed_temporary(place) {
                     // `&make()` of a struct that is dropped at the end of the statement.
@@ -2147,6 +2174,16 @@ impl<'a> TypeChecker<'a> {
         parts: impl Iterator<Item = &'e Expr>,
     ) -> Option<crate::hir::env::RefProvenance> {
         Self::join_provenances(parts.map(|e| self.ref_provenance_of(e)).collect())
+    }
+
+    /// [`Self::scope_depth_of`], except that in a closure body a variable from outside the
+    /// closure is at the closure's depth: each call copies it into the call's own frame.
+    fn frame_depth_of(&self, name: &str) -> usize {
+        let depth = self.scope_depth_of(name);
+        match self.mono.closure_depths.last() {
+            Some(&closure) if depth < closure => closure,
+            _ => depth,
+        }
     }
 
     /// The depth of the innermost scope open now; the function's parameters are at 0 or 1.
@@ -2465,6 +2502,7 @@ impl<'a> TypeChecker<'a> {
             self.borrow.record(
                 base,
                 BorrowRecord {
+                    carried_from: None,
                     is_mut: record_is_mut,
                     scope_depth: self.scopes.len(),
                     borrower_name: self.current_assignment_target.clone(),
@@ -2555,6 +2593,9 @@ impl<'a> TypeChecker<'a> {
                             Some(crate::diagnostic::SourceSpan::from_ast_span(&e.span)),
                         );
                     }
+                }
+                if let Type::Pointer(inner, _, _) = &inner_ty {
+                    self.refuse_move_through_raw_pointer(inner, consume, &e.span);
                 }
                 let resolved_ty = match inner_ty.clone() {
                     Type::Pointer(t, _, _) => {

@@ -18,9 +18,10 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
-    // `it.next().unwrap()` on a `VecIter<i64>`: the flat path declines `Option<&i64>::unwrap`
-    // ("a non-scalar default return").
-    "backend/pass/a_result_read_through_a_reference_field_points_where_the_field_points.vx",
+    // A `return` of a tensor from inside a `tasks` block: the flat path declines it ("a return
+    // of a value of this type from inside a tasks block"). The file is about the AST path.
+    "backend/pass/a_return_of_a_tensor_leaves_a_tasks_block.vx",
+    // `VecIter<i64>::filter`: the flat path declines it ("a struct with no GID").
     "backend/pass/an_iterator_item_does_not_keep_the_iterator_borrowed.vx",
     // A `match` through a reference to an enum, one of them with a payload: the flat path does
     // not lower a match over a borrowed enum or an enum that carries a payload.
@@ -103,8 +104,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/closure_literal_in_a_for_header.vx",
     // `Vec::iter()` hands out `&T`: the flat path has no layout for `Option<&T>` and cannot
     // read through a `for` variable that is a reference (#889).
-    "backend/pass/closure_map.vx",
-    "backend/pass/vec_iter_is_core_iterator.vx",
     "backend/pass/vec_leaves_iter_names_free.vx",
     "backend/pass/vec_iter_hands_out_references.vx",
     "backend/pass/write_through_a_mutable_reference.vx",
@@ -383,6 +382,10 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/gpu_region_that_ends_in_a_value_runs_on_the_gpu.vx", // needs --machine
             "optimizations/pass/across_loops_with_auto_schedule_levels_carry_their_level.vx", // needs -f
             "frontend/pass/packages/import_from_a_package.vx", // needs --package
+            // needs --machine
+            "optimizations/pass/across_loops_get_a_launch_check_only_when_an_index_may_wrap.vx",
+            // needs --machine
+            "optimizations/pass/an_across_loop_whose_index_wraps_stops_at_the_launch.vx",
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {
             continue;

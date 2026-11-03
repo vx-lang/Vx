@@ -1441,7 +1441,7 @@ impl<'a> Parser<'a> {
             }
         };
 
-        // Postfix operators: .member, .method(), [index]
+        // Postfix operators: .member, .method(), [index], ?
         loop {
             if self.match_token(&TokenType::Dot) {
                 // The method name's own token, so a diagnostic about the call points at it.
@@ -1529,6 +1529,19 @@ impl<'a> Parser<'a> {
                 });
             } else if self.check(&TokenType::As) {
                 expr = self.parse_as_casts(expr)?;
+            } else if self.check(&TokenType::Question) {
+                let token = self.advance();
+                let span = Span {
+                    line: token.line,
+                    column: token.column,
+                    length: token.length,
+                    expansion: self.expansion(),
+                };
+                expr = Expr::UnaryOp(UnaryOpExpr {
+                    op: UnaryOp::Try,
+                    expr: Box::new(expr),
+                    span,
+                });
             } else {
                 break;
             }

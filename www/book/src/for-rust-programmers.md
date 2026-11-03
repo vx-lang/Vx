@@ -38,7 +38,11 @@ lists what to change. Each item shows the Rust form and the Vx form.
 
 - **A `match` arm's body is a block.** `0 => 7,` is `0 => { 7 },`.
 - **No `if let` or `while let`.** Use `match`.
-- **No `?` operator.** Use `match` and return early.
+- **`?` does not convert the error.** `x?` passes the `Err` up unchanged, so its type must be
+  the error type of the function. Use `.map_err(..)` to convert it. `?` takes only a `Result`.
+- **`?` in a `tasks` block fails the block**, not the function. The block gives that `Err`, and it
+  cancels its tasks. In a task, `?` ends the task, and the task fails. A `?` cannot leave a
+  closure yet.
 
 ## Printing
 

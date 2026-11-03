@@ -57,6 +57,8 @@ enum Frame {
         tasks: Vec<String>,
         /// The tasks of the block that can fail.
         failures: Vec<Failure>,
+        /// The error type and the place of each `?` that passes an error up to the block.
+        passed_up: Vec<(Type, Span)>,
     },
     Spawn {
         /// `scopes.len()` before the body. A variable of a lower scope is from outside the task.
@@ -65,6 +67,8 @@ enum Frame {
         loops: usize,
         /// Each variable from outside that the body names, with its type.
         used: BTreeMap<crate::symbol::Symbol, Type>,
+        /// The error type and the place of each `?` that passes an error up to the task.
+        passed_up: Vec<(Type, Span)>,
     },
 }
 
@@ -225,7 +229,10 @@ impl TypeChecker<'_> {
         before: impl FnOnce(&mut Self),
     ) -> Type {
         let unused = std::mem::replace(&mut self.value_unused, false);
-        let Expr::TaskBlock(TaskBlockExpr { stmts, ret, .. }) = expr else {
+        let Expr::TaskBlock(TaskBlockExpr {
+            stmts, ret, kind, ..
+        }) = expr
+        else {
             unreachable!("only a task block reaches here")
         };
         // As in an `unsafe` block: the block's drops are placed when its statements are checked,
@@ -258,7 +265,16 @@ impl TypeChecker<'_> {
         let mut ty = self.check_expr_block(stmts, ret.as_deref(), consume);
         if let Some(r) = ret {
             self.value_unused = unused;
+            // A `return` of the task gives the type of its last value, as the return type of a
+            // function does.
+            let returned = match kind {
+                TaskBlockKind::Spawn => self.current_return_type.clone(),
+                TaskBlockKind::Tasks => None,
+            };
+            let outer = self.expected_type.take();
+            self.expected_type = returned.filter(|t| *t != Type::Unknown).or(outer.clone());
             ty = self.check_expr_type_flag(r, consume);
+            self.expected_type = outer;
         }
         ty
     }
@@ -310,6 +326,7 @@ impl TypeChecker<'_> {
                 loops,
                 tasks: Vec::new(),
                 failures: Vec::new(),
+                passed_up: Vec::new(),
             });
         });
         self.drops_exit_tasks();
@@ -318,6 +335,7 @@ impl TypeChecker<'_> {
             scope_len,
             tasks,
             failures,
+            passed_up,
             ..
         }) = self.tasks.frames.pop()
         else {
@@ -329,7 +347,7 @@ impl TypeChecker<'_> {
         self.tasks.loop_tasks.retain(|t| !tasks.contains(&t.task));
         self.tasks.handles.retain(|h| h.depth < scope_len - 1);
         self.pop_scope();
-        let fails_as = self.check_block_failures(&failures, &ty, &expr.span());
+        let fails_as = self.check_block_failures(&failures, &passed_up, &ty, &expr.span());
         let has_value = matches!(&*expr, Expr::TaskBlock(tb) if tb.ret.is_some())
             && !crate::syntax::types::is_void_ty(&ty);
         let value_ty = has_value.then(|| ty.clone());
@@ -343,10 +361,11 @@ impl TypeChecker<'_> {
     fn check_block_failures(
         &mut self,
         failures: &[Failure],
+        passed_up: &[(Type, Span)],
         block_ty: &Type,
         span: &Span,
     ) -> Option<Type> {
-        if failures.is_empty() {
+        if failures.is_empty() && passed_up.is_empty() {
             return None;
         }
         for f in failures.iter().filter(|f| !f.joined) {
@@ -375,7 +394,151 @@ impl TypeChecker<'_> {
                 return None;
             }
         }
+        for (err, at) in passed_up {
+            if block_err.as_ref() != Some(err) {
+                self.task_error(
+                    DiagnosticCode::E3063,
+                    format!(
+                        "this `?` passes up an error of type '{err}', so its `tasks` block must \
+                         give a `Result<_, {err}>`. The block gives '{block_ty}'"
+                    ),
+                    at,
+                );
+                return None;
+            }
+        }
         Some(block_ty.clone())
+    }
+
+    /// `x?` (F2): `match x { Ok(v) => v, Err(e) => .. }`, where the `Err` arm passes `e` up
+    /// unchanged. It passes it to the innermost function or closure with a `return`, or to the
+    /// innermost `tasks` block as the failure of the block.
+    pub(crate) fn check_try(&mut self, expr: &mut Expr) -> Type {
+        let Expr::UnaryOp(UnaryOpExpr {
+            expr: inner, span, ..
+        }) = &*expr
+        else {
+            unreachable!("only `?` reaches here")
+        };
+        let span = *span;
+        let errors = self.errors.len();
+        let inner_ty = self.operand_type(inner);
+        self.errors.inner.truncate(errors);
+        let Some((ok_ty, err_ty)) = result_parts(&inner_ty) else {
+            let Expr::UnaryOp(UnaryOpExpr { expr: inner, .. }) = expr else {
+                unreachable!("matched above")
+            };
+            let ty = self.check_expr_type(inner);
+            if ty != Type::Unknown {
+                let is_option = matches!(&ty, Type::GenericInstance(base, _)
+                    if matches!(&**base, Type::Enum(n, _) | Type::Struct(n, _) if n.as_ref() == "Option"));
+                let hint = if is_option {
+                    ". For an `Option`, use a `match`, or `.ok_or(e)?` with an error `e`"
+                } else {
+                    ""
+                };
+                self.task_error(
+                    DiagnosticCode::E3063,
+                    format!("`?` takes a `Result<T, E>`. This value has the type '{ty}'{hint}"),
+                    &span,
+                );
+            }
+            return Type::Unknown;
+        };
+        let closures = self.mono.closure_depths.len();
+        let target = self.tasks.frames.last().filter(|f| match f {
+            Frame::Tasks { closures: c, .. } | Frame::Spawn { closures: c, .. } => *c == closures,
+        });
+        let fn_ret = self.current_return_type.clone().unwrap_or(Type::Unknown);
+        let refused = match target {
+            Some(Frame::Tasks { .. } | Frame::Spawn { .. }) => None,
+            None if closures > 0 => Some((
+                DiagnosticCode::E3063,
+                "a `?` cannot leave a closure yet. Use a `match`, or call a function that uses \
+                 `?`"
+                .to_string(),
+            )),
+            None if result_parts(&fn_ret).is_some_and(|(_, e)| e == err_ty) => None,
+            None => Some((
+                DiagnosticCode::E3063,
+                format!(
+                    "this `?` passes up an error of type '{err_ty}', so the function must return \
+                     a `Result<_, {err_ty}>`. It returns '{fn_ret}'. `?` does not convert the \
+                     error: use `.map_err(..)` for that"
+                ),
+            )),
+        };
+        // The task or the block checks the error type at its end, where its type is known.
+        let leaves_region = target.is_some();
+        if let Some((code, message)) = refused {
+            self.task_error(code, message, &span);
+            let Expr::UnaryOp(UnaryOpExpr { expr: inner, .. }) = expr else {
+                unreachable!("matched above")
+            };
+            self.check_expr_type(inner);
+            return ok_ty;
+        }
+        let n = self.tasks.next_id;
+        self.tasks.next_id += 1;
+        let (ok, err): (crate::symbol::Symbol, crate::symbol::Symbol) =
+            (format!("$ok{n}").into(), format!("$err{n}").into());
+        let ident = |name: &crate::symbol::Symbol| {
+            Expr::Identifier(IdentifierExpr::new(name.clone(), span))
+        };
+        let pass_up = if leaves_region {
+            if !self.speculating {
+                if let Some(Frame::Tasks { passed_up, .. } | Frame::Spawn { passed_up, .. }) =
+                    self.tasks.frames.last_mut()
+                {
+                    passed_up.push((err_ty.clone(), span));
+                }
+            }
+            let mut leave = BreakStmt::new(span);
+            leave.tasks_value = Some(Box::new(ident(&err)));
+            Statement::Break(leave)
+        } else {
+            Statement::Return(ReturnStmt {
+                expr: Some(Expr::EnumVariant(crate::syntax::failure_of(
+                    &fn_ret,
+                    ident(&err),
+                    span,
+                ))),
+                span,
+            })
+        };
+        let arm = |variant: &str, bind: &crate::symbol::Symbol, body: Statement| MatchArm {
+            pattern: Pattern::EnumVariant(
+                inner_ty.to_string().into(),
+                variant.into(),
+                Some(vec![Pattern::Identifier(bind.clone())]),
+            ),
+            body: vec![body],
+            span: Span::default(),
+        };
+        let Expr::UnaryOp(UnaryOpExpr { expr: inner, .. }) = &*expr else {
+            unreachable!("matched above")
+        };
+        let mut lowered = Expr::Match(MatchExpr::new(
+            inner.clone(),
+            vec![
+                arm(
+                    "Ok",
+                    &ok,
+                    Statement::ExprStmt(ExprStmtStmt {
+                        expr: ident(&ok),
+                        has_semi: false,
+                        span,
+                    }),
+                ),
+                arm("Err", &err, pass_up),
+            ],
+            span,
+        ));
+        let ty = self.check_expr_type_flag(&mut lowered, true);
+        if !self.speculating {
+            *expr = lowered;
+        }
+        ty
     }
 
     fn check_spawn(&mut self, expr: &mut Expr, consume: bool) -> Type {
@@ -464,6 +627,18 @@ impl TypeChecker<'_> {
                 }
             }
         }
+        // `let h = spawn { ..; return v; }` is `let h = spawn { ..; v }`.
+        if let (Expr::TaskBlock(tb), Some(SpawnPlace::Let)) = (&mut *expr, place) {
+            if tb.ret.is_none() {
+                if let Some(Statement::Return(ReturnStmt { expr: Some(_), .. })) = tb.stmts.last() {
+                    let Some(Statement::Return(ReturnStmt { expr: Some(v), .. })) = tb.stmts.pop()
+                    else {
+                        unreachable!("matched above")
+                    };
+                    tb.ret = Some(Box::new(v));
+                }
+            }
+        }
         let ended_by_join = self.tasks.joined_in_block.contains(&span);
         if !ended_by_join {
             self.move_locals_that_end_first(expr, tasks_scope_len);
@@ -478,12 +653,27 @@ impl TypeChecker<'_> {
             closures,
             loops,
             used: BTreeMap::new(),
+            passed_up: Vec::new(),
         });
+        // A `return` in the body leaves the task, and its value is the value of the task. The
+        // first `return` gives the type that the others must have, as in a closure.
+        let outer_ret = self.current_return_type.replace(Type::Unknown);
+        let outer_ensures = std::mem::take(&mut self.consteval.current_ensures);
+        self.drops_enter_task();
         let mut ty = self.check_task_body(expr, consume, |_| {});
+        self.drops_exit_task();
+        let returned = std::mem::replace(&mut self.current_return_type, outer_ret);
+        self.consteval.current_ensures = outer_ensures;
         self.pop_scope();
-        let Some(Frame::Spawn { mut used, .. }) = self.tasks.frames.pop() else {
+        let Some(Frame::Spawn {
+            mut used,
+            passed_up,
+            ..
+        }) = self.tasks.frames.pop()
+        else {
             unreachable!("pushed above")
         };
+        self.check_task_exits(&ty, returned, &passed_up, place, &span);
         let changed_in_task = std::mem::replace(&mut self.changed_vars, changed_outside);
         self.changed_vars.extend(changed_in_task.iter().cloned());
         // An assignment writes a variable without reading it.
@@ -536,6 +726,7 @@ impl TypeChecker<'_> {
                 self.borrow.record(
                     name,
                     crate::hir::env::BorrowRecord {
+                        carried_from: None,
                         is_mut: false,
                         scope_depth: tasks_scope_len.max(var_depth + 1),
                         borrower_name: Some(format!("{id}{COPY_SUFFIX}")),
@@ -554,6 +745,7 @@ impl TypeChecker<'_> {
             self.borrow.record(
                 name,
                 crate::hir::env::BorrowRecord {
+                    carried_from: None,
                     is_mut: writes,
                     scope_depth: tasks_scope_len,
                     borrower_name: Some(id.clone()),
@@ -588,8 +780,70 @@ impl TypeChecker<'_> {
         } else {
             ty = Type::Struct("void".into(), None);
         }
-        self.task_block_to_plain_block(expr, ret, None, cancels_on_err, None);
+        // The type of the value of a task with a handle, for an exit that gives it early.
+        let value_ty = (place == Some(SpawnPlace::Let)).then(|| ty.clone());
+        self.task_block_to_plain_block(expr, ret, None, cancels_on_err, value_ty);
         ty
+    }
+
+    /// Each `return` of a task gives the type of its last value, and each `?` passes up the `E`
+    /// of that type `Result<T, E>`. `returned` is the type of the first `return`, if any.
+    fn check_task_exits(
+        &mut self,
+        ty: &Type,
+        returned: Option<Type>,
+        passed_up: &[(Type, Span)],
+        place: Option<SpawnPlace>,
+        span: &Span,
+    ) {
+        let returned = returned.filter(|t| *t != Type::Unknown && *ty != Type::Unknown);
+        if place != Some(SpawnPlace::Let) {
+            if returned.is_some_and(|t| !crate::syntax::types::is_void_ty(&t)) {
+                self.task_error(
+                    DiagnosticCode::E3058,
+                    "nothing reads the result of this task, so a `return` in it takes no value. \
+                     To keep the result, write `let h = spawn { .. };`"
+                        .to_string(),
+                    span,
+                );
+            }
+            if let Some((err, _)) = passed_up.first() {
+                self.task_error(
+                    DiagnosticCode::E3060,
+                    format!(
+                        "this task can fail with '{err}', so it needs a handle that the `tasks` \
+                         block joins: `let h = spawn {{ .. }};` and then `h.join()`"
+                    ),
+                    span,
+                );
+            }
+            return;
+        }
+        if let Some(returned) = returned.filter(|t| !self.is_assignable(ty, t)) {
+            self.task_error(
+                DiagnosticCode::E3002,
+                format!(
+                    "a `return` in this task gives '{returned}', so the last value of the task \
+                     must have that type. It gives '{ty}'"
+                ),
+                span,
+            );
+            return;
+        }
+        let task_err = result_parts(ty).map(|(_, e)| e);
+        for (err, at) in passed_up {
+            if *ty != Type::Unknown && task_err.as_ref() != Some(err) {
+                self.task_error(
+                    DiagnosticCode::E3063,
+                    format!(
+                        "this `?` passes up an error of type '{err}', so its task must give a \
+                         `Result<_, {err}>`. The task gives '{ty}'"
+                    ),
+                    at,
+                );
+                return;
+            }
+        }
     }
 
     /// K2: a task moves each local that is not `Copy` and that ends before the task's join. The
@@ -930,14 +1184,13 @@ impl TypeChecker<'_> {
         }
     }
 
-    /// A `return`, `break` or `continue` that leaves a task body (E3058).
+    /// A `break` or `continue` that leaves a task body (E3058). A `return` leaves the task.
     pub(crate) fn check_task_exit(&mut self, stmt: &Statement) {
         let closures = self.mono.closure_depths.len();
         let Some(Frame::Spawn { loops, .. }) = self.tasks.innermost_spawn(closures) else {
             return;
         };
         let (what, span) = match stmt {
-            Statement::Return(r) => ("`return`", r.span),
             Statement::Break(b) if *loops == self.borrow.loop_exits.len() => ("`break`", b.span),
             Statement::Continue(c) if *loops == self.borrow.loop_exits.len() => {
                 ("`continue`", c.span)
@@ -946,9 +1199,7 @@ impl TypeChecker<'_> {
         };
         self.task_error(
             DiagnosticCode::E3058,
-            format!(
-                "a {what} cannot leave a task. The last expression of the task body is its result"
-            ),
+            format!("a {what} cannot leave a task. Use `return` to end the task"),
             &span,
         );
     }

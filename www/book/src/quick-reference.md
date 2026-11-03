@@ -54,6 +54,7 @@ when writing Vx with Rust habits.
 - `match v { Shape::Square(s) => { .. }, _ => { .. } }`. Each arm's body is a block, and the
   last arm must cover every value that is left.
 - `return x;`, or a final expression with no `;`.
+- `let v = parse(s)?;` gives the value of an `Ok`, or returns the `Err` unchanged.
 - Arithmetic `+ - * / %`, comparisons `== != < <= > >=`, `&&` `||` `!` on `bool`, and `+=`,
   `-=`, `*=` and the like.
 - Closures: `| x : i64 | x * 2`. Parameter types are required.

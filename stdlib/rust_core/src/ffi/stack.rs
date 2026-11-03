@@ -13,6 +13,9 @@
 // park gets a fixed stack from a pool, with a guard page below it. `switch` saves the registers
 // of the running code on its stack, and continues the code that another stack holds.
 //
+// With shadow stacks on (arm64's Guarded Control Stack), each stack also gets a shadow stack,
+// and `switch` moves both. docs/testing_shadow_stacks_with_qemu.md says how to test this.
+//
 //===----------------------------------------------------------------------===//
 
 use std::sync::Mutex;
@@ -26,6 +29,16 @@ pub struct Stack {
     /// The start of the mapping. The guard page is the first page.
     map: *mut u8,
     map_bytes: usize,
+    /// The shadow stack, when shadow stacks are on.
+    shadow: Option<Shadow>,
+}
+
+/// A shadow stack from `map_shadow_stack`, with a token in its top word. A switch to the stack
+/// names that token. Linux keeps a guard gap next to each shadow-stack mapping, so this needs no
+/// guard page of its own.
+struct Shadow {
+    map: *mut u8,
+    bytes: usize,
 }
 
 unsafe impl Send for Stack {}
@@ -45,28 +58,51 @@ impl Stack {
 /// The stacks that no task uses now.
 pub struct StackPool {
     stack_bytes: usize,
+    /// Shadow stacks were on when the pool started. A program cannot turn them off later.
+    shadow: bool,
     free: Mutex<Vec<Stack>>,
 }
 
 impl StackPool {
     /// A pool of stacks with room for `stack_bytes` each, rounded up to a page.
     pub fn new(stack_bytes: usize) -> StackPool {
-        // The switch does not move a shadow stack yet. With shadow stacks on, the first switch to
-        // a new stack would stop the program with a fault that names no cause.
-        if shadow_stacks_are_on() {
-            eprintln!("vx: the task stacks do not support shadow stacks yet");
+        let shadow = shadow_stacks_are_on();
+        // The x86-64 switch does not move a shadow stack yet. With shadow stacks on, the first
+        // switch to a new stack would stop the program with a fault that names no cause.
+        if shadow && !cfg!(target_arch = "aarch64") {
+            eprintln!("vx: the task stacks do not support shadow stacks on this machine yet");
             std::process::abort();
         }
         let page = page_bytes();
         StackPool {
             stack_bytes: stack_bytes.div_ceil(page) * page,
+            shadow,
             free: Mutex::new(Vec::new()),
         }
     }
 
+    /// Gives `stack` a new shadow stack, when shadow stacks are on. False when the kernel gives
+    /// no more mappings.
+    fn add_shadow(&self, stack: &mut Stack) -> bool {
+        if !self.shadow {
+            return true;
+        }
+        // A frame that calls keeps its return address in at least 16 bytes of the stack, and the
+        // shadow stack keeps it in 8.
+        let page = page_bytes();
+        let bytes = (self.stack_bytes / 2).div_ceil(page) * page;
+        stack.shadow = map_shadow(bytes).map(|map| Shadow { map, bytes });
+        stack.shadow.is_some()
+    }
+
     /// A stack from the pool, or a new one. `None` when the kernel gives no more mappings.
     pub fn take(&self) -> Option<Stack> {
-        if let Some(stack) = self.free.lock().unwrap().pop() {
+        let reused = self.free.lock().unwrap().pop();
+        if let Some(mut stack) = reused {
+            if !self.add_shadow(&mut stack) {
+                self.free.lock().unwrap().push(stack);
+                return None;
+            }
             return Some(stack);
         }
         let page = page_bytes();
@@ -83,9 +119,10 @@ impl StackPool {
             if map == libc::MAP_FAILED {
                 return None;
             }
-            let stack = Stack {
+            let mut stack = Stack {
                 map: map as *mut u8,
                 map_bytes,
+                shadow: None,
             };
             if libc::mprotect(map, page, libc::PROT_NONE) != 0 {
                 drop_mapping(&stack);
@@ -98,21 +135,30 @@ impl StackPool {
                 self.stack_bytes,
                 libc::MADV_NOHUGEPAGE,
             );
+            if !self.add_shadow(&mut stack) {
+                drop_mapping(&stack);
+                return None;
+            }
             Some(stack)
         }
     }
 
     /// Clears `stack` and keeps it for the next task. The next task cannot read the data of the
     /// last one, and the kernel gets the pages back.
-    pub fn give_back(&self, stack: Stack) {
+    ///
+    /// The shadow stack goes back to the kernel. It still holds the return addresses of the
+    /// last task, and a token in the middle, so the next task gets a new one.
+    pub fn give_back(&self, mut stack: Stack) {
         clear(&stack, self.stack_bytes);
+        drop_shadow(&mut stack);
         self.free.lock().unwrap().push(stack);
     }
 }
 
 impl Drop for StackPool {
     fn drop(&mut self) {
-        for stack in self.free.get_mut().unwrap().drain(..) {
+        for mut stack in self.free.get_mut().unwrap().drain(..) {
+            drop_shadow(&mut stack);
             drop_mapping(&stack);
         }
     }
@@ -157,6 +203,27 @@ fn drop_mapping(stack: &Stack) {
     assert_eq!(r, 0, "munmap of a task stack failed");
 }
 
+fn drop_shadow(stack: &mut Stack) {
+    if let Some(shadow) = stack.shadow.take() {
+        let r = unsafe { libc::munmap(shadow.map as *mut libc::c_void, shadow.bytes) };
+        assert_eq!(r, 0, "munmap of a shadow stack failed");
+    }
+}
+
+/// A new shadow stack of `bytes`, with a token in its top word, or `None`.
+#[cfg(target_os = "linux")]
+fn map_shadow(bytes: usize) -> Option<*mut u8> {
+    const SYS_MAP_SHADOW_STACK: libc::c_long = 453;
+    const SHADOW_STACK_SET_TOKEN: libc::c_long = 1;
+    let r = unsafe { libc::syscall(SYS_MAP_SHADOW_STACK, 0, bytes, SHADOW_STACK_SET_TOKEN) };
+    (r != -1).then_some(r as *mut u8)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn map_shadow(_bytes: usize) -> Option<*mut u8> {
+    unreachable!("shadow stacks are on only on Linux")
+}
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn shadow_stacks_are_on() -> bool {
     const ARCH_SHSTK_STATUS: libc::c_long = 0x5005;
@@ -197,7 +264,12 @@ pub type StackEntry = unsafe extern "C" fn(arg: *mut u8) -> !;
 /// The stack must stay mapped until `entry` switches away for the last time.
 pub unsafe fn start_on(stack: &Stack, entry: StackEntry, arg: *mut u8) -> *mut u8 {
     let top = stack.top() as usize & !15;
-    arch::first_frame(top as *mut usize, entry, arg)
+    // The token in the top word of the shadow stack.
+    let token = stack
+        .shadow
+        .as_ref()
+        .map_or(0, |s| s.map as usize + s.bytes - 8);
+    arch::first_frame(top as *mut usize, entry, arg, token)
 }
 
 /// Saves the registers that a call must keep, stores the stack pointer in `*from`, and continues
@@ -217,7 +289,13 @@ mod arch {
     // r12, rbx, rbp, and the address that `ret` continues at.
     const SAVED_WORDS: usize = 8;
 
-    pub unsafe fn first_frame(top: *mut usize, entry: StackEntry, arg: *mut u8) -> *mut u8 {
+    pub unsafe fn first_frame(
+        top: *mut usize,
+        entry: StackEntry,
+        arg: *mut u8,
+        shadow_token: usize,
+    ) -> *mut u8 {
+        assert_eq!(shadow_token, 0, "this switch does not move a shadow stack");
         // After the `ret` into `start`, the stack pointer is a multiple of 16, as a call needs.
         let frame = top.sub(SAVED_WORDS + 2);
         let words: [usize; SAVED_WORDS] = [
@@ -272,21 +350,32 @@ mod arch {
     use super::StackEntry;
 
     // The saved frame, from the stack pointer up: x19 to x28, x29, x30 (the return address),
-    // d8 to d15, and FPCR. 22 words, and two more keep the stack pointer a multiple of 16.
+    // d8 to d15, FPCR, and the shadow word. 22 words, a multiple of 16 bytes.
+    //
+    // The shadow word is the address of the token on the shadow stack of the frame, or 0 with
+    // shadow stacks off. Bit 0 says that the frame is new: no call put `start` on its shadow
+    // stack, so the switch branches to it and does not return to it.
     const SAVED_WORDS: usize = 22;
 
-    pub unsafe fn first_frame(top: *mut usize, entry: StackEntry, arg: *mut u8) -> *mut u8 {
+    pub unsafe fn first_frame(
+        top: *mut usize,
+        entry: StackEntry,
+        arg: *mut u8,
+        shadow_token: usize,
+    ) -> *mut u8 {
         let frame = top.sub(SAVED_WORDS);
         std::ptr::write_bytes(frame, 0, SAVED_WORDS);
         *frame.add(0) = entry as *const () as usize; // x19
         *frame.add(1) = arg as usize; // x20
         *frame.add(11) = start as *const () as usize; // x30
+        *frame.add(21) = shadow_token | 1;
         frame as *mut u8
     }
 
+    // `hint #38` is `bti jc`: the switch branches here.
     #[unsafe(naked)]
     unsafe extern "C" fn start() {
-        core::arch::naked_asm!("mov x0, x20", "blr x19", "brk #1")
+        core::arch::naked_asm!("hint #38", "mov x0, x20", "blr x19", "brk #1")
     }
 
     #[unsafe(naked)]
@@ -305,11 +394,26 @@ mod arch {
             "stp d14, d15, [sp, #144]",
             "mrs x9, fpcr",
             "str x9, [sp, #160]",
+            "str xzr, [sp, #168]",
+            // `hint #40` is `chkfeat x16`. It clears bit 0 when shadow stacks are on, and a CPU
+            // with no shadow stacks runs it as a no-op.
+            "mov x16, #1",
+            "hint #40",
+            "tbnz x16, #0, 1f",
+            // Move to the shadow stack of `to` (`gcsss1`). Then put a token on the old one, and
+            // keep its address in the frame that this switch saves (`gcsss2`).
+            "ldr x9, [x1, #168]",
+            "and x9, x9, #0xfffffffffffffffe",
+            "sys #3, c7, c7, #2, x9",
+            "sysl x10, #3, c7, c7, #3",
+            "str x10, [sp, #168]",
+            "1:",
             "mov x9, sp",
             "str x9, [x0]",
             "mov sp, x1",
             "ldr x9, [sp, #160]",
             "msr fpcr, x9",
+            "ldr x10, [sp, #168]",
             "ldp x19, x20, [sp, #0]",
             "ldp x21, x22, [sp, #16]",
             "ldp x23, x24, [sp, #32]",
@@ -321,9 +425,45 @@ mod arch {
             "ldp d12, d13, [sp, #128]",
             "ldp d14, d15, [sp, #144]",
             "add sp, sp, #176",
+            "tbnz x10, #0, 2f",
             "ret",
+            "2:",
+            "br x30",
         )
     }
+}
+
+/// Turns on shadow stacks for this thread, with a system call that returns through no
+/// function. False when the CPU or the kernel has none.
+#[cfg(all(test, target_os = "linux", target_arch = "aarch64"))]
+#[inline(always)]
+pub(crate) fn turn_on_shadow_stacks() -> bool {
+    const PR_SET_SHADOW_STACK_STATUS: i64 = 75;
+    const PR_SHADOW_STACK_ENABLE: i64 = 1;
+    let r: i64;
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            inlateout("x0") PR_SET_SHADOW_STACK_STATUS => r,
+            in("x1") PR_SHADOW_STACK_ENABLE,
+            in("x2") 0,
+            in("x3") 0,
+            in("x4") 0,
+            in("x8") libc::SYS_prctl,
+        );
+    }
+    r == 0
+}
+
+/// A test with shadow stacks found none. When VX_REQUIRE_SHADOW_STACKS is not empty, as in CI,
+/// the test fails. Otherwise it passes and says that it checked nothing.
+#[cfg(all(test, target_os = "linux", target_arch = "aarch64"))]
+pub(crate) fn found_no_shadow_stacks() {
+    let message = "this CPU or kernel has no shadow stacks, so the test checked nothing";
+    if std::env::var_os("VX_REQUIRE_SHADOW_STACKS").is_some_and(|v| !v.is_empty()) {
+        panic!("{message}, and VX_REQUIRE_SHADOW_STACKS is set");
+    }
+    eprintln!("{message}");
 }
 
 // To run these tests for aarch64 on an x86_64 machine, install qemu-user and
@@ -552,5 +692,61 @@ mod tests {
             "the switch back lost the rounding mode"
         );
         pool.give_back(stack);
+    }
+
+    /// Exit codes of the child process.
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    const NO_SHADOW_STACKS: i32 = 77;
+
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[test]
+    fn tasks_switch_with_shadow_stacks_on() {
+        // A return to a frame from before shadow stacks were on fails, so the child turns them
+        // on, and then ends with `_exit`, which does not return.
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0, "fork failed");
+        if child == 0 {
+            if !turn_on_shadow_stacks() {
+                unsafe { libc::_exit(NO_SHADOW_STACKS) };
+            }
+            let pool = StackPool::new(STACK_BYTES);
+            assert!(pool.shadow, "the pool did not see the shadow stacks");
+            // Twice, so that a stack from the pool also gets a working shadow stack.
+            for _ in 0..2 {
+                let stack = pool.take().expect("a stack");
+                assert!(stack.shadow.is_some(), "the stack has no shadow stack");
+                let mut s = Switches {
+                    test: std::ptr::null_mut(),
+                    task: std::ptr::null_mut(),
+                    stack_bottom: stack.bottom() as usize,
+                    stack_top: stack.top() as usize,
+                    local_at: 0,
+                    rounds: 100,
+                    task_result: 0,
+                };
+                let rounds = s.rounds;
+                let p = &raw mut s;
+                let test_result = unsafe {
+                    (*p).task = start_on(&stack, count_rounds, p as *mut u8);
+                    live_values(rounds + 1, || switch(&raw mut (*p).test, (*p).task))
+                };
+                assert_eq!(s.task_result, live_values(rounds, || ()));
+                assert_eq!(test_result, live_values(rounds + 1, || ()));
+                pool.give_back(stack);
+            }
+            unsafe { libc::_exit(0) };
+        }
+        let mut status = 0;
+        unsafe { libc::waitpid(child, &mut status, 0) };
+        if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == NO_SHADOW_STACKS {
+            found_no_shadow_stacks();
+            return;
+        }
+        assert!(
+            libc::WIFEXITED(status),
+            "the child stopped with signal {}: a switch broke the shadow stack, or a check failed",
+            libc::WTERMSIG(status)
+        );
+        assert_eq!(libc::WEXITSTATUS(status), 0, "a check in the child failed");
     }
 }

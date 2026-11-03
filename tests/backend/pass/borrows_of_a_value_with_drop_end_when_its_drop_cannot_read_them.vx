@@ -1,0 +1,75 @@
+//===- borrows_of_a_value_with_drop_end_when_its_drop_cannot_read_them.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// What a value borrows is free again before the end of its block when the value was moved
+// away, or when its `drop` cannot read the references: a `Vec<&i32>` only frees its buffer.
+// A function may return a shared reference that a value dropped as it returns holds.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator cannot lower a `Vec<&i32>`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}reader sees 1; moved=5;{{$}}
+// CHECK-NEXT: {{^}}first=2; vec=6;{{$}}
+// CHECK-NEXT: {{^}}reader sees 7; shared=7;{{$}}
+
+import core::mem;
+import core::ops;
+import std::vec;
+
+struct Reader {
+  r : &i32,
+}
+
+impl Drop for Reader {
+  fn drop(self : &mut Reader) -> void {
+    print!("reader sees {}; ", *self.r);
+  }
+}
+
+fn moved_away() -> void {
+  let mut x = 1;
+  let rd = Reader {
+    r : &x
+  };
+  drop(rd);
+  x = 5;
+  println!("moved={};", x);
+}
+
+struct Bag {
+  items : Vec<&i32>,
+  first : &i32,
+}
+
+fn in_a_struct_with_a_vec() -> void {
+  let mut x = 2;
+  let mut items = Vec<&i32>::new();
+  items.push(&x);
+  let b = Bag {
+    items : items,
+    first : &x
+  };
+  print!("first={}; ", *b.first);
+  x = 6;
+  println!("vec={};", x);
+}
+
+fn shared_from(rd : Reader) -> &i32 {
+  return rd.r;
+}
+
+fn main() -> i32 {
+  moved_away();
+  in_a_struct_with_a_vec();
+  let x = 7;
+  let r = shared_from(Reader {
+    r : &x
+  });
+  println!("shared={};", *r);
+  return 0;
+}

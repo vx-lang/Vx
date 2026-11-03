@@ -15,6 +15,19 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let ReturnStmt { expr, span: _ } = self;
+        // A `return` in a task ends the task with the value.
+        if super::expr::leaving_task(gen) {
+            let (val, block) = match expr {
+                Some(e) => {
+                    let (val, _, block) = gen.generate_expr(e, block)?;
+                    (Some(val), block)
+                }
+                None => (None, block),
+            };
+            let block = gen.run_value_drops(block)?;
+            super::expr::emit_task_exit(gen, block, val)?;
+            return Ok(None);
+        }
         // A bare `return;` -- only a `void` function may write one, which the checker enforces.
         // Nothing to compute and nothing to convert, so emit the terminator and stop.
         let Some(expr) = expr else {
@@ -116,10 +129,6 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         // Returning through a buffer the caller allocated: copy the result in and return nothing.
         // A `vx.return` is a spawn region's yield rather than the function's, so it is untouched.
         if let Some(slot) = gen.current_return_slot.filter(|_| !gen.in_spawn) {
-            assert!(
-                gen.tasks_exits.is_empty(),
-                "a tasks block in a function that returns through a slot runs in place"
-            );
             if val != slot {
                 let copy_op = OperationBuilder::new("memref.copy", gen.loc())
                     .add_operands(&[val, slot])
@@ -136,8 +145,10 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
                     .build()?;
                 block.append_operation(drop);
             }
+            // In the region of a `tasks` block, the return leaves the region, and the function
+            // returns after the block.
             let block = gen.run_value_drops(block)?;
-            block.append_operation(OperationBuilder::new(op_name, gen.loc()).build()?);
+            super::expr::emit_func_return(gen, block, None)?;
             gen.has_returned = true;
             return Ok(None);
         }

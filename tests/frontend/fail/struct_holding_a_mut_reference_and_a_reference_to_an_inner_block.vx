@@ -70,6 +70,8 @@ fn mut_reference_given_last() -> i32 {
     // CHECK-NOT: Error
     // CHECK: Error[E4005] at {{.*}}struct_holding_a_mut_reference_and_a_reference_to_an_inner_block.vx:[[# @LINE + 1]]:7: `q` holds a `&mut` to a variable of an outer block
     q.out = &mut me_out;
+    // `q` is dropped at the end of the block, and its `drop` may still use `&mut other`.
+    // CHECK: Error[E4004] at {{.*}}struct_holding_a_mut_reference_and_a_reference_to_an_inner_block.vx:[[# @LINE + 1]]:17: Cannot borrow 'other' because it is already borrowed as mutable.
     print(other.len());
   }
   return me_out.len();

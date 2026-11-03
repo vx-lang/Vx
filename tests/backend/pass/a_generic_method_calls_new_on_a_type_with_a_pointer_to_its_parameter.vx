@@ -1,0 +1,46 @@
+//===- a_generic_method_calls_new_on_a_type_with_a_pointer_to_its_parameter.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Inside `impl<T> Holder<T>`, the calls `Cell<*mut T>::new` and `Cell<*const T>::new` must
+// use `i32` for `T` when `T` is `i32`. Before, `T` stayed in the name and the compile failed
+// with E3003.
+//
+// EXPECT: 5 5
+struct Cell<U> {
+  v : U,
+}
+
+impl<U> Cell<U> {
+  fn new(v : U) -> Cell<U> {
+    return Cell<U> {
+      v: v
+    };
+  }
+}
+
+struct Holder<T> {
+  m : Cell<*mut T>,
+  c : Cell<*const T>,
+}
+
+impl<T> Holder<T> {
+  fn new(p : *mut T) -> Holder<T> {
+    return Holder<T> {
+      m: Cell<*mut T>::new(p),
+      c: Cell<*const T>::new(p as *const T)
+    };
+  }
+}
+
+fn main() -> i32 {
+  let mut a : i32 = 5;
+  let h = Holder<i32>::new((&mut a) as *mut i32);
+  print(unsafe { *h.m.v });
+  print!(" ");
+  print(unsafe { *h.c.v });
+  return 0;
+}

@@ -1,6 +1,6 @@
 # Tasks that wait, channels, and errors from tasks
 
-Status: agreed, except decision 9 (who owns a task's error, #1937). Issues:
+Status: agreed. Issues:
 #1865, #1864, #1893. Tracking: #1870.
 Builds on `cpu_tasks_send_sync_and_shared_atomics.md` (T1 to T8, S1 to S6) and the memory model
 (C0 to C7).
@@ -323,7 +323,7 @@ requests that worked, or to try another source after a failure, the task returns
 The compiler knows `Result` by name, as it knows `SharedCell`. `panic` still stops the program
 (T6), so Vx needs no unwinding.
 
-**F2. `?`.** Vx has no `?` today. This design adds one:
+**F2. `?`.**
 
 - `x?` returns the `Err` of `x` unchanged. The type of the error must be the `E` of the target. It
   does not convert the error, because Vx has no implicit conversions. `.map_err(..)` converts it.
@@ -333,6 +333,8 @@ The compiler knows `Result` by name, as it knows `SharedCell`. `panic` still sto
   task is (F3). An `Err` that is the last value of the block is also a failure.
 - In a `spawn` body, `return` leaves the task. A `break` or `continue` that targets a loop outside
   the body is a compile error.
+- Done for a function, the code of a `tasks` block, and a `spawn` body (E3063). A closure has no
+  early exit yet, so a `?` there is an error (#2540).
 
 So passing `Cancelled` up costs more in Vx than in Rust: Rust's `?` converts it with `From`. A
 function with its own error enum needs a `Cancelled` case in it, or a `.map_err(..)` at each wait.
@@ -574,8 +576,8 @@ We chose these on 2026-10-19, from the recommendations of a review.
    and the block owns its first failure (F1, F3a). One other choice: `join()` gives a
    `Result<T, &E>`. The code can read it but not pass it up with `?`, so each join needs a `match`.
    Another: `join()` gives the `Err` by value, and the code must pass it up on every path. That
-   needs a flow check, and it can give the block a second error that is not the first. Open. The
-   recommendation is the first.
+   needs a flow check, and it can give the block a second error that is not the first. Chosen:
+   the first (#2105).
 
 The review also settled two earlier questions: `select` starts its search round robin (M3), and
 the memory-space type decides what can go between targets (M6).

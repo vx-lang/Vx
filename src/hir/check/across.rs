@@ -16,7 +16,7 @@
 use crate::arch::{Level, LevelKind};
 use crate::hir::check::{across_lanes, lanes};
 use crate::syntax::stmt::{ForLoopStmt, Statement};
-use crate::syntax::{Expr, Span};
+use crate::syntax::{ElementType, Expr, RelationalOp, Span};
 use std::collections::{HashMap, HashSet};
 
 /// The `spawn on` region that a statement is in.
@@ -74,6 +74,9 @@ struct Walk<'g> {
     /// The level of each `across` loop, by the position of its clause, with the lanes of a
     /// subgroup of its topology, and whether `-fauto-schedule-levels` makes it a plain `for`.
     found: HashMap<Span, (LevelKind, Option<u64>, bool)>,
+    /// The largest end of each `across` loop whose index wraps for a large size, with the type of
+    /// the index, by the position of its clause.
+    largest_ends: HashMap<Span, (i128, ElementType)>,
     /// `-fauto-schedule-levels`.
     auto_schedule: bool,
     /// The memories with `scope: cta` or `scope: sm`, whose tensors the lanes of a block share.
@@ -103,7 +106,7 @@ impl crate::hir::TypeChecker<'_> {
     pub(crate) fn check_across_loops(
         &mut self,
         params: &[(crate::symbol::Symbol, crate::syntax::Type)],
-        body: &mut [Statement],
+        body: &mut Vec<Statement>,
     ) {
         let read_only = params
             .iter()
@@ -129,6 +132,7 @@ impl crate::hir::TypeChecker<'_> {
             graph: self.transfer_cost_graph,
             errors: Vec::new(),
             found: HashMap::new(),
+            largest_ends: HashMap::new(),
             auto_schedule: self.worker.global.auto_schedule_levels,
             shared,
             contracts: self.atomic_contracts(),
@@ -138,6 +142,7 @@ impl crate::hir::TypeChecker<'_> {
         };
         walk.stmts(body, &Ctx::default());
         mark_stmts(body, &walk.found);
+        check_sizes_at_launch(body, &walk.largest_ends, !walk.errors.is_empty());
         walk.lane_reductions(body);
         // The proof of an outer loop also walks the inner loops, so one place can come twice.
         let mut seen = HashSet::new();
@@ -1119,12 +1124,18 @@ impl Walk<'_> {
             }
         }
         // L4: no pass may touch a place that another pass writes.
-        if let Some((why, at)) = crate::hir::check::across_proof::across_loop_race(
+        match crate::hir::check::across_proof::across_loop_race(
             f,
             kind_word(level.kind),
             &self.contracts,
         ) {
-            self.error(why, at);
+            Err((why, at)) => self.error(why, at),
+            Ok(ends) => {
+                for (at, end, ty) in ends {
+                    let e = self.largest_ends.entry(at).or_insert((end, ty));
+                    e.0 = e.0.min(end);
+                }
+            }
         }
         // L5: a lane loop may not read what only lane 0 has.
         if level.kind != LevelKind::Blocks {
@@ -1154,6 +1165,122 @@ impl Walk<'_> {
         }
         self.stmts(&f.body, &body);
     }
+}
+
+/// Puts an `assert` before each `spawn on` statement for each loop in its region that `ends`
+/// names. The `assert` stops the program when the end of the loop is larger than the end in
+/// `ends`. The host computes it, so the end may only read values from outside the region.
+fn check_sizes_at_launch(
+    stmts: &mut Vec<Statement>,
+    ends: &HashMap<Span, (i128, ElementType)>,
+    has_errors: bool,
+) {
+    if ends.is_empty() {
+        return;
+    }
+    let mut i = 0;
+    while i < stmts.len() {
+        let mut checks = Vec::new();
+        match &mut stmts[i] {
+            Statement::ForLoop(f) => check_sizes_at_launch(&mut f.body, ends, has_errors),
+            Statement::Loop(l) => check_sizes_at_launch(&mut l.body, ends, has_errors),
+            Statement::LetDecl(crate::syntax::stmt::LetDeclStmt { expr, .. })
+            | Statement::ExprStmt(crate::syntax::stmt::ExprStmtStmt { expr, .. }) => match expr {
+                Expr::SpawnOn(sp) => checks = launch_checks(&sp.stmts, ends, has_errors),
+                Expr::If(c) => {
+                    check_sizes_at_launch(&mut c.then_block, ends, has_errors);
+                    if let Some(b) = c.else_block.as_mut() {
+                        check_sizes_at_launch(b, ends, has_errors);
+                    }
+                }
+                Expr::UnsafeBlock(b) => check_sizes_at_launch(&mut b.stmts, ends, has_errors),
+                _ => {}
+            },
+            Statement::Return(crate::syntax::stmt::ReturnStmt {
+                expr: Some(Expr::SpawnOn(sp)),
+                ..
+            }) => checks = launch_checks(&sp.stmts, ends, has_errors),
+            _ => {}
+        }
+        // The checker can walk a function twice, so the checks can be there already.
+        checks.retain(|c| !stmts[..i].contains(c));
+        let n = checks.len();
+        stmts.splice(i..i, checks);
+        i += n + 1;
+    }
+}
+
+/// The `assert`s for the loops of a region, as `check_sizes_at_launch` describes them.
+fn launch_checks(
+    region: &[Statement],
+    ends: &HashMap<Span, (i128, ElementType)>,
+    has_errors: bool,
+) -> Vec<Statement> {
+    let mut inside = HashSet::new();
+    across_lanes::visit_stmts(region, &mut |s| match s {
+        Statement::LetDecl(l) => {
+            inside.insert(l.name.as_ref().to_string());
+        }
+        Statement::ForLoop(f) => {
+            inside.insert(f.iter.clone());
+        }
+        _ => {}
+    });
+    let mut checks = Vec::new();
+    across_lanes::visit_stmts(region, &mut |s| {
+        let Statement::ForLoop(f) = s else {
+            return;
+        };
+        let (Some(a), Expr::Range(r)) = (&f.across, &*f.iterable) else {
+            return;
+        };
+        let Some((end, ty)) = ends.get(&a.span) else {
+            return;
+        };
+        let max = crate::hir::comptime_interpreter::ComptimeInterpreter::integer_range(ty)
+            .map_or(i128::MAX, |(_, hi)| hi);
+        // An end of the type is never larger.
+        if *end > max {
+            return;
+        }
+        // Only a loop of blocks has an end that is not a number, and the checker refuses one
+        // that reads a value of the region.
+        let mut reads_inside = false;
+        crate::syntax::visit_expr(&r.end, &mut |e| {
+            if let Expr::Identifier(id) = e {
+                reads_inside |= inside.contains(id.name.as_ref());
+            }
+        });
+        if reads_inside {
+            assert!(
+                has_errors,
+                "the end of the `across` loop at line {} reads a value of its region",
+                a.span.line
+            );
+            return;
+        }
+        let mut cond = crate::syntax::RelationalOpExpr::new(
+            r.end.clone(),
+            RelationalOp::Le,
+            Box::new(Expr::Number(crate::syntax::NumberExpr::new(
+                end.to_string(),
+                Some(ty.clone()),
+                a.span,
+            ))),
+            a.span,
+        );
+        cond.operand_ty = Some(ty.clone());
+        checks.push(Statement::Assert(crate::syntax::stmt::AssertStmt::new(
+            Box::new(Expr::RelationalOp(cond)),
+            Some(format!(
+                "the end of the `across` loop at line {} is larger than {end}, so an index of \
+                 the loop wraps. Compute the index with a wider type, such as `i64`",
+                a.span.line
+            )),
+            a.span,
+        )));
+    });
+    checks
 }
 
 /// Gives each `across` loop in `stmts` the level that the walk found for it. A loop in a place
