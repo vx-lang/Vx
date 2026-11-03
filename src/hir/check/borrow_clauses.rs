@@ -355,6 +355,58 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `vxc --print-borrow-clauses`: print each `!` clause that the walk proves for `f`, as
+    /// `f: ensures !reaches(return, *key)`. An instance of a generic function is not printed.
+    pub(crate) fn print_proved_borrow_clauses(&self, f: &Function) {
+        if self.print_borrow_clauses.is_none()
+            || f.file != self.print_borrow_clauses
+            || f.name.contains('$')
+            || f.params.len() > 32
+        {
+            return;
+        }
+        let body = {
+            let instances = &self.mono.return_provenances;
+            let functions = &self.env.return_provenances;
+            let callee = |name: &str| instances.get(name).or_else(|| functions.get(name)).copied();
+            let not_kept = |name: &str| self.not_kept_by(name);
+            crate::hir::provenance::walk_body(f, &self.env.decls, &callee, &not_kept)
+        };
+        let references: Vec<(usize, &crate::symbol::Symbol)> = f
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, ty))| matches!(ty, Type::Borrow { .. }))
+            .map(|(i, (p, _))| (i, p))
+            .collect();
+        let mut proved = Vec::new();
+        if let ReturnProvenance::FromParams { into, held } = body.result {
+            for &(i, p) in &references {
+                if (into | held) & (1 << i) == 0 {
+                    proved.push(format!("!reaches(return, *{p})"));
+                } else if into & (1 << i) == 0 {
+                    proved.push(format!("!points_into(return, *{p})"));
+                }
+            }
+        }
+        // `!keeps(p)` helps a caller only when the call gets something else that a reference can
+        // be stored through.
+        let stores_through: Vec<bool> = f
+            .params
+            .iter()
+            .map(|(_, ty)| self.env.decls.can_store_through(ty, 0))
+            .collect();
+        for &(i, p) in &references {
+            let elsewhere = (0..f.params.len()).any(|j| j != i && stores_through[j]);
+            if elsewhere && !body.stored_anywhere && body.stored & (1 << i) == 0 {
+                proved.push(format!("!keeps({p})"));
+            }
+        }
+        for clause in proved {
+            println!("{}: ensures {clause}", f.name);
+        }
+    }
+
     /// The parameters that the function `name` says `!keeps` for, as bits. A call stores no
     /// argument for them.
     pub(crate) fn not_kept_by(&self, name: &str) -> u32 {

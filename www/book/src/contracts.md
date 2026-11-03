@@ -243,6 +243,10 @@ the body.
 
 Write each borrow clause as an `ensures` of its own. The prover does not read borrow clauses.
 
+`vxc --print-borrow-clauses file.vx` prints each `!` clause that the compiler can prove for each
+function of the file, such as `find: ensures !reaches(return, *key)`. Copy a clause into the
+signature to make it part of the contract.
+
 ## Diagnostics
 
 Contract failures report under their own codes. The full list is in the

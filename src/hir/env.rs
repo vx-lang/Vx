@@ -512,6 +512,9 @@ pub struct TypeChecker<'a> {
     pub env: &'a GlobalAstEnv<'a>,
     pub(crate) scopes: Vec<HashMap<crate::symbol::Symbol, (Type, Topology)>>,
     pub allow_cross_topology: bool,
+    /// `vxc --print-borrow-clauses`: print the borrow clauses that the checker can prove for each
+    /// function of this file.
+    pub print_borrow_clauses: Option<crate::symbol::Symbol>,
     pub errors: crate::diagnostic::DiagnosticsVec,
     pub(crate) in_unsafe_block: bool,
     /// Inside the body of an `unsafe fn`, whose caller keeps the promises the body cannot check.
@@ -648,6 +651,7 @@ impl<'a> TypeChecker<'a> {
             in_written_unsafe_block: false,
             unsafe_op_seen: false,
             allow_cross_topology: false,
+            print_borrow_clauses: None,
             active_topology: Topology::CPU,
             active_memory,
             active_space_declares_dtypes,
@@ -2009,6 +2013,7 @@ impl<'a> TypeChecker<'a> {
         let speculating = std::mem::replace(&mut self.speculating, false);
         self.check_integer_literals_fit(&func.body);
         self.check_borrow_clauses(func);
+        self.print_proved_borrow_clauses(func);
         self.speculating = speculating;
 
         self.seam.contracts = prev_contracts;
