@@ -6101,7 +6101,12 @@ impl<'r> Lowerer<'r> {
                         .push((self.code.len(), clause, second));
                 }
             }
-            self.emit_effect(store, place.reg, value.reg, 0);
+            let imm = if is_ptr {
+                0
+            } else {
+                self.lane_element_store(ix)
+            };
+            self.emit_effect(store, place.reg, value.reg, imm);
             return Ok(());
         }
         // `*t = v` with `t : &mut Tensor<..>`: the new tensor's elements are written into the one

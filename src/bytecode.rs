@@ -374,6 +374,18 @@ pub const LANE_REDUCE_SUBGROUP: u64 = 4;
 /// `operand2` the tensor of indices, and the `Arg` just before is the count. The result is an
 /// `i32`.
 pub const LANE_REDUCE_ARGMAX: u64 = 8;
+/// `Opcode::LaneReduce` in the code of a subgroup: each tensor is `&tile[w]`, with `w` the index
+/// of the subgroup loop. So it is the row that a `TENSOR_STORE_LANE_ELEMENT` store of the
+/// subgroup writes.
+pub const LANE_REDUCE_OWN_ROW: u64 = 16;
+
+/// `Opcode::TensorStore`: the place is `tile[t]` in a lane loop of the code of a block, with `t`
+/// the index of the loop. The loop goes from 0 over all of its lanes, so only lane `t` writes the
+/// element.
+pub const TENSOR_STORE_BLOCK_LANE_ELEMENT: u64 = 1;
+/// `Opcode::TensorStore`: as `TENSOR_STORE_BLOCK_LANE_ELEMENT`, but `tile[w][t]` in the code of a
+/// subgroup, with `w` the index of the subgroup loop.
+pub const TENSOR_STORE_SUBGROUP_LANE_ELEMENT: u64 = 2;
 
 /// `Opcode::LoopHint`: the loop was `across` a level of blocks.
 pub const LOOP_HINT_BLOCKS: u64 = 0;
