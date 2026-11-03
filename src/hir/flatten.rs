@@ -4541,7 +4541,8 @@ impl<'r> Lowerer<'r> {
     /// The lowered type of an enum payload. A generic struct instance, such as `SendError<i64>`,
     /// has no registry layout of its own, so it gets its concrete layout here.
     fn payload_lowered_ty(&mut self, ty: &Type) -> Option<LoweredTy> {
-        if let Some(lty) = lowered_ty(ty, self.registry) {
+        // An enum with data, generic or not, has an instance layout of its own.
+        if let Some(lty) = self.lower_ty_synth(ty) {
             return Some(lty);
         }
         match ty {

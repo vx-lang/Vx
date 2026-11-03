@@ -1383,6 +1383,38 @@ const READ_INNER: &str = "enum Inner { Value(i64), Empty }\n\
      fn inner_value(i : Inner) -> i64 { match i { \
        Inner::Value(n) => { return n; } Inner::Empty => { return 0; } } }\n";
 
+fn assert_enum_layout_declines(src: &str) {
+    let mut program = parse(src);
+    program.module_path = "crate::diff".into();
+    let mut mods = vec![program];
+    let symbol_map = vxc::resolver::build_symbol_map(&mods);
+    mods[0].resolve_names(&symbol_map, &[]);
+    let registry = vxc::pipeline::build_frozen_registry(&mods).expect("registry builds");
+    let session = std::sync::Arc::new(GlobalSession::with_registry(1, registry));
+    let env_mods = mods.clone();
+    let env = GlobalAstEnv::build(&env_mods);
+    let mut worker = LocalWorkerState::new(session);
+    {
+        let mut checker = TypeChecker::new(&env, &mut worker);
+        for function in &mut mods[0].functions {
+            checker.check_function(function);
+        }
+        assert_eq!(checker.errors.error_count(), 0, "fixture must type-check");
+    }
+    let main = mods[0]
+        .functions
+        .iter()
+        .find(|function| function.name.as_ref() == "main")
+        .expect("fixture has main");
+    assert_eq!(
+        lower_function_to_hir(main, &mut worker),
+        Err(vxc::decline::Decline::TypeNotModelled {
+            what: "an enum with no modelled instance layout",
+        }),
+        "the unsupported payload must decline during layout resolution"
+    );
+}
+
 #[test]
 fn flat_matches_ast_for_an_enum_with_a_nested_payload() {
     assert_parity(
@@ -1414,6 +1446,19 @@ fn flat_matches_ast_for_the_first_variant_of_an_enum_with_a_nested_payload() {
 }
 
 #[test]
+fn flat_declines_an_enum_with_an_unsupported_nested_payload() {
+    // A function pointer payload has no layout on the flat path. Lower the code but don't run it: a
+    // layout that let the store through would write past the end of `Outer`.
+    assert_enum_layout_declines(
+        "fn add_one(x : i32) -> i32 { return x + 1; }\n\
+         enum Outer { Number(i32), Nested(fn(i32) -> i32) }\n\
+         fn main() -> i32 { \
+           let _value = Outer::Nested(add_one); \
+           return 0; }",
+    );
+}
+
+#[test]
 fn flat_matches_ast_for_a_nested_payload_after_another_payload() {
     assert_parity(
         &format!(
@@ -1425,6 +1470,15 @@ fn flat_matches_ast_for_a_nested_payload_after_another_payload() {
                let v = Outer::Nested(5, Inner::Value(37)); return read(v) as i32; }}"
         ),
         42,
+    );
+}
+
+#[test]
+fn flat_declines_an_enum_with_an_unsupported_first_variant() {
+    // Even constructing the supported variant must reject the incomplete enum layout.
+    assert_enum_layout_declines(
+        "enum Outer { Nested(fn(i32) -> i32), Number(i32) }\n\
+         fn main() -> i32 { let _value = Outer::Number(7); return 0; }",
     );
 }
 
@@ -1443,6 +1497,14 @@ fn flat_matches_ast_for_a_nested_payload_in_the_first_variant() {
 }
 
 #[test]
+fn flat_declines_an_enum_with_an_unsupported_second_payload() {
+    assert_enum_layout_declines(
+        "enum Outer { Numbers(i32, i32), Nested(i32, fn(i32) -> i32) }\n\
+         fn main() -> i32 { let _value = Outer::Numbers(3, 7); return 0; }",
+    );
+}
+
+#[test]
 fn flat_matches_ast_for_a_generic_enum_with_a_nested_payload() {
     assert_parity(
         &format!(
@@ -1454,6 +1516,22 @@ fn flat_matches_ast_for_a_generic_enum_with_a_nested_payload() {
                let v = Outer<Inner>::Nested(Inner::Value(42)); return read(v) as i32; }}"
         ),
         42,
+    );
+}
+
+#[test]
+fn flat_declines_an_enum_with_an_unsupported_second_payload_in_the_first_variant() {
+    assert_enum_layout_declines(
+        "enum Outer { Nested(i32, fn(i32) -> i32), Numbers(i32, i32) }\n\
+         fn main() -> i32 { let _value = Outer::Numbers(3, 7); return 0; }",
+    );
+}
+
+#[test]
+fn flat_declines_an_enum_with_an_unsupported_generic_payload() {
+    assert_enum_layout_declines(
+        "enum Outer<T> { Number(i32), Nested(T) }\n\
+         fn main() -> i32 { let _value = Outer<fn(i32) -> i32>::Number(7); return 0; }",
     );
 }
 
@@ -1527,6 +1605,67 @@ fn parallel_driver_takes_the_flat_path_for_a_nested_enum() {
         return;
     }
     assert_nested_enum_takes_the_flat_path(Some(2));
+}
+
+fn assert_enum_layout_falls_back(jobs: Option<usize>) {
+    use melior::ir::operation::OperationLike;
+
+    let dir = tempfile::tempdir().expect("create fixture directory");
+    let path = dir.path().join("enum_with_a_function_payload.vx");
+    std::fs::write(
+        &path,
+        "fn add_one(x : i32) -> i32 { return x + 1; }\n\
+         enum Outer { Number(i32), Nested(fn(i32) -> i32) }\n\
+         fn main() -> i32 { \
+           let _value = Outer::Nested(add_one); \
+           return 0; }",
+    )
+    .expect("write fixture");
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_vxc"));
+    command
+        .arg(&path)
+        .arg("--emit-mlir")
+        .env("VX_FLAT_DBG", "1");
+    if let Some(jobs) = jobs {
+        command.arg("-j").arg(jobs.to_string());
+    }
+    // Stop before execution: a broken guard could generate an out-of-bounds store.
+    let output = command.output().expect("run compiler");
+    let log = String::from_utf8_lossy(&output.stderr);
+    let context = make_context();
+    let valid_mlir = melior::ir::Module::parse(&context, &String::from_utf8_lossy(&output.stdout))
+        .is_some_and(|module| module.as_operation().verify());
+    let decline = "[flat-codegen] declined main: an enum with no modelled instance layout \
+                   [type-not-modelled(an enum with no modelled instance layout)]";
+    assert_eq!(
+        (
+            output.status.success(),
+            log.contains(decline),
+            log.contains("[flat-codegen] program outside the flat subset; using the AST path"),
+            log.contains("emitted module via the flat path"),
+            jobs.is_none()
+                || log.contains("[parallel-frontend] the flat emitter did not take this program; using the sequential driver"),
+            valid_mlir,
+        ),
+        (true, true, true, false, true, true),
+        "compilation with jobs={jobs:?}: flags are (success, layout decline, AST fallback, \
+         flat module, parallel fallback, valid MLIR)\n{log}\nMLIR:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn driver_falls_back_for_an_unsupported_enum_layout() {
+    assert_enum_layout_falls_back(None);
+}
+
+#[test]
+fn parallel_driver_falls_back_for_an_unsupported_enum_layout() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_enum_layout_falls_back(Some(2));
 }
 
 fn assert_enum_variants_with_different_structs_run(jobs: Option<usize>) {
