@@ -1816,7 +1816,10 @@ impl<'a> TypeChecker<'a> {
         // `return;` -- valid only where there is no value to return. Everything below types a
         // returned expression, so there is nothing left to do once the function type is checked.
         let Some(expr) = expr else {
-            if !crate::syntax::is_void_ty(return_type) {
+            // The first `return` of a closure or a task gives the type of the others.
+            if self.current_return_type == Some(Type::Unknown) {
+                self.current_return_type = Some(Type::Struct("void".into(), None));
+            } else if !crate::syntax::is_void_ty(return_type) {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E3002,
                     format!("this function returns {return_type}, so `return` needs a value"),
