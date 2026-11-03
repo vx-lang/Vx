@@ -1,0 +1,63 @@
+//===- an_impl_that_keeps_the_clause_of_its_trait.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each impl of a trait method gets the borrow clauses of the trait, and the checker proves them
+// against its body. An impl that keeps the clause compiles, and so does the default `second`,
+// which keeps it because each `next` does.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator cannot lower a struct that holds a reference.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}a=10; b=20;{{$}}
+// CHECK-NEXT: {{^}}d=40; e=50;{{$}}
+
+import std::vec;
+
+trait Walk {
+  fn next(self : &mut Self) -> &i64
+  ensures !points_into(return, *self);
+
+  fn second(self : &mut Self) -> &i64
+  ensures !points_into(return, *self)
+  {
+    self.next();
+    return self.next();
+  }
+}
+
+struct Cursor {
+  data : &Vec<i64>,
+  pos : i32,
+}
+
+impl Walk for Cursor {
+  fn next(self : &mut Cursor) -> &i64 {
+    let r = self.data.get_ref(self.pos);
+    self.pos = self.pos + 1;
+    return r;
+  }
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i64>::new();
+  v.push(10i64);
+  v.push(20i64);
+  v.push(30i64);
+  v.push(40i64);
+  v.push(50i64);
+  let mut c = Cursor {
+    data : &v, pos : 0
+  };
+  let a = c.next();
+  let b = c.next();
+  println!("a={}; b={};", *a, *b);
+  let d = c.second();
+  let e = c.next();
+  println!("d={}; e={};", *d, *e);
+  return 0;
+}

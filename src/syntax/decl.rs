@@ -175,6 +175,8 @@ pub struct MethodSignature {
     /// The parameters written `mut`, as for a [`Function`].
     pub mut_params: Vec<Symbol>,
     pub return_type: Type,
+    /// The `ensures` clauses. Each impl of the method gets them too, so each impl must keep them.
+    pub ensures: Vec<crate::syntax::Expr>,
     /// The default body, when the trait writes one instead of a `;`. An impl that does not
     /// provide the method gets a copy of this, with `Self` replaced by the type it is
     /// implemented for. `None` means the method is required.

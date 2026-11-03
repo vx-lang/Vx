@@ -241,7 +241,10 @@ when the body does not keep it. A clause without `!` keeps the default for its p
 where the compiler could find less in the body. A library can use it to keep the freedom to change
 the body.
 
-Write each borrow clause as an `ensures` of its own. The prover does not read borrow clauses.
+Write each borrow clause as an `ensures` of its own. The prover does not read borrow clauses. A
+trait method can have `ensures` clauses too, written after its signature. Each impl of the method
+gets them, also when the impl names a parameter differently, and the compiler checks them against
+each body.
 
 `vxc --print-borrow-clauses file.vx` prints each `!` clause that the compiler can prove for each
 function of the file, such as `find: ensures !reaches(return, *key)`. Copy a clause into the
