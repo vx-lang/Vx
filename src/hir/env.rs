@@ -500,6 +500,9 @@ pub struct TypeChecker<'a> {
     pub allow_cross_topology: bool,
     pub errors: crate::diagnostic::DiagnosticsVec,
     pub(crate) in_unsafe_block: bool,
+    /// The variables that hold a token of `transfer_async`, with the place of their `let` and
+    /// the depth of their scope. Each one must be waited before its scope ends (E6036).
+    pub(crate) tokens: Vec<(crate::symbol::Symbol, Span, usize)>,
     /// Inside the body of an `unsafe fn`, whose caller keeps the promises the body cannot check.
     pub(crate) in_unsafe_fn: bool,
     /// Inside an `unsafe` block someone wrote, not only one the compiler made for `vec![..]`.
@@ -630,6 +633,7 @@ impl<'a> TypeChecker<'a> {
             scopes: vec![HashMap::new()],
             errors: crate::diagnostic::DiagnosticsVec::new(),
             in_unsafe_block: false,
+            tokens: Vec::new(),
             in_unsafe_fn: false,
             in_written_unsafe_block: false,
             unsafe_op_seen: false,
@@ -724,6 +728,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn pop_scope(&mut self) {
+        self.check_tokens_waited();
         if self.traffic.scope_releases.pop().unwrap_or(false) {
             self.traffic.scope_chain.pop();
         }
@@ -1814,8 +1819,14 @@ impl<'a> TypeChecker<'a> {
             walk(&func.return_type, &mut names);
             for n in names {
                 // `void`/`none`/`!` are spelled as nominals but are builtins, and a `Closure_N` is
-                // synthesized by the compiler rather than written by anyone.
-                if n == "void" || n == "none" || n == "!" || n.starts_with("Closure_") {
+                // synthesized by the compiler rather than written by anyone. `Token` is the type
+                // of `transfer_async`.
+                if n == "void"
+                    || n == "none"
+                    || n == "!"
+                    || n == "Token"
+                    || n.starts_with("Closure_")
+                {
                     continue;
                 }
                 let sym = crate::symbol::Symbol::from(n.as_str());
@@ -1941,6 +1952,8 @@ impl<'a> TypeChecker<'a> {
         let prev_borrowers = self.borrow.take_borrowers();
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
+            // A token that the caller passes must be waited by the function.
+            self.note_token_let(name, func.span);
             self.borrow.current_params.insert(name.clone(), ty.clone());
             self.set_mutable(name.as_ref(), func.mut_params.contains(name));
         }

@@ -502,7 +502,10 @@ impl<'a> TypeChecker<'a> {
             Statement::LetDecl(decl) if crate::hir::check::tasks::is_spawn(&decl.expr) => {
                 self.check_spawn_let(decl, consume)
             }
-            Statement::LetDecl(decl) => self.check_let_decl_stmt(decl, consume),
+            Statement::LetDecl(decl) => {
+                self.check_let_decl_stmt(decl, consume);
+                self.note_token_let(&decl.name, decl.span);
+            }
             Statement::ForLoop(floop) => self.check_for_loop_stmt(floop, consume, return_type),
             Statement::Loop(lp) => self.check_loop_stmt(lp, return_type),
             // The `Err` arm of the join of a task that failed: it leaves the `tasks` block,
@@ -526,6 +529,7 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::Assign(AssignStmt { lhs, rhs, span }) => {
                 let span = *span;
+                self.check_token_overwrite(lhs, &span);
                 if let Some(call) = self.container_store(lhs, None, rhs, span) {
                     *stmt = Statement::ExprStmt(ExprStmtStmt::new(call, true, span));
                     self.check_statement(stmt, return_type, consume);

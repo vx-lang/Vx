@@ -1,0 +1,39 @@
+//===- a_transfer_async_keeps_a_copy_in_flight_in_a_loop.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Double buffering: each pass of the loop starts the copy of the next tile before it waits for
+// the copy of the tile that it uses. The tiles start at 0, 100, 200 and 300, so the sum of their
+// first elements is 600.
+//
+// The flat code generator does not give a tensor a new value in a loop yet, so only the AST
+// code generator runs this program.
+//
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}sum 600{{$}}
+
+fn filled(v : f32) -> Tensor<f32, [4]> {
+  let mut t = unsafe { Tensor<f32, [4]>::uninit() };
+  for i in 0..4 {
+    t[i] = v + i as f32;
+  }
+  return t;
+}
+
+fn main() -> i32 {
+  let mut sum : f32 = 0.0;
+  let mut inflight = transfer_async(filled(0.0), Memory::CPU_DRAM);
+  for k in 1..4 {
+    let next = transfer_async(filled(k as f32 * 100.0), Memory::CPU_DRAM);
+    let cur = inflight.wait();
+    sum = sum + cur[0];
+    inflight = next;
+  }
+  let last = inflight.wait();
+  sum = sum + last[0];
+  println!("sum {}", sum);
+  return 0;
+}
