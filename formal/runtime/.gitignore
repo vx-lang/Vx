@@ -1,0 +1,2 @@
+# TLC 1.8 writes a trace of each error that it finds next to the model.
+*_TTrace_*.tla
