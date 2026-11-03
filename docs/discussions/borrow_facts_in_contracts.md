@@ -204,9 +204,9 @@ A programmer can then copy a clause into the signature, to make it part of the c
 **A private function gets inferred clauses.** Each caller of a private function is in the same
 module and in the same compile. So when an edit to its body breaks a caller, the error appears at
 once, to the person who made the edit. Most functions are small private helpers, so inference saves
-the most clauses there. Vx has no private functions yet: the lexer reserves `pub`, and the parser
-does not use it. Until it does, each function gets inferred clauses. Open question 3 asks what a
-public function gets after that.
+the most clauses there. Vx has no private functions yet: another module can import each function.
+`pub fn` only exports a function to C (`docs/lang/abi.md`). Until Vx has private functions, each
+function gets inferred clauses. Open question 3 asks what a public function gets after that.
 
 Inference of `!keeps(b)` can follow later. The same walk over the syntax can find a body that stores
 `b` nowhere. It also stops at a method call.
@@ -441,7 +441,7 @@ for later:
    clauses and gets the default where it writes none. Then the standard library must write
    `!points_into(return, *self)` on `VecIter::next`, or `v.iter()` loses what #2431 gave it. The
    other choice keeps the inferred clauses, and a check warns when they change between two versions
-   of the package, as `cargo-semver-checks` does for Rust. The question matters once Vx has `pub`
+   of the package, as `cargo-semver-checks` does for Rust. The question matters once Vx has private
    functions and compiles packages separately. Today the standard library compiles with each
    program.
 1. A form of `overlaps` for two lengths or two element types.
