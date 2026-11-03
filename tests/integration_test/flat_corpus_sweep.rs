@@ -67,14 +67,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // A raw pointer held in a `let` ("a place-bound reference in value position"): the flat
     // path has no pointer values yet.
     "backend/pass/raw_pointers_compare_by_address.vx",
-    // `Rev<VecIter<i64>>` reads through `&T`: "a pointer whose type cannot be inferred".
-    "backend/pass/core_iter_rev.vx",
-    // `Vec::iter()` hands out `&T`: the flat path has no layout for `Option<&T>` and cannot
-    // read through a `for` variable that is a reference (#889).
-    "backend/pass/vec_leaves_iter_names_free.vx",
-    "backend/pass/vec_iter_hands_out_references.vx",
-    "backend/pass/write_through_a_mutable_reference.vx",
-    "backend/pass/for_loop_over_a_reference_to_a_vec.vx",
     // "A compound assignment to something other than a simple name" is not modelled.
     "backend/pass/compound_assignment_through_a_reference.vx",
     "backend/pass/core_iter_zip.vx",
@@ -98,8 +90,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // frontends has its warnings reported once, which needs a program that declines.
     "frontend/pass/jobs_warns_once_when_it_falls_back.vx",
     "frontend/pass/trait_topologies.vx",
-    // A `for` loop over `v.iter()`: the flat path declines `Vec` iteration by reference.
-    "frontend/pass/vec_iterator_borrow_ends_at_last_use.vx",
     // A parameter with run-time extents (Vx#409). It used to compile through the flat path
     // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
     // signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one function, plus
