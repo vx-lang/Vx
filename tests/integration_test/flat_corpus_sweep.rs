@@ -76,12 +76,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/closure_using_a_local_stays_in_its_function.vx",
     // "A store to a nested nominal field": `r[0].name = x` puts a struct into a struct's field.
     "backend/pass/assign_to_a_field_through_index_mut_drops_the_old_field.vx",
-    // `Option::take` writes through `&mut Option<T>`, which the flat path declines as "a
-    // pointer element type that is not modelled". The answers come from the AST path.
-    "backend/pass/core_option.vx",
-    // `fetch_update` calls a closure that answers an `Option`, which the flat path declines
-    // as "an indirect callee returning a non-scalar". The answers come from the AST path.
-    "backend/pass/core_sync_atomic_fetch_update.vx",
     // The flat path declines `main` here as "a callee return type": the adaptors it
     // builds answer with a generic struct. Its answers come from the AST path.
     "backend/pass/core_iter.vx",
@@ -90,7 +84,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // Same decline as `core_iter.vx`: `main` builds adaptors before consuming them.
     "backend/pass/core_iter_fold_sum_collect.vx",
     // Same decline again, for the same reason.
-    "backend/pass/core_iter_consumers.vx",
     "backend/pass/core_iter_adapters.vx",
     "backend/pass/core_iter_stateful_adapters.vx",
     "backend/pass/core_iter_rev.vx",
@@ -106,16 +99,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/compound_assignment_through_a_reference.vx",
     "backend/pass/core_iter_zip.vx",
     "backend/pass/core_iter_exact_size.vx",
-    "backend/pass/core_iter_try_fold.vx",
-    // `and_then` calls a closure that answers a `Result`, which the flat path declines as "an
-    // indirect callee returning a non-scalar". The answers come from the AST path.
-    "backend/pass/core_result.vx",
-    // `partial_cmp` answers with an `Option<Ordering>`, and `then_with` and `max_by` take
-    // closures that answer with an `Ordering`. The flat path declines the first as "a
-    // callee return type" and the others as "an indirect callee returning a non-scalar".
-    // These live apart from `core_cmp.vx` so that file keeps compiling through the flat
-    // path; putting them together would have moved it here instead.
-    "backend/pass/core_cmp_partial.vx",
     // A generic struct, which the flat path declines as "a struct with no GID". The file
     // exists to pin that `>>` still closes two generics now that it is also the right
     // shift, and that question is settled in the parser, so the decline costs it nothing.
@@ -123,9 +106,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/user_lowering_name_collisions.vx",
     "backend/pass/user_lowering_uncountable.vx",
     "backend/pass/user_lowering_waste.vx",
-    // `min_by` over a struct: the flat path declines it as "an indirect callee returning a
-    // non-scalar". The answers come from the AST path.
-    "backend/pass/core_cmp_ties_and_keys.vx",
     // `total_cmp` takes a reference to a number, which the flat path declines as "a borrow of
     // something that is not a tensor". The answers come from the AST path.
     "backend/pass/core_num_float_total_cmp.vx",
@@ -155,9 +135,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
     // ("an aggregate slot with no struct type").
     "backend/pass/let_if_tensor_inside_an_if.vx",
-    // A call through a pointer to a `void` function: the flat path declines it ("an indirect
-    // callee returning a non-scalar").
-    "backend/pass/generic_call_of_a_void_function.vx",
     // `a && b` in a `print!` argument: the flat path declines it ("a logical operator lowers only
     // in memory mode"). The file is about the AST path.
     "frontend/pass/print_argument_with_and_or.vx",

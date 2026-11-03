@@ -160,9 +160,7 @@ fn main() -> i32 {
   print(Option<i32>::None().ok_or_else(|| 4).unwrap_err());
   print!(" | ");
 
-  // `Clone` for `Result` lives in `core::clone` and is asked here rather than in
-  // `core_clone_default.vx`, which is flat-only: this impl returns an enum from each match
-  // arm, so it declines, and a flat-only file has to compile through the flat path.
+  // `Clone` for `Result` lives in `core::clone`, and is asked here.
   //
   // Both arms are cloned, since they are two bodies, and the `i64` failure carries the
   // widest value so a clone that rebuilt it at the success type would show. A mixed

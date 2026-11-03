@@ -374,23 +374,34 @@ impl FnEmit<'_> {
     // the scalar return type. Reconstruct the function type `(arg types)->ret` from the actual
     // args, cast the pointer to it, and `func.call_indirect`. (#242)
     pub(crate) fn op_call_indirect(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        // The result is a scalar, or a pointer when the type is the pointer GID.
+        // The result is a scalar, a pointer (the pointer GID), a struct or enum by value, or
+        // nothing for a `void` callee.
         let ret_gid = *self
             .types
             .get(ins.type_idx.0 as usize)
             .ok_or(crate::emitter_gap!())?;
-        let ret_ptr = ret_gid == crate::hir::flatten::ptr_gid();
-        let ret_elem = if ret_ptr {
+        let void = ins.imm & crate::hir::flatten::CALL_INDIRECT_VOID != 0;
+        let ret_ptr = !void && ret_gid == crate::hir::flatten::ptr_gid();
+        let ret_agg = (!void && self.ctx.aggs.contains_key(&ret_gid)).then_some(ret_gid);
+        let ret_elem = if void || ret_ptr || ret_agg.is_some() {
             None
         } else {
             self.ty_at(ins.type_idx.0)
         };
-        let rt = match &ret_elem {
-            Some(e) => mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string(),
-            None if ret_ptr => "!llvm.ptr".to_string(),
-            None => return Err(crate::emitter_gap!()),
+        let rt = match (&ret_elem, ret_agg) {
+            _ if void => "()".to_string(),
+            (Some(e), _) => mlir_scalar(e).ok_or(crate::emitter_gap!())?.to_string(),
+            (None, Some(gid)) => self
+                .ctx
+                .aggs
+                .get(&gid)
+                .ok_or(crate::emitter_gap!())?
+                .struct_ty
+                .clone(),
+            (None, None) if ret_ptr => "!llvm.ptr".to_string(),
+            (None, None) => return Err(crate::emitter_gap!()),
         };
-        let n = ins.imm as usize;
+        let n = (ins.imm & !crate::hir::flatten::CALL_INDIRECT_VOID) as usize;
         if self.pending_args.len() < n {
             return Err(crate::emitter_gap!());
         }
@@ -434,6 +445,14 @@ impl FnEmit<'_> {
         let nm = format!("%v{idx}");
         self.body +=
             &format!("  {fc} = builtin.unrealized_conversion_cast {fnptr} : !llvm.ptr to {fnty}\n");
+        if void {
+            // MLIR forbids a result name on a call that returns nothing.
+            self.body += &format!(
+                "  func.call_indirect {fc}({}) : {fnty}\n",
+                arg_names.join(", ")
+            );
+            return Ok(());
+        }
         self.body += &format!(
             "  {nm} = func.call_indirect {fc}({}) : {fnty}\n",
             arg_names.join(", ")
@@ -441,6 +460,8 @@ impl FnEmit<'_> {
         self.names[idx] = nm;
         if ret_ptr {
             self.ptr_of[idx] = true;
+        } else if ret_agg.is_some() {
+            self.agg_val_of[idx] = ret_agg;
         } else {
             self.etypes[idx] = ret_elem;
         }
