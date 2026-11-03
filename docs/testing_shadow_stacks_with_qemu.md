@@ -38,8 +38,8 @@ QEMU 10.1 and later emulates GCS in user mode (`qemu-aarch64`). Its default CPU 
 `max`, which has GCS. So an x86-64 machine can run arm64 tests with GCS on. QEMU does not
 emulate CET, so the x86-64 version cannot be tested this way.
 
-Ubuntu 24.04 has QEMU 8.2, which has no GCS. The CI job "Rust core tests on aarch64 (qemu)"
-runs on it, so there a GCS test finds no GCS and does not run its checks.
+Ubuntu 24.04 has QEMU 8.2, which has no GCS. So the CI job "Rust core tests on aarch64 (qemu)"
+builds QEMU 10.2.1 and caches it.
 
 ## Check that your QEMU has GCS
 
@@ -133,7 +133,8 @@ assembly, and it ends with `_exit`, which does not return. The parent reads the 
 the child.
 
 When the CPU has no GCS, each test prints "this CPU or kernel has no shadow stacks, so the test
-checked nothing", and passes. So check the output for this line.
+checked nothing", and passes. So check the output for this line. With
+`VX_REQUIRE_SHADOW_STACKS=1`, as in CI, each test fails there.
 
 To see a test fail, make the switch skip its shadow-stack part: in `vx_stack_switch`, change
 `"tbnz x16, #0, 1f"` to `"b 1f"`. Each test then reports that the child stopped with signal 11.
