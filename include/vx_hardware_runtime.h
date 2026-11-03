@@ -360,9 +360,9 @@ static inline size_t vx_payload_text_end(const void *payload,
 /// dispatch id, decoded by vx_payload_topology), `toponame=`, `grid=`, `block=`
 /// and `grid_loops=` (the launch shape of an `across` kernel, vx_launch_shape),
 /// `host_blocks=` (the host copy shares the blocks of axis x among the host's
-/// workers, vx_host_worker_count_for), `launch=`, `coop=`, `format=` (`ptx`,
-/// what the image is), and `image=` (a device image that is text, which today
-/// means PTX).
+/// workers, vx_host_worker_count_for), `launch=`, `coop=`, `format=` (what the
+/// image is: `ptx`, or `msl` for the Apple GPU),
+/// and `image=` (a device image that is text).
 ///
 /// Every entry is optional to a reader, and that is what let each of them land
 /// without breaking a consumer that predates it. `kind=` absent means

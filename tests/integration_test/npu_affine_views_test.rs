@@ -35,6 +35,7 @@ fn an_affine_kernel_on_a_view_gives_the_right_elements() {
         .arg("-DVX_ENABLE_CPU_FALLBACK")
         .args([
             "runtime/npu_dispatch.mm",
+            "runtime/metal_dispatch.mm",
             "tests/runtime/npu_affine_views_test.cpp",
         ])
         .args(["-framework", "Accelerate", "-framework", "Foundation"])

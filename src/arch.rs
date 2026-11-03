@@ -605,6 +605,9 @@ pub enum DeviceTarget {
     /// The Intel XPU route (SPIR-V + Level Zero). Its storage-class numbering comes from
     /// MLIR's `SPIRVTypeConverter` and is added with the pipeline, not guessed here first.
     Spirv64,
+    /// The Apple GPU. Vx writes Metal Shading Language for it, and the MSL printer reads the
+    /// NVPTX numbers: 3 is `threadgroup` memory.
+    AppleGpu,
 }
 
 impl DeviceTarget {
@@ -618,15 +621,19 @@ impl DeviceTarget {
             "nvptx64" => Some(DeviceTarget::Nvptx64),
             "amdgcn" => Some(DeviceTarget::AmdGcn),
             "spirv64" => Some(DeviceTarget::Spirv64),
+            "applegpu" => Some(DeviceTarget::AppleGpu),
             _ => None,
         }
     }
 
     /// The most lanes in a block and the lanes in a subgroup, on a target whose code generator
-    /// can launch the levels of `across` loops. Only NVPTX can today.
+    /// can launch the levels of `across` loops.
     pub fn launch_limits(self) -> Option<(u64, u64)> {
         match self {
             DeviceTarget::Nvptx64 => Some((1024, 32)),
+            // spec: Metal Feature Set Tables: at most 1024 threads in a threadgroup, and a
+            // SIMD-group of 32 threads on Apple GPUs.
+            DeviceTarget::AppleGpu => Some((1024, 32)),
             DeviceTarget::X86_64
             | DeviceTarget::Aarch64
             | DeviceTarget::AmdGcn
@@ -638,7 +645,7 @@ impl DeviceTarget {
     pub fn address_space(self, space: AddressSpace) -> i32 {
         match self {
             // NVPTX: 0 generic, 1 global, 3 shared, 5 local.
-            DeviceTarget::Nvptx64 => space.nvptx_addrspace(),
+            DeviceTarget::Nvptx64 | DeviceTarget::AppleGpu => space.nvptx_addrspace(),
             // No other target's pipeline exists yet, so today's numbers stand in until that
             // target's own table replaces this arm. An `arch:` naming nothing never becomes a
             // `DeviceTarget`: `from_arch` returns `None` and the caller refuses it, so no arm
@@ -1806,6 +1813,10 @@ mod tests {
             DeviceTarget::from_arch("spirv64"),
             Some(DeviceTarget::Spirv64)
         );
+        assert_eq!(
+            DeviceTarget::from_arch("applegpu"),
+            Some(DeviceTarget::AppleGpu)
+        );
         assert_eq!(DeviceTarget::from_arch("riscv64"), None);
 
         // No declared arch at all gives today's numbers -- the flat path has no arch for a
@@ -1816,7 +1827,9 @@ mod tests {
 
         // Every arch this compiler knows answers today's numbers too: the SPIR-V arm in
         // particular gets its storage classes from the pipeline, not a constant guessed here.
-        for arch in ["x86_64", "aarch64", "nvptx64", "amdgcn", "spirv64"] {
+        for arch in [
+            "x86_64", "aarch64", "nvptx64", "amdgcn", "spirv64", "applegpu",
+        ] {
             for (space, n) in spaces.iter().zip(today) {
                 assert_eq!(address_space_for_arch(Some(arch), *space), n);
             }

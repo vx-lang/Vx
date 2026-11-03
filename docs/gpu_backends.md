@@ -53,7 +53,8 @@ decisions:
 |---|---|---|
 | CPU (x86-64, arm64) | native, through LLVM | working; x86-64 tested in CI, arm64 built for release but not tested |
 | NVIDIA | `gpu` dialect → NVVM → PTX; cuBLAS for matmul | working for placed kernels; completion tracked in #251 |
-| Apple GPU / ANE | library routing (MPS, CoreML) | working for the routed patterns |
+| Apple GPU | `gpu` dialect → structured `scf` → Metal Shading Language, compiled by Metal at run time | working for placed kernels on `fleet/m4-uma.vx`; see "The Apple GPU" below |
+| Apple GPU / ANE, matmul | library routing (MPS, CoreML) | working for the routed patterns |
 | Intel XPU | kernel SPIR-V, SYCL runtime, oneMKL for matmul | the first community backend, offered by a contributor; planning in #1137 |
 | Vulkan | shader SPIR-V | later: the shader model fights a language with raw pointers, and there is no vendor BLAS — see below |
 | AMD | ROCDL | machine file exists (`fleet/mi300x.vx`); no backend yet. Likely the cheapest backend after the shared work — ROCDL sits close to the NVVM path, hipBLASLt parallels cuBLAS — and a maintainer priority when hardware access appears |
@@ -63,6 +64,24 @@ A "working" row is true of a build made for that target: `build.rs` builds
 one dispatch library (shared-work item 6), so a compiler built with CUDA
 cannot run programs on an Apple GPU, and one built on a Mac cannot run them
 on an NVIDIA GPU.
+
+**The Apple GPU.** A kernel placed on a topology with `arch: applegpu` is
+written as Metal Shading Language (MSL). `src/dialect/MetalImage.cpp` inlines
+the functions that the kernel calls, turns its stack slots of numbers into
+values, lifts its branches to `scf.while` and `scf.if`, and prints MSL. The
+payload carries the text with `format=msl`, and `runtime/metal_dispatch.mm`
+compiles it with Metal's safe math, so a kernel gives the same bits as its CPU
+copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
+
+- Each tensor is one buffer over the pages that it touches, made with no copy.
+  Its sizes and strides go in a buffer of 32-bit words, so `index` is 32 bits,
+  and the runtime refuses a tensor of 2^31 elements or more.
+- `VX_METAL=0`, or `vx_metal_set_enabled(0)` on one thread, runs the CPU copy
+  of each kernel on the same memory instead.
+- Each launch waits for the GPU to finish.
+- Not yet: atomics, dynamic shared memory and `vector` ops. Each is a compile
+  error that names the op. Kernels for two GPU architectures in one program
+  are a compile error too.
 
 **SYCL first.** The first community backend targets Intel GPUs through the
 SYCL runtime. Vx still compiles each kernel itself, to SPIR-V; the dispatch
