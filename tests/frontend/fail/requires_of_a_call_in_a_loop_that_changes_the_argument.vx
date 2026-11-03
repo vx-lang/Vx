@@ -1,0 +1,125 @@
+//===- requires_of_a_call_in_a_loop_that_changes_the_argument.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A loop body runs more than once. Each call here meets the `requires` of `need` on the first
+// pass, but the body then changes the argument, so a later pass breaks it (E8006).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+fn need(n : i64) -> i64
+requires n < 5i64
+{
+  return n;
+}
+
+fn need_below(i : i64, m : i64) -> i64
+requires i < m
+{
+  return i;
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_in_a_loop_that_changes_the_argument.vx:[[@LINE+5]]:7: this call to 'need' may not meet its precondition `n < 5`
+fn in_a_for_loop() -> i64 {
+  let mut n = 0i64;
+  if n < 5i64 {
+    for i in 0i64..3i64 {
+      need(n);
+      n = n + 10i64;
+    }
+  }
+  return n;
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_in_a_loop_that_changes_the_argument.vx:[[@LINE+6]]:7: this call to 'need' may not meet its precondition `n < 5`
+fn in_a_while_loop() -> i64 {
+  let mut n = 0i64;
+  let mut k = 0i64;
+  if n < 5i64 {
+    while k < 3i64 {
+      need(n);
+      n += 10i64;
+      k += 1i64;
+    }
+  }
+  return n;
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_in_a_loop_that_changes_the_argument.vx:[[@LINE+5]]:7: this call to 'need' may not meet its precondition `n < 5`
+fn changed_in_an_if_after_the_call(c : bool) -> i64 {
+  let mut n = 0i64;
+  if n < 5i64 {
+    for i in 0i64..3i64 {
+      need(n);
+      if c {
+        n = 10i64;
+      }
+    }
+  }
+  return n;
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_in_a_loop_that_changes_the_argument.vx:[[@LINE+5]]:7: this call to 'need' may not meet its precondition `n < 5`
+fn changed_in_an_inner_loop() -> i64 {
+  let mut n = 0i64;
+  if n < 5i64 {
+    for i in 0i64..3i64 {
+      need(n);
+      for j in 0i64..2i64 {
+        n = n + 10i64;
+      }
+    }
+  }
+  return n;
+}
+
+// The range is `0..3`, and the body makes `m` smaller, so `i < m` is false on the second pass.
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_in_a_loop_that_changes_the_argument.vx:[[@LINE+4]]:5: this call to 'need_below' may not meet its precondition `i < m`
+fn range_end_changed_in_the_body() -> i64 {
+  let mut m = 3i64;
+  for i in 0i64..m {
+    need_below(i, m);
+    m = m - 2i64;
+  }
+  return m;
+}
+
+// An `mlir!` block writes each variable that it clobbers.
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_call_in_a_loop_that_changes_the_argument.vx:[[@LINE+5]]:7: this call to 'need' may not meet its precondition `n < 5`
+fn clobbered_by_an_mlir_block() -> i64 {
+  let mut n = 0i64;
+  if n < 5i64 {
+    for i in 0i64..3i64 {
+      need(n);
+      let _w = mlir!(inputs : (), clobbers : [n], returns : void, dialects : []) {
+      };
+    }
+  }
+  return n;
+}
+
+// An invariant holds at the start of each pass, so the call meets `requires`, and E8006 does
+// not fire. The compiler cannot prove that the body keeps the invariant (E8009), because it
+// knows no fact about `n` after `n = k`.
+// CHECK-DAG: E8009] at {{.*}}requires_of_a_call_in_a_loop_that_changes_the_argument.vx:[[@LINE+5]]:32: this loop invariant `n < 5` may not hold after a pass
+fn invariant_about_the_argument() -> i64 {
+  let mut n = 0i64;
+  let mut k = 0i64;
+  if n < 5i64 {
+    while k < 3i64 invariant n < 5i64 {
+      need(n);
+      n = k;
+      k += 1i64;
+    }
+  }
+  return n;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: 7 error(s) emitted
