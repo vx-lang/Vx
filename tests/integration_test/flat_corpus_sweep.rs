@@ -82,9 +82,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // `Option::take` writes through `&mut Option<T>`, which the flat path declines as "a
     // pointer element type that is not modelled". The answers come from the AST path.
     "backend/pass/core_option.vx",
-    // An `Option` of an `Option` and of a pair: the flat path declines `main` as "an enum
-    // with no modelled instance layout". The answers come from the AST path.
-    "backend/pass/core_option_flatten_unzip.vx",
     // `fetch_update` calls a closure that answers an `Option`, which the flat path declines
     // as "an indirect callee returning a non-scalar". The answers come from the AST path.
     "backend/pass/core_sync_atomic_fetch_update.vx",
