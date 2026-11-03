@@ -6065,7 +6065,8 @@ struct PromoteBuffersToStackPass
   }
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<memref::MemRefDialect>();
+    registry.insert<arith::ArithDialect, LLVM::LLVMDialect,
+                    memref::MemRefDialect>();
   }
 
   // Why buffers in this function must stay on the heap, or null if they need
@@ -6086,11 +6087,28 @@ struct PromoteBuffersToStackPass
     return reason;
   }
 
+  // Marks where `buffer` starts or stops being used. The marker names the
+  // buffer by its pointer, because the `llvm.alloca` comes later.
+  // `vx-lifetime-markers-on-allocas` then puts the alloca in its place.
+  template <typename Marker>
+  static void markLifetime(OpBuilder &b, Location loc, Value buffer) {
+    Value index =
+        memref::ExtractAlignedPointerAsIndexOp::create(b, loc, buffer);
+    Value address = arith::IndexCastOp::create(b, loc, b.getI64Type(), index);
+    Value ptr = LLVM::IntToPtrOp::create(
+        b, loc, LLVM::LLVMPointerType::get(b.getContext()), address);
+    Marker::create(b, loc, ptr);
+  }
+
   // Under drops a heap buffer has a `memref.dealloc`, which upstream promotion
   // refuses, and a buffer passed by value is freed by the function that takes
   // it, which upstream promotion does not know. So a small buffer is promoted
-  // here when nothing takes it by value, returns it or branches with it, and
-  // its deallocs are erased.
+  // here when nothing takes it by value, returns it or branches with it.
+  //
+  // Each dealloc becomes the end of the buffer's lifetime, and the place of the
+  // allocation its start. The stack slot moves to the entry block later, so
+  // LLVM can then give two buffers that are not used at the same time one
+  // slot. A task stack has a fixed size, so this matters there.
   static void promoteOwnedBuffers(func::FuncOp func) {
     SmallVector<memref::AllocOp> allocs;
     func.walk([&](memref::AllocOp a) { allocs.push_back(a); });
@@ -6133,10 +6151,16 @@ struct PromoteBuffersToStackPass
       OpBuilder builder(alloc);
       auto alloca = memref::AllocaOp::create(builder, alloc.getLoc(), type,
                                              alloc.getAlignmentAttr());
+      markLifetime<LLVM::LifetimeStartOp>(builder, alloc.getLoc(),
+                                          alloca.getResult());
       alloc.replaceAllUsesWith(alloca.getResult());
       alloc.erase();
-      for (memref::DeallocOp d : deallocs)
+      for (memref::DeallocOp d : deallocs) {
+        builder.setInsertionPoint(d);
+        markLifetime<LLVM::LifetimeEndOp>(builder, d.getLoc(),
+                                          alloca.getResult());
         d.erase();
+      }
     }
   }
 
@@ -6892,6 +6916,59 @@ struct ProbeStackPass
   }
 };
 
+// `vx-promote-buffers-to-stack` marks the lifetime of a stack buffer by its
+// pointer. LLVM wants the `alloca` itself, so this pass follows the pointer
+// back through the memref descriptor to the alloca. A marker that it cannot
+// follow is erased: with no markers, the buffer lives for the whole call.
+struct LifetimeMarkersOnAllocasPass
+    : public PassWrapper<LifetimeMarkersOnAllocasPass,
+                         OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LifetimeMarkersOnAllocasPass)
+
+  llvm::StringRef getArgument() const override {
+    return "vx-lifetime-markers-on-allocas";
+  }
+
+  llvm::StringRef getDescription() const override {
+    return "Makes each lifetime marker of a stack buffer name its alloca";
+  }
+
+  // The alloca that `ptr` points to, or null.
+  static LLVM::AllocaOp allocaOf(Value ptr) {
+    if (auto toPtr = ptr.getDefiningOp<LLVM::IntToPtrOp>())
+      ptr = toPtr.getArg();
+    if (auto toInt = ptr.getDefiningOp<LLVM::PtrToIntOp>())
+      ptr = toInt.getArg();
+    auto field = ptr.getDefiningOp<LLVM::ExtractValueOp>();
+    if (!field)
+      return ptr.getDefiningOp<LLVM::AllocaOp>();
+    // The aligned pointer is field 1 of a memref descriptor.
+    if (field.getPosition() != ArrayRef<int64_t>{1})
+      return nullptr;
+    Value descriptor = field.getContainer();
+    while (auto insert = descriptor.getDefiningOp<LLVM::InsertValueOp>()) {
+      if (insert.getPosition() == ArrayRef<int64_t>{1})
+        return insert.getValue().getDefiningOp<LLVM::AllocaOp>();
+      descriptor = insert.getContainer();
+    }
+    return nullptr;
+  }
+
+  void runOnOperation() override {
+    SmallVector<Operation *> markers;
+    getOperation().walk([&](Operation *op) {
+      if (isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(op))
+        markers.push_back(op);
+    });
+    for (Operation *marker : markers) {
+      if (LLVM::AllocaOp alloca = allocaOf(marker->getOperand(0)))
+        marker->setOperand(0, alloca.getResult());
+      else
+        marker->erase();
+    }
+  }
+};
+
 // Upstream's `inline` pass inlines every call it can. A function that calls
 // another three times, which calls another three times, and so on, then holds
 // 3^depth copies of the innermost one, and compile time grows the same way.
@@ -6976,6 +7053,9 @@ void registerVxPasses() {
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<ProbeStackPass>();
+  });
+  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
+    return std::make_unique<LifetimeMarkersOnAllocasPass>();
   });
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<OrderRelaxedReadsPass>();
