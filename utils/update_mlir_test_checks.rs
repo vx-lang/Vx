@@ -14,6 +14,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,6 +24,7 @@ use clap::Parser;
 #[derive(Parser)]
 #[command(
     name = "update_mlir_test_checks",
+    version,
     about = "Rewrite FileCheck lines in Vx MLIR tests from live vxc output"
 )]
 struct Cli {
@@ -187,8 +189,10 @@ fn process_test_file(file_path: &Path, vxc_bin: &Path) -> Result<(), String> {
 
         let exec_name = args.remove(0);
         if exec_name != "vxc" && exec_name != "vx-opt" {
-            eprintln!("Unknown executable in RUN line: {}", exec_name);
-            continue;
+            return Err(format!(
+                "Unknown executable in RUN line: {} (in {})",
+                exec_name, display
+            ));
         }
 
         let output = Command::new(vxc_bin)
