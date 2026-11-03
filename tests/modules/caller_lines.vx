@@ -1,0 +1,19 @@
+//===- caller_lines.vx - Vx Compiler ------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A module for a_caller_parameter_gets_the_line_of_the_call.vx.
+import core::panic;
+
+/// Prints the file and the line of its call.
+fn here(what : i32, at : Caller) -> void {
+  println!("{} at {}:{}", what, at.file, at.line);
+}
+
+/// Calls `here` from this module.
+fn from_the_module() -> void {
+  here(6);
+}

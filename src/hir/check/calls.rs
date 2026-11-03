@@ -821,6 +821,9 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         Vec::new()
                     };
+                if let Some((params, _)) = self.resolve_callee_ref_signature(&resolved_name) {
+                    self.fill_caller_arg(&params, args, span);
+                }
                 let errors_before_args = self.errors.inner.len();
                 for arg in args.iter_mut() {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume));
@@ -1249,6 +1252,47 @@ impl<'a> TypeChecker<'a> {
                 })
                 .collect(),
         )
+    }
+
+    /// A call that leaves out a last parameter of type `Caller` gets the place of the call:
+    /// `Caller { file : "<file>", line : <line> }`. `params` are the parameters after any receiver.
+    pub(crate) fn fill_caller_arg(
+        &self,
+        params: &[Type],
+        args: &mut Vec<Expr>,
+        span: &crate::syntax::Span,
+    ) -> bool {
+        let wants = params.len() == args.len() + 1
+            && matches!(params.last(), Some(Type::Struct(n, None)) if n.as_ref() == "Caller");
+        if !wants {
+            return false;
+        }
+        let file = self
+            .errors
+            .file
+            .as_ref()
+            .map(|f| f.to_string())
+            .unwrap_or_default();
+        args.push(Expr::StructInit(crate::syntax::StructInitExpr {
+            name: "Caller".into(),
+            fields: vec![
+                (
+                    "file".into(),
+                    Expr::StringLiteral(crate::syntax::StringLiteralExpr::new(file, *span)),
+                ),
+                (
+                    "line".into(),
+                    Expr::Number(crate::syntax::NumberExpr::new(
+                        span.line.to_string(),
+                        Some(ElementType::I32),
+                        *span,
+                    )),
+                ),
+            ],
+            type_id: None,
+            span: *span,
+        }));
+        true
     }
 
     /// Check a call's arguments against the callee's parameter list: the count first (E3010),
@@ -3323,6 +3367,16 @@ impl<'a> TypeChecker<'a> {
                 let mut mapping = HashMap::new();
                 let found_method = self.resolve_method_in_impls(&base_ty, _method, &mut mapping);
                 if let Some((generic_method, ib)) = found_method {
+                    let after_self: Vec<Type> = generic_method
+                        .params
+                        .iter()
+                        .skip(1)
+                        .map(|(_, t)| t.clone())
+                        .collect();
+                    if self.fill_caller_arg(&after_self, args, &method_span) {
+                        let last = args.last_mut().expect("the filled argument");
+                        checked_arg_types.push(self.check_expr_type(last));
+                    }
                     // An `unsafe fn` method needs an unsafe context at its call, exactly as a
                     // free function does. Only the resolution differs, so the rule is repeated
                     // here rather than shared: a method never reaches `env.functions`.
@@ -3708,7 +3762,7 @@ impl<'a> TypeChecker<'a> {
         // `Type::method(..)`: the method's declared signature, found the way
         // `check_static_method_call` finds it. Before its first instance exists, nothing else
         // knows it, and a reference the call returns would keep no borrow.
-        if let Some(sig) = self.static_method_signature(base) {
+        if let Some(sig) = self.static_method_signature(resolved_name) {
             return Some(sig);
         }
         // A function from an `extern` block. Without its signature, none of the borrows its

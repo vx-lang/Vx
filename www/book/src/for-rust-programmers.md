@@ -18,6 +18,9 @@ lists what to change. Each item shows the Rust form and the Vx form.
 - **`self` has a type.** `fn get(&self)` is `fn get(self : &Self)`, `&mut self` is
   `self : &mut Self`, and `self` is `self : Self`. The type's own name works too:
   `self : &Point`.
+- **`#[track_caller]` is a parameter.** End the parameters with `at : Caller`
+  (`import core::panic;`). A call that leaves the argument out passes its own file and line, in
+  `at.file` and `at.line`. To report the line of your own caller, give your `at` to the call.
 - **Closure parameters have types.** `|x| x + 1` is `| x : i64 | x + 1`.
 - **No `impl Trait` parameters.** `fn show(g : &impl Area)` is `fn show<T : Area>(g : &T)`.
 
