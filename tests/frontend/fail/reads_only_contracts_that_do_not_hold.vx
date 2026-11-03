@@ -1,0 +1,79 @@
+//===- reads_only_contracts_that_do_not_hold.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `reads_only(t)` says that a function or an `mlir!` block reads the tensor `t` and writes none
+// of it. Each function here breaks that, or writes the clause wrong (E8007).
+//
+// RUN: not vxc %s --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: not vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn block_names_no_input(t : &Tensor<i32, [?], Memory::HBM>) on Topology::Device -> void {
+  // CHECK: Error[E8007] at {{.*}}reads_only_contracts_that_do_not_hold.vx:[[# @LINE + 1]]:{{[0-9]+}}: a `reads_only` clause of an `mlir!` block names one of its inputs, a tensor passed by name, such as `reads_only(t)` for `%t = t : memref<?xi32>`
+  mlir!( inputs : (%t = t : memref<?xi32>), dialects : ["memref"], ensures : [reads_only(u)]) {
+    macro.yield
+  };
+  return;
+}
+
+fn block_writes_its_tensor(t : &Tensor<i32, [?], Memory::HBM>) on Topology::Device -> void {
+  // CHECK: Error[E8007] at {{.*}}reads_only_contracts_that_do_not_hold.vx:[[# @LINE + 1]]:10: the block says `reads_only(t)`, but `memref.store %z, %t[%c0] : memref<?xi32>` writes `%t`
+  mlir!( inputs : (%t = t : memref<?xi32>), dialects : ["memref", "arith"],
+  ensures : [reads_only(t)]) {
+    %c0 = arith.constant 0 : index
+    %z = arith.constant 0 : i32
+    memref.store %z, %t[%c0] : memref<?xi32>
+    macro.yield
+  };
+  return;
+}
+
+// CHECK: Error[E8007] at {{.*}}reads_only_contracts_that_do_not_hold.vx:[[# @LINE + 2]]:9: `reads_only(n)` must name a `&` tensor, but `n` is `i32`
+fn names_a_number(n : i32) on Topology::Device -> i32
+ensures reads_only(n)
+{
+  return n;
+}
+
+// CHECK: Error[E8007] at {{.*}}reads_only_contracts_that_do_not_hold.vx:[[# @LINE + 2]]:9: `reads_only(u)` names no parameter of `names_no_parameter`
+fn names_no_parameter(t : &Tensor<i32, [?], Memory::HBM>) on Topology::Device -> i32
+ensures reads_only(u)
+{
+  return t[0];
+}
+
+fn passes_it_to_a_block_without_the_clause(t : &Tensor<i32, [?], Memory::HBM>) on Topology::Device -> void
+ensures reads_only(t)
+{
+  // CHECK: Error[E8007] at {{.*}}reads_only_contracts_that_do_not_hold.vx:[[# @LINE + 1]]:{{[0-9]+}}: `passes_it_to_a_block_without_the_clause` says `reads_only(t)`, so it may only read an element or a field of `t`, or pass it to an `mlir!` block with `ensures : [reads_only(t)]`, or to a function that says `reads_only` for that argument
+  mlir!( inputs : (%t = t : memref<?xi32>), dialects : ["memref"]) {
+    macro.yield
+  };
+  return;
+}
+
+fn first(t : &Tensor<i32, [?], Memory::HBM>) on Topology::Device -> i32 {
+  return t[0];
+}
+
+fn passes_it_to_a_function_without_the_clause(t : &Tensor<i32, [?], Memory::HBM>) on Topology::Device -> i32
+ensures reads_only(t)
+{
+  // CHECK: Error[E8007] at {{.*}}reads_only_contracts_that_do_not_hold.vx:[[# @LINE + 1]]:16: `passes_it_to_a_function_without_the_clause` says `reads_only(t)`, so it may only read an element or a field of `t`
+  return first(t);
+}
+
+fn gives_it_another_name(t : &Tensor<i32, [?], Memory::HBM>) on Topology::Device -> i32
+ensures reads_only(t)
+{
+  // CHECK: Error[E8007] at {{.*}}reads_only_contracts_that_do_not_hold.vx:[[# @LINE + 1]]:11: `gives_it_another_name` says `reads_only(t)`, so it may only read an element or a field of `t`
+  let u = t;
+  return u[0];
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -701,7 +701,8 @@ pub enum DiagnosticCode {
     /// A call does not meet the called function's precondition (`requires`)
     E8006,
     /// An access clause that does not hold: an `atomic(t)` whose body uses `t` without an atomic
-    /// operation, or a `writes_only()` whose body may write memory
+    /// operation, a `reads_only(t)` whose body may write `t`, or a `writes_only()` whose body may
+    /// write memory
     E8007,
     /// A loop invariant that the prover cannot show to hold when the loop starts
     E8008,
