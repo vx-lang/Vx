@@ -1285,6 +1285,10 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::RightParen, "Expected ')'")?;
             self.consume(&TokenType::Arrow, "Expected '->'")?;
             let return_type = self.parse_return_type()?;
+            let mut ensures = Vec::new();
+            while self.match_token(&TokenType::Ensures) {
+                ensures.push(self.parse_expr()?);
+            }
             // A trait method is either a requirement, ending in `;`, or a default, whose body
             // an impl inherits unless it writes its own.
             let default_body = if self.match_token(&TokenType::LeftBrace) {
@@ -1313,6 +1317,7 @@ impl<'a> Parser<'a> {
                 params,
                 mut_params,
                 return_type,
+                ensures,
                 default_body,
                 doc_comment,
             });

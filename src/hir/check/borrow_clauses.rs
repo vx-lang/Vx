@@ -182,6 +182,63 @@ fn contradiction(clauses: &[Clause]) -> Option<(Clause, Clause)> {
     None
 }
 
+/// `e` with each parameter name in `names` replaced: a trait's clause written with an impl's
+/// names. A clause uses names, `!`, `*`, calls, fields and operators.
+pub(crate) fn rename_params(
+    e: &Expr,
+    names: &std::collections::HashMap<crate::symbol::Symbol, crate::symbol::Symbol>,
+) -> Expr {
+    let sub = |x: &Expr| Box::new(rename_params(x, names));
+    match e {
+        Expr::Identifier(id) => match names.get(&id.name) {
+            Some(to) => Expr::Identifier(crate::syntax::IdentifierExpr {
+                name: to.clone(),
+                span: id.span,
+            }),
+            None => e.clone(),
+        },
+        Expr::UnaryOp(u) => {
+            let mut u = u.clone();
+            u.expr = sub(&u.expr);
+            Expr::UnaryOp(u)
+        }
+        Expr::Dereference(d) => {
+            let mut d = d.clone();
+            d.expr = sub(&d.expr);
+            Expr::Dereference(d)
+        }
+        Expr::FunctionCall(fc) => {
+            let mut fc = fc.clone();
+            fc.args = fc.args.iter().map(|a| rename_params(a, names)).collect();
+            Expr::FunctionCall(fc)
+        }
+        Expr::BinaryOp(b) => {
+            let mut b = b.clone();
+            b.lhs = sub(&b.lhs);
+            b.rhs = sub(&b.rhs);
+            Expr::BinaryOp(b)
+        }
+        Expr::RelationalOp(r) => {
+            let mut r = r.clone();
+            r.lhs = sub(&r.lhs);
+            r.rhs = sub(&r.rhs);
+            Expr::RelationalOp(r)
+        }
+        Expr::LogicalOp(l) => {
+            let mut l = l.clone();
+            l.lhs = sub(&l.lhs);
+            l.rhs = sub(&l.rhs);
+            Expr::LogicalOp(l)
+        }
+        Expr::MemberAccess(m) => {
+            let mut m = m.clone();
+            m.base = sub(&m.base);
+            Expr::MemberAccess(m)
+        }
+        _ => e.clone(),
+    }
+}
+
 /// The parameters that `f` says `!keeps` for, as bits. A call stores no argument for them.
 pub(crate) fn not_kept_params(f: &Function) -> u32 {
     let clauses = clauses(f);
@@ -236,11 +293,8 @@ impl<'a> TypeChecker<'a> {
         if self.speculating {
             return;
         }
-        // An instance of a generic function is named by its template in a message.
-        let shown = match f.name.split_once('$') {
-            Some((template, _)) if self.env.generic_functions.contains_key(template) => template,
-            _ => f.name.as_ref(),
-        };
+        let shown = self.clause_owner_name(f);
+        let shown = shown.as_str();
         for e in f.requires.iter().filter(|e| mentions_borrow_function(e)) {
             self.borrow_clause_error(
                 "a borrow clause says what a call does, so it belongs in `ensures`, not in \
@@ -422,7 +476,58 @@ impl<'a> TypeChecker<'a> {
             .unwrap_or(0)
     }
 
+    /// How a message names `f`. An instance of a generic function is named by its template. A
+    /// method is named by its type, as in `Wrong::first`, because an impl can break a clause
+    /// that its trait wrote, and the clause then points into the trait.
+    fn clause_owner_name(&self, f: &Function) -> String {
+        if let Some((template, _)) = f.name.split_once('$') {
+            if self.env.generic_functions.contains_key(template) {
+                return template.to_string();
+            }
+        }
+        let owner = match f.params.first() {
+            Some((name, ty)) if name.as_ref() == "self" => match ty {
+                Type::Borrow { inner, .. } => inner.as_ref(),
+                ty => ty,
+            },
+            _ => return f.name.to_string(),
+        };
+        // The instance of a method is named for its receiver: `Wrong$first`. A `$` or the end
+        // follows the method name, so `get` does not match `get_ref`.
+        let in_name = |m: &str| {
+            f.name.as_ref() == m
+                || f.name.ends_with(&format!("${m}"))
+                || f.name.contains(&format!("${m}$"))
+        };
+        fn base_name(ty: &Type) -> Option<&str> {
+            match ty {
+                Type::GenericInstance(base, _) => base_name(base),
+                Type::Struct(name, _) | Type::Enum(name, _) => Some(name.as_ref()),
+                _ => None,
+            }
+        }
+        let method = self
+            .env
+            .impls
+            .values()
+            .flatten()
+            .filter(|ib| {
+                base_name(&ib.target_type).is_some()
+                    && base_name(&ib.target_type) == base_name(owner)
+            })
+            .flat_map(|ib| ib.methods.iter())
+            .map(|m| m.name.as_ref())
+            .filter(|m| in_name(m))
+            .max_by_key(|m| m.len());
+        format!("{owner}::{}", method.unwrap_or(f.name.as_ref()))
+    }
+
+    /// E4016, once for each clause, type and reason: an impl method is checked once as written
+    /// and once for each call that makes its instance.
     fn borrow_clause_error(&mut self, message: String, at: Span) {
+        if !self.borrow_clause_errors.insert((at, message.clone())) {
+            return;
+        }
         self.errors.error_with_code(
             crate::diagnostic::DiagnosticCode::E4016,
             message,

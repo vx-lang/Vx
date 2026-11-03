@@ -115,7 +115,7 @@ fn substitute_self(ty: &crate::syntax::Type, target: &crate::syntax::Type) -> cr
 /// impl need not be in the same one.
 #[derive(Default)]
 pub struct TraitDefaults {
-    /// Each trait's parameters and the methods it gives a default body.
+    /// Each trait's parameters and the methods it gives a default body or `ensures` clauses.
     pub methods: std::collections::HashMap<
         crate::symbol::Symbol,
         (
@@ -132,7 +132,7 @@ pub struct TraitDefaults {
     )>,
 }
 
-/// The trait methods that carry a default body, across every module.
+/// The trait methods that carry a default body or `ensures` clauses, across every module.
 ///
 /// Global on purpose: an impl and the trait it implements need not share a module, and an
 /// impl a macro produces is as entitled to the defaults as one written by hand.
@@ -152,7 +152,7 @@ pub fn collect_trait_defaults<'p>(
             let with_bodies: Vec<crate::syntax::MethodSignature> = decl
                 .methods
                 .iter()
-                .filter(|m| m.default_body.is_some())
+                .filter(|m| m.default_body.is_some() || !m.ensures.is_empty())
                 .cloned()
                 .collect();
             if !with_bodies.is_empty() {
@@ -235,11 +235,27 @@ pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &T
             trait_subst.insert(param.name().into(), arg.clone());
         }
         for signature in trait_methods {
-            if block
+            if let Some(method) = block
                 .methods
-                .iter()
-                .any(|m| m.name.as_ref() == signature.name.as_ref())
+                .iter_mut()
+                .find(|m| m.name.as_ref() == signature.name.as_ref())
             {
+                // The impl keeps the trait's clauses, written with its own parameter names.
+                let names: std::collections::HashMap<_, _> = signature
+                    .params
+                    .iter()
+                    .zip(&method.params)
+                    .map(|((from, _), (to, _))| (from.clone(), to.clone()))
+                    .collect();
+                for clause in &signature.ensures {
+                    let clause = crate::hir::check::borrow_clauses::rename_params(clause, &names);
+                    if !method.ensures.contains(&clause) {
+                        method.ensures.push(clause);
+                    }
+                }
+                continue;
+            }
+            if signature.default_body.is_none() {
                 continue;
             }
             // A method of a generic impl has the block's parameters in scope, which the
@@ -307,7 +323,7 @@ pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &T
             let body = signature
                 .default_body
                 .clone()
-                .expect("only methods with a default body are collected")
+                .expect("a method with no default body was skipped above")
                 .iter()
                 .map(|s| s.substitute(&renames).substitute(&self_subst))
                 .collect();
@@ -324,7 +340,7 @@ pub fn fill_trait_defaults_in(program: &mut crate::syntax::Program, defaults: &T
                 topology: crate::syntax::Topology::CPU,
                 return_type: signature_type(&signature.return_type),
                 requires: Vec::new(),
-                ensures: Vec::new(),
+                ensures: signature.ensures.clone(),
                 where_transfers: Vec::new(),
                 is_unsafe: false,
                 is_pub: false,
