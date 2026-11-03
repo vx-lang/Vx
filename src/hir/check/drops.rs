@@ -280,7 +280,7 @@ impl DropFrames {
         for f in self.frames.iter().rev() {
             match f {
                 FrameKind::Function { .. } | FrameKind::Spawn => return false,
-                FrameKind::Loop | FrameKind::Tasks => {}
+                FrameKind::Loop | FrameKind::Tasks | FrameKind::Task => {}
                 FrameKind::Block { owners, .. } => {
                     if let Some(o) = owners.iter().rev().find(|o| o.name == name) {
                         return o.drop_reads_borrows && o.moved != Moved::Yes;
