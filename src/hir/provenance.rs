@@ -22,8 +22,8 @@
 //===----------------------------------------------------------------------===//
 use crate::symbol::Symbol;
 use crate::syntax::{
-    ElementType, EnumDecl, Expr, Function, FunctionCallExpr, ImplBlock, Pattern, Statement,
-    StructDecl, Type,
+    ElementType, EnumDecl, Expr, Function, FunctionCallExpr, GenericParam, ImplBlock, Pattern,
+    Statement, StructDecl, Type,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -116,7 +116,7 @@ fn holds_nothing(ty: &Type) -> bool {
 }
 
 /// Whether the walk looks at a function that returns `ty`.
-fn can_hold_reference(ty: &Type) -> bool {
+pub(crate) fn can_hold_reference(ty: &Type) -> bool {
     match ty {
         Type::Scalar(e) => matches!(e, ElementType::Generic(_)),
         Type::Borrow { .. }
@@ -197,6 +197,81 @@ impl<'d> Decls<'d> {
         };
         Self::lookup(&self.enums, head)
             .is_some_and(|e| e.variants.iter().any(|(v, _)| v.as_ref() == variant))
+    }
+
+    /// The types of the parts of a value of type `ty`: the fields of a declared struct, or the
+    /// payloads of a declared enum, with the type arguments of `ty` in place. `None` for a type
+    /// that the walk cannot look into, such as a type parameter.
+    fn parts(&self, ty: &Type) -> Option<Vec<Type>> {
+        let name = Self::type_name(ty)?;
+        let (generics, types): (&[GenericParam], Vec<&Type>) =
+            if let Some(s) = Self::lookup(&self.structs, name) {
+                (&s.generics, s.fields.iter().map(|(_, t)| t).collect())
+            } else {
+                let e = Self::lookup(&self.enums, name)?;
+                let payloads = e.variants.iter().flat_map(|(_, p)| p.iter().flatten());
+                (&e.generics, payloads.collect())
+            };
+        let args: &[Type] = match ty {
+            Type::GenericInstance(_, args) => args,
+            _ => &[],
+        };
+        let mapping: HashMap<Symbol, Type> = generics
+            .iter()
+            .zip(args)
+            .filter_map(|(g, a)| match g {
+                GenericParam::Type { name, .. } => Some((name.clone(), a.clone())),
+                _ => None,
+            })
+            .collect();
+        Some(types.into_iter().map(|t| t.substitute(&mapping)).collect())
+    }
+
+    /// Whether a call given a value of type `ty` can store a reference where the value points:
+    /// through a `&mut` or a raw pointer to memory that can hold one, at any depth of the value.
+    /// A `&` gives no write, unless what it points at holds a `SharedCell`.
+    fn can_store_through(&self, ty: &Type, depth: usize) -> bool {
+        if holds_nothing(ty) {
+            return false;
+        }
+        if depth > 8 {
+            return true;
+        }
+        match ty {
+            Type::Borrow {
+                is_mut: false,
+                inner,
+                ..
+            } => self.holds_shared_cell(inner, depth + 1),
+            Type::Borrow { inner, .. } | Type::Pointer(inner, ..) | Type::Ref(inner, _) => {
+                !holds_nothing(inner)
+            }
+            _ => self
+                .parts(ty)
+                .is_none_or(|parts| parts.iter().any(|t| self.can_store_through(t, depth + 1))),
+        }
+    }
+
+    /// Whether a value of type `ty` holds a `SharedCell`, through which code can write behind a
+    /// `&`. It is Rust's `UnsafeCell`.
+    fn holds_shared_cell(&self, ty: &Type, depth: usize) -> bool {
+        if holds_nothing(ty) {
+            return false;
+        }
+        if depth > 8 {
+            return true;
+        }
+        match ty {
+            Type::Borrow { inner, .. } | Type::Pointer(inner, ..) | Type::Ref(inner, _) => {
+                self.holds_shared_cell(inner, depth + 1)
+            }
+            _ if Self::type_name(ty).and_then(|n| n.rsplit("::").next()) == Some("SharedCell") => {
+                true
+            }
+            _ => self
+                .parts(ty)
+                .is_none_or(|parts| parts.iter().any(|t| self.holds_shared_cell(t, depth + 1))),
+        }
     }
 }
 
@@ -696,8 +771,16 @@ impl<'a> ProvWalk<'a> {
         if self.decls.is_variant(fc.name.as_ref()) {
             return given;
         }
-        // The function may store what it is given where a parameter reaches.
-        self.store_somewhere(given);
+        // The function may store what it is given where a parameter reaches, through an argument
+        // that lets it write there.
+        if typed.iter().any(|(v, ty)| {
+            *v != Prov::NONE
+                && ty
+                    .as_ref()
+                    .is_none_or(|t| self.decls.can_store_through(t, 0))
+        }) {
+            self.store_somewhere(given);
+        }
         let name = fc.name.as_ref();
         let name = match name.find('<') {
             Some(i) if name.ends_with('>') => &name[..i],
@@ -824,8 +907,20 @@ pub fn compute_return_provenance(func: &Function) -> ReturnProvenance {
 }
 
 /// As [`compute_return_provenance`], reading the fields of structs from `decls` and what a called
-/// function returns from `callee`.
+/// function returns from `callee`. The borrow clauses that `func` writes replace what the walk
+/// infers for the parameters they name.
 pub fn compute_return_provenance_with(
+    func: &Function,
+    decls: &Decls,
+    callee: &dyn Fn(&str) -> Option<ReturnProvenance>,
+) -> ReturnProvenance {
+    let inferred = infer_return_provenance(func, decls, callee);
+    crate::hir::check::borrow_clauses::apply_written_clauses(func, inferred)
+}
+
+/// What the walk finds in the body of `func`, without its written borrow clauses. The checker
+/// proves those clauses against this.
+pub fn infer_return_provenance(
     func: &Function,
     decls: &Decls,
     callee: &dyn Fn(&str) -> Option<ReturnProvenance>,
@@ -1226,6 +1321,52 @@ mod tests {
         );
         assert_eq!(map[&Symbol::from("again")], ReturnProvenance::AnyParam);
         assert_eq!(map[&Symbol::from("hidden")], ReturnProvenance::AnyParam);
+    }
+
+    #[test]
+    fn a_call_given_only_shared_references_stores_nothing() {
+        // `first` gets a `&Vec<i64>` and a number, so it has nowhere to store a reference. A read
+        // through `c` after the call still knows where it points.
+        let map = summarize_all(&format!(
+            "{VEC} struct Cursor {{ data : &Vec<i64>, pos : i32 }} \
+             fn first(v : &Vec<i64>, i : i32) -> &i32 {{ return &(*v).len; }} \
+             fn step(c : &mut Cursor) -> &i32 {{ \
+               let r = first(c.data, c.pos); c.pos = c.pos + 1; return r; }}"
+        ));
+        assert_eq!(map[&Symbol::from("step")], from(0, 0b1));
+    }
+
+    #[test]
+    fn a_call_given_a_mut_reference_or_a_value_that_holds_one_may_store_through_it() {
+        let map = summarize_all(
+            "struct H { r : &i32 } \
+             struct W { m : &mut H } \
+             fn put(h : &mut H, b : &i32) -> void { h.r = b; } \
+             fn put_in(w : W, b : &i32) -> void { w.m.r = b; } \
+             fn direct(h : &mut H, b : &i32) -> &i32 { put(h, b); return h.r; } \
+             fn inside(h : &mut H, b : &i32) -> &i32 { put_in(W { m : h }, b); return h.r; }",
+        );
+        assert_eq!(map[&Symbol::from("direct")], ReturnProvenance::AnyParam);
+        assert_eq!(map[&Symbol::from("inside")], ReturnProvenance::AnyParam);
+    }
+
+    #[test]
+    fn a_shared_reference_to_a_shared_cell_may_store_through_it() {
+        let map = summarize_all(
+            "struct SharedCell<T> { v : T } \
+             struct H { r : &i32 } \
+             struct S { c : SharedCell<&i32> } \
+             struct Plain { n : &i32 } \
+             fn set(s : &S, b : &i32) -> void { return; } \
+             fn look(s : &Plain, b : &i32) -> void { return; } \
+             fn through_a_cell(s : &S, h : &H, b : &i32) -> &i32 { set(s, b); return h.r; } \
+             fn through_a_plain(s : &Plain, h : &H, b : &i32) -> &i32 { look(s, b); return h.r; }",
+        );
+        assert_eq!(
+            map[&Symbol::from("through_a_cell")],
+            ReturnProvenance::AnyParam
+        );
+        assert_eq!(map[&Symbol::from("through_a_plain")], from(0, 0b010));
     }
 
     #[test]

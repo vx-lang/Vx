@@ -1875,7 +1875,7 @@ impl<'a> TypeChecker<'a> {
         let proved: Vec<Expr> = func
             .ensures
             .iter()
-            .filter(|e| !crate::hir::check::atomic_contracts::is_access_clause(e))
+            .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
             .cloned()
             .collect();
         let prev_ensures = std::mem::replace(&mut self.consteval.current_ensures, proved);
@@ -1951,7 +1951,11 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Add preconditions (requires) to our constraints
-        for req in &func.requires {
+        for req in func
+            .requires
+            .iter()
+            .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
+        {
             self.consteval.constraints.push(req.clone());
         }
 
@@ -1990,6 +1994,7 @@ impl<'a> TypeChecker<'a> {
         // made during a probe is not checked again.
         let speculating = std::mem::replace(&mut self.speculating, false);
         self.check_integer_literals_fit(&func.body);
+        self.check_borrow_clauses(func);
         self.speculating = speculating;
 
         self.seam.contracts = prev_contracts;
@@ -2000,7 +2005,7 @@ impl<'a> TypeChecker<'a> {
             for ens in func
                 .ensures
                 .iter()
-                .filter(|e| !crate::hir::check::atomic_contracts::is_access_clause(e))
+                .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
             {
                 if !self.prove_expr(ens) {
                     self.errors.error_with_code(

@@ -1,0 +1,62 @@
+//===- borrow_clause_that_the_body_does_not_keep.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// The checker proves each borrow clause with `!` against the body. A caller relies on the clause,
+// so a clause that the body does not keep is an error in the function.
+
+struct Holder {
+  r : &i64,
+}
+
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `second` says `!points_into(return, *b)`, but the result can point into `*b`
+fn second(_a : &i64, b : &i64) -> &i64
+ensures !points_into(return, *b)
+{
+  return b;
+}
+
+// The result is the reference that `*h` holds. It does not point into `*h`, but it points where
+// a reference in `*h` points.
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `held` says `!reaches(return, *h)`, but the result can point into memory that `*h` reaches through a reference
+fn held(h : &Holder) -> &i64
+ensures !reaches(return, *h)
+{
+  return h.r;
+}
+
+// The result never points into `*c`, but the checker does not follow a reference that the body
+// stores and then reads back.
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `stash` says `!points_into(return, *c)`, but the checker cannot show it: it cannot follow where the result of `stash` points
+fn stash(h : &mut Holder, b : &i64, c : &i64) -> &i64
+ensures !points_into(return, *c)
+{
+  h.r = b;
+  return h.r;
+}
+
+// The checker checks a generic function for each type it is used with, and the message names the
+// function as written.
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `pick_second` says `!points_into(return, *b)`, but the result can point into `*b`
+fn pick_second<T>(_a : &T, b : &T) -> &T
+ensures !points_into(return, *b)
+{
+  return b;
+}
+
+fn main() -> i32 {
+  let x = 1i64;
+  let y = 2i64;
+  let mut h = Holder {
+    r : &x
+  };
+  let total = *second(&x, &y) + *held(&h) + *stash(&mut h, &x, &y) + *pick_second(&x, &y);
+  return total as i32;
+}
+
+// CHECK: 4 error(s) emitted

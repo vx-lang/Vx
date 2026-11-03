@@ -20,6 +20,7 @@ pub mod across_lanes;
 pub mod across_proof;
 pub mod atomic_contracts;
 pub mod autodiff;
+pub mod borrow_clauses;
 pub mod calls;
 pub mod cancel_loops;
 pub mod capacity_fold;

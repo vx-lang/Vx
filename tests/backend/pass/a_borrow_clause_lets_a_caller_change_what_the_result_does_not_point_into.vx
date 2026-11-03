@@ -1,0 +1,100 @@
+//===- a_borrow_clause_lets_a_caller_change_what_the_result_does_not_point_into.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `ensures !reaches(return, *key)` says that the result does not point into `*key`, nor where a
+// reference in it points. `ensures !points_into(return, *c)` says that the result does not point
+// into `*c`, but it can point where a reference in `*c` points. A method call stops the inferred
+// summary, so without these clauses each caller below is refused.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator cannot lower a struct that holds a reference.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}found=30; key=7;{{$}}
+// CHECK-NEXT: {{^}}a=10; b=20;{{$}}
+// CHECK-NEXT: {{^}}last=30; key=9;{{$}}
+// CHECK-NEXT: {{^}}picked=10; y=6;{{$}}
+
+import std::vec;
+
+struct Cursor {
+  data : &Vec<i64>,
+  pos : i32,
+}
+
+struct Holder {
+  r : &i64,
+}
+
+fn find(v : &Vec<i64>, key : &i64) -> &i64
+ensures !reaches(return, *key)
+{
+  for i in 0..v.len() {
+    if *v.get_ref(i) == *key {
+      return v.get_ref(i);
+    }
+  }
+  return v.get_ref(0);
+}
+
+fn next(c : &mut Cursor) -> &i64
+ensures !points_into(return, *c)
+{
+  let r = c.data.get_ref(c.pos);
+  c.pos = c.pos + 1;
+  return r;
+}
+
+// The recursive call reads the clause of `last_from` itself.
+fn last_from(v : &Vec<i64>, key : &i64, i : i32) -> &i64
+ensures !reaches(return, *key)
+{
+  if i + 1 >= v.len() {
+    return v.get_ref(i);
+  }
+  return last_from(v, key, i + 1);
+}
+
+// `!points_into(return, *h)` would still let the result point where `h.r` points.
+fn pick(h : &Holder, v : &Vec<i64>) -> &i64
+ensures !reaches(return, *h)
+{
+  return v.get_ref(0);
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i64>::new();
+  v.push(10i64);
+  v.push(20i64);
+  v.push(30i64);
+
+  let mut k = 30i64;
+  let found = find(&v, &k);
+  k = 7i64;
+  println!("found={}; key={};", *found, k);
+
+  let mut c = Cursor {
+    data : &v, pos : 0
+  };
+  let a = next(&mut c);
+  let b = next(&mut c);
+  println!("a={}; b={};", *a, *b);
+
+  let mut k2 = 1i64;
+  let last = last_from(&v, &k2, 0);
+  k2 = 9i64;
+  println!("last={}; key={};", *last, k2);
+
+  let mut y = 5i64;
+  let h = Holder {
+    r : &y
+  };
+  let picked = pick(&h, &v);
+  y = 6i64;
+  println!("picked={}; y={};", *picked, y);
+  return 0;
+}
