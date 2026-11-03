@@ -356,17 +356,24 @@ fn take_fibers(waiters: &mut Waiters, which: Fibers) -> Vec<FiberRef> {
 fn wake(b: &Bucket, which: Fibers) {
     deadlock::progress();
     let mut waiters = Held::new(b);
-    let fibers = take_fibers(&mut waiters, which);
-    deadlock::sleep_ended(std::mem::take(&mut waiters.sleepers).len() as i64);
-    for s in std::mem::take(&mut waiters.blocked) {
-        s.unblocked();
-    }
-    waiters.wakes = waiters.wakes.wrapping_add(1);
+    let fibers = wake_under_the_lock(&mut waiters, which);
     drop(waiters);
     b.cond.notify_all();
     for fiber in fibers {
         sched::wake(fiber);
     }
+}
+
+/// The part of a wake that runs under the lock of the bucket. It takes the waiters off the
+/// counts, and returns the fibers to put back on the queue.
+fn wake_under_the_lock(waiters: &mut Waiters, which: Fibers) -> Vec<FiberRef> {
+    let fibers = take_fibers(waiters, which);
+    deadlock::sleep_ended(std::mem::take(&mut waiters.sleepers).len() as i64);
+    for s in std::mem::take(&mut waiters.blocked) {
+        s.unblocked();
+    }
+    waiters.wakes = waiters.wakes.wrapping_add(1);
+    fibers
 }
 
 /// One thread that wakes the bucket of a word at a deadline, for a fiber that parks with a time
@@ -763,11 +770,14 @@ mod tests {
         let worker = g.thread.lock().unwrap().expect("the task ran");
         let worker_sleeps = sleeps(b, worker);
         g.gate.store(1, Ordering::SeqCst);
-        wake(b, Fibers::Of(g.gate.as_ptr() as usize));
-        // The task needs this lock to come back from its wait, so it is still in it here.
-        let w = b.lock.lock().unwrap();
+        // The task needs the bucket lock to come back from its wait. The test holds the lock
+        // from the wake to the read, so the task is still in its wait at the read.
+        let mut w = b.lock.lock().unwrap();
+        let fibers = wake_under_the_lock(&mut w, Fibers::Of(g.gate.as_ptr() as usize));
         let parked_after_the_wake = sched.all_parked();
         drop(w);
+        b.cond.notify_all();
+        assert!(fibers.is_empty(), "a task in a callback parked as a fiber");
         unsafe { crate::ffi::tasks::vx_tasks_end(group) };
         assert!(
             parked_while_waiting,
