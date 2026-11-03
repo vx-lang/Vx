@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 // Each task waits in `recv` for a value that only the other task sends. The deadlock report
-// names each wait, and the `spawn` of each task. The main code waits for the end of the first
-// task.
+// names the line of each wait, the line that made its channel, and the `spawn` of each task. The
+// main code waits for the end of the first task.
 //
 // RUN: not vxc %s --run 2>&1 | FileCheck %s
 // RUN: not vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
@@ -15,9 +15,9 @@
 
 // CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
 // CHECK-NEXT: {{^}}  the main code waits for the end of the task from the `spawn` at {{.*}}.vx:46{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `recv` on channel 1{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:28 on channel 1, made at {{.*}}.vx:43{{$}}
 // CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:46{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `recv` on channel 2{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:28 on channel 2, made at {{.*}}.vx:44{{$}}
 // CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:49{{$}}
 
 import std::sync::channel;
