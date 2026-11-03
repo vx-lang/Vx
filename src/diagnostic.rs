@@ -459,7 +459,8 @@ pub enum DiagnosticCode {
     /// for a block: a variable declared outside a block cannot be given a value that points
     /// at a variable declared inside it. Nor can a variable keep a reference into a value with
     /// no name, such as `make_vec()` in `let r = &make_vec();`, when that value is dropped at
-    /// the end of its statement.
+    /// the end of its statement. A closure cannot return a reference to its own parameter, or to
+    /// the copy it keeps of a variable it uses (`|| &x`): each call has its own frame.
     E4005,
     /// An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where
     /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`.

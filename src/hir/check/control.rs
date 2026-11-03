@@ -1332,6 +1332,11 @@ impl<'a> TypeChecker<'a> {
                 for (name, ty) in &cloned_params {
                     self.insert(name.to_string(), ty.clone());
                 }
+                // The closure's call has its own parameters, which a returned reference may use.
+                let outer_params = self.borrow.current_params.clone();
+                self.borrow
+                    .current_params
+                    .extend(cloned_params.iter().cloned());
                 let mut b = e.body.clone();
                 // A closure is a function, so its body starts a fresh compile-time context.
                 // `comptime` directly inside `comptime` is the thing being refused; a lambda
@@ -1356,6 +1361,24 @@ impl<'a> TypeChecker<'a> {
                         ret_ty = inferred.clone();
                     }
                 }
+                if !self.speculating
+                    && self.type_can_hold_reference(&ret_ty)
+                    && matches!(
+                        self.ref_provenance_of(&b),
+                        Some(crate::hir::env::RefProvenance::Local(d)) if d >= closure_depth
+                    )
+                {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E4005,
+                        "this closure returns a value that points into the closure's own call: \
+                         at a parameter, or at the copy the closure keeps of a variable it uses. \
+                         That copy is gone once the call returns. Return the value itself, or a \
+                         reference made outside the closure"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&e.span)),
+                    );
+                }
+                self.borrow.current_params = outer_params;
 
                 self.pop_scope();
                 self.current_return_type = old_ret;

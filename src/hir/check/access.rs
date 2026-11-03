@@ -2045,7 +2045,7 @@ impl<'a> TypeChecker<'a> {
                 if let Some((base, _path)) = Self::extract_base_and_path(&b.expr) {
                     match self.borrow.current_params.get(base.as_str()) {
                         Some(pty) if Self::is_ref_type(pty) => Some(RefProvenance::External),
-                        _ => Some(RefProvenance::Local(self.scope_depth_of(&base))),
+                        _ => Some(RefProvenance::Local(self.frame_depth_of(&base))),
                     }
                 } else if self.drops_frees_borrowed_temporary(place) {
                     // `&make()` of a struct that is dropped at the end of the statement.
@@ -2171,6 +2171,16 @@ impl<'a> TypeChecker<'a> {
         parts: impl Iterator<Item = &'e Expr>,
     ) -> Option<crate::hir::env::RefProvenance> {
         Self::join_provenances(parts.map(|e| self.ref_provenance_of(e)).collect())
+    }
+
+    /// [`Self::scope_depth_of`], except that in a closure body a variable from outside the
+    /// closure is at the closure's depth: each call copies it into the call's own frame.
+    fn frame_depth_of(&self, name: &str) -> usize {
+        let depth = self.scope_depth_of(name);
+        match self.mono.closure_depths.last() {
+            Some(&closure) if depth < closure => closure,
+            _ => depth,
+        }
     }
 
     /// The depth of the innermost scope open now; the function's parameters are at 0 or 1.
