@@ -15,13 +15,19 @@
 // An atomic access, through a call or an `mlir!` block with an `atomic(t)` clause, races with no
 // other atomic access. A tensor that the loop changes atomically has only atomic accesses.
 //
+// Two accesses whose index forms differ by a number are apart when that number, as one more
+// digit, keeps the form a mixed-radix number: `2 * j` and `2 * j + 1` never meet.
+//
+// An access in `if v == c`, where `v` is the loop's variable and `c` a number, is made by one
+// pass only. Two such accesses with the same `c` are made by the same pass, so they never race.
+//
 //===----------------------------------------------------------------------===//
 
 use crate::hir::comptime_interpreter::ComptimeInterpreter;
 use crate::hir::flatten::is_tensor_alloc_call;
 use crate::syntax::stmt::{AcrossClause, ForLoopStmt, Statement};
 use crate::syntax::types::{scalar_of, ElementType};
-use crate::syntax::{BinaryOp, Expr, Span, UnaryOp};
+use crate::syntax::{BinaryOp, Expr, LogicalOp, RelationalOp, Span, UnaryOp};
 use std::collections::{BTreeMap, HashMap};
 
 /// `Σ coefficient · variable + constant`. A variable is a loop index of this pass, by a name that
@@ -92,6 +98,8 @@ struct Access {
     atomic: bool,
     indices: Vec<Option<Affine>>,
     span: Span,
+    /// `c`, when only the pass whose variable is `c` makes the access.
+    pass: Option<i64>,
 }
 
 struct Proof<'c> {
@@ -117,6 +125,8 @@ struct Proof<'c> {
     error: Option<(String, Span)>,
     /// The statement being walked, for an expression with no position of its own.
     at: Span,
+    /// `c` in the `then` block of an `if` that tests that the loop's variable is `c`.
+    pass: Option<i64>,
 }
 
 /// The position of an `across` clause, the largest end that its loop may have, and the type of
@@ -160,6 +170,7 @@ pub(crate) fn across_loop_race(
             next_key: 0,
             error: None,
             at: f.span,
+            pass: None,
         };
         p.own = p.bind_index(&f.iter, &f.iterable, range, f.across.as_ref());
         p.stmts(&f.body);
@@ -414,6 +425,7 @@ impl Proof<'_> {
                 atomic: false,
                 indices,
                 span: at,
+                pass: self.pass,
             });
     }
 
@@ -430,6 +442,7 @@ impl Proof<'_> {
                         atomic: true,
                         indices: Vec::new(),
                         span: arg.span(),
+                        pass: self.pass,
                     });
             }
             Some(_) => {}
@@ -542,7 +555,10 @@ impl Proof<'_> {
             }
             Expr::If(i) => {
                 self.expr(&i.cond);
+                let outer = self.pass;
+                self.pass = self.pass.or(self.one_pass(&i.cond));
                 self.block(&i.then_block);
+                self.pass = outer;
                 if let Some(b) = &i.else_block {
                     self.block(b);
                 }
@@ -665,6 +681,28 @@ impl Proof<'_> {
         }
     }
 
+    /// `c` when `cond` holds only in the pass whose variable is `c`: `v == c` or `c == v`, also
+    /// as one side of `&&`.
+    fn one_pass(&self, cond: &Expr) -> Option<i64> {
+        match cond {
+            Expr::RelationalOp(r) if r.op == RelationalOp::Eq => {
+                let own = Affine::var(self.own.clone());
+                let (l, r) = (self.affine(&r.lhs)?, self.affine(&r.rhs)?);
+                if l == own {
+                    r.as_constant()
+                } else if r == own {
+                    l.as_constant()
+                } else {
+                    None
+                }
+            }
+            Expr::LogicalOp(l) if l.op == LogicalOp::And => {
+                self.one_pass(&l.lhs).or_else(|| self.one_pass(&l.rhs))
+            }
+            _ => None,
+        }
+    }
+
     /// The integer type of `e`, when the checker recorded it.
     fn int_type(&self, e: &Expr) -> Option<ElementType> {
         match e {
@@ -730,6 +768,14 @@ impl Proof<'_> {
 
     /// Whether two passes that compute `form` to the same value are the same pass.
     fn fixes_own(&self, form: &Affine) -> bool {
+        self.fixes_own_with(form, None)
+    }
+
+    /// As `fixes_own`, for two forms that differ by the constant `gap`: `form` and
+    /// `form + gap`. The gap is one more digit, `gap * d` with `d` 0 or 1. So two passes never
+    /// meet when the passes and the digit together are a mixed-radix number, as for
+    /// `out[2 * j]` and `out[2 * j + 1]`, or `out[j]` and `out[j + 32]` with `j` below 32.
+    fn fixes_own_with(&self, form: &Affine, gap: Option<i64>) -> bool {
         if !form.terms.contains_key(&self.own) {
             return false;
         }
@@ -748,6 +794,9 @@ impl Proof<'_> {
                 (c.abs(), span)
             })
             .collect();
+        if let Some(gap) = gap {
+            digits.push((gap, Some(2)));
+        }
         // For equal coefficients, a smaller range goes first, and a range of unknown size last.
         digits.sort_by_key(|&(c, span)| (c, span.unwrap_or(i64::MAX)));
         let last = digits.len() - 1;
@@ -800,9 +849,23 @@ impl Proof<'_> {
             }
             for w in accesses.iter().filter(|a| a.write) {
                 for other in accesses {
-                    let apart = w.indices.iter().zip(&other.indices).any(|(x, y)| {
-                        matches!((x, y), (Some(x), Some(y)) if x == y && self.fixes_own(x))
-                    });
+                    // One pass makes both.
+                    if w.pass.is_some() && w.pass == other.pass {
+                        continue;
+                    }
+                    let apart = w
+                        .indices
+                        .iter()
+                        .zip(&other.indices)
+                        .any(|(x, y)| match (x, y) {
+                            (Some(x), Some(y)) if x == y => self.fixes_own(x),
+                            (Some(x), Some(y)) if x.terms == y.terms => x
+                                .constant
+                                .checked_sub(y.constant)
+                                .and_then(i64::checked_abs)
+                                .is_some_and(|gap| self.fixes_own_with(x, Some(gap))),
+                            _ => false,
+                        });
                     if apart {
                         continue;
                     }
@@ -814,7 +877,9 @@ impl Proof<'_> {
                     } else if other.write {
                         format!(
                             "two passes of this {level} loop may write the same element of \
-                             `{name}`: the writes must use the same index that fixes `{own}`"
+                             `{name}`: the writes must use the same index that fixes `{own}`, \
+                             or indices that no two passes make equal, such as `2 * {own}` and \
+                             `2 * {own} + 1`"
                         )
                     } else {
                         format!(

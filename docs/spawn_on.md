@@ -215,6 +215,10 @@ spawn on(Topology::Gpu) {
   memory, such as `atomic_fetch_add_u32(&counts, i, 1u32, AtomicOrdering::Relaxed)`.
 - A call to a function that says `ensures writes_only()` accesses no memory, so it races with
   nothing. `scoped_fence(order, FenceScope::Device)` is one.
+- A call to a function that says `ensures reads_only(t)`, or an `mlir!` block with
+  `ensures : [reads_only(t)]`, reads all of `t` and writes none of it. It races with no other
+  read. The function may only read elements of `t`, ask for its length, or pass it to code that
+  says `reads_only` for it.
 - Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
   memory.
 - A condition or a bound around a lane loop may read an element of a `&` tensor parameter. Only
