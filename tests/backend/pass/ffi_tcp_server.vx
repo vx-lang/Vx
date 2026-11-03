@@ -13,25 +13,28 @@
 // CHECK-DAG: func.func private @print_str(
 // CHECK-DAG: func.func private @print_i32(
 // CHECK-LABEL: func.func @main() -> i32
-// CHECK: %[[V0:.*]] = call @vx_tcp_listener_bind(%{{.*}}) : (!llvm.ptr) -> !llvm.ptr
-// CHECK: call @vx_tcp_listener_drop(%[[V0]]) : (!llvm.ptr) -> i32
+// CHECK: %[[SLOT:.*]] = llvm.alloca %{{.*}} x !llvm.ptr : (i32) -> !llvm.ptr
+// CHECK: %[[STATUS:.*]] = call @vx_tcp_listener_bind(%{{.*}}, %[[SLOT]]) : (!llvm.ptr, !llvm.ptr) -> i32
+// CHECK: %[[LISTENER:.*]] = llvm.load %[[SLOT]] : !llvm.ptr -> !llvm.ptr
+// CHECK: call @vx_tcp_listener_drop(%[[LISTENER]]) : (!llvm.ptr) -> i32
 // CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
-// CHECK: call @print_i32(%{{.*}}) : (i32) -> i32
+// CHECK: call @print_i32(%[[STATUS]]) : (i32) -> i32
 import std::io;
 extern {
-  fn vx_tcp_listener_bind(c_addr : *const i8) -> *mut i8;
+  fn vx_tcp_listener_bind(c_addr : *const i8, out : *mut *mut i8) -> i32;
   fn vx_tcp_listener_drop(ptr : *mut i8) -> i32;
 }
 
 fn main() -> i32 {
   unsafe {
-    // We bind to a random port and then drop to avoid blocking on accept
-    // Since we don't have non-blocking mode or threading in our test harness
+    // Bind to a free port, then drop the listener, so that the program does not wait in
+    // `accept`. The bind writes the listener through `out` and returns 0 when it works.
     let addr = "127.0.0.1:0";
-    let listener = vx_tcp_listener_bind(addr);
+    let mut listener : *mut i8 = 0 as *mut i8;
+    let status = vx_tcp_listener_bind(addr, (&mut listener) as *mut *mut i8);
     vx_tcp_listener_drop(listener);
     print!("TCP Server Success: ");
-    print!(0);
+    print!(status);
   }
   return 0;
 }
