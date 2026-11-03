@@ -12,8 +12,9 @@
 // lifetime of `b` starts. In `one_block`, `a` ends after its last use, before `b` starts. In
 // `a_raw_pointer`, `keep` stores a raw pointer to `a` in `h`, and `read(&h)` reads `a` through
 // it later. A raw pointer keeps no borrow, so `a` lives to the end of its block, as in Rust.
-// The ASM checks: in `two_blocks`, the two calls of `total` get the same address, so `b` uses
-// the same bytes as `a`. The OUT checks: the sums are right, with each code generator.
+// The ASM checks: in `two_blocks`, the two calls of `total` get the same address with each code
+// generator, so `b` uses the same bytes as `a`. The OUT checks: the sums are right, with each
+// code generator.
 //
 // REQUIRES: x86_64
 // REQUIRES: aarch64
@@ -23,6 +24,8 @@
 // RUN: vxc %s --action emit-obj -o %t.o
 // macOS adds `_` to each symbol name.
 // RUN: llvm-objdump -d --no-show-raw-insn --disassemble-symbols=two_blocks,_two_blocks %t.o | FileCheck %s --check-prefixes=ASM,ASM-%arch
+// RUN: vxc %s --legacy-codegen --action emit-obj -o %t.ast.o
+// RUN: llvm-objdump -d --no-show-raw-insn --disassemble-symbols=two_blocks,_two_blocks %t.ast.o | FileCheck %s --check-prefixes=ASM,ASM-%arch
 // RUN: vxc %s 2>&1 | FileCheck %s --check-prefix=OUT
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --check-prefix=OUT
 //

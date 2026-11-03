@@ -293,6 +293,12 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
                     .build()?;
                 let alloca_ref = block.append_operation(alloca_op);
                 let alloca_val = alloca_ref.result(0)?.into();
+                // The checker writes where the struct's lifetime ends (`DropStmt::ends_lifetime`).
+                if ty_str.contains("!llvm.struct") {
+                    gen.emit_lifetime_marker("llvm.intr.lifetime.start", alloca_val, block)?;
+                    gen.started_slots
+                        .insert(MeliorGenerator::slot_key(alloca_val));
+                }
 
                 let store_op = OperationBuilder::new("llvm.store", gen.loc())
                     .add_operands(&[val, alloca_val])
