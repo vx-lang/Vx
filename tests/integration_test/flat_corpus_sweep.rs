@@ -21,8 +21,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // A `return` of a tensor from inside a `tasks` block: the flat path declines it ("a return
     // of a value of this type from inside a tasks block"). The file is about the AST path.
     "backend/pass/a_return_of_a_tensor_leaves_a_tasks_block.vx",
-    // `VecIter<i64>::filter`: the flat path declines it ("a struct with no GID").
-    "backend/pass/an_iterator_item_does_not_keep_the_iterator_borrowed.vx",
     // A `match` through a reference to an enum, one of them with a payload: the flat path does
     // not lower a match over a borrowed enum or an enum that carries a payload.
     "backend/pass/match_on_a_reference_to_an_enum.vx",
@@ -76,16 +74,9 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/closure_using_a_local_stays_in_its_function.vx",
     // "A store to a nested nominal field": `r[0].name = x` puts a struct into a struct's field.
     "backend/pass/assign_to_a_field_through_index_mut_drops_the_old_field.vx",
-    // The flat path declines `main` here as "a callee return type": the adaptors it
-    // builds answer with a generic struct. Its answers come from the AST path.
-    "backend/pass/core_iter.vx",
-    // Same decline as `core_iter.vx`, one adaptor deeper: the answers come from the AST path.
-    "backend/pass/iter_adaptors_chain.vx",
-    // Same decline as `core_iter.vx`: `main` builds adaptors before consuming them.
-    "backend/pass/core_iter_fold_sum_collect.vx",
-    // Same decline again, for the same reason.
-    "backend/pass/core_iter_adapters.vx",
+    // `Peekable::peek` stores an `Option` into a field: "a store to a nested nominal field".
     "backend/pass/core_iter_stateful_adapters.vx",
+    // `Rev<VecIter<i64>>` reads through `&T`: "a pointer whose type cannot be inferred".
     "backend/pass/core_iter_rev.vx",
     // `Vec::iter()` hands out `&T`: the flat path has no layout for `Option<&T>` and cannot
     // read through a `for` variable that is a reference (#889).
