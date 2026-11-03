@@ -6626,6 +6626,16 @@ impl<'r> Lowerer<'r> {
                 // (the merge block loads it). The slot type comes from the `let`'s annotation, else
                 // from a branch's trailing value.
                 if let Expr::If(if_expr) = &l.expr {
+                    // `let _v = if c { f(); } else { g(); };`: no branch gives a value, so the
+                    // `if` runs as a statement and the name holds nothing.
+                    let no_value = match self.infer_ast_type(&l.expr) {
+                        Some(t) => crate::syntax::is_void_ty(&t),
+                        None => if_gives_no_value(if_expr),
+                    };
+                    if no_value && l.ty_ann.as_ref().is_none_or(crate::syntax::is_void_ty) {
+                        self.lower_if(if_expr)?;
+                        return Ok(());
+                    }
                     let result_ty = match l.ty_ann.as_ref() {
                         Some(ann) => {
                             lowered_ty(ann, self.registry).ok_or(Decline::TypeNotModelled {
@@ -7297,6 +7307,9 @@ fn expr_has_control_flow(e: &Expr) -> bool {
         Expr::Array(arr) => arr.elements.iter().any(expr_has_control_flow),
         Expr::StructInit(si) => si.fields.iter().any(|(_, e)| expr_has_control_flow(e)),
         Expr::EnumVariant(ev) => ev.payload.iter().flatten().any(expr_has_control_flow),
+        // `print!("{}", a && b)`: an argument can branch like any other operand.
+        Expr::Print(p) => p.args.iter().any(expr_has_control_flow),
+        Expr::Println(p) => p.args.iter().any(expr_has_control_flow),
         _ => false,
     }
 }
@@ -8081,6 +8094,14 @@ fn agg_gid_of_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<TypeId
 /// blocks; mutation flows through the pointer to the pointee, not to the register). (#242)
 fn is_ptr_to_agg(ty: &Type, registry: &ImmutableGlobalRegistry) -> bool {
     matches!(ty, Type::Borrow { .. } | Type::Pointer(..)) && agg_gid_of_ty(ty, registry).is_some()
+}
+
+/// Whether neither branch of an `if` ends in a value: each one's last statement is not an
+/// expression without a semicolon.
+fn if_gives_no_value(e: &crate::syntax::IfExpr) -> bool {
+    let ends_in_a_value =
+        |block: &[Statement]| matches!(block.last(), Some(Statement::ExprStmt(x)) if !x.has_semi);
+    !ends_in_a_value(&e.then_block) && !e.else_block.as_deref().is_some_and(ends_in_a_value)
 }
 
 /// Whether `e` names a place that a borrow must point at: a local, a field, an element or a
