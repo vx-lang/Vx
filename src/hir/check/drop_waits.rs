@@ -7,8 +7,9 @@
 //===----------------------------------------------------------------------===//
 //
 // A `drop` runs with cancellation off, so a cancel cannot stop a wait in it. A `send` or `recv`
-// there waits forever when the other end never acts. W1036 warns about such a call, and the
-// fix is `send_for` or `recv_for` (F6 in docs/discussions/waiting_tasks_channels_and_task_errors.md).
+// there waits until the time limit of the `drop` when the other end never acts. W1036 warns
+// about such a call, and the fix is `send_for` or `recv_for` (F6 in
+// docs/discussions/waiting_tasks_channels_and_task_errors.md).
 // It is a warning, not an error, because the check does not look into the functions that the
 // `drop` calls.
 //
@@ -66,9 +67,10 @@ impl TypeChecker<'_> {
         self.errors.warn(
             crate::diagnostic::DiagnosticCode::W1036,
             format!(
-                "'{method}' waits with no time limit in a 'drop'. A drop runs with cancellation \
-                 off, so this wait never ends if the other end of the channel never acts. Use \
-                 '{timed}' with a time limit"
+                "'{method}' waits with no time limit of its own in a 'drop'. A drop runs with \
+                 cancellation off, so if the other end of the channel never acts, this wait \
+                 holds up the drop until the limit of the drop: VX_DROP_WAIT_SECONDS, or 10 \
+                 seconds. Use '{timed}' with a time limit"
             ),
             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
         );
