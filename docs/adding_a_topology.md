@@ -131,6 +131,11 @@ ______________________________________________________________________
 | `visible: [..]` | Every space it can address. Defaults to just its own memory. |
 | `arch:` | The instruction set it executes: `x86_64`, `aarch64`, `nvptx64`, `amdgcn`. |
 | `transfer A -> B` | An edge in the cost graph. Repeatable. |
+| `offload: true` | The fleet may run it on a worker of another node. Defaults to `false`. |
+
+A worker of another node does not share the memory of this node. So a topology with
+`offload: true` gets no exception for `managed: cached` memory: a host tensor in its region needs
+a `transfer` (E6003), as on a discrete GPU.
 
 A `transfer` clause takes an optional cost (`: 300`, or a bandwidth like `: 64 GB/s`), an optional
 consistency grade (`relaxed` or `sync`, default `sync`), and an optional `copy_engine` marker.
