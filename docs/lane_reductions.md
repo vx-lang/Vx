@@ -95,6 +95,27 @@ kernel expands it, and the argmax shuffles a value and an index at each step:
   `-fauto-schedule-levels` use them. So does the AST code generator (`--legacy-codegen`), which
   runs a kernel on one lane.
 
+## Sorts
+
+`lanes::sort(&mut t, n)` sorts `t[0]` to `t[n - 1]` from the smallest value up, and
+`lanes::sort_descending(&mut t, n)` from the largest value down. The other elements of `t` do not
+change. A sort gives no value, so a call is a statement of its own, in the places that a lane
+reduction can be.
+
+- `t` is a rank-1 tensor of `i64`, with a size `N` that is a power of two. To sort other values,
+  put each value in the high bits of an `i64` key, and its index in the low bits.
+- `n` is an `i32`, with the limits of a lane reduction.
+- In the code of a block, the lanes of the block are a power of two and at least 32. In the code
+  of a subgroup, a subgroup has 32 lanes. Each lane holds at most 8 elements, so `N` is at most
+  8 times the lanes.
+
+A sort of integers has one result, so every copy of a kernel gives the same bits. Each copy uses
+a bitonic sorting network. On the GPU, each lane holds its elements in registers. A step of the
+network with a distance below 32 uses `shfl.sync.bfly`, and a step with a distance of at least
+the lanes stays in the registers of a lane. Only the steps between them use shared memory and
+barriers: 20 of the 66 steps for 2048 elements on 1024 lanes. The CPU runs the same network in
+loops.
+
 ## Not yet
 
 - `f64` and the integer types.

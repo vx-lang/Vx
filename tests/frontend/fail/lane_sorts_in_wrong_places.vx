@@ -1,0 +1,179 @@
+//===- lane_sorts_in_wrong_places.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Every lane of the block or the subgroup must get to a lane sort, so a call is a statement of
+// its own in the code of a loop of blocks or subgroups. Each function below breaks one rule of
+// the place, the size or the arguments of a call.
+//
+// RUN: not vxc %s --host default --machine fleet/a100-80.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: Error[E6032] at {{.*}}lane_sorts_in_wrong_places.vx:32:{{.*}}`lanes::sort` must be a statement of its own in the code of a loop of blocks or subgroups, outside its lane loops
+// CHECK: Error[E6032] at {{.*}}lane_sorts_in_wrong_places.vx:50:{{.*}}each pass writes `keys`, which is declared outside the loop, so the passes race
+// CHECK: Error[E6032] at {{.*}}lane_sorts_in_wrong_places.vx:50:{{.*}}`lanes::sort` must be a statement of its own
+// CHECK: Error[E3003] at {{.*}}lane_sorts_in_wrong_places.vx:68:{{.*}}the first argument of `lanes::sort` must borrow a rank-1 tensor of `i64` as `&mut`, with a size that is a power of two,{{.*}} but it is `&mut Tensor<f32, [64], Memory::SMEM>`
+// CHECK: Error[E3003] at {{.*}}lane_sorts_in_wrong_places.vx:85:{{.*}}the first argument of `lanes::sort`{{.*}} but it is `&mut Tensor<i64, [100], Memory::SMEM>`
+// CHECK: Error[E3003] at {{.*}}lane_sorts_in_wrong_places.vx:102:{{.*}}the first argument of `lanes::sort`{{.*}} but it is `&Tensor<i64, [64], Memory::SMEM>`
+// CHECK: Error[E6032] at {{.*}}lane_sorts_in_wrong_places.vx:121:{{.*}}`lanes::sort` in the code of a block needs a block whose lanes are a power of two and at least 32, but the lane loops of this region give 96 lanes
+// CHECK: Error[E6032] at {{.*}}lane_sorts_in_wrong_places.vx:138:{{.*}}`lanes::sort` sorts at most 8 elements for each of the 64 lanes, so at most 512, but its tensor has 1024
+// CHECK: Error[E3003] at {{.*}}lane_sorts_in_wrong_places.vx:155:{{.*}}the second argument of `lanes::sort` is the number of elements to sort, an `i32`, but it is `f32`
+// CHECK: Error[E3003] at {{.*}}lane_sorts_in_wrong_places.vx:172:{{.*}}`lanes::sort` takes 2 arguments, a borrowed tensor and the number of its elements to sort, but it got 1
+
+// A sort gives no value, so it is a statement of its own.
+pub fn as_the_value_of_a_let(out : &mut Tensor<i64, [?], Memory::HBM>, x : &Tensor<i64, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut keys = unsafe { Tensor<i64, [64], Memory::SMEM>::uninit() };
+      for t in 0..64 across lanes(64) {
+        keys[t] = x[t];
+      }
+      let s = lanes::sort(&mut keys, 64);
+      for t in 0..64 across lanes(64) {
+        out[b * 64 + t] = keys[t];
+      }
+    }
+  }
+  return;
+}
+
+// A call in a lane loop. Each pass then also writes all of `keys`, so the passes race.
+pub fn in_a_lane_loop(out : &mut Tensor<i64, [?], Memory::HBM>, x : &Tensor<i64, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut keys = unsafe { Tensor<i64, [64], Memory::SMEM>::uninit() };
+      for t in 0..64 across lanes(64) {
+        keys[t] = x[t];
+      }
+      for t in 0..64 across lanes {
+        lanes::sort(&mut keys, 64);
+      }
+      for t in 0..64 across lanes(64) {
+        out[b * 64 + t] = keys[t];
+      }
+    }
+  }
+  return;
+}
+
+// The keys are `i64`.
+pub fn of_floats(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut keys = unsafe { Tensor<f32, [64], Memory::SMEM>::uninit() };
+      for t in 0..64 across lanes(64) {
+        keys[t] = x[t];
+      }
+      lanes::sort(&mut keys, 64);
+      for t in 0..64 across lanes(64) {
+        out[b * 64 + t] = keys[t];
+      }
+    }
+  }
+  return;
+}
+
+// The size is a power of two.
+pub fn of_100_keys(out : &mut Tensor<i64, [?], Memory::HBM>, x : &Tensor<i64, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut keys = unsafe { Tensor<i64, [100], Memory::SMEM>::uninit() };
+      for t in 0..100 across lanes(100) {
+        keys[t] = x[t];
+      }
+      lanes::sort(&mut keys, 100);
+      for t in 0..100 across lanes(100) {
+        out[b * 100 + t] = keys[t];
+      }
+    }
+  }
+  return;
+}
+
+// The sort writes the tensor, so it takes `&mut`.
+pub fn not_mut(out : &mut Tensor<i64, [?], Memory::HBM>, x : &Tensor<i64, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut keys = unsafe { Tensor<i64, [64], Memory::SMEM>::uninit() };
+      for t in 0..64 across lanes(64) {
+        keys[t] = x[t];
+      }
+      lanes::sort(&keys, 64);
+      for t in 0..64 across lanes(64) {
+        out[b * 64 + t] = keys[t];
+      }
+    }
+  }
+  return;
+}
+
+// The lanes of the block are a power of two.
+pub fn on_96_lanes(out : &mut Tensor<i64, [?], Memory::HBM>, x : &Tensor<i64, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut keys = unsafe { Tensor<i64, [64], Memory::SMEM>::uninit() };
+      for t in 0..96 across lanes {
+        if t < 64 {
+          keys[t] = x[t];
+        }
+      }
+      lanes::sort(&mut keys, 64);
+      for t in 0..64 across lanes {
+        out[b * 64 + t] = keys[t];
+      }
+    }
+  }
+  return;
+}
+
+// Each of the 64 lanes holds at most 8 keys.
+pub fn of_too_many_keys(out : &mut Tensor<i64, [?], Memory::HBM>, x : &Tensor<i64, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut keys = unsafe { Tensor<i64, [1024], Memory::SMEM>::uninit() };
+      for t in 0..1024 across lanes(64) {
+        keys[t] = x[t];
+      }
+      lanes::sort(&mut keys, 1024);
+      for t in 0..1024 across lanes(64) {
+        out[b * 1024 + t] = keys[t];
+      }
+    }
+  }
+  return;
+}
+
+// The count is an `i32`.
+pub fn with_a_float_count(out : &mut Tensor<i64, [?], Memory::HBM>, x : &Tensor<i64, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut keys = unsafe { Tensor<i64, [64], Memory::SMEM>::uninit() };
+      for t in 0..64 across lanes(64) {
+        keys[t] = x[t];
+      }
+      lanes::sort(&mut keys, 64.0);
+      for t in 0..64 across lanes(64) {
+        out[b * 64 + t] = keys[t];
+      }
+    }
+  }
+  return;
+}
+
+// The count is missing.
+pub fn with_one_argument(out : &mut Tensor<i64, [?], Memory::HBM>, x : &Tensor<i64, [?], Memory::HBM>, rows : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..rows across blocks {
+      let mut keys = unsafe { Tensor<i64, [64], Memory::SMEM>::uninit() };
+      for t in 0..64 across lanes(64) {
+        keys[t] = x[t];
+      }
+      lanes::sort(&mut keys);
+      for t in 0..64 across lanes(64) {
+        out[b * 64 + t] = keys[t];
+      }
+    }
+  }
+  return;
+}

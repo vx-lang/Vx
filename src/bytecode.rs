@@ -378,6 +378,11 @@ pub const LANE_REDUCE_ARGMAX: u64 = 8;
 /// of the subgroup loop. So it is the row that a `TENSOR_STORE_LANE_ELEMENT` store of the
 /// subgroup writes.
 pub const LANE_REDUCE_OWN_ROW: u64 = 16;
+/// `Opcode::LaneReduce`: `lanes::sort`, an effect with no result. `operand1` is the tensor and
+/// `operand2` the count. The lanes of the block or the subgroup are in `imm >> 32`.
+pub const LANE_REDUCE_SORT: u64 = 32;
+/// `Opcode::LaneReduce` with `LANE_REDUCE_SORT`: from the largest value down.
+pub const LANE_REDUCE_DESCENDING: u64 = 64;
 
 /// `Opcode::TensorStore`: the place is `tile[t]` in a lane loop of the code of a block, with `t`
 /// the index of the loop. The loop goes from 0 over all of its lanes, so only lane `t` writes the

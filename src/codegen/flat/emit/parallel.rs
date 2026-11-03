@@ -318,6 +318,23 @@ impl FnEmit<'_> {
             .ok_or(crate::emitter_gap!())?
             .clone()
             .ok_or(crate::emitter_gap!())?;
+        if ins.imm & crate::bytecode::LANE_REDUCE_SORT != 0 {
+            let n = self
+                .names
+                .get(ins.operand2.0 as usize)
+                .ok_or(crate::emitter_gap!())?
+                .clone();
+            let mut attrs = format!("lanes = {} : i64", ins.imm >> 32);
+            if ins.imm & crate::bytecode::LANE_REDUCE_DESCENDING != 0 {
+                attrs += ", descending";
+            }
+            if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
+                attrs += ", subgroup";
+            }
+            self.body +=
+                &format!("  \"vx.lane_sort\"({t}, {n}) {{{attrs}}} : ({memty}, i32) -> ()\n");
+            return Ok(());
+        }
         let argmax = ins.imm & crate::bytecode::LANE_REDUCE_ARGMAX != 0;
         // The count: `operand2` for a sum or a larger value, the `Arg` before for the argmax.
         let count = if argmax {

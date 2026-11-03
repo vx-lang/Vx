@@ -541,6 +541,24 @@ impl Proof<'_> {
                     self.fail(why, fc.span);
                     return;
                 }
+                // A lane sort writes the tensor that it borrows: a row `t[w]`, or a tensor of
+                // this pass.
+                let sort = crate::hir::check::lanes::lane_routine(&fc.name)
+                    .is_some_and(|(op, _)| op.is_sort());
+                if let (true, Some(Expr::Borrow(b))) = (sort, fc.args.first()) {
+                    if let Some((name, indices)) = Self::element(&b.expr) {
+                        for i in &indices {
+                            self.expr(i);
+                        }
+                        if self.outside(name) {
+                            self.record(name, &indices, true, b.span);
+                        }
+                    } else {
+                        self.target(&b.expr, b.span);
+                    }
+                    fc.args[1..].iter().for_each(|a| self.expr(a));
+                    return;
+                }
                 fc.args.iter().for_each(|a| self.expr(a));
             }
             Expr::Borrow(b) => {
