@@ -497,6 +497,8 @@ pub struct TypeChecker<'a> {
     pub allow_cross_topology: bool,
     pub errors: crate::diagnostic::DiagnosticsVec,
     pub(crate) in_unsafe_block: bool,
+    /// Inside the body of an `unsafe fn`, whose caller keeps the promises the body cannot check.
+    pub(crate) in_unsafe_fn: bool,
     /// Inside an `unsafe` block someone wrote, not only one the compiler made for `vec![..]`.
     pub(crate) in_written_unsafe_block: bool,
     /// Something that needs `unsafe` was checked since the innermost written `unsafe` block
@@ -625,6 +627,7 @@ impl<'a> TypeChecker<'a> {
             scopes: vec![HashMap::new()],
             errors: crate::diagnostic::DiagnosticsVec::new(),
             in_unsafe_block: false,
+            in_unsafe_fn: false,
             in_written_unsafe_block: false,
             unsafe_op_seen: false,
             allow_cross_topology: false,
@@ -1899,6 +1902,7 @@ impl<'a> TypeChecker<'a> {
         // The same for `unsafe`: a generic body is checked at the call that needs it, which may
         // be inside the caller's `unsafe` block, but the body is not inside that block.
         let prev_in_unsafe = std::mem::take(&mut self.in_unsafe_block);
+        let prev_in_unsafe_fn = std::mem::replace(&mut self.in_unsafe_fn, func.is_unsafe);
         let prev_written_unsafe = std::mem::take(&mut self.in_written_unsafe_block);
         let prev_unsafe_op_seen = std::mem::take(&mut self.unsafe_op_seen);
         self.push_scope();
@@ -2119,6 +2123,7 @@ impl<'a> TypeChecker<'a> {
         self.changed_vars = prev_changed_vars;
         self.tasks.exit_function(prev_tasks);
         self.in_unsafe_block = prev_in_unsafe;
+        self.in_unsafe_fn = prev_in_unsafe_fn;
         self.in_written_unsafe_block = prev_written_unsafe;
         self.unsafe_op_seen = prev_unsafe_op_seen;
         self.errors.file = prev_file;

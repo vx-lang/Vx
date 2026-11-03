@@ -744,6 +744,29 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `*p` or `p[i]` read by value through a raw pointer: the value stays with its owner, so
+    /// moving it out would drop it twice. An `unsafe fn` such as `core::ptr::read` may, for its
+    /// caller.
+    fn refuse_move_through_raw_pointer(&mut self, inner: &Type, consume: bool, span: &Span) {
+        if !consume
+            || self.checking_assign_lhs
+            || self.speculating
+            || self.in_unsafe_fn
+            || self.drops_glue(inner).is_empty()
+        {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E4008,
+            format!(
+                "this moves a value of type `{inner}` out from behind a raw pointer, and its \
+                 owner still drops it; clone it, or use `core::ptr::read` and make sure only one \
+                 of the two is dropped"
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     /// A raw-pointer access needs an unsafe context: nothing here knows the address is valid,
     /// or that anything lives at it. `*p`, `p[i]` and `p.field` are one operation with three
     /// spellings, so they answer to one rule.
@@ -1610,9 +1633,10 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                if let Type::Pointer(..) = &base {
+                if let Type::Pointer(inner, _, _) = &base {
                     self.require_unsafe_raw_access("Indexing a raw pointer", &ix_span);
                     self.check_pointer_target_is_visible(&base, "Indexing a raw pointer", &ix_span);
+                    self.refuse_move_through_raw_pointer(inner, consume, &ix_span);
                 }
                 if let Type::Pointer(inner, _, _) = base {
                     *inner
@@ -2555,6 +2579,9 @@ impl<'a> TypeChecker<'a> {
                             Some(crate::diagnostic::SourceSpan::from_ast_span(&e.span)),
                         );
                     }
+                }
+                if let Type::Pointer(inner, _, _) = &inner_ty {
+                    self.refuse_move_through_raw_pointer(inner, consume, &e.span);
                 }
                 let resolved_ty = match inner_ty.clone() {
                     Type::Pointer(t, _, _) => {
