@@ -590,6 +590,7 @@ mod tests {
         a_cancel_stops_a_read("a_cancel_stops_a_task_thread_that_waits_for_a_socket", None);
     }
 
+    #[cfg(target_os = "linux")]
     struct Dial {
         address: CString,
         /// 1 when the connect gave a stream, 0 when it gave null.
@@ -597,6 +598,7 @@ mod tests {
         other_ran: AtomicI64,
     }
 
+    #[cfg(target_os = "linux")]
     extern "C" fn connect_to_a_full_listener(env: *mut u8) {
         let d = unsafe { &**(env as *const *const Dial) };
         let stream = vx_tcp_stream_connect(d.address.as_ptr());
@@ -605,12 +607,14 @@ mod tests {
         vx_tcp_stream_drop(stream);
     }
 
+    #[cfg(target_os = "linux")]
     extern "C" fn note_that_it_ran(env: *mut u8) {
         let d = unsafe { &**(env as *const *const Dial) };
         d.other_ran.store(1, Ordering::SeqCst);
     }
 
     /// Whether a caller waits to write, as a connect does.
+    #[cfg(target_os = "linux")]
     fn waits_to_write() -> bool {
         super::POLLER
             .get()
