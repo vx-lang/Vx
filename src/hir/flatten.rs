@@ -1770,7 +1770,7 @@ impl<'r> Lowerer<'r> {
                     "sizeof<{}>() reached lowering with its type parameter unbound",
                     s.target_ty
                 );
-                // A generic instance (`Mutex<i64>`) has its own layout, so it is resolved
+                // A generic instance (`Pair<i64>`) has its own layout, so it is resolved
                 // here, not through its base struct.
                 let size = sizeof_bytes(&s.target_ty)
                     .or_else(|| match self.lower_ty_synth(&s.target_ty) {
@@ -5734,7 +5734,7 @@ impl<'r> Lowerer<'r> {
     /// Lower `*p` as `p[0]`: a `PtrIndex` at a constant zero index — a value read (`is_place=false`)
     /// or an element place (`is_place=true`, consumed by a `PtrStore`). The pointee element type comes
     /// from `p`'s AST type. Backs `let v = *p` / `*p = val` (`Box`'s heap cell). An element that is
-    /// a generic struct instance, such as `Mutex<i64>`, gets the layout of that instance. A
+    /// a generic struct instance, such as `Pair<i64>`, gets the layout of that instance. A
     /// non-pointer, or a pointer whose element isn't a scalar/aggregate, declines. (#242)
     fn lower_ptr_deref(&mut self, ptr_expr: &Expr, is_place: bool) -> Lowered<Val> {
         let base = self.lower_expr(ptr_expr)?;
