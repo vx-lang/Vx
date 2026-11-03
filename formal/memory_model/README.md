@@ -294,14 +294,14 @@ does not spin, and `Cpu.finishes` does not need its spin. `Cpu.finishes_fifo` is
 scheduler, with no fairness hypothesis on the threads. `lifo_starves` shows that a queue with a
 push to the front can keep a fiber from running forever.
 
-`Select.lean` has M3, the bound of `select` in `channel.vx`. A call tries the `n` receivers in a
-round from a start index, and takes the first one that has a value. `within_n` shows that if a
-receiver is ready at each of `n` calls in a row, one of them chooses it. It holds when the next
-start moves past the last choice, but not past the ready receiver. `after_last_within_n` is the
-rule of the design: the next call starts after the last choice. `code_within_n` is the rule of the
-code: the start is the count of channel events modulo `n`. It gives the bound when no other event
-comes between two calls. `code_starves` shows that other events can keep a ready receiver waiting
-forever.
+`Select.lean` has M3, the bound of `Selector::select` in `channel.vx`. A call tries the `n`
+receivers in a round from a start index, and takes the first one that has a value. `within_n`
+shows that if a receiver is ready at each of `n` calls in a row, one of them chooses it. It holds
+when the next start moves past the last choice, but not past the ready receiver.
+`after_last_within_n` is the rule of the code: the next call starts after the last choice.
+`count_within_n` is the rule that `select` used before: the start is the count of channel events
+modulo `n`. It gives the bound only when no other event comes between two calls. `count_starves`
+shows that other events can keep a ready receiver waiting forever.
 
 The definitions in `lean/VxMemoryModel/Rc11.lean` follow `memalloy/vx_cpu.cat` line by line.
 `run_lean.py` checks that Lean and `vx.cat` agree on the 13 tests without scopes and barriers:
@@ -410,6 +410,5 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   `tasks` and of channels meet them are not done yet. A thread with a `loop` is not covered.
 - `fifo_fair` takes three facts of the runtime as hypotheses. The workers take a fiber within `B`
   points. A wake puts a fiber that can continue on the queue. A fiber that a worker takes makes a
-  step. No model of the workers, the monitor thread or `wait.rs` proves them.
-- `select` in `channel.vx` starts its search at the count of channel events, not after its last
-  choice. So M3 holds for the code only when no other channel event comes between two calls.
+  step. No proof covers them. `formal/runtime/WaitWake.tla` checks the second one at a small
+  size, with TLC.
