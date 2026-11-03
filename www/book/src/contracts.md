@@ -192,6 +192,53 @@ fn main() -> i32 {
 This is the same idea as `requires`, moved into the type: rather than every function re-stating the
 condition, one function establishes it and the type carries it onwards.
 
+## Borrow clauses
+
+Vx has no lifetime syntax. When a function returns a reference, the caller must know which
+arguments the result keeps borrowed. The compiler finds this in the body of the function. It cannot
+follow a method call there, so after one it assumes that the result can point into each argument.
+
+A borrow clause states the fact in the signature:
+
+```rust
+import std::vec;
+
+fn find(v : &Vec<i64>, key : &i64) -> &i64
+    ensures !reaches(return, *key)
+{
+    for i in 0..v.len() {
+        if *v.get_ref(i) == *key {
+            return v.get_ref(i);
+        }
+    }
+    return v.get_ref(0);
+}
+
+fn main() -> i32 {
+    let mut v = Vec<i64>::new();
+    v.push(3i64);
+    let mut k = 3i64;
+    let r = find(&v, &k);
+    k = 7i64;
+    println!("{} {}", *r, k);
+    return 0;
+}
+```
+
+Without the clause, `k = 7i64` is an error, because `r` keeps `k` borrowed.
+
+- `points_into(return, *p)`: the result can point into the memory under `*p`. That is `*p` itself,
+  and the memory behind its `&mut` fields and raw pointer fields, such as the buffer of a `Vec`.
+- `reaches(return, *p)`: the result can also point where a reference in `*p` points.
+
+`p` is a reference parameter. A clause with `!` says that the relation does not hold, so the caller
+does not keep that borrow. The compiler checks each `!` clause against the body, and reports E4016
+when the body does not keep it. A clause without `!` keeps the default for its parameter, even
+where the compiler could find less in the body. A library can use it to keep the freedom to change
+the body.
+
+Write each borrow clause as an `ensures` of its own. The prover does not read borrow clauses.
+
 ## Diagnostics
 
 Contract failures report under their own codes. The full list is in the

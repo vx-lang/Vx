@@ -706,7 +706,11 @@ impl<'a> TypeChecker<'a> {
             };
             names.insert(param.clone(), value);
         }
-        for req in &func.requires {
+        for req in func
+            .requires
+            .iter()
+            .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
+        {
             let at_call = crate::hir::prover::substitute_names(req, &names);
             if !self.prove_expr(&at_call) {
                 let condition = crate::hir::prover::to_source(req)
