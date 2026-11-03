@@ -3,6 +3,7 @@ name: Formal model
 # Checks the memory model in formal/memory_model: herd7 runs the litmus tests on vx.cat, Lean
 # checks the proofs, and run_lean.py checks that the Lean definitions agree with vx.cat.
 # memalloy needs local patches to build, so formal/memory_model/memalloy is checked by hand.
+# TLC checks the models of the runtime protocols in formal/runtime.
 on:
   push:
     branches: [ main ]
@@ -56,3 +57,29 @@ jobs:
 
       - name: Check that the Lean model agrees with vx.cat
         run: opam exec -- python3 formal/memory_model/run_lean.py
+
+  runtime-protocols:
+    name: Check the protocols of the runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # The nightly release of TLC changes. So use a fixed release and check its hash.
+      - name: Install TLC
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/tla2tools.jar" \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+          echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $RUNNER_TEMP/tla2tools.jar" |
+            sha256sum -c -
+
+      - name: Run TLC on the models and on each mistake
+        run: TLA2TOOLS="$RUNNER_TEMP/tla2tools.jar" python3 formal/runtime/run_tlc.py
