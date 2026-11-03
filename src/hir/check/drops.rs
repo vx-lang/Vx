@@ -199,6 +199,9 @@ enum FrameKind {
     Spawn,
     /// A `tasks` block. An exit that leaves it waits for its tasks before its drops.
     Tasks,
+    /// The body of a task. A `return` in it leaves the task, so it drops only the owners of the
+    /// task. A move in it still reaches the owners outside, which the task takes.
+    Task,
     Block {
         owners: Vec<Owner>,
         /// What each statement of the block uses, and where each name has a `let`.
@@ -778,6 +781,18 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    pub(crate) fn drops_enter_task(&mut self) {
+        self.borrow.drops.frames.push(FrameKind::Task);
+    }
+
+    pub(crate) fn drops_exit_task(&mut self) {
+        let popped = self.borrow.drops.frames.pop();
+        assert!(
+            matches!(popped, Some(FrameKind::Task)),
+            "a task frame closes a task body"
+        );
+    }
+
     pub(crate) fn drops_enter_tasks(&mut self) {
         self.borrow.drops.frames.push(FrameKind::Tasks);
     }
@@ -929,7 +944,7 @@ impl<'a> TypeChecker<'a> {
         for (k, f) in self.borrow.drops.frames.iter_mut().enumerate().rev() {
             match f {
                 FrameKind::Function { .. } | FrameKind::Spawn => return,
-                FrameKind::Loop | FrameKind::Tasks => {}
+                FrameKind::Loop | FrameKind::Tasks | FrameKind::Task => {}
                 FrameKind::Block { owners, stmt, .. } => {
                     if let Some(o) = owners.iter_mut().rev().find(|o| o.name == name) {
                         let (scope, decl) = (o.scope, o.decl);
@@ -1042,7 +1057,7 @@ impl<'a> TypeChecker<'a> {
             match f {
                 FrameKind::Function { .. } => return false,
                 FrameKind::Spawn => crossed = true,
-                FrameKind::Loop | FrameKind::Tasks => {}
+                FrameKind::Loop | FrameKind::Tasks | FrameKind::Task => {}
                 FrameKind::Block { owners, .. } => {
                     if owners.iter().any(|o| o.name == name) {
                         return crossed;
@@ -1072,7 +1087,7 @@ impl<'a> TypeChecker<'a> {
             match f {
                 FrameKind::Function { .. } => return,
                 // A raw pointer taken inside a region still points into the owner outside it.
-                FrameKind::Loop | FrameKind::Spawn | FrameKind::Tasks => {}
+                FrameKind::Loop | FrameKind::Spawn | FrameKind::Tasks | FrameKind::Task => {}
                 FrameKind::Block { owners, .. } => {
                     for o in owners.iter_mut().filter(|o| names.contains(&o.name)) {
                         o.to_block_end = true;
@@ -1127,7 +1142,7 @@ impl<'a> TypeChecker<'a> {
         for f in self.borrow.drops.frames.iter_mut().rev() {
             match f {
                 FrameKind::Function { .. } | FrameKind::Spawn => return,
-                FrameKind::Loop | FrameKind::Tasks => {}
+                FrameKind::Loop | FrameKind::Tasks | FrameKind::Task => {}
                 FrameKind::Block { owners, .. } => {
                     if let Some(o) = owners.iter_mut().rev().find(|o| o.name == name) {
                         o.fields.clear();
@@ -1156,7 +1171,7 @@ impl<'a> TypeChecker<'a> {
         for f in self.borrow.drops.frames.iter().rev() {
             match f {
                 FrameKind::Function { .. } | FrameKind::Spawn => return None,
-                FrameKind::Loop | FrameKind::Tasks => {}
+                FrameKind::Loop | FrameKind::Tasks | FrameKind::Task => {}
                 FrameKind::Block { owners, .. } => {
                     if let Some(o) = owners.iter().rev().find(|o| o.name == name) {
                         return Some(o);
@@ -1827,7 +1842,7 @@ impl<'a> TypeChecker<'a> {
         'frames: for f in d.frames.iter().rev() {
             match f {
                 // A `return` inside a region leaves the region, not the function.
-                FrameKind::Function { .. } | FrameKind::Spawn => break 'frames,
+                FrameKind::Function { .. } | FrameKind::Spawn | FrameKind::Task => break 'frames,
                 FrameKind::Loop if to == ExitTo::Loop => break 'frames,
                 FrameKind::Loop => {}
                 FrameKind::Tasks if to == ExitTo::TasksBlock => {

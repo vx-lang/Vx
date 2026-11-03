@@ -333,8 +333,8 @@ The compiler knows `Result` by name, as it knows `SharedCell`. `panic` still sto
   task is (F3). An `Err` that is the last value of the block is also a failure.
 - In a `spawn` body, `return` leaves the task. A `break` or `continue` that targets a loop outside
   the body is a compile error.
-- Done for a function and for the code of a `tasks` block (E3063). A `spawn` body and a closure
-  have no early exit yet, so a `?` there is an error (#2540).
+- Done for a function, the code of a `tasks` block, and a `spawn` body (E3063). A closure has no
+  early exit yet, so a `?` there is an error (#2540).
 
 So passing `Cancelled` up costs more in Vx than in Rust: Rust's `?` converts it with `From`. A
 function with its own error enum needs a `Cancelled` case in it, or a `.map_err(..)` at each wait.

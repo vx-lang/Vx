@@ -112,6 +112,8 @@ pub struct MeliorGenerator<'c> {
     /// The open `tasks` blocks whose region a `return`, `break` or `continue` leaves,
     /// innermost last.
     pub(crate) tasks_exits: Vec<crate::codegen::lower::expr::TasksExits<'c>>,
+    /// The open task bodies that a `return` or a `?` can leave, innermost last.
+    pub(crate) task_bodies: Vec<crate::codegen::lower::expr::TaskBody<'c>>,
     /// The lowered type of each variant's payload, by the enum's struct name, then the variant
     /// and the position. A slot can be wider than a variant's payload, or a byte slot that
     /// holds payloads of different kinds, so a `match` reads the payload back as this type.
@@ -932,6 +934,7 @@ impl<'c> MeliorGenerator<'c> {
             tasks_leaves: Vec::new(),
             tasks_inline: false,
             tasks_exits: Vec::new(),
+            task_bodies: Vec::new(),
             enum_payloads: Default::default(),
             continue_blocks: Vec::new(),
             allocs: std::collections::HashSet::new(),

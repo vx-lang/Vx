@@ -13,7 +13,8 @@ own. The block ends only after each of its tasks ends. So a task can borrow the 
 code around it: the locals live longer than the task.
 
 `spawn` gives a handle to the task. `join()` waits for the task and gives the value of its last
-expression. The value of the block is the value of its last expression too.
+expression. A `return` in the task ends the task early, and its value is then the value of the
+task. The value of the block is the value of its last expression too.
 
 This program adds the numbers 1 to 100 with two tasks. Each task borrows the vector `v` from `main`
 and adds one half of it (`book_tasks_split_the_work.vx`):
@@ -29,7 +30,7 @@ It prints `total 5050`.
 A task fails when its value is the `Err` of a `Result`. Then its `join()` leaves the block, and that
 `Err` is the value of the block. A `join()` of a task that did not fail gives the value inside the
 `Ok`. So the code of the block works with plain values, and the block gives the first failure
-(`book_tasks_join_a_failure.vx`):
+(`book_tasks_join_a_failure.vx`). A `?` in a task ends the task with the `Err`:
 
 ```rust
 {{#include ../../../tests/backend/pass/book_tasks_join_a_failure.vx:program}}

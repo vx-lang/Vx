@@ -413,9 +413,10 @@ pub enum DiagnosticCode {
     /// cannot return a handle, store it, or pass it to a function. Write
     /// `let h = spawn { .. };` and later `h.join()`.
     E3057,
-    /// A `return`, `break` or `continue` that leaves a task, or a task that joins another task.
-    /// The last expression of a task body is its result. A task cannot join another task yet.
-    /// Join both tasks in the `tasks` block.
+    /// A `break` or `continue` that leaves a task, a `return` with a value in a task that has no
+    /// handle, or a task that joins another task. A `return` in a task ends the task, and its
+    /// value is the result of the task. A task cannot join another task yet. Join both tasks in
+    /// the `tasks` block.
     E3058,
     /// An `extern` declaration of `malloc`, `calloc`, `realloc`, `aligned_alloc` or `free` whose
     /// type is not C's. The compiler calls these functions too, and it can share only a
@@ -439,8 +440,8 @@ pub enum DiagnosticCode {
     E3062,
     /// A `?` that cannot pass its error up. `x?` takes a `Result<T, E>`. It gives the `T` of an
     /// `Ok`, and it passes an `Err` up unchanged: to the function, which must return a
-    /// `Result<_, E>` with the same `E`, or to its `tasks` block, which must give one. `?` does not
-    /// convert the error. `.map_err(..)` converts it.
+    /// `Result<_, E>` with the same `E`, or to its task or `tasks` block, which must give one. `?`
+    /// does not convert the error. `.map_err(..)` converts it.
     E3063,
 
     // --- Borrow/Ownership Errors (E4xxx) ---

@@ -2069,6 +2069,9 @@ fn lower_task_block<'c>(
         ),
     };
     let lowered = match region {
+        None if kind == syntax::TaskBlockKind::Spawn && task_has_exit(this) => {
+            lower_task_in_place_with_exits(this, gen, block)
+        }
         None => lower_unsafe_block(this, gen, block),
         Some(slot) if kind == syntax::TaskBlockKind::Tasks => {
             lower_tasks_block_with_exits(this, gen, block, slot)
@@ -2077,6 +2080,156 @@ fn lower_task_block<'c>(
     };
     gen.tasks_inline = outer_inline;
     lowered
+}
+
+/// A task body that a `return` or a `?` can leave. The exit gives the value of the task. The
+/// flat code generator does the same.
+pub(crate) struct TaskBody<'c> {
+    /// `tasks_exits.len()` and `tasks_leaves.len()` at the task. A `tasks` block inside the task
+    /// takes the exits in it.
+    tasks_exits: usize,
+    tasks_leaves: usize,
+    /// For a task that runs in place: the block after it, which takes the value.
+    after: Option<melior::ir::BlockRef<'c, 'c>>,
+    /// The type of the value of the task, when the code after it reads one.
+    value: Option<Type<'c>>,
+    /// The `Result` type of a task that can fail. An exit with an `Err` cancels its block.
+    fails: Option<syntax::Type>,
+}
+
+impl TaskBody<'_> {
+    /// The `Result` type of a task that can fail.
+    pub(crate) fn fails(&self) -> Option<syntax::Type> {
+        self.fails.clone()
+    }
+}
+
+/// Whether a `return`, or a `?` that leaves the task, is in the body of the task `this`.
+fn task_has_exit(this: &UnsafeBlockExpr) -> bool {
+    leaves_the_block(&this.stmts, true)
+}
+
+/// Whether a `return` or a `?` here leaves a task.
+pub(crate) fn leaving_task(gen: &MeliorGenerator) -> bool {
+    gen.task_bodies.last().is_some_and(|t| {
+        t.tasks_exits == gen.tasks_exits.len() && t.tasks_leaves == gen.tasks_leaves.len()
+    })
+}
+
+/// Leaves the innermost task with `val`. A task with a handle and no result gives `false`, as
+/// its last value does.
+pub(crate) fn emit_task_exit<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    val: Option<Value<'c, 'c>>,
+) -> Result<(), LowerError> {
+    let t = gen.task_bodies.last().expect("an exit leaves an open task");
+    let (after, value, fails) = (t.after, t.value, t.fails.is_some());
+    let val = match (val, value) {
+        (Some(v), Some(_)) => Some(v),
+        (None, Some(ty)) => {
+            let op = OperationBuilder::new("arith.constant", gen.loc())
+                .add_results(&[ty])
+                .add_attributes(&[(
+                    Identifier::new(gen.context, "value"),
+                    IntegerAttribute::new(ty, 0).into(),
+                )])
+                .build()?;
+            Some(block.append_operation(op).result(0)?.into())
+        }
+        (_, None) => None,
+    };
+    let block = match val {
+        Some(v) if fails => cancel_on_err(gen, block, v)?,
+        _ => block,
+    };
+    let exit = match after {
+        Some(after) => OperationBuilder::new("cf.br", gen.loc())
+            .add_operands(val.as_slice())
+            .add_successors(&[&after])
+            .build()?,
+        None => OperationBuilder::new("vx.yield", gen.loc())
+            .add_operands(val.as_slice())
+            .build()?,
+    };
+    block.append_operation(exit);
+    Ok(())
+}
+
+/// The `TaskBody` of the task `this`, which gives a value of type `value`.
+fn task_body<'c>(
+    this: &UnsafeBlockExpr,
+    gen: &MeliorGenerator<'c>,
+    after: Option<melior::ir::BlockRef<'c, 'c>>,
+    value: Option<Type<'c>>,
+) -> TaskBody<'c> {
+    TaskBody {
+        tasks_exits: gen.tasks_exits.len(),
+        tasks_leaves: gen.tasks_leaves.len(),
+        after,
+        value,
+        fails: this.cancels_on_err.clone(),
+    }
+}
+
+/// A task that runs in place, with a `return` or a `?` in it. Each exit, and the end of the
+/// body, goes to the block after the task with the value.
+fn lower_task_in_place_with_exits<'c>(
+    this: &UnsafeBlockExpr,
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(Value<'c, 'c>, Type<'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let wants_value = this.ret.is_some() && gen.expected_type != Some(gen.none_ty);
+    let value = match &this.value_ty {
+        Some(ty) if wants_value => Some(gen.lower_type(ty)?),
+        _ => None,
+    };
+    let after = block
+        .parent_region()
+        .expect("a block being lowered into always sits in a region")
+        .append_block(melior::ir::Block::new(
+            &value.iter().map(|&ty| (ty, gen.loc())).collect::<Vec<_>>(),
+        ));
+    gen.task_bodies
+        .push(task_body(this, gen, Some(after), value));
+    let lowered = lower_task_in_place_body(this, gen, block);
+    gen.task_bodies.pop();
+    lowered?;
+    match value {
+        Some(ty) => Ok((after.argument(0)?.into(), ty, after)),
+        None => {
+            let zero = constant_i32(gen, after, 0)?;
+            Ok((zero, gen.i32_ty, after))
+        }
+    }
+}
+
+/// The statements and the last value of a task that runs in place. The last value leaves the
+/// task as an exit does.
+fn lower_task_in_place_body<'c>(
+    this: &UnsafeBlockExpr,
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(), LowerError> {
+    let mut current = block;
+    for stmt in &this.stmts {
+        match gen.generate_statement(stmt, current)? {
+            Some(b) => current = b,
+            None => return Ok(()),
+        }
+    }
+    let wants_value = gen.task_bodies.last().is_some_and(|t| t.value.is_some());
+    let val = match &this.ret {
+        Some(ret) => {
+            let waiting = std::mem::take(&mut gen.queued_drops);
+            let (val, _, cur) = gen.generate_expr(ret, current)?;
+            gen.queued_drops.extend(waiting);
+            current = gen.run_queued_drops(cur)?;
+            wants_value.then_some(val)
+        }
+        None => None,
+    };
+    emit_task_exit(gen, current, val)
 }
 
 /// What an exit from a `tasks` block does after the block ends.
@@ -2472,6 +2625,8 @@ fn leaves_the_block(stmts: &[syntax::Statement], in_loop: bool) -> bool {
     use syntax::Statement as S;
     stmts.iter().any(|s| match s {
         S::Return(_) => true,
+        // A `?` that leaves the task or the `tasks` block.
+        S::Break(b) if b.tasks_value.is_some() => true,
         S::Break(_) | S::Continue(_) => !in_loop,
         S::Loop(l) => leaves_the_block(&l.body, true),
         S::ForLoop(l) => expr_leaves(&l.iterable, in_loop) || leaves_the_block(&l.body, true),
@@ -2557,8 +2712,20 @@ fn lower_task_region<'c>(
     let region = melior::ir::Region::new();
     let mut body = region.append_block(melior::ir::Block::new(&[]));
     let mut reached_end = true;
+    let task = kind == syntax::TaskBlockKind::Spawn;
+    let task_value = match &this.value_ty {
+        Some(ty) if task && wants_value && value_slot.is_none() => Some(gen.lower_type(ty)?),
+        _ => None,
+    };
+    if task {
+        gen.task_bodies.push(task_body(this, gen, None, task_value));
+    }
     for stmt in &this.stmts {
-        match gen.generate_statement(stmt, body)? {
+        let lowered = gen.generate_statement(stmt, body);
+        if task && lowered.is_err() {
+            gen.task_bodies.pop();
+        }
+        match lowered? {
             Some(b) => body = b,
             None => {
                 // The region still needs a last block that yields.
@@ -2567,6 +2734,9 @@ fn lower_task_region<'c>(
                 break;
             }
         }
+    }
+    if task {
+        gen.task_bodies.pop();
     }
     let mut result_types = Vec::new();
     let mut yielded = Vec::new();
@@ -2589,6 +2759,16 @@ fn lower_task_region<'c>(
                 result_types.push(ty);
                 yielded.push(val);
             }
+        } else if let Some(ty) = task_value {
+            // Each way out of the task is an exit, which yields the value. The last block is
+            // never reached, and it yields a zero of the same type.
+            let zero = body.append_operation(
+                OperationBuilder::new("llvm.mlir.zero", location)
+                    .add_results(&[ty])
+                    .build()?,
+            );
+            result_types.push(ty);
+            yielded.push(zero.result(0)?.into());
         }
         body.append_operation(
             OperationBuilder::new("vx.yield", location)
