@@ -2113,8 +2113,7 @@ fn region_value_slot<'c>(
     this: &UnsafeBlockExpr,
     gen: &mut MeliorGenerator<'c>,
 ) -> Option<ValueSlot<'c>> {
-    let buffer_return = gen.current_return_type.is_some_and(|t| gen.is_memref(&t));
-    if gen.in_spawn || gen.current_return_slot.is_some() || buffer_return {
+    if gen.in_spawn {
         return None;
     }
     let wants_value = this.ret.is_some() && gen.expected_type != Some(gen.none_ty);
@@ -2234,6 +2233,15 @@ pub(crate) fn emit_func_return<'c>(
     let slot = gen.tasks_exits.last().and_then(|t| t.ret);
     match (val, slot) {
         (Some(val), Some(slot)) => {
+            let val = match buffer_rank(gen, val.r#type()) {
+                Some(rank) => {
+                    let ty = gen
+                        .current_return_type
+                        .expect("a function that returns a buffer");
+                    tensor_into_field(gen, &block, val, val.r#type(), ty, rank)?
+                }
+                None => val,
+            };
             block.append_operation(
                 OperationBuilder::new("llvm.store", gen.loc())
                     .add_operands(&[val, slot])
@@ -2323,8 +2331,19 @@ fn lower_tasks_block_with_exits<'c>(
             .add_operands(&[zero, code])
             .build()?,
     );
+    // A buffer waits in the slot as its descriptor, as in a struct field. A function that
+    // returns through the caller's buffer has written it already.
     let ret = match gen.current_return_type {
-        Some(t) if t != gen.none_ty => Some(llvm_slot(gen, block, t)?),
+        Some(t) if t != gen.none_ty && gen.current_return_slot.is_none() => {
+            let stored = match buffer_rank(gen, t) {
+                Some(rank) => {
+                    let desc = crate::codegen::generator::tensor_descriptor_str(rank);
+                    Type::parse(gen.context, &desc).ok_or(LowerError::ParseType(desc))?
+                }
+                None => t,
+            };
+            Some((llvm_slot(gen, block, stored)?, stored))
+        }
         _ => None,
     };
     let value = match value_slot {
@@ -2334,7 +2353,7 @@ fn lower_tasks_block_with_exits<'c>(
     gen.tasks_exits.push(TasksExits {
         loops: gen.break_blocks.len(),
         code,
-        ret,
+        ret: ret.map(|(slot, _)| slot),
         failure: this.fails_as.clone().and_then(|f| Some((value?.0, f))),
         leaves: gen.tasks_leaves.len(),
         exits: Vec::new(),
@@ -2386,17 +2405,19 @@ fn lower_tasks_block_with_exits<'c>(
         match kind {
             TasksExitKind::Return => {
                 let v = match ret {
-                    Some(slot) => Some(
-                        exit_b
+                    Some((slot, stored)) => {
+                        let loaded = exit_b
                             .append_operation(
                                 OperationBuilder::new("llvm.load", gen.loc())
                                     .add_operands(&[slot])
-                                    .add_results(&[gen.current_return_type.expect("a slot")])
+                                    .add_results(&[stored])
                                     .build()?,
                             )
                             .result(0)?
-                            .into(),
-                    ),
+                            .into();
+                        let ty = gen.current_return_type.expect("a slot");
+                        Some(tensor_from_field(gen, &exit_b, loaded, stored, ty)?)
+                    }
                     None => None,
                 };
                 emit_func_return(gen, exit_b, v)?;
@@ -6010,6 +6031,17 @@ pub(crate) fn tensor_into_field<'c>(
         .add_results(&[desc_ty])
         .build()?;
     Ok(block.append_operation(cast).result(0)?.into())
+}
+
+/// The rank of `ty` when it is a buffer, `memref<4x?xf32>`, which a slot keeps as its
+/// descriptor.
+fn buffer_rank(gen: &MeliorGenerator, ty: Type) -> Option<usize> {
+    if !gen.is_memref(&ty) {
+        return None;
+    }
+    let text = ty.to_string();
+    let shape = text.strip_prefix("memref<")?.split([',', '>']).next()?;
+    Some(shape.matches('x').count())
 }
 
 /// A struct field read back: a tensor's descriptor becomes the memref again.
