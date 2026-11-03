@@ -642,10 +642,11 @@ macro_rules! instantiate_tcp_stream_ffi {
 
 /// Macro to instantiate C-ABI compatible FFI wrappers for `std::net::UdpSocket`.
 ///
-/// `$when_ready` is as for `instantiate_tcp_stream_ffi`.
+/// `$when_ready` is as for `instantiate_tcp_stream_ffi`. `$lookup(addr)` gives the addresses of
+/// `addr`.
 #[macro_export]
 macro_rules! instantiate_udp_socket_ffi {
-    ($when_ready:path) => {
+    ($when_ready:path, $lookup:path) => {
         #[no_mangle]
         pub extern "C" fn vx_udp_socket_bind(
             c_addr: *const std::ffi::c_char,
@@ -654,7 +655,8 @@ macro_rules! instantiate_udp_socket_ffi {
                 return std::ptr::null_mut();
             }
             let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
-            match std::net::UdpSocket::bind(addr_str.as_ref())
+            match $lookup(addr_str.as_ref())
+                .and_then(|a| std::net::UdpSocket::bind(&a[..]))
                 .and_then(|s| s.set_nonblocking(true).map(|()| s))
             {
                 Ok(socket) => Box::into_raw(Box::new(socket)) as *mut std::ffi::c_void,
@@ -697,8 +699,10 @@ macro_rules! instantiate_udp_socket_ffi {
             let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
             let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
             let fd = std::os::fd::AsRawFd::as_raw_fd(socket);
-            $when_ready(fd, true, || socket.send_to(buf_slice, addr_str.as_ref())).unwrap_or(0)
-                as u64
+            let Ok(to) = $lookup(addr_str.as_ref()) else {
+                return 0;
+            };
+            $when_ready(fd, true, || socket.send_to(buf_slice, &to[..])).unwrap_or(0) as u64
         }
 
         #[no_mangle]
@@ -712,10 +716,10 @@ macro_rules! instantiate_udp_socket_ffi {
 
 /// Macro to instantiate C-ABI compatible FFI wrappers for `std::net::TcpListener`.
 ///
-/// `$when_ready` is as for `instantiate_tcp_stream_ffi`.
+/// `$when_ready` and `$lookup` are as for `instantiate_udp_socket_ffi`.
 #[macro_export]
 macro_rules! instantiate_tcp_listener_ffi {
-    ($when_ready:path) => {
+    ($when_ready:path, $lookup:path) => {
         #[no_mangle]
         pub extern "C" fn vx_tcp_listener_bind(
             c_addr: *const std::ffi::c_char,
@@ -724,7 +728,8 @@ macro_rules! instantiate_tcp_listener_ffi {
                 return std::ptr::null_mut();
             }
             let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
-            match std::net::TcpListener::bind(addr_str.as_ref())
+            match $lookup(addr_str.as_ref())
+                .and_then(|a| std::net::TcpListener::bind(&a[..]))
                 .and_then(|l| l.set_nonblocking(true).map(|()| l))
             {
                 Ok(listener) => Box::into_raw(Box::new(listener)) as *mut std::ffi::c_void,

@@ -23,6 +23,10 @@ fn connect_and_block(addr: &str) -> std::io::Result<std::net::TcpStream> {
     std::net::TcpStream::connect(addr)
 }
 
+fn lookup(addr: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
+    Ok(std::net::ToSocketAddrs::to_socket_addrs(addr)?.collect())
+}
+
 // Report a failed check through the test's Result, with the expression that failed.
 macro_rules! check_eq {
     ($actual:expr, $expected:expr) => {{
@@ -98,7 +102,7 @@ mod tcp {
 }
 
 mod udp {
-    instantiate_udp_socket_ffi!(super::call_once);
+    instantiate_udp_socket_ffi!(super::call_once, super::lookup);
 
     #[test]
     fn rejects_invalid_lengths_then_transfers_one_byte() -> std::io::Result<()> {
