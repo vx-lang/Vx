@@ -148,6 +148,21 @@ unlocks the `Mutex` (`book_mutex_guards_a_total.vx`):
 It prints `total 20000`. Use an atomic for one number, and a `Mutex` when a change touches more
 than one number.
 
+## `Arc`
+
+A task can borrow the locals of its parent, so most programs need no `Arc`. Use an `Arc<T>` when a
+value must live longer than its `tasks` block. `clone()` gives another `Arc` that shares the value,
+and `get()` gives `&T`. The drop of the last `Arc` drops the value. It works as Rust's `Arc` does.
+An `Arc<T>` can move to another task only when `T` is `Send` and `Sync`
+(`book_arc_outlives_its_task.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_arc_outlives_its_task.vx:program}}
+```
+
+It prints `scale 10, owners 2`, and then `owners 1`. To change a shared value, put a `Mutex` in the
+`Arc`.
+
 ## Why Vx has no `async`
 
 In Vx, a function that waits is a normal function. `recv`, `join`, `lock` and a network read wait

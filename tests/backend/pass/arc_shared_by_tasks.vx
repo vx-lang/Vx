@@ -1,0 +1,96 @@
+//===- arc_shared_by_tasks.vx - Vx Compiler -----------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Eight tasks each get a clone of one `Arc` and read its value. Each task drops its clone, so
+// after the `tasks` block the count is 1 again. Then the program checks `ptr_eq`, `try_unwrap`
+// and `into_inner`. A clone also goes through a channel, which needs a value that does not borrow.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}sum 336, count 1{{$}}
+// CHECK: {{^}}received 21, count 2{{$}}
+// CHECK: {{^}}same true, count 2{{$}}
+// CHECK: {{^}}try_unwrap with 2 owners gives the Arc back, count 2{{$}}
+// CHECK: {{^}}into_inner of the first of 2 owners gives none{{$}}
+// CHECK: {{^}}into_inner of the last owner gives 21{{$}}
+
+import core::sync::atomic;
+import std::sync::arc;
+import std::sync::channel;
+
+fn twice(a : Arc<i64>) -> i64 {
+  return *a.get() * 2;
+}
+
+fn receive(rx : &Receiver<Arc<i64>>) -> Arc<i64> {
+  match rx.recv() {
+    Result<Arc<i64>, RecvError>::Ok(got) => {
+      return got;
+    }
+    Result<Arc<i64>, RecvError>::Err(_e) => {
+      panic("the channel closed");
+    }
+  }
+}
+
+// The `Arc` that `try_unwrap` gives back when `a` has other owners.
+fn not_the_only_owner(a : Arc<i64>) -> Arc<i64> {
+  match a.try_unwrap() {
+    Result<i64, Arc<i64>>::Ok(_v) => {
+      panic("try_unwrap gave the value while another owner exists");
+    }
+    Result<i64, Arc<i64>>::Err(back) => {
+      return back;
+    }
+  }
+}
+
+fn main() -> i32 {
+  let a = Arc<i64>::new(21);
+  let sum = AtomicI64::new(0);
+  tasks {
+    for t in 0..8 {
+      let c = a.clone();
+      spawn {
+        sum.fetch_add(twice(c), AtomicOrdering::SeqCst);
+      };
+    }
+  };
+  println!("sum {}, count {}", sum.load(AtomicOrdering::SeqCst), a.strong_count());
+
+  let (tx, rx) = channel<Arc<i64>>(1);
+  match tx.send(a.clone()) {
+    Result<void, SendError<Arc<i64>>>::Ok() => {}
+    Result<void, SendError<Arc<i64>>>::Err(_e) => {
+      println!("the send failed");
+    }
+  }
+  let b = receive(&rx);
+  println!("received {}, count {}", *b.get(), a.strong_count());
+  println!("same {}, count {}", a.ptr_eq(&b), b.strong_count());
+
+  let back = not_the_only_owner(a);
+  println!("try_unwrap with 2 owners gives the Arc back, count {}", back.strong_count());
+  match back.into_inner() {
+    Option<i64>::Some(_v) => {
+      return 3;
+    }
+    Option<i64>::None => {
+      println!("into_inner of the first of 2 owners gives none");
+    }
+  }
+  match b.into_inner() {
+    Option<i64>::Some(v) => {
+      println!("into_inner of the last owner gives {}", v);
+    }
+    Option<i64>::None => {
+      return 4;
+    }
+  }
+  return 0;
+}
