@@ -688,6 +688,7 @@ impl TypeChecker<'_> {
                 self.borrow.record(
                     name,
                     crate::hir::env::BorrowRecord {
+                        carried_from: None,
                         is_mut: false,
                         scope_depth: tasks_scope_len.max(var_depth + 1),
                         borrower_name: Some(format!("{id}{COPY_SUFFIX}")),
@@ -706,6 +707,7 @@ impl TypeChecker<'_> {
             self.borrow.record(
                 name,
                 crate::hir::env::BorrowRecord {
+                    carried_from: None,
                     is_mut: writes,
                     scope_depth: tasks_scope_len,
                     borrower_name: Some(id.clone()),

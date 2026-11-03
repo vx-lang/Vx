@@ -448,6 +448,9 @@ pub struct BorrowRecord {
     pub scope_depth: usize,
     pub borrower_name: Option<String>,
     pub path: Vec<String>,
+    /// A borrow that the previous pass of a loop may have left: the block of that loop's body
+    /// in the borrow context. `None` for a borrow the checker saw being made.
+    pub carried_from: Option<usize>,
 }
 
 /// Where a reference value ultimately points, for return-escape analysis (#243).

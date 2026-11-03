@@ -540,8 +540,7 @@ impl<'a> TypeChecker<'a> {
     ) -> Type {
         self.borrow.enter_block(crate::hir::borrow_cx::BlockUses {
             last_use: branch_uses.into_iter().map(|n| (n.into(), 1)).collect(),
-            declared: Default::default(),
-            is_loop: false,
+            ..Default::default()
         });
         let ty = check(self);
         self.borrow.exit_block();
@@ -588,7 +587,8 @@ impl<'a> TypeChecker<'a> {
         // moved if a branch that reaches the code after the `if` moved it; a branch that
         // returns or breaks does not count.
         let marks_before = self.moved_snapshot();
-        // The same for borrows: the `else` branch does not see what the `then` branch borrowed.
+        // The same for borrows: the `else` branch does not see what the `then` branch borrowed,
+        // and still sees what the `then` branch ended.
         let borrows_before = self.borrow.snapshot();
         // The prover's facts follow the paths: the `then` branch knows the condition and the
         // `else` branch its negation, and what a branch learns ends with it.
@@ -617,8 +617,7 @@ impl<'a> TypeChecker<'a> {
         let marks_after_then = self.branch_end(&if_expr.then_block);
         let values_after_then = std::mem::replace(&mut self.consteval.env, values_before);
         self.restore_moved(marks_before.clone());
-        let then_borrows = self.borrow.added_since(&borrows_before);
-        self.borrow.forget(&then_borrows);
+        let then_borrows = self.borrow.next_branch(&borrows_before);
         let mut marks_after_else = Some(marks_before.clone());
 
         let mut else_ty = Type::Struct("void".into(), None);
@@ -1148,13 +1147,13 @@ impl<'a> TypeChecker<'a> {
                 let mut every_arm_ends = !arms.is_empty();
                 let values_before = self.consteval.env.clone();
                 let mut values_after_arms = Vec::new();
-                for arm in arms {
+                for (i, arm) in arms.iter_mut().enumerate() {
                     self.consteval.env = values_before.clone();
                     self.consteval.constraints.truncate(facts_before);
                     self.restore_moved(marks_before.clone());
-                    let added = self.borrow.added_since(&borrows_before);
-                    self.borrow.forget(&added);
-                    arm_borrows.extend(added);
+                    if i > 0 {
+                        arm_borrows.extend(self.borrow.next_branch(&borrows_before));
+                    }
                     match &arm.pattern {
                         Pattern::Wildcard | Pattern::Identifier(_) => has_wildcard = true,
                         Pattern::EnumVariant(_, variant, _) => covered.push(variant.clone()),
