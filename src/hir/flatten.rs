@@ -6282,11 +6282,10 @@ impl<'r> Lowerer<'r> {
     /// shape for the checker to have compared `c` against, so writing into `c` could run past
     /// it, and the AST path stays the oracle for that form.
     fn lower_matmul_assign(&mut self, dst: &Expr, a: &Expr, b: &Expr) -> Lowered<()> {
-        if !self.matmul_assign_is_disjoint(dst, a, b) {
-            return Err(Decline::Unsupported {
-                what: "a matmul assignment whose destination may be one of its operands",
-            });
-        }
+        assert!(
+            self.matmul_assign_is_disjoint(dst, a, b),
+            "a matmul fills a destination that may be one of its operands"
+        );
         let dst = self.lower_expr(dst)?;
         let a = self.lower_expr(a)?;
         let b = self.lower_expr(b)?;
@@ -6471,8 +6470,11 @@ impl<'r> Lowerer<'r> {
         // one and rebinding the name. The destination is a tensor the program asked for and the
         // checker has compared its shape against the product, so the buffer to write is in hand
         // and the assignment is the same `MatmulInto` the builtin spelling emits (Vx#391).
+        // When `c` may be an operand, the product goes into a new tensor that `c` then names.
         if let Expr::BinaryOp(bin) = rhs {
-            if matches!(bin.op, BinaryOp::MatMul) {
+            if matches!(bin.op, BinaryOp::MatMul)
+                && self.matmul_assign_is_disjoint(lhs, &bin.lhs, &bin.rhs)
+            {
                 return self.lower_matmul_assign(lhs, &bin.lhs, &bin.rhs);
             }
         }

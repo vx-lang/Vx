@@ -28,10 +28,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // copies into the caller.
     "backend/pass/custom_topology_user_lowering.vx",
     "frontend/pass/assert_in_a_transfer_lowering_stays_in_it.vx",
-    // `c = a @ b` where `c` may be read by an operand (the same name, or a view through its
-    // pointer): the flat path only fills the destination in place, and declines the rest.
-    "backend/pass/matmul_assign_alias.vx",
-    "backend/pass/matmul_into_a_tensor_read_through_a_view.vx",
     // The tuple's enum subject has no concrete type recorded for the flat match path.
     "backend/pass/tuple_match_with_enum_variants_as_a_value.vx",
     // A struct passed to `grad`: the flat path declines it ("an autodiff argument that is not a
@@ -53,9 +49,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/user_lowering_waste.vx",
     "frontend/pass/closure_fat_ptr.vx",
     "frontend/pass/control_flow_rigorous.vx",
-    // `c = c @ b`: the flat path writes a product into its destination, which here is also an
-    // operand ("a matmul assignment whose destination may be one of its operands").
-    "frontend/pass/tensor_drop_points_reassigned.vx",
     // The `vxc -j` fallback fixture: a program the flat path declines, chosen so the parallel
     // frontend has something to hand back to the sequential driver. It declines "a match in
     // value position".
