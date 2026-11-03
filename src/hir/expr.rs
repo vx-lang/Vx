@@ -463,6 +463,11 @@ impl<'a> TypeChecker<'a> {
             }
         };
 
+        // A raw pointer can point into a struct on the stack. A string literal points at a global.
+        if Self::is_raw_pointer(&ty) && !matches!(expr, Expr::StringLiteral(_)) {
+            self.borrow.drops.note_raw_pointer();
+        }
+
         // A value built inside a device region has no placement, so no placement check sees
         // it. The region's device has to be able to represent it. Silent outside a region,
         // whose host space declares no `dtypes:`.

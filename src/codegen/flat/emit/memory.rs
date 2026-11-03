@@ -117,6 +117,18 @@ impl FnEmit<'_> {
         Ok(())
     }
 
+    // `llvm.intr.lifetime.start` or `.end` on the `llvm.alloca` of a struct's or enum's slot.
+    // LLVM gives two slots one place in the frame when their lifetimes do not overlap.
+    pub(crate) fn op_lifetime(&mut self, ins: &HirInstruction, which: &str) -> Lowered<()> {
+        let r = ins.operand1.0 as usize;
+        if !matches!(self.agg_of.get(r), Some(Some(_))) {
+            return Err(crate::emitter_gap!());
+        }
+        let slot = self.names.get(r).ok_or(crate::emitter_gap!())?;
+        self.body += &format!("  llvm.intr.lifetime.{which} {slot} : !llvm.ptr\n");
+        Ok(())
+    }
+
     // Store a value into a slot (no result). A scalar slot is a rank-0 `memref`; an aggregate
     // slot (a struct value spilled from a struct-returning call) is an `llvm.store` (#215).
     pub(crate) fn op_store(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {

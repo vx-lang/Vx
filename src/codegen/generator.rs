@@ -1623,6 +1623,10 @@ impl<'c> MeliorGenerator<'c> {
         d: &syntax::stmt::DropStmt,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
+        // This code generator gives a struct's slot no lifetime markers yet.
+        if d.ends_lifetime {
+            return Ok(Some(block));
+        }
         if let Some(stmt) = d.call_statement() {
             let drop = WaitingDrop::Call(Box::new(stmt), d.call.is_some());
             if d.after_value {

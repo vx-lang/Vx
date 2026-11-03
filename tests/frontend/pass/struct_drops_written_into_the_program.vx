@@ -8,8 +8,9 @@
 // RUN: vxc %s --action print-ast 2>/dev/null | FileCheck %s
 //
 // Dropping a struct is a list of drops: its `Drop` impl's `drop`, then each field's, in the
-// order they are declared. A struct whose drop calls a `Drop` impl is dropped at the end of
-// its block; one that only holds tensors is freed after its last use, as a tensor is.
+// order they are declared, then the end of the lifetime of its stack slot. A struct whose
+// drop calls a `Drop` impl is dropped at the end of its block; one that only holds tensors is
+// freed after its last use, as a tensor is.
 
 import core::ops;
 
@@ -66,9 +67,11 @@ fn main() -> i32 {
 // CHECK-NEXT: Drop p.a.t, after the value
 // CHECK-NEXT: Drop p.b by calling Noisy$drop, after the value
 // CHECK-NEXT: Drop p.b.t, after the value
+// CHECK-NEXT: Drop p by ending its lifetime, after the value
 // CHECK-NEXT: Return
 
 // CHECK-LABEL: Function: holder
 // CHECK:      Let x =
 // CHECK:      Drop h.t
+// CHECK-NEXT: Drop h by ending its lifetime
 // CHECK-NEXT: Let y =

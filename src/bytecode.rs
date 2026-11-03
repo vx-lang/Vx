@@ -336,6 +336,12 @@ pub enum Opcode {
     CancelOn = 77,
     /// `h.join()`: waits for the task whose value is `operand1`, or is in the slot `operand1`.
     TaskJoin = 78,
+    /// The `let` of a struct or enum: the lifetime of its slot `operand1` (from `Alloca`)
+    /// starts, before the first store into it.
+    LifetimeStart = 79,
+    /// After the last use of a struct or enum: the lifetime of its slot `operand1` ends, so
+    /// LLVM can give the slot's memory to another value.
+    LifetimeEnd = 80,
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.
@@ -441,6 +447,8 @@ impl Opcode {
             69 => LoopHint,
             70 => EnumPayloadLoad,
             71 => LaneReduce,
+            79 => LifetimeStart,
+            80 => LifetimeEnd,
             8 => Call,
             9 => Ret,
             10 => Matmul,
