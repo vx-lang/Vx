@@ -1327,6 +1327,10 @@ impl<'r> Lowerer<'r> {
                     || (self.has_control_flow && self.mutated.contains(&name))
                     || self.across.on_lane0
             }
+            // A vector is a value, as a scalar is.
+            LoweredTy::Vector { .. } => {
+                (self.has_control_flow && self.mutated.contains(&name)) || self.across.on_lane0
+            }
             _ => self.memory,
         };
         if needs_slot {
@@ -2350,13 +2354,18 @@ impl<'r> Lowerer<'r> {
                     Type::Borrow { inner, .. } => inner.as_ref(),
                     other => other,
                 };
+                let is_mut = mc.method_name.as_ref() == "as_mut_ptr";
+                // `(&mut t[i]).as_mut_ptr()`: a pointer to the borrowed element.
+                if let (Type::Borrow { .. }, Type::Scalar(_)) = (&base_ty, tensor) {
+                    return Some(Type::Pointer(Box::new(tensor.clone()), None, is_mut));
+                }
                 let Type::Tensor(el, _, place) = tensor else {
                     return None;
                 };
                 Some(Type::Pointer(
                     Box::new(Type::Scalar(el.clone())),
                     place.clone(),
-                    mc.method_name.as_ref() == "as_mut_ptr",
+                    is_mut,
                 ))
             }
             // `transfer(t, Memory::X)`: the same tensor, placed in `X`.
@@ -2696,9 +2705,16 @@ impl<'r> Lowerer<'r> {
             _ => None,
         }) {
             // The subject retains concrete type arguments even when patterns still name generic parameters.
-            let enum_ty = self
-                .infer_ast_type(&m.expr)
-                .unwrap_or_else(|| Type::Enum(pattern_en.into(), None));
+            // Else the pattern's own name, which can carry the arguments (`Option<i32>::None()`).
+            let enum_ty = self.infer_ast_type(&m.expr).unwrap_or_else(|| {
+                let (base, args) = parse_struct_instance(&pattern_en);
+                let nominal = Type::Enum(base.as_str().into(), None);
+                if args.is_empty() {
+                    nominal
+                } else {
+                    Type::GenericInstance(Box::new(nominal), args)
+                }
+            });
             return self.lower_data_match(m, deref_to_pointee(&enum_ty), result);
         }
         let mut subj = self.lower_expr(&m.expr)?;
@@ -5418,6 +5434,10 @@ impl<'r> Lowerer<'r> {
     /// is what a C function takes.
     fn lower_tensor_as_ptr(&mut self, mc: &crate::syntax::MethodCallExpr) -> Lowered<Val> {
         let src = self.lower_expr(&mc.base)?;
+        // `(&mut t[i]).as_mut_ptr()`: the borrow of an element already is its address.
+        if matches!(src.ty, LoweredTy::Ptr) && matches!(&*mc.base, Expr::Borrow(_)) {
+            return Ok(src);
+        }
         if !matches!(src.ty, LoweredTy::Tensor { .. }) {
             return Err(Decline::TypeNotModelled {
                 what: "as_ptr() on something that is not a tensor",
@@ -7005,7 +7025,14 @@ impl<'r> Lowerer<'r> {
                 let combined = self.emit_typed(op, cur.reg, rhs.reg, result_ty, 0);
                 if matches!(&a.lhs, Expr::IndexAccess(_)) {
                     let place = self.lower_place(&a.lhs)?;
-                    self.emit_effect(Opcode::TensorStore, place.reg, combined.reg, 0);
+                    // `p[i] += v` through a raw pointer stores through the element pointer.
+                    let store =
+                        if matches!(self.code[place.reg.0 as usize].opcode, Opcode::PtrIndex) {
+                            Opcode::PtrStore
+                        } else {
+                            Opcode::TensorStore
+                        };
+                    self.emit_effect(store, place.reg, combined.reg, 0);
                     Ok(())
                 } else {
                     let name = simple_ident(&a.lhs).ok_or(Decline::Unsupported {
@@ -7847,6 +7874,8 @@ impl BorrowScan {
                     p.iter().for_each(|e| self.expr(e));
                 }
             }
+            Expr::Print(p) => p.args.iter().for_each(|a| self.expr(a)),
+            Expr::Println(p) => p.args.iter().for_each(|a| self.expr(a)),
             _ => {}
         }
     }
@@ -7992,6 +8021,8 @@ impl RefUseScan<'_> {
                     p.iter().for_each(|e| self.expr(e));
                 }
             }
+            Expr::Print(p) => p.args.iter().for_each(|a| self.expr(a)),
+            Expr::Println(p) => p.args.iter().for_each(|a| self.expr(a)),
             _ => {}
         }
     }

@@ -665,6 +665,8 @@ pub struct Callee {
     /// The memref spelling when the callee returns a statically shaped tensor (wrappers peeled) --
     /// the call's result is then a memref value tracked in `mem_of`.
     pub ret_tensor: Option<String>,
+    /// The `vector<NxT>` a callee returning `<N x T>` gives back.
+    pub ret_vec: Option<String>,
     /// Whether the returned tensor is placed in another memory. Such a result is handed back
     /// as a buffer, never through a slot on the caller's stack.
     pub ret_placed: bool,
@@ -797,6 +799,10 @@ pub fn build_callee_map(
                 },
                 ret_void: is_void_ty(&sig.ret_ty),
                 ret_tensor: tensor_memref_of_type(&sig.ret_ty),
+                ret_vec: match peel_wrappers(&sig.ret_ty) {
+                    Type::Simd(e, lanes) => mlir_vector(e, *lanes),
+                    _ => None,
+                },
                 ret_placed: crate::codegen::generator::written_placement(&sig.ret_ty).is_some(),
                 param_tensors: sig
                     .params

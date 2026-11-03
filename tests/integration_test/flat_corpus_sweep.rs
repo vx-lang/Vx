@@ -28,18 +28,9 @@ const KNOWN_DECLINES: &[&str] = &[
     // copies into the caller.
     "backend/pass/custom_topology_user_lowering.vx",
     "frontend/pass/assert_in_a_transfer_lowering_stays_in_it.vx",
-    // The tuple's enum subject has no concrete type recorded for the flat match path.
-    "backend/pass/tuple_match_with_enum_variants_as_a_value.vx",
     // A struct passed to `grad`: the flat path declines it ("an autodiff argument that is not a
     // scalar"). The file is about the AST path.
     "backend/pass/autodiff/autodiff_for_variable_argument.vx",
-    // `(&mut c[0][1]).as_mut_ptr()`: "as_ptr() on something that is not a tensor".
-    "backend/pass/cast_a_borrow_to_a_raw_pointer.vx",
-    // A raw pointer held in a `let` ("a place-bound reference in value position"): the flat
-    // path has no pointer values yet.
-    "backend/pass/raw_pointers_compare_by_address.vx",
-    // "A compound assignment to something other than a simple name" is not modelled.
-    "backend/pass/compound_assignment_through_a_reference.vx",
     // A generic struct, which the flat path declines as "a struct with no GID". The file
     // exists to pin that `>>` still closes two generics now that it is also the right
     // shift, and that question is settled in the parser, so the decline costs it nothing.
@@ -56,7 +47,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // The same shape again, with a warning added: it states that a program checked by both
     // frontends has its warnings reported once, which needs a program that declines.
     "frontend/pass/jobs_warns_once_when_it_falls_back.vx",
-    "frontend/pass/trait_topologies.vx",
     // A parameter with run-time extents (Vx#409). It used to compile through the flat path
     // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
     // signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one function, plus

@@ -46,6 +46,8 @@ impl FnEmit<'_> {
             mt.clone() // a `?`-shaped tensor return: the result is a memref value the callee made
         } else if callee.ret_ptr {
             "!llvm.ptr".to_string() // an FFI pointer-returning callee (#235)
+        } else if let Some(v) = &callee.ret_vec {
+            v.clone()
         } else if callee.ret_void {
             "()".to_string()
         } else {
@@ -83,6 +85,8 @@ impl FnEmit<'_> {
                     .clone()
             } else if self.is_pointer_value(*a as usize)? {
                 "!llvm.ptr".to_string()
+            } else if let Some(v) = self.vec_of.get(*a as usize).cloned().flatten() {
+                v
             } else {
                 self.mem_of
                     .get(*a as usize)
@@ -169,6 +173,8 @@ impl FnEmit<'_> {
                 self.agg_val_of[idx] = Some(agg_gid);
             } else if let Some(mt) = &callee.ret_tensor {
                 self.mem_of[idx] = Some(mt.clone()); // a tensor result: downstream ops index it
+            } else if let Some(v) = &callee.ret_vec {
+                self.vec_of[idx] = Some(v.clone());
             }
         }
         Ok(())
@@ -426,6 +432,8 @@ impl FnEmit<'_> {
                     .clone()
             } else if self.is_pointer_value(*a as usize)? {
                 "!llvm.ptr".to_string()
+            } else if let Some(v) = self.vec_of.get(*a as usize).cloned().flatten() {
+                v
             } else {
                 self.mem_of
                     .get(*a as usize)
