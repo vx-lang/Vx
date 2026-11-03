@@ -548,9 +548,11 @@ struct Lowerer<'r> {
     /// `lower_for` takes it and tags its induction-variable init and latch increment
     /// (`IMM_PARALLEL_INIT`/`IMM_PARALLEL_STEP`) so the device clone can grid-stride the loop (#251).
     stride_next_for: bool,
-    /// How many `spawn` regions enclose the code being lowered. Inside one, `panic` does not print:
-    /// the region may run on a device.
+    /// How many `spawn` regions enclose the code being lowered.
     spawn_depth: u32,
+    /// How many of those regions are not tasks or `tasks` blocks. Inside one, `panic` does not
+    /// print: the region may run on a device.
+    device_depth: u32,
     /// The `AffineFor` instructions of the open affine loops, outermost first.
     affine_open: Vec<usize>,
     /// The two-level plan `parallel_two_level` proved for the region being lowered, when it proved
@@ -646,6 +648,7 @@ impl<'r> Lowerer<'r> {
             overlap_accesses: Vec::new(),
             stride_next_for: false,
             spawn_depth: 0,
+            device_depth: 0,
             affine_open: Vec::new(),
             stride_plan: None,
             across: AcrossState::default(),
@@ -3711,8 +3714,10 @@ impl<'r> Lowerer<'r> {
                     fails: u.cancels_on_err.clone(),
                 });
             }
+            // A task has no topology name, so the high half holds the line of its `spawn`.
+            let line = if task { (u.span.line as u64) << 32 } else { 0 };
             let lowered = self.lower_region(
-                id as u32 as u64,
+                id as u32 as u64 | line,
                 launch,
                 &u.stmts,
                 u.ret.as_deref(),
@@ -4000,6 +4005,11 @@ impl<'r> Lowerer<'r> {
         // The region is a block: its `let`s end with it.
         let depth = self.open_block();
         self.spawn_depth += 1;
+        let on_device = !matches!(
+            imm as u32 as i32,
+            crate::arch::TASK_DISPATCH_ID | crate::arch::TASKS_BLOCK_DISPATCH_ID
+        );
+        self.device_depth += on_device as u32;
         let par = if offer_parallel {
             parallel_outer_for(stmts)
         } else {
@@ -4052,6 +4062,7 @@ impl<'r> Lowerer<'r> {
             self.run_queued_drops()?;
             self.close_blocks_to(depth);
             self.spawn_depth -= 1;
+            self.device_depth -= on_device as u32;
             let ty = v.ty.clone();
             let ended = self.emit_typed(Opcode::SpawnEnd, v.reg, Register(0), ty.clone(), end_imm);
             // The region gives the value of a construction. The code after it takes a slot, as
@@ -4088,6 +4099,7 @@ impl<'r> Lowerer<'r> {
         self.run_queued_drops()?;
         self.close_blocks_to(depth);
         self.spawn_depth -= 1;
+        self.device_depth -= on_device as u32;
         self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), end_imm);
         Ok(None)
     }
@@ -6673,7 +6685,7 @@ impl<'r> Lowerer<'r> {
                     let mut abort_msg = "abort() called";
                     if fc.name.as_ref() == "panic" {
                         abort_msg = "panic";
-                        if self.spawn_depth == 0 {
+                        if self.device_depth == 0 {
                             let panic_label =
                                 Expr::StringLiteral(crate::syntax::StringLiteralExpr::new(
                                     "panic: ".to_string(),

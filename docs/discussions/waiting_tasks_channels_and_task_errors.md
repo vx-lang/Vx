@@ -431,6 +431,8 @@ of the block (F2). A `join()` of a task that failed leaves the block the same wa
 **F9. Run-time reports.**
 
 - A panic in a task gives the line of its `spawn`, and the `spawn` lines of each parent task.
+  Done: the handler of an abort prints them, so a failed check in a task prints them too. The
+  file is always the file given to `vxc`, so the file of a `spawn` in an imported module is wrong.
 - A deadlock: the runtime stops the program when every task waits, and nothing can wake one. A
   task in a foreign call (W8), work on a device, a timer, or I/O in progress can wake one. Go
   already lists each goroutine, what it waits for and where, and the line that started it. Vx

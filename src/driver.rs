@@ -1629,6 +1629,15 @@ impl CompilerDriver {
                 .as_operation_mut()
                 .set_attribute("vx.export_kernels", melior::ir::Attribute::unit(context));
         }
+        if llvm_lower {
+            // The file that a `spawn` is in, for the line that an abort in a task prints. Only the
+            // lowering to LLVM reads it, so the MLIR that `--emit-mlir` prints does not show it.
+            use melior::ir::operation::OperationMutLike;
+            module.as_operation_mut().set_attribute(
+                "vx.source",
+                melior::ir::attribute::StringAttribute::new(context, filename).into(),
+            );
+        }
         if self.options.weak_relaxed_atomics() {
             use melior::ir::operation::OperationMutLike;
             module.as_operation_mut().set_attribute(

@@ -190,8 +190,12 @@ impl FnEmit<'_> {
     pub(crate) fn op_spawn_end(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let (topo, open_at, name) = self.spawn_stack.pop().ok_or(crate::emitter_gap!())?;
         let across = matches!(self.region_slots.pop(), Some(Some(_)));
-        // The topology's name as the program wrote it, from the function's string table.
+        // The topology's name as the program wrote it, from the function's string table. A task
+        // has no name: its high half is the line of its `spawn`.
         let name = match name.checked_sub(1) {
+            _ if topo == crate::arch::TASK_DISPATCH_ID as i64 => {
+                format!(", vx.line = {name} : i64")
+            }
             Some(i) => {
                 let s = self.strings.get(i as usize).ok_or(crate::emitter_gap!())?;
                 format!(
