@@ -532,9 +532,24 @@ mod timer {
     use std::time::Duration;
 
     struct Timer {
-        /// The deadlines, the earliest first, with the address of the word of each.
-        deadlines: Mutex<BinaryHeap<Reverse<(i64, usize)>>>,
+        deadlines: Mutex<Deadlines>,
         cond: Condvar,
+    }
+
+    struct Deadlines {
+        /// The deadlines, the earliest first, with the address of the word of each.
+        heap: BinaryHeap<Reverse<(i64, usize)>>,
+        /// The timer took a deadline off the heap and did not end its wake yet.
+        firing: bool,
+    }
+
+    impl Deadlines {
+        /// Whether a wake of the timer is still to come. Between the pop of a deadline and its
+        /// wake, the heap can be empty, and no progress shows. So the deadline that the timer
+        /// fires counts too.
+        fn pending(&self) -> bool {
+            !self.heap.is_empty() || self.firing
+        }
     }
 
     static TIMER: OnceLock<&'static Timer> = OnceLock::new();
@@ -542,17 +557,20 @@ mod timer {
     /// Whether a deadline is still to come. Its wake can let a parked fiber go on.
     pub(super) fn pending() -> bool {
         TIMER.get().is_some_and(|t| {
-            !t.deadlines
+            t.deadlines
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .is_empty()
+                .pending()
         })
     }
 
     fn timer() -> &'static Timer {
         TIMER.get_or_init(|| {
             let t: &'static Timer = Box::leak(Box::new(Timer {
-                deadlines: Mutex::new(BinaryHeap::new()),
+                deadlines: Mutex::new(Deadlines {
+                    heap: BinaryHeap::new(),
+                    firing: false,
+                }),
                 cond: Condvar::new(),
             }));
             std::thread::Builder::new()
@@ -567,14 +585,14 @@ mod timer {
     pub(super) fn wake_at(deadline_ns: i64, word: *const i64) {
         let t = timer();
         let mut d = t.deadlines.lock().unwrap_or_else(|e| e.into_inner());
-        d.push(Reverse((deadline_ns, word as usize)));
+        d.heap.push(Reverse((deadline_ns, word as usize)));
         t.cond.notify_one();
     }
 
     fn run(t: &'static Timer) {
         let mut d = t.deadlines.lock().unwrap_or_else(|e| e.into_inner());
         loop {
-            let Some(&Reverse((deadline, word))) = d.peek() else {
+            let Some(&Reverse((deadline, word))) = d.heap.peek() else {
                 d = t.cond.wait(d).unwrap_or_else(|e| e.into_inner());
                 continue;
             };
@@ -588,10 +606,34 @@ mod timer {
                     .0;
                 continue;
             }
-            d.pop();
+            d.heap.pop();
+            d.firing = true;
             drop(d);
             wake(bucket(word as *const i64), Fibers::Of(word));
             d = t.deadlines.lock().unwrap_or_else(|e| e.into_inner());
+            d.firing = false;
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_deadline_that_the_timer_fires_is_pending_until_its_wake() {
+            let mut d = Deadlines {
+                heap: BinaryHeap::new(),
+                firing: false,
+            };
+            assert!(!d.pending(), "a timer with no deadline is pending");
+            d.heap.push(Reverse((1, 8)));
+            assert!(d.pending(), "a deadline on the heap is not pending");
+            d.heap.pop();
+            d.firing = true;
+            assert!(
+                d.pending(),
+                "a deadline off the heap is not pending before its wake"
+            );
         }
     }
 }
