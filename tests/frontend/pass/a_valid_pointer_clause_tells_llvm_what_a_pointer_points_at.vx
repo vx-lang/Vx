@@ -1,0 +1,73 @@
+//===- a_valid_pointer_clause_tells_llvm_what_a_pointer_points_at.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `requires valid(p, n)` says that `p` is not null, is aligned, and points at `n` elements. The
+// code generator tells LLVM so: `p` gets `llvm.nonnull` and `llvm.align`, and the body starts with
+// an `llvm.intr.assume` that `n` times the element size bytes at `p` can be read. A length that is
+// an `i32` is widened first. `initialized` and `!overlaps` give LLVM nothing yet.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefix=EXEC --implicit-check-not=Error
+//
+// MLIR-LABEL: func.func @sum(%arg0: !llvm.ptr {llvm.align = 8 : i64, llvm.nonnull}, %arg1: i64) -> i64
+// MLIR: %[[SIZE:.*]] = arith.constant 8 : i64
+// MLIR: %[[BYTES:.*]] = arith.muli %arg1, %[[SIZE]] : i64
+// MLIR: llvm.intr.assume %{{.*}} ["dereferenceable"(%arg0, %[[BYTES]] : !llvm.ptr, i64)] : i1
+//
+// MLIR-LABEL: func.func @copy(%arg0: !llvm.ptr {llvm.align = 4 : i64, llvm.nonnull}, %arg1: !llvm.ptr {llvm.align = 4 : i64, llvm.nonnull}, %arg2: i32)
+// MLIR: %[[N:.*]] = arith.extsi %arg2 : i32 to i64
+// MLIR: llvm.intr.assume %{{.*}} ["dereferenceable"(%arg0, %{{.*}} : !llvm.ptr, i64)] : i1
+// MLIR: llvm.intr.assume %{{.*}} ["dereferenceable"(%arg1, %{{.*}} : !llvm.ptr, i64)] : i1
+//
+// EXEC: {{^}}sum=6; copied=3;{{$}}
+
+import std::vec;
+
+unsafe fn sum(p : *mut i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let mut total = 0i64;
+  let mut i = 0i64;
+  while i < n {
+    total = total + unsafe { p[i] };
+    i = i + 1i64;
+  }
+  return total;
+}
+
+unsafe fn copy(dst : *mut i32, src : *mut i32, n : i32) -> void
+requires valid(dst, n)
+requires valid(src, n)
+requires initialized(src, n)
+requires !overlaps(dst, src, n)
+{
+  let mut i = 0i32;
+  while i < n {
+    unsafe { dst[i] = src[i]; }
+    i = i + 1i32;
+  }
+}
+
+fn main() -> i32 {
+  let mut v = Vec<i64>::new();
+  v.push(1i64);
+  v.push(2i64);
+  v.push(3i64);
+  let mut a = Vec<i32>::new();
+  a.push(1i32);
+  a.push(2i32);
+  a.push(3i32);
+  let mut b = Vec<i32>::new();
+  b.push(0i32);
+  b.push(0i32);
+  b.push(0i32);
+  let s = unsafe { sum(v.as_mut_ptr(), 3i64) };
+  unsafe { copy(b.as_mut_ptr(), a.as_mut_ptr(), 3i32); }
+  println!("sum={}; copied={};", s, *b.get_ref(2));
+  return 0;
+}
