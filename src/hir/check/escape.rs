@@ -673,6 +673,7 @@ impl<'a> TypeChecker<'a> {
                             scope_depth: depth,
                             borrower_name: Some(holder.to_string()),
                             path,
+                            carried_from: None,
                         },
                     );
                 }
