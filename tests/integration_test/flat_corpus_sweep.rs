@@ -386,6 +386,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/across_loops_get_a_launch_check_only_when_an_index_may_wrap.vx",
             // needs --machine
             "optimizations/pass/an_across_loop_whose_index_wraps_stops_at_the_launch.vx",
+            // needs --machine
+            "optimizations/pass/two_tensors_in_a_gpu_kernel_share_local_memory.vx",
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {
             continue;
