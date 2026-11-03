@@ -173,6 +173,7 @@ impl SmtProver {
                         format!("(- {})", inner),
                         int_type(&u.expr, type_of).or(expected),
                     ),
+                    UnaryOp::Try => Err("the `?` operator".to_string()),
                 }
             }
             // A field or an element is a name of its own, `|p.x|` or `|a[0]|`. The `|` quotes it
@@ -398,6 +399,7 @@ pub fn to_source(e: &Expr) -> Option<String> {
         Expr::UnaryOp(u) => match u.op {
             UnaryOp::Not => format!("!({})", to_source(&u.expr)?),
             UnaryOp::Neg => format!("-{}", to_source(&u.expr)?),
+            UnaryOp::Try => format!("{}?", to_source(&u.expr)?),
         },
         Expr::MemberAccess(m) => format!("{}.{}", to_source(&m.base)?, m.member),
         Expr::IndexAccess(i) => format!("{}[{}]", to_source(&i.base)?, to_source(&i.index)?),

@@ -437,6 +437,11 @@ pub enum DiagnosticCode {
     /// `f` before `g` and store `y` before `x`. Write the fields in the order the struct declares
     /// them.
     E3062,
+    /// A `?` that cannot pass its error up. `x?` takes a `Result<T, E>`. It gives the `T` of an
+    /// `Ok`, and it passes an `Err` up unchanged: to the function, which must return a
+    /// `Result<_, E>` with the same `E`, or to its `tasks` block, which must give one. `?` does not
+    /// convert the error. `.map_err(..)` converts it.
+    E3063,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable

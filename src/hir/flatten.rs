@@ -1394,6 +1394,7 @@ impl<'r> Lowerer<'r> {
                 let op = match u.op {
                     UnaryOp::Neg => Opcode::Neg,
                     UnaryOp::Not => Opcode::Not,
+                    UnaryOp::Try => unreachable!("the checker turns `?` into a match"),
                 };
                 Ok(self.emit_typed(op, v.reg, Register(0), v.ty, 0))
             }

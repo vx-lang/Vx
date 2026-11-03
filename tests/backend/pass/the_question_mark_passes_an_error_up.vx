@@ -1,0 +1,126 @@
+//===- the_question_mark_passes_an_error_up.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `x?` gives the value of an `Ok`. For an `Err`, it returns that `Err` from the function,
+// unchanged. Each value is dropped once, also the locals that the early return leaves behind.
+//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+
+import core::result;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("drop {}", self.id);
+  }
+}
+
+fn make(id : i32, fails : bool) -> Result<Noisy, Noisy> {
+  if fails {
+    return Result<Noisy, Noisy>::Err(Noisy {
+      id: id
+    });
+  }
+  return Result<Noisy, Noisy>::Ok(Noisy {
+    id: id
+  });
+}
+
+// The second `?` returns the error 2. `a` and `local` are dropped on the way out.
+fn two(fails : bool) -> Result<Noisy, Noisy> {
+  let local = Noisy {
+    id: 9
+  };
+  let a = make(1, false)?;
+  let b = make(2, fails)?;
+  return Result<Noisy, Noisy>::Ok(Noisy {
+    id: a.id + b.id + local.id
+  });
+}
+
+fn first<T>(r : Result<T, i32>) -> Result<T, i32> {
+  let v = r?;
+  return Result<T, i32>::Ok(v);
+}
+
+fn plus(n : i32) -> Result<i32, i32> {
+  if n > 100 {
+    return Result<i32, i32>::Err(n);
+  }
+  return Result<i32, i32>::Ok(n + 1);
+}
+
+// A `?` in a loop, a `?` inside another, and a `?` whose value is not used.
+fn looped(step : i32) -> Result<i32, i32> {
+  let mut total = 0;
+  for i in 0..5 {
+    total = total + plus(i * step)?;
+  }
+  plus(plus(total)?)?;
+  return Result<i32, i32>::Ok(total);
+}
+
+fn show(r : Result<Noisy, Noisy>) -> i32 {
+  match r {
+    Result<Noisy, Noisy>::Ok(v) => {
+      println!("ok {}", v.id);
+    }
+    Result<Noisy, Noisy>::Err(e) => {
+      println!("err {}", e.id);
+    }
+  }
+  return 0;
+}
+
+fn show_number(r : Result<i32, i32>) -> i32 {
+  match r {
+    Result<i32, i32>::Ok(v) => {
+      println!("ok {}", v);
+    }
+    Result<i32, i32>::Err(e) => {
+      println!("err {}", e);
+    }
+  }
+  return 0;
+}
+
+// CHECK: -- works
+// CHECK-NEXT: drop 2
+// CHECK-NEXT: drop 1
+// CHECK-NEXT: drop 9
+// CHECK-NEXT: ok 12
+// CHECK-NEXT: drop 12
+// CHECK-NEXT: -- fails
+// CHECK-NEXT: drop 1
+// CHECK-NEXT: drop 9
+// CHECK-NEXT: err 2
+// CHECK-NEXT: drop 2
+// CHECK-NEXT: -- generic
+// CHECK-NEXT: ok 5
+// CHECK-NEXT: err 6
+// CHECK-NEXT: -- loop
+// CHECK-NEXT: ok 15
+// CHECK-NEXT: err 150
+// CHECK-NOT: drop
+fn main() -> i32 {
+  println!("-- works");
+  show(two(false));
+  println!("-- fails");
+  show(two(true));
+  println!("-- generic");
+  show_number(first(Result<i32, i32>::Ok(5)));
+  show_number(first(Result<i32, i32>::Err(6)));
+  println!("-- loop");
+  show_number(looped(1));
+  // 0 + 1, then 50 + 1, then 100 + 1, then 150 fails.
+  show_number(looped(50));
+  return 0;
+}
