@@ -342,7 +342,13 @@ impl FnEmit<'_> {
             self.pptr_elem[idx] = Some(et);
         } else {
             let n = format!("%v{idx}");
-            self.body += &format!("  {n} = llvm.load {p} : !llvm.ptr -> {et}\n");
+            // A read in the first `n` elements of a `requires !overlaps(p, q, n)` pointer.
+            let attrs = self
+                .alias_scope_of
+                .get(&idx)
+                .map(|(own, sibs)| alias_store_attrs(*own, sibs))
+                .unwrap_or_default();
+            self.body += &format!("  {n} = llvm.load {p}{attrs} : !llvm.ptr -> {et}\n");
             self.names[idx] = n;
             self.etypes[idx] = scalar_e;
             self.agg_val_of[idx] = agg_gid;
@@ -358,7 +364,7 @@ impl FnEmit<'_> {
     // Store into a raw-pointer place (no result): `operand1` is the `PtrIndex` place (the GEP'd
     // element pointer), `operand2` the value, and the pointee element type comes from the
     // place. (#242)
-    pub(crate) fn op_ptr_store(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
+    pub(crate) fn op_ptr_store(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let place = self
             .names
             .get(ins.operand1.0 as usize)
@@ -375,7 +381,13 @@ impl FnEmit<'_> {
             .get(ins.operand2.0 as usize)
             .ok_or(crate::emitter_gap!())?
             .clone();
-        self.body += &format!("  llvm.store {val}, {place} : {et}, !llvm.ptr\n");
+        // A write in the first `n` elements of a `requires !overlaps(p, q, n)` pointer.
+        let attrs = self
+            .alias_scope_of
+            .get(&idx)
+            .map(|(own, sibs)| alias_store_attrs(*own, sibs))
+            .unwrap_or_default();
+        self.body += &format!("  llvm.store {val}, {place}{attrs} : {et}, !llvm.ptr\n");
         Ok(())
     }
 }

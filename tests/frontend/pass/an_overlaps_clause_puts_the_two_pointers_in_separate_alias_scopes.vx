@@ -1,0 +1,106 @@
+//===- an_overlaps_clause_puts_the_two_pointers_in_separate_alias_scopes.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `requires !overlaps(dst, src, n)` says that the first `n` elements at `dst` and at `src` share
+// no byte. An access `dst[i]` or `src[i]` in a `for i in k..n` loop, with `k` at least 0, is in
+// those elements. So it gets an alias scope of its pointer, and does not alias the other pointer's
+// scope. The clause says nothing about an access that the compiler cannot place in the first `n`
+// elements: in a `while` loop, in a loop to another length, or through an `i` that the body binds
+// again. Nor does it say anything once the body changes `dst`, `src` or `n`.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --check-prefix=MLIR
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefix=EXEC --implicit-check-not=Error
+//
+// MLIR-LABEL: func.func @copy_while(
+// MLIR-NOT: alias_scopes
+// MLIR-LABEL: func.func @copy_shadowed(
+// MLIR-NOT: alias_scopes
+// MLIR-LABEL: func.func @copy_other_length(
+// MLIR-NOT: alias_scopes
+// MLIR-LABEL: func.func @copy_moved(
+// MLIR-NOT: alias_scopes
+// MLIR-LABEL: func.func @copy_from_one(
+// MLIR: llvm.load %{{.*}} {alias_scopes = [#[[SRC1:.*]]], noalias_scopes = [#[[DST1:.*]]]} : !llvm.ptr -> i64
+// MLIR: llvm.store %{{.*}}, %{{.*}} {alias_scopes = [#[[DST1]]], noalias_scopes = [#[[SRC1]]]} : i64, !llvm.ptr
+// MLIR-LABEL: func.func @copy(
+// MLIR: llvm.load %{{.*}} {alias_scopes = [#[[SRC:.*]]], noalias_scopes = [#[[DST:.*]]]} : !llvm.ptr -> i64
+// MLIR: llvm.store %{{.*}}, %{{.*}} {alias_scopes = [#[[DST]]], noalias_scopes = [#[[SRC]]]} : i64, !llvm.ptr
+//
+// EXEC: {{^}}b=2;{{$}}
+
+import std::vec;
+
+unsafe fn copy(dst : *mut i64, src : *mut i64, n : i64) -> void
+requires !overlaps(dst, src, n)
+{
+  for i in 0i64..n {
+    unsafe { dst[i] = src[i]; }
+  }
+}
+
+unsafe fn copy_from_one(dst : *mut i64, src : *mut i64, n : i64) -> void
+requires !overlaps(dst, src, n)
+{
+  for i in 1i64..n {
+    unsafe { dst[i] = src[i]; }
+  }
+}
+
+unsafe fn copy_moved(mut dst : *mut i64, src : *mut i64, n : i64) -> void
+requires !overlaps(dst, src, n)
+{
+  dst = src;
+  for i in 0i64..n {
+    unsafe { dst[i] = src[i]; }
+  }
+}
+
+unsafe fn copy_while(dst : *mut i64, src : *mut i64, n : i64) -> void
+requires !overlaps(dst, src, n)
+{
+  let mut i = 0i64;
+  while i < n {
+    unsafe { dst[i] = src[i]; }
+    i = i + 1i64;
+  }
+}
+
+unsafe fn copy_other_length(dst : *mut i64, src : *mut i64, n : i64, m : i64) -> void
+requires !overlaps(dst, src, n)
+{
+  for i in 0i64..m {
+    unsafe { dst[i] = src[i]; }
+  }
+}
+
+unsafe fn copy_shadowed(dst : *mut i64, src : *mut i64, n : i64) -> void
+requires !overlaps(dst, src, n)
+{
+  for i in 0i64..n {
+    let i = 0i64;
+    unsafe { dst[i] = src[i]; }
+  }
+}
+
+fn main() -> i32 {
+  let mut a = Vec<i64>::new();
+  a.push(1i64);
+  a.push(2i64);
+  let mut b = Vec<i64>::new();
+  b.push(0i64);
+  b.push(0i64);
+  unsafe {
+    copy(b.as_mut_ptr(), a.as_mut_ptr(), 2i64);
+    copy_while(b.as_mut_ptr(), a.as_mut_ptr(), 2i64);
+    copy_other_length(b.as_mut_ptr(), a.as_mut_ptr(), 2i64, 2i64);
+    copy_shadowed(b.as_mut_ptr(), a.as_mut_ptr(), 2i64);
+    copy_from_one(b.as_mut_ptr(), a.as_mut_ptr(), 2i64);
+    copy_moved(b.as_mut_ptr(), a.as_mut_ptr(), 2i64);
+  }
+  println!("b={};", *b.get_ref(1));
+  return 0;
+}
