@@ -441,13 +441,13 @@ of the block (F2). A `join()` of a task that failed leaves the block the same wa
   also names the channel or lock, with the line that made it, and prints the cycle of waits.
   Done in `wait.rs`: a watcher thread stops the program. The report lists each wait: `send`,
   `recv`, `lock`, `select`, or the join of a task, with the `spawn` lines of the task that waits.
-  Two waits on one channel or one lock get the same number. Not done: the line where the program
-  made the channel or the lock, the line of the wait, and the cycle of waits. The first two need
-  the place of a call in the program inside the library, and Vx has no way to get it.
+  Two waits on one channel or one lock get the same number. Each wait has its line, and the line
+  that made its channel or lock. The library gets them from a last parameter `at : Caller`, which
+  the compiler fills with the place of each call (#2569). Not done: the cycle of waits.
 - A task that gets `Cancelled` from many waits in a row: the line of the wait (F4).
   Done in part: at the 1000th time that a task sees the cancel of its block, the runtime warns
-  once, with the `spawn` lines of the task. The line of the wait is not known, for the reason
-  above.
+  once, with the `spawn` lines of the task. Not done: the line of the wait. A task checks the
+  cancel at many places, and the warning does not know which wait it came from.
 
 ## 5. Admission
 

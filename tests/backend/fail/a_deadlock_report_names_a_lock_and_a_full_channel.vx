@@ -7,20 +7,21 @@
 //===----------------------------------------------------------------------===//
 // One task holds a lock and waits in `recv`. Another task waits for the lock. The main code and
 // a third task each send two values on a channel that holds one and that nothing reads. Two
-// waits on the same channel name the same number.
+// waits on the same channel name the same number. Each wait has its line, and the line that made
+// its channel or lock.
 //
 // RUN: not vxc %s --run 2>&1 | FileCheck %s
 // RUN: not vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
 // RUN: env VX_TASK_RUNTIME=shared not vxc %s --run 2>&1 | FileCheck %s
 
 // CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
-// CHECK-NEXT: {{^}}  the main code waits in `send` on channel 1{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `lock` on lock 1{{$}}
-// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:68{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `recv` on channel 2{{$}}
-// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:71{{$}}
-// CHECK-NEXT: {{^}}  a task waits in `send` on channel 1{{$}}
-// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:74{{$}}
+// CHECK-NEXT: {{^}}  the main code waits in `send` at {{.*}}.vx:52 on channel 1, made at {{.*}}.vx:66{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `lock` at {{.*}}.vx:43 on lock 1, made at {{.*}}.vx:63{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:69{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:33 on channel 2, made at {{.*}}.vx:65{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:72{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `send` at {{.*}}.vx:48 on channel 1, made at {{.*}}.vx:66{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:75{{$}}
 
 import std::sync::channel;
 import std::sync::mutex;

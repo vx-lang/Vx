@@ -62,25 +62,78 @@ enum What {
     Join(Option<crate::ffi::tasks::Site>),
 }
 
+/// A line of the program: a `Caller` of the library.
+#[derive(Clone, Copy)]
+struct Place {
+    /// A C string that lives as long as the program: a string literal.
+    file: usize,
+    line: i32,
+}
+
+impl Place {
+    /// `None` when `file` is null.
+    fn new(file: *const libc::c_char, line: i32) -> Option<Place> {
+        (!file.is_null()).then_some(Place {
+            file: file as usize,
+            line,
+        })
+    }
+
+    fn text(self) -> String {
+        let file = unsafe { std::ffi::CStr::from_ptr(self.file as *const libc::c_char) };
+        format!("{}:{}", file.to_string_lossy(), self.line)
+    }
+}
+
+/// What the next wait of a thread is for, and its lines.
+#[derive(Clone)]
+struct Waiting {
+    what: What,
+    /// The line of the wait.
+    at: Option<Place>,
+    /// The line that made the channel or the lock.
+    made: Option<Place>,
+}
+
+const NOT_SAID: Waiting = Waiting {
+    what: What::Word,
+    at: None,
+    made: None,
+};
+
 /// One waiter of a bucket, for the deadlock report.
 struct Note {
     /// The thread or the fiber that waits, so that it can take its own note away.
     owner: usize,
     word: usize,
     what: What,
+    at: Option<Place>,
+    made: Option<Place>,
     /// Where the waiting task started, or `None` for the main code.
     site: Option<crate::ffi::tasks::Site>,
 }
 
 thread_local! {
     /// What the next wait of this thread is for. The wait takes it.
-    static WHAT: std::cell::RefCell<What> = const { std::cell::RefCell::new(What::Word) };
+    static WHAT: std::cell::RefCell<Waiting> = const { std::cell::RefCell::new(NOT_SAID) };
 }
 
 /// Says what the next wait of this thread is for: 1 for a `send`, 2 for a `recv`, 3 for a
-/// `lock` and 4 for a `select`. The deadlock report prints it.
+/// `lock` and 4 for a `select`. The deadlock report prints it, with the line of the wait at
+/// `at_file:at_line`, and the line that made the channel or the lock at `made_file:made_line`.
+/// A null file means that the line is not known.
+///
+/// # Safety
+///
+/// Each file that is not null is a C string that lives as long as the program.
 #[no_mangle]
-pub extern "C" fn vx_waiting_for(what: i32) {
+pub unsafe extern "C" fn vx_waiting_for(
+    what: i32,
+    at_file: *const libc::c_char,
+    at_line: i32,
+    made_file: *const libc::c_char,
+    made_line: i32,
+) {
     let what = match what {
         1 => What::Send,
         2 => What::Recv,
@@ -88,12 +141,22 @@ pub extern "C" fn vx_waiting_for(what: i32) {
         4 => What::Select,
         _ => What::Word,
     };
-    WHAT.with(|w| *w.borrow_mut() = what);
+    let waiting = Waiting {
+        what,
+        at: Place::new(at_file, at_line),
+        made: Place::new(made_file, made_line),
+    };
+    WHAT.with(|w| *w.borrow_mut() = waiting);
 }
 
 /// The next wait of this thread is the join of a task with the site `site`.
 pub(crate) fn waiting_for_join(site: Option<crate::ffi::tasks::Site>) {
-    WHAT.with(|w| *w.borrow_mut() = What::Join(site));
+    WHAT.with(|w| {
+        *w.borrow_mut() = Waiting {
+            what: What::Join(site),
+            ..NOT_SAID
+        }
+    });
 }
 
 /// The owner of a note for this thread.
@@ -234,7 +297,8 @@ pub unsafe extern "C" fn vx_wait_while(word: *const i64, value: i64) {
 /// deadline: a thread sleeps with a time limit, and a fiber asks the timer to wake its bucket.
 unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Option<i64>) {
     let b = bucket(word);
-    let what = WHAT.with(|w| std::mem::replace(&mut *w.borrow_mut(), What::Word));
+    let Waiting { what, at, made } =
+        WHAT.with(|w| std::mem::replace(&mut *w.borrow_mut(), NOT_SAID));
     let mut waiters = Held::new(b);
     let atomic = unsafe { &*(word as *const AtomicI64) };
     if atomic.load(Ordering::SeqCst) != value
@@ -260,6 +324,8 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
         owner,
         word: word as usize,
         what,
+        at,
+        made,
         site: crate::ffi::tasks::current_site(),
     };
     if fiber.is_null() {
@@ -538,7 +604,7 @@ fn report() -> String {
     for b in &TABLE {
         let w = Held::new(b);
         for n in &w.notes {
-            waits.push((n.site.clone(), n.word, n.what.clone()));
+            waits.push((n.site.clone(), n.word, n.what.clone(), n.at, n.made));
         }
     }
     waits.sort_by_key(|w| w.0.as_ref().map(crate::ffi::tasks::site_key));
@@ -551,12 +617,26 @@ fn report() -> String {
         }
     };
     let mut out = String::new();
-    for (site, word, what) in waits {
+    for (site, word, what, at, made) in waits {
+        // ` at main.vx:15` and `, made at main.vx:11`, or nothing when the line is not known.
+        let at = at.map(|p| format!(" at {}", p.text())).unwrap_or_default();
+        let made = made
+            .map(|p| format!(", made at {}", p.text()))
+            .unwrap_or_default();
         let doing = match what {
-            What::Send => format!("waits in `send` on channel {}", number(&mut channels, word)),
-            What::Recv => format!("waits in `recv` on channel {}", number(&mut channels, word)),
-            What::Lock => format!("waits in `lock` on lock {}", number(&mut locks, word)),
-            What::Select => "waits in `select`".to_string(),
+            What::Send => format!(
+                "waits in `send`{at} on channel {}{made}",
+                number(&mut channels, word)
+            ),
+            What::Recv => format!(
+                "waits in `recv`{at} on channel {}{made}",
+                number(&mut channels, word)
+            ),
+            What::Lock => format!(
+                "waits in `lock`{at} on lock {}{made}",
+                number(&mut locks, word)
+            ),
+            What::Select => format!("waits in `select`{at}"),
             What::Join(Some(task)) => format!(
                 "waits for the end of the task from the `spawn` at {}",
                 crate::ffi::tasks::spawn_line(&task)
@@ -773,7 +853,7 @@ mod tests {
         let at = word.as_ptr() as usize;
         let waiter = std::thread::spawn(move || {
             while word.load(Ordering::SeqCst) == 0 {
-                vx_waiting_for(2);
+                unsafe { vx_waiting_for(2, std::ptr::null(), 0, std::ptr::null(), 0) };
                 unsafe { vx_wait_while(at as *const i64, 0) };
             }
         });
@@ -879,6 +959,8 @@ mod tests {
             owner,
             word,
             what: What::Recv,
+            at: None,
+            made: None,
             site: None,
         };
         let mut waiters = Waiters {
