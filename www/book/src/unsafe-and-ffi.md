@@ -89,7 +89,9 @@ fn main() -> i32 {
 The compiler cannot prove these clauses at a call yet, so only an `unsafe fn` may have them. The
 author of each `unsafe` block that calls the function keeps the promise. For `valid(p, n)` the
 compiler tells LLVM that `p` is not null and aligned, and that `n` elements at `p` can be read.
-A clause that does not hold is undefined behavior, as a wrong `*p` is.
+For `!overlaps(p, q, n)` it tells LLVM that an access `p[i]` does not alias an access `q[i]`,
+where `i` is the variable of a `for i in 0..n` loop. A clause that does not hold is undefined
+behavior, as a wrong `*p` is.
 
 ## Calling C
 

@@ -565,6 +565,16 @@ struct Lowerer<'r> {
     /// codegen can attach `alias_scopes`/`noalias_scopes` — carrying the borrow checker's disjointness
     /// of simultaneously live `&mut o.field` borrows into the IR. (#275, §5.4)
     place_field_stores: Vec<(usize, Symbol, Vec<Symbol>)>,
+    /// The `requires !overlaps(p, q, n)` clauses of an `unsafe fn` whose `p`, `q` and `n` the body
+    /// never changes or binds again.
+    overlap_clauses: Vec<(Symbol, Symbol, Symbol)>,
+    /// The `for i in 0..n` loops around the statement being lowered, as `(i, n)`, where `n` is the
+    /// length of an `overlap_clauses` entry. An access `p[i]` in one is in the first `n` elements.
+    range_loops: Vec<(Symbol, Symbol)>,
+    /// Each pointer access in the first `n` elements of an `overlap_clauses` entry: its stream
+    /// position, the clause, and whether it goes through the clause's second pointer. Codegen puts
+    /// the two pointers' accesses in two alias scopes that do not alias each other.
+    overlap_accesses: Vec<(usize, usize, bool)>,
     /// Drops marked `after_value` in the block being lowered, waiting for the statement they
     /// precede. Each holds the register the name had at the drop, which an assignment may rebind.
     queued_drops: Vec<PendingDrop>,
@@ -631,6 +641,9 @@ impl<'r> Lowerer<'r> {
             place_bindings: HashSet::new(),
             pending_place_write: None,
             place_field_stores: Vec::new(),
+            overlap_clauses: Vec::new(),
+            range_loops: Vec::new(),
+            overlap_accesses: Vec::new(),
             stride_next_for: false,
             spawn_depth: 0,
             affine_open: Vec::new(),
@@ -1566,6 +1579,10 @@ impl<'r> Lowerer<'r> {
                             return Err(Decline::TypeNotModelled {
                                 what: "an index that is not a scalar",
                             }); // index must be a scalar
+                        }
+                        if let Some((clause, second)) = self.overlap_access(ix) {
+                            self.overlap_accesses
+                                .push((self.code.len(), clause, second));
                         }
                         Ok(self.emit_typed(Opcode::PtrIndex, base.reg, index.reg, elem, 0))
                     }
@@ -3012,12 +3029,58 @@ impl<'r> Lowerer<'r> {
     }
 
     fn lower_plain_for(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
-        self.scoped(|me| {
+        let range = self.overlap_range(f);
+        self.range_loops.extend(range.clone());
+        let lowered = self.scoped(|me| {
             let name: Symbol = f.iter.as_str().into();
             me.note_shadow(&name);
             me.ast_types.remove(&name);
             me.lower_for_loop(f)
-        })
+        });
+        if range.is_some() {
+            self.range_loops.pop();
+        }
+        lowered
+    }
+
+    /// `(i, n)` for `for i in k..n` with a number `k` of at least 0, where the body does not bind
+    /// `i` again: in the body, `i` is in the first `n` elements.
+    fn overlap_range(&self, f: &crate::syntax::ForLoopStmt) -> Option<(Symbol, Symbol)> {
+        let Expr::Range(range) = &*f.iterable else {
+            return None;
+        };
+        let (Expr::Number(start), Expr::Identifier(end)) = (&*range.start, &*range.end) else {
+            return None;
+        };
+        let i: Symbol = f.iter.as_str().into();
+        let from_zero_up = start.value.parse::<i64>().is_ok_and(|v| v >= 0);
+        (from_zero_up && !binds_name(&f.body, &i)).then(|| (i, end.name.clone()))
+    }
+
+    /// The `!overlaps` clause that covers the access `base[index]`, and whether `base` is its
+    /// second pointer: `index` is the variable of a `for index in 0..n` around the access, with
+    /// the clause's `n`.
+    fn overlap_access(&self, ix: &crate::syntax::IndexAccessExpr) -> Option<(usize, bool)> {
+        let (Expr::Identifier(base), Expr::Identifier(index)) = (&*ix.base, &*ix.index) else {
+            return None;
+        };
+        self.overlap_clauses
+            .iter()
+            .enumerate()
+            .find_map(|(k, (p, q, n))| {
+                let second = if &base.name == p {
+                    false
+                } else if &base.name == q {
+                    true
+                } else {
+                    return None;
+                };
+                let in_range = self
+                    .range_loops
+                    .iter()
+                    .any(|(i, len)| i == &index.name && len == n);
+                in_range.then_some((k, second))
+            })
     }
 
     fn lower_for_loop(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
@@ -5939,6 +6002,12 @@ impl<'r> Lowerer<'r> {
             } else {
                 Opcode::TensorStore
             };
+            if is_ptr {
+                if let Some((clause, second)) = self.overlap_access(ix) {
+                    self.overlap_accesses
+                        .push((self.code.len(), clause, second));
+                }
+            }
             self.emit_effect(store, place.reg, value.reg, 0);
             return Ok(());
         }
@@ -6669,9 +6738,20 @@ impl<'r> Lowerer<'r> {
         worker.local_inline_blocks.extend(self.inline_blocks);
         // Place-write alias table (M2b-2): reduce collected field stores to `(position, group, siblings)`.
         // Positions are stream-relative; a fresh worker lowers one function, so they need no rebasing.
-        worker
-            .local_place_alias_stores
-            .extend(reduce_place_alias(&self.place_field_stores));
+        let mut alias_table = reduce_place_alias(&self.place_field_stores);
+        // Each `!overlaps` clause gets two groups after the field groups, one for the accesses
+        // through each of its pointers. An access does not alias the other pointer's group.
+        let first = alias_table
+            .iter()
+            .flat_map(|(_, own, sibs)| std::iter::once(own).chain(sibs))
+            .max()
+            .map_or(0, |g| g + 1);
+        for &(pos, clause, second) in &self.overlap_accesses {
+            let own = first + 2 * clause + usize::from(second);
+            let other = first + 2 * clause + usize::from(!second);
+            alias_table.push((pos, own, vec![other]));
+        }
+        worker.local_place_alias_stores.extend(alias_table);
         for mut ins in self.code {
             if ins.type_idx.0 != NO_TYPE {
                 ins.type_idx = TypeIdx(ins.type_idx.0 + base);
@@ -6708,6 +6788,7 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Lowe
     lw.materialized = uses.materialized;
     lw.mutated = uses.mutated;
     lw.place_bindings = uses.place_bindings;
+    lw.overlap_clauses = overlap_clauses(func, &lw.mutated);
     // Control flow drives the block model (entry block + branch skeletons) and is the precondition for
     // slotting a *mutated* scalar (it must cross a block boundary). An aggregate param or a struct
     // construction also turns on the memory model (an aggregate must live in an addressable slot), but
@@ -7013,6 +7094,82 @@ fn place_root(e: &Expr) -> Option<Symbol> {
         Expr::MemberAccess(m) => place_root(&m.base),
         _ => None,
     }
+}
+
+/// The `requires !overlaps(p, q, n)` clauses of `func`, an `unsafe fn`, whose `p` and `q` are raw
+/// pointer parameters and `n` a parameter. A name that the body changes or binds again is left out,
+/// since then `p[i]` might not read the pointer or the length that the clause is about.
+fn overlap_clauses(func: &Function, mutated: &HashSet<Symbol>) -> Vec<(Symbol, Symbol, Symbol)> {
+    if !func.is_unsafe {
+        return Vec::new();
+    }
+    let param = |e: &Expr, pointer: bool| -> Option<Symbol> {
+        let Expr::Identifier(id) = e else {
+            return None;
+        };
+        let (_, ty) = func.params.iter().find(|(n, _)| n == &id.name)?;
+        let fixed = !mutated.contains(&id.name)
+            && !func.mut_params.contains(&id.name)
+            && !binds_name(&func.body, &id.name);
+        (fixed && (!pointer || matches!(ty, Type::Pointer(..)))).then(|| id.name.clone())
+    };
+    func.requires
+        .iter()
+        .filter_map(|e| {
+            let Expr::UnaryOp(u) = e else {
+                return None;
+            };
+            let Expr::FunctionCall(fc) = &*u.expr else {
+                return None;
+            };
+            if u.op != UnaryOp::Not || fc.name.as_ref() != "overlaps" {
+                return None;
+            }
+            let [p, q, n] = fc.args.as_slice() else {
+                return None;
+            };
+            let (p, q, n) = (param(p, true)?, param(q, true)?, param(n, false)?);
+            (p != q).then_some((p, q, n))
+        })
+        .collect()
+}
+
+/// Whether `stmts` bind `name` anywhere: with `let`, as a `for` variable, or in a `match` pattern.
+fn binds_name(stmts: &[Statement], name: &Symbol) -> bool {
+    fn in_pattern(p: &crate::syntax::Pattern, name: &Symbol) -> bool {
+        match p {
+            crate::syntax::Pattern::Identifier(n) => n == name,
+            crate::syntax::Pattern::EnumVariant(_, _, Some(parts)) => {
+                parts.iter().any(|p| in_pattern(p, name))
+            }
+            _ => false,
+        }
+    }
+    let direct = stmts.iter().any(|s| match s {
+        Statement::LetDecl(l) => &l.name == name,
+        Statement::ForLoop(f) => f.iter.as_str() == name.as_ref() || binds_name(&f.body, name),
+        Statement::Loop(l) => binds_name(&l.body, name),
+        _ => false,
+    });
+    let mut nested = false;
+    crate::syntax::visit_exprs(stmts, &mut |e| {
+        nested |= match e {
+            Expr::If(i) => {
+                binds_name(&i.then_block, name)
+                    || i.else_block.as_ref().is_some_and(|b| binds_name(b, name))
+            }
+            Expr::Match(m) => m
+                .arms
+                .iter()
+                .any(|a| in_pattern(&a.pattern, name) || binds_name(&a.body, name)),
+            Expr::UnsafeBlock(b) => binds_name(&b.stmts, name),
+            Expr::ComptimeBlock(b) => binds_name(&b.stmts, name),
+            Expr::TaskBlock(b) => binds_name(&b.stmts, name),
+            Expr::SpawnOn(b) => binds_name(&b.stmts, name),
+            _ => false,
+        }
+    });
+    direct || nested
 }
 
 /// Index of the `(root, path)` key in `keys`, or `None` if absent — the group-id lookup for the alias
