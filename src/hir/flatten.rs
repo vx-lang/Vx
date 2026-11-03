@@ -4455,7 +4455,10 @@ impl<'r> Lowerer<'r> {
             return Some(lty);
         }
         match ty {
-            Type::GenericInstance(..) => self.resolve_concrete_layout(ty).map(LoweredTy::Aggregate),
+            // A generic instance, or an enum whose variants carry data.
+            Type::GenericInstance(..) | Type::Enum(..) | Type::Struct(..) => {
+                self.resolve_concrete_layout(ty).map(LoweredTy::Aggregate)
+            }
             _ => None,
         }
     }
@@ -4706,6 +4709,25 @@ impl<'r> Lowerer<'r> {
             .is_some_and(|data| data.variants.iter().all(|(_, fields)| fields.is_empty()))
         {
             return Some((4, 4, "i32".to_string()));
+        }
+        // An enum whose variants carry data, as `E` in `Result<u64, E>`: its whole storage.
+        let (nominal, args) = match ty {
+            Type::GenericInstance(base, args) => (base.as_ref(), args.as_slice()),
+            other => (other, &[][..]),
+        };
+        let is_enum = self
+            .registry
+            .aggregate_identities()
+            .resolve_base(nominal.into())
+            .is_some_and(|(name, _)| self.registry.enum_data.contains_key(&name));
+        if is_enum {
+            let (gid, _) = self.enum_instance_layout_of(nominal, args)?;
+            let layout = self.generated_layout(gid)?;
+            return Some((
+                layout.size_bytes,
+                layout.align_bytes,
+                crate::codegen::flat::generated_storage_type(layout),
+            ));
         }
         match ty {
             Type::Struct(..) => {

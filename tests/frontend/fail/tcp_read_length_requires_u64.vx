@@ -12,7 +12,9 @@ import std::net;
 
 fn main() -> i32 {
   unsafe {
-    let mut stream = TcpStream::connect("127.0.0.1:1");
+    let mut stream = TcpStream {
+      ptr: 0 as *mut i8
+    };
     let length : i64 = 1;
     let _count = stream.read(0 as *mut u8, length);
   }

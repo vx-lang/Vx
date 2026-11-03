@@ -13,33 +13,31 @@
 // CHECK-DAG: func.func private @print_str(
 // CHECK-DAG: func.func private @print_i32(
 // CHECK-LABEL: func.func @main() -> i32
-// CHECK: %[[V0:.*]] = call @vx_udp_socket_bind(%{{.*}}) : (!llvm.ptr) -> !llvm.ptr
-// CHECK: %[[V1:.*]] = call @vx_udp_socket_bind(%{{.*}}) : (!llvm.ptr) -> !llvm.ptr
-// CHECK: call @vx_udp_socket_drop(%[[V0]]) : (!llvm.ptr) -> i32
-// CHECK: call @vx_udp_socket_drop(%[[V1]]) : (!llvm.ptr) -> i32
+// CHECK: call @vx_udp_socket_bind(%{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr) -> i32
+// CHECK: call @vx_udp_socket_bind(%{{.*}}, %{{.*}}) : (!llvm.ptr, !llvm.ptr) -> i32
+// CHECK: call @vx_udp_socket_drop(%{{.*}}) : (!llvm.ptr) -> i32
+// CHECK: call @vx_udp_socket_drop(%{{.*}}) : (!llvm.ptr) -> i32
 // CHECK: call @print_str(%{{.*}}) : (!llvm.ptr) -> i32
 // CHECK: call @print_i32(%{{.*}}) : (i32) -> i32
 import std::io;
 extern {
-  fn vx_udp_socket_bind(c_addr : *const i8) -> *mut i8;
-  fn vx_udp_socket_recv(ptr : *mut i8, buffer : *mut u8, len : u64) -> u64;
-  fn vx_udp_socket_send_to(ptr : *mut i8, buffer : *const u8, len : u64,
-  c_addr : *const i8) -> u64;
+  fn vx_udp_socket_bind(c_addr : *const i8, out : *mut *mut i8) -> i32;
   fn vx_udp_socket_drop(ptr : *mut i8) -> i32;
 }
 
 fn main() -> i32 {
   unsafe {
-    let addr1 = "127.0.0.1:0";
-    let socket1 = vx_udp_socket_bind(addr1);
+    // Each bind gives its status, 0 when it worked, and the socket through `out`.
+    let mut socket1 : *mut i8 = 0 as *mut i8;
+    let status1 = vx_udp_socket_bind("127.0.0.1:0", (&mut socket1) as *mut *mut i8);
 
-    let addr2 = "127.0.0.1:0";
-    let socket2 = vx_udp_socket_bind(addr2);
+    let mut socket2 : *mut i8 = 0 as *mut i8;
+    let status2 = vx_udp_socket_bind("127.0.0.1:0", (&mut socket2) as *mut *mut i8);
 
     vx_udp_socket_drop(socket1);
     vx_udp_socket_drop(socket2);
     print!("Net Success: ");
-    print!(0);
+    print!(status1 + status2);
   }
   return 0;
 }
