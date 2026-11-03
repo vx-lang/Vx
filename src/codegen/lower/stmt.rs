@@ -15,6 +15,19 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let ReturnStmt { expr, span: _ } = self;
+        // A `return` in a task ends the task with the value.
+        if super::expr::leaving_task(gen) {
+            let (val, block) = match expr {
+                Some(e) => {
+                    let (val, _, block) = gen.generate_expr(e, block)?;
+                    (Some(val), block)
+                }
+                None => (None, block),
+            };
+            let block = gen.run_value_drops(block)?;
+            super::expr::emit_task_exit(gen, block, val)?;
+            return Ok(None);
+        }
         // A bare `return;` -- only a `void` function may write one, which the checker enforces.
         // Nothing to compute and nothing to convert, so emit the terminator and stop.
         let Some(expr) = expr else {

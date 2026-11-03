@@ -1,0 +1,59 @@
+//===- closure_returning_a_reference_into_its_own_call.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// Each call of a closure copies the variables it uses into the call's own stack frame, as it
+// does its parameters. A reference to one of them is gone once the call returns (E4005).
+
+fn returns_its_copy() -> i32 {
+  let orig = 5;
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:11: this closure returns a value that points into the closure's own call
+  let f = || &orig;
+  return *f();
+}
+
+fn returns_a_mut_to_its_copy() -> i32 {
+  let mut x = 5;
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:11: this closure returns a value that points into the closure's own call
+  let f = || &mut x;
+  let a = f();
+  *a = 1;
+  return x;
+}
+
+fn returns_its_parameter() -> i32 {
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:11: this closure returns a value that points into the closure's own call
+  let f = |x : i32| &x;
+  return *f(3);
+}
+
+fn returns_one_from_a_branch() -> i32 {
+  let orig = 5;
+  let other = 6;
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:11: this closure returns a value that points into the closure's own call
+  let f = |c : bool| if c {
+    &orig
+  } else {
+    &other
+  };
+  return *f(true);
+}
+
+fn returns_a_closure_that_uses_its_parameter() -> i32 {
+  // CHECK: Error[E4005] at {{.*}}.vx:[[@LINE+1]]:14: this closure returns a value that points into the closure's own call
+  let make = |x : i32| (|| x) as ||->i32;
+  let f = make(11);
+  return f();
+}
+
+fn main() -> i32 {
+  return returns_its_copy() + returns_a_mut_to_its_copy() + returns_its_parameter()
+  + returns_one_from_a_branch() + returns_a_closure_that_uses_its_parameter();
+}
+
+// CHECK: 5 error(s) emitted

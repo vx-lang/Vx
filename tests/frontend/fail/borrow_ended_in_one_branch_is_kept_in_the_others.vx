@@ -1,0 +1,49 @@
+//===- borrow_ended_in_one_branch_is_kept_in_the_others.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// `r = &other` in one branch of an `if` or a `match` ends the borrow `r` held. Each other
+// branch starts from the borrows before the `if` or `match`, where `r` still holds it.
+
+import std::vec;
+
+fn push_in_the_else_branch(c : bool) -> i64 {
+  let mut v = Vec<i64>::with_capacity(1);
+  v.push(11i64);
+  let other : i64 = 22i64;
+  let mut r : &i64 = v.get_ref(0);
+  if c {
+    r = &other;
+  } else {
+    // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:7: Cannot borrow 'v' as mutable because it is also borrowed as immutable.
+    v.push(5i64);
+  }
+  return *r;
+}
+
+fn assign_in_a_later_arm(k : i32) -> i32 {
+  let mut x = 0;
+  let y = 100;
+  let mut r : &i32 = &x;
+  match k {
+    0 => {
+      r = &y;
+    }
+    _ => {
+      // CHECK: Error[E4009] at {{.*}}.vx:[[@LINE+1]]:7: `x` is assigned while it is borrowed
+      x = 5;
+    }
+  }
+  return *r;
+}
+
+fn main() -> i32 {
+  return (push_in_the_else_branch(false) as i32) + assign_in_a_later_arm(1);
+}
+
+// CHECK: 2 error(s) emitted

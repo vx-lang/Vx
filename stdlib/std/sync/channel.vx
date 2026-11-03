@@ -160,6 +160,12 @@ fn word(words : *mut AtomicI64, i : i64) -> &AtomicI64 {
   return unsafe { &words[i] };
 }
 
+/// Moves the value in slot `i` out of the buffer. The caller marks the slot taken, so the
+/// buffer does not drop it again.
+unsafe fn take_slot<T>(data : *mut T, i : i64) -> T {
+  return unsafe { data[i] };
+}
+
 /// Wake the threads that wait on a channel, and each `select`. Call it after the change.
 fn notify(words : *mut AtomicI64) -> void {
   word(words, WAKE).fetch_add(1, AtomicOrdering::SeqCst);
@@ -190,7 +196,7 @@ fn release<T>(words : *mut AtomicI64, data : *mut T, cap : i64) -> void {
   let end = word(words, SENDS).load(AtomicOrdering::SeqCst);
   while k < end {
     if word(words, SLOTS + k % cap).load(AtomicOrdering::SeqCst) == 2 * k + 1 {
-      let value : T = unsafe { data[k % cap] };
+      let value : T = unsafe { take_slot(data, k % cap) };
       drop(value);
     }
     k = k + 1;
@@ -308,7 +314,7 @@ Receiver<T> {
       if slot.load(AtomicOrdering::SeqCst) == 2 * k + 1 {
         word(words, RECVS).store(k + 1, AtomicOrdering::SeqCst);
         let data = self.data;
-        let value : T = unsafe { data[k % self.cap] };
+        let value : T = unsafe { take_slot(data, k % self.cap) };
         slot.store(2 * (k + self.cap), AtomicOrdering::SeqCst);
         notify(words);
         return Result<T, RecvError>::Ok(value);
@@ -342,7 +348,7 @@ Receiver<T> {
       if slot.load(AtomicOrdering::SeqCst) == 2 * k + 1 {
         word(words, RECVS).store(k + 1, AtomicOrdering::SeqCst);
         let data = self.data;
-        let value : T = unsafe { data[k % self.cap] };
+        let value : T = unsafe { take_slot(data, k % self.cap) };
         slot.store(2 * (k + self.cap), AtomicOrdering::SeqCst);
         notify(words);
         return Result<T, TryRecvError>::Ok(value);

@@ -67,6 +67,12 @@ fn vec_check_index(index : i64, len : i64) -> i32 {
   return 0;
 }
 
+/// Moves the element at `index` out of the buffer. The caller makes sure the buffer does not
+/// drop it again.
+unsafe fn vec_take<T>(data : *mut T, index : i32) -> T {
+  return unsafe { data[index] };
+}
+
 /// A growable array of `T`.
 ///
 /// It holds a buffer from `std::alloc` and does its own element loads and stores. The buffer is
@@ -166,7 +172,7 @@ Vec<T> {
   /// vector; `push` is what grows it.
   fn set(self : &mut Vec<T>, index: i32, val: T) -> i32 {
     vec_check_index(index as i64, self.len as i64);
-    let old : T = unsafe { self.data[index] };
+    let old : T = unsafe { vec_take(self.data, index) };
     drop(old);
     unsafe { self.data[index] = val; }
     return 0;
@@ -189,7 +195,7 @@ Vec<T> {
       return Option<T>::None();
     }
     self.len = self.len - 1;
-    return Option<T>::Some(unsafe { self.data[self.len] });
+    return Option<T>::Some(unsafe { vec_take(self.data, self.len) });
   }
 
   /// An iterator over references to the elements, borrowing the vector rather than
@@ -228,7 +234,7 @@ impl<T> Drop for Vec<T> {
   fn drop(self : &mut Vec<T>) -> void {
     if needs_drop<T>() {
       for i in 0..self.len {
-        let element : T = unsafe { self.data[i] };
+        let element : T = unsafe { vec_take(self.data, i) };
         drop(element);
       }
     }
@@ -321,7 +327,7 @@ impl<T> Drop for VecIntoIter<T> {
   fn drop(self : &mut VecIntoIter<T>) -> void {
     if needs_drop<T>() {
       for i in self.current..self.back {
-        let element : T = unsafe { self.vec.data[i] };
+        let element : T = unsafe { vec_take(self.vec.data, i) };
         drop(element);
       }
     }
@@ -337,7 +343,7 @@ impl<T> Iterator for VecIntoIter<T> {
   fn next(self : &mut VecIntoIter<T>) -> Option<T> {
     let mut ret = Option<T>::None();
     if self.current < self.back {
-      let val : T = unsafe { self.vec.data[self.current] };
+      let val : T = unsafe { vec_take(self.vec.data, self.current) };
       self.current = self.current + 1;
       ret = Option<T>::Some(val);
     }
@@ -352,7 +358,7 @@ impl<T> DoubleEndedIterator for VecIntoIter<T> {
       return Option<T>::None();
     }
     self.back = self.back - 1;
-    let val : T = unsafe { self.vec.data[self.back] };
+    let val : T = unsafe { vec_take(self.vec.data, self.back) };
     return Option<T>::Some(val);
   }
 }

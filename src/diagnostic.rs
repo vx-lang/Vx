@@ -413,9 +413,10 @@ pub enum DiagnosticCode {
     /// cannot return a handle, store it, or pass it to a function. Write
     /// `let h = spawn { .. };` and later `h.join()`.
     E3057,
-    /// A `return`, `break` or `continue` that leaves a task, or a task that joins another task.
-    /// The last expression of a task body is its result. A task cannot join another task yet.
-    /// Join both tasks in the `tasks` block.
+    /// A `break` or `continue` that leaves a task, a `return` with a value in a task that has no
+    /// handle, or a task that joins another task. A `return` in a task ends the task, and its
+    /// value is the result of the task. A task cannot join another task yet. Join both tasks in
+    /// the `tasks` block.
     E3058,
     /// An `extern` declaration of `malloc`, `calloc`, `realloc`, `aligned_alloc` or `free` whose
     /// type is not C's. The compiler calls these functions too, and it can share only a
@@ -439,8 +440,8 @@ pub enum DiagnosticCode {
     E3062,
     /// A `?` that cannot pass its error up. `x?` takes a `Result<T, E>`. It gives the `T` of an
     /// `Ok`, and it passes an `Err` up unchanged: to the function, which must return a
-    /// `Result<_, E>` with the same `E`, or to its `tasks` block, which must give one. `?` does not
-    /// convert the error. `.map_err(..)` converts it.
+    /// `Result<_, E>` with the same `E`, or to its task or `tasks` block, which must give one. `?`
+    /// does not convert the error. `.map_err(..)` converts it.
     E3063,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
@@ -459,7 +460,8 @@ pub enum DiagnosticCode {
     /// for a block: a variable declared outside a block cannot be given a value that points
     /// at a variable declared inside it. Nor can a variable keep a reference into a value with
     /// no name, such as `make_vec()` in `let r = &make_vec();`, when that value is dropped at
-    /// the end of its statement.
+    /// the end of its statement. A closure cannot return a reference to its own parameter, or to
+    /// the copy it keeps of a variable it uses (`|| &x`): each call has its own frame.
     E4005,
     /// An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where
     /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`.
@@ -470,7 +472,10 @@ pub enum DiagnosticCode {
     /// A value moved out from behind a reference: `let b = *r;` where `r` is a reference to a
     /// type that is not `Copy`. The reference does not own the value, so it cannot give it
     /// away. Copy or clone it instead. A `match` on a reference names parts of the value behind
-    /// it, so `match r { Holder::Full(n) => n }` cannot move `n` either.
+    /// it, so `match r { Holder::Full(n) => n }` cannot move `n` either. Through a raw pointer,
+    /// `let b = *p;` and `let b = p[i];` are refused when the value has something to drop,
+    /// since its owner drops it too. Only an `unsafe fn` such as `core::ptr::read(p)` may take
+    /// it out.
     E4008,
     /// An assignment to a variable, or a field or element of it, while a `&` borrow of it is
     /// still used afterwards: `let r = &x; x = 2;` and then a use of `r`. The borrow would see

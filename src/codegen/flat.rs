@@ -2507,9 +2507,14 @@ impl<'a> FnEmit<'a> {
                 Ok(())
             }
             // A way out of the region before its end. `VxLowering` sends each `vx.yield` of a
-            // `tasks` block to the code after the block.
+            // `tasks` block to the code after the block. An exit from a task gives the value of
+            // the task, and the task stores it and ends.
             Opcode::RegionExit => {
-                self.body += "  \"vx.yield\"() : () -> ()\n";
+                if self.types.get(ins.type_idx.0 as usize).is_some() {
+                    self.yield_value(idx, ins.operand1.0 as usize)?;
+                } else {
+                    self.body += "  \"vx.yield\"() : () -> ()\n";
+                }
                 self.terminated = true;
                 Ok(())
             }

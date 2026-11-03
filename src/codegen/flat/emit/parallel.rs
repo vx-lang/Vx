@@ -150,6 +150,43 @@ impl FnEmit<'_> {
         Ok(mlir_scalar(&elem).ok_or(crate::emitter_gap!())?.to_string())
     }
 
+    /// Yields the value of register `r` from the region, when the block is not terminated, and
+    /// gives its MLIR type. A struct in a slot is yielded as its value, and the struct's id
+    /// comes back too.
+    pub(crate) fn yield_value(
+        &mut self,
+        idx: usize,
+        r: usize,
+    ) -> Lowered<(String, Option<TypeId>)> {
+        let mut v = self.names.get(r).ok_or(crate::emitter_gap!())?.clone();
+        let struct_of = |gid: Option<TypeId>| {
+            gid.and_then(|g| self.ctx.aggs.get(&g))
+                .map(|a| (gid.unwrap(), a.struct_ty.clone()))
+        };
+        let in_slot = struct_of(self.agg_of.get(r).copied().flatten());
+        let by_value = struct_of(self.agg_val_of.get(r).copied().flatten());
+        let (ty, gid) = if let Some(Some(m)) = self.mem_of.get(r) {
+            (m.clone(), None)
+        } else if let Some((gid, sty)) = in_slot.or(by_value.clone()) {
+            if by_value.is_none() && !self.terminated {
+                let loaded = format!("%v{idx}_value");
+                self.body += &format!("  {loaded} = llvm.load {v} : !llvm.ptr -> {sty}\n");
+                v = loaded;
+            }
+            (sty, Some(gid))
+        } else {
+            let elem = self.elem_at(r as u32).ok_or(crate::emitter_gap!())?;
+            (
+                mlir_scalar(&elem).ok_or(crate::emitter_gap!())?.to_string(),
+                None,
+            )
+        };
+        if !self.terminated {
+            self.body += &format!("  \"vx.yield\"({v}) : ({ty}) -> ()\n");
+        }
+        Ok((ty, gid))
+    }
+
     pub(crate) fn op_spawn_end(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let (topo, open_at, name) = self.spawn_stack.pop().ok_or(crate::emitter_gap!())?;
         let across = matches!(self.region_slots.pop(), Some(Some(_)));
@@ -170,30 +207,9 @@ impl FnEmit<'_> {
         let mut result_ty: Option<String> = None;
         if self.types.get(ins.type_idx.0 as usize).is_some() {
             let r = ins.operand1.0 as usize;
-            let mut v = self.names.get(r).ok_or(crate::emitter_gap!())?.clone();
-            let struct_of = |gid: Option<TypeId>| {
-                gid.and_then(|g| self.ctx.aggs.get(&g))
-                    .map(|a| (gid.unwrap(), a.struct_ty.clone()))
-            };
-            let in_slot = struct_of(self.agg_of.get(r).copied().flatten());
-            let by_value = struct_of(self.agg_val_of.get(r).copied().flatten());
-            let ty = if let Some(Some(m)) = self.mem_of.get(r) {
-                m.clone()
-            } else if let Some((gid, sty)) = in_slot.or(by_value.clone()) {
-                if by_value.is_none() && !self.terminated {
-                    let loaded = format!("%v{idx}_value");
-                    self.body += &format!("  {loaded} = llvm.load {v} : !llvm.ptr -> {sty}\n");
-                    v = loaded;
-                }
-                self.agg_val_of[idx] = Some(gid);
-                sty
-            } else {
-                mlir_scalar(&self.elem_at(ins.operand1.0).ok_or(crate::emitter_gap!())?)
-                    .ok_or(crate::emitter_gap!())?
-                    .to_string()
-            };
-            if !self.terminated {
-                self.body += &format!("  \"vx.yield\"({v}) : ({ty}) -> ()\n");
+            let (ty, gid) = self.yield_value(idx, r)?;
+            if gid.is_some() {
+                self.agg_val_of[idx] = gid;
             }
             let n = format!("%v{idx}");
             self.body.insert_str(open_at + 2, &format!("{n} = "));

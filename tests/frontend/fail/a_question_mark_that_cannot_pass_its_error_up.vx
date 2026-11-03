@@ -56,8 +56,8 @@ fn block_of_other_error(n : i32) -> Result<i32, i64> {
   return r;
 }
 
-// CHECK-DAG: Error[E3058] at {{.*}}.vx:[[@LINE+4]]:14: a `?` cannot leave a task yet
-fn in_a_task(n : i32) -> i32 {
+// CHECK-DAG: Error[E3063] at {{.*}}.vx:[[@LINE+4]]:14: this `?` passes up an error of type 'i32', so its task must give a `Result<_, i32>`. The task gives 'i32'
+fn in_a_task_that_gives_no_result(n : i32) -> i32 {
   let r = tasks {
     let h = spawn {
       plus(n)?

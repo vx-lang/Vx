@@ -78,8 +78,8 @@ fn handle_with_a_wrong_type() -> void {
   }
 }
 
-// CHECK: Error[E3058] at {{.*}}spawn_outside_a_tasks_block_and_handles_that_leave_it.vx:[[@LINE+4]]:7: a `return` cannot leave a task
-fn return_from_a_task() -> i32 {
+// CHECK: Error[E3058] at {{.*}}spawn_outside_a_tasks_block_and_handles_that_leave_it.vx:[[@LINE+3]]:5: nothing reads the result of this task, so a `return` in it takes no value. To keep the result, write `let h = spawn { .. };`
+fn return_a_value_from_a_task_with_no_handle() -> i32 {
   tasks {
     spawn {
       return 1;
@@ -88,7 +88,7 @@ fn return_from_a_task() -> i32 {
   return 0;
 }
 
-// CHECK: Error[E3058] at {{.*}}spawn_outside_a_tasks_block_and_handles_that_leave_it.vx:[[@LINE+5]]:9: a `break` cannot leave a task
+// CHECK: Error[E3058] at {{.*}}spawn_outside_a_tasks_block_and_handles_that_leave_it.vx:[[@LINE+5]]:9: a `break` cannot leave a task. Use `return` to end the task
 fn break_out_of_a_task() -> void {
   tasks {
     for i in 0..3 {
