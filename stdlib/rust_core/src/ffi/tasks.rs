@@ -48,7 +48,7 @@ struct Task {
     /// `None` when the task ended and was joined, or when it is a fiber.
     thread: Option<JoinHandle<()>>,
     /// Set to 1, with a wake, as the last step of the task's thread.
-    thread_done: Arc<AtomicI64>,
+    thread_done: Option<Arc<AtomicI64>>,
     /// The task in the shared runtime.
     fiber: Option<Box<Fiber>>,
     env: *mut u8,
@@ -128,8 +128,12 @@ fn wait(task: &mut Task) {
     if let Some(thread) = task.thread.take() {
         // The wait goes through `wait.rs`, so the deadlock watcher stops counting this thread
         // as waiting at the wake, not when the OS runs it again.
-        let done = Arc::as_ptr(&task.thread_done) as *const i64;
-        while task.thread_done.load(Ordering::SeqCst) == 0 {
+        let thread_done = task
+            .thread_done
+            .as_ref()
+            .expect("a task thread has a done word");
+        let done = Arc::as_ptr(thread_done) as *const i64;
+        while thread_done.load(Ordering::SeqCst) == 0 {
             unsafe { crate::ffi::wait::vx_wait_while(done, 0) };
         }
         // A Vx panic stops the program (T6). A Rust panic in a task is a bug of the runtime.
@@ -197,7 +201,7 @@ pub unsafe extern "C" fn vx_task_start(
     if let Some(sched) = group.sched {
         group.tasks.push(Task {
             thread: None,
-            thread_done: Arc::default(),
+            thread_done: None,
             fiber: Some(sched.spawn(run, env, Some(mark))),
             env,
         });
@@ -231,7 +235,7 @@ pub unsafe extern "C" fn vx_task_start(
     };
     group.tasks.push(Task {
         thread: Some(thread),
-        thread_done,
+        thread_done: Some(thread_done),
         fiber: None,
         env,
     });
