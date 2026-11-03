@@ -334,6 +334,8 @@ pub enum Opcode {
     CancelOff = 76,
     /// After the call of a `Drop` impl: turns cancellation back on.
     CancelOn = 77,
+    /// `h.join()`: waits for the task whose value is `operand1`, or is in the slot `operand1`.
+    TaskJoin = 78,
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.

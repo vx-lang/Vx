@@ -1553,6 +1553,11 @@ impl<'r> Lowerer<'r> {
                 Ok(self.emit_typed(Opcode::Transfer, src.reg, Register(0), result_ty, imm))
             }
             // `Tensor<T>([..])` allocates a buffer. Any other name is an ordinary function call.
+            Expr::FunctionCall(fc) if fc.name.as_ref() == crate::syntax::TASK_JOIN => {
+                let v = self.lower_expr(&fc.args[0])?;
+                self.emit_effect(Opcode::TaskJoin, v.reg, Register(0), 0);
+                Ok(v)
+            }
             Expr::FunctionCall(fc) => {
                 if is_tensor_alloc_call(fc) {
                     return self.lower_tensor_alloc(fc).ok_or(Decline::TypeNotModelled {
@@ -2013,10 +2018,13 @@ impl<'r> Lowerer<'r> {
             }
             Expr::Topology(_) => Some(LoweredTy::Scalar(ElementType::I32)),
             Expr::AsCast(c) => Some(LoweredTy::Scalar(scalar_of(&c.target_ty)?)),
-            Expr::FunctionCall(fc) => {
-                let sig = self.registry.fn_sigs.get(&fc.name)?;
-                lowered_ty(&sig.ret_ty, self.registry)
-            }
+            Expr::FunctionCall(fc) => match crate::syntax::task_join_handle(e) {
+                Some(h) => self.infer_expr_ty(h),
+                None => {
+                    let sig = self.registry.fn_sigs.get(&fc.name)?;
+                    lowered_ty(&sig.ret_ty, self.registry)
+                }
+            },
             Expr::Match(m) => m.arms.iter().find_map(|arm| {
                 self.infer_block_ty(&arm.body)
                     .or_else(|| self.infer_payload_binding_ty(m, arm))
@@ -2187,6 +2195,9 @@ impl<'r> Lowerer<'r> {
             // A call's type is its callee's return type (`v.iter()` -> `Vec$iter`'s `VecIter<i32>`),
             // for typing a `for x in v.iter()` iterable.
             // A named function's return type, else a function-typed local's (`let f = probe;`).
+            Expr::FunctionCall(_) if crate::syntax::task_join_handle(e).is_some() => {
+                self.infer_ast_type(crate::syntax::task_join_handle(e)?)
+            }
             Expr::FunctionCall(fc) => self
                 .registry
                 .fn_sigs

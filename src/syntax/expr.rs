@@ -745,6 +745,28 @@ pub fn tasks_wait_stmt(span: Span) -> super::Statement {
     })
 }
 
+/// The callee that `h.join()` becomes, with `h` as its argument. No program can name it. The
+/// code generators wait for the task of `h` at the call, and its value is the value of `h`.
+pub const TASK_JOIN: &str = "$task_join";
+
+/// `$task_join(handle)`, for the join at `span`.
+pub fn task_join_expr(handle: Expr, span: Span) -> Expr {
+    Expr::FunctionCall(FunctionCallExpr::new(
+        TASK_JOIN.into(),
+        None,
+        vec![handle],
+        span,
+    ))
+}
+
+/// The handle of a call of [`task_join_expr`].
+pub fn task_join_handle(e: &Expr) -> Option<&Expr> {
+    match e {
+        Expr::FunctionCall(c) if c.name.as_ref() == TASK_JOIN => c.args.first(),
+        _ => None,
+    }
+}
+
 /// `Err(value)` of the type `Result<U, E>` of a `tasks` block that can fail, as the parser and
 /// the checker write a construction: the type in the name, and its arguments apart.
 pub fn failure_of(result: &Type, value: Expr, span: Span) -> EnumVariantExpr {
