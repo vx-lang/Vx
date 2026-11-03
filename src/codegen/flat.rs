@@ -2616,6 +2616,8 @@ impl<'a> FnEmit<'a> {
             Opcode::AcrossId => self.op_across_id(idx, ins),
             Opcode::AcrossRegion => self.op_across_region(idx, ins),
             Opcode::TensorDrop => self.op_tensor_drop(idx, ins),
+            Opcode::LifetimeStart => self.op_lifetime(ins, "start"),
+            Opcode::LifetimeEnd => self.op_lifetime(ins, "end"),
             Opcode::Abort => self.op_abort(idx, ins),
             Opcode::PrintStr => self.op_print_str(idx, ins),
             Opcode::PrintStream => self.op_print_stream(idx, ins),

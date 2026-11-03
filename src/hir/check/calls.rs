@@ -1333,6 +1333,10 @@ impl<'a> TypeChecker<'a> {
         let bound = self.bind_extern_memories(callee, params, arg_types);
         let params = bound.as_deref().unwrap_or(params);
         for (i, param_ty) in params.iter().enumerate() {
+            // `&mut a` passed as a raw pointer keeps no borrow of `a`.
+            if Self::is_raw_pointer(param_ty) {
+                self.borrow.drops.note_raw_pointer();
+            }
             let arg_ty = self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
             // An `Unknown` argument already has its error, a use of a moved value say.
             if !self.is_assignable(param_ty, &arg_ty)

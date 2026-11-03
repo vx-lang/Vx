@@ -496,6 +496,9 @@ struct Lowerer<'r> {
     /// Locals bound to a tensor the compiler allocated, as against a view over memory it does
     /// not control. Only these can be filled in place by `c = a @ b` (Vx#391).
     owned_tensors: std::collections::HashSet<Symbol>,
+    /// The slots whose lifetime `start_lifetime` started. Only these get an end: a task writes
+    /// into the slot of its `let` while the code goes on, so that slot gets neither.
+    started_slots: std::collections::HashSet<u32>,
     /// Locals whose element pointer the function takes: a view through it can share their memory.
     pointer_taken: std::collections::HashSet<Symbol>,
     /// Generated struct and enum layouts, transferred to the worker without discarding metadata.
@@ -607,6 +610,8 @@ enum PendingDrop {
         stmt: Box<Statement>,
         calls_drop: bool,
     },
+    /// The end of the lifetime of a struct's or enum's stack slot.
+    LifetimeEnd { slot: Register },
 }
 
 impl<'r> Lowerer<'r> {
@@ -628,6 +633,7 @@ impl<'r> Lowerer<'r> {
             ast_types: HashMap::new(),
             block_frames: Vec::new(),
             owned_tensors: std::collections::HashSet::new(),
+            started_slots: std::collections::HashSet::new(),
             pointer_taken: std::collections::HashSet::new(),
             agg_layouts: Vec::new(),
             agg_layout_indices: HashMap::new(),
@@ -715,6 +721,15 @@ impl<'r> Lowerer<'r> {
             }
         };
         self.emit_typed(Opcode::Alloca, Register(0), Register(0), ty, imm)
+    }
+
+    /// The slot of a local struct or enum starts its lifetime, before the first store into it.
+    /// The checker writes where it ends (`DropStmt::ends_lifetime`).
+    fn start_lifetime(&mut self, slot: &Val) {
+        if matches!(slot.ty, LoweredTy::Aggregate(_)) {
+            self.emit_effect(Opcode::LifetimeStart, slot.reg, Register(0), 0);
+            self.started_slots.insert(slot.reg.0);
+        }
     }
 
     /// Emit an *effect* instruction (no result value): `type_idx` is the [`NO_TYPE`] sentinel.
@@ -1086,7 +1101,36 @@ impl<'r> Lowerer<'r> {
 
     /// `Statement::Drop`: free the owner now, or once the next statement has its value.
     fn lower_drop(&mut self, d: &crate::syntax::DropStmt) -> Lowered<()> {
-        let drop = if let Some(stmt) = d.call_statement() {
+        let drop = if d.ends_lifetime {
+            match self.scope.get(&d.name) {
+                Some(Binding::Slot {
+                    reg,
+                    ty: LoweredTy::Aggregate(_),
+                }) if self.started_slots.contains(&reg.0) => {
+                    PendingDrop::LifetimeEnd { slot: *reg }
+                }
+                // With no start, the slot lives for the whole call.
+                Some(Binding::Slot {
+                    ty: LoweredTy::Aggregate(_),
+                    ..
+                }) => return Ok(()),
+                // A payload-free enum is a number: in a register, or in a number's slot, which
+                // gets no lifetime markers.
+                Some(Binding::Reg(Val {
+                    ty: LoweredTy::Scalar(_),
+                    ..
+                }))
+                | Some(Binding::Slot {
+                    ty: LoweredTy::Scalar(_),
+                    ..
+                }) => return Ok(()),
+                _ => {
+                    return Err(Decline::Unsupported {
+                        what: "the end of the lifetime of a struct not held in a slot",
+                    })
+                }
+            }
+        } else if let Some(stmt) = d.call_statement() {
             PendingDrop::Call {
                 stmt: Box::new(stmt),
                 calls_drop: d.call.is_some(),
@@ -1129,6 +1173,10 @@ impl<'r> Lowerer<'r> {
     fn emit_drop(&mut self, d: PendingDrop) -> Lowered<()> {
         let (reg, flag, field) = match d {
             PendingDrop::Tensor { reg, flag, field } => (reg, flag, field),
+            PendingDrop::LifetimeEnd { slot } => {
+                self.emit_effect(Opcode::LifetimeEnd, slot, Register(0), 0);
+                return Ok(());
+            }
             // A `Drop` impl runs with cancellation off (F6), so a `send` or a wait in it can
             // finish.
             PendingDrop::Call { stmt, calls_drop } => {
@@ -1231,7 +1279,8 @@ impl<'r> Lowerer<'r> {
             .push(before);
     }
 
-    fn bind_local(&mut self, name: Symbol, v: Val) {
+    /// `starts_lifetime`: a struct's slot starts its lifetime here, for a `let` the checker ends.
+    fn bind_local(&mut self, name: Symbol, v: Val, starts_lifetime: bool) {
         if matches!(v.ty, LoweredTy::Tensor { .. }) {
             self.tensor_depth.insert(v.reg.0, self.block_frames.len());
         }
@@ -1279,6 +1328,9 @@ impl<'r> Lowerer<'r> {
             } else {
                 self.emit_alloca(v.ty.clone())
             };
+            if starts_lifetime {
+                self.start_lifetime(&slot);
+            }
             self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
             self.scope.insert(
                 name,
@@ -1747,7 +1799,7 @@ impl<'r> Lowerer<'r> {
             // A struct literal in value position (e.g. `return P { .. }`, #215): construct it in a slot
             // (the `let x = P { .. }` form is handled directly in `lower_stmt`). The `Val` is the slot,
             // which a `Ret` loads + returns by value.
-            Expr::StructInit(si) => self.lower_struct_init(si),
+            Expr::StructInit(si) => self.lower_struct_init(si, false),
             // A `comptime { .. }` block: the AST codegen lowers it *transparently* (its `sizeof<T>()`
             // folds to a constant and its `assert`s are runtime no-ops), so at runtime a compile-time
             // block produces no observable effect. Mirror that — lower the inner statements, then the
@@ -1833,7 +1885,7 @@ impl<'r> Lowerer<'r> {
                         ));
                     }
                 }
-                self.lower_enum_construct(ev)
+                self.lower_enum_construct(ev, false)
             }
             // `&<expr>`: a borrow. A tensor is a memref — already a reference value — so borrowing it
             // is transparent: yield the tensor itself, matching the AST codegen (`BorrowExpr` returns
@@ -2805,7 +2857,7 @@ impl<'r> Lowerer<'r> {
                                 );
                                 self.note_shadow(pname);
                                 self.ast_types.insert(pname.clone(), payload_type);
-                                self.bind_local(pname.clone(), pval);
+                                self.bind_local(pname.clone(), pval, false);
                             }
                         }
                     }
@@ -3443,7 +3495,7 @@ impl<'r> Lowerer<'r> {
             }
             .encode(),
         );
-        self.bind_local(f.iter.as_str().into(), x);
+        self.bind_local(f.iter.as_str().into(), x, false);
         self.loop_stack.push((header, exit)); // continue -> header, break -> exit
         self.lower_block(&f.body)?;
         self.loop_stack.pop();
@@ -4116,7 +4168,11 @@ impl<'r> Lowerer<'r> {
     /// discriminant ordinal into the tag, then `FieldStore` each payload value into its field (a
     /// payload-free variant like `None` stores only the tag, leaving the payload undefined — as the AST
     /// codegen does). Returns the slot as an aggregate `Val`. (#242)
-    fn lower_enum_construct(&mut self, ev: &crate::syntax::EnumVariantExpr) -> Lowered<Val> {
+    fn lower_enum_construct(
+        &mut self,
+        ev: &crate::syntax::EnumVariantExpr,
+        starts_lifetime: bool,
+    ) -> Lowered<Val> {
         let base = base_name(&ev.enum_name);
         let data = self
             .registry
@@ -4143,6 +4199,9 @@ impl<'r> Lowerer<'r> {
                     what: "an enum with no modelled instance layout",
                 })?;
         let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
+        if starts_lifetime {
+            self.start_lifetime(&slot);
+        }
         let tag = self.emit_value(
             Opcode::Const,
             Register(0),
@@ -4783,7 +4842,11 @@ impl<'r> Lowerer<'r> {
         Some((gid, layout.field_offsets()))
     }
 
-    fn lower_struct_init(&mut self, si: &crate::syntax::StructInitExpr) -> Lowered<Val> {
+    fn lower_struct_init(
+        &mut self,
+        si: &crate::syntax::StructInitExpr,
+        starts_lifetime: bool,
+    ) -> Lowered<Val> {
         // The struct's layout GID: the checker-attached `type_id` when present, else resolved by
         // name. A *monomorphized generic* construction (`Vec<i32> { .. }`) carries no `type_id` (the
         // instance identity isn't a plain module symbol), so fall back to the base nominal's layout
@@ -4840,6 +4903,9 @@ impl<'r> Lowerer<'r> {
             return Err(not_in_layout);
         }
         let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
+        if starts_lifetime {
+            self.start_lifetime(&slot);
+        }
         // The fields are evaluated in the order the source writes them, not in declaration order.
         for (name, init_expr) in &si.fields {
             // Scalar, pointer, or by-value nested-aggregate fields — a nested aggregate is stored as a
@@ -6330,7 +6396,7 @@ impl<'r> Lowerer<'r> {
                 // A struct literal is constructed *in place* into its own slot; the local is that
                 // slot (binding it directly avoids re-`Alloca`ing and storing the slot handle).
                 if let Expr::StructInit(si) = &l.expr {
-                    let slot = self.lower_struct_init(si)?;
+                    let slot = self.lower_struct_init(si, true)?;
                     self.scope.insert(
                         l.name.clone(),
                         Binding::Slot {
@@ -6352,7 +6418,7 @@ impl<'r> Lowerer<'r> {
                         .get(base)
                         .is_some_and(|d| d.variants.iter().any(|(_, p)| !p.is_empty()));
                     if is_data {
-                        let slot = self.lower_enum_construct(ev)?;
+                        let slot = self.lower_enum_construct(ev, true)?;
                         self.scope.insert(
                             l.name.clone(),
                             Binding::Slot {
@@ -6379,6 +6445,7 @@ impl<'r> Lowerer<'r> {
                         })?,
                     };
                     let slot = self.emit_alloca(result_ty.clone());
+                    self.start_lifetime(&slot);
                     self.lower_if_into_slot(if_expr, slot.reg)?;
                     self.scope.insert(
                         l.name.clone(),
@@ -6438,7 +6505,10 @@ impl<'r> Lowerer<'r> {
                     // The initializer already carries the local's type: an annotated `let` types its
                     // literal initializer to the annotation, and a genuine mismatch is rejected (no
                     // implicit conversion, #240), so the value is bound directly.
-                    self.bind_local(l.name.clone(), v);
+                    // A task writes its result into the slot while the code goes on, so the
+                    // slot's lifetime cannot start after the `spawn`.
+                    let from_a_task = matches!(&l.expr, Expr::UnsafeBlock(u) if u.task.is_some());
+                    self.bind_local(l.name.clone(), v, !from_a_task);
                 }
                 Ok(())
             }
@@ -6461,6 +6531,10 @@ impl<'r> Lowerer<'r> {
                         }
                         return Ok(());
                     }
+                    // Each arm returns, so nothing runs after the match. A slot whose lifetime
+                    // does not end lives to the end of the call, which is correct.
+                    self.value_drops
+                        .retain(|d| !matches!(d, PendingDrop::LifetimeEnd { .. }));
                     if !self.value_drops.is_empty() {
                         return Err(Decline::Unsupported {
                             what: "a drop waiting for the value of a returned match",
@@ -6859,7 +6933,7 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Lowe
         {
             lw.scope.insert(name.clone(), Binding::Reg(incoming));
         } else {
-            lw.bind_local(name.clone(), incoming);
+            lw.bind_local(name.clone(), incoming, false);
         }
     }
     for (si, stmt) in func.body.iter().enumerate() {

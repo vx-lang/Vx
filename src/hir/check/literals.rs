@@ -839,6 +839,10 @@ impl<'a> TypeChecker<'a> {
                         }
                         previous = Some(previous.map_or(index, |p| p.max(index)));
                         let expected_type = &struct_fields[index].1.substitute(&mapping);
+                        // `&mut a` stored as a raw pointer keeps no borrow of `a`.
+                        if Self::is_raw_pointer(expected_type) {
+                            self.borrow.drops.note_raw_pointer();
+                        }
                         // The field's type is the expected type of what initializes it, so
                         // `Counter { n : 0 }` writes a `u64` zero into a `u64` field rather than
                         // an `i32` one the field then refuses.
