@@ -230,7 +230,7 @@ impl<'d> Decls<'d> {
     /// Whether a call given a value of type `ty` can store a reference where the value points:
     /// through a `&mut` or a raw pointer to memory that can hold one, at any depth of the value.
     /// A `&` gives no write, unless what it points at holds a `SharedCell`.
-    fn can_store_through(&self, ty: &Type, depth: usize) -> bool {
+    pub(crate) fn can_store_through(&self, ty: &Type, depth: usize) -> bool {
         if holds_nothing(ty) {
             return false;
         }
