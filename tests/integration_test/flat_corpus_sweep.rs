@@ -28,9 +28,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // copies into the caller.
     "backend/pass/custom_topology_user_lowering.vx",
     "frontend/pass/assert_in_a_transfer_lowering_stays_in_it.vx",
-    // A struct passed to `grad`: the flat path declines it ("an autodiff argument that is not a
-    // scalar"). The file is about the AST path.
-    "backend/pass/autodiff/autodiff_for_variable_argument.vx",
     // A generic struct, which the flat path declines as "a struct with no GID". The file
     // exists to pin that `>>` still closes two generics now that it is also the right
     // shift, and that question is settled in the parser, so the decline costs it nothing.

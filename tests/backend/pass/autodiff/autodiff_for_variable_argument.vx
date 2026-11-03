@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 // A `for` variable passed to grad and vjp for an `i32` parameter is converted to `i32`, as
-// in an ordinary call. The struct parameter makes the compiler use the AST code generator.
+// in an ordinary call. A struct parameter is passed by value and is not differentiated.
 //
 // EXPECT: grad 4 3
 // EXPECT: vjp 8 6
