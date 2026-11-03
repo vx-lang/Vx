@@ -242,6 +242,36 @@ static bool hostCanRead(vx::TransferOp op) {
   return true;
 }
 
+/// The operand a host run of this region would read from device memory, or
+/// null when running it on the host is safe.
+///
+/// Two facts make the host fallback unsafe: the region reaches memory, and one
+/// of the values it uses from outside came from a transfer into a space
+/// declared `managed: explicit`. Asked in two places, from this one answer: the
+/// check that runs before the conversion (`diagnoseUnrunnableSpawns`) and the
+/// device-image step, because a refusal found only there would otherwise turn
+/// the same region into a host run. `operands` are the values the region reads:
+/// the captures of a `vx.spawn` before it is outlined, and the operands of the
+/// `vx.launch` that replaced it afterwards. Both name the same transfers.
+static vx::TransferOp captureTheHostCannotRead(Region &body,
+                                               ValueRange operands) {
+  if (!regionTouchesMemory(body))
+    return nullptr;
+  for (Value capture : operands) {
+    vx::TransferOp xfer = definingTransfer(capture);
+    if (xfer && isDeviceTransfer(xfer) && !hostCanRead(xfer))
+      return xfer;
+  }
+  return nullptr;
+}
+
+/// The memory space a transfer names, for a diagnostic.
+static StringRef spaceOfTransfer(vx::TransferOp xfer) {
+  if (auto s = xfer->getAttrOfType<StringAttr>("space"))
+    return s.getValue();
+  return "a device memory space";
+}
+
 static StringRef kernelKindOf(Region &body, Operation **payloadOut = nullptr) {
   if (payloadOut)
     *payloadOut = nullptr;
@@ -1570,39 +1600,31 @@ static LogicalResult diagnoseUnrunnableSpawns(Operation *root) {
       return;
     if (!kernelKindOf(body).empty() || spawnRunsOnDevice(spawn))
       return;
-    if (!regionTouchesMemory(body))
-      return;
 
     SetVector<Value> captures;
     getUsedValuesDefinedAbove(body, captures);
-    for (Value capture : captures) {
-      vx::TransferOp xfer = definingTransfer(capture);
-      if (!xfer || !isDeviceTransfer(xfer) || hostCanRead(xfer))
-        continue;
+    vx::TransferOp xfer =
+        captureTheHostCannotRead(body, captures.getArrayRef());
+    if (!xfer)
+      return;
 
-      StringRef space = "a device memory space";
-      if (auto s = xfer->getAttrOfType<StringAttr>("space"))
-        space = s.getValue();
+    // A declared topology's id is a hash of its name, so name it instead.
+    std::string where = "topology " + std::to_string(topology);
+    if (auto name = spawn->getAttrOfType<StringAttr>("topology_name"))
+      where = ("`Topology::" + name.getValue() + "`").str();
 
-      // A declared topology's id is a hash of its name, so name it instead.
-      std::string where = "topology " + std::to_string(topology);
-      if (auto name = spawn->getAttrOfType<StringAttr>("topology_name"))
-        where = ("`Topology::" + name.getValue() + "`").str();
-
-      spawn.emitError()
-          << "this region is placed on " << where
-          << ", but the compiler cannot emit a device kernel for it and its "
-             "operands are in '"
-          << space
-          << "', declared `managed: explicit` -- memory the host cannot read.\n"
-          << "  Falling back to the host would dereference device memory "
-             "there.\n"
-          << "  Either the computation must be one the target can run (a "
-             "matmul is routed today; general kernel emission is #251), or its "
-             "operands must stay in a space the host can read.";
-      failed = true;
-      break;
-    }
+    spawn.emitError()
+        << "this region is placed on " << where
+        << ", but the compiler cannot emit a device kernel for it and its "
+           "operands are in '"
+        << spaceOfTransfer(xfer)
+        << "', declared `managed: explicit` -- memory the host cannot read.\n"
+        << "  Falling back to the host would dereference device memory "
+           "there.\n"
+        << "  Either the computation must be one the target can run (a "
+           "matmul is routed today; general kernel emission is #251), or its "
+           "operands must stay in a space the host can read.";
+    failed = true;
   });
   return success(!failed);
 }
@@ -6132,22 +6154,63 @@ struct ConvertVxToLLVMPass
         llvm_unreachable("the pipeline was checked to be present above");
       }
       if (image.bytes.empty()) {
-        // `--emit-ptx` asked for this image, so a refusal is the answer.
-        if (exportingPtx) {
+        // `--emit-ptx` asked for this image, so a refusal is the answer. So is
+        // any NVPTX refusal: the program placed a kernel on an NVPTX device,
+        // and carrying on produces a program that compiles, dispatches, and is
+        // then refused at the far end for a reason that does not name the
+        // cause -- the kernel is missing. The compile is the place where the
+        // cause is still legible.
+        if (exportingPtx || *pipeline == DevicePipeline::Nvptx) {
           m.emitError("cannot compile this device kernel: ") << error;
           signalPassFailure();
           return;
         }
-        // Anything else keeps the host path the program already has: the
+        // A SPIR-V region keeps the host path the program already has: the
         // launch carries no image, the host copy of the kernel runs, and the
         // warning names the reason in the same words the gate above uses.
+        // The gate catches what it can name before anything is copied, and
+        // this catches what only the backend knows, such as a module LLVM's
+        // SPIR-V target refuses.
         //
-        // This is the last line of the one rule: a region no image pipeline
-        // could compile runs on the host, and a program that used to compile
-        // must not stop compiling because the image step met something it
-        // cannot express. The gate catches what it can name before anything is
-        // copied; this catches what only the backend knows, such as a module
-        // LLVM's SPIR-V target refuses.
+        // The host path is only safe while the region's operands are host
+        // memory. A value transferred into a space declared
+        // `managed: explicit` is not -- the host would dereference device
+        // memory, which is silent corruption rather than a diagnostic. The
+        // check before the conversion refuses that pair already, but it runs
+        // before this step, so a refusal only the backend knows would slip
+        // past it. Ask the same question from the same helper (#251, #348).
+        llvm::StringMap<vx::LaunchOp> launchesByName;
+        module.walk([&](vx::LaunchOp l) {
+          launchesByName[l.getCalleeAttr().getValue()] = l;
+        });
+        bool unreadableOperands = false;
+        m.walk([&](gpu::GPUFuncOp f) {
+          vx::KernelOp kernel = kernelsByName.lookup(f.getName());
+          if (!kernel)
+            return;
+          vx::LaunchOp launch = launchesByName.lookup(f.getName());
+          if (!launch)
+            return;
+          vx::TransferOp xfer =
+              captureTheHostCannotRead(kernel.getBody(), launch.getOperands());
+          if (!xfer)
+            return;
+          kernel.emitError()
+              << "this kernel cannot become a `"
+              << archNameOfPipeline(*pipeline) << "` device image: " << error
+              << ", and its operands are in '" << spaceOfTransfer(xfer)
+              << "', declared `managed: explicit` -- memory the host cannot "
+                 "read.\n"
+              << "  Running the region on the host instead would dereference "
+                 "device memory there.\n"
+              << "  Either the region must be one the target can compile, or "
+                 "its operands must stay in a space the host can read.";
+          unreadableOperands = true;
+        });
+        if (unreadableOperands) {
+          signalPassFailure();
+          return;
+        }
         m.walk([&](gpu::GPUFuncOp f) {
           vx::KernelOp kernel = kernelsByName.lookup(f.getName());
           if (!kernel)

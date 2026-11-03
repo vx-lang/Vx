@@ -1,0 +1,66 @@
+//===- placed_kernel_calls_a_helper_on_explicit_memory.vx ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A placed region calls a helper written for the same topology, and the helper
+// takes a tensor in `managed: explicit` memory. The SPIR-V image step cannot
+// pass a memref in a call -- the argument flattening only rewrites the kernel's
+// own accesses -- so the image fails there, not at the check that runs before
+// the conversion. Normally that failure keeps the region on the host.
+//
+// Here it cannot. `managed: explicit` says the host cannot read this memory, so
+// the host run would dereference device memory. That is silent corruption, not
+// a slow answer, and the compile refuses it (#251, #348).
+//
+// The helper is what makes the refusal appear only at the image step: the gate
+// before the conversion admits the call, because a call is device code and the
+// callee is copied into the device module. With `managed: cached` this same
+// program warns and runs on the host, which is correct because the host can
+// read that memory.
+//
+// RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// CHECK: cannot become a `spirv64` device image: a memref reaches `func.call`
+// CHECK-SAME: and its operands are in 'GPU_HBM', declared `managed: explicit`
+// CHECK: Running the region on the host instead would dereference device memory
+// CHECK-NOT: will run on the host instead
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: explicit
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+// A helper the region calls cannot carry a memref into the image. `on
+// Topology::Dev` is what lets the region call it at all.
+fn first(a: &Tensor<f32, [4], Memory::GPU_HBM>) on Topology::Dev -> f32 {
+  return a[0];
+}
+
+fn main() -> i32 {
+  let mut h = unsafe { Tensor<f32, [4]>::uninit() };
+  let mut o_h = unsafe { Tensor<f32, [4]>::uninit() };
+  for i in 0..4 {
+    h[i] = i as f32;
+    o_h[i] = 0.0;
+  }
+  let d = transfer(h, Memory::GPU_HBM);
+  let mut o = transfer(o_h, Memory::GPU_HBM);
+
+  spawn on(Topology::Dev) {
+    for i in 0..4 {
+      o[i] = first(&d) + 1.0;
+    }
+  }
+
+  let back = transfer(o, Memory::CPU_DRAM);
+  print(back);
+  return 0;
+}
