@@ -2415,11 +2415,21 @@ impl<'r> Lowerer<'r> {
         if let Expr::Dereference(d) = base {
             let gid = self.agg_base_gid(base)?; // the pointee (Vec<T>)
             let v = self.lower_expr(&d.expr)?; // lower the pointer, not the deref
-            return matches!(v.ty, LoweredTy::Ptr)
-                .then_some((v.reg, gid))
-                .ok_or(Decline::TypeNotModelled {
+            if !matches!(v.ty, LoweredTy::Ptr) {
+                return Err(Decline::TypeNotModelled {
                     what: "an aggregate base that is not a pointer",
                 });
+            }
+            // A pointer loaded from a local does not say what it points to. The cast tells the
+            // emitter, so the field op can address the field.
+            let tagged = self.emit_typed(
+                Opcode::Cast,
+                v.reg,
+                Register(0),
+                LoweredTy::Aggregate(gid),
+                0,
+            );
+            return Ok((tagged.reg, gid));
         }
         // A field as a base. A by-value nested-aggregate field (`outer.inner.a`) is addressed with a
         // `FieldAddr`, and a pointer field (`make(p).p.x`) is loaded. `m.base` is lowered only here:

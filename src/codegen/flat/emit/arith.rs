@@ -301,6 +301,33 @@ impl FnEmit<'_> {
     // Scalar comparison → `i1`; the relation is in `imm`, the operand type comes from the
     // first operand's tracked type (this instruction's own type is `bool`, the result).
     pub(crate) fn op_cmp(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        // `a == b` or `a != b` on two raw pointers compares their addresses.
+        if self.is_pointer_value(ins.operand1.0 as usize)?
+            && self.is_pointer_value(ins.operand2.0 as usize)?
+        {
+            let pred = match ins.imm {
+                0 => "eq",
+                1 => "ne",
+                _ => {
+                    return Err(Decline::TypeNotModelled {
+                        what: "an ordering comparison of two pointers",
+                    })
+                }
+            };
+            let a = self
+                .names
+                .get(ins.operand1.0 as usize)
+                .ok_or(crate::emitter_gap!())?;
+            let b = self
+                .names
+                .get(ins.operand2.0 as usize)
+                .ok_or(crate::emitter_gap!())?;
+            let n = format!("%v{idx}");
+            self.body += &format!("  {n} = llvm.icmp \"{pred}\" {a}, {b} : !llvm.ptr\n");
+            self.names[idx] = n;
+            self.etypes[idx] = Some(ElementType::Bool);
+            return Ok(());
+        }
         let e = self.elem_at(ins.operand1.0).ok_or(crate::emitter_gap!())?;
         let mt = mlir_scalar(&e).ok_or(crate::emitter_gap!())?;
         let (op, pred) = cmp_op(ins.imm, &e).ok_or(crate::emitter_gap!())?;
@@ -388,6 +415,19 @@ impl FnEmit<'_> {
             .types
             .get(ins.type_idx.0 as usize)
             .ok_or(crate::emitter_gap!())?;
+        // A pointer cast to a struct's layout (`(*p).field` with `p : *mut S`): the same pointer,
+        // which now knows the struct it points to, so a field access through it can address the
+        // field. No code is written.
+        if self.ctx.aggs.contains_key(&gid) && self.is_pointer_value(ins.operand1.0 as usize)? {
+            self.names[idx] = self
+                .names
+                .get(ins.operand1.0 as usize)
+                .ok_or(crate::emitter_gap!())?
+                .clone();
+            self.ptr_of[idx] = true;
+            self.agg_of[idx] = Some(gid);
+            return Ok(());
+        }
         // A slice `as`: the source is a vector an elementwise op produced, so the cast is
         // `arith.truncf`/`arith.extf` over the lanes. This is the spelling that narrows a
         // widened slice back into half storage, which the checker requires be written.

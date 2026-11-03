@@ -46,8 +46,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/tensor_given_a_new_value_on_one_path.vx",
     // `(&mut c[0][1]).as_mut_ptr()`: "as_ptr() on something that is not a tensor".
     "backend/pass/cast_a_borrow_to_a_raw_pointer.vx",
-    // `(*p).field` through a raw pointer to a struct: an emitter gap in aggregate.rs.
-    "backend/pass/borrow_element_through_pointer.vx",
     // A raw pointer held in a `let` ("a place-bound reference in value position"): the flat
     // path has no pointer values yet.
     "backend/pass/raw_pointers_compare_by_address.vx",
