@@ -17,7 +17,9 @@
 // between the read and the sleep, and no wake is lost.
 //
 // A task of the shared runtime (sched.rs) does not sleep: it parks. Under the lock it goes on
-// the list of fibers of the bucket, and a wake puts each fiber of the list back on the queue.
+// the list of fibers of the bucket, with the address of its word. A wake of a word puts each
+// fiber of that word back on the queue. A fiber of another word of the bucket stays parked, so
+// the queue does not depend on which words share a bucket.
 //
 //===----------------------------------------------------------------------===//
 
@@ -34,8 +36,8 @@ struct Bucket {
 }
 
 struct Waiters {
-    /// The fibers that park on a word of this bucket.
-    fibers: Vec<FiberRef>,
+    /// The fibers that park on a word of this bucket, with the address of the word.
+    fibers: Vec<(FiberRef, usize)>,
     /// The threads that sleep here with no time limit, which the deadlock watcher counts.
     sleepers: i64,
     /// Goes up at each wake of the bucket.
@@ -127,7 +129,7 @@ unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Optio
         return;
     }
     sched::will_park(fiber);
-    waiters.fibers.push(FiberRef(fiber));
+    waiters.fibers.push((FiberRef(fiber), word as usize));
     drop(waiters);
     // A wake of the bucket before the park leaves the fiber `WOKEN`, so the timer can fire now.
     if let Some(deadline) = deadline_ns {
@@ -180,21 +182,52 @@ pub unsafe extern "C" fn vx_wait_while_until(
 /// `word` is an address that `vx_wait_while` may have been called with. It is not read.
 #[no_mangle]
 pub unsafe extern "C" fn vx_wake_all(word: *const i64) {
-    wake(bucket(word));
+    wake(bucket(word), Fibers::Of(word as usize));
 }
 
 /// Wake each thread that waits on any word. A cancel uses it: each wait reads its word again,
 /// and a wait that can be cancelled then sees the cancel.
 pub(crate) fn wake_every_thread() {
     for b in &TABLE {
-        wake(b);
+        wake(b, Fibers::All);
     }
 }
 
-fn wake(b: &Bucket) {
+/// Wakes each thread that sleeps on any word, and no fiber. The thread that runs the tasks of
+/// a seed sleeps on any word, and a fiber that wakes for no reason changes the order of a seed.
+pub(crate) fn wake_every_sleeper() {
+    for b in &TABLE {
+        wake(b, Fibers::None);
+    }
+}
+
+/// The fibers of a bucket that a wake puts back on the queue.
+#[derive(Clone, Copy)]
+enum Fibers {
+    /// The fibers that park on the word at this address.
+    Of(usize),
+    All,
+    None,
+}
+
+/// Takes the fibers that `which` names off the list of the bucket.
+fn take_fibers(waiters: &mut Waiters, which: Fibers) -> Vec<FiberRef> {
+    let (taken, kept) = std::mem::take(&mut waiters.fibers)
+        .into_iter()
+        .partition(|&(_, w)| match which {
+            Fibers::Of(word) => w == word,
+            Fibers::All => true,
+            Fibers::None => false,
+        });
+    waiters.fibers = kept;
+    taken.into_iter().map(|(fiber, _)| fiber).collect()
+}
+
+/// Wakes each thread of the bucket, and the fibers that `which` names.
+fn wake(b: &Bucket, which: Fibers) {
     deadlock::progress();
     let mut waiters = b.lock.lock().unwrap_or_else(|e| e.into_inner());
-    let fibers = std::mem::take(&mut waiters.fibers);
+    let fibers = take_fibers(&mut waiters, which);
     deadlock::sleep_ended(std::mem::take(&mut waiters.sleepers));
     waiters.wakes = waiters.wakes.wrapping_add(1);
     drop(waiters);
@@ -205,10 +238,10 @@ fn wake(b: &Bucket) {
 }
 
 /// One thread that wakes the bucket of a word at a deadline, for a fiber that parks with a time
-/// limit. The wake puts each fiber of the bucket back on the queue. Each caller of a wait loops,
-/// so the other fibers see a spurious wake and park again.
+/// limit. The wake puts each fiber of the word back on the queue. Each caller of a wait loops,
+/// so a fiber that the deadline did not end parks again.
 mod timer {
-    use super::{bucket, vx_clock_ns, wake};
+    use super::{bucket, vx_clock_ns, wake, Fibers};
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
     use std::sync::{Condvar, Mutex, OnceLock};
@@ -273,7 +306,7 @@ mod timer {
             }
             d.pop();
             drop(d);
-            wake(bucket(word as *const i64));
+            wake(bucket(word as *const i64), Fibers::Of(word));
             d = t.deadlines.lock().unwrap_or_else(|e| e.into_inner());
         }
     }
@@ -446,7 +479,7 @@ mod tests {
             std::thread::yield_now();
         }
         word.store(1, Ordering::SeqCst);
-        wake(b);
+        wake(b, Fibers::All);
         // The sleeper needs this lock to come back from its wait, so it is still in it here.
         let waiters = b.lock.lock().unwrap();
         assert_eq!(
@@ -455,5 +488,31 @@ mod tests {
         );
         drop(waiters);
         sleeper.join().unwrap();
+    }
+
+    /// A wake of a word must not take a fiber that parks on another word of the same bucket.
+    /// With a seed, such a wake changes the order of the tasks. The fibers here never run.
+    #[test]
+    fn a_wake_takes_only_the_fibers_that_it_names() {
+        let fiber = || FiberRef(std::ptr::null_mut());
+        let mut waiters = Waiters {
+            fibers: vec![(fiber(), 8), (fiber(), 16), (fiber(), 8)],
+            sleepers: 0,
+            wakes: 0,
+        };
+        assert_eq!(
+            take_fibers(&mut waiters, Fibers::None).len(),
+            0,
+            "a wake of the sleepers took a fiber"
+        );
+        assert_eq!(
+            take_fibers(&mut waiters, Fibers::Of(8)).len(),
+            2,
+            "a wake of a word did not take each fiber of the word"
+        );
+        let words: Vec<usize> = waiters.fibers.iter().map(|&(_, w)| w).collect();
+        assert_eq!(words, [16], "a wake of a word took a fiber of another word");
+        assert_eq!(take_fibers(&mut waiters, Fibers::All).len(), 1);
+        assert!(waiters.fibers.is_empty());
     }
 }

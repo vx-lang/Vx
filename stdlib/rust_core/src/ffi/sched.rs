@@ -221,7 +221,7 @@ impl Scheduler {
         self.has_ready.notify_one();
         // The thread that runs the tasks of a seed can wait on any word.
         if self.random.is_some() {
-            crate::ffi::wait::wake_every_thread();
+            crate::ffi::wait::wake_every_sleeper();
         }
     }
 
