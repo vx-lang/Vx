@@ -27,6 +27,20 @@ extern {
   fn vx_clock_ns() -> i64;
   /// The Rust core behind `wait_while_until`.
   fn vx_wait_while_until(word : *mut i64, value : i64, deadline : i64, or_cancel : i32) -> void;
+  /// The Rust core behind `waiting_for`.
+  fn vx_waiting_for(what : i32) -> void;
+}
+
+/// What a wait is for, for `waiting_for`.
+const WAIT_IN_SEND : i32 = 1;
+const WAIT_IN_RECV : i32 = 2;
+const WAIT_IN_LOCK : i32 = 3;
+const WAIT_IN_SELECT : i32 = 4;
+
+/// Say what the next wait of this task is for, one of the `WAIT_IN_` values. When the program
+/// stops on a deadlock, the report says it for each task.
+fn waiting_for(what : i32) -> void {
+  unsafe { vx_waiting_for(what); }
 }
 
 /// A deadline that never comes.

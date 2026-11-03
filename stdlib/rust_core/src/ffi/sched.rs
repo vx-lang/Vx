@@ -56,6 +56,7 @@ pub(crate) struct TaskLocals {
     pub(crate) line: Vec<u8>,
     pub(crate) to_stderr: bool,
     pub(crate) site: Option<crate::ffi::tasks::Site>,
+    pub(crate) cancels: u32,
 }
 
 impl TaskLocals {
@@ -64,6 +65,7 @@ impl TaskLocals {
         crate::ffi::tasks::swap_marks(&mut self.mark, &mut self.put_aside);
         lines::swap_with_thread(&mut self.line, &mut self.to_stderr);
         crate::ffi::tasks::swap_site(&mut self.site);
+        crate::ffi::tasks::swap_cancels(&mut self.cancels);
     }
 }
 

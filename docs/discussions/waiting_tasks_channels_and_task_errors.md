@@ -437,9 +437,15 @@ of the block (F2). A `join()` of a task that failed leaves the block the same wa
   task in a foreign call (W8), work on a device, a timer, or I/O in progress can wake one. Go
   already lists each goroutine, what it waits for and where, and the line that started it. Vx
   also names the channel or lock, with the line that made it, and prints the cycle of waits.
-  The first step is in `wait.rs`: a watcher thread stops the program with a short report. It does
-  not name the waits yet.
+  Done in `wait.rs`: a watcher thread stops the program. The report lists each wait: `send`,
+  `recv`, `lock`, `select`, or the join of a task, with the `spawn` lines of the task that waits.
+  Two waits on one channel or one lock get the same number. Not done: the line where the program
+  made the channel or the lock, the line of the wait, and the cycle of waits. The first two need
+  the place of a call in the program inside the library, and Vx has no way to get it.
 - A task that gets `Cancelled` from many waits in a row: the line of the wait (F4).
+  Done in part: at the 1000th time that a task sees the cancel of its block, the runtime warns
+  once, with the `spawn` lines of the task. The line of the wait is not known, for the reason
+  above.
 
 ## 5. Admission
 
