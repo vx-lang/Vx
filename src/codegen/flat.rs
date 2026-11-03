@@ -1237,11 +1237,12 @@ pub fn local_devices_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i32, i32)>
     crate::arch::local_device_aliases(env.topologies.values().map(|d| (&d.name, &d.descriptor)))
 }
 
-/// A declared topology's `arch:`, and its `chip:` when it gives one.
+/// A declared topology's `arch:`, its `chip:` when it gives one, and its `offload:`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DeclaredArch {
     pub arch: String,
     pub chip: Option<String>,
+    pub offload: bool,
 }
 
 /// The declared-arch table for `EmitCtx::topo_archs`, from the per-compilation env: one entry per
@@ -1264,6 +1265,7 @@ pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, Declared
                     .chip
                     .as_ref()
                     .map(|c| c.as_ref().to_string()),
+                offload: decl.descriptor.offload,
             };
             Some((id as i64, declared))
         })

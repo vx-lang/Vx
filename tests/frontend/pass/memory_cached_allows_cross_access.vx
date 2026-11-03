@@ -8,18 +8,35 @@
 // A value in a `managed: cached` space may be used implicitly across spaces (hardware
 // coherence keeps it visible), so no explicit transfer is required. The same program without
 // the `managed: cached` declaration is rejected (see fail/illegal_npu_to_gpu.vx): declaring
-// NPU_HBM cached is exactly what makes this legal.
+// NPU_HBM cached is exactly what makes this legal. The GPU is one that this machine file
+// declares with no `offload:`, so it runs on this node. A built-in GPU counts as
+// `offload: true`, and gets no such use
+// (fail/a_built_in_gpu_gets_no_exception_for_cached_memory.vx).
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+Memory CPU_DRAM {}
 
 Memory NPU_HBM {
   managed: cached
 }
 
+Memory LOCAL_HBM {
+  capacity: 80 GiB, bandwidth: 3 TB/s, managed: explicit, scope: device
+}
+
+Topology LocalGpu {
+  arch: nvptx64,
+  memory: Memory::LOCAL_HBM,
+  visible: [Memory::LOCAL_HBM],
+  transfer Memory::CPU_DRAM -> Memory::LOCAL_HBM : 50 GB/s,
+  transfer Memory::NPU_HBM -> Memory::LOCAL_HBM : 100 GB/s
+}
+
 fn main() -> i32 {
   let t : Tensor<f32, []> = 1.0;
   let t_npu = transfer(t, Memory::NPU_HBM);
-  spawn on(Topology::GPU) {
+  spawn on(Topology::LocalGpu) {
     // NPU_HBM is cached, so accessing the NPU-pinned value from GPU is allowed.
     let ok = t_npu.clone();
   }

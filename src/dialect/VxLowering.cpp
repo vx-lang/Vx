@@ -1095,6 +1095,11 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     if (auto topoName = op->getAttrOfType<StringAttr>("topology_name")) {
       launchOp->setAttr("vx.topology_name", topoName);
     }
+    // Whether a declared topology may run on a worker of another node. A
+    // built-in has no mark, and the runtime lets a manifest send it anywhere.
+    if (auto offload = op->getAttrOfType<BoolAttr>("offload")) {
+      launchOp->setAttr("vx.offload", offload);
+    }
 
     if (resultSlot) {
       Value result = rewriter.create<memref::LoadOp>(op.getLoc(), resultSlot);
@@ -4688,6 +4693,14 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
     if (auto nameAttr = op->getAttrOfType<StringAttr>("vx.topology_name")) {
       payload += "toponame=";
       payload += nameAttr.getValue().str();
+      payload.push_back('\0');
+    }
+
+    // `offload: true` or `false` of a declared topology. The runtime sends a
+    // kernel with `offload=0` to no remote worker: the checker let it read
+    // `managed: cached` host memory with no transfer.
+    if (auto offload = op->getAttrOfType<BoolAttr>("vx.offload")) {
+      payload += offload.getValue() ? "offload=1" : "offload=0";
       payload.push_back('\0');
     }
 
