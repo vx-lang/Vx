@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checking the deadlock watcher — Vx</title>
+<meta name="author" content="Aditya Kumar">
+<meta name="description" content="The Vx runtime stops a program when each of its tasks waits and nothing can wake one. A TLA+ model of that watcher found a gap of three lines in the timer, where a busy machine could make the watcher report a deadlock that did not exist.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:title" content="Checking the deadlock watcher">
+<meta property="og:description" content="A TLA+ model of the Vx deadlock watcher found a gap of three lines in the timer, where a busy machine could make the watcher report a deadlock that did not exist.">
+<meta property="og:type" content="article">
+<meta property="article:published_time" content="2026-11-03T18:00:00Z">
+<meta property="og:url" content="https://vxlang.org/blog/checking-the-deadlock-watcher.html">
+<meta property="og:image" content="https://vxlang.org/cards/blog.png">
+<meta property="og:image:alt" content="Checking the deadlock watcher.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://vxlang.org/cards/blog.png">
+
+<link rel="alternate" type="application/atom+xml" title="Vx" href="/blog/feed.xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/">
+    <span class="mark">Vx</span>
+  </a>
+  <nav>
+    <a href="/docs/getting-started.html">Install</a>
+    <a href="/docs/tour.html">Language tour</a>
+    <a href="/docs/">Docs</a>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/vx-lang/Vx">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<article class="post">
+
+<h1>Checking the deadlock watcher</h1>
+<p class="post-meta">Aditya Kumar &middot; 3 November 2026</p>
+
+<blockquote class="tldr"><strong>TL;DR</strong> — When each task of a Vx program waits and
+nothing can wake one, the runtime stops the program and names each wait. A program that it stops
+by mistake is worse than a program that hangs. So we wrote a TLA+ model of the watcher that makes
+this decision, and the TLC model checker tried every order of its steps at a small size. TLC found
+a gap of three lines in the timer thread. In that gap, a busy machine could make the watcher report
+a deadlock that did not exist. A flag now closes the gap. The model was ten times larger with the
+watcher in it, so only the smallest models turn the watcher on. A proof in Lean, a proof
+assistant, also found that <code>select</code>, which waits on several channels at once, could
+pass over a channel forever.</blockquote>
+
+<p class="lede">A deadlock in a concurrent program often looks like a program that is slow. Vx
+tells the two apart. The runtime has a watcher thread. When it is sure that no task can go on, it
+stops the program and prints where each task waits. A mistake in either direction costs the user.
+If the watcher misses a deadlock, the program hangs with no message. If it reports a deadlock that
+is not there, it stops a correct program. This post is about how we checked the watcher, and the
+bug that the check found.</p>
+
+<h2 id="what-the-watcher-prints"><a href="#what-the-watcher-prints">What the watcher prints</a></h2>
+
+<p>Here is a report from a test of the runtime, with its file name made shorter. One task holds a lock and waits for a value on a
+channel. A second task waits for the lock. The main code and a third task send on a full channel
+that nothing reads:</p>
+
+<pre><code>vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
+  the main code waits in `send` at deadlock.vx:49 on channel 1, made at deadlock.vx:77
+  a task waits in `lock` at deadlock.vx:44 on lock 1, made at deadlock.vx:73
+    in the task from the `spawn` at deadlock.vx:80
+  a task waits in `recv` at deadlock.vx:34 on channel 2, made at deadlock.vx:76
+    in the task from the `spawn` at deadlock.vx:83
+  a task waits in `send` at deadlock.vx:66 on channel 1, made at deadlock.vx:77
+    in the task from the `spawn` at deadlock.vx:86</code></pre>
+
+<p>Each line names the wait, the line that made its channel or lock, and the <code>spawn</code>
+that started the task. Two waits on the same channel name the same number.</p>
+
+<h2 id="how-the-watcher-decides"><a href="#how-the-watcher-decides">How the watcher decides</a></h2>
+
+<p>Every wait in the runtime is a wait on a word of memory. A task in Vx is a fiber, a small stack
+that a worker thread runs. When a fiber waits, it parks: it leaves its worker and goes on a list
+of the waiters of that word. A thread that is not a worker sleeps on a condition variable instead. A waker changes
+the word and then wakes the fibers and threads on its list.</p>
+
+<p>Every 100 ms, the watcher looks at four things:</p>
+
+<!-- vx-doctest: skip (Rust code of the runtime, not Vx) -->
+<pre><code>fn stuck() -&gt; bool {
+    let fibers_parked = program_scheduler().is_none_or(|s| s.all_parked());
+    fibers_parked
+        &amp;&amp; WAITING.load(SeqCst) == THREADS.load(SeqCst)
+        &amp;&amp; !timer::pending()
+        &amp;&amp; !io::pending()
+}</code></pre>
+
+<p>Every fiber must be parked. <code>WAITING</code> counts the threads that sleep with no time
+limit, and <code>THREADS</code> counts all threads of the program, so every thread must sleep. No
+deadline of a wait with a time limit may be still to come, and no I/O may be in flight. A counter,
+<code>PROGRESS</code>, goes up at each wake. The watcher reports a deadlock only when two looks in
+a row are stuck and the counter did not move between them.</p>
+
+<p>None of the four reads is atomic with the others. A fiber can park after the watcher counted
+the fibers and before it counted the threads. The watcher is correct only if every such order
+still gives the right answer. Tests try a few orders. A model checker tries all of them.</p>
+
+<h2 id="a-model-of-the-protocol"><a href="#a-model-of-the-protocol">A model of the protocol</a></h2>
+
+<p><code>formal/runtime/WaitWake.tla</code> is a TLA+ model of the wait and wake protocol. Each
+step of the code that another thread can see is a step of the model. Here is the step where
+the timer takes a deadline and gets ready to wake its word:</p>
+
+<pre><code>\* The deadline of a fiber comes, and the timer wakes the word of the fiber.
+Fire(k) ==
+    /\ pc[k] = "set"
+    /\ k \in Timer
+    /\ \E f \in armed :
+         /\ armed' = armed \ {f}
+         /\ expired' = expired \cup {f}
+         /\ firing' = f
+    /\ pc' = [pc EXCEPT ![k] = "wake"]</code></pre>
+
+<p>The model has fibers that park, threads that sleep, and two wakers that share one list. It
+also has a cancel, which ends a <code>tasks</code> block and wakes every task in it. It has a task
+under a callback from foreign code, waits with a time limit, and the timer thread. Last, it has the
+seed mode for tests, where a seed fixes the order of the tasks and the main thread runs every task
+itself. The watcher is three steps, one for each
+separate read in the code: the progress counter, the parked fibers, and the counts of threads and
+deadlines.</p>
+
+<p>TLC checks these claims for every order of the steps:</p>
+
+<ul>
+<li><strong><code>NoFalseDeadlock</code></strong>: the watcher reports only when every waker ended,
+some wait did not end, and no waiting task can still go on.</li>
+<li><strong><code>DeadlockIsReported</code></strong>: the watcher reports each deadlock that stays.</li>
+<li><strong><code>EachWaitEnds</code></strong>: each wait for a word that a waker sets ends.</li>
+<li>Four more: no internal check of the runtime fails, the watcher counts each sleeping thread
+once, each waiter has a note of its wait for the report, and a fiber is on the ready queue at
+most once.</li>
+</ul>
+
+<h2 id="a-check-that-can-fail"><a href="#a-check-that-can-fail">A check that can fail</a></h2>
+
+<p>A claim that holds tells us little if it could not fail. A model can be too weak, or a claim
+can be true for a reason that has nothing to do with the code. So <code>run_tlc.py</code> also
+puts 16 mistakes into the model, one at a time. TLC must report the claim that each mistake breaks,
+and the run fails if it reports another claim or none.</p>
+
+<p>Two of the mistakes are bugs that we fixed in the runtime before the model existed. In the
+first, a thread still counted as waiting after its wake, until it ran again
+(<a href="https://github.com/vx-lang/Vx/pull/2505">#2505</a>). On a busy machine the watcher then
+saw every thread asleep, though one of them could go on. In the second, a task under a callback
+from foreign code waits on its worker's thread and does not park. The scheduler counted it as
+running, so a deadlock that included it was never reported
+(<a href="https://github.com/vx-lang/Vx/pull/2522">#2522</a>). With these bugs put back, TLC reports
+<code>NoFalseDeadlock</code> for the first and <code>DeadlockIsReported</code> for the second.</p>
+
+<h2 id="the-gap-in-the-timer"><a href="#the-gap-in-the-timer">The gap in the timer</a></h2>
+
+<p>The first run of the full model failed. In the model of a task that waits with a time limit,
+TLC reported <code>NoFalseDeadlock</code>. This was the loop of the timer thread:</p>
+
+<!-- vx-doctest: skip (Rust code of the runtime, not Vx) -->
+<pre><code>fn run(t: &amp;'static Timer) {
+    let mut d = t.deadlines.lock().unwrap();
+    loop {
+        // ... wait until the earliest deadline comes ...
+        d.pop();
+        drop(d);
+        wake(bucket(word as *const i64), Fibers::Of(word));
+        d = t.deadlines.lock().unwrap();
+    }
+}</code></pre>
+
+<p>The timer takes the deadline off its heap, lets go of the lock, and then wakes the word. Between
+the <code>pop</code> and the <code>wake</code>, the heap can be empty, so
+<code>timer::pending()</code> is false. The wake did not happen yet, so <code>PROGRESS</code> did
+not move. The task is parked. Each check of <code>stuck()</code> is true.</p>
+
+<p>TLC printed a trace of 21 states. Here are its last steps, in words:</p>
+
+<ol>
+<li>The main thread and both wakers end. Task <code>f2</code> parks on a word that no one sets, with
+a deadline.</li>
+<li>The deadline comes. The timer takes it off the heap, and the heap is now empty. The timer does
+not run its wake yet.</li>
+<li>The watcher looks. Progress moved since its last look, so it does not report. But every
+fiber is parked, every thread of the program ended, and no deadline is pending, so this look is
+stuck.</li>
+<li>The watcher looks again. The timer still did not run. Progress did not move, and the look is
+stuck again. The watcher reports a deadlock.</li>
+</ol>
+
+<p>The next step of the timer would wake <code>f2</code>, and the program would go on. The report
+was false.</p>
+
+<p>On a real machine, this happens only if the timer thread stays off the CPU for about 200 ms
+between two lines. That needs a machine with more ready threads than cores, or a timer thread that the
+operating system stops for some other reason. It is rare. It is also the kind of failure that a
+user cannot reproduce and that a test suite never shows.</p>
+
+<p>The fix
+(<a href="https://github.com/vx-lang/Vx/pull/2615">#2615</a>) keeps a flag next to the heap,
+under the same lock:</p>
+
+<!-- vx-doctest: skip (Rust code of the runtime, not Vx) -->
+<pre><code>fn pending(&amp;self) -&gt; bool {
+    !self.heap.is_empty() || self.firing
+}</code></pre>
+
+<p>The timer sets <code>firing</code> when it takes a deadline off the heap and clears it after the
+wake ends. The model has the same rule, and the mistake
+<code>the_timer_looks_idle_before_its_wake</code> puts the old rule back. A unit test checks
+<code>pending()</code> at each step: with no deadline, with a deadline on the heap, and with a
+deadline that the timer took but did not wake yet.</p>
+
+<h2 id="small-models"><a href="#small-models">Small models</a></h2>
+
+<p>The watcher has its own state: where it is in its three reads, and what it saw at the last look.
+That state multiplies with every other state of the program. With the watcher in it, a model was
+about ten times larger. The nine models took 3,330 seconds on two TLC workers, which is too slow
+for CI. Without the watcher they took about 160 seconds.</p>
+
+<p>So most models turn the watcher off, and they still check the protocol. Five more models turn it
+on, with one fiber and one thread. Each watcher mistake still breaks its claim in these small
+models, and they take 10 to 90 seconds each. The whole run, 14 models and 16 mistakes, took 4
+minutes on 14 workers.</p>
+
+<p>This is the usual bet of a model checker. Most concurrency bugs need only two or three actors to
+show. The timer bug needed one task, one thread and the timer. A bug that needs ten tasks will not
+show in these models.</p>
+
+<h2 id="select-and-lean"><a href="#select-and-lean">Select and Lean</a></h2>
+
+<p>The same work checked <code>select</code>, which waits on several channels at once. The design
+says that it takes turns: if a channel has a value at each of <code>n</code> calls, for
+<code>n</code> channels, one of the calls chooses it. <code>select</code> started its search at the
+count of all channel events, modulo <code>n</code>. A Lean proof showed that this count can starve
+a channel. Take two channels that always have a value. Each call takes one value, which is one
+event. Then a send on channel 0 is a second event. So the count goes up by 2 between two calls, the
+count modulo 2 is always 0, and every call starts at channel 0:</p>
+
+<pre><code>theorem count_starves : ∀ c, pick 2 ((2 * c) % 2) (fun _ =&gt; true) ≠ some 1 := by
+  intro c
+  rw [Nat.mul_mod_right]
+  decide</code></pre>
+
+<p>Now a <code>Selector</code> keeps the index after its last choice and starts its next search
+there (<a href="https://github.com/vx-lang/Vx/pull/2568">#2568</a>). The theorem
+<code>after_last_within_n</code> proves that this rule takes turns for any <code>n</code>.</p>
+
+<h2 id="what-the-model-does-not-check"><a href="#what-the-model-does-not-check">What the model does not check</a></h2>
+
+<p>We write the model by hand from the code. If the code changes and the model does not, TLC
+checks the old code. The model also checks the protocol, not the tests of the protocol. On the
+same day, CI failed on the test that prints the report above. The main code and a task both sent
+on a channel that holds one value. The test expected the main code to send first, and on CI the
+task sent first. The runtime had no bug, and the test checked the outcome of a race. The test now
+makes the task send first.</p>
+
+<h2 id="what-is-left"><a href="#what-is-left">What is left</a></h2>
+
+<ul>
+<li><strong>I/O.</strong> The model has no I/O, so it does not check
+<code>io::pending()</code>.</li>
+<li><strong>Larger models.</strong> A run with two fibers and the watcher takes more than ten
+minutes on two workers. It could run each night instead of on each pull request.</li>
+<li><strong>Other protocols.</strong> The design for nodes that pass messages
+(<a href="https://github.com/vx-lang/Vx/issues/2360">#2360</a>) adds protocols that have no code
+yet. Their models
+come with that code.</li>
+</ul>
+
+<p class="post-foot">The model is <code>formal/runtime/WaitWake.tla</code>, and
+<code>formal/runtime/run_tlc.py</code> runs it with each mistake. The <code>select</code> proofs
+are in <code>formal/memory_model/lean/VxMemoryModel/Select.lean</code>. The changes are
+<a href="https://github.com/vx-lang/Vx/pull/2566">Vx#2566</a>,
+<a href="https://github.com/vx-lang/Vx/pull/2568">Vx#2568</a> and
+<a href="https://github.com/vx-lang/Vx/pull/2615">Vx#2615</a>. Vx is Apache 2.0 with the LLVM
+exception &mdash; <a href="/docs/getting-started.html">install it</a> and try the examples.</p>
+
+</article>
+
+</main>
+
+<footer>
+  <p>Vx is Apache 2.0 with the LLVM exception. <a href="https://github.com/vx-lang/Vx">Source</a>. Questions and discussion: <a href="https://www.reddit.com/r/vxlang">r/vxlang</a>.</p>
+</footer>
+
+<script src="/blog/copy-code.js" defer></script>
+</body>
+</html>
