@@ -1,0 +1,68 @@
+//===- closure_literal_where_a_closure_value_is_expected.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure literal written where a `Closure1` is expected becomes a `Closure1`: a pointer to
+// its captures and a pointer to its code. This test writes one in a struct field, in an
+// assignment to a field, in a `let` with a type, in an assignment to that variable, in a
+// `return`, and as a call argument. Each call through the stored closure must give its own
+// answer.
+//
+// The AST code generator cannot compile these when the closure uses a variable (#2600), so
+// this test runs the default code generator only.
+//
+// REQUIRES: flat-codegen
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}field 11{{$}}
+// CHECK: {{^}}assigned 21{{$}}
+// CHECK: {{^}}typed let 31{{$}}
+// CHECK: {{^}}reassigned 61{{$}}
+// CHECK: {{^}}returned 41{{$}}
+// CHECK: {{^}}argument 51{{$}}
+
+import core::ops;
+
+struct Holder {
+  f : Closure1<i64, i64>,
+}
+
+fn call(c : Closure1<i64, i64>, x : i64) -> i64 {
+  let p = c.func;
+  return p(c.env, x);
+}
+
+// A returned closure can use no variable of its function.
+fn add_forty() -> Closure1<i64, i64> {
+  return | x : i64 | x + 40i64;
+}
+
+fn main() -> i32 {
+  let ten = 10i64;
+  let h = Holder {
+    f : | x : i64 | x + ten
+  };
+  println!("field {}", call(h.f, 1));
+
+  let twenty = 20i64;
+  let mut g = Holder {
+    f : | x : i64 | x
+  };
+  g.f = | x : i64 | x + twenty;
+  println!("assigned {}", call(g.f, 1));
+
+  let thirty = 30i64;
+  let mut c : Closure1<i64, i64> = | x : i64 | x + thirty;
+  println!("typed let {}", call(c, 1));
+  let sixty = 60i64;
+  c = | x : i64 | x + sixty;
+  println!("reassigned {}", call(c, 1));
+
+  println!("returned {}", call(add_forty(), 1));
+
+  let fifty = 50i64;
+  println!("argument {}", call(| x : i64 | x + fifty, 1));
+  return 0;
+}

@@ -519,6 +519,8 @@ struct Lowerer<'r> {
     /// the match's fall-through merge block needs a terminator, so it returns a default (zero) value of
     /// this type — mirroring the AST codegen's default-return merge block (`Option::unwrap`). (#242)
     ret_ty: Option<LoweredTy>,
+    /// The function's declared return type, as written.
+    ret_decl_ty: Type,
     /// The function returns `void`. Its `return f(x);` (a closure body calling a void function)
     /// runs the call and returns nothing.
     ret_void: bool,
@@ -642,6 +644,7 @@ impl<'r> Lowerer<'r> {
             completed_layout_identities: HashMap::new(),
             resolving_layouts: Vec::new(),
             ret_ty: None,
+            ret_decl_ty: Type::Unknown,
             ret_void: false,
             materialized: HashSet::new(),
             mutated: HashSet::new(),
@@ -3507,22 +3510,29 @@ impl<'r> Lowerer<'r> {
     }
 
     /// Find the monomorphized `next` for an iterator type (`VecIter<i32>` -> `VecIter$i32$next$i32`):
-    /// its callee GID and `Option<Element>` return type. Matches a `fn_sig` whose name shares the
-    /// iterator's base and carries a `next` method (the mangler uses `$`). (#242)
+    /// its callee GID and `Option<Element>` return type. The name starts with the whole mangled
+    /// type, so `Take<Map<.., Closure1<i64, i64>>>` and `Take<Map<.., Closure1<i64, i32>>>` find
+    /// their own `next`. Matching on the base name alone picked either one.
     fn find_iterator_next(&self, iter_ty: &Type) -> Lowered<(TypeId, Type)> {
-        let (base, _) =
-            nominal_name_and_args(deref_to_pointee(iter_ty)).ok_or(Decline::TypeNotModelled {
-                what: "an iterator that is not a nominal type",
-            })?;
-        for (name, sig) in &self.registry.fn_sigs {
-            let n = name.as_ref();
-            if n.starts_with(base.as_ref()) && (n.contains("$next$") || n.ends_with("$next")) {
-                return Ok((sig.gid, sig.ret_ty.clone()));
-            }
-        }
-        Err(Decline::TypeNotModelled {
+        let pointee = deref_to_pointee(iter_ty);
+        nominal_name_and_args(pointee).ok_or(Decline::TypeNotModelled {
+            what: "an iterator that is not a nominal type",
+        })?;
+        let method = format!("{}$next", crate::syntax::types::Mangle::mangle(pointee));
+        let instance = format!("{method}$");
+        let mut found =
+            self.registry.fn_sigs.iter().filter(|(name, _)| {
+                name.as_ref() == method || name.as_ref().starts_with(&instance)
+            });
+        let (_, sig) = found.next().ok_or(Decline::TypeNotModelled {
             what: "an iterator type with no next function",
-        })
+        })?;
+        if found.next().is_some() {
+            return Err(Decline::TypeNotModelled {
+                what: "an iterator type with more than one next function",
+            });
+        }
+        Ok((sig.gid, sig.ret_ty.clone()))
     }
 
     /// Lower `spawn on (<topology>) { body }` into a `Spawn`/`SpawnEnd`-delimited region carrying the
@@ -4289,6 +4299,22 @@ impl<'r> Lowerer<'r> {
 
     /// The lowered type of a tensor field, from the struct's declaration: the layout carries
     /// only the element and rank, the extents are in the declared field type.
+    /// The declared type of field `member` of the struct `name`, as written in the declaration.
+    fn declared_struct_field_ty(&self, name: &Symbol, member: &Symbol) -> Option<Type> {
+        let base = Type::Struct(name.clone(), None);
+        let (_, declaration) = self
+            .registry
+            .aggregate_identities()
+            .resolve_base((&base).into())?;
+        self.registry
+            .structs
+            .get(&declaration)?
+            .fields
+            .iter()
+            .find(|(n, _)| n == member)
+            .map(|(_, ty)| ty.clone())
+    }
+
     fn declared_field_ty(&mut self, gid: &TypeId, member: &str) -> Option<LoweredTy> {
         let ty = self
             .registry
@@ -4940,13 +4966,21 @@ impl<'r> Lowerer<'r> {
                 .ok_or(not_in_layout.clone())?;
             // The initializer already carries the field's declared type — the checker infers a literal
             // to the field type and rejects a genuine mismatch (no implicit conversion, #240).
-            let mut v = self.lower_expr(init_expr)?;
+            let field_ty = self.declared_struct_field_ty(&si.name, name);
+            let converted = field_ty
+                .as_ref()
+                .is_some_and(|t| self.converts_closure(init_expr, t));
+            let mut v = match &field_ty {
+                Some(t) => self.lower_expr_for(init_expr, t)?,
+                None => self.lower_expr(init_expr)?,
+            };
             // A by-value nested-aggregate field (`Outer { inner : Inner { .. } }`): the initializer
             // yields the inner construction *slot* (a pointer), but the field must hold the struct
             // *value*. Load it so the `FieldStore` stores the value, not the address (#277) — the same
             // fix `lower_assign` applies to an aggregate-construction RHS. First cut per §16.1 option 1;
             // constructing in place (option 2) is the destination-passing follow-up.
-            if construction_tail(init_expr) && matches!(v.ty, LoweredTy::Aggregate(_)) {
+            if !converted && construction_tail(init_expr) && matches!(v.ty, LoweredTy::Aggregate(_))
+            {
                 v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
             }
             self.emit_effect(Opcode::FieldStore, slot.reg, v.reg, offset);
@@ -5534,6 +5568,42 @@ impl<'r> Lowerer<'r> {
     /// (its GID + return type), lower each argument, mark them with `Arg` instructions in order, then
     /// emit `Call` (callee GID in `type_idx`, arg count in `imm`). Declines an unknown callee (or one
     /// ambiguous across modules) and a void/unmodelled return -- for now only value-returning calls.
+    /// Lower `e` for a place of type `target`. A closure literal is its environment struct
+    /// (`Closure_N`), so where a `ClosureK` is expected it becomes the `{ env, func }` value, as
+    /// it does for a call argument. Any other value lowers unchanged.
+    /// The result is a value, never a construction slot, so a caller must not load it again.
+    fn lower_expr_for(&mut self, e: &Expr, target: &Type) -> Lowered<Val> {
+        if self.converts_closure(e, target) {
+            return self.try_adapt_closure_arg(e);
+        }
+        self.lower_expr(e)
+    }
+
+    /// Whether `lower_expr_for(e, target)` turns a closure literal into a `ClosureK` value.
+    fn converts_closure(&mut self, e: &Expr, target: &Type) -> bool {
+        is_nominal_closure(target)
+            && matches!(
+                self.infer_ast_type(e),
+                Some(Type::Struct(name, _)) if name.as_ref().starts_with("Closure_")
+            )
+    }
+
+    /// Whether the value stored into `place` is a closure literal that becomes a `ClosureK`.
+    fn converts_closure_for(&mut self, place: &Expr, value: &Expr) -> bool {
+        match self.infer_ast_type(place) {
+            Some(target) => self.converts_closure(value, &target),
+            None => false,
+        }
+    }
+
+    /// Lower the value stored into `place`, for the type of that place.
+    fn lower_value_for(&mut self, place: &Expr, value: &Expr) -> Lowered<Val> {
+        match self.infer_ast_type(place) {
+            Some(target) => self.lower_expr_for(value, &target),
+            None => self.lower_expr(value),
+        }
+    }
+
     /// If `arg` is a closure literal environment (`Closure_N`), materialize the nominal `ClosureK`
     /// fat struct `{ env, func }` the stdlib API expects (`.map`'s `f : Closure1<T, NewItem>`): `env`
     /// is the address of the closure's environment aggregate (its captures), `func` a `FuncConst`
@@ -5861,14 +5931,17 @@ impl<'r> Lowerer<'r> {
         for (n, arg) in fc.args.iter().enumerate() {
             // A closure literal passed where a nominal `ClosureK` is expected (`.map(adder)`) is
             // adapted to the `{ env, func }` fat struct; any other argument lowers normally. (#242)
-            let v = match self.try_adapt_closure_arg(arg) {
-                Ok(v) => v,
-                Err(_) => self.lower_expr(arg)?,
+            // The adapted value is already loaded, although the checker wrote the closure as a
+            // struct literal (`Closure_1 { k }`).
+            let (v, adapted) = match self.try_adapt_closure_arg(arg) {
+                Ok(v) => (v, true),
+                Err(_) => (self.lower_expr(arg)?, false),
             };
             // A construction (`Option<i32>::Some(7)`, `Pair { .. }`) lowers to its slot, and the
             // callee takes the aggregate by value: load it off the slot here, the load a nested
             // construction gets in `lower_struct_init`.
-            let v = if construction_tail(arg) && matches!(v.ty, LoweredTy::Aggregate(_)) {
+            let v = if !adapted && construction_tail(arg) && matches!(v.ty, LoweredTy::Aggregate(_))
+            {
                 let ty = v.ty.clone();
                 self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), ty, 0)
             } else {
@@ -6111,7 +6184,7 @@ impl<'r> Lowerer<'r> {
             let place = self.lower_place(lhs)?;
             // The stored scalar already matches the place's element type (the checker types a literal
             // RHS to the element and rejects a genuine mismatch, #240).
-            let value = self.lower_expr(rhs)?;
+            let value = self.lower_value_for(lhs, rhs)?;
             let store = if is_ptr {
                 Opcode::PtrStore
             } else {
@@ -6139,7 +6212,7 @@ impl<'r> Lowerer<'r> {
                 Some(Type::Borrow { ref inner, .. }) if matches!(**inner, Type::Tensor(..))
             ) {
                 let place = self.lower_expr(&d.expr)?;
-                let value = self.lower_expr(rhs)?;
+                let value = self.lower_value_for(lhs, rhs)?;
                 self.emit_effect(Opcode::TensorStore, place.reg, value.reg, 0);
                 return Ok(());
             }
@@ -6148,9 +6221,10 @@ impl<'r> Lowerer<'r> {
         // pointer, so always a `PtrStore`). (#242)
         if let Expr::Dereference(_) = lhs {
             let place = self.lower_place(lhs)?;
-            let mut value = self.lower_expr(rhs)?;
+            let converted = self.converts_closure_for(lhs, rhs);
+            let mut value = self.lower_value_for(lhs, rhs)?;
             // A struct or enum built in place yields its slot; the place holds the value.
-            if construction_tail(rhs) && matches!(value.ty, LoweredTy::Aggregate(_)) {
+            if !converted && construction_tail(rhs) && matches!(value.ty, LoweredTy::Aggregate(_)) {
                 value = self.emit_typed(
                     Opcode::SlotLoad,
                     value.reg,
@@ -6188,9 +6262,10 @@ impl<'r> Lowerer<'r> {
                     what: "a store to a nested nominal field",
                 });
             }
-            let mut v = self.lower_expr(rhs)?;
+            let converted = self.converts_closure_for(lhs, rhs);
+            let mut v = self.lower_value_for(lhs, rhs)?;
             // A struct or enum built in place yields its slot; the field holds the value.
-            if nested && matches!(v.ty, LoweredTy::Aggregate(_)) {
+            if !converted && nested && matches!(v.ty, LoweredTy::Aggregate(_)) {
                 v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
             }
             self.run_value_drops()?;
@@ -6217,11 +6292,13 @@ impl<'r> Lowerer<'r> {
         let name = simple_ident(lhs).ok_or(Decline::Unsupported {
             what: "an assignment to something other than a simple name",
         })?;
-        let mut v = self.lower_expr(rhs)?;
+        let converted = self.converts_closure_for(lhs, rhs);
+        let mut v = self.lower_value_for(lhs, rhs)?;
         // An aggregate *construction* RHS (`ret = Some(val)`, `p = Point { .. }`) yields the
         // construction *slot* (a pointer), but the assignment must copy the struct *value* into the
         // target slot — load it first, else the slot pointer is stored as a struct (#242).
-        if matches!(rhs, Expr::EnumVariant(_) | Expr::StructInit(_))
+        if !converted
+            && matches!(rhs, Expr::EnumVariant(_) | Expr::StructInit(_))
             && matches!(v.ty, LoweredTy::Aggregate(_))
         {
             v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
@@ -6420,9 +6497,14 @@ impl<'r> Lowerer<'r> {
                         return Ok(());
                     }
                 }
+                // A closure literal in a `let` typed `ClosureK` becomes a `{ env, func }` value below.
+                let converted = match l.ty_ann.clone() {
+                    Some(ann) => self.converts_closure(&l.expr, &ann),
+                    None => false,
+                };
                 // A struct literal is constructed *in place* into its own slot; the local is that
                 // slot (binding it directly avoids re-`Alloca`ing and storing the slot handle).
-                if let Expr::StructInit(si) = &l.expr {
+                if let (false, Expr::StructInit(si)) = (converted, &l.expr) {
                     let slot = self.lower_struct_init(si, true)?;
                     self.scope.insert(
                         l.name.clone(),
@@ -6483,10 +6565,16 @@ impl<'r> Lowerer<'r> {
                     );
                     return Ok(());
                 }
-                let v = self.lower_expr(&l.expr)?;
+                let v = match &l.ty_ann {
+                    Some(ann) => self.lower_expr_for(&l.expr, ann)?,
+                    None => self.lower_expr(&l.expr)?,
+                };
                 // A construction reached through a block's tail (`let w = unsafe { .. W { .. } }`)
                 // already sits in a slot: bind the local to it, as the bare form above does.
-                if construction_tail(&l.expr) && matches!(v.ty, LoweredTy::Aggregate(_)) {
+                if !converted
+                    && construction_tail(&l.expr)
+                    && matches!(v.ty, LoweredTy::Aggregate(_))
+                {
                     self.scope.insert(
                         l.name.clone(),
                         Binding::Slot {
@@ -6642,7 +6730,8 @@ impl<'r> Lowerer<'r> {
                     }
                     return Ok(());
                 }
-                let v = self.lower_expr(ret_expr)?;
+                let ret_decl_ty = self.ret_decl_ty.clone();
+                let v = self.lower_expr_for(ret_expr, &ret_decl_ty)?;
                 if self.ret_void {
                     if !self.block_terminated() {
                         self.run_value_drops()?;
@@ -6928,6 +7017,7 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Lowe
         .any(|(_, ty)| matches!(lw.lower_ty_synth(ty), Some(LoweredTy::Aggregate(_))));
     lw.memory = lw.has_control_flow || has_aggregate_param || body_constructs_struct(&func.body);
     lw.ret_ty = lw.lower_ty_synth(&func.return_type);
+    lw.ret_decl_ty = func.return_type.clone();
     lw.ret_void = crate::syntax::is_void_ty(&func.return_type);
     if lw.memory {
         lw.emit_effect(Opcode::BlockStart, Register(0), Register(0), 0); // entry block
@@ -7894,6 +7984,22 @@ fn agg_gid_of_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<TypeId
 /// blocks; mutation flows through the pointer to the pointee, not to the register). (#242)
 fn is_ptr_to_agg(ty: &Type, registry: &ImmutableGlobalRegistry) -> bool {
     matches!(ty, Type::Borrow { .. } | Type::Pointer(..)) && agg_gid_of_ty(ty, registry).is_some()
+}
+
+/// Whether `ty` is a nominal closure type, `Closure0` to `Closure3`, which holds `{ env, func }`.
+fn is_nominal_closure(ty: &Type) -> bool {
+    let base = match ty {
+        Type::GenericInstance(base, _) => base.as_ref(),
+        other => other,
+    };
+    matches!(
+        base,
+        Type::Struct(name, _) if name
+            .as_ref()
+            .strip_prefix("Closure")
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(|c| c.is_ascii_digit())
+    )
 }
 
 /// Pack an `if`'s two branch targets into `CondBr`'s `imm`: `then | (else << 32)`.

@@ -72,9 +72,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // "A store to a nested nominal field": `self.inner = x` puts a struct into a struct's
     // field, which the flat path does not model. The file is about the AST path anyway.
     "backend/pass/assign_field_of_struct_local.vx",
-    // Reading a closure back out of a struct field: the flat path loads only plain numbers
-    // there ("an emitter gap" in memory.rs).
-    "backend/pass/closure_literal_as_closure_value.vx",
     // "A store to a nested nominal field": `out.f = f` puts a closure into a struct's field.
     "backend/pass/closure_using_a_local_stays_in_its_function.vx",
     // "A store to a nested nominal field": `r[0].name = x` puts a struct into a struct's field.
@@ -97,8 +94,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/core_iter_adapters.vx",
     "backend/pass/core_iter_stateful_adapters.vx",
     "backend/pass/core_iter_rev.vx",
-    // Same decline as `core_iter.vx`: `map` answers with a generic adaptor struct.
-    "backend/pass/closure_literal_in_a_for_header.vx",
     // `Vec::iter()` hands out `&T`: the flat path has no layout for `Option<&T>` and cannot
     // read through a `for` variable that is a reference (#889).
     "backend/pass/vec_leaves_iter_names_free.vx",
@@ -110,22 +105,8 @@ const KNOWN_DECLINES: &[&str] = &[
     // "A compound assignment to something other than a simple name" is not modelled.
     "backend/pass/compound_assignment_through_a_reference.vx",
     "backend/pass/core_iter_zip.vx",
-    "backend/pass/core_iter_extend.vx",
     "backend/pass/core_iter_exact_size.vx",
-    "backend/pass/core_iter_compare.vx",
     "backend/pass/core_iter_try_fold.vx",
-    "backend/pass/core_iter_cycle.vx",
-    // A user iterator over a struct, which `main` builds and consumes: "a callee return type".
-    "backend/pass/iterator_over_structs.vx",
-    // Generic functions answering generic instances: "a callee return type", as above.
-    "backend/pass/bounds_with_type_arguments.vx",
-    // A closure passed to a generic function: the flat emitter has no path for the call yet.
-    "warnings/pass/w1001_a_called_local_is_used.vx",
-    // Same decline again: two chains whose `Map`s differ, for a name clash in the AST path.
-    "backend/pass/generic_struct_instances_nested.vx",
-    // A generic struct, `Cap<Count>`, which the flat path declines as "a struct with no GID".
-    // The projections are resolved by the checker, before either code generator runs.
-    "backend/pass/associated_type_projection.vx",
     // `and_then` calls a closure that answers a `Result`, which the flat path declines as "an
     // indirect callee returning a non-scalar". The answers come from the AST path.
     "backend/pass/core_result.vx",
@@ -148,10 +129,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // `total_cmp` takes a reference to a number, which the flat path declines as "a borrow of
     // something that is not a tensor". The answers come from the AST path.
     "backend/pass/core_num_float_total_cmp.vx",
-    // `map_inplace` calls the closure it is given, reading the function and its environment
-    // out of the closure value, which the flat path does not load. The answers come from the
-    // AST path.
-    "backend/pass/std_tensor_map_inplace.vx",
     "frontend/pass/closure_fat_ptr.vx",
     "frontend/pass/control_flow_rigorous.vx",
     // `c = c @ b`: the flat path writes a product into its destination, which here is also an
