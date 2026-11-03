@@ -374,6 +374,8 @@ struct ProvWalk<'a> {
     /// The body stores a value that may hold a reference through a pointer, or gives one to a
     /// call. Memory that a parameter reaches may then hold anything.
     stores: bool,
+    /// Where each value that the body stores where the walk does not follow it may point, joined.
+    stored: Prov,
     /// The body has something the walk does not read, such as a macro that was not expanded.
     unknown: bool,
     /// What the walk knows grew in this pass, so it walks again.
@@ -381,6 +383,8 @@ struct ProvWalk<'a> {
     decls: &'a Decls<'a>,
     /// The summaries known so far for the functions this body calls.
     callee: &'a dyn Fn(&str) -> Option<ReturnProvenance>,
+    /// The parameters of a called function that it says `!keeps` for, as bits.
+    not_kept: &'a dyn Fn(&str) -> u32,
 }
 
 /// The variable at the root of `x`, `x.f` and `x[i]`.
@@ -398,6 +402,7 @@ impl<'a> ProvWalk<'a> {
         func: &Function,
         decls: &'a Decls<'a>,
         callee: &'a dyn Fn(&str) -> Option<ReturnProvenance>,
+        not_kept: &'a dyn Fn(&str) -> u32,
     ) -> Self {
         let mut walk = ProvWalk {
             vars: HashMap::new(),
@@ -405,10 +410,12 @@ impl<'a> ProvWalk<'a> {
             returned: Prov::NONE,
             saw_return: false,
             stores: false,
+            stored: Prov::NONE,
             unknown: false,
             changed: false,
             decls,
             callee,
+            not_kept,
         };
         for (slot, (name, ty)) in func.params.iter().enumerate() {
             let v = walk.param_value(slot, ty);
@@ -477,6 +484,7 @@ impl<'a> ProvWalk<'a> {
 
     /// The body stores `v` where the walk does not follow it.
     fn store_somewhere(&mut self, v: Prov) {
+        self.stored = self.stored.join(v);
         if v != Prov::NONE && !self.stores {
             self.stores = true;
             self.changed = true;
@@ -771,23 +779,28 @@ impl<'a> ProvWalk<'a> {
         if self.decls.is_variant(fc.name.as_ref()) {
             return given;
         }
-        // The function may store what it is given where a parameter reaches, through an argument
-        // that lets it write there.
-        if typed.iter().any(|(v, ty)| {
-            *v != Prov::NONE
-                && ty
-                    .as_ref()
-                    .is_none_or(|t| self.decls.can_store_through(t, 0))
-        }) {
-            self.store_somewhere(given);
-        }
         let name = fc.name.as_ref();
         let name = match name.find('<') {
             Some(i) if name.ends_with('>') => &name[..i],
             _ => name,
         };
         // A variable of the same name, a closure, hides the function.
-        if self.vars.contains_key(name) {
+        let hidden = self.vars.contains_key(name);
+        let not_kept = if hidden { 0 } else { (self.not_kept)(name) };
+        // The function may store what it is given where a parameter reaches, through an argument
+        // that lets it write there. It stores no argument that it says `!keeps` for.
+        if typed.iter().any(|(v, ty)| {
+            *v != Prov::NONE
+                && ty
+                    .as_ref()
+                    .is_none_or(|t| self.decls.can_store_through(t, 0))
+        }) {
+            let kept = (0..args.len())
+                .filter(|&i| !has(not_kept, i))
+                .fold(Prov::NONE, |acc, i| acc.join(args[i]));
+            self.store_somewhere(kept);
+        }
+        if hidden {
             return Prov::ANY;
         }
         let (into, held) = match (self.callee)(name) {
@@ -918,8 +931,7 @@ pub fn compute_return_provenance_with(
     crate::hir::check::borrow_clauses::apply_written_clauses(func, inferred)
 }
 
-/// What the walk finds in the body of `func`, without its written borrow clauses. The checker
-/// proves those clauses against this.
+/// What the walk finds in the body of `func`, without its written borrow clauses.
 pub fn infer_return_provenance(
     func: &Function,
     decls: &Decls,
@@ -928,11 +940,37 @@ pub fn infer_return_provenance(
     if !can_hold_reference(&func.return_type) {
         return ReturnProvenance::NotAReference;
     }
+    walk_body(func, decls, callee, &|_| 0).result
+}
+
+/// What the walk finds in a body: the checker proves the borrow clauses of the function against
+/// it.
+pub struct BodyFacts {
+    pub result: ReturnProvenance,
+    /// The parameters that a value the body stores may point into, or where a reference in them
+    /// points, as bits. A value stored in the result does not count.
+    pub stored: u32,
+    /// The body may store a value that the walk cannot follow.
+    pub stored_anywhere: bool,
+}
+
+/// Walk the body of `func`. A call reads the summary of its callee from `callee`, and the
+/// parameters that the callee says `!keeps` for from `not_kept`.
+pub fn walk_body(
+    func: &Function,
+    decls: &Decls,
+    callee: &dyn Fn(&str) -> Option<ReturnProvenance>,
+    not_kept: &dyn Fn(&str) -> u32,
+) -> BodyFacts {
     // The exact bitsets hold 32 parameters. A function with no body, an `extern`, cannot be read.
     if func.params.len() > 32 || func.body.is_empty() {
-        return ReturnProvenance::AnyParam;
+        return BodyFacts {
+            result: ReturnProvenance::AnyParam,
+            stored: 0,
+            stored_anywhere: true,
+        };
     }
-    let mut walk = ProvWalk::new(func, decls, callee);
+    let mut walk = ProvWalk::new(func, decls, callee, not_kept);
     // Each pass can only add to what the walk knows, so the walk settles. The returned values
     // of the last pass are read with everything it knows.
     for _ in 0..16 {
@@ -948,20 +986,27 @@ pub fn infer_return_provenance(
         }
     }
     let r = walk.returned;
-    if walk.changed || walk.unknown || r.any || !walk.saw_return {
-        return ReturnProvenance::AnyParam;
-    }
-    if r.into | r.held != 0 {
+    let unsettled = walk.changed || walk.unknown;
+    let result = if !can_hold_reference(&func.return_type) {
+        ReturnProvenance::NotAReference
+    } else if unsettled || r.any || !walk.saw_return {
+        ReturnProvenance::AnyParam
+    } else if r.into | r.held != 0 {
         // A return of a local is an `E4005` in the function, and adds nothing here.
-        return ReturnProvenance::FromParams {
+        ReturnProvenance::FromParams {
             into: r.into,
             held: r.held,
-        };
+        }
+    } else if r.local {
+        ReturnProvenance::Local
+    } else {
+        ReturnProvenance::NotAReference
+    };
+    BodyFacts {
+        result,
+        stored: walk.stored.into | walk.stored.held,
+        stored_anywhere: unsettled || walk.stored.any,
     }
-    if r.local {
-        return ReturnProvenance::Local;
-    }
-    ReturnProvenance::NotAReference
 }
 
 /// Summarize each function in `funcs` that has a body. Functions with an empty body

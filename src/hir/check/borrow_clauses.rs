@@ -8,10 +8,12 @@
 //
 // Borrow clauses: `ensures` clauses that state borrow facts, in place of lifetime syntax.
 // `points_into(return, *p)` says that the result can point into the memory under `*p`, and
-// `reaches(return, *p)` also counts the memory that `*p` reaches through references. A clause
-// with `!` narrows what a caller assumes, and the checker proves it against the body. A clause
-// without `!` keeps the default for its parameter. The written clauses about a parameter replace
-// the clauses that the return summary (provenance.rs) infers for it.
+// `reaches(return, *p)` also counts the memory that `*p` reaches through references.
+// `keeps(b)` says that a place outside the call can hold `b` after it, or a reference read
+// through `b`. A clause with `!` narrows what a caller assumes, and the checker proves it against
+// the body. A clause without `!` keeps the default for its parameter. The written clauses about
+// the result replace, for each parameter they name, what the return summary (provenance.rs)
+// infers for it.
 // docs/discussions/borrow_facts_in_contracts.md has the design.
 //
 //===----------------------------------------------------------------------===//
@@ -56,31 +58,37 @@ fn first_borrow_call(e: &Expr) -> Option<Span> {
 enum Relation {
     PointsInto,
     Reaches,
+    Keeps,
 }
 
-/// `points_into(return, *p)` or `reaches(return, *p)`, with or without `!`.
+/// `points_into(return, *p)`, `reaches(return, *p)` or `keeps(p)`, with or without `!`.
 #[derive(Clone, Copy, Debug)]
-struct ResultClause {
+struct Clause {
     relation: Relation,
     /// The position of `p` among the parameters.
     param: usize,
     negated: bool,
 }
 
-impl ResultClause {
+impl Clause {
     fn text(&self, f: &Function) -> String {
-        let name = match self.relation {
-            Relation::PointsInto => "points_into",
-            Relation::Reaches => "reaches",
-        };
         let not = if self.negated { "!" } else { "" };
-        format!("{not}{name}(return, *{})", f.params[self.param].0)
+        let p = &f.params[self.param].0;
+        match self.relation {
+            Relation::PointsInto => format!("{not}points_into(return, *{p})"),
+            Relation::Reaches => format!("{not}reaches(return, *{p})"),
+            Relation::Keeps => format!("{not}keeps({p})"),
+        }
+    }
+
+    fn about_the_result(&self) -> bool {
+        self.relation != Relation::Keeps
     }
 }
 
 /// Read `e`, an `ensures` of `f`. `None` when `e` is not a borrow clause, and a message when it
 /// is one that is not well formed. `shown` names `f` in the message.
-fn read_clause(f: &Function, shown: &str, e: &Expr) -> Option<Result<ResultClause, String>> {
+fn read_clause(f: &Function, shown: &str, e: &Expr) -> Option<Result<Clause, String>> {
     let (negated, call) = match e {
         Expr::UnaryOp(u) if u.op == UnaryOp::Not => (true, &*u.expr),
         e => (false, e),
@@ -91,32 +99,41 @@ fn read_clause(f: &Function, shown: &str, e: &Expr) -> Option<Result<ResultClaus
     let relation = match fc.name.as_ref() {
         "points_into" => Relation::PointsInto,
         "reaches" => Relation::Reaches,
-        "keeps" => return Some(Err("`keeps` is not supported yet".to_string())),
+        "keeps" => Relation::Keeps,
         _ => return None,
     };
     let name = fc.name.as_ref();
-    let usage = format!(
-        "`{name}` takes `return` and a reference parameter after `*`, as in `{name}(return, *p)`"
-    );
-    let [result, place] = fc.args.as_slice() else {
-        return Some(Err(usage));
-    };
-    let Expr::Dereference(place) = place else {
-        return Some(Err(usage));
-    };
-    if !matches!(result, Expr::Identifier(id) if id.name.as_ref() == "return") {
-        return Some(Err(usage));
-    }
-    let p = match &*place.expr {
-        Expr::Identifier(id) => id.name.as_ref(),
-        Expr::MemberAccess(_) => {
-            let path = crate::hir::prover::to_source(&place.expr).unwrap_or_default();
-            return Some(Err(format!(
-                "a clause about a field, such as `*{path}`, is not supported yet: the checker \
-                 keeps one set of borrows for a struct value"
-            )));
+    let p = if relation == Relation::Keeps {
+        let usage = "`keeps` takes one reference parameter, as in `keeps(b)`".to_string();
+        match fc.args.as_slice() {
+            [Expr::Identifier(id)] => id.name.as_ref(),
+            _ => return Some(Err(usage)),
         }
-        _ => return Some(Err(usage)),
+    } else {
+        let usage = format!(
+            "`{name}` takes `return` and a reference parameter after `*`, as in \
+             `{name}(return, *p)`"
+        );
+        let [result, place] = fc.args.as_slice() else {
+            return Some(Err(usage));
+        };
+        let Expr::Dereference(place) = place else {
+            return Some(Err(usage));
+        };
+        if !matches!(result, Expr::Identifier(id) if id.name.as_ref() == "return") {
+            return Some(Err(usage));
+        }
+        match &*place.expr {
+            Expr::Identifier(id) => id.name.as_ref(),
+            Expr::MemberAccess(_) => {
+                let path = crate::hir::prover::to_source(&place.expr).unwrap_or_default();
+                return Some(Err(format!(
+                    "a clause about a field, such as `*{path}`, is not supported yet: the \
+                     checker keeps one set of borrows for a struct value"
+                )));
+            }
+            _ => return Some(Err(usage)),
+        }
     };
     let Some(param) = f.params.iter().position(|(n, _)| n.as_ref() == p) else {
         return Some(Err(format!("`{p}` is not a parameter of `{shown}`")));
@@ -124,7 +141,7 @@ fn read_clause(f: &Function, shown: &str, e: &Expr) -> Option<Result<ResultClaus
     let ty = &f.params[param].1;
     if !matches!(ty, Type::Borrow { .. }) {
         return Some(Err(format!(
-            "`{name}` needs a reference parameter after `*`, but `{p}` is `{ty}`"
+            "`{name}` needs a reference parameter, but `{p}` is `{ty}`"
         )));
     }
     if param >= 32 {
@@ -132,15 +149,15 @@ fn read_clause(f: &Function, shown: &str, e: &Expr) -> Option<Result<ResultClaus
             "a borrow clause can name only the first 32 parameters, and `{p}` is not one of them"
         )));
     }
-    Some(Ok(ResultClause {
+    Some(Ok(Clause {
         relation,
         param,
         negated,
     }))
 }
 
-/// The well formed clauses about the result of `f`.
-fn result_clauses(f: &Function) -> Vec<ResultClause> {
+/// The well formed borrow clauses of `f`.
+fn clauses(f: &Function) -> Vec<Clause> {
     f.ensures
         .iter()
         .filter_map(|e| read_clause(f, "", e)?.ok())
@@ -149,10 +166,15 @@ fn result_clauses(f: &Function) -> Vec<ResultClause> {
 
 /// Two clauses about one parameter that cannot both hold: a clause without `!` and a `!` clause
 /// that rules it out. A result that points into `*p` also reaches it.
-fn contradiction(clauses: &[ResultClause]) -> Option<(ResultClause, ResultClause)> {
+fn contradiction(clauses: &[Clause]) -> Option<(Clause, Clause)> {
     for pos in clauses.iter().filter(|c| !c.negated) {
         for neg in clauses.iter().filter(|c| c.negated && c.param == pos.param) {
-            if pos.relation == Relation::PointsInto || neg.relation == Relation::Reaches {
+            let rules_out = match pos.relation {
+                Relation::Keeps => neg.relation == Relation::Keeps,
+                Relation::PointsInto => neg.about_the_result(),
+                Relation::Reaches => neg.relation == Relation::Reaches,
+            };
+            if rules_out {
                 return Some((*pos, *neg));
             }
         }
@@ -160,17 +182,32 @@ fn contradiction(clauses: &[ResultClause]) -> Option<(ResultClause, ResultClause
     None
 }
 
+/// The parameters that `f` says `!keeps` for, as bits. A call stores no argument for them.
+pub(crate) fn not_kept_params(f: &Function) -> u32 {
+    let clauses = clauses(f);
+    if contradiction(&clauses).is_some() {
+        return 0;
+    }
+    clauses
+        .iter()
+        .filter(|c| c.negated && c.relation == Relation::Keeps)
+        .fold(0, |bits, c| bits | 1 << c.param)
+}
+
 /// The summary of `f` with its written clauses. For each parameter that a written clause names,
 /// the written clauses replace the inferred ones. A clause that is not well formed adds nothing,
 /// and the checker reports it.
 pub(crate) fn apply_written_clauses(f: &Function, inferred: ReturnProvenance) -> ReturnProvenance {
-    let clauses = result_clauses(f);
+    let all_clauses = clauses(f);
+    if contradiction(&all_clauses).is_some() {
+        return inferred;
+    }
+    let clauses: Vec<Clause> = all_clauses
+        .into_iter()
+        .filter(Clause::about_the_result)
+        .collect();
     // The bit sets hold 32 parameters, and a summary with more is `AnyParam`.
-    if clauses.is_empty()
-        || inferred == ReturnProvenance::NotAReference
-        || f.params.len() > 32
-        || contradiction(&clauses).is_some()
-    {
+    if clauses.is_empty() || inferred == ReturnProvenance::NotAReference || f.params.len() > 32 {
         return inferred;
     }
     let all = u32::MAX >> (32 - f.params.len());
@@ -234,18 +271,20 @@ impl<'a> TypeChecker<'a> {
         let Some(&(_, first)) = clauses.first() else {
             return;
         };
-        if !crate::hir::provenance::can_hold_reference(&f.return_type) {
-            self.borrow_clause_error(
-                format!(
-                    "`{shown}` returns `{}`, which holds no reference, so a clause about where its \
-                     result points says nothing",
-                    f.return_type
-                ),
-                first,
-            );
-            return;
+        if let Some(&(_, at)) = clauses.iter().find(|(c, _)| c.about_the_result()) {
+            if !crate::hir::provenance::can_hold_reference(&f.return_type) {
+                self.borrow_clause_error(
+                    format!(
+                        "`{shown}` returns `{}`, which holds no reference, so a clause about \
+                         where its result points says nothing",
+                        f.return_type
+                    ),
+                    at,
+                );
+                return;
+            }
         }
-        let only: Vec<ResultClause> = clauses.iter().map(|(c, _)| *c).collect();
+        let only: Vec<Clause> = clauses.iter().map(|(c, _)| *c).collect();
         if let Some((pos, neg)) = contradiction(&only) {
             let at = clauses
                 .iter()
@@ -264,18 +303,35 @@ impl<'a> TypeChecker<'a> {
         if !clauses.iter().any(|(c, _)| c.negated) {
             return;
         }
-        // Where the body lets the result point. A call reads the summary of its callee, written
-        // clauses included. So a recursive call reads the clauses of `f` itself.
+        // Where the body lets the result point, and what it stores. A call reads the summary and
+        // the `!keeps` clauses of its callee. So a recursive call reads the clauses of `f` itself.
         let body = {
             let instances = &self.mono.return_provenances;
             let functions = &self.env.return_provenances;
             let callee = |name: &str| instances.get(name).or_else(|| functions.get(name)).copied();
-            crate::hir::provenance::infer_return_provenance(f, &self.env.decls, &callee)
+            let not_kept = |name: &str| self.not_kept_by(name);
+            crate::hir::provenance::walk_body(f, &self.env.decls, &callee, &not_kept)
         };
         for (c, at) in clauses.iter().filter(|(c, _)| c.negated) {
             let p = &f.params[c.param].0;
             let bit = 1u32 << c.param;
-            let why = match body {
+            if c.relation == Relation::Keeps {
+                let why = if body.stored & bit != 0 {
+                    format!(
+                        "the body can store `{p}`, or a reference read through it, where it \
+                         outlives the call"
+                    )
+                } else if body.stored_anywhere {
+                    "the checker cannot show it: the body can store a value that the checker \
+                     cannot follow"
+                        .to_string()
+                } else {
+                    continue;
+                };
+                self.borrow_clause_error(format!("`{shown}` says `{}`, but {why}", c.text(f)), *at);
+                continue;
+            }
+            let why = match body.result {
                 // A result with no reference keeps each clause. A result that points into a
                 // local is an E4005 in `f`.
                 ReturnProvenance::NotAReference | ReturnProvenance::Local => continue,
@@ -297,6 +353,21 @@ impl<'a> TypeChecker<'a> {
             };
             self.borrow_clause_error(format!("`{shown}` says `{}`, but {why}", c.text(f)), *at);
         }
+    }
+
+    /// The parameters that the function `name` says `!keeps` for, as bits. A call stores no
+    /// argument for them.
+    pub(crate) fn not_kept_by(&self, name: &str) -> u32 {
+        let name = match name.find('<') {
+            Some(i) if name.ends_with('>') => &name[..i],
+            _ => name,
+        };
+        self.mono
+            .not_kept
+            .get(name)
+            .or_else(|| self.env.not_kept.get(name))
+            .copied()
+            .unwrap_or(0)
     }
 
     fn borrow_clause_error(&mut self, message: String, at: Span) {
