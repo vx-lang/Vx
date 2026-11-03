@@ -1,0 +1,57 @@
+//===- select_takes_turns_when_other_channels_are_busy.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Two channels always have a value. Between two calls of `select`, the program sends on a third
+// channel. `select` still takes turns between the two channels: each search starts after the
+// channel of the last value.
+//
+// REQUIRES: flat-codegen
+// Only because the older code generator cannot lower `Result<Selected<i64>, RecvError>`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK:      {{^}}0 1 0 1 0 1{{$}}
+
+import std::sync::channel;
+import std::vec;
+
+fn fill(tx : &Sender<i64>) -> void {
+  let first : i64 = 0;
+  for i in first..3 {
+    match tx.send(i) {
+      Result<void, SendError<i64>>::Ok() => {}
+      Result<void, SendError<i64>>::Err(_e) => {}
+    }
+  }
+}
+
+fn main() -> i32 {
+  let (tx0, rx0) = channel<i64>(3);
+  let (tx1, rx1) = channel<i64>(3);
+  let (other, _other_rx) = channel<i64>(8);
+  fill(&tx0);
+  fill(&tx1);
+  let mut rs = Vec<Receiver<i64>>::new();
+  rs.push(rx0);
+  rs.push(rx1);
+  let mut sel = Selector<i64>::new(rs);
+  let mut order : Tensor<i32, [6]> = [9, 9, 9, 9, 9, 9];
+  for k in 0..6 {
+    match sel.select() {
+      Result<Selected<i64>, RecvError>::Ok(s) => {
+        order[k] = s.index;
+      }
+      Result<Selected<i64>, RecvError>::Err(_e) => {}
+    }
+    // One more event on another channel between two calls.
+    match other.send(1) {
+      Result<void, SendError<i64>>::Ok() => {}
+      Result<void, SendError<i64>>::Err(_e) => {}
+    }
+  }
+  println!("{} {} {} {} {} {}", order[0], order[1], order[2], order[3], order[4], order[5]);
+  return 0;
+}

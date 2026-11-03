@@ -182,12 +182,14 @@ ends. In the example, a task whose receiver is gone fails, and so does the block
 right result: no code reads the values.
 
 **M3. `select`.** Decision 8 chose a library function, not the block expression below (#2384):
-`select(rs : &Vec<Receiver<T>>)` gives the first value from any channel in the list, with the index
-of its channel, or `Closed` when each channel is closed and empty. It waits on `recv` only, and the
-channels have one element type. A program that waits on channels of different types sends an enum
-of its own. A `select` sleeps on one word of the runtime, which each event on any channel changes.
-The rest of this section is the design of the block expression, which can still come later for
-`send` and `sleep` arms.
+`Selector::new(rs : Vec<Receiver<T>>)` makes a selector, and its `select()` gives the first value
+from any channel in the list, with the index of its channel, or `Closed` when each channel is closed
+and empty. The selector keeps the index of its last choice, and the next search starts after it
+(round robin). So a channel with a value gives it within `n` calls (#2548). It waits on `recv` only,
+and the channels have one element type. A program that waits on channels of different types sends
+an enum of its own. A `select` sleeps on one word of the runtime, which each event on any channel
+changes. The rest of this section is the design of the block expression, which can still come later
+for `send` and `sleep` arms.
 
 The block expression waits on several operations, and runs the arm of the first one that can
 continue. It is a block expression, as `tasks` is, not a library type.
