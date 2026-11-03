@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 // A closure literal written where a `Closure1` is expected becomes a `Closure1`: a pointer to
-// its captures and a pointer to its code. This test writes one in a struct field, in an
-// assignment to a field, in a `let` with a type, in an assignment to that variable, in a
+// its captures and a pointer to its code. This test writes one in a struct field, in a field
+// of a generic struct, in an assignment to a field, in a `let` with a type, in an assignment to that variable, in a
 // `return`, and as a call argument. Each call through the stored closure must give its own
 // answer.
 //
@@ -17,6 +17,7 @@
 // REQUIRES: flat-codegen
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}field 11{{$}}
+// CHECK: {{^}}generic field 16{{$}}
 // CHECK: {{^}}assigned 21{{$}}
 // CHECK: {{^}}typed let 31{{$}}
 // CHECK: {{^}}reassigned 61{{$}}
@@ -27,6 +28,10 @@ import core::ops;
 
 struct Holder {
   f : Closure1<i64, i64>,
+}
+
+struct Generic<T> {
+  f : Closure1<T, T>,
 }
 
 fn call(c : Closure1<i64, i64>, x : i64) -> i64 {
@@ -45,6 +50,12 @@ fn main() -> i32 {
     f : | x : i64 | x + ten
   };
   println!("field {}", call(h.f, 1));
+
+  let fifteen = 15i64;
+  let gen = Generic<i64> {
+    f : | x : i64 | x + fifteen
+  };
+  println!("generic field {}", call(gen.f, 1));
 
   let twenty = 20i64;
   let mut g = Holder {

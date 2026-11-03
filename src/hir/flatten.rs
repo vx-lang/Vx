@@ -4304,8 +4304,10 @@ impl<'r> Lowerer<'r> {
     /// The lowered type of a tensor field, from the struct's declaration: the layout carries
     /// only the element and rank, the extents are in the declared field type.
     /// The declared type of field `member` of the struct `name`, as written in the declaration.
+    /// A generic instance's name (`Holder<i32>`) names the declaration by its base.
     fn declared_struct_field_ty(&self, name: &Symbol, member: &Symbol) -> Option<Type> {
-        let base = Type::Struct(name.clone(), None);
+        let (base_name, _) = parse_struct_instance(name.as_ref());
+        let base = Type::Struct(base_name.into(), None);
         let (_, declaration) = self
             .registry
             .aggregate_identities()
@@ -6272,7 +6274,14 @@ impl<'r> Lowerer<'r> {
             let offset = field.offset as u64;
             let nested =
                 matches!(field.ty, FieldTy::Nominal(n) if !self.registry.is_payload_free_enum(n));
-            if nested && !construction_tail(rhs) {
+            // A local or a call gives the struct as a value, and a construction gives its slot,
+            // which is loaded below. Other shapes, such as an `if` used as a value, may give a
+            // slot too, so they decline.
+            let gives_value = matches!(
+                rhs,
+                Expr::Identifier(_) | Expr::FunctionCall(_) | Expr::MethodCall(_)
+            );
+            if nested && !construction_tail(rhs) && !gives_value {
                 return Err(Decline::TypeNotModelled {
                     what: "a store to a nested nominal field",
                 });
@@ -6280,7 +6289,11 @@ impl<'r> Lowerer<'r> {
             let converted = self.converts_closure_for(lhs, rhs);
             let mut v = self.lower_value_for(lhs, rhs)?;
             // A struct or enum built in place yields its slot; the field holds the value.
-            if !converted && nested && matches!(v.ty, LoweredTy::Aggregate(_)) {
+            if !converted
+                && nested
+                && construction_tail(rhs)
+                && matches!(v.ty, LoweredTy::Aggregate(_))
+            {
                 v = self.emit_typed(Opcode::SlotLoad, v.reg, Register(0), v.ty.clone(), 0);
             }
             self.run_value_drops()?;
