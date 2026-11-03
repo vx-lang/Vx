@@ -174,8 +174,8 @@ fn process_test_file(file_path: &Path, vxc_bin: &Path) -> Result<(), String> {
     let display = file_path.display().to_string();
     println!("Updating {}...", display);
 
-    let original_content = fs::read_to_string(file_path)
-        .map_err(|e| format!("Failed to read {}: {}", display, e))?;
+    let original_content =
+        fs::read_to_string(file_path).map_err(|e| format!("Failed to read {}: {}", display, e))?;
 
     let (runs, prefixes) = parse_run_lines(&original_content, &display);
     if runs.is_empty() {
