@@ -43,6 +43,21 @@
 
   <ul class="posts">
     <li>
+      <a href="/blog/checking-the-deadlock-watcher.html">Checking the deadlock watcher</a>
+      <time datetime="2026-11-03">3 November 2026</time>
+      <p>The Vx runtime stops a program when each task waits and nothing can wake one. A TLA+ model
+      of that watcher found a gap of three lines in the timer, where a busy machine could make the
+      watcher report a deadlock that did not exist.</p>
+    </li>
+    <li>
+      <a href="/blog/two-tensors-one-stack-slot.html">Stack coloring enabled by lifetime markers</a>
+      <time datetime="2026-11-02">2 November 2026</time>
+      <p>LLVM gives two local arrays one stack slot when lifetime markers show that they are not in
+      use at the same time. Clang and rustc end each lifetime at the end of a scope. Vx ends it after
+      the last use of a tensor, so the same function uses 4 KB of stack in Vx and 8 KB in C++ and
+      Rust.</p>
+    </li>
+    <li>
       <a href="/blog/design-visibility-builds-and-versions-together.html">Design visibility, builds and versions together</a>
       <time datetime="2026-10-27">27 October 2026</time>
       <p>Visibility rules, the build system and the package manager all depend on the public

@@ -1,0 +1,101 @@
+//===- borrow_clause_that_is_written_wrong.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A borrow clause is an `ensures` of its own, in the form `points_into(return, *p)`,
+// `reaches(return, *p)` or `keeps(p)`, with or without `!`, where `p` is a reference parameter.
+
+struct Cursor {
+  data : &i64,
+  pos : i32,
+}
+
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:10: a borrow clause says what a call does, so it belongs in `ensures`, not in `requires`
+fn in_requires(a : &i64) -> &i64
+requires !points_into(return, *a)
+{
+  return a;
+}
+
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:10: write each borrow clause as an `ensures` of its own, as in `ensures !reaches(return, *p)`
+fn inside_another_clause(a : &i64, n : i64) -> &i64
+ensures !points_into(return, *a) && n > 0
+{
+  return a;
+}
+
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `points_into` takes `return` and a reference parameter after `*`, as in `points_into(return, *p)`
+fn not_about_the_result(a : &i64, b : &i64) -> &i64
+ensures !points_into(a, *b)
+{
+  return a;
+}
+
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `z` is not a parameter of `no_such_parameter`
+fn no_such_parameter(a : &i64) -> &i64
+ensures !reaches(return, *z)
+{
+  return a;
+}
+
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `reaches` needs a reference parameter, but `n` is `i64`
+fn not_a_reference(a : &i64, n : i64) -> &i64
+ensures !reaches(return, *n)
+{
+  return a;
+}
+
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: a clause about a field, such as `*c.data`, is not supported yet: the checker keeps one set of borrows for a struct value
+fn about_a_field(c : &Cursor) -> &i64
+ensures !points_into(return, *c.data)
+{
+  return c.data;
+}
+
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `keeps` takes one reference parameter, as in `keeps(b)`
+fn keeps_two(a : &i64, b : &i64) -> i64
+ensures !keeps(a, b)
+{
+  return *a + *b;
+}
+
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+3]]:9: `keeps(a)` and `!keeps(a)` contradict each other
+fn keeps_and_not(a : &i64) -> i64
+ensures keeps(a)
+ensures !keeps(a)
+{
+  return *a;
+}
+
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+2]]:9: `no_reference` returns `i64`, which holds no reference, so a clause about where its result points says nothing
+fn no_reference(a : &i64) -> i64
+ensures !points_into(return, *a)
+{
+  return *a;
+}
+
+// CHECK: Error[E4016] at {{.*}}.vx:[[@LINE+3]]:9: `reaches(return, *a)` and `!reaches(return, *a)` contradict each other
+fn contradicts(a : &i64) -> &i64
+ensures reaches(return, *a)
+ensures !reaches(return, *a)
+{
+  return a;
+}
+
+fn main() -> i32 {
+  let x = 1i64;
+  let c = Cursor {
+    data : &x, pos : 0
+  };
+  let total = *in_requires(&x) + *inside_another_clause(&x, 1i64) + *not_about_the_result(&x, &x)
+  + *no_such_parameter(&x) + *not_a_reference(&x, 1i64) + *about_a_field(&c)
+  + keeps_two(&x, &x) + keeps_and_not(&x) + no_reference(&x) + *contradicts(&x);
+  return total as i32;
+}
+
+// CHECK: 10 error(s) emitted

@@ -192,6 +192,65 @@ fn main() -> i32 {
 This is the same idea as `requires`, moved into the type: rather than every function re-stating the
 condition, one function establishes it and the type carries it onwards.
 
+## Borrow clauses
+
+Vx has no lifetime syntax. When a function returns a reference, the caller must know which
+arguments the result keeps borrowed. The compiler finds this in the body of the function. It cannot
+follow a method call there, so after one it assumes that the result can point into each argument.
+
+A borrow clause states the fact in the signature:
+
+```rust
+import std::vec;
+
+fn find(v : &Vec<i64>, key : &i64) -> &i64
+    ensures !reaches(return, *key)
+{
+    for i in 0..v.len() {
+        if *v.get_ref(i) == *key {
+            return v.get_ref(i);
+        }
+    }
+    return v.get_ref(0);
+}
+
+fn main() -> i32 {
+    let mut v = Vec<i64>::new();
+    v.push(3i64);
+    let mut k = 3i64;
+    let r = find(&v, &k);
+    k = 7i64;
+    println!("{} {}", *r, k);
+    return 0;
+}
+```
+
+Without the clause, `k = 7i64` is an error, because `r` keeps `k` borrowed.
+
+- `points_into(return, *p)`: the result can point into the memory under `*p`. That is `*p` itself,
+  and the memory behind its `&mut` fields and raw pointer fields, such as the buffer of a `Vec`.
+- `reaches(return, *p)`: the result can also point where a reference in `*p` points.
+- `keeps(p)`: after the call, a place outside the call can hold `p`, or a reference read through
+  `p`. Without a clause, the compiler assumes that a call keeps each reference that it gets in each
+  `&mut` that it gets, unless it finds in the body that the call stores the reference nowhere. So
+  `ensures !keeps(x)` lets a caller pass a reference to a local together with a `&mut` to memory
+  that outlives the local, also where the compiler cannot follow the body.
+
+`p` is a reference parameter. A clause with `!` says that the relation does not hold, so the caller
+does not keep that borrow. The compiler checks each `!` clause against the body, and reports E4016
+when the body does not keep it. A clause without `!` keeps the default for its parameter, even
+where the compiler could find less in the body. A library can use it to keep the freedom to change
+the body.
+
+Write each borrow clause as an `ensures` of its own. The prover does not read borrow clauses. A
+trait method can have `ensures` clauses too, written after its signature. Each impl of the method
+gets them, also when the impl names a parameter differently, and the compiler checks them against
+each body.
+
+`vxc --print-borrow-clauses file.vx` prints each `!` clause that the compiler can prove for each
+function of the file, such as `find: ensures !reaches(return, *key)`. Copy a clause into the
+signature to make it part of the contract.
+
 ## Diagnostics
 
 Contract failures report under their own codes. The full list is in the

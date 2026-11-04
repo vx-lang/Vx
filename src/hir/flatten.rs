@@ -496,6 +496,9 @@ struct Lowerer<'r> {
     /// Locals bound to a tensor the compiler allocated, as against a view over memory it does
     /// not control. Only these can be filled in place by `c = a @ b` (Vx#391).
     owned_tensors: std::collections::HashSet<Symbol>,
+    /// The slots whose lifetime `start_lifetime` started. Only these get an end: a task writes
+    /// into the slot of its `let` while the code goes on, so that slot gets neither.
+    started_slots: std::collections::HashSet<u32>,
     /// Locals whose element pointer the function takes: a view through it can share their memory.
     pointer_taken: std::collections::HashSet<Symbol>,
     /// Generated struct and enum layouts, transferred to the worker without discarding metadata.
@@ -548,9 +551,11 @@ struct Lowerer<'r> {
     /// `lower_for` takes it and tags its induction-variable init and latch increment
     /// (`IMM_PARALLEL_INIT`/`IMM_PARALLEL_STEP`) so the device clone can grid-stride the loop (#251).
     stride_next_for: bool,
-    /// How many `spawn` regions enclose the code being lowered. Inside one, `panic` does not print:
-    /// the region may run on a device.
+    /// How many `spawn` regions enclose the code being lowered.
     spawn_depth: u32,
+    /// How many of those regions are not tasks or `tasks` blocks. Inside one, `panic` does not
+    /// print: the region may run on a device.
+    device_depth: u32,
     /// The `AffineFor` instructions of the open affine loops, outermost first.
     affine_open: Vec<usize>,
     /// The two-level plan `parallel_two_level` proved for the region being lowered, when it proved
@@ -565,6 +570,16 @@ struct Lowerer<'r> {
     /// codegen can attach `alias_scopes`/`noalias_scopes` — carrying the borrow checker's disjointness
     /// of simultaneously live `&mut o.field` borrows into the IR. (#275, §5.4)
     place_field_stores: Vec<(usize, Symbol, Vec<Symbol>)>,
+    /// The `requires !overlaps(p, q, n)` clauses of an `unsafe fn` whose `p`, `q` and `n` the body
+    /// never changes or binds again.
+    overlap_clauses: Vec<(Symbol, Symbol, Symbol)>,
+    /// The `for i in 0..n` loops around the statement being lowered, as `(i, n)`, where `n` is the
+    /// length of an `overlap_clauses` entry. An access `p[i]` in one is in the first `n` elements.
+    range_loops: Vec<(Symbol, Symbol)>,
+    /// Each pointer access in the first `n` elements of an `overlap_clauses` entry: its stream
+    /// position, the clause, and whether it goes through the clause's second pointer. Codegen puts
+    /// the two pointers' accesses in two alias scopes that do not alias each other.
+    overlap_accesses: Vec<(usize, usize, bool)>,
     /// Drops marked `after_value` in the block being lowered, waiting for the statement they
     /// precede. Each holds the register the name had at the drop, which an assignment may rebind.
     queued_drops: Vec<PendingDrop>,
@@ -595,6 +610,8 @@ enum PendingDrop {
         stmt: Box<Statement>,
         calls_drop: bool,
     },
+    /// The end of the lifetime of a struct's or enum's stack slot.
+    LifetimeEnd { slot: Register },
 }
 
 impl<'r> Lowerer<'r> {
@@ -616,6 +633,7 @@ impl<'r> Lowerer<'r> {
             ast_types: HashMap::new(),
             block_frames: Vec::new(),
             owned_tensors: std::collections::HashSet::new(),
+            started_slots: std::collections::HashSet::new(),
             pointer_taken: std::collections::HashSet::new(),
             agg_layouts: Vec::new(),
             agg_layout_indices: HashMap::new(),
@@ -631,8 +649,12 @@ impl<'r> Lowerer<'r> {
             place_bindings: HashSet::new(),
             pending_place_write: None,
             place_field_stores: Vec::new(),
+            overlap_clauses: Vec::new(),
+            range_loops: Vec::new(),
+            overlap_accesses: Vec::new(),
             stride_next_for: false,
             spawn_depth: 0,
+            device_depth: 0,
             affine_open: Vec::new(),
             stride_plan: None,
             across: AcrossState::default(),
@@ -699,6 +721,15 @@ impl<'r> Lowerer<'r> {
             }
         };
         self.emit_typed(Opcode::Alloca, Register(0), Register(0), ty, imm)
+    }
+
+    /// The slot of a local struct or enum starts its lifetime, before the first store into it.
+    /// The checker writes where it ends (`DropStmt::ends_lifetime`).
+    fn start_lifetime(&mut self, slot: &Val) {
+        if matches!(slot.ty, LoweredTy::Aggregate(_)) {
+            self.emit_effect(Opcode::LifetimeStart, slot.reg, Register(0), 0);
+            self.started_slots.insert(slot.reg.0);
+        }
     }
 
     /// Emit an *effect* instruction (no result value): `type_idx` is the [`NO_TYPE`] sentinel.
@@ -1070,7 +1101,36 @@ impl<'r> Lowerer<'r> {
 
     /// `Statement::Drop`: free the owner now, or once the next statement has its value.
     fn lower_drop(&mut self, d: &crate::syntax::DropStmt) -> Lowered<()> {
-        let drop = if let Some(stmt) = d.call_statement() {
+        let drop = if d.ends_lifetime {
+            match self.scope.get(&d.name) {
+                Some(Binding::Slot {
+                    reg,
+                    ty: LoweredTy::Aggregate(_),
+                }) if self.started_slots.contains(&reg.0) => {
+                    PendingDrop::LifetimeEnd { slot: *reg }
+                }
+                // With no start, the slot lives for the whole call.
+                Some(Binding::Slot {
+                    ty: LoweredTy::Aggregate(_),
+                    ..
+                }) => return Ok(()),
+                // A payload-free enum is a number: in a register, or in a number's slot, which
+                // gets no lifetime markers.
+                Some(Binding::Reg(Val {
+                    ty: LoweredTy::Scalar(_),
+                    ..
+                }))
+                | Some(Binding::Slot {
+                    ty: LoweredTy::Scalar(_),
+                    ..
+                }) => return Ok(()),
+                _ => {
+                    return Err(Decline::Unsupported {
+                        what: "the end of the lifetime of a struct not held in a slot",
+                    })
+                }
+            }
+        } else if let Some(stmt) = d.call_statement() {
             PendingDrop::Call {
                 stmt: Box::new(stmt),
                 calls_drop: d.call.is_some(),
@@ -1113,6 +1173,10 @@ impl<'r> Lowerer<'r> {
     fn emit_drop(&mut self, d: PendingDrop) -> Lowered<()> {
         let (reg, flag, field) = match d {
             PendingDrop::Tensor { reg, flag, field } => (reg, flag, field),
+            PendingDrop::LifetimeEnd { slot } => {
+                self.emit_effect(Opcode::LifetimeEnd, slot, Register(0), 0);
+                return Ok(());
+            }
             // A `Drop` impl runs with cancellation off (F6), so a `send` or a wait in it can
             // finish.
             PendingDrop::Call { stmt, calls_drop } => {
@@ -1215,7 +1279,8 @@ impl<'r> Lowerer<'r> {
             .push(before);
     }
 
-    fn bind_local(&mut self, name: Symbol, v: Val) {
+    /// `starts_lifetime`: a struct's slot starts its lifetime here, for a `let` the checker ends.
+    fn bind_local(&mut self, name: Symbol, v: Val, starts_lifetime: bool) {
         if matches!(v.ty, LoweredTy::Tensor { .. }) {
             self.tensor_depth.insert(v.reg.0, self.block_frames.len());
         }
@@ -1263,6 +1328,9 @@ impl<'r> Lowerer<'r> {
             } else {
                 self.emit_alloca(v.ty.clone())
             };
+            if starts_lifetime {
+                self.start_lifetime(&slot);
+            }
             self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
             self.scope.insert(
                 name,
@@ -1567,6 +1635,10 @@ impl<'r> Lowerer<'r> {
                                 what: "an index that is not a scalar",
                             }); // index must be a scalar
                         }
+                        if let Some((clause, second)) = self.overlap_access(ix) {
+                            self.overlap_accesses
+                                .push((self.code.len(), clause, second));
+                        }
                         Ok(self.emit_typed(Opcode::PtrIndex, base.reg, index.reg, elem, 0))
                     }
                     _ => Err(Decline::TypeNotModelled {
@@ -1612,6 +1684,11 @@ impl<'r> Lowerer<'r> {
                 Ok(self.emit_typed(Opcode::Transfer, src.reg, Register(0), result_ty, imm))
             }
             // `Tensor<T>([..])` allocates a buffer. Any other name is an ordinary function call.
+            Expr::FunctionCall(fc) if fc.name.as_ref() == crate::syntax::TASK_JOIN => {
+                let v = self.lower_expr(&fc.args[0])?;
+                self.emit_effect(Opcode::TaskJoin, v.reg, Register(0), 0);
+                Ok(v)
+            }
             Expr::FunctionCall(fc) => {
                 if is_tensor_alloc_call(fc) {
                     return self.lower_tensor_alloc(fc).ok_or(Decline::TypeNotModelled {
@@ -1722,7 +1799,7 @@ impl<'r> Lowerer<'r> {
             // A struct literal in value position (e.g. `return P { .. }`, #215): construct it in a slot
             // (the `let x = P { .. }` form is handled directly in `lower_stmt`). The `Val` is the slot,
             // which a `Ret` loads + returns by value.
-            Expr::StructInit(si) => self.lower_struct_init(si),
+            Expr::StructInit(si) => self.lower_struct_init(si, false),
             // A `comptime { .. }` block: the AST codegen lowers it *transparently* (its `sizeof<T>()`
             // folds to a constant and its `assert`s are runtime no-ops), so at runtime a compile-time
             // block produces no observable effect. Mirror that — lower the inner statements, then the
@@ -1770,11 +1847,14 @@ impl<'r> Lowerer<'r> {
                     "sizeof<{}>() reached lowering with its type parameter unbound",
                     s.target_ty
                 );
+                // A generic instance (`Pair<i64>`) has its own layout, so it is resolved
+                // here, not through its base struct.
                 let size = sizeof_bytes(&s.target_ty)
-                    .or_else(|| {
-                        agg_gid_of_ty(&s.target_ty, self.registry)
-                            .and_then(|g| self.layout_of(&g))
-                            .map(|d| d.size_bytes as u64)
+                    .or_else(|| match self.lower_ty_synth(&s.target_ty) {
+                        Some(LoweredTy::Aggregate(g)) => {
+                            self.layout_of(&g).map(|d| d.size_bytes as u64)
+                        }
+                        _ => None,
                     })
                     .unwrap_or(8);
                 Ok(self.emit_value(
@@ -1805,7 +1885,7 @@ impl<'r> Lowerer<'r> {
                         ));
                     }
                 }
-                self.lower_enum_construct(ev)
+                self.lower_enum_construct(ev, false)
             }
             // `&<expr>`: a borrow. A tensor is a memref — already a reference value — so borrowing it
             // is transparent: yield the tensor itself, matching the AST codegen (`BorrowExpr` returns
@@ -2072,10 +2152,13 @@ impl<'r> Lowerer<'r> {
             }
             Expr::Topology(_) => Some(LoweredTy::Scalar(ElementType::I32)),
             Expr::AsCast(c) => Some(LoweredTy::Scalar(scalar_of(&c.target_ty)?)),
-            Expr::FunctionCall(fc) => {
-                let sig = self.registry.fn_sigs.get(&fc.name)?;
-                lowered_ty(&sig.ret_ty, self.registry)
-            }
+            Expr::FunctionCall(fc) => match crate::syntax::task_join_handle(e) {
+                Some(h) => self.infer_expr_ty(h),
+                None => {
+                    let sig = self.registry.fn_sigs.get(&fc.name)?;
+                    lowered_ty(&sig.ret_ty, self.registry)
+                }
+            },
             Expr::Match(m) => m.arms.iter().find_map(|arm| {
                 self.infer_block_ty(&arm.body)
                     .or_else(|| self.infer_payload_binding_ty(m, arm))
@@ -2246,6 +2329,9 @@ impl<'r> Lowerer<'r> {
             // A call's type is its callee's return type (`v.iter()` -> `Vec$iter`'s `VecIter<i32>`),
             // for typing a `for x in v.iter()` iterable.
             // A named function's return type, else a function-typed local's (`let f = probe;`).
+            Expr::FunctionCall(_) if crate::syntax::task_join_handle(e).is_some() => {
+                self.infer_ast_type(crate::syntax::task_join_handle(e)?)
+            }
             Expr::FunctionCall(fc) => self
                 .registry
                 .fn_sigs
@@ -2771,7 +2857,7 @@ impl<'r> Lowerer<'r> {
                                 );
                                 self.note_shadow(pname);
                                 self.ast_types.insert(pname.clone(), payload_type);
-                                self.bind_local(pname.clone(), pval);
+                                self.bind_local(pname.clone(), pval, false);
                             }
                         }
                     }
@@ -3012,12 +3098,58 @@ impl<'r> Lowerer<'r> {
     }
 
     fn lower_plain_for(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
-        self.scoped(|me| {
+        let range = self.overlap_range(f);
+        self.range_loops.extend(range.clone());
+        let lowered = self.scoped(|me| {
             let name: Symbol = f.iter.as_str().into();
             me.note_shadow(&name);
             me.ast_types.remove(&name);
             me.lower_for_loop(f)
-        })
+        });
+        if range.is_some() {
+            self.range_loops.pop();
+        }
+        lowered
+    }
+
+    /// `(i, n)` for `for i in k..n` with a number `k` of at least 0, where the body does not bind
+    /// `i` again: in the body, `i` is in the first `n` elements.
+    fn overlap_range(&self, f: &crate::syntax::ForLoopStmt) -> Option<(Symbol, Symbol)> {
+        let Expr::Range(range) = &*f.iterable else {
+            return None;
+        };
+        let (Expr::Number(start), Expr::Identifier(end)) = (&*range.start, &*range.end) else {
+            return None;
+        };
+        let i: Symbol = f.iter.as_str().into();
+        let from_zero_up = start.value.parse::<i64>().is_ok_and(|v| v >= 0);
+        (from_zero_up && !binds_name(&f.body, &i)).then(|| (i, end.name.clone()))
+    }
+
+    /// The `!overlaps` clause that covers the access `base[index]`, and whether `base` is its
+    /// second pointer: `index` is the variable of a `for index in 0..n` around the access, with
+    /// the clause's `n`.
+    fn overlap_access(&self, ix: &crate::syntax::IndexAccessExpr) -> Option<(usize, bool)> {
+        let (Expr::Identifier(base), Expr::Identifier(index)) = (&*ix.base, &*ix.index) else {
+            return None;
+        };
+        self.overlap_clauses
+            .iter()
+            .enumerate()
+            .find_map(|(k, (p, q, n))| {
+                let second = if &base.name == p {
+                    false
+                } else if &base.name == q {
+                    true
+                } else {
+                    return None;
+                };
+                let in_range = self
+                    .range_loops
+                    .iter()
+                    .any(|(i, len)| i == &index.name && len == n);
+                in_range.then_some((k, second))
+            })
     }
 
     fn lower_for_loop(&mut self, f: &crate::syntax::ForLoopStmt) -> Lowered<()> {
@@ -3363,7 +3495,7 @@ impl<'r> Lowerer<'r> {
             }
             .encode(),
         );
-        self.bind_local(f.iter.as_str().into(), x);
+        self.bind_local(f.iter.as_str().into(), x, false);
         self.loop_stack.push((header, exit)); // continue -> header, break -> exit
         self.lower_block(&f.body)?;
         self.loop_stack.pop();
@@ -3637,8 +3769,10 @@ impl<'r> Lowerer<'r> {
                     fails: u.cancels_on_err.clone(),
                 });
             }
+            // A task has no topology name, so the high half holds the line of its `spawn`.
+            let line = if task { (u.span.line as u64) << 32 } else { 0 };
             let lowered = self.lower_region(
-                id as u32 as u64,
+                id as u32 as u64 | line,
                 launch,
                 &u.stmts,
                 u.ret.as_deref(),
@@ -3926,6 +4060,11 @@ impl<'r> Lowerer<'r> {
         // The region is a block: its `let`s end with it.
         let depth = self.open_block();
         self.spawn_depth += 1;
+        let on_device = !matches!(
+            imm as u32 as i32,
+            crate::arch::TASK_DISPATCH_ID | crate::arch::TASKS_BLOCK_DISPATCH_ID
+        );
+        self.device_depth += on_device as u32;
         let par = if offer_parallel {
             parallel_outer_for(stmts)
         } else {
@@ -3978,6 +4117,7 @@ impl<'r> Lowerer<'r> {
             self.run_queued_drops()?;
             self.close_blocks_to(depth);
             self.spawn_depth -= 1;
+            self.device_depth -= on_device as u32;
             let ty = v.ty.clone();
             let ended = self.emit_typed(Opcode::SpawnEnd, v.reg, Register(0), ty.clone(), end_imm);
             // The region gives the value of a construction. The code after it takes a slot, as
@@ -4014,6 +4154,7 @@ impl<'r> Lowerer<'r> {
         self.run_queued_drops()?;
         self.close_blocks_to(depth);
         self.spawn_depth -= 1;
+        self.device_depth -= on_device as u32;
         self.emit_effect(Opcode::SpawnEnd, Register(0), Register(0), end_imm);
         Ok(None)
     }
@@ -4027,7 +4168,11 @@ impl<'r> Lowerer<'r> {
     /// discriminant ordinal into the tag, then `FieldStore` each payload value into its field (a
     /// payload-free variant like `None` stores only the tag, leaving the payload undefined — as the AST
     /// codegen does). Returns the slot as an aggregate `Val`. (#242)
-    fn lower_enum_construct(&mut self, ev: &crate::syntax::EnumVariantExpr) -> Lowered<Val> {
+    fn lower_enum_construct(
+        &mut self,
+        ev: &crate::syntax::EnumVariantExpr,
+        starts_lifetime: bool,
+    ) -> Lowered<Val> {
         let base = base_name(&ev.enum_name);
         let data = self
             .registry
@@ -4054,6 +4199,9 @@ impl<'r> Lowerer<'r> {
                     what: "an enum with no modelled instance layout",
                 })?;
         let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
+        if starts_lifetime {
+            self.start_lifetime(&slot);
+        }
         let tag = self.emit_value(
             Opcode::Const,
             Register(0),
@@ -4122,9 +4270,10 @@ impl<'r> Lowerer<'r> {
         lowered_ty(ty, self.registry)
     }
 
-    /// The element type behind a pointer, synthesizing an instance layout the free
-    /// `pointer_elem_ty` cannot: `*mut Option<i32>` is a `Vec<Option<i32>>`'s storage, and its
-    /// element is the enum instance's `{ tag, payload }`.
+    /// The element type behind a pointer, with an instance layout when the element needs one:
+    /// `*mut Option<i32>` is a `Vec<Option<i32>>`'s storage, and its element is the enum
+    /// instance's `{ tag, payload }`. A pointer to a pointer (`&&T`) has a bare `!llvm.ptr`
+    /// element.
     fn pointer_elem_synth(&mut self, ty: &Type) -> Option<LoweredTy> {
         let inner = match ty {
             Type::Pointer(inner, ..) | Type::Borrow { inner, .. } | Type::Ref(inner, ..) => {
@@ -4306,7 +4455,10 @@ impl<'r> Lowerer<'r> {
             return Some(lty);
         }
         match ty {
-            Type::GenericInstance(..) => self.resolve_concrete_layout(ty).map(LoweredTy::Aggregate),
+            // A generic instance, or an enum whose variants carry data.
+            Type::GenericInstance(..) | Type::Enum(..) | Type::Struct(..) => {
+                self.resolve_concrete_layout(ty).map(LoweredTy::Aggregate)
+            }
             _ => None,
         }
     }
@@ -4558,6 +4710,25 @@ impl<'r> Lowerer<'r> {
         {
             return Some((4, 4, "i32".to_string()));
         }
+        // An enum whose variants carry data, as `E` in `Result<u64, E>`: its whole storage.
+        let (nominal, args) = match ty {
+            Type::GenericInstance(base, args) => (base.as_ref(), args.as_slice()),
+            other => (other, &[][..]),
+        };
+        let is_enum = self
+            .registry
+            .aggregate_identities()
+            .resolve_base(nominal.into())
+            .is_some_and(|(name, _)| self.registry.enum_data.contains_key(&name));
+        if is_enum {
+            let (gid, _) = self.enum_instance_layout_of(nominal, args)?;
+            let layout = self.generated_layout(gid)?;
+            return Some((
+                layout.size_bytes,
+                layout.align_bytes,
+                crate::codegen::flat::generated_storage_type(layout),
+            ));
+        }
         match ty {
             Type::Struct(..) => {
                 let gid = self.nominal_struct_gid(ty)?;
@@ -4693,7 +4864,11 @@ impl<'r> Lowerer<'r> {
         Some((gid, layout.field_offsets()))
     }
 
-    fn lower_struct_init(&mut self, si: &crate::syntax::StructInitExpr) -> Lowered<Val> {
+    fn lower_struct_init(
+        &mut self,
+        si: &crate::syntax::StructInitExpr,
+        starts_lifetime: bool,
+    ) -> Lowered<Val> {
         // The struct's layout GID: the checker-attached `type_id` when present, else resolved by
         // name. A *monomorphized generic* construction (`Vec<i32> { .. }`) carries no `type_id` (the
         // instance identity isn't a plain module symbol), so fall back to the base nominal's layout
@@ -4750,6 +4925,9 @@ impl<'r> Lowerer<'r> {
             return Err(not_in_layout);
         }
         let slot = self.emit_alloca(LoweredTy::Aggregate(gid));
+        if starts_lifetime {
+            self.start_lifetime(&slot);
+        }
         // The fields are evaluated in the order the source writes them, not in declaration order.
         for (name, init_expr) in &si.fields {
             // Scalar, pointer, or by-value nested-aggregate fields — a nested aggregate is stored as a
@@ -5729,8 +5907,9 @@ impl<'r> Lowerer<'r> {
     /// non-tensor-index place.
     /// Lower `*p` as `p[0]`: a `PtrIndex` at a constant zero index — a value read (`is_place=false`)
     /// or an element place (`is_place=true`, consumed by a `PtrStore`). The pointee element type comes
-    /// from `p`'s AST type. Backs `let v = *p` / `*p = val` (`Box`'s heap cell). A non-pointer, or a
-    /// pointer whose element isn't a scalar/aggregate, declines. (#242)
+    /// from `p`'s AST type. Backs `let v = *p` / `*p = val` (`Box`'s heap cell). An element that is
+    /// a generic struct instance, such as `Pair<i64>`, gets the layout of that instance. A
+    /// non-pointer, or a pointer whose element isn't a scalar/aggregate, declines. (#242)
     fn lower_ptr_deref(&mut self, ptr_expr: &Expr, is_place: bool) -> Lowered<Val> {
         let base = self.lower_expr(ptr_expr)?;
         if !matches!(base.ty, LoweredTy::Ptr) {
@@ -5738,17 +5917,16 @@ impl<'r> Lowerer<'r> {
                 what: "a dereference of something that is not a pointer",
             });
         }
-        let elem = pointer_elem_ty(
-            &self
-                .infer_ast_type(ptr_expr)
-                .ok_or(Decline::TypeNotModelled {
-                    what: "a pointer whose type cannot be inferred",
-                })?,
-            self.registry,
-        )
-        .ok_or(Decline::TypeNotModelled {
-            what: "a pointer element type that is not modelled",
-        })?;
+        let ptr_ty = self
+            .infer_ast_type(ptr_expr)
+            .ok_or(Decline::TypeNotModelled {
+                what: "a pointer whose type cannot be inferred",
+            })?;
+        let elem = self
+            .pointer_elem_synth(&ptr_ty)
+            .ok_or(Decline::TypeNotModelled {
+                what: "a pointer element type that is not modelled",
+            })?;
         let zero = self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0);
         Ok(self.emit_typed(
             Opcode::PtrIndex,
@@ -5939,7 +6117,18 @@ impl<'r> Lowerer<'r> {
             } else {
                 Opcode::TensorStore
             };
-            self.emit_effect(store, place.reg, value.reg, 0);
+            if is_ptr {
+                if let Some((clause, second)) = self.overlap_access(ix) {
+                    self.overlap_accesses
+                        .push((self.code.len(), clause, second));
+                }
+            }
+            let imm = if is_ptr {
+                0
+            } else {
+                self.lane_element_store(ix)
+            };
+            self.emit_effect(store, place.reg, value.reg, imm);
             return Ok(());
         }
         // `*t = v` with `t : &mut Tensor<..>`: the new tensor's elements are written into the one
@@ -6234,7 +6423,7 @@ impl<'r> Lowerer<'r> {
                 // A struct literal is constructed *in place* into its own slot; the local is that
                 // slot (binding it directly avoids re-`Alloca`ing and storing the slot handle).
                 if let Expr::StructInit(si) = &l.expr {
-                    let slot = self.lower_struct_init(si)?;
+                    let slot = self.lower_struct_init(si, true)?;
                     self.scope.insert(
                         l.name.clone(),
                         Binding::Slot {
@@ -6256,7 +6445,7 @@ impl<'r> Lowerer<'r> {
                         .get(base)
                         .is_some_and(|d| d.variants.iter().any(|(_, p)| !p.is_empty()));
                     if is_data {
-                        let slot = self.lower_enum_construct(ev)?;
+                        let slot = self.lower_enum_construct(ev, true)?;
                         self.scope.insert(
                             l.name.clone(),
                             Binding::Slot {
@@ -6283,6 +6472,7 @@ impl<'r> Lowerer<'r> {
                         })?,
                     };
                     let slot = self.emit_alloca(result_ty.clone());
+                    self.start_lifetime(&slot);
                     self.lower_if_into_slot(if_expr, slot.reg)?;
                     self.scope.insert(
                         l.name.clone(),
@@ -6342,7 +6532,10 @@ impl<'r> Lowerer<'r> {
                     // The initializer already carries the local's type: an annotated `let` types its
                     // literal initializer to the annotation, and a genuine mismatch is rejected (no
                     // implicit conversion, #240), so the value is bound directly.
-                    self.bind_local(l.name.clone(), v);
+                    // A task writes its result into the slot while the code goes on, so the
+                    // slot's lifetime cannot start after the `spawn`.
+                    let from_a_task = matches!(&l.expr, Expr::UnsafeBlock(u) if u.task.is_some());
+                    self.bind_local(l.name.clone(), v, !from_a_task);
                 }
                 Ok(())
             }
@@ -6365,6 +6558,10 @@ impl<'r> Lowerer<'r> {
                         }
                         return Ok(());
                     }
+                    // Each arm returns, so nothing runs after the match. A slot whose lifetime
+                    // does not end lives to the end of the call, which is correct.
+                    self.value_drops
+                        .retain(|d| !matches!(d, PendingDrop::LifetimeEnd { .. }));
                     if !self.value_drops.is_empty() {
                         return Err(Decline::Unsupported {
                             what: "a drop waiting for the value of a returned match",
@@ -6593,7 +6790,7 @@ impl<'r> Lowerer<'r> {
                     let mut abort_msg = "abort() called";
                     if fc.name.as_ref() == "panic" {
                         abort_msg = "panic";
-                        if self.spawn_depth == 0 {
+                        if self.device_depth == 0 {
                             let panic_label =
                                 Expr::StringLiteral(crate::syntax::StringLiteralExpr::new(
                                     "panic: ".to_string(),
@@ -6669,9 +6866,20 @@ impl<'r> Lowerer<'r> {
         worker.local_inline_blocks.extend(self.inline_blocks);
         // Place-write alias table (M2b-2): reduce collected field stores to `(position, group, siblings)`.
         // Positions are stream-relative; a fresh worker lowers one function, so they need no rebasing.
-        worker
-            .local_place_alias_stores
-            .extend(reduce_place_alias(&self.place_field_stores));
+        let mut alias_table = reduce_place_alias(&self.place_field_stores);
+        // Each `!overlaps` clause gets two groups after the field groups, one for the accesses
+        // through each of its pointers. An access does not alias the other pointer's group.
+        let first = alias_table
+            .iter()
+            .flat_map(|(_, own, sibs)| std::iter::once(own).chain(sibs))
+            .max()
+            .map_or(0, |g| g + 1);
+        for &(pos, clause, second) in &self.overlap_accesses {
+            let own = first + 2 * clause + usize::from(second);
+            let other = first + 2 * clause + usize::from(!second);
+            alias_table.push((pos, own, vec![other]));
+        }
+        worker.local_place_alias_stores.extend(alias_table);
         for mut ins in self.code {
             if ins.type_idx.0 != NO_TYPE {
                 ins.type_idx = TypeIdx(ins.type_idx.0 + base);
@@ -6708,6 +6916,7 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Lowe
     lw.materialized = uses.materialized;
     lw.mutated = uses.mutated;
     lw.place_bindings = uses.place_bindings;
+    lw.overlap_clauses = overlap_clauses(func, &lw.mutated);
     // Control flow drives the block model (entry block + branch skeletons) and is the precondition for
     // slotting a *mutated* scalar (it must cross a block boundary). An aggregate param or a struct
     // construction also turns on the memory model (an aggregate must live in an addressable slot), but
@@ -6751,7 +6960,7 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Lowe
         {
             lw.scope.insert(name.clone(), Binding::Reg(incoming));
         } else {
-            lw.bind_local(name.clone(), incoming);
+            lw.bind_local(name.clone(), incoming, false);
         }
     }
     for (si, stmt) in func.body.iter().enumerate() {
@@ -7013,6 +7222,82 @@ fn place_root(e: &Expr) -> Option<Symbol> {
         Expr::MemberAccess(m) => place_root(&m.base),
         _ => None,
     }
+}
+
+/// The `requires !overlaps(p, q, n)` clauses of `func`, an `unsafe fn`, whose `p` and `q` are raw
+/// pointer parameters and `n` a parameter. A name that the body changes or binds again is left out,
+/// since then `p[i]` might not read the pointer or the length that the clause is about.
+fn overlap_clauses(func: &Function, mutated: &HashSet<Symbol>) -> Vec<(Symbol, Symbol, Symbol)> {
+    if !func.is_unsafe {
+        return Vec::new();
+    }
+    let param = |e: &Expr, pointer: bool| -> Option<Symbol> {
+        let Expr::Identifier(id) = e else {
+            return None;
+        };
+        let (_, ty) = func.params.iter().find(|(n, _)| n == &id.name)?;
+        let fixed = !mutated.contains(&id.name)
+            && !func.mut_params.contains(&id.name)
+            && !binds_name(&func.body, &id.name);
+        (fixed && (!pointer || matches!(ty, Type::Pointer(..)))).then(|| id.name.clone())
+    };
+    func.requires
+        .iter()
+        .filter_map(|e| {
+            let Expr::UnaryOp(u) = e else {
+                return None;
+            };
+            let Expr::FunctionCall(fc) = &*u.expr else {
+                return None;
+            };
+            if u.op != UnaryOp::Not || fc.name.as_ref() != "overlaps" {
+                return None;
+            }
+            let [p, q, n] = fc.args.as_slice() else {
+                return None;
+            };
+            let (p, q, n) = (param(p, true)?, param(q, true)?, param(n, false)?);
+            (p != q).then_some((p, q, n))
+        })
+        .collect()
+}
+
+/// Whether `stmts` bind `name` anywhere: with `let`, as a `for` variable, or in a `match` pattern.
+fn binds_name(stmts: &[Statement], name: &Symbol) -> bool {
+    fn in_pattern(p: &crate::syntax::Pattern, name: &Symbol) -> bool {
+        match p {
+            crate::syntax::Pattern::Identifier(n) => n == name,
+            crate::syntax::Pattern::EnumVariant(_, _, Some(parts)) => {
+                parts.iter().any(|p| in_pattern(p, name))
+            }
+            _ => false,
+        }
+    }
+    let direct = stmts.iter().any(|s| match s {
+        Statement::LetDecl(l) => &l.name == name,
+        Statement::ForLoop(f) => f.iter.as_str() == name.as_ref() || binds_name(&f.body, name),
+        Statement::Loop(l) => binds_name(&l.body, name),
+        _ => false,
+    });
+    let mut nested = false;
+    crate::syntax::visit_exprs(stmts, &mut |e| {
+        nested |= match e {
+            Expr::If(i) => {
+                binds_name(&i.then_block, name)
+                    || i.else_block.as_ref().is_some_and(|b| binds_name(b, name))
+            }
+            Expr::Match(m) => m
+                .arms
+                .iter()
+                .any(|a| in_pattern(&a.pattern, name) || binds_name(&a.body, name)),
+            Expr::UnsafeBlock(b) => binds_name(&b.stmts, name),
+            Expr::ComptimeBlock(b) => binds_name(&b.stmts, name),
+            Expr::TaskBlock(b) => binds_name(&b.stmts, name),
+            Expr::SpawnOn(b) => binds_name(&b.stmts, name),
+            _ => false,
+        }
+    });
+    direct || nested
 }
 
 /// Index of the `(root, path)` key in `keys`, or `None` if absent — the group-id lookup for the alias
@@ -7571,26 +7856,6 @@ fn substitute_generics(fty: &Type, generics: &[Symbol], args: &[Type]) -> Type {
         mapping.insert(g.clone(), a.clone());
     }
     fty.substitute(&mapping)
-}
-
-/// The lowered element type of a raw pointer, for lowering a raw-pointer index `p[i]`:
-/// `*mut i32` -> `Scalar(i32)` (`Vec<i32>`'s `self.data[i]`), `*mut Vec<i32>` -> `Aggregate(gid)`
-/// (`Vec<Vec<i32>>`'s element, stored/loaded as a whole `!llvm.struct` by value). Only scalar and
-/// aggregate elements are modelled — a pointer-to-pointer or pointer-to-tensor element declines. (#242)
-fn pointer_elem_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy> {
-    let inner = match ty {
-        Type::Pointer(inner, ..) | Type::Borrow { inner, .. } | Type::Ref(inner, ..) => {
-            inner.as_ref()
-        }
-        _ => return None,
-    };
-    match lowered_ty(inner, registry)? {
-        // A pointer whose pointee is itself a pointer (`&&T`, `*mut *mut T`): the deref loads/stores a
-        // bare `!llvm.ptr` element. This is what makes a *materialized* nested reference (`&mut &mut i32`,
-        // whose `rr` is a real ptr-to-ptr rather than a symbolic place) deref through `PtrIndex`. (#278)
-        e @ (LoweredTy::Scalar(_) | LoweredTy::Aggregate(_) | LoweredTy::Ptr) => Some(e),
-        _ => None,
-    }
 }
 
 /// The layout GID of the aggregate a (borrow/pointer-to-)nominal type names, resolving a

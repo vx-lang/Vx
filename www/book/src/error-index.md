@@ -18,11 +18,11 @@ the test suite has one, a program that triggers it.
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
 - [Type Errors](#type-errors) — `E3001`–`E3063` (62 codes)
-- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4015` (15 codes)
+- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4016` (16 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
 - [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6035` (35 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
-- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8010` (10 codes)
+- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8011` (11 codes)
 
 ## Warnings
 
@@ -159,7 +159,7 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3060`](/errors/E3060/) | A task that can fail, used in a way that could lose its failure. A task whose body gives `Result<T, E>` can fail, and its `join()` gives the `T`. When the task failed, the join leaves the `tasks` block, and the block gives the `Err`. So the task needs a handle, `let h = spawn { .. };`, and a join in its own block that always runs after the `spawn`. The block must give a `Result<U, E>` with the same `E`. |
 | [`E3061`](/errors/E3061/) | An impl of a trait does not write a method that the trait requires: one the trait declares with no default body. A call to that method would otherwise fail where it is called, with "method not found", though the fault is in the impl. |
 | [`E3062`](/errors/E3062/) | A struct literal that writes its fields in an order other than the struct's declaration. The fields run in the order the source writes them, so `P { y : f(), x : g() }` would run `f` before `g` and store `y` before `x`. Write the fields in the order the struct declares them. |
-| [`E3063`](/errors/E3063/) | A `?` that cannot pass its error up. `x?` takes a `Result<T, E>`. It gives the `T` of an `Ok`, and it passes an `Err` up unchanged: to the function, which must return a `Result<_, E>` with the same `E`, or to its task or `tasks` block, which must give one. `?` does not convert the error. `.map_err(..)` converts it. |
+| [`E3063`](/errors/E3063/) | A `?` that cannot pass its error up. `x?` takes a `Result<T, E>`. It gives the `T` of an `Ok`, and it passes an `Err` up unchanged: to the function, which must return a `Result<_, E>` with the same `E`, to its closure, which must return one, or to its task or `tasks` block, which must give one. A `?` in a closure needs the closure's type written, `|x| -> Result<T, E> { .. }`. `?` does not convert the error. `.map_err(..)` converts it. |
 
 ## Borrow/Ownership Errors
 
@@ -182,6 +182,7 @@ Raised by the borrow checker and the linear-type rules. These rule out use-after
 | [`E4013`](/errors/E4013/) | A field moved out of a value that must keep it: `let x = p.a` where `p`'s type implements `Drop`, whose `drop` needs every field, or `let x = make().a`, where the value has no name and drops all its fields at the end of the statement. Borrow the field (`&p.a`), clone it, or bind the value to a variable first. |
 | [`E4014`](/errors/E4014/) | A task that can still run when a variable that it uses ends or changes. A task in a loop that the same pass does not join runs at the same time as the next pass, so it must not write a variable from outside the loop, or read one that the loop writes. A task must not use a variable that ends before its `tasks` block, such as one of the loop body. Join the task in the same block: `let h = spawn { .. };` and then `h.join();`. A `return`, `break` or `continue` that leaves two `tasks` blocks waits only for the tasks of the inner one, so it cannot drop a value from outside the inner block yet. |
 | [`E4015`](/errors/E4015/) | A `spawn` region that moves a value from the code around it: `let x = t;` or `f(t)` with a parameter that takes `t` by value, where `t` is declared before the region. The region only borrows what it uses, and the function drops `t` after the region. Borrow it (`&t`), or clone it (`t.clone()`). |
+| [`E4016`](/errors/E4016/) | A borrow clause that is not well formed, or one that the body does not keep. In `ensures !points_into(return, *p)` the result cannot point into the memory under `*p`, and in `ensures !reaches(return, *p)` it also cannot point where a reference in `*p` points. In `ensures !keeps(p)` the body stores `p`, or a reference read through it, nowhere that outlives the call. `p` is a reference parameter. Each borrow clause is an `ensures` of its own. |
 
 ## Safety Errors
 
@@ -261,7 +262,8 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | [`E8008`](/errors/E8008/) | A loop invariant that the prover cannot show to hold when the loop starts |
 | [`E8009`](/errors/E8009/) | A loop invariant that the prover cannot show to hold after a pass through the loop body |
 | [`E8010`](/errors/E8010/) | An `mlir!` block whose `dialects` list does not match its body: the body uses an operation of a dialect that the list does not name, or the list names something that is not a dialect. The list is what the block says it uses, so it must be right. |
+| [`E8011`](/errors/E8011/) | A pointer clause that is not well formed: `requires valid(p, n)`, `requires initialized(p, n)` or `requires !overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters. The checker cannot prove one at a call yet, so only an `unsafe fn` may have one, and each clause is a `requires` of its own. |
 
 ______________________________________________________________________
 
-175 diagnostics.
+177 diagnostics.

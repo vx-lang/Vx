@@ -270,7 +270,13 @@ impl<'a> TypeChecker<'a> {
         for sub in &all {
             self.check_escape_in_calls(sub);
         }
-        self.hold_borrows_a_call_may_store(&all, receiver.is_some());
+        // A call stores no argument whose parameter says `!keeps`.
+        let not_kept = match expr {
+            Expr::FunctionCall(c) => self.not_kept_by(c.name.as_ref()),
+            _ => 0,
+        };
+        let kept = |i: usize| i >= 32 || not_kept & (1 << i) == 0;
+        self.hold_borrows_a_call_may_store(&all, receiver.is_some(), &kept);
         // A method call may carry no position of its own; its receiver or first argument
         // does.
         let span = if span == crate::syntax::Span::default() {
@@ -287,7 +293,7 @@ impl<'a> TypeChecker<'a> {
 
         let mut holders: Vec<usize> = Vec::new();
         let mut depth = 0;
-        for (i, arg) in all.iter().enumerate() {
+        for (i, arg) in all.iter().enumerate().filter(|&(i, _)| kept(i)) {
             if let Some(RefProvenance::Local(d)) = self.ref_provenance_of(arg) {
                 if self.type_can_hold_reference(&self.check_expr_type_probe(arg)) {
                     holders.push(i);
@@ -618,8 +624,14 @@ impl<'a> TypeChecker<'a> {
     /// A call may store any reference it is given through any `&mut` it is given whose target
     /// can hold one, as the escape check above assumes. So after the call, the variable that
     /// `&mut` reaches holds the borrows of the other arguments: `set_r(&mut h, &y)` and
-    /// `v.push(&y)` leave `h` and `v` borrowing `y`.
-    fn hold_borrows_a_call_may_store(&mut self, all: &[&Expr], has_receiver: bool) {
+    /// `v.push(&y)` leave `h` and `v` borrowing `y`. An argument that `kept` says no for, whose
+    /// parameter says `!keeps`, is stored nowhere.
+    fn hold_borrows_a_call_may_store(
+        &mut self,
+        all: &[&Expr],
+        has_receiver: bool,
+        kept: &dyn Fn(usize) -> bool,
+    ) {
         if self.speculating {
             return;
         }
@@ -641,7 +653,7 @@ impl<'a> TypeChecker<'a> {
             }
             let depth = self.scope_depth_of(&holder);
             for (j, other) in all.iter().enumerate() {
-                if j == i {
+                if j == i || !kept(j) {
                     continue;
                 }
                 let mut made = Vec::new();
@@ -850,7 +862,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Is `name` a reference or pointer, so that storing through it reaches memory this
     /// function does not own?
-    fn is_reference_variable(&self, name: &crate::symbol::Symbol) -> bool {
+    pub(crate) fn is_reference_variable(&self, name: &crate::symbol::Symbol) -> bool {
         matches!(
             self.lookup(name.as_ref()).map(|(t, _)| t),
             Some(Type::Ref(..)) | Some(Type::Borrow { .. }) | Some(Type::Pointer(..))

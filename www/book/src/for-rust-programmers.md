@@ -18,6 +18,11 @@ lists what to change. Each item shows the Rust form and the Vx form.
 - **`self` has a type.** `fn get(&self)` is `fn get(self : &Self)`, `&mut self` is
   `self : &mut Self`, and `self` is `self : Self`. The type's own name works too:
   `self : &Point`.
+- **`#[track_caller]` is a parameter.** End the parameters with `at : Caller`
+  (`import core::panic;`). A call that leaves the argument out passes its own place, in
+  `at.location`: a `Location` with `file`, `line` and `column`. To report the place of your own
+  caller, give your `at` to the call. `Location::here()` is Rust's `Location::caller()` and
+  `file!()`, `line!()` and `column!()` in one.
 - **Closure parameters have types.** `|x| x + 1` is `| x : i64 | x + 1`.
 - **No `impl Trait` parameters.** `fn show(g : &impl Area)` is `fn show<T : Area>(g : &T)`.
 
@@ -41,8 +46,8 @@ lists what to change. Each item shows the Rust form and the Vx form.
 - **`?` does not convert the error.** `x?` passes the `Err` up unchanged, so its type must be
   the error type of the function. Use `.map_err(..)` to convert it. `?` takes only a `Result`.
 - **`?` in a `tasks` block fails the block**, not the function. The block gives that `Err`, and it
-  cancels its tasks. In a task, `?` ends the task, and the task fails. A `?` cannot leave a
-  closure yet.
+  cancels its tasks. In a task, `?` ends the task, and the task fails. In a closure, `?` needs
+  the closure's type written: `|x : i32| -> Result<i32, E> { .. }`.
 
 ## Printing
 

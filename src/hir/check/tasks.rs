@@ -10,10 +10,10 @@
 // docs/discussions/cpu_tasks_send_sync_and_shared_atomics.md.
 //
 // After the checks a `tasks` block and a task body are blocks with a `task` mark,
-// `let h = spawn { e }` is `let h = { e }`, and `h.join()` is `h`. For a task that can fail, it is
-// a `match` on `h` whose `Err` arm leaves the `tasks` block. Each pass treats them as plain
-// blocks, which T7 allows. The flat code generator runs each task on a thread of its own, and a
-// read of `h` waits for the task. The checks are for the tasks that run at the same time: a task
+// `let h = spawn { e }` is `let h = { e }`, and `h.join()` is `$task_join(h)`, a read of `h`
+// that waits for the task there. For a task that can fail, it is a `match` on `h` whose `Err` arm
+// leaves the `tasks` block. Each pass treats them as plain blocks, which T7 allows. The flat code
+// generator runs each task on a thread of its own, and a read of `h` waits for the task. The checks are for the tasks that run at the same time: a task
 // holds a borrow of each variable that it uses, from its `spawn` until its join.
 //
 //===----------------------------------------------------------------------===//
@@ -305,6 +305,7 @@ impl TypeChecker<'_> {
             fails_as,
             cancels_on_err,
             value_ty,
+            closure_body: false,
         });
     }
 
@@ -452,19 +453,22 @@ impl TypeChecker<'_> {
         let fn_ret = self.current_return_type.clone().unwrap_or(Type::Unknown);
         let refused = match target {
             Some(Frame::Tasks { .. } | Frame::Spawn { .. }) => None,
-            None if closures > 0 => Some((
+            // The closure's type comes from its body, which the `?` is in.
+            None if closures > 0 && fn_ret == Type::Unknown => Some((
                 DiagnosticCode::E3063,
-                "a `?` cannot leave a closure yet. Use a `match`, or call a function that uses \
-                 `?`"
-                .to_string(),
+                format!(
+                    "a `?` in a closure needs the type that the closure returns. Write it: \
+                     `|..| -> Result<T, {err_ty}> {{ .. }}`"
+                ),
             )),
             None if result_parts(&fn_ret).is_some_and(|(_, e)| e == err_ty) => None,
             None => Some((
                 DiagnosticCode::E3063,
                 format!(
-                    "this `?` passes up an error of type '{err_ty}', so the function must return \
-                     a `Result<_, {err_ty}>`. It returns '{fn_ret}'. `?` does not convert the \
-                     error: use `.map_err(..)` for that"
+                    "this `?` passes up an error of type '{err_ty}', so the {} must return a \
+                     `Result<_, {err_ty}>`. It returns '{fn_ret}'. `?` does not convert the \
+                     error: use `.map_err(..)` for that",
+                    if closures > 0 { "closure" } else { "function" }
                 ),
             )),
         };
@@ -1068,7 +1072,7 @@ impl TypeChecker<'_> {
             let name = id.name.clone();
             return Some(self.check_failing_join(expr, &name, handle_depth, &task, &result, ok_ty));
         }
-        // The join becomes `h`. Only code that takes the value moves it out of `h`. Otherwise
+        // The join reads `h`. Only code that takes the value moves it out of `h`. Otherwise
         // `h` still owns the value and drops it at the end of its scope.
         self.tasks.joining = true;
         self.check_identifier_expr(&mut receiver, consume);
@@ -1081,8 +1085,9 @@ impl TypeChecker<'_> {
             self.borrow.end_task(&task);
             self.tasks.loop_tasks.retain(|t| t.task != task);
         }
+        // The code waits for the task here, not where it first reads the value.
         if !self.speculating {
-            *expr = receiver;
+            *expr = crate::syntax::task_join_expr(receiver, span);
         }
         Some(result)
     }

@@ -182,12 +182,14 @@ ends. In the example, a task whose receiver is gone fails, and so does the block
 right result: no code reads the values.
 
 **M3. `select`.** Decision 8 chose a library function, not the block expression below (#2384):
-`select(rs : &Vec<Receiver<T>>)` gives the first value from any channel in the list, with the index
-of its channel, or `Closed` when each channel is closed and empty. It waits on `recv` only, and the
-channels have one element type. A program that waits on channels of different types sends an enum
-of its own. A `select` sleeps on one word of the runtime, which each event on any channel changes.
-The rest of this section is the design of the block expression, which can still come later for
-`send` and `sleep` arms.
+`Selector::new(rs : Vec<Receiver<T>>)` makes a selector, and its `select()` gives the first value
+from any channel in the list, with the index of its channel, or `Closed` when each channel is closed
+and empty. The selector keeps the index of its last choice, and the next search starts after it
+(round robin). So a channel with a value gives it within `n` calls (#2548). It waits on `recv` only,
+and the channels have one element type. A program that waits on channels of different types sends
+an enum of its own. A `select` sleeps on one word of the runtime, which each event on any channel
+changes. The rest of this section is the design of the block expression, which can still come later
+for `send` and `sleep` arms.
 
 The block expression waits on several operations, and runs the arm of the first one that can
 continue. It is a block expression, as `tasks` is, not a library type.
@@ -308,8 +310,10 @@ never continues. So `lock` parks the task (W4), and the lock belongs to a task, 
 (W9). `lock` cannot be cancelled (F4). It has the same model check as the channel.
 
 **M8. `Arc`.** #1864 also asks for `Arc`. A task borrows the locals of its parent (T5), so most
-programs need no reference count. `Arc` waits until a program needs data that lives longer than
-its `tasks` block.
+programs need no reference count. `std::sync::arc` has one for data that lives longer than its
+`tasks` block. It follows Rust's `Arc`: a clone adds 1 with `Relaxed`, a drop takes 1 away with
+`Release`, and the last drop runs an `Acquire` fence before it drops the value.
+`formal/memory_model/tests/arc_last_drop_*.litmus` check that order.
 
 ## 4. Errors from tasks (#1893)
 
@@ -333,8 +337,8 @@ The compiler knows `Result` by name, as it knows `SharedCell`. `panic` still sto
   task is (F3). An `Err` that is the last value of the block is also a failure.
 - In a `spawn` body, `return` leaves the task. A `break` or `continue` that targets a loop outside
   the body is a compile error.
-- Done for a function, the code of a `tasks` block, and a `spawn` body (E3063). A closure has no
-  early exit yet, so a `?` there is an error (#2540).
+- Done for a function, the code of a `tasks` block, a `spawn` body and a closure (E3063). In a
+  closure, `?` needs the type that the closure returns: `|x| -> Result<T, E> { .. }`.
 
 So passing `Cancelled` up costs more in Vx than in Rust: Rust's `?` converts it with `From`. A
 function with its own error enum needs a `Cancelled` case in it, or a `.map_err(..)` at each wait.
@@ -433,13 +437,21 @@ of the block (F2). A `join()` of a task that failed leaves the block the same wa
 **F9. Run-time reports.**
 
 - A panic in a task gives the line of its `spawn`, and the `spawn` lines of each parent task.
+  Done: the handler of an abort prints them, so a failed check in a task prints them too. The
+  file is always the file given to `vxc`, so the file of a `spawn` in an imported module is wrong.
 - A deadlock: the runtime stops the program when every task waits, and nothing can wake one. A
   task in a foreign call (W8), work on a device, a timer, or I/O in progress can wake one. Go
   already lists each goroutine, what it waits for and where, and the line that started it. Vx
   also names the channel or lock, with the line that made it, and prints the cycle of waits.
-  The first step is in `wait.rs`: a watcher thread stops the program with a short report. It does
-  not name the waits yet.
+  Done in `wait.rs`: a watcher thread stops the program. The report lists each wait: `send`,
+  `recv`, `lock`, `select`, or the join of a task, with the `spawn` lines of the task that waits.
+  Two waits on one channel or one lock get the same number. Each wait has its line, and the line
+  that made its channel or lock. The library gets them from a last parameter `at : Caller`, which
+  the compiler fills with the place of each call (#2569). Not done: the cycle of waits.
 - A task that gets `Cancelled` from many waits in a row: the line of the wait (F4).
+  Done in part: at the 1000th time that a task sees the cancel of its block, the runtime warns
+  once, with the `spawn` lines of the task. Not done: the line of the wait. A task checks the
+  cancel at many places, and the warning does not know which wait it came from.
 
 ## 5. Admission
 

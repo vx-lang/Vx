@@ -27,7 +27,8 @@
 
 use crate::ffi::sched::{self, Fiber, Scheduler};
 use crate::io::lines;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::ffi::{c_char, CStr};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -52,6 +53,8 @@ struct Task {
     /// The task in the shared runtime.
     fiber: Option<Box<Fiber>>,
     env: *mut u8,
+    /// Where the task started, so that the deadlock report can name the task that a join waits for.
+    site: Option<Site>,
 }
 
 /// The cancel mark of a `tasks` block.
@@ -76,7 +79,18 @@ impl CancelMark {
 /// `drop` on the clock of `vx_clock_ns`.
 pub(crate) type PutAside = Vec<(Option<Arc<CancelMark>>, i64)>;
 
+/// Where the task that runs now started: one line for its `spawn`, and then one line for the
+/// `spawn` of each task around it. An abort in a task prints it (F9).
+pub(crate) type Site = Arc<[u8]>;
+
 thread_local! {
+    /// The site of the task that this thread runs, or `None` outside a task.
+    static SITE: RefCell<Option<Site>> = const { RefCell::new(None) };
+    /// The bytes of `SITE`, for the handler of an abort. A signal handler must not touch a
+    /// `RefCell`, so it reads this copy of the pointer.
+    static SITE_BYTES: Cell<(*const u8, usize)> = const { Cell::new((std::ptr::null(), 0)) };
+    /// How many times `vx_cancelled` gave 1 to the task that this thread runs.
+    static CANCELS: Cell<u32> = const { Cell::new(0) };
     /// The mark of the innermost block whose task or code this thread runs.
     static CURRENT: RefCell<Option<Arc<CancelMark>>> = const { RefCell::new(None) };
     static PUT_ASIDE: RefCell<PutAside> = const { RefCell::new(Vec::new()) };
@@ -135,6 +149,61 @@ pub(crate) fn swap_marks(mark: &mut Option<Arc<CancelMark>>, put_aside: &mut Put
     PUT_ASIDE.with(|p| std::mem::swap(&mut *p.borrow_mut(), put_aside));
 }
 
+/// Swaps the site of this thread with `site`. The shared runtime gives each fiber its own.
+pub(crate) fn swap_site(site: &mut Option<Site>) {
+    SITE.with(|s| std::mem::swap(&mut *s.borrow_mut(), site));
+    let bytes = SITE.with(|s| s.borrow().as_ref().map(|b| (b.as_ptr(), b.len())));
+    SITE_BYTES.with(|b| b.set(bytes.unwrap_or((std::ptr::null(), 0))));
+}
+
+/// The site of a task that a `spawn` at `file` and `line` starts on this thread.
+fn site_of_spawn(file: *const c_char, line: i64) -> Option<Site> {
+    if line <= 0 {
+        return None;
+    }
+    let file = if file.is_null() {
+        "an unknown file".into()
+    } else {
+        unsafe { CStr::from_ptr(file) }.to_string_lossy()
+    };
+    let mut text = format!("  in the task from the `spawn` at {file}:{line}\n").into_bytes();
+    SITE.with(|s| text.extend_from_slice(s.borrow().as_deref().unwrap_or(&[])));
+    Some(text.into())
+}
+
+/// The file and line of the `spawn` of the task with the site `site`.
+pub(crate) fn spawn_line(site: &Site) -> String {
+    let text = String::from_utf8_lossy(site);
+    let first = text.lines().next().unwrap_or_default();
+    first.rsplit(" at ").next().unwrap_or_default().to_string()
+}
+
+/// The file and the line of each `spawn` of the site `site`, the innermost first, to sort sites
+/// by their lines.
+pub(crate) fn site_key(site: &Site) -> Vec<(String, u64)> {
+    String::from_utf8_lossy(site)
+        .lines()
+        .filter_map(|l| {
+            let (file, line) = l.rsplit(" at ").next()?.rsplit_once(':')?;
+            Some((file.to_string(), line.parse().ok()?))
+        })
+        .collect()
+}
+
+/// The site of the task that this thread runs now.
+pub(crate) fn current_site() -> Option<Site> {
+    SITE.with(|s| s.borrow().clone())
+}
+
+/// Writes the site of this thread to standard error. A signal handler may call it: it uses only
+/// a `Cell` and `write`.
+pub(crate) fn write_site() {
+    let (bytes, len) = SITE_BYTES.with(|b| b.get());
+    if !bytes.is_null() {
+        unsafe { libc::write(2, bytes as *const libc::c_void, len) };
+    }
+}
+
 /// The tasks of one `tasks` block.
 pub struct VxTaskGroup {
     tasks: Vec<Task>,
@@ -149,6 +218,7 @@ fn wait(task: &mut Task) {
     if let Some(fiber) = &task.fiber {
         let done = &raw const fiber.done as *const i64;
         while fiber.done.load(Ordering::SeqCst) == 0 {
+            crate::ffi::wait::waiting_for_join(task.site.clone());
             unsafe { crate::ffi::wait::vx_wait_while(done, 0) };
         }
     }
@@ -161,6 +231,7 @@ fn wait(task: &mut Task) {
             .expect("a task thread has a done word");
         let done = Arc::as_ptr(thread_done) as *const i64;
         while thread_done.load(Ordering::SeqCst) == 0 {
+            crate::ffi::wait::waiting_for_join(task.site.clone());
             unsafe { crate::ffi::wait::vx_wait_while(done, 0) };
         }
         // A Vx panic stops the program (T6). A Rust panic in a task is a bug of the runtime.
@@ -198,11 +269,31 @@ pub(crate) fn tasks_begin(sched: Option<&'static Scheduler>) -> *mut VxTaskGroup
 /// Whether the block of this thread's task or code, or a block around it, was cancelled, or a
 /// `drop` that this thread runs is past its deadline. A wait that can be cancelled then gives
 /// `Cancelled`.
+///
+/// The mark stays, so a task that sees it many times is in a loop that waits again after each
+/// `Cancelled` (F4, F9). At the `CANCELS_TO_WARN`th time, a warning says which task it is.
 #[no_mangle]
 pub extern "C" fn vx_cancelled() -> i32 {
     let set = CURRENT.with(|c| c.borrow().as_ref().is_some_and(|m| m.is_set()));
+    if set && CANCELS.with(|n| n.replace(n.get() + 1) + 1) == CANCELS_TO_WARN {
+        let site = current_site().map(|s| String::from_utf8_lossy(&s).into_owned());
+        eprint!(
+            "vx: warning: a task saw the cancel of its `tasks` block {CANCELS_TO_WARN} times. A \
+             loop may wait again after each `Cancelled`.\n{}",
+            site.unwrap_or_else(|| "  in the main code\n".to_string())
+        );
+    }
     let late = drop_deadline().is_some_and(|d| crate::ffi::wait::vx_clock_ns() >= d);
     (set || late) as i32
+}
+
+/// See `vx_cancelled`.
+const CANCELS_TO_WARN: u32 = 1000;
+
+/// Swaps the count of `vx_cancelled` of this thread with `count`. The shared runtime gives each
+/// fiber its own.
+pub(crate) fn swap_cancels(count: &mut u32) {
+    CANCELS.with(|n| *count = n.replace(*count));
 }
 
 /// A task or the code of a block failed: cancel its block (F3).
@@ -225,19 +316,38 @@ pub unsafe extern "C" fn vx_task_start(
     run: VxTaskFn,
     env: *mut u8,
 ) -> i64 {
+    vx_task_start_at(group, run, env, std::ptr::null(), 0)
+}
+
+/// `vx_task_start` for a `spawn` at line `line` of the file `file`, a C string. An abort in the
+/// task prints that line.
+///
+/// # Safety
+/// As for `vx_task_start`. `file` is null or a C string that lives as long as the program.
+#[no_mangle]
+pub unsafe extern "C" fn vx_task_start_at(
+    group: *mut VxTaskGroup,
+    run: VxTaskFn,
+    env: *mut u8,
+    file: *const c_char,
+    line: i64,
+) -> i64 {
     let group = &mut *group;
     let mark = group.mark.clone();
+    let site = site_of_spawn(file, line);
     lines::task_started();
     if let Some(sched) = group.sched {
         group.tasks.push(Task {
             thread: None,
             thread_done: None,
-            fiber: Some(sched.spawn(run, env, Some(mark))),
+            fiber: Some(sched.spawn_at(run, env, Some(mark), site.clone())),
             env,
+            site,
         });
         return (group.tasks.len() - 1) as i64;
     }
     let task_env = Env(env);
+    let own_site = site.clone();
     let thread_done = Arc::new(AtomicI64::new(0));
     let done = thread_done.clone();
     crate::ffi::wait::thread_started();
@@ -245,7 +355,9 @@ pub unsafe extern "C" fn vx_task_start(
         .stack_size(TASK_STACK_BYTES)
         .spawn(move || {
             let task_env = task_env;
+            let mut site = site;
             CURRENT.with(|c| *c.borrow_mut() = Some(mark));
+            swap_site(&mut site);
             run(task_env.0);
             lines::task_ended();
             // The wake comes before the count of threads goes down. So the joining thread
@@ -268,6 +380,7 @@ pub unsafe extern "C" fn vx_task_start(
         thread_done: Some(thread_done),
         fiber: None,
         env,
+        site: own_site,
     });
     (group.tasks.len() - 1) as i64
 }
@@ -385,6 +498,62 @@ mod tests {
             });
             e
         }
+    }
+
+    /// The site that an abort on this thread would print, as text.
+    fn site_text() -> String {
+        let (bytes, len) = SITE_BYTES.with(|b| b.get());
+        if bytes.is_null() {
+            return String::new();
+        }
+        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(bytes, len) }).into_owned()
+    }
+
+    /// The sites that a task and a task inside it saw.
+    #[repr(C)]
+    struct SiteEnv {
+        outer: String,
+        inner: String,
+    }
+
+    extern "C" fn record_inner(env: *mut u8) {
+        let env = unsafe { &mut *(*(env as *mut *mut SiteEnv)) };
+        env.inner = site_text();
+    }
+
+    /// Records its site, then starts a task at line 20 that records its own.
+    extern "C" fn record_outer(env: *mut u8) {
+        let sites = unsafe { *(env as *mut *mut SiteEnv) };
+        unsafe { (*sites).outer = site_text() };
+        let group = vx_tasks_begin();
+        unsafe {
+            let e = libc::malloc(std::mem::size_of::<*mut SiteEnv>()) as *mut *mut SiteEnv;
+            e.write(sites);
+            vx_task_start_at(group, record_inner, e as *mut u8, c"b.vx".as_ptr(), 20);
+            vx_tasks_end(group);
+        }
+    }
+
+    #[test]
+    fn a_task_knows_the_spawn_of_each_task_around_it() {
+        let mut sites = SiteEnv {
+            outer: String::new(),
+            inner: String::new(),
+        };
+        let group = vx_tasks_begin();
+        unsafe {
+            let e = libc::malloc(std::mem::size_of::<*mut SiteEnv>()) as *mut *mut SiteEnv;
+            e.write(&mut sites);
+            vx_task_start_at(group, record_outer, e as *mut u8, c"a.vx".as_ptr(), 7);
+            vx_tasks_end(group);
+        }
+        assert_eq!(sites.outer, "  in the task from the `spawn` at a.vx:7\n");
+        assert_eq!(
+            sites.inner,
+            "  in the task from the `spawn` at b.vx:20\n  in the task from the `spawn` at a.vx:7\n"
+        );
+        // The code outside each task has no site.
+        assert_eq!(site_text(), "");
     }
 
     #[test]

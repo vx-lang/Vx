@@ -250,6 +250,9 @@ pub struct DropStmt {
     /// Freed only once the next statement has computed its value: a `return`'s, a block's last
     /// expression, or an assignment's right-hand side, which may still read the tensor.
     pub after_value: bool,
+    /// Frees nothing: the struct or enum `name` is no longer used, so its stack slot can hold
+    /// another value. It comes after the other drops of `name`.
+    pub ends_lifetime: bool,
     pub span: Span,
 }
 

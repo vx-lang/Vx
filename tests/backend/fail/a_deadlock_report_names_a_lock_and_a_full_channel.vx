@@ -1,0 +1,95 @@
+//===- a_deadlock_report_names_a_lock_and_a_full_channel.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// One task holds a lock and waits in `recv`. Another task waits for the lock. The main code and
+// a third task each send two values on a channel that holds one and that nothing reads. The task
+// sends first, so the main code waits on its first `send` and the task on its second. Two waits
+// on the same channel name the same number. Each wait has its line, and the line that made its
+// channel or lock.
+//
+// RUN: not vxc %s --run 2>&1 | FileCheck %s
+// RUN: not vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// RUN: env VX_TASK_RUNTIME=shared not vxc %s --run 2>&1 | FileCheck %s
+
+// CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
+// CHECK-NEXT: {{^}}  the main code waits in `send` at {{.*}}.vx:49 on channel 1, made at {{.*}}.vx:77{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `lock` at {{.*}}.vx:44 on lock 1, made at {{.*}}.vx:73{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:80{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:34 on channel 2, made at {{.*}}.vx:76{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:83{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `send` at {{.*}}.vx:66 on channel 1, made at {{.*}}.vx:77{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:86{{$}}
+
+import std::sync::channel;
+import std::sync::mutex;
+import core::sync::atomic;
+
+fn hold_and_wait(m : &Mutex<i64>, held : &AtomicI64, rx : Receiver<i64>) -> void {
+  let g = m.lock();
+  held.store(1, AtomicOrdering::SeqCst);
+  match rx.recv() {
+    Result<i64, RecvError>::Ok(_v) => {}
+    Result<i64, RecvError>::Err(_e) => {}
+  }
+  drop(g);
+}
+
+// Takes the lock only after the other task holds it.
+fn take_the_lock(m : &Mutex<i64>, held : &AtomicI64) -> void {
+  while held.load(AtomicOrdering::SeqCst) == 0 {}
+  let g = m.lock();
+  drop(g);
+}
+
+fn send_two(tx : &Sender<i64>) -> void {
+  match tx.send(1) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(_e) => {}
+  }
+  match tx.send(2) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(_e) => {}
+  }
+}
+
+// Sends one value, notes it in `sent`, and sends one more.
+fn send_two_from_a_task(tx : Sender<i64>, sent : &AtomicI64) -> void {
+  match tx.send(1) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(_e) => {}
+  }
+  sent.store(1, AtomicOrdering::SeqCst);
+  match tx.send(2) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(_e) => {}
+  }
+}
+
+fn main() -> i32 {
+  let m = Mutex<i64>::new(0);
+  let held = AtomicI64::new(0);
+  let sent = AtomicI64::new(0);
+  let (tx, rx) = channel<i64>(1);
+  let (full_tx, full_rx) = channel<i64>(1);
+  let other_tx = full_tx.clone();
+  tasks {
+    spawn {
+      take_the_lock(&m, &held);
+    };
+    spawn {
+      hold_and_wait(&m, &held, rx);
+    };
+    spawn {
+      send_two_from_a_task(other_tx, &sent);
+    };
+    while sent.load(AtomicOrdering::SeqCst) == 0 {}
+    send_two(&full_tx);
+    drop(tx);
+    drop(full_rx);
+  };
+  return 0;
+}

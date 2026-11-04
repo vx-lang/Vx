@@ -548,6 +548,8 @@ static void useDeviceMathIn(Region &kernel, ModuleOp module,
   }
 }
 
+static void promoteOwnedBuffers(Region &region, RewriterBase &rewriter);
+
 // Put a kernel's own scratch on the stack.
 //
 // A `Tensor` declared inside the region -- a kernel's one scratch tile --
@@ -557,14 +559,17 @@ static void useDeviceMathIn(Region &kernel, ModuleOp module,
 // 64-byte scratch buffer. Nothing frees it either, so on the host path it leaks
 // once per dispatch.
 //
-// Only allocations in the entry block and with a static shape. An `alloca`
-// inside a loop grows the stack every iteration, which is a worse bug than the
-// one being fixed, and a dynamic extent is not a stack slot on a device at all.
-// A `dealloc` of one, which a drop writes, goes with it: the stack slot lives
-// until the kernel returns, which is no earlier than the `dealloc` was.
+// A small tensor that does not escape gets a stack slot with lifetime markers,
+// as on the host, so two tensors used one after the other share a slot.
+//
+// Any other allocation in the entry block with a static shape gets a slot for
+// the whole kernel, and its `dealloc` goes. Elsewhere it stays on the heap: the
+// analysis cannot tell where its lifetime ends, and a dynamic extent is not a
+// stack slot on a device at all.
 static void useStackScratchIn(Region &kernel, PatternRewriter &rewriter) {
   if (kernel.empty())
     return;
+  promoteOwnedBuffers(kernel, rewriter);
   SmallVector<memref::AllocOp> allocs;
   for (Operation &op : kernel.front())
     if (auto alloc = dyn_cast<memref::AllocOp>(&op))
@@ -1089,6 +1094,11 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
     // `roles=` degrade rather than fail (#348).
     if (auto topoName = op->getAttrOfType<StringAttr>("topology_name")) {
       launchOp->setAttr("vx.topology_name", topoName);
+    }
+    // Whether a declared topology may run on a worker of another node. A
+    // built-in has no mark, and the runtime lets a manifest send it anywhere.
+    if (auto offload = op->getAttrOfType<BoolAttr>("offload")) {
+      launchOp->setAttr("vx.offload", offload);
     }
 
     if (resultSlot) {
@@ -1683,6 +1693,9 @@ struct LaneReduction {
   Value count;
   bool ordered;
   bool subgroup;
+  /// On the GPU, this lane's element of each input, when a register holds it.
+  /// Empty when the lanes read the inputs.
+  SmallVector<Value, 2> registers = {};
 };
 using LaneElem = SmallVector<Value, 2>;
 } // namespace
@@ -1757,7 +1770,12 @@ static LaneElem laneIdentity(OpBuilder &b, Location loc,
 /// The count, at least 0 and at most the size of the input, as an index.
 static Value laneCount(OpBuilder &b, const LaneReduction &r) {
   Value zero = b.create<arith::ConstantIndexOp>(r.loc, 0);
-  Value size = b.create<memref::DimOp>(r.loc, r.inputs[0], zero);
+  auto type = cast<MemRefType>(r.inputs[0].getType());
+  Value size =
+      type.isDynamicDim(0)
+          ? b.create<memref::DimOp>(r.loc, r.inputs[0], zero).getResult()
+          : b.create<arith::ConstantIndexOp>(r.loc, type.getDimSize(0))
+                .getResult();
   Value n = b.create<arith::IndexCastOp>(r.loc, b.getIndexType(), r.count);
   n = b.create<arith::MaxSIOp>(r.loc, n, zero);
   return b.create<arith::MinSIOp>(r.loc, n, size);
@@ -1776,6 +1794,30 @@ static LaneElem lanePad(OpBuilder &b, const LaneReduction &r, Value n) {
   return {b.create<arith::SelectOp>(
       r.loc, any, first,
       f32Constant(b, r.loc, -std::numeric_limits<float>::infinity()))};
+}
+
+/// `lanePad` when each lane holds its element in a register. The first element
+/// of the larger value is the register of lane 0. In the code of a block, only
+/// a count that is a multiple of 32 gets here, so no lane that counts needs the
+/// pad.
+static LaneElem registerPad(OpBuilder &b, const LaneReduction &r, Value n) {
+  if (r.kind != LaneReduction::Max)
+    return laneIdentity(b, r.loc, r.kind);
+  Value none = f32Constant(b, r.loc, -std::numeric_limits<float>::infinity());
+  // With 32 elements, no lane of a subgroup needs the pad.
+  auto count = r.count.getDefiningOp<arith::ConstantIntOp>();
+  auto size = cast<MemRefType>(r.inputs[0].getType());
+  bool full = count && count.value() >= 32 && !size.isDynamicDim(0) &&
+              size.getDimSize(0) >= 32;
+  if (!r.subgroup || full)
+    return {none};
+  Value first = b.create<gpu::ShuffleOp>(r.loc, r.registers[0], 0, 32,
+                                         gpu::ShuffleMode::IDX)
+                    .getShuffleResult();
+  Value zero = b.create<arith::ConstantIndexOp>(r.loc, 0);
+  Value any =
+      b.create<arith::CmpIOp>(r.loc, arith::CmpIPredicate::sgt, n, zero);
+  return {b.create<arith::SelectOp>(r.loc, any, first, none)};
 }
 
 static LaneElem laneLoad(OpBuilder &b, Location loc, ValueRange from, Value i) {
@@ -1915,19 +1957,29 @@ static LaneElem expandLaneReductionOnHost(OpBuilder &b,
   return hostTree(b, loc, results, r.kind);
 }
 
-/// On the GPU: the group of 32 lanes of a warp, with `shfl.sync.down`. Lane 0
-/// of the warp has the result. With `broadcast`, every lane gets it.
+/// On the GPU: the group of 32 lanes of a warp. Lane 0 of the warp has the
+/// result. With `broadcast`, every lane gets it.
+///
+/// A sum uses `shfl.sync.bfly`: lane `i` adds the value of lane `i ^ offset`.
+/// Each lane then adds the same two values as lane 0 at each step, only maybe
+/// in the other order. On NVIDIA, `a + b` has the bits of `b + a`, also for a
+/// NaN, which is always the canonical NaN. So every lane gets the bits of lane
+/// 0, with no broadcast. The larger value and the argmax keep the order of
+/// their operands, so they use `shfl.sync.down` and a broadcast from lane 0.
 static LaneElem deviceTree(OpBuilder &b, Location loc, LaneElem v,
                            LaneReduction::Kind kind, bool broadcast) {
+  bool butterfly = kind == LaneReduction::Sum;
   for (int32_t offset : {16, 8, 4, 2, 1}) {
     LaneElem other;
     for (Value part : v)
       other.push_back(b.create<gpu::ShuffleOp>(loc, part, offset, 32,
-                                               gpu::ShuffleMode::DOWN)
+                                               butterfly
+                                                   ? gpu::ShuffleMode::XOR
+                                                   : gpu::ShuffleMode::DOWN)
                           .getShuffleResult());
     v = laneCombine(b, loc, kind, v, other);
   }
-  if (!broadcast)
+  if (!broadcast || butterfly)
     return v;
   LaneElem all;
   for (Value part : v)
@@ -1944,13 +1996,21 @@ static LaneElem expandLaneReductionOnDevice(OpBuilder &b,
                                             const LaneReduction &r) {
   Location loc = r.loc;
   Value n = laneCount(b, r);
-  LaneElem pad = lanePad(b, r, n);
+  LaneElem pad = r.registers.empty() ? lanePad(b, r, n) : registerPad(b, r, n);
   Value tid =
       b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
   Value c32 = b.create<arith::ConstantIndexOp>(loc, 32);
   Value inWarp = b.create<arith::RemUIOp>(loc, tid, c32);
   Value lane = r.subgroup ? inWarp : tid;
-  LaneElem v = laneElement(b, loc, r.inputs, lane, n, pad);
+  LaneElem v;
+  if (r.registers.empty()) {
+    v = laneElement(b, loc, r.inputs, lane, n, pad);
+  } else {
+    Value inRange =
+        b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt, lane, n);
+    for (auto [reg, p] : llvm::zip(r.registers, pad))
+      v.push_back(b.create<arith::SelectOp>(loc, inRange, reg, p));
+  }
   v = deviceTree(b, loc, v, r.kind, /*broadcast=*/r.subgroup);
   if (r.subgroup)
     return v;
@@ -1988,12 +2048,167 @@ static Value laneResult(const LaneReduction &r, const LaneElem &e) {
 /// Replaces a lane reduction with its expansion: the host's loops with
 /// `serial`, and otherwise the expansion that `device` picks.
 template <typename OpTy>
-static void expandLaneReduction(OpBuilder &b, OpTy op, bool device) {
+static void expandLaneReduction(OpBuilder &b, OpTy op, bool device,
+                                ValueRange registers = {}) {
   LaneReduction r = laneReduction(op);
+  r.registers.assign(registers.begin(), registers.end());
   LaneElem e = device && !op.getSerial() ? expandLaneReductionOnDevice(b, r)
                                          : expandLaneReductionOnHost(b, r);
   op.getResult().replaceAllUsesWith(laneResult(r, e));
   op.erase();
+}
+
+/// The tile behind the input of a lane reduction whose lanes can keep their
+/// elements in registers: the `memref.alloca` itself, or the alloca of a row in
+/// the code of a subgroup. A subgroup needs `own_row`.
+template <typename OpTy>
+static memref::AllocaOp laneTile(OpTy op, Value input) {
+  if (op.getSubgroup() && !op.getOwnRow())
+    return {};
+  if (auto row = input.getDefiningOp<memref::ReinterpretCastOp>();
+      row && op.getSubgroup())
+    input = row.getSource();
+  return input.getDefiningOp<memref::AllocaOp>();
+}
+
+/// Whether every use of `tile` is a store with `vx.lane_element` of `level`, a
+/// reduction in `reads`, or a drop. In the code of a subgroup, the uses are on
+/// the rows of the tile.
+static bool onlyLaneElements(Value tile, StringRef level,
+                             const llvm::SmallPtrSetImpl<Operation *> &reads,
+                             bool row = false) {
+  for (OpOperand &use : tile.getUses()) {
+    Operation *user = use.getOwner();
+    if (auto store = dyn_cast<memref::StoreOp>(user)) {
+      auto attr = store->getAttrOfType<StringAttr>("vx.lane_element");
+      if (!attr || attr.getValue() != level || store.getMemRef() != tile)
+        return false;
+    } else if (auto cast = dyn_cast<memref::ReinterpretCastOp>(user)) {
+      if (row || level != "subgroup" ||
+          !onlyLaneElements(cast.getResult(), level, reads, /*row=*/true))
+        return false;
+    } else if (!reads.contains(user) && !(isa<vx::DropOp>(user) && !row)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// docs/lane_reductions.md: a lane that alone writes its element of a tile
+/// keeps the element in a register, when the tile is only there for lane
+/// reductions. Then the device copy of a kernel has no tile in memory. The
+/// `vx.lane_element` stores say which lane writes an element. Expands each of
+/// those reductions, and gives the others back.
+static SmallVector<Operation *>
+expandLaneReductionsFromRegisters(gpu::GPUFuncOp f,
+                                  ArrayRef<Operation *> reductions) {
+  auto tilesOf = [](Operation *op) {
+    SmallVector<memref::AllocaOp, 2> tiles;
+    auto add = [&](auto r, ValueRange inputs) {
+      for (Value v : inputs)
+        tiles.push_back(laneTile(r, v));
+    };
+    if (auto r = dyn_cast<vx::LaneReduceOp>(op))
+      add(r, ValueRange{r.getInput()});
+    else if (auto r = dyn_cast<vx::LaneArgmaxOp>(op))
+      add(r, ValueRange{r.getValues(), r.getIndices()});
+    return tiles;
+  };
+  // In the code of a block, the larger value pads with the first element,
+  // which only lane 0 has. A count that is a multiple of 32 needs no pad.
+  auto padsWithLane0 = [](Operation *op) {
+    auto r = dyn_cast<vx::LaneReduceOp>(op);
+    if (!r || r.getKind() != "max" || r.getSubgroup())
+      return false;
+    auto size = cast<MemRefType>(r.getInput().getType());
+    auto count = r.getCount().getDefiningOp<arith::ConstantIntOp>();
+    if (!count || size.isDynamicDim(0))
+      return true;
+    int64_t n = std::clamp<int64_t>(count.value(), 0, size.getDimSize(0));
+    return n % 32 != 0;
+  };
+  llvm::SmallPtrSet<Operation *, 4> chosen;
+  for (Operation *op : reductions)
+    if (!padsWithLane0(op) &&
+        llvm::all_of(tilesOf(op), [](auto t) { return static_cast<bool>(t); }))
+      chosen.insert(op);
+  // A reduction whose tile has another use reads the tile. So does every other
+  // reduction of that tile.
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (Operation *op : reductions) {
+      if (!chosen.contains(op))
+        continue;
+      bool subgroup = isa<vx::LaneReduceOp>(op)
+                          ? cast<vx::LaneReduceOp>(op).getSubgroup()
+                          : cast<vx::LaneArgmaxOp>(op).getSubgroup();
+      StringRef level = subgroup ? "subgroup" : "block";
+      for (memref::AllocaOp tile : tilesOf(op))
+        if (!onlyLaneElements(tile, level, chosen)) {
+          chosen.erase(op);
+          changed = true;
+          break;
+        }
+    }
+  }
+  // One register a tile, as a stack slot in the entry block, which LLVM puts
+  // in a register.
+  llvm::MapVector<Operation *, Value> slots;
+  Block &entry = f.getBody().front();
+  OpBuilder atEntry(&entry, entry.begin());
+  for (Operation *op : reductions)
+    for (memref::AllocaOp tile : chosen.contains(op)
+                                     ? tilesOf(op)
+                                     : SmallVector<memref::AllocaOp, 2>{}) {
+      if (slots.count(tile))
+        continue;
+      Type elem = tile.getType().getElementType();
+      Location loc = tile.getLoc();
+      Value slot =
+          atEntry.create<memref::AllocaOp>(loc, MemRefType::get({}, elem));
+      Value zero = isa<FloatType>(elem)
+                       ? atEntry.create<arith::ConstantOp>(
+                             loc, atEntry.getFloatAttr(elem, 0.0))
+                       : atEntry.create<arith::ConstantOp>(
+                             loc, atEntry.getIntegerAttr(elem, 0));
+      atEntry.create<memref::StoreOp>(loc, zero, slot);
+      slots[tile] = slot;
+    }
+  SmallVector<Operation *> rest;
+  for (Operation *op : reductions) {
+    if (!chosen.contains(op)) {
+      rest.push_back(op);
+      continue;
+    }
+    OpBuilder b(op);
+    SmallVector<Value, 2> registers;
+    for (memref::AllocaOp tile : tilesOf(op))
+      registers.push_back(
+          b.create<memref::LoadOp>(op->getLoc(), slots[tile], ValueRange{}));
+    if (auto r = dyn_cast<vx::LaneReduceOp>(op))
+      expandLaneReduction(b, r, /*device=*/true, registers);
+    else
+      expandLaneReduction(b, cast<vx::LaneArgmaxOp>(op), /*device=*/true,
+                          registers);
+  }
+  // The stores go to the registers. Then nothing uses the tiles.
+  for (auto [tile, slot] : slots) {
+    SmallVector<Operation *> users;
+    for (Operation *user : tile->getUsers()) {
+      users.push_back(user);
+      if (isa<memref::ReinterpretCastOp>(user))
+        users.append(user->getUsers().begin(), user->getUsers().end());
+    }
+    for (Operation *user : users)
+      if (auto store = dyn_cast<memref::StoreOp>(user)) {
+        OpBuilder b(store);
+        b.create<memref::StoreOp>(store.getLoc(), store.getValue(), slot);
+      }
+    for (Operation *user : llvm::reverse(users))
+      user->erase();
+    tile->erase();
+  }
+  return rest;
 }
 
 static bool isDeviceLowerableDialect(StringRef ns) {
@@ -2335,6 +2550,82 @@ static bool takesOwnership(func::CallOp call, unsigned i) {
   auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
       call, call.getCalleeAttr());
   return callee && callee.getArgAttr(i, "vx.owned");
+}
+
+// Marks where `buffer` starts or stops being used. The marker names the
+// buffer by its pointer, because the `llvm.alloca` comes later.
+// `vx-lifetime-markers-on-allocas` then puts the alloca in its place.
+template <typename Marker>
+static void markLifetime(OpBuilder &b, Location loc, Value buffer) {
+  Value index = memref::ExtractAlignedPointerAsIndexOp::create(b, loc, buffer);
+  Value address = arith::IndexCastOp::create(b, loc, b.getI64Type(), index);
+  Value ptr = LLVM::IntToPtrOp::create(
+      b, loc, LLVM::LLVMPointerType::get(b.getContext()), address);
+  Marker::create(b, loc, ptr);
+}
+
+// Under drops a heap buffer has a `memref.dealloc`, which upstream promotion
+// refuses, and a buffer passed by value is freed by the function that takes
+// it, which upstream promotion does not know. So a small buffer is promoted
+// here when nothing takes it by value, returns it or branches with it.
+//
+// Each dealloc becomes the end of the buffer's lifetime, and the place of the
+// allocation its start. The stack slot moves to the entry block later, so
+// LLVM can then give two buffers that are not used at the same time one
+// slot. A task stack has a fixed size, so this matters there.
+static void promoteOwnedBuffers(Region &region, RewriterBase &rewriter) {
+  SmallVector<memref::AllocOp> allocs;
+  region.walk([&](memref::AllocOp a) { allocs.push_back(a); });
+  for (memref::AllocOp alloc : allocs) {
+    MemRefType type = alloc.getType();
+    if (!type.hasStaticShape() || !type.getLayout().isIdentity() ||
+        !type.getElementType().isIntOrIndexOrFloat())
+      continue;
+    int64_t bits =
+        type.getNumElements() * type.getElementType().getIntOrFloatBitWidth();
+    if (bits > 4096 * 8)
+      continue;
+    SmallVector<Value> aliases{alloc.getResult()};
+    SmallVector<memref::DeallocOp> deallocs;
+    bool escapes = false;
+    for (size_t i = 0; i < aliases.size() && !escapes; ++i) {
+      for (OpOperand &use : aliases[i].getUses()) {
+        Operation *user = use.getOwner();
+        if (auto view = dyn_cast<ViewLikeOpInterface>(user);
+            view && view.getViewSource() == aliases[i]) {
+          aliases.push_back(user->getResult(0));
+        } else if (auto d = dyn_cast<memref::DeallocOp>(user)) {
+          deallocs.push_back(d);
+        } else if (auto call = dyn_cast<func::CallOp>(user)) {
+          escapes |= takesOwnership(call, use.getOperandNumber());
+        } else if (isa<func::ReturnOp, BranchOpInterface,
+                       RegionBranchTerminatorOpInterface,
+                       memref::ExtractAlignedPointerAsIndexOp>(user) ||
+                   llvm::any_of(user->getResultTypes(), [](Type t) {
+                     return isa<BaseMemRefType>(t);
+                   })) {
+          // A select or a region result can carry the buffer to a dealloc
+          // that this loop does not see.
+          escapes = true;
+        }
+      }
+    }
+    if (escapes)
+      continue;
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(alloc);
+    auto alloca = memref::AllocaOp::create(rewriter, alloc.getLoc(), type,
+                                           alloc.getAlignmentAttr());
+    markLifetime<LLVM::LifetimeStartOp>(rewriter, alloc.getLoc(),
+                                        alloca.getResult());
+    rewriter.replaceOp(alloc, alloca.getResult());
+    for (memref::DeallocOp d : deallocs) {
+      rewriter.setInsertionPoint(d);
+      markLifetime<LLVM::LifetimeEndOp>(rewriter, d.getLoc(),
+                                        alloca.getResult());
+      rewriter.eraseOp(d);
+    }
+  }
 }
 
 // Whether parameter `i` of the function `call` reaches takes a placed tensor
@@ -3213,9 +3504,30 @@ static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
       if (user != slotStore && !fn->isProperAncestor(user))
         slotUsers.push_back(user);
   b.setInsertionPoint(task);
-  auto start = LLVM::lookupOrCreateFn(b, module, "vx_task_start",
-                                      {ptrTy, ptrTy, ptrTy}, i64Ty);
+  auto start =
+      LLVM::lookupOrCreateFn(b, module, "vx_task_start_at",
+                             {ptrTy, ptrTy, ptrTy, ptrTy, i64Ty}, i64Ty);
   assert(succeeded(start) && "the runtime function has one declaration");
+  // Where the `spawn` is, so that an abort in the task can say it: the file
+  // from the module, and the line from the op. A line of 0 is not known.
+  Value file = LLVM::ZeroOp::create(b, loc, ptrTy);
+  if (auto source = module->getAttrOfType<StringAttr>("vx.source")) {
+    StringRef name = "__vx_source_file";
+    if (module.lookupSymbol<LLVM::GlobalOp>(name))
+      file = LLVM::AddressOfOp::create(b, loc, ptrTy, name);
+    else {
+      // A C string: the runtime reads it up to its 0.
+      std::string text = source.getValue().str();
+      text.push_back('\0');
+      file =
+          LLVM::createGlobalString(loc, b, name, text, LLVM::Linkage::Internal);
+    }
+  }
+  int64_t spawnLine = 0;
+  if (auto line = task->getAttrOfType<IntegerAttr>("vx.line"))
+    spawnLine = line.getInt();
+  Value lineValue =
+      LLVM::ConstantOp::create(b, loc, i64Ty, b.getI64IntegerAttr(spawnLine));
   Value null = LLVM::ZeroOp::create(b, loc, ptrTy);
   Value end = LLVM::GEPOp::create(b, loc, ptrTy, envType, null,
                                   ArrayRef<LLVM::GEPArg>{1});
@@ -3242,7 +3554,8 @@ static LogicalResult lowerTask(vx::SpawnOp task, Value group, ModuleOp module,
   Value fnPtr =
       UnrealizedConversionCastOp::create(b, loc, ptrTy, fnRef).getResult(0);
   Value index =
-      LLVM::CallOp::create(b, loc, *start, ValueRange{group, fnPtr, newEnv})
+      LLVM::CallOp::create(b, loc, *start,
+                           ValueRange{group, fnPtr, newEnv, file, lineValue})
           .getResult();
   LLVM::StoreOp::create(b, loc, group, field(b, newEnv, 0));
   LLVM::StoreOp::create(b, loc, index, field(b, newEnv, 1));
@@ -3380,6 +3693,11 @@ static LogicalResult lowerTasks(ModuleOp module) {
     op.emitError("a task outside a tasks block");
     return WalkResult::interrupt();
   });
+  // Each join waited for its task above, as a use of the task's value.
+  SmallVector<vx::TaskJoinOp> joins;
+  module.walk([&](vx::TaskJoinOp op) { joins.push_back(op); });
+  for (vx::TaskJoinOp op : joins)
+    op.erase();
   return failure(stray.wasInterrupted());
 }
 
@@ -3640,6 +3958,7 @@ struct ConvertVxToStandardPass
           if (isa<vx::LaneReduceOp, vx::LaneArgmaxOp>(op))
             reductions.push_back(op);
         });
+        reductions = expandLaneReductionsFromRegisters(gpuFunc, reductions);
         for (Operation *op : reductions) {
           OpBuilder b(op);
           if (auto r = dyn_cast<vx::LaneReduceOp>(op))
@@ -4583,6 +4902,14 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
       payload.push_back('\0');
     }
 
+    // `offload: true` or `false` of a declared topology. The runtime sends a
+    // kernel with `offload=0` to no remote worker: the checker let it read
+    // `managed: cached` host memory with no transfer.
+    if (auto offload = op->getAttrOfType<BoolAttr>("vx.offload")) {
+      payload += offload.getValue() ? "offload=1" : "offload=0";
+      payload.push_back('\0');
+    }
+
     // How many iterations the kernel's grid-strided loop covers, when the
     // frontend proved it stridable (#251). The runtime sizes the launch from
     // this; absent, the kernel is serial and gets the 1x1x1 launch it needs.
@@ -5220,6 +5547,8 @@ static void markKernelBuffers(gpu::GPUModuleOp original, ModuleOp device) {
 /// leave the host module half-lowered -- the copy is what gets damaged.
 ///
 /// Returns the empty string on failure, with `error` naming the stage.
+static std::unique_ptr<Pass> createLifetimeMarkersOnAllocasPass();
+
 static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
                                  std::string &error) {
   MLIRContext *context = gpuModule.getContext();
@@ -5299,6 +5628,9 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
   pm.addPass(createConvertVectorToLLVMPass());
   pm.addPass(createGpuToLLVMConversionPass());
   pm.addPass(createReconcileUnrealizedCastsPass());
+  // The host runs this pass after the device code is written, so the
+  // lifetime markers of a kernel's stack slots need it here.
+  pm.addPass(createLifetimeMarkersOnAllocasPass());
 
   PassManager toBinary(context, ModuleOp::getOperationName());
   GpuModuleToBinaryPassOptions binary;
@@ -6087,89 +6419,13 @@ struct PromoteBuffersToStackPass
     return reason;
   }
 
-  // Marks where `buffer` starts or stops being used. The marker names the
-  // buffer by its pointer, because the `llvm.alloca` comes later.
-  // `vx-lifetime-markers-on-allocas` then puts the alloca in its place.
-  template <typename Marker>
-  static void markLifetime(OpBuilder &b, Location loc, Value buffer) {
-    Value index =
-        memref::ExtractAlignedPointerAsIndexOp::create(b, loc, buffer);
-    Value address = arith::IndexCastOp::create(b, loc, b.getI64Type(), index);
-    Value ptr = LLVM::IntToPtrOp::create(
-        b, loc, LLVM::LLVMPointerType::get(b.getContext()), address);
-    Marker::create(b, loc, ptr);
-  }
-
-  // Under drops a heap buffer has a `memref.dealloc`, which upstream promotion
-  // refuses, and a buffer passed by value is freed by the function that takes
-  // it, which upstream promotion does not know. So a small buffer is promoted
-  // here when nothing takes it by value, returns it or branches with it.
-  //
-  // Each dealloc becomes the end of the buffer's lifetime, and the place of the
-  // allocation its start. The stack slot moves to the entry block later, so
-  // LLVM can then give two buffers that are not used at the same time one
-  // slot. A task stack has a fixed size, so this matters there.
-  static void promoteOwnedBuffers(func::FuncOp func) {
-    SmallVector<memref::AllocOp> allocs;
-    func.walk([&](memref::AllocOp a) { allocs.push_back(a); });
-    for (memref::AllocOp alloc : allocs) {
-      MemRefType type = alloc.getType();
-      if (!type.hasStaticShape() || !type.getLayout().isIdentity() ||
-          !type.getElementType().isIntOrIndexOrFloat())
-        continue;
-      int64_t bits =
-          type.getNumElements() * type.getElementType().getIntOrFloatBitWidth();
-      if (bits > 4096 * 8)
-        continue;
-      SmallVector<Value> aliases{alloc.getResult()};
-      SmallVector<memref::DeallocOp> deallocs;
-      bool escapes = false;
-      for (size_t i = 0; i < aliases.size() && !escapes; ++i) {
-        for (OpOperand &use : aliases[i].getUses()) {
-          Operation *user = use.getOwner();
-          if (auto view = dyn_cast<ViewLikeOpInterface>(user);
-              view && view.getViewSource() == aliases[i]) {
-            aliases.push_back(user->getResult(0));
-          } else if (auto d = dyn_cast<memref::DeallocOp>(user)) {
-            deallocs.push_back(d);
-          } else if (auto call = dyn_cast<func::CallOp>(user)) {
-            escapes |= takesOwnership(call, use.getOperandNumber());
-          } else if (isa<func::ReturnOp, BranchOpInterface,
-                         RegionBranchTerminatorOpInterface,
-                         memref::ExtractAlignedPointerAsIndexOp>(user) ||
-                     llvm::any_of(user->getResultTypes(), [](Type t) {
-                       return isa<BaseMemRefType>(t);
-                     })) {
-            // A select or a region result can carry the buffer to a dealloc
-            // that this loop does not see.
-            escapes = true;
-          }
-        }
-      }
-      if (escapes)
-        continue;
-      OpBuilder builder(alloc);
-      auto alloca = memref::AllocaOp::create(builder, alloc.getLoc(), type,
-                                             alloc.getAlignmentAttr());
-      markLifetime<LLVM::LifetimeStartOp>(builder, alloc.getLoc(),
-                                          alloca.getResult());
-      alloc.replaceAllUsesWith(alloca.getResult());
-      alloc.erase();
-      for (memref::DeallocOp d : deallocs) {
-        builder.setInsertionPoint(d);
-        markLifetime<LLVM::LifetimeEndOp>(builder, d.getLoc(),
-                                          alloca.getResult());
-        d.erase();
-      }
-    }
-  }
-
   void runOnOperation() override {
     func::FuncOp func = getOperation();
     if (reasonToKeepOnHeap(func))
       return;
     if (func->getParentOfType<ModuleOp>()->hasAttr("vx.drops")) {
-      promoteOwnedBuffers(func);
+      IRRewriter rewriter(func.getContext());
+      promoteOwnedBuffers(func.getBody(), rewriter);
       return;
     }
     OpPassManager pm(func::FuncOp::getOperationName());
@@ -6916,10 +7172,10 @@ struct ProbeStackPass
   }
 };
 
-// `vx-promote-buffers-to-stack` marks the lifetime of a stack buffer by its
-// pointer. LLVM wants the `alloca` itself, so this pass follows the pointer
-// back through the memref descriptor to the alloca. A marker that it cannot
-// follow is erased: with no markers, the buffer lives for the whole call.
+// `promoteOwnedBuffers` marks the lifetime of a stack buffer by its pointer.
+// LLVM wants the `alloca` itself, so this pass follows the pointer back through
+// the memref descriptor to the alloca. A marker that it cannot follow is
+// erased: with no markers, the buffer lives for the whole call.
 struct LifetimeMarkersOnAllocasPass
     : public PassWrapper<LifetimeMarkersOnAllocasPass,
                          OperationPass<ModuleOp>> {
@@ -6968,6 +7224,10 @@ struct LifetimeMarkersOnAllocasPass
     }
   }
 };
+
+static std::unique_ptr<Pass> createLifetimeMarkersOnAllocasPass() {
+  return std::make_unique<LifetimeMarkersOnAllocasPass>();
+}
 
 // Upstream's `inline` pass inlines every call it can. A function that calls
 // another three times, which calls another three times, and so on, then holds
@@ -7054,9 +7314,7 @@ void registerVxPasses() {
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<ProbeStackPass>();
   });
-  mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
-    return std::make_unique<LifetimeMarkersOnAllocasPass>();
-  });
+  mlir::registerPass(createLifetimeMarkersOnAllocasPass);
   mlir::registerPass([]() -> std::unique_ptr<mlir::Pass> {
     return std::make_unique<OrderRelaxedReadsPass>();
   });

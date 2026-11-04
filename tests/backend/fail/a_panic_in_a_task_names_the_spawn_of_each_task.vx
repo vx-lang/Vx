@@ -1,0 +1,51 @@
+//===- a_panic_in_a_task_names_the_spawn_of_each_task.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A panic in a task stops the program. After the message, it prints the line of the `spawn` that
+// started the task, and then the line of the `spawn` of each task around it.
+//
+// RUN: not vxc %s --run 2>&1 | FileCheck %s
+// RUN: not vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// RUN: env VX_TASK_RUNTIME=shared not vxc %s --run 2>&1 | FileCheck %s
+
+fn work(n : i32) -> i32 {
+  if n > 1 {
+    panic("too big");
+  }
+  return n;
+}
+
+// The panic is in the body of the task.
+fn inner(n : i32) -> i32 {
+  let r = tasks {
+    let a = spawn {
+      if n > 1 {
+        panic("too big in the body");
+      }
+      work(n)
+    };
+    a.join()
+  };
+  return r;
+}
+
+// CHECK: panic: too big in the body
+// CHECK-NEXT: {{^}}  in the task from the `spawn` at {{.*}}a_panic_in_a_task_names_the_spawn_of_each_task.vx:25{{$}}
+// CHECK-NEXT: {{^}}  in the task from the `spawn` at {{.*}}a_panic_in_a_task_names_the_spawn_of_each_task.vx:45{{$}}
+// CHECK-NOT: in the task
+fn main() -> i32 {
+  let r = tasks {
+    let a = spawn {
+      inner(1)
+    };
+    let b = spawn {
+      inner(2)
+    };
+    a.join() + b.join()
+  };
+  return r;
+}

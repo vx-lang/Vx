@@ -123,7 +123,7 @@ impl Lowerer<'_> {
         let open = self.code.len();
         let i = self.emit_value(Opcode::AffineFor, start.reg, end.reg, elem, 0);
         self.affine_open.push(open);
-        self.bind_local(f.iter.as_str().into(), i);
+        self.bind_local(f.iter.as_str().into(), i, false);
         let lowered = self.lower_block(&f.body);
         self.affine_open.pop();
         lowered?;

@@ -987,6 +987,24 @@ impl<'a> TypeChecker<'a> {
     /// Whether a memory space is declared `managed: cached` (hardware-coherent), so an implicit
     /// cross-space use of a value there — or a relaxed transfer into it — is safe. Undeclared
     /// spaces are treated as `explicit` (the strict default), preserving the older behavior.
+    /// Whether the fleet may run `top` on a worker of another node (`offload: true`). Such a
+    /// worker does not share this node's memory, so `managed: cached` does not reach it. A
+    /// built-in device has no declaration to mark, and a manifest can send it anywhere, so it
+    /// counts as one. The host does not.
+    pub(crate) fn topology_offloads(&self, top: &Topology) -> bool {
+        match top {
+            Topology::Custom(name) => self
+                .env
+                .topologies
+                .get(name)
+                .is_none_or(|d| d.descriptor.offload),
+            Topology::Slice(inner, ..) => self.topology_offloads(inner),
+            // The host runs the program itself, so its own code reads its own memory.
+            Topology::CPU | Topology::CpuAvx512 | Topology::CpuNeon => false,
+            _ => true,
+        }
+    }
+
     pub(crate) fn space_is_cached(&self, space: &MemorySpace) -> bool {
         self.env.memories.values().any(|d| {
             d.managed == crate::syntax::Management::Cached

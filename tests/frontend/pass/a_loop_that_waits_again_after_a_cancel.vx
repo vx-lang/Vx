@@ -51,9 +51,9 @@ fn send_in_a_while(tx : &Sender<i64>) -> void {
 }
 
 // CHECK: Warning[W1035] at {{.*}}a_loop_that_waits_again_after_a_cancel.vx:[[@LINE+7]]:7: this arm can take 'Cancelled'
-fn select_in_a_loop(rs : &Vec<Receiver<i64>>) -> void {
+fn select_in_a_loop(sel : &mut Selector<i64>) -> void {
   loop {
-    match select(rs) {
+    match sel.select() {
       Result<Selected<i64>, RecvError>::Ok(s) => {
         println!("channel {} gave {}", s.index, s.value);
       }
@@ -197,8 +197,8 @@ fn main() -> i32 {
   let (tx, rx) = channel<i64>(4);
   recv_in_a_loop(&rx);
   send_in_a_while(&tx);
-  let rs = Vec<Receiver<i64>>::new();
-  select_in_a_loop(&rs);
+  let mut sel = Selector<i64>::new(Vec<Receiver<i64>>::new());
+  select_in_a_loop(&mut sel);
   leaves_with_break(&rx);
   leaves_with_a_break_in_an_if(&tx, true);
   names_the_error(&tx);

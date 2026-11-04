@@ -1,0 +1,15 @@
+LISA arc_last_drop_release_acquire
+(* Two tasks each hold an `Arc`, so the count starts at 2. P0 reads the value, and then drops its
+   `Arc`: a release decrement. P1 drops its `Arc`. When P1 takes the count to 0, it runs an
+   acquire fence and then frees the value (the write). So P0's read happens before the free.
+   Expect: sometimes, no data race. *)
+{ count = 2; value = 0; }
+ P0                            | P1                            ;
+ r[plain] r2 value             | rmw[rel] r0 (add r0 -1) count ;
+ rmw[rel] r0 (add r0 -1) count | mov r3 (neq r0 1)             ;
+                               | b[] r3 LC01                   ;
+                               | f[acq]                        ;
+                               | w[plain] value 9              ;
+                               | LC01:                         ;
+scopes: (system P0 P1)
+exists (1:r0 = 1)

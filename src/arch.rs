@@ -217,6 +217,10 @@ pub struct TopologyDescriptor {
     /// The levels of a launch that `across` loops name -- `levels: [..]` in the declaration,
     /// outside in. `None` when the fleet file gives none: an `across` loop on it is E6032.
     pub levels: Option<Vec<Level>>,
+    /// The fleet may run this topology on a worker of another node -- `offload: true` in the
+    /// declaration. Such a worker does not share the memory of this node, so a host tensor in its
+    /// region needs a `transfer`, also from `managed: cached` memory. False by default.
+    pub offload: bool,
 }
 
 /// What a level of a launch is, given by its place in `levels:`: the first is a block, the last
@@ -892,6 +896,7 @@ fn builtin_descriptors() -> HashMap<crate::syntax::TopologyKind, TopologyDescrip
         dtypes: None,
         chip: None,
         levels: None,
+        offload: false,
     };
     let mut m = HashMap::new();
     m.insert(K::CPU, d(CPUDRAM, &[CPUDRAM, NPUHBM]));
@@ -2097,6 +2102,7 @@ mod tests {
             dtypes: None,
             chip: None,
             levels: None,
+            offload: false,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -2132,6 +2138,7 @@ mod tests {
             dtypes: None,
             chip: None,
             levels: None,
+            offload: false,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -2172,6 +2179,7 @@ mod tests {
             dtypes: None,
             chip: None,
             levels: None,
+            offload: false,
         };
         let mut g = TransferCostGraph::default();
         g.apply_descriptor_edges(&desc);
@@ -2423,6 +2431,7 @@ mod tests {
                 dtypes: None,
                 chip: None,
                 levels: None,
+                offload: false,
             },
         }
     }
@@ -2506,6 +2515,7 @@ mod tests {
             dtypes: None,
             chip: None,
             levels: None,
+            offload: false,
         };
         graph.apply_descriptor_edges(&desc);
         graph.precompute_costs();
@@ -2539,6 +2549,7 @@ mod tests {
             dtypes: None,
             chip: None,
             levels: None,
+            offload: false,
         };
         graph.apply_descriptor_edges(&desc);
         graph.precompute_costs();
@@ -2560,6 +2571,7 @@ mod tests {
             dtypes: None,
             chip: None,
             levels: None,
+            offload: false,
         };
         assert!(
             descriptor_coherence(&bad, &graph).contains(&CoherenceIssue::MemoryUnreachableFromHost)
@@ -2574,6 +2586,7 @@ mod tests {
             dtypes: None,
             chip: None,
             levels: None,
+            offload: false,
         };
         assert!(descriptor_coherence(&bad2, &graph).contains(&CoherenceIssue::DefaultNotVisible));
 
@@ -2586,6 +2599,7 @@ mod tests {
             dtypes: None,
             chip: None,
             levels: None,
+            offload: false,
         };
         assert!(descriptor_coherence(&good, &graph).is_empty());
     }
@@ -2691,6 +2705,7 @@ mod tests {
                     dtypes: None,
                     chip: None,
                     levels: None,
+                    offload: false,
                 },
             );
         }

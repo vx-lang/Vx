@@ -1,8 +1,8 @@
 /-!
 # The round-robin bound of `select` (M3)
 
-`select` in `stdlib/std/sync/channel.vx` takes a list of `n` receivers. A call tries them in a
-round, from a start index: `start`, `start + 1`, ... modulo `n`. It returns the first one that
+`Selector::select` in `stdlib/std/sync/channel.vx` holds a list of `n` receivers. A call tries
+them in a round, from a start index: `start`, `start + 1`, ... modulo `n`. It returns the first one that
 gives a value. `pick` models this search. Each try sees whether its receiver has a value then
 (`ready`).
 
@@ -11,12 +11,13 @@ it. `within_n` shows the bound for each rule of the start that moves the start p
 receiver that the last call chose, but not past the ready one. Two rules do this:
 
 - `after_last_within_n`: the next call starts after the receiver that this call chose. This is
-  the rule of the design.
-- `code_within_n`: the rule of the code. The start is the count of channel events modulo `n`.
-  Each value that `select` takes is one event. So when no other event comes between two calls,
-  the start moves by one.
-- `code_starves`: with the rule of the code, other events can keep each call from choosing a
-  ready receiver. With two receivers and two events between calls, each call starts at 0.
+  the rule of the code: `Selector` keeps the start in its field `next`.
+- `count_within_n`: the rule that `select` used before. The start is the count of channel events
+  modulo `n`. Each value that `select` takes is one event. So when no other event comes between
+  two calls, the start moves by one.
+- `count_starves`: with the rule of the count, other events can keep each call from choosing a
+  ready receiver. With two receivers and two events between calls, each call starts at 0. This
+  is why the code changed to the rule of `after_last_within_n`.
 -/
 
 namespace Vx.Select
@@ -99,7 +100,7 @@ theorem within_n {n i : Nat} {start : Nat → Nat} {ready : Nat → Nat → Bool
   obtain ⟨c, h1, h2, h3⟩ := within hnext d c₀ hd hoff fun c h1 h2 => hready c h1 (by omega)
   exact ⟨c, h1, by omega, h3⟩
 
-/-- The rule of the design: the next call starts after the receiver that this call chose. -/
+/-- The rule of the code: the next call starts after the receiver that this call chose. -/
 theorem after_last_within_n {n i : Nat} {start : Nat → Nat} {ready : Nat → Nat → Bool}
     (hi : i < n)
     (hstart : ∀ c k, pick n (start c) (ready c) = some k → start (c + 1) = (k + 1) % n)
@@ -110,9 +111,10 @@ theorem after_last_within_n {n i : Nat} {start : Nat → Nat} {ready : Nat → N
   congr 1
   omega
 
-/-- The rule of the code: the start is the count `seen c` of channel events modulo `n`. When the
-only event between two calls is the value that the first call took, the count goes up by one. -/
-theorem code_within_n {n i : Nat} {seen : Nat → Nat} {ready : Nat → Nat → Bool} (hi : i < n)
+/-- The rule that `select` used before: the start is the count `seen c` of channel events modulo
+`n`. When the only event between two calls is the value that the first call took, the count goes
+up by one. -/
+theorem count_within_n {n i : Nat} {seen : Nat → Nat} {ready : Nat → Nat → Bool} (hi : i < n)
     {c₀ : Nat} (hseen : ∀ c, c₀ ≤ c → seen (c + 1) = seen c + 1)
     (hready : ∀ c, c₀ ≤ c → c < c₀ + n → ready c i = true) :
     ∃ c, c₀ ≤ c ∧ c < c₀ + n ∧ pick n (seen c % n) (ready c) = some i := by
@@ -129,11 +131,11 @@ theorem code_within_n {n i : Nat} {seen : Nat → Nat} {ready : Nat → Nat → 
     congr 1
     omega
 
-/-- The rule of the code does not give M3 when other events come between the calls. Two
+/-- The rule of the count does not give M3 when other events come between the calls. Two
 receivers have a value at each call. Each call takes one value, and then a `send` to the
 receiver 0 adds a second event. So the count at the call `c` is `2 * c`, each call starts at 0,
 and no call chooses the receiver 1. -/
-theorem code_starves : ∀ c, pick 2 ((2 * c) % 2) (fun _ => true) ≠ some 1 := by
+theorem count_starves : ∀ c, pick 2 ((2 * c) % 2) (fun _ => true) ≠ some 1 := by
   intro c
   rw [Nat.mul_mod_right]
   decide

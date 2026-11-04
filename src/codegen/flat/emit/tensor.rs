@@ -1392,7 +1392,18 @@ impl FnEmit<'_> {
                     }
                 }
             }
-            self.body += &format!("  memref.store {val}, {base}[{ic}] : {memty}\n");
+            // docs/lane_reductions.md: the device copy of a kernel keeps this lane's element in a
+            // register.
+            let lane = match ins.imm {
+                crate::bytecode::TENSOR_STORE_BLOCK_LANE_ELEMENT => {
+                    " {vx.lane_element = \"block\"}"
+                }
+                crate::bytecode::TENSOR_STORE_SUBGROUP_LANE_ELEMENT => {
+                    " {vx.lane_element = \"subgroup\"}"
+                }
+                _ => "",
+            };
+            self.body += &format!("  memref.store {val}, {base}[{ic}]{lane} : {memty}\n");
         } else if let Some(rowty) = self
             .mem_of
             .get(ins.operand1.0 as usize)

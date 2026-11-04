@@ -22,8 +22,8 @@
 //===----------------------------------------------------------------------===//
 use crate::symbol::Symbol;
 use crate::syntax::{
-    ElementType, EnumDecl, Expr, Function, FunctionCallExpr, ImplBlock, Pattern, Statement,
-    StructDecl, Type,
+    ElementType, EnumDecl, Expr, Function, FunctionCallExpr, GenericParam, ImplBlock, Pattern,
+    Statement, StructDecl, Type,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -116,7 +116,7 @@ fn holds_nothing(ty: &Type) -> bool {
 }
 
 /// Whether the walk looks at a function that returns `ty`.
-fn can_hold_reference(ty: &Type) -> bool {
+pub(crate) fn can_hold_reference(ty: &Type) -> bool {
     match ty {
         Type::Scalar(e) => matches!(e, ElementType::Generic(_)),
         Type::Borrow { .. }
@@ -197,6 +197,81 @@ impl<'d> Decls<'d> {
         };
         Self::lookup(&self.enums, head)
             .is_some_and(|e| e.variants.iter().any(|(v, _)| v.as_ref() == variant))
+    }
+
+    /// The types of the parts of a value of type `ty`: the fields of a declared struct, or the
+    /// payloads of a declared enum, with the type arguments of `ty` in place. `None` for a type
+    /// that the walk cannot look into, such as a type parameter.
+    fn parts(&self, ty: &Type) -> Option<Vec<Type>> {
+        let name = Self::type_name(ty)?;
+        let (generics, types): (&[GenericParam], Vec<&Type>) =
+            if let Some(s) = Self::lookup(&self.structs, name) {
+                (&s.generics, s.fields.iter().map(|(_, t)| t).collect())
+            } else {
+                let e = Self::lookup(&self.enums, name)?;
+                let payloads = e.variants.iter().flat_map(|(_, p)| p.iter().flatten());
+                (&e.generics, payloads.collect())
+            };
+        let args: &[Type] = match ty {
+            Type::GenericInstance(_, args) => args,
+            _ => &[],
+        };
+        let mapping: HashMap<Symbol, Type> = generics
+            .iter()
+            .zip(args)
+            .filter_map(|(g, a)| match g {
+                GenericParam::Type { name, .. } => Some((name.clone(), a.clone())),
+                _ => None,
+            })
+            .collect();
+        Some(types.into_iter().map(|t| t.substitute(&mapping)).collect())
+    }
+
+    /// Whether a call given a value of type `ty` can store a reference where the value points:
+    /// through a `&mut` or a raw pointer to memory that can hold one, at any depth of the value.
+    /// A `&` gives no write, unless what it points at holds a `SharedCell`.
+    pub(crate) fn can_store_through(&self, ty: &Type, depth: usize) -> bool {
+        if holds_nothing(ty) {
+            return false;
+        }
+        if depth > 8 {
+            return true;
+        }
+        match ty {
+            Type::Borrow {
+                is_mut: false,
+                inner,
+                ..
+            } => self.holds_shared_cell(inner, depth + 1),
+            Type::Borrow { inner, .. } | Type::Pointer(inner, ..) | Type::Ref(inner, _) => {
+                !holds_nothing(inner)
+            }
+            _ => self
+                .parts(ty)
+                .is_none_or(|parts| parts.iter().any(|t| self.can_store_through(t, depth + 1))),
+        }
+    }
+
+    /// Whether a value of type `ty` holds a `SharedCell`, through which code can write behind a
+    /// `&`. It is Rust's `UnsafeCell`.
+    fn holds_shared_cell(&self, ty: &Type, depth: usize) -> bool {
+        if holds_nothing(ty) {
+            return false;
+        }
+        if depth > 8 {
+            return true;
+        }
+        match ty {
+            Type::Borrow { inner, .. } | Type::Pointer(inner, ..) | Type::Ref(inner, _) => {
+                self.holds_shared_cell(inner, depth + 1)
+            }
+            _ if Self::type_name(ty).and_then(|n| n.rsplit("::").next()) == Some("SharedCell") => {
+                true
+            }
+            _ => self
+                .parts(ty)
+                .is_none_or(|parts| parts.iter().any(|t| self.holds_shared_cell(t, depth + 1))),
+        }
     }
 }
 
@@ -299,6 +374,8 @@ struct ProvWalk<'a> {
     /// The body stores a value that may hold a reference through a pointer, or gives one to a
     /// call. Memory that a parameter reaches may then hold anything.
     stores: bool,
+    /// Where each value that the body stores where the walk does not follow it may point, joined.
+    stored: Prov,
     /// The body has something the walk does not read, such as a macro that was not expanded.
     unknown: bool,
     /// What the walk knows grew in this pass, so it walks again.
@@ -306,6 +383,8 @@ struct ProvWalk<'a> {
     decls: &'a Decls<'a>,
     /// The summaries known so far for the functions this body calls.
     callee: &'a dyn Fn(&str) -> Option<ReturnProvenance>,
+    /// The parameters of a called function that it says `!keeps` for, as bits.
+    not_kept: &'a dyn Fn(&str) -> u32,
 }
 
 /// The variable at the root of `x`, `x.f` and `x[i]`.
@@ -323,6 +402,7 @@ impl<'a> ProvWalk<'a> {
         func: &Function,
         decls: &'a Decls<'a>,
         callee: &'a dyn Fn(&str) -> Option<ReturnProvenance>,
+        not_kept: &'a dyn Fn(&str) -> u32,
     ) -> Self {
         let mut walk = ProvWalk {
             vars: HashMap::new(),
@@ -330,10 +410,12 @@ impl<'a> ProvWalk<'a> {
             returned: Prov::NONE,
             saw_return: false,
             stores: false,
+            stored: Prov::NONE,
             unknown: false,
             changed: false,
             decls,
             callee,
+            not_kept,
         };
         for (slot, (name, ty)) in func.params.iter().enumerate() {
             let v = walk.param_value(slot, ty);
@@ -402,6 +484,7 @@ impl<'a> ProvWalk<'a> {
 
     /// The body stores `v` where the walk does not follow it.
     fn store_somewhere(&mut self, v: Prov) {
+        self.stored = self.stored.join(v);
         if v != Prov::NONE && !self.stores {
             self.stores = true;
             self.changed = true;
@@ -696,15 +779,28 @@ impl<'a> ProvWalk<'a> {
         if self.decls.is_variant(fc.name.as_ref()) {
             return given;
         }
-        // The function may store what it is given where a parameter reaches.
-        self.store_somewhere(given);
         let name = fc.name.as_ref();
         let name = match name.find('<') {
             Some(i) if name.ends_with('>') => &name[..i],
             _ => name,
         };
         // A variable of the same name, a closure, hides the function.
-        if self.vars.contains_key(name) {
+        let hidden = self.vars.contains_key(name);
+        let not_kept = if hidden { 0 } else { (self.not_kept)(name) };
+        // The function may store what it is given where a parameter reaches, through an argument
+        // that lets it write there. It stores no argument that it says `!keeps` for.
+        if typed.iter().any(|(v, ty)| {
+            *v != Prov::NONE
+                && ty
+                    .as_ref()
+                    .is_none_or(|t| self.decls.can_store_through(t, 0))
+        }) {
+            let kept = (0..args.len())
+                .filter(|&i| !has(not_kept, i))
+                .fold(Prov::NONE, |acc, i| acc.join(args[i]));
+            self.store_somewhere(kept);
+        }
+        if hidden {
             return Prov::ANY;
         }
         let (into, held) = match (self.callee)(name) {
@@ -824,8 +920,19 @@ pub fn compute_return_provenance(func: &Function) -> ReturnProvenance {
 }
 
 /// As [`compute_return_provenance`], reading the fields of structs from `decls` and what a called
-/// function returns from `callee`.
+/// function returns from `callee`. The borrow clauses that `func` writes replace what the walk
+/// infers for the parameters they name.
 pub fn compute_return_provenance_with(
+    func: &Function,
+    decls: &Decls,
+    callee: &dyn Fn(&str) -> Option<ReturnProvenance>,
+) -> ReturnProvenance {
+    let inferred = infer_return_provenance(func, decls, callee);
+    crate::hir::check::borrow_clauses::apply_written_clauses(func, inferred)
+}
+
+/// What the walk finds in the body of `func`, without its written borrow clauses.
+pub fn infer_return_provenance(
     func: &Function,
     decls: &Decls,
     callee: &dyn Fn(&str) -> Option<ReturnProvenance>,
@@ -833,11 +940,37 @@ pub fn compute_return_provenance_with(
     if !can_hold_reference(&func.return_type) {
         return ReturnProvenance::NotAReference;
     }
+    walk_body(func, decls, callee, &|_| 0).result
+}
+
+/// What the walk finds in a body: the checker proves the borrow clauses of the function against
+/// it.
+pub struct BodyFacts {
+    pub result: ReturnProvenance,
+    /// The parameters that a value the body stores may point into, or where a reference in them
+    /// points, as bits. A value stored in the result does not count.
+    pub stored: u32,
+    /// The body may store a value that the walk cannot follow.
+    pub stored_anywhere: bool,
+}
+
+/// Walk the body of `func`. A call reads the summary of its callee from `callee`, and the
+/// parameters that the callee says `!keeps` for from `not_kept`.
+pub fn walk_body(
+    func: &Function,
+    decls: &Decls,
+    callee: &dyn Fn(&str) -> Option<ReturnProvenance>,
+    not_kept: &dyn Fn(&str) -> u32,
+) -> BodyFacts {
     // The exact bitsets hold 32 parameters. A function with no body, an `extern`, cannot be read.
     if func.params.len() > 32 || func.body.is_empty() {
-        return ReturnProvenance::AnyParam;
+        return BodyFacts {
+            result: ReturnProvenance::AnyParam,
+            stored: 0,
+            stored_anywhere: true,
+        };
     }
-    let mut walk = ProvWalk::new(func, decls, callee);
+    let mut walk = ProvWalk::new(func, decls, callee, not_kept);
     // Each pass can only add to what the walk knows, so the walk settles. The returned values
     // of the last pass are read with everything it knows.
     for _ in 0..16 {
@@ -853,20 +986,27 @@ pub fn compute_return_provenance_with(
         }
     }
     let r = walk.returned;
-    if walk.changed || walk.unknown || r.any || !walk.saw_return {
-        return ReturnProvenance::AnyParam;
-    }
-    if r.into | r.held != 0 {
+    let unsettled = walk.changed || walk.unknown;
+    let result = if !can_hold_reference(&func.return_type) {
+        ReturnProvenance::NotAReference
+    } else if unsettled || r.any || !walk.saw_return {
+        ReturnProvenance::AnyParam
+    } else if r.into | r.held != 0 {
         // A return of a local is an `E4005` in the function, and adds nothing here.
-        return ReturnProvenance::FromParams {
+        ReturnProvenance::FromParams {
             into: r.into,
             held: r.held,
-        };
+        }
+    } else if r.local {
+        ReturnProvenance::Local
+    } else {
+        ReturnProvenance::NotAReference
+    };
+    BodyFacts {
+        result,
+        stored: walk.stored.into | walk.stored.held,
+        stored_anywhere: unsettled || walk.stored.any,
     }
-    if r.local {
-        return ReturnProvenance::Local;
-    }
-    ReturnProvenance::NotAReference
 }
 
 /// Summarize each function in `funcs` that has a body. Functions with an empty body
@@ -1226,6 +1366,52 @@ mod tests {
         );
         assert_eq!(map[&Symbol::from("again")], ReturnProvenance::AnyParam);
         assert_eq!(map[&Symbol::from("hidden")], ReturnProvenance::AnyParam);
+    }
+
+    #[test]
+    fn a_call_given_only_shared_references_stores_nothing() {
+        // `first` gets a `&Vec<i64>` and a number, so it has nowhere to store a reference. A read
+        // through `c` after the call still knows where it points.
+        let map = summarize_all(&format!(
+            "{VEC} struct Cursor {{ data : &Vec<i64>, pos : i32 }} \
+             fn first(v : &Vec<i64>, i : i32) -> &i32 {{ return &(*v).len; }} \
+             fn step(c : &mut Cursor) -> &i32 {{ \
+               let r = first(c.data, c.pos); c.pos = c.pos + 1; return r; }}"
+        ));
+        assert_eq!(map[&Symbol::from("step")], from(0, 0b1));
+    }
+
+    #[test]
+    fn a_call_given_a_mut_reference_or_a_value_that_holds_one_may_store_through_it() {
+        let map = summarize_all(
+            "struct H { r : &i32 } \
+             struct W { m : &mut H } \
+             fn put(h : &mut H, b : &i32) -> void { h.r = b; } \
+             fn put_in(w : W, b : &i32) -> void { w.m.r = b; } \
+             fn direct(h : &mut H, b : &i32) -> &i32 { put(h, b); return h.r; } \
+             fn inside(h : &mut H, b : &i32) -> &i32 { put_in(W { m : h }, b); return h.r; }",
+        );
+        assert_eq!(map[&Symbol::from("direct")], ReturnProvenance::AnyParam);
+        assert_eq!(map[&Symbol::from("inside")], ReturnProvenance::AnyParam);
+    }
+
+    #[test]
+    fn a_shared_reference_to_a_shared_cell_may_store_through_it() {
+        let map = summarize_all(
+            "struct SharedCell<T> { v : T } \
+             struct H { r : &i32 } \
+             struct S { c : SharedCell<&i32> } \
+             struct Plain { n : &i32 } \
+             fn set(s : &S, b : &i32) -> void { return; } \
+             fn look(s : &Plain, b : &i32) -> void { return; } \
+             fn through_a_cell(s : &S, h : &H, b : &i32) -> &i32 { set(s, b); return h.r; } \
+             fn through_a_plain(s : &Plain, h : &H, b : &i32) -> &i32 { look(s, b); return h.r; }",
+        );
+        assert_eq!(
+            map[&Symbol::from("through_a_cell")],
+            ReturnProvenance::AnyParam
+        );
+        assert_eq!(map[&Symbol::from("through_a_plain")], from(0, 0b010));
     }
 
     #[test]

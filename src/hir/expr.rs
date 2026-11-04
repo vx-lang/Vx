@@ -151,6 +151,8 @@ impl<'a> TypeChecker<'a> {
         consume: bool,
     ) -> Type {
         let has_value = value.is_some();
+        // Taken here, so that a block inside this one does not see it.
+        let closure_body = std::mem::take(&mut self.closure_body_next);
         let tail = tail.or(value.as_ref().map(|(v, _)| &**v));
         Self::name_loop_literals(stmts);
         self.hoist_spawn_allocations(stmts);
@@ -253,7 +255,14 @@ impl<'a> TypeChecker<'a> {
             self.borrow.set_stmt(stmts.len());
             self.drops_set_stmt(stmts.len());
             self.value_unused = unused;
-            self.check_expr_type_flag(value, consume)
+            let outer = self.expected_type.clone();
+            let returned = self.current_return_type.clone();
+            if let Some(t) = returned.filter(|t| closure_body && *t != Type::Unknown) {
+                self.expected_type = Some(t);
+            }
+            let ty = self.check_expr_type_flag(value, consume);
+            self.expected_type = outer;
+            ty
         });
         if let Some(ty) = type_at_end {
             ret_ty = ty;
@@ -340,6 +349,10 @@ impl<'a> TypeChecker<'a> {
                 self.check_if_expr(expr, consume)
             }
             Expr::SizeOf(..) => Type::Scalar(ElementType::I64),
+            // A join that the check already wrote: a read of the handle.
+            Expr::FunctionCall(fc) if fc.name.as_ref() == crate::syntax::TASK_JOIN => {
+                self.check_expr_type_flag(&mut fc.args[0], consume)
+            }
             Expr::FunctionCall(..) => {
                 let ty = self.check_functioncall_expr(expr);
                 // A comptime lambda runs while compiling, so its calls fold here. With every
@@ -458,6 +471,11 @@ impl<'a> TypeChecker<'a> {
                 // Fallback type
             }
         };
+
+        // A raw pointer can point into a struct on the stack. A string literal points at a global.
+        if Self::is_raw_pointer(&ty) && !matches!(expr, Expr::StringLiteral(_)) {
+            self.borrow.drops.note_raw_pointer();
+        }
 
         // A value built inside a device region has no placement, so no placement check sees
         // it. The region's device has to be able to represent it. Silent outside a region,

@@ -724,6 +724,8 @@ pub struct MonoState {
     /// The return-provenance summary of each checked instance, by its name. In a checked body a
     /// method call is a call by name, so the summary can follow it.
     pub return_provenances: HashMap<Symbol, crate::hir::provenance::ReturnProvenance>,
+    /// The parameters that each checked instance says `!keeps` for, as bits, by its name.
+    pub not_kept: HashMap<Symbol, u32>,
 }
 
 /// How deep a chain of generic instantiations the checker will follow before giving up.

@@ -672,9 +672,12 @@ impl<'a> TypeChecker<'a> {
                                     // memory space is declared `managed: cached` (hardware-coherent)
                                     // and a path exists (`NeedsSeam`). `explicit`/undeclared spaces
                                     // and truly `Unreachable` ones still require an explicit transfer.
+                                    // A topology that can run on another node does not share
+                                    // this node's memory, so it gets no such use.
                                     let allowed = matches!(reach, Reachability::NeedsSeam { .. })
                                         && self
-                                            .space_is_cached(&self.value_memory_space(&ty, &top));
+                                            .space_is_cached(&self.value_memory_space(&ty, &top))
+                                        && !self.topology_offloads(&self.active_topology);
                                     if !allowed {
                                         self.unreadable_reported.insert(span);
                                         match reach {
