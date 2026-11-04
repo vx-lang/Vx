@@ -20,6 +20,13 @@
 //   * A descriptor that the region publishes from a view gets device memory
 //     back, with its own offset.
 //   * An empty view keeps its descriptor.
+//   * One column of a matrix gets a dense copy of its elements only, in one
+//     block. The gaps between them do not change.
+//   * A row and a column that the region publishes from a dense copy map back
+//     to the layout of the view. A view that flattens the copy has no exact
+//     map, and is refused.
+//   * A view that reaches one element twice, and dimensions that interleave,
+//     get no dense copy.
 //   * A negative offset, or an offset past the address space, is refused.
 //
 // Driven by tests/integration_test/view_copy_test.rs.
@@ -52,6 +59,14 @@ struct Desc1 {
   int64_t strides[1];
 };
 
+struct Desc2 {
+  void *allocated;
+  void *aligned;
+  int64_t offset;
+  int64_t sizes[2];
+  int64_t strides[2];
+};
+
 Desc1 vector_view(float *data, int64_t offset, int64_t size, int64_t stride) {
   Desc1 d = {data, data, offset, {size}, {stride}};
   return d;
@@ -81,20 +96,33 @@ struct Call {
                            &num_spans, &bad)) {
       return false;
     }
+    return copy_planned();
+  }
+
+  bool copy_planned() {
     for (int64_t s = 0; s < num_spans; ++s) {
       spans[s].copy = malloc(spans[s].bytes);
-      memcpy(spans[s].copy, (const void *)spans[s].start, spans[s].bytes);
+      if (spans[s].view >= 0) {
+        vx_view_copy_gather(&views[spans[s].view], spans[s].copy);
+      } else {
+        memcpy(spans[s].copy, (const void *)spans[s].start, spans[s].bytes);
+      }
     }
     vx_view_copy_point_at(views.data(), (int64_t)views.size(), spans.data());
     return true;
   }
 
-  void copy_out(std::vector<void *> descs) {
+  void copy_out(std::vector<void *> descs, std::vector<int32_t> ranks = {}) {
     for (int64_t s = 0; s < num_spans; ++s) {
-      memcpy((void *)spans[s].start, spans[s].copy, spans[s].bytes);
+      if (spans[s].view >= 0) {
+        vx_view_copy_scatter(&views[spans[s].view], spans[s].copy);
+      } else {
+        memcpy((void *)spans[s].start, spans[s].copy, spans[s].bytes);
+      }
     }
+    ranks.resize(descs.size(), 1);
     vx_view_copy_restore(views.data(), (int64_t)views.size(), spans.data(),
-                         descs.data(), (int64_t)descs.size());
+                         descs.data(), ranks.data(), (int64_t)descs.size());
     for (int64_t s = 0; s < num_spans; ++s) {
       free(spans[s].copy);
     }
@@ -275,6 +303,174 @@ void test_a_bad_offset_is_refused() {
 
 } // namespace
 
+void test_a_column_gets_a_dense_copy() {
+  // A 64x64 matrix. Element [r][c] is 100 * r + c.
+  std::vector<float> device(64 * 64);
+  for (int r = 0; r < 64; ++r) {
+    for (int c = 0; c < 64; ++c) {
+      device[r * 64 + c] = (float)(100 * r + c);
+    }
+  }
+  Desc1 column = vector_view(device.data(), 3, 64, 64);
+  Call call;
+  check(call.copy_in({&column}), "the plan for a column succeeds");
+  check(call.num_spans == 1 && call.spans[0].view == 0,
+        "the column gets a dense copy");
+  check(call.spans[0].bytes == 256,
+        "the dense copy of a column of 64 floats holds 256 bytes");
+  check(column.offset == 0 && column.strides[0] == 1,
+        "during the call, the column has the offset 0 and the stride 1");
+  double_view(column);
+  call.copy_out({&column});
+  check(column.aligned == device.data() && column.offset == 3 &&
+            column.strides[0] == 64,
+        "after the call, the column has its offset and its stride back");
+  bool right = true;
+  for (int r = 0; r < 64; ++r) {
+    for (int c = 0; c < 64; ++c) {
+      float want = (float)(100 * r + c) * (c == 3 ? 2 : 1);
+      right &= device[r * 64 + c] == want;
+    }
+  }
+  check(right, "column 3 doubled, and the other columns did not change");
+}
+
+void test_a_column_of_rank_two_gets_its_strides_back() {
+  std::vector<float> device(64 * 64);
+  Desc2 column = {device.data(), device.data(), 3, {64, 1}, {64, 1}};
+  vx_view_copy v = {};
+  v.desc = &column;
+  v.rank = 2;
+  v.elem = VX_DTYPE_F32;
+  Call call;
+  call.views.push_back(v);
+  call.spans.resize(1);
+  int64_t bad = 0;
+  vx_view_copy_plan(call.views.data(), 1, call.spans.data(), &call.num_spans,
+                    &bad);
+  call.copy_planned();
+  call.copy_out({&column}, {2});
+  check(column.offset == 3 && column.strides[0] == 64 && column.strides[1] == 1,
+        "a 64x1 column gets back its offset 3 and its strides 64 and 1");
+}
+
+int blocks = 0;
+uint64_t block_width = 0, block_pitch = 0, block_height = 0;
+
+void count_block(void *, uint64_t, uintptr_t, uint64_t width, uint64_t pitch,
+                 uint64_t height) {
+  ++blocks;
+  block_width = width;
+  block_pitch = pitch;
+  block_height = height;
+}
+
+void test_a_column_is_one_block() {
+  std::vector<float> device(64 * 64);
+  Desc1 column = vector_view(device.data(), 3, 64, 64);
+  Call call;
+  call.views.push_back(view_of(&column));
+  call.spans.resize(1);
+  int64_t bad = 0;
+  check(vx_view_copy_plan(call.views.data(), 1, call.spans.data(),
+                          &call.num_spans, &bad),
+        "the plan for a column succeeds");
+  vx_view_copy_blocks(&call.views[0], count_block, nullptr);
+  check(blocks == 1 && block_width == 4 && block_pitch == 256 &&
+            block_height == 64,
+        "a column is one block of 64 runs of 4 bytes, 256 bytes apart");
+
+  // Two rows of two elements, 4 elements apart: each row is one run.
+  Desc2 rows = {device.data(), device.data(), 1, {2, 2}, {4, 1}};
+  vx_view_copy v = {};
+  v.desc = &rows;
+  v.rank = 2;
+  v.elem = VX_DTYPE_F32;
+  vx_copy_span span = {};
+  check(vx_view_copy_plan(&v, 1, &span, &call.num_spans, &bad) && v.packed,
+        "two padded rows get a dense copy");
+  blocks = 0;
+  vx_view_copy_blocks(&v, count_block, nullptr);
+  check(blocks == 1 && block_width == 8 && block_pitch == 16 &&
+            block_height == 2,
+        "two padded rows are one block of 2 runs of 8 bytes, 16 bytes apart");
+}
+
+// A 4x2 block of a 4x8 matrix: columns 0 and 1. Element [r][c] is 10 * r + c.
+struct Block {
+  float device[32];
+  Desc2 block;
+  Call call;
+
+  Block() {
+    for (int i = 0; i < 32; ++i) {
+      device[i] = (float)(10 * (i / 8) + i % 8);
+    }
+    block = {device, device, 0, {4, 2}, {8, 1}};
+    vx_view_copy v = {};
+    v.desc = &block;
+    v.rank = 2;
+    v.elem = VX_DTYPE_F32;
+    call.views.push_back(v);
+    call.spans.resize(1);
+    int64_t bad = 0;
+    vx_view_copy_plan(call.views.data(), 1, call.spans.data(), &call.num_spans,
+                      &bad);
+    call.copy_planned();
+  }
+};
+
+void test_a_published_row_and_column_map_back() {
+  Block b;
+  check(b.call.spans[0].view == 0 && b.call.spans[0].bytes == 32,
+        "the 4x2 block gets a dense copy of 32 bytes");
+  check(b.block.strides[0] == 2 && b.block.strides[1] == 1,
+        "during the call, the block has the dense strides 2 and 1");
+  // What a region publishes: row 2 of the block, and column 1 of it.
+  Desc1 row = {b.block.aligned, b.block.aligned, 4, {2}, {1}};
+  Desc1 column = {b.block.aligned, b.block.aligned, 1, {4}, {2}};
+  b.call.copy_out({&b.block, &row, &column}, {2, 1, 1});
+  check(b.block.offset == 0 && b.block.strides[0] == 8 &&
+            b.block.strides[1] == 1,
+        "the block has its strides back");
+  check(row.aligned == b.device && row.offset == 16 && row.strides[0] == 1,
+        "the published row 2 is at the offset 16 with the stride 1");
+  check(column.aligned == b.device && column.offset == 1 &&
+            column.strides[0] == 8,
+        "the published column 1 is at the offset 1 with the stride 8");
+}
+
+void test_a_flat_view_of_a_dense_copy_has_no_map() {
+  Block b;
+  // All 8 elements as one row: in the matrix, that is no view.
+  int64_t offset = 0;
+  int64_t sizes[1] = {8}, strides[1] = {1};
+  check(!vx_view_copy_unpack(&b.call.views[0], &offset, sizes, strides, 1),
+        "a flat view of the 4x2 block has no layout in the matrix");
+  b.call.copy_out({&b.block}, {2});
+}
+
+void test_views_that_reach_an_element_twice_get_no_dense_copy() {
+  float device[64] = {0};
+  // Stride 0: each element is element 0.
+  Desc2 repeat = {device, device, 0, {4, 2}, {0, 8}};
+  // Sizes 2 and 3 with strides 4 and 2: element 4 is [0][2] and [1][0]. A
+  // dense copy of its 6 elements is smaller than the 9 that it spans.
+  Desc2 interleave = {device, device, 0, {2, 3}, {4, 2}};
+  for (Desc2 *d : {&repeat, &interleave}) {
+    vx_view_copy v = {};
+    v.desc = d;
+    v.rank = 2;
+    v.elem = VX_DTYPE_F32;
+    vx_copy_span span = {};
+    int64_t num_spans = 0, bad = 0;
+    check(vx_view_copy_plan(&v, 1, &span, &num_spans, &bad),
+          "the plan succeeds");
+    check(span.view == -1 && !v.packed,
+          "a view that reaches an element twice keeps its strides");
+  }
+}
+
 int main() {
   test_two_rows_get_one_copy_each();
   test_interleaved_columns_get_one_copy();
@@ -284,6 +480,12 @@ int main() {
   test_a_published_view_gets_device_memory_back();
   test_an_empty_view_keeps_its_descriptor();
   test_a_bad_offset_is_refused();
+  test_a_column_gets_a_dense_copy();
+  test_a_column_is_one_block();
+  test_a_column_of_rank_two_gets_its_strides_back();
+  test_a_published_row_and_column_map_back();
+  test_a_flat_view_of_a_dense_copy_has_no_map();
+  test_views_that_reach_an_element_twice_get_no_dense_copy();
 
   if (failures) {
     fprintf(stderr, "%d check(s) failed\n", failures);

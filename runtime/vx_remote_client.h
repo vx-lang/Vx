@@ -214,6 +214,8 @@ typedef struct {
   uint64_t handle; /* the worker's copy */
   void *host;      /* the first byte in local memory, NULL for an empty view */
   uint64_t bytes;  /* the bytes to copy back, 0 for an empty view */
+  void *dense;     /* the dense copy of `view` in local memory, or NULL */
+  vx_view_copy view; /* the view of a dense copy */
 } vx_remote_staged;
 
 /// Stage one zero element of type `elem` for an empty view. A worker cannot
@@ -232,6 +234,7 @@ static inline uint64_t vx_remote_stage_empty(int fd, int32_t elem,
   s = &staged[*num_staged];
   s->host = NULL;
   s->bytes = 0;
+  s->dense = NULL;
   s->handle = vx_remote_transfer(fd, zero, vx_dtype_bytes(elem), elem, scratch,
                                  scratch_len);
   if (s->handle != 0) {
@@ -349,7 +352,9 @@ static inline int vx_remote_encode_args(int fd, void **device_args,
   }
 
   /* Stage every byte from the first element a view reaches to the last one,
-     so its strides still mean what they said on the worker. */
+     so its strides still mean what they said on the worker. A strided view
+     that shares its bytes with no other view goes as its elements only, with
+     dense strides. */
   if (!vx_view_copy_plan(views, num_views, spans, &num_spans, &bad)) {
     fprintf(stderr,
             "[Vx remote] FATAL: argument %lld has the offset %lld, and its "
@@ -370,9 +375,20 @@ static inline int vx_remote_encode_args(int fd, void **device_args,
     }
     st->host = (void *)spans[s].start;
     st->bytes = spans[s].bytes;
-    st->handle =
-        vx_remote_transfer(fd, st->host, st->bytes, elem, scratch, scratch_len);
+    st->dense = NULL;
+    if (spans[s].view >= 0) {
+      /* A strided view with a span to itself goes as its elements only. */
+      st->dense = malloc(st->bytes);
+      if (!st->dense) {
+        return 0;
+      }
+      st->view = views[spans[s].view];
+      vx_view_copy_gather(&st->view, st->dense);
+    }
+    st->handle = vx_remote_transfer(fd, st->dense ? st->dense : st->host,
+                                    st->bytes, elem, scratch, scratch_len);
     if (st->handle == 0) {
+      free(st->dense);
       return 0;
     }
     ++*num_staged;
@@ -386,15 +402,20 @@ static inline int vx_remote_encode_args(int fd, void **device_args,
     if (a->handle == 0) {
       return 0;
     }
+    if (views[v].packed) {
+      for (int32_t d = 0; d < views[v].rank; ++d) {
+        a->strides[d] = vx_view_copy_dense_stride(&views[v], d);
+      }
+    }
   }
   return 1;
 }
 
 /// The record of the staged bytes that hold `handle`, or NULL when the handle
 /// names a buffer that the program placed on the worker.
-static inline const vx_remote_staged *
-vx_remote_find_staged(const vx_remote_staged *staged, int64_t num_staged,
-                      uint64_t handle) {
+static inline vx_remote_staged *vx_remote_find_staged(vx_remote_staged *staged,
+                                                      int64_t num_staged,
+                                                      uint64_t handle) {
   for (int64_t s = 0; s < num_staged; ++s) {
     uint64_t bytes = staged[s].bytes ? staged[s].bytes : 1;
     if (handle >= staged[s].handle && handle - staged[s].handle < bytes) {
@@ -406,18 +427,25 @@ vx_remote_find_staged(const vx_remote_staged *staged, int64_t num_staged,
 
 /// Copy a staged view back into local memory. Copies the bytes that staging
 /// recorded. For an empty view that is 0 bytes, so nothing is copied.
-static inline int vx_remote_fetch_staged(int fd, const vx_remote_staged *s) {
+static inline int vx_remote_fetch_staged(int fd, vx_remote_staged *s) {
+  if (s->dense) {
+    if (!vx_remote_fetch(fd, s->handle, s->dense, s->bytes)) {
+      return 0;
+    }
+    vx_view_copy_scatter(&s->view, s->dense);
+    return 1;
+  }
   return s->bytes == 0 || vx_remote_fetch(fd, s->handle, s->host, s->bytes);
 }
 
-/// Send a dispatch and apply whatever it published back into the caller's
-/// slots. Returns 0 when the worker declined, which the caller must treat as
-/// "run it here" rather than as a failure.
-static inline int vx_remote_dispatch(int fd, const void *payload,
-                                     uint64_t payload_len, void **device_args,
-                                     const int32_t *arg_tags, int64_t num_args,
-                                     vx_wire_arg *args, uint8_t *scratch,
-                                     size_t scratch_len) {
+/// vx_remote_dispatch, with the buffers it stages in `staged`. The caller
+/// frees their dense copies.
+static inline int
+vx_remote_dispatch_staged(int fd, const void *payload, uint64_t payload_len,
+                          void **device_args, const int32_t *arg_tags,
+                          int64_t num_args, vx_wire_arg *args, uint8_t *scratch,
+                          size_t scratch_len, vx_remote_staged *staged,
+                          int64_t *num_staged_out) {
   vx_wire_writer w;
   vx_wire_reader r;
   uint8_t reply[4096];
@@ -425,14 +453,13 @@ static inline int vx_remote_dispatch(int fd, const void *payload,
   uint64_t reply_len = 0;
   int32_t status = -1;
   int64_t count = 0;
-
-  vx_remote_staged staged[VX_REMOTE_MAX_STAGED];
-  int64_t num_staged = 0;
+  int64_t num_staged;
 
   if (!vx_remote_encode_args(fd, device_args, arg_tags, num_args, args, staged,
-                             &num_staged, scratch, scratch_len)) {
+                             num_staged_out, scratch, scratch_len)) {
     return 0;
   }
+  num_staged = *num_staged_out;
 
   vx_wire_writer_init(&w, scratch, scratch_len);
   vx_wire_put_dispatch(&w, payload, payload_len, args, num_args);
@@ -490,7 +517,7 @@ static inline int vx_remote_dispatch(int fd, const void *payload,
       const char *roles =
           vx_payload_field(payload, (size_t)payload_len, "roles=");
       int ai = -1, bi = -1, oi = -1;
-      const vx_remote_staged *s = NULL;
+      vx_remote_staged *s = NULL;
       if (roles && vx_parse_roles(roles, &ai, &bi, &oi) && oi >= 0 &&
           oi < num_args && args[oi].handle != 0) {
         s = vx_remote_find_staged(staged, num_staged, args[oi].handle);
@@ -515,6 +542,26 @@ static inline int vx_remote_dispatch(int fd, const void *payload,
     vx_remote_free(fd, staged[i].handle);
   }
   return 1;
+}
+
+/// Send a dispatch and apply whatever it published back into the caller's
+/// slots. Returns 0 when the worker declined, which the caller must treat as
+/// "run it here" rather than as a failure.
+static inline int vx_remote_dispatch(int fd, const void *payload,
+                                     uint64_t payload_len, void **device_args,
+                                     const int32_t *arg_tags, int64_t num_args,
+                                     vx_wire_arg *args, uint8_t *scratch,
+                                     size_t scratch_len) {
+  vx_remote_staged staged[VX_REMOTE_MAX_STAGED];
+  int64_t num_staged = 0;
+  int ok = vx_remote_dispatch_staged(fd, payload, payload_len, device_args,
+                                     arg_tags, num_args, args, scratch,
+                                     scratch_len, staged, &num_staged);
+  /* The dense copies, on every path out. */
+  for (int64_t i = 0; i < num_staged; ++i) {
+    free(staged[i].dense);
+  }
+  return ok;
 }
 
 /// Release a resident buffer, and wait for the acknowledgement.
