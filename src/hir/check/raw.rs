@@ -1455,7 +1455,7 @@ impl<'a> TypeChecker<'a> {
 
     pub(crate) fn note_a_change_to_variable(&mut self, root: String) {
         match self.fact_change_frames.last_mut() {
-            Some(frame) => frame.push(root),
+            Some(frame) => frame.push((root, false)),
             None => self.neutralize_facts_mentioning(&root),
         }
     }
@@ -1480,16 +1480,27 @@ impl<'a> TypeChecker<'a> {
             Expr::IndirectCall(ic) => &ic.args,
             _ => &[],
         };
-        let written: Vec<String> = args
+        let written = args
             .iter()
             .filter(|arg| self.callee_can_write_through(arg))
-            .filter_map(|arg| Self::arg_reborrow_base(arg).map(|(root, _)| root))
-            .collect();
-        for name in self.fact_change_frames.pop().unwrap_or_default() {
-            self.neutralize_facts_mentioning(&name);
+            .filter_map(|arg| Self::arg_reborrow_base(arg).map(|(root, _)| (root, true)))
+            .collect::<Vec<_>>();
+        let mut changes = self.fact_change_frames.pop().unwrap_or_default();
+        changes.extend(written);
+        // A method call checks the call of its function speculatively, before it proves the
+        // `requires`. So in a speculative check the changes go to the outer call.
+        if self.speculating {
+            if let Some(outer) = self.fact_change_frames.last_mut() {
+                outer.extend(changes);
+                return ty;
+            }
         }
-        for root in written {
-            self.neutralize_facts_behind(&root);
+        for (name, behind) in changes {
+            if behind {
+                self.neutralize_facts_behind(&name);
+            } else {
+                self.neutralize_facts_mentioning(&name);
+            }
         }
         ty
     }

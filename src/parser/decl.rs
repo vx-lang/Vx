@@ -1785,6 +1785,22 @@ impl<'a> Parser<'a> {
                 path: vec!["core".into(), "tuple".into()],
             });
         }
+        // `==` with a string literal is a call of `core::c_str`'s `c_str_equals`, so it brings
+        // that module with it. The module itself compares no literals, so it does not import
+        // itself.
+        let compares_text = functions
+            .iter()
+            .chain(impls.iter().flat_map(|i: &ImplBlock| i.methods.iter()))
+            .any(|f: &Function| crate::syntax::compares_with_a_string_literal(&f.body));
+        if compares_text
+            && !imports.iter().any(|i: &ImportDecl| {
+                i.path.len() == 2 && &*i.path[0] == "core" && &*i.path[1] == "c_str"
+            })
+        {
+            imports.push(ImportDecl {
+                path: vec!["core".into(), "c_str".into()],
+            });
+        }
         Ok(Program {
             module_path: self.source.to_string().into(), // Default fallback, should be overridden by pipeline
             file: None,

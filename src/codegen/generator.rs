@@ -2613,6 +2613,11 @@ impl<'c> MeliorGenerator<'c> {
             // to a type the checker already computed -- and a redundant annotation then decides
             // which code is generated. The flat path's inference already sees through it.
             Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
+            // An `if` that gives a value has the type of its first branch's last expression.
+            Expr::If(i) => match i.then_block.last()? {
+                syntax::Statement::ExprStmt(e) if !e.has_semi => self.infer_ast_type(&e.expr),
+                _ => None,
+            },
             // A number has the type the checker gave it.
             Expr::Number(n) => n.ty.clone().map(syntax::Type::Scalar),
             // `let p = &mut x` binds a reference. Recording that is what tells a later read of

@@ -649,7 +649,8 @@ pub struct TypeChecker<'a> {
     pub(crate) changed_vars: std::collections::HashSet<String>,
     /// One frame for each call being checked: the variables that the call can change. Their
     /// prover facts end after the call, because its `requires` is proved before it runs.
-    pub(crate) fact_change_frames: Vec<Vec<String>>,
+    /// `true` marks a variable whose pointer value stays: only the memory behind it changes.
+    pub(crate) fact_change_frames: Vec<Vec<(String, bool)>>,
     /// The raw-pointer facts of the body being checked.
     pub(crate) pointer_facts: crate::hir::check::pointer_facts::PointerFacts,
     /// The last id given to a base or a fact. Never saved or restored, so that two branches

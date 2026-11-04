@@ -59,6 +59,15 @@ fn a_receiver_with_no_fact(c : &mut C) -> void {
   c.take_one();
 }
 
+// The first call can make `c.n` zero, so the second call has no fact about `c.n`.
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_method_that_a_call_does_not_meet.vx:[[@LINE+5]]:5: this call to 'take_one' may not meet its precondition `self.n > 0`
+fn a_second_call_after_the_fact_ends(c : &mut C) -> void
+requires c.n > 0i64
+{
+  c.take_one();
+  c.take_one();
+}
+
 // CHECK-DAG: E8006] at {{.*}}requires_of_a_method_that_a_call_does_not_meet.vx:[[@LINE+2]]:12: this call to 'take_below_n' may not meet its precondition `x < self.n`
 fn on_a_generic_type(h : &Holder<i32>) -> i64 {
   return h.take_below_n(3i64);
@@ -68,4 +77,4 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: 4 error(s) emitted
+// CHECK: 5 error(s) emitted
