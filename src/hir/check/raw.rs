@@ -1469,8 +1469,11 @@ impl<'a> TypeChecker<'a> {
         check: impl FnOnce(&mut Self, &mut Expr) -> Type,
     ) -> Type {
         self.fact_change_frames.push(Vec::new());
+        // The check can turn the call into another call, such as a method call into a call of
+        // its function, so the raw-pointer facts read the call as the program wrote it.
+        let written = self.written_call(expr);
         let ty = check(self, expr);
-        self.pointer_facts_at_call(expr);
+        self.pointer_facts_at_call(expr, written);
         let args: &[Expr] = match &*expr {
             Expr::FunctionCall(fc) => &fc.args,
             Expr::MethodCall(m) => &m.args,

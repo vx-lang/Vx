@@ -647,6 +647,9 @@ pub struct TypeChecker<'a> {
     /// The last id given to a base or a fact. Never saved or restored, so that two branches
     /// never give one id to two things.
     pub(crate) pointer_fact_ids: usize,
+    /// The method name and the place of a method call that the check turns into a call of its
+    /// function, for the note of E8006.
+    pub(crate) method_call_written: Option<(crate::symbol::Symbol, crate::syntax::Span)>,
     /// The `tasks` blocks and tasks around the code being checked.
     pub(crate) tasks: crate::hir::check::tasks::TaskCx,
     /// Expected type of the expression currently being checked, from a `let x: T = …` or a
@@ -728,6 +731,7 @@ impl<'a> TypeChecker<'a> {
             fact_change_frames: Vec::new(),
             pointer_facts: Default::default(),
             pointer_fact_ids: 0,
+            method_call_written: None,
             tasks: Default::default(),
             expected_type: None,
             consteval: Default::default(),
@@ -1140,6 +1144,7 @@ impl<'a> TypeChecker<'a> {
             return;
         };
         self.drops_note_move(name, false);
+        self.pointer_facts_move_out(name);
         if let Some(moved) = self.borrow.moved_vars.get_mut(scope) {
             moved.insert(name.to_string());
         }
@@ -1267,6 +1272,7 @@ impl<'a> TypeChecker<'a> {
         };
         let place = Self::field_place(root, path);
         self.drops_note_field_move(root, path, false);
+        self.pointer_facts_move_out(root);
         if let Some(moved) = self.borrow.moved_vars.get_mut(scope) {
             moved.insert(place);
         }

@@ -1,0 +1,244 @@
+//===- pointer_facts_that_an_event_ends.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each call here gets E8006, because an event before it ended the fact that the call needs. The
+// error has a note with the line of that event and its reason. An event is code that can free
+// memory: a call with an argument that can free memory, an assignment or a drop of a value with a
+// drop, an `mlir!` block, or a `spawn`. The end of the scope of a local ends the facts about its
+// storage, and a move out of it ends `initialized`.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+import core::ptr;
+import std::vec;
+
+fn need_valid(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  return n;
+}
+
+fn need_initialized(p : *const Vec<i64>, n : i64) -> i64
+requires initialized(p, n)
+{
+  return n;
+}
+
+fn touch(_p : *const i64) -> void {
+  return;
+}
+
+fn change(_v : &mut Vec<i64>) -> void {
+  return;
+}
+
+struct Holder {
+  f : || -> i64,
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+6]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'touch', which can free memory through `p` (at [[@LINE+4]]:3)
+fn after_a_call_that_gets_the_pointer(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  touch(p);
+  return need_valid(p, n);
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+6]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'push', which can free memory through `v` (at [[@LINE+4]]:5)
+fn after_a_method_call(p : *const i64, n : i64, v : &mut Vec<i64>) -> i64
+requires valid(p, n)
+{
+  v.push(1i64);
+  return need_valid(p, n);
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+7]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call through `g`, which can free memory through `p` (at [[@LINE+5]]:3)
+fn after_a_call_through_a_function_value(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let g : fn(*const i64) -> void = touch;
+  g(p);
+  return need_valid(p, n);
+}
+
+// The closure captures `v`, so its call can free memory.
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+7]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call of the closure `f`, which can free memory through what it captures (at [[@LINE+5]]:3)
+fn after_a_call_of_a_closure(p : *const i64, n : i64, v : &mut Vec<i64>) -> i64
+requires valid(p, n)
+{
+  let f = || v.push(1i64);
+  f();
+  return need_valid(p, n);
+}
+
+// A closure value that the function gets can have captured anything.
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+6]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call of the closure `g`, which can free memory through what it captures (at [[@LINE+4]]:11)
+fn after_a_call_of_a_closure_parameter(p : *const i64, n : i64, g : || -> i64) -> i64
+requires valid(p, n)
+{
+  let t = g();
+  return need_valid(p, n) + t;
+}
+
+// A closure in a field can have captured anything. The parser gives this call no place, so the
+// note gives the line of its statement.
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+6]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call of the closure `h.f`, which can free memory through what it captures (at [[@LINE+4]]:3)
+fn after_a_call_of_a_closure_in_a_field(p : *const i64, n : i64, h : Holder) -> i64
+requires valid(p, n)
+{
+  let t = (h.f)();
+  return need_valid(p, n) + t;
+}
+
+// The assignment drops the old vector.
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+7]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at an assignment that drops the old value (at [[@LINE+5]]:3)
+fn after_an_assignment_that_drops(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let mut w = Vec<i64>::new();
+  w = Vec<i64>::new();
+  return need_valid(p, n);
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+9]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the `mlir!` block, which can free memory (at [[@LINE+4]]:17)
+fn after_an_mlir_block(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let z = mlir!(inputs : (%q = p : !llvm.ptr), returns : i64, dialects : ["llvm", "arith"]) {
+    %z = arith.constant 0 : i64
+    macro.yield %z : i64
+  };
+  return need_valid(p, n) + z;
+}
+
+// The drop of `_v` at the end of the branch can free memory. The note gives the line of the `if`.
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+8]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the end of the scope of `_v`, which drops its value (at [[@LINE+4]]:3)
+fn after_a_drop(p : *const i64, n : i64, c : bool) -> i64
+requires valid(p, n)
+{
+  if c {
+    let _v = Vec<i64>::new();
+  }
+  return need_valid(p, n);
+}
+
+// `q` points at `x`, whose scope ends with the `unsafe` block.
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+5]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the end of the scope of `x` (at [[@LINE+3]]:3)
+fn after_the_end_of_the_scope_of_a_local() -> i64 {
+  let mut q = null<i64>();
+  unsafe { let x = 5i64; q = &x; }
+  return need_valid(q, 1i64);
+}
+
+// The borrow checker also refuses the move while `p` is in use (E4007).
+// CHECK: E4007] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+6]]:12: `v` is moved while it is borrowed
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+6]]:10: this call to 'need_initialized' may not meet its precondition `initialized(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the move out of `v` (at [[@LINE+4]]:3)
+fn after_a_move_out_of_a_local() -> i64 {
+  let v = Vec<i64>::new();
+  let p : *const Vec<i64> = &v;
+  let _w = v;
+  return need_initialized(p, 1i64);
+}
+
+// The call can move the vector out of `v` and drop it. The borrow checker also refuses the `&mut`
+// while `p` is in use (E4003).
+// CHECK: E4003] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+6]]:10: Cannot borrow 'v' as mutable
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+6]]:10: this call to 'need_initialized' may not meet its precondition `initialized(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'change', which can free memory through `&mut v` (at [[@LINE+4]]:3)
+fn after_a_call_that_can_change_a_local() -> i64 {
+  let mut v = Vec<i64>::new();
+  let p : *const Vec<i64> = &v;
+  change(&mut v);
+  return need_initialized(p, 1i64);
+}
+
+// The call on the first pass can free the memory before the call on the second pass.
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+7]]:13: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the loop, whose body can free memory (at [[@LINE+5]]:3)
+fn in_a_loop(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let mut t = 0i64;
+  for i in 0i64..3i64 {
+    t = t + need_valid(p, n);
+    touch(p);
+  }
+  return t;
+}
+
+// The fact ends in one branch, so the note gives the line in that branch.
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+8]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'touch', which can free memory through `p` (at [[@LINE+5]]:5)
+fn after_a_branch_that_gets_the_pointer(p : *const i64, n : i64, c : bool) -> i64
+requires valid(p, n)
+{
+  if c {
+    touch(p);
+  }
+  return need_valid(p, n);
+}
+
+// The event is in the `else` branch.
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+10]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'touch', which can free memory through `p` (at [[@LINE+7]]:5)
+fn after_an_else_branch_that_gets_the_pointer(p : *const i64, n : i64, c : bool) -> i64
+requires valid(p, n)
+{
+  if c {
+    let _x = 1i64;
+  } else {
+    touch(p);
+  }
+  return need_valid(p, n);
+}
+
+// After the call, `n` changes. The fact that the call ended names the old `n`, so it would not
+// prove the clause either, and the error has no note.
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+8]]:12: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NOT: note:
+fn after_a_change_of_the_length(p : *const i64, mut n : i64) -> i64
+requires valid(p, n)
+{
+  touch(p);
+  n = 3i64;
+  if n > 0i64 {
+    return need_valid(p, n);
+  }
+  return 0i64;
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_an_event_ends.vx:[[@LINE+10]]:9: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the `spawn`, whose task can free memory (at [[@LINE+6]]:13)
+fn after_a_spawn(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let mut t = 0i64;
+  tasks {
+    let h = spawn {
+      0i64
+    };
+    t = need_valid(p, n) + h.join();
+  }
+  return t;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: 19 error(s) emitted
