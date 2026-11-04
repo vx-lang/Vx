@@ -103,9 +103,15 @@ impl FnEmit<'_> {
             attrs += &format!(", space = \"{name}\"");
         }
         // The count of the passes of a nest of blocks, which `--emit-ptx` names by its length.
-        if let Some(i) = (ins.operand2.0 as usize).checked_sub(1) {
+        let user_lowered = ins.operand2.0 & crate::bytecode::TRANSFER_USER_LOWERED;
+        let arrivals = ins.operand2.0 & !crate::bytecode::TRANSFER_USER_LOWERED;
+        if let Some(i) = (arrivals as usize).checked_sub(1) {
             let length = self.strings.get(i).ok_or(crate::emitter_gap!())?;
             attrs += &format!(", vx.arrivals = \"{length}\"");
+        }
+        // The body of a user lowering copies the tile, so the backend only places it.
+        if user_lowered != 0 {
+            attrs += ", user_lowered";
         }
         self.body +=
             &format!("  {n} = \"vx.transfer\"({src}) {{{attrs}}} : ({srcty}) -> {dstty}\n");
@@ -296,7 +302,9 @@ impl FnEmit<'_> {
     // `subgroup`: only the lanes of one subgroup wait, as at the end of a lane loop in a
     // subgroup loop.
     pub(crate) fn op_barrier(&mut self, _idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        if ins.imm == crate::bytecode::BARRIER_SUBGROUP {
+        if ins.imm == crate::bytecode::BARRIER_GPU {
+            self.body += "  gpu.barrier\n";
+        } else if ins.imm == crate::bytecode::BARRIER_SUBGROUP {
             self.body += "  \"vx.barrier\"() {subgroup} : () -> ()\n";
         } else {
             self.body += "  \"vx.barrier\"() : () -> ()\n";
