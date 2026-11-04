@@ -72,6 +72,10 @@ pub fn ptr_gid() -> TypeId {
     TypeId::new(0, sym, 0, 0)
 }
 
+/// Set in the `imm` of a `CallIndirect` whose callee returns `void`. The low 32 bits are the
+/// argument count.
+pub const CALL_INDIRECT_VOID: u64 = 1 << 32;
+
 /// The stable GID of a concrete data-carrying enum (`Option<i32>`).
 /// The hash includes the declaration ID, type arguments, and placement.
 /// Signatures and bodies use the same ID for an instance.
@@ -5697,10 +5701,11 @@ impl<'r> Lowerer<'r> {
     }
 
     /// Lower an indirect call `f(args)` where `f` is a local (a fn-pointer parameter or a `Closure1`'s
-    /// loaded `func` field), not a registered function. The callee's function type — hence the scalar
-    /// return — comes from `f`'s AST type; args are emitted as `Arg`s exactly like a direct call, and a
-    /// `CallIndirect` carries the callee pointer register + arg count + return type. Declines for a
-    /// non-scalar return or an unknown callee type. (#242)
+    /// loaded `func` field), not a registered function. The callee's function type — hence the
+    /// return type — comes from `f`'s AST type; args are emitted as `Arg`s exactly like a direct call,
+    /// and a `CallIndirect` carries the callee pointer register + arg count + return type. A struct
+    /// or enum comes back by value, as from a direct call. A `void` callee sets
+    /// `CALL_INDIRECT_VOID` in `imm` and gives no value. Declines for an unknown callee type.
     fn lower_indirect_call(
         &mut self,
         fc: &crate::syntax::FunctionCallExpr,
@@ -5730,17 +5735,26 @@ impl<'r> Lowerer<'r> {
             .ok_or(Decline::TypeNotModelled {
                 what: "an indirect callee with no recorded AST type",
             })? {
-            Type::Function(_, ret, _) | Type::Closure(_, ret) => match ret.as_ref() {
-                Type::Borrow { .. } | Type::Ref(..) | Type::Pointer(..) => LoweredTy::Ptr,
-                other => LoweredTy::Scalar(scalar_of(other).ok_or(Decline::TypeNotModelled {
-                    what: "an indirect callee returning a non-scalar",
-                })?),
-            },
+            Type::Function(_, ret, _) | Type::Closure(_, ret) => ret.as_ref().clone(),
             _ => {
                 return Err(Decline::TypeNotModelled {
                     what: "an indirect callee that is not a function type",
                 })
             }
+        };
+        let void = crate::syntax::is_void_ty(&ty);
+        // A `void` callee gives no value, and its statement drops the placeholder type.
+        let ty = match &ty {
+            _ if void => LoweredTy::Scalar(ElementType::I32),
+            Type::Borrow { .. } | Type::Ref(..) | Type::Pointer(..) => LoweredTy::Ptr,
+            other => match self.lower_ty_synth(other) {
+                Some(lowered @ (LoweredTy::Scalar(_) | LoweredTy::Aggregate(_))) => lowered,
+                _ => {
+                    return Err(Decline::TypeNotModelled {
+                        what: "an indirect callee returning a type with no layout",
+                    })
+                }
+            },
         };
         let mut arg_regs = Vec::with_capacity(fc.args.len());
         for arg in &fc.args {
@@ -5752,12 +5766,13 @@ impl<'r> Lowerer<'r> {
         let type_idx = TypeIdx(self.types.len() as u32);
         self.types.push(ty.gid());
         let reg = Register(self.code.len() as u32);
+        let imm = fc.args.len() as u64 | if void { CALL_INDIRECT_VOID } else { 0 };
         self.code.push(HirInstruction::new(
             Opcode::CallIndirect,
             fnptr.reg,
             Register(0),
             type_idx,
-            fc.args.len() as u64,
+            imm,
         ));
         Ok(Val { reg, ty })
     }
