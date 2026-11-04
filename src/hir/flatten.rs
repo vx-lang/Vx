@@ -2636,7 +2636,25 @@ impl<'r> Lowerer<'r> {
                 .unwrap_or_else(|| Type::Enum(pattern_en.into(), None));
             return self.lower_data_match(m, deref_to_pointee(&enum_ty), result);
         }
-        let subj = self.lower_expr(&m.expr)?;
+        let mut subj = self.lower_expr(&m.expr)?;
+        // A reference to an enum with no payloads (`match self` with `self : &Op`) points to its
+        // `i32` tag. Load the tag, as `*self` would.
+        let through_a_reference = matches!(
+            self.infer_ast_type(&m.expr),
+            Some(Type::Borrow { ref inner, .. } | Type::Ref(ref inner, _) | Type::Pointer(ref inner, ..))
+                if matches!(lowered_ty(inner, self.registry), Some(LoweredTy::Scalar(ElementType::I32)))
+        );
+        if matches!(subj.ty, LoweredTy::Ptr) && through_a_reference {
+            let zero =
+                self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0);
+            subj = self.emit_typed(
+                Opcode::PtrIndex,
+                subj.reg,
+                zero.reg,
+                LoweredTy::Scalar(ElementType::I32),
+                0,
+            );
+        }
         if !matches!(subj.ty, LoweredTy::Scalar(ElementType::I32)) {
             return Err(Decline::Unsupported {
                 what: "a match subject that is not represented as an i32",
@@ -2854,15 +2872,20 @@ impl<'r> Lowerer<'r> {
                     if let Some(pats) = payload_pats {
                         for (i, pat) in pats.iter().enumerate() {
                             if let crate::syntax::Pattern::Identifier(pname) = pat {
-                                // This variant's payload type, not the slot's.
-                                let payload_type = self.agg_layouts[layout_index]
+                                let payloads = self.agg_layouts[layout_index]
                                     .variant_payloads
                                     .get(ordinal as usize)
-                                    .and_then(|types| types.get(i))
-                                    .map(|payload| payload.ty.clone())
                                     .ok_or(Decline::TypeNotModelled {
                                         what: "an enum payload type that is not laid out",
                                     })?;
+                                // A `void` payload (`Ok(v)` of a `Result<void, E>`) has no
+                                // storage, so there is nothing to bind. A later read of the name
+                                // finds it unbound and declines.
+                                if i >= payloads.len() {
+                                    continue;
+                                }
+                                // This variant's payload type, not the slot's.
+                                let payload_type = payloads[i].ty.clone();
                                 let lty = self.payload_lowered_ty(&payload_type).ok_or(
                                     Decline::TypeNotModelled {
                                         what: "an enum payload type that is not modelled",
@@ -4258,6 +4281,14 @@ impl<'r> Lowerer<'r> {
         if let Some(payload) = &ev.payload {
             for (i, pexpr) in payload.iter().enumerate() {
                 let mut v = self.lower_expr(pexpr)?;
+                // A `void` payload (`Ok(nothing())`) has no storage. The call still runs, and
+                // its placeholder result is not stored.
+                if self
+                    .infer_ast_type(pexpr)
+                    .is_some_and(|t| crate::syntax::is_void_ty(&t))
+                {
+                    continue;
+                }
                 // A struct built in place is its slot's address; the payload takes its value,
                 // as a struct literal's field does.
                 if construction_tail(pexpr) && matches!(v.ty, LoweredTy::Aggregate(_)) {
