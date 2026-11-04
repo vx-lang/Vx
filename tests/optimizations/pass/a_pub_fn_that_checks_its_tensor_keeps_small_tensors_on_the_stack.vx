@@ -1,0 +1,22 @@
+// `scaled_sum` is a `pub fn`, so at its start it checks that its tensor parameter has no gaps.
+// The check compares the stride that the caller passed, `%arg4`, with 1. The small tensor
+// `doubled` must still go on the stack: its 4 floats get an `llvm.alloca`.
+// At -O3 the optimizer removes `doubled`, so the test uses the default level.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
+// CHECK-LABEL: llvm.func @scaled_sum(
+// CHECK: %[[FOUR:[0-9]+]] = llvm.mlir.constant(4 : index) : i64
+// CHECK: llvm.icmp "eq" %arg4, {{%[0-9]+}} : i64
+// CHECK: llvm.alloca %[[FOUR]] x f32
+
+pub fn scaled_sum(t : &Tensor<f32, [?]>) -> f32 {
+  let mut doubled = Tensor<f32, [4]>::fill(0.0);
+  for i in 0..4 {
+    doubled[i] = t[i] * 2.0;
+  }
+  let mut s : f32 = 0.0;
+  for i in 0..4 {
+    s = s + doubled[i];
+  }
+  return s;
+}

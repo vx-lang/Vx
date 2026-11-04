@@ -320,6 +320,10 @@ CUDA backend (`runtime/cuda_dispatch.cpp`). These rules hold for such a call:
   strides (the `words` of §3.5). A scalar is one value. For example,
   `glm_vx_spawn_scale(out, x, alpha, n)` with two rank-1 tensors is
   `(ptr, ptr, i64, i64, i64, ptr, ptr, i64, i64, i64, f32, i32)`.
+- **Packed tensors.** Vx reads a tensor with no gaps: the last stride is 1, and each other
+  stride is the product of the sizes after it. A `pub fn` checks the strides of each tensor
+  parameter at its start, and stops the program with a message when one has a gap. The stride
+  of an axis of size 1 can be any value, and so can every stride of an empty tensor.
 - **Device memory.** A tensor in a GPU space, such as `&Tensor<f32, [?], Memory::HBM>`, can
   point at memory that is already on the GPU. The launch gives the descriptor to the kernel as
   it is, with no copy.
