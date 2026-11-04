@@ -20,8 +20,9 @@ use super::*;
 use crate::arch::LevelKind;
 use crate::bytecode::{
     ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP, LANE_REDUCE_ARGMAX,
-    LANE_REDUCE_MAX, LANE_REDUCE_ORDERED, LANE_REDUCE_OWN_ROW, LANE_REDUCE_SUBGROUP,
-    TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
+    LANE_REDUCE_DESCENDING, LANE_REDUCE_MAX, LANE_REDUCE_ORDERED, LANE_REDUCE_OWN_ROW,
+    LANE_REDUCE_SORT, LANE_REDUCE_SUBGROUP, TENSOR_STORE_BLOCK_LANE_ELEMENT,
+    TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
 };
 use crate::hir::check::across_lanes;
 
@@ -412,6 +413,9 @@ impl Lowerer<'_> {
         op: crate::hir::check::lanes::LaneOp,
         ordered: bool,
     ) -> Lowered<Val> {
+        if op.is_sort() {
+            return self.lower_lane_sort(fc, op);
+        }
         let argmax = op == crate::hir::check::lanes::LaneOp::ArgMax;
         let (n, tensors) = fc.args.split_last().ok_or(crate::emitter_gap!())?;
         if tensors.len() != if argmax { 2 } else { 1 } {
@@ -432,7 +436,7 @@ impl Lowerer<'_> {
         match op {
             crate::hir::check::lanes::LaneOp::Max => imm |= LANE_REDUCE_MAX,
             crate::hir::check::lanes::LaneOp::ArgMax => imm |= LANE_REDUCE_ARGMAX,
-            crate::hir::check::lanes::LaneOp::Sum => {}
+            _ => {}
         }
         if ordered {
             imm |= LANE_REDUCE_ORDERED;
@@ -457,6 +461,38 @@ impl Lowerer<'_> {
             ));
         }
         Ok(self.emit_value(Opcode::LaneReduce, regs[0], n.reg, ElementType::F32, imm))
+    }
+
+    /// `lanes::sort(&mut t, n)` and `lanes::sort_descending(&mut t, n)`: an effect on `t`. The
+    /// value is a constant that nothing reads, as for `barrier()`.
+    fn lower_lane_sort(
+        &mut self,
+        fc: &crate::syntax::expr::FunctionCallExpr,
+        op: crate::hir::check::lanes::LaneOp,
+    ) -> Lowered<Val> {
+        let [t, n] = fc.args.as_slice() else {
+            return Err(crate::emitter_gap!());
+        };
+        let t = self.lower_expr(t)?;
+        if !matches!(&t.ty, LoweredTy::Tensor { shape, .. } if shape.len() == 1) {
+            return Err(Decline::TypeNotModelled {
+                what: "a lane sort of something that is not a rank-1 tensor",
+            });
+        }
+        let n = self.lower_expr(n)?;
+        let mut imm = LANE_REDUCE_SORT | LANE_REDUCE_ORDERED;
+        if op == crate::hir::check::lanes::LaneOp::SortDescending {
+            imm |= LANE_REDUCE_DESCENDING;
+        }
+        let lanes = if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
+            imm |= LANE_REDUCE_SUBGROUP;
+            self.subgroup_lanes()?
+        } else {
+            self.across.lanes
+        };
+        imm |= lanes << 32;
+        self.emit_effect(Opcode::LaneReduce, t.reg, n.reg, imm);
+        Ok(self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0))
     }
 
     /// `TENSOR_STORE_BLOCK_LANE_ELEMENT` or `TENSOR_STORE_SUBGROUP_LANE_ELEMENT` when the store

@@ -448,23 +448,18 @@ impl Walk<'_> {
                     self.block_tensor(l, ctx);
                 }
                 if let Some(fc) = lanes::bare_lanes_call(&l.expr) {
-                    if let (true, false, Some(region), Some(axis)) = (
-                        Self::stretch_level(ctx),
-                        ctx.in_closure,
-                        ctx.region.clone(),
-                        ctx.axes.last(),
-                    ) {
-                        self.lane_calls.push(LaneCall {
-                            at: fc.span,
-                            name: fc.name.as_ref().to_string(),
-                            scope: axis.kind,
-                            region,
-                        });
+                    if lanes::bare_lane_sort(&l.expr).is_none() {
+                        self.lane_call(fc, ctx);
                     }
                 }
                 self.expr(&l.expr, ctx)
             }
-            Statement::ExprStmt(e) => self.expr(&e.expr, ctx),
+            Statement::ExprStmt(e) => {
+                if let Some(fc) = lanes::bare_lane_sort(&e.expr) {
+                    self.lane_call(fc, ctx);
+                }
+                self.expr(&e.expr, ctx)
+            }
             Statement::Assign(a) => {
                 self.expr(&a.lhs, ctx);
                 self.expr(&a.rhs, ctx);
@@ -479,6 +474,23 @@ impl Walk<'_> {
             | Statement::MacroCall(_)
             | Statement::Drop(_)
             | Statement::Error(_) => {}
+        }
+    }
+
+    /// A call to a lane routine in a place that allows it, when it is in the code of a level.
+    fn lane_call(&mut self, fc: &crate::syntax::expr::FunctionCallExpr, ctx: &Ctx) {
+        if let (true, false, Some(region), Some(axis)) = (
+            Self::stretch_level(ctx),
+            ctx.in_closure,
+            ctx.region.clone(),
+            ctx.axes.last(),
+        ) {
+            self.lane_calls.push(LaneCall {
+                at: fc.span,
+                name: fc.name.as_ref().to_string(),
+                scope: axis.kind,
+                region,
+            });
         }
     }
 
@@ -633,11 +645,15 @@ impl Walk<'_> {
             }
         });
         for (name, at) in elsewhere {
+            let place = if lanes::lane_routine(&name).is_some_and(|(op, _)| op.is_sort()) {
+                "a statement of its own"
+            } else {
+                "the whole value of a `let`"
+            };
             self.error(
                 format!(
-                    "`{name}` must be the whole value of a `let` in the code of a loop of blocks \
-                     or subgroups, outside its lane loops. Every lane of the block or the \
-                     subgroup must get to it"
+                    "`{name}` must be {place} in the code of a loop of blocks or subgroups, \
+                     outside its lane loops. Every lane of the block or the subgroup must get to it"
                 ),
                 at,
             );
@@ -647,6 +663,10 @@ impl Walk<'_> {
             let Some(&n) = self.lane_sizes.get(&c.at) else {
                 continue;
             };
+            if lanes::lane_routine(&c.name).is_some_and(|(op, _)| op.is_sort()) {
+                self.lane_sort_sizes(c, n, &block_lanes);
+                continue;
+            }
             let (most, scope) = match c.scope {
                 LevelKind::Subgroups => (32, "subgroup"),
                 _ => (lanes::MAX_BLOCK_ELEMENTS, "block"),
@@ -706,6 +726,69 @@ impl Walk<'_> {
                     }
                 }
             }
+        }
+    }
+
+    /// The checks of a lane sort of `n` elements. Each lane holds at most
+    /// `MAX_SORT_ELEMENTS_A_LANE` of them. A block needs a number of lanes that is a power of two
+    /// and at least 32, and a subgroup 32 lanes.
+    fn lane_sort_sizes(&mut self, c: &LaneCall, n: u64, block_lanes: &HashMap<Span, Option<u64>>) {
+        let lanes = match c.scope {
+            LevelKind::Subgroups => {
+                let sub = c
+                    .region
+                    .levels
+                    .iter()
+                    .flatten()
+                    .find(|l| l.kind == LevelKind::Subgroups)
+                    .and_then(|l| l.lanes);
+                if c.region.launches && sub != Some(32) {
+                    self.error(
+                        format!(
+                            "`{}` in the code of a subgroup needs subgroups of 32 lanes, but the \
+                             topology `{}` gives {}",
+                            c.name,
+                            c.region.name,
+                            sub.map_or("no size".to_string(), |s| s.to_string())
+                        ),
+                        c.at,
+                    );
+                    return;
+                }
+                32
+            }
+            _ => {
+                let lanes = block_lanes
+                    .get(&c.region.span)
+                    .copied()
+                    .flatten()
+                    .unwrap_or(1);
+                if c.region.launches && (lanes < 32 || !lanes.is_power_of_two()) {
+                    self.error(
+                        format!(
+                            "`{}` in the code of a block needs a block whose lanes are a power of \
+                             two and at least 32, but the lane loops of this region give {lanes} \
+                             lanes",
+                            c.name
+                        ),
+                        c.at,
+                    );
+                    return;
+                }
+                lanes
+            }
+        };
+        let most = lanes * lanes::MAX_SORT_ELEMENTS_A_LANE;
+        if c.region.launches && n > most {
+            self.error(
+                format!(
+                    "`{}` sorts at most {} elements for each of the {lanes} lanes, so at most \
+                     {most}, but its tensor has {n}",
+                    c.name,
+                    lanes::MAX_SORT_ELEMENTS_A_LANE
+                ),
+                c.at,
+            );
         }
     }
 

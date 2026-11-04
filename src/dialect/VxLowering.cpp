@@ -2058,6 +2058,300 @@ static void expandLaneReduction(OpBuilder &b, OpTy op, bool device,
   op.erase();
 }
 
+//===----------------------------------------------------------------------===//
+// Lane sorts (`vx.lane_sort`)
+//===----------------------------------------------------------------------===//
+//
+// A bitonic sorting network over `V`, a power of two at least the size of the
+// tensor. A position past the count holds the sentinel, the largest `i64` for
+// an ascending sort and the smallest for a descending one. So the sentinels go
+// to the end, and the first `count` elements are the sorted ones. A sort of
+// integers has one result, so the CPU loops and the GPU network agree.
+
+/// The size of the tensor of a lane sort on the GPU. The checker made sure that
+/// it is a number and a power of two, and the flat code generator keeps it in
+/// the type.
+static int64_t laneSortSize(vx::LaneSortOp op) {
+  auto type = cast<MemRefType>(op.getInput().getType());
+  int64_t size = type.getDimSize(0);
+  assert(!type.isDynamicDim(0) && llvm::isPowerOf2_64(size) &&
+         "a lane sort of a tensor whose size is a power of two");
+  return size;
+}
+
+/// The size of the tensor of a lane sort, as an index. The AST code generator
+/// can give a type whose size is not a number.
+static Value laneSortSizeValue(OpBuilder &b, vx::LaneSortOp op) {
+  Location loc = op.getLoc();
+  auto type = cast<MemRefType>(op.getInput().getType());
+  if (!type.isDynamicDim(0))
+    return b.create<arith::ConstantIndexOp>(loc, type.getDimSize(0));
+  return b.create<memref::DimOp>(loc, op.getInput(),
+                                 b.create<arith::ConstantIndexOp>(loc, 0));
+}
+
+static Value laneSortSentinel(OpBuilder &b, vx::LaneSortOp op) {
+  int64_t v = op.getDescending() ? std::numeric_limits<int64_t>::min()
+                                 : std::numeric_limits<int64_t>::max();
+  return b.create<arith::ConstantIntOp>(op.getLoc(), b.getI64Type(), v);
+}
+
+/// The value that position `p` keeps of the pair `mine` and `theirs`, at the
+/// step of distance `d` in the merge of runs of `size`. The lower position of
+/// a pair keeps the smaller value in a run that goes up.
+static Value laneSortKeep(OpBuilder &b, Location loc, vx::LaneSortOp op,
+                          Value p, Value size, Value d, Value mine,
+                          Value theirs) {
+  auto bit = [&](Value c) {
+    Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+    return b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                   b.create<arith::AndIOp>(loc, p, c), zero);
+  };
+  Value lower = bit(d);
+  Value up = bit(size);
+  if (op.getDescending())
+    up = b.create<arith::XOrIOp>(
+        loc, up, b.create<arith::ConstantIntOp>(loc, b.getI1Type(), 1));
+  Value keepMin =
+      b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, lower, up);
+  return b.create<arith::SelectOp>(loc, keepMin,
+                                   b.create<arith::MinSIOp>(loc, mine, theirs),
+                                   b.create<arith::MaxSIOp>(loc, mine, theirs));
+}
+
+/// The count, at least 0 and at most `size`, as an index.
+static Value laneSortCount(OpBuilder &b, vx::LaneSortOp op, Value size) {
+  Location loc = op.getLoc();
+  Value n = b.create<arith::IndexCastOp>(loc, b.getIndexType(), op.getCount());
+  n = b.create<arith::MaxSIOp>(loc, n,
+                               b.create<arith::ConstantIndexOp>(loc, 0));
+  return b.create<arith::MinSIOp>(loc, n, size);
+}
+
+/// Element `p` of `from` when `p` is below `n`, and the sentinel otherwise.
+static Value laneSortLoad(OpBuilder &b, vx::LaneSortOp op, Value from, Value p,
+                          Value n) {
+  Location loc = op.getLoc();
+  Value inRange = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt, p, n);
+  auto pick = b.create<scf::IfOp>(loc, TypeRange{b.getI64Type()}, inRange,
+                                  /*withElseRegion=*/true);
+  OpBuilder::InsertionGuard guard(b);
+  b.setInsertionPointToStart(&pick.getThenRegion().front());
+  b.create<scf::YieldOp>(
+      loc, ValueRange{b.create<memref::LoadOp>(loc, from, ValueRange{p})});
+  b.setInsertionPointToStart(&pick.getElseRegion().front());
+  b.create<scf::YieldOp>(loc, ValueRange{laneSortSentinel(b, op)});
+  return pick.getResult(0);
+}
+
+/// `to[p] = v` when `p` is below `n`.
+static void laneSortStore(OpBuilder &b, Location loc, Value v, Value to,
+                          Value p, Value n) {
+  Value inRange = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt, p, n);
+  auto store = b.create<scf::IfOp>(loc, inRange, /*withElseRegion=*/false);
+  OpBuilder::InsertionGuard guard(b);
+  b.setInsertionPointToStart(&store.getThenRegion().front());
+  b.create<memref::StoreOp>(loc, v, to, ValueRange{p});
+}
+
+/// On the CPU: the network in loops, over a copy of the tensor. A run of the
+/// merges is `2^e` long, for each `e` with `2^e` at most the size.
+static void expandLaneSortOnHost(OpBuilder &b, vx::LaneSortOp op) {
+  Location loc = op.getLoc();
+  Value all = laneSortSizeValue(b, op);
+  Value n = laneSortCount(b, op, all);
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  Value work = b.create<memref::AllocaOp>(
+      loc, MemRefType::get({ShapedType::kDynamic}, b.getI64Type()),
+      ValueRange{all});
+  b.create<scf::ForOp>(loc, zero, all, one, ValueRange{},
+                       [&](OpBuilder &nb, Location l, Value i, ValueRange) {
+                         nb.create<memref::StoreOp>(
+                             l, laneSortLoad(nb, op, op.getInput(), i, n), work,
+                             ValueRange{i});
+                         nb.create<scf::YieldOp>(l);
+                       });
+  // One step: each pair `i` and `i ^ d`, with `i` the lower, in place.
+  auto step = [&](OpBuilder &b, Location loc, Value run, Value d) {
+    b.create<scf::ForOp>(
+        loc, zero, all, one, ValueRange{},
+        [&](OpBuilder &nb, Location l, Value i, ValueRange) {
+          Value j = nb.create<arith::XOrIOp>(l, i, d);
+          Value lower =
+              nb.create<arith::CmpIOp>(l, arith::CmpIPredicate::ult, i, j);
+          auto pair = nb.create<scf::IfOp>(l, lower, /*withElseRegion=*/false);
+          {
+            OpBuilder::InsertionGuard guard(nb);
+            nb.setInsertionPointToStart(&pair.getThenRegion().front());
+            Value mine = nb.create<memref::LoadOp>(l, work, ValueRange{i});
+            Value theirs = nb.create<memref::LoadOp>(l, work, ValueRange{j});
+            Value keep = laneSortKeep(nb, l, op, i, run, d, mine, theirs);
+            Value other = laneSortKeep(nb, l, op, j, run, d, theirs, mine);
+            nb.create<memref::StoreOp>(l, keep, work, ValueRange{i});
+            nb.create<memref::StoreOp>(l, other, work, ValueRange{j});
+          }
+          nb.create<scf::YieldOp>(l);
+        });
+  };
+  Value most = b.create<arith::ConstantIndexOp>(loc, 63);
+  b.create<scf::ForOp>(
+      loc, one, most, one, ValueRange{},
+      [&](OpBuilder &nb, Location l, Value e, ValueRange) {
+        Value run = nb.create<arith::ShLIOp>(l, one, e);
+        Value fits =
+            nb.create<arith::CmpIOp>(l, arith::CmpIPredicate::ule, run, all);
+        auto merge = nb.create<scf::IfOp>(l, fits, /*withElseRegion=*/false);
+        {
+          OpBuilder::InsertionGuard guard(nb);
+          nb.setInsertionPointToStart(&merge.getThenRegion().front());
+          // The distances `run / 2` down to 1.
+          nb.create<scf::ForOp>(
+              l, zero, e, one, ValueRange{},
+              [&](OpBuilder &mb, Location ml, Value f, ValueRange) {
+                Value shift = mb.create<arith::AddIOp>(ml, f, one);
+                step(mb, ml, run, mb.create<arith::ShRUIOp>(ml, run, shift));
+                mb.create<scf::YieldOp>(ml);
+              });
+        }
+        nb.create<scf::YieldOp>(l);
+      });
+  b.create<scf::ForOp>(loc, zero, n, one, ValueRange{},
+                       [&](OpBuilder &nb, Location l, Value i, ValueRange) {
+                         nb.create<memref::StoreOp>(
+                             l,
+                             nb.create<memref::LoadOp>(l, work, ValueRange{i}),
+                             op.getInput(), ValueRange{i});
+                         nb.create<scf::YieldOp>(l);
+                       });
+}
+
+/// The `i64` of lane `lane ^ d` of the warp, as two 32-bit shuffles.
+static Value laneSortShuffle(OpBuilder &b, Location loc, Value v, int32_t d) {
+  Type i32 = b.getI32Type();
+  Type i64 = b.getI64Type();
+  Value c32 = b.create<arith::ConstantIntOp>(loc, i64, 32);
+  Value lo = b.create<arith::TruncIOp>(loc, i32, v);
+  Value hi = b.create<arith::TruncIOp>(loc, i32,
+                                       b.create<arith::ShRUIOp>(loc, v, c32));
+  auto xorShuffle = [&](Value x) {
+    return b.create<gpu::ShuffleOp>(loc, x, d, 32, gpu::ShuffleMode::XOR)
+        .getShuffleResult();
+  };
+  Value newLo = b.create<arith::ExtUIOp>(loc, i64, xorShuffle(lo));
+  Value newHi = b.create<arith::ExtUIOp>(loc, i64, xorShuffle(hi));
+  return b.create<arith::OrIOp>(loc, b.create<arith::ShLIOp>(loc, newHi, c32),
+                                newLo);
+}
+
+/// On the GPU: lane `x` of the block, or of the subgroup, holds positions
+/// `x + k * lanes` of the network in registers. A step of distance below 32
+/// takes the other value from a lane of the warp with a shuffle. A step of a
+/// distance of at least `lanes` takes it from another register of the lane.
+/// Only the steps between them go through shared memory, with barriers.
+static void expandLaneSortOnDevice(OpBuilder &b, vx::LaneSortOp op) {
+  Location loc = op.getLoc();
+  int64_t size = laneSortSize(op);
+  int64_t lanes = op.getLanes();
+  assert(lanes >= 32 && llvm::isPowerOf2_64(lanes) &&
+         "the checker gives a lane sort lanes that are a power of two");
+  int64_t span = std::max<int64_t>(size, 32);
+  int64_t regs = std::max<int64_t>(1, span / lanes);
+  Value n = laneSortCount(b, op, b.create<arith::ConstantIndexOp>(loc, size));
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value x = op.getSubgroup()
+                ? b.create<arith::RemUIOp>(
+                      loc, tid, b.create<arith::ConstantIndexOp>(loc, 32))
+                : tid;
+  SmallVector<Value> pos, r;
+  for (int64_t k = 0; k < regs; ++k) {
+    pos.push_back(b.create<arith::AddIOp>(
+        loc, x, b.create<arith::ConstantIndexOp>(loc, k * lanes)));
+    r.push_back(laneSortLoad(b, op, op.getInput(), pos[k], n));
+  }
+  // The memory of the steps between: the tensor itself when every lane of the
+  // block sees it, and otherwise a tile of shared memory.
+  Value shared;
+  auto memory = [&]() {
+    if (shared)
+      return shared;
+    auto type = cast<MemRefType>(op.getInput().getType());
+    auto space = dyn_cast_or_null<IntegerAttr>(type.getMemorySpace());
+    bool own = op.getInput().getDefiningOp<memref::AllocaOp>() &&
+               !(space && space.getInt() == 3);
+    if (own) {
+      OpBuilder::InsertionGuard guard(b);
+      auto t =
+          MemRefType::get({size}, b.getI64Type(), MemRefLayoutAttrInterface{},
+                          b.getI64IntegerAttr(3));
+      shared = b.create<memref::AllocaOp>(loc, t, b.getI64IntegerAttr(16));
+    } else {
+      shared = op.getInput();
+    }
+    return shared;
+  };
+  Value inTensor = b.create<arith::ConstantIndexOp>(loc, size);
+  for (int64_t run = 2; run <= span; run *= 2)
+    for (int64_t d = run / 2; d >= 1; d /= 2) {
+      SmallVector<Value> theirs(regs);
+      if (d < 32) {
+        for (int64_t k = 0; k < regs; ++k)
+          theirs[k] = laneSortShuffle(b, loc, r[k], static_cast<int32_t>(d));
+      } else if (d >= lanes) {
+        for (int64_t k = 0; k < regs; ++k)
+          theirs[k] = r[k ^ (d / lanes)];
+      } else {
+        Value m = memory();
+        for (int64_t k = 0; k < regs; ++k)
+          laneSortStore(b, loc, r[k], m, pos[k], inTensor);
+        b.create<gpu::BarrierOp>(loc);
+        Value dist = b.create<arith::ConstantIndexOp>(loc, d);
+        for (int64_t k = 0; k < regs; ++k) {
+          Value other = b.create<arith::XOrIOp>(loc, pos[k], dist);
+          Value inRange = b.create<arith::CmpIOp>(
+              loc, arith::CmpIPredicate::slt, other, inTensor);
+          auto pick = b.create<scf::IfOp>(loc, TypeRange{b.getI64Type()},
+                                          inRange, /*withElseRegion=*/true);
+          OpBuilder::InsertionGuard guard(b);
+          b.setInsertionPointToStart(&pick.getThenRegion().front());
+          b.create<scf::YieldOp>(loc, ValueRange{b.create<memref::LoadOp>(
+                                          loc, m, ValueRange{other})});
+          b.setInsertionPointToStart(&pick.getElseRegion().front());
+          b.create<scf::YieldOp>(loc, ValueRange{laneSortSentinel(b, op)});
+          b.setInsertionPointAfter(pick);
+          theirs[k] = pick.getResult(0);
+        }
+        // The next step writes the memory again.
+        b.create<gpu::BarrierOp>(loc);
+      }
+      Value runValue = b.create<arith::ConstantIndexOp>(loc, run);
+      Value dValue = b.create<arith::ConstantIndexOp>(loc, d);
+      for (int64_t k = 0; k < regs; ++k)
+        r[k] =
+            laneSortKeep(b, loc, op, pos[k], runValue, dValue, r[k], theirs[k]);
+    }
+  for (int64_t k = 0; k < regs; ++k)
+    laneSortStore(b, loc, r[k], op.getInput(), pos[k], n);
+  // Later code reads what the other lanes wrote.
+  if (op.getSubgroup()) {
+    auto bar = b.create<vx::BarrierOp>(loc);
+    bar->setAttr("subgroup", b.getUnitAttr());
+  } else {
+    b.create<gpu::BarrierOp>(loc);
+  }
+}
+
+/// Replaces a lane sort with its expansion: the host's loops with `serial`,
+/// and otherwise the expansion that `device` picks.
+static void expandLaneSort(OpBuilder &b, vx::LaneSortOp op, bool device) {
+  if (device && !op.getSerial())
+    expandLaneSortOnDevice(b, op);
+  else
+    expandLaneSortOnHost(b, op);
+  op.erase();
+}
+
 /// The tile behind the input of a lane reduction whose lanes can keep their
 /// elements in registers: the `memref.alloca` itself, or the alloca of a row in
 /// the code of a subgroup. A subgroup needs `own_row`.
@@ -2431,7 +2725,7 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
   // Rewritten to `gpu.return` and `gpu.barrier` in the device clone (Vx#379).
   // A `vx.launch_dim` leaves the region when it is outlined.
   if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp,
-          vx::LaneReduceOp, vx::LaneArgmaxOp>(op))
+          vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp>(op))
     return true;
   // A DYNAMIC shared-memory tile cannot become a `.shared` global (those
   // need a static shape), and leaving the alloca as-is ships a kernel that
@@ -3959,6 +4253,12 @@ struct ConvertVxToStandardPass
             reductions.push_back(op);
         });
         reductions = expandLaneReductionsFromRegisters(gpuFunc, reductions);
+        SmallVector<vx::LaneSortOp> sorts;
+        gpuFunc.walk([&](vx::LaneSortOp op) { sorts.push_back(op); });
+        for (vx::LaneSortOp op : sorts) {
+          OpBuilder b(op);
+          expandLaneSort(b, op, /*device=*/true);
+        }
         for (Operation *op : reductions) {
           OpBuilder b(op);
           if (auto r = dyn_cast<vx::LaneReduceOp>(op))
@@ -5341,6 +5641,17 @@ struct LaneReductionLowering : public OpRewritePattern<OpTy> {
   }
 };
 
+struct LaneSortLowering : public OpRewritePattern<vx::LaneSortOp> {
+  using OpRewritePattern<vx::LaneSortOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vx::LaneSortOp op,
+                                PatternRewriter &rewriter) const override {
+    expandLaneSortOnHost(rewriter, op);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Device images
 //===----------------------------------------------------------------------===//
@@ -6340,7 +6651,7 @@ struct ConvertVxToLLVMPass
     // pattern rather than letting the op leak to mlir-translate, which does
     // not know the vx dialect (Vx#379).
     target.addIllegalOp<vx::BarrierOp>();
-    target.addIllegalOp<vx::LaneReduceOp, vx::LaneArgmaxOp>();
+    target.addIllegalOp<vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp>();
 
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
@@ -6353,7 +6664,8 @@ struct ConvertVxToLLVMPass
     patterns.add<ReturnOpLowering>(&getContext());
     patterns.add<BarrierOpLowering>(&getContext());
     patterns.add<LaneReductionLowering<vx::LaneReduceOp>,
-                 LaneReductionLowering<vx::LaneArgmaxOp>>(&getContext());
+                 LaneReductionLowering<vx::LaneArgmaxOp>, LaneSortLowering>(
+        &getContext());
 
     adoptDeclaredRuntimeFns(getOperation());
     markArrivalCounts(getOperation());
