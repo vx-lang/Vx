@@ -9,12 +9,9 @@
 // block then gives that `Err`, and it cancels its tasks. The code after the block still runs. Here a task waits in `recv`, and only
 // the cancel ends that wait: the `?` leaves before the code drops the `Sender`.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator cannot lower `Result<i64, RecvError>`: its two
-// variants carry payloads of different kinds.
-//
 // RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen --run 2>&1 | FileCheck %s --implicit-check-not=Error
 
 import std::sync::channel;
 
