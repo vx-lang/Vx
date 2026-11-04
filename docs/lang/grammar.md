@@ -75,7 +75,8 @@ topology_field ::=
     | "arch" ":" identifier
     | "transfer" memory_space "->" memory_space ( ":" edge_cost )? transfer_marker*
 transfer_marker ::= "relaxed" | "sync" | "copy_engine"
-edge_cost ::= number | rate_literal        // a unitless relative cost, or a link bandwidth
+edge_cost ::= number | rate_literal | "shared"  // a unitless relative cost, a link bandwidth,
+                                                // or a memory that both sides address
 
 // A first-class memory space (all fields optional except the name). Unlike a topology, the
 // descriptor is stored on the AST, not a global registry. `within:` forms the hierarchy tree.

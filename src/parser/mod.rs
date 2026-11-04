@@ -490,12 +490,12 @@ mod tests {
         );
     }
 
-    /// The three edge-cost forms. An edge carries exactly one cost source, so the
+    /// The four edge-cost forms. An edge carries exactly one cost source, so the
     /// grammar has to be able to express "no cost declared" — otherwise a hop whose cost is
     /// derivable from its endpoints' bandwidths has no legal spelling, and every `fleet/` file was
     /// forced to declare a second one (E6013).
     #[test]
-    fn transfer_edges_carry_one_of_three_cost_forms() {
+    fn transfer_edges_carry_one_of_four_cost_forms() {
         use crate::arch::EdgeCost;
         use crate::syntax::{Bandwidth, RatePer};
         let edges = |src: &str| {
@@ -527,6 +527,10 @@ mod tests {
         let e = edges("Topology T { memory: Memory::GPU_HBM, transfer Memory::GPU_HBM -> Memory::Local_SRAM : 300 relaxed }");
         assert_eq!(e[0].cost, EdgeCost::Fixed(300));
         assert!(!e[0].sync);
+
+        // `shared`: both sides address one memory, so the hop copies nothing.
+        let e = edges("Topology T { memory: Memory::GPU_HBM, transfer Memory::GPU_HBM -> Memory::CPU_DRAM : shared }");
+        assert_eq!(e[0].cost, EdgeCost::Shared);
     }
 
     #[test]
