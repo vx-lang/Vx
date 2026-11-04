@@ -766,6 +766,7 @@ impl<'a> TypeChecker<'a> {
         }
         let mut names = HashMap::new();
         for (i, ((param, _), arg)) in func.params.iter().zip(args).enumerate() {
+            let arg = crate::hir::prover::without_borrow(arg);
             let value = if crate::hir::prover::is_modelled(arg) {
                 arg.clone()
             } else {
