@@ -468,6 +468,15 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.check_atomic_block(e);
                 self.check_block_dialects(e);
+                // The block can free memory through a pointer that it gets.
+                let frees = !e.clobbers.is_empty()
+                    || e.inputs.iter().any(|(_, arg, _)| {
+                        let ty = self.check_expr_type_probe(arg);
+                        self.type_can_free(&ty, 0)
+                    });
+                if frees {
+                    self.pointer_facts_event();
+                }
                 // Typecheck clobbers. The block writes to each of them, so each one changes.
                 for clobber in &mut e.clobbers {
                     self.record_change(clobber);

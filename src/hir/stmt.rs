@@ -779,7 +779,9 @@ impl<'a> TypeChecker<'a> {
         // proofs (a stale `i == 1` beside a new `i == 9` proves anything). Neutralized
         // for mutable bindings too -- they record no new fact, but they still shadow.
         self.set_mutable(name.as_ref(), *_is_mut);
+        let pointer = self.pointer_value_for(name.as_ref(), expr);
         self.neutralize_facts_mentioning(name.as_ref());
+        self.note_pointer_value(name.as_ref(), pointer);
         if !*_is_mut {
             let id_expr = Expr::Identifier(IdentifierExpr {
                 name: name.clone(),
@@ -1187,6 +1189,7 @@ impl<'a> TypeChecker<'a> {
                 used: false,
             });
         self.check_loop_body(body, return_type, header);
+        self.pointer_facts_after_a_loop(body);
         if let Some(c) = self.unroll_candidates.pop().filter(|c| c.used) {
             *unroll = c.bounds;
         }
@@ -1303,6 +1306,7 @@ impl<'a> TypeChecker<'a> {
         }
         self.consteval.constraints.truncate(facts_before);
         self.neutralize_facts_a_loop_writes(body);
+        self.end_pointer_facts_a_loop_can_end(body);
         self.consteval
             .constraints
             .extend(invariants.iter().cloned());
@@ -1342,6 +1346,7 @@ impl<'a> TypeChecker<'a> {
         self.cancel_loops
             .push(crate::hir::check::cancel_loops::loop_exits(body));
         self.check_loop_body(body, return_type, header);
+        self.pointer_facts_after_a_loop(body);
         self.cancel_loops.pop();
         self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
@@ -1703,8 +1708,19 @@ impl<'a> TypeChecker<'a> {
                 _ => None,
             }
         }
+        let pointer = match lhs {
+            Expr::Identifier(id) => self.pointer_value_for(id.name.as_ref(), rhs),
+            _ => None,
+        };
         if let Some(root) = assigned_root(lhs) {
             self.note_a_change_to_variable(root.to_string());
+        }
+        if let Expr::Identifier(id) = lhs {
+            self.note_pointer_value(id.name.as_ref(), pointer);
+        }
+        // The old value of a type with a drop is dropped, which can free memory.
+        if !self.drops_glue(&lhs_ty).is_empty() {
+            self.pointer_facts_event();
         }
         // Keep the compile-time value of the assigned variable in step with the assignment.
         // An assignment the evaluator cannot compute makes the variable unknown rather than
@@ -2262,6 +2278,65 @@ impl<'a> TypeChecker<'a> {
             Err(e) => {
                 self.errors.push_warning(format!("SMT solver error: {}", e));
                 false
+            }
+        }
+    }
+
+    /// Whether the facts prove `goal`, whose sums and comparisons are of exact integers. A
+    /// fact that the prover cannot express is left out, and `prove_expr` warns about it.
+    pub(crate) fn prove_exact(&mut self, goal: &crate::hir::check::pointer_facts::Exact) -> bool {
+        let mut prover = hir::prover::SmtProver::new();
+        let mut calls = 0;
+        let mut facts = Vec::new();
+        let constraints: Vec<Expr> = self
+            .consteval
+            .constraints
+            .iter()
+            .map(|c| self.abstract_calls(c, &mut calls, &mut facts))
+            .collect();
+        let goal = self.lower_exact(goal, &mut prover, &mut calls, &mut facts);
+        for constraint in constraints.iter().chain(&facts) {
+            let _ = prover.add_constraint(constraint, &|n| self.prover_int_type(n));
+        }
+        let Some(goal) = goal else {
+            return false;
+        };
+        prover.add_smt(format!("(not {goal})"));
+        matches!(prover.prove(), Ok(false))
+    }
+
+    fn lower_exact(
+        &self,
+        goal: &crate::hir::check::pointer_facts::Exact,
+        prover: &mut hir::prover::SmtProver,
+        calls: &mut usize,
+        facts: &mut Vec<Expr>,
+    ) -> Option<String> {
+        use crate::hir::check::pointer_facts::Exact;
+        let mut all = |gs: &[Exact], op: &str, empty: &str| -> Option<String> {
+            let parts: Option<Vec<String>> = gs
+                .iter()
+                .map(|g| self.lower_exact(g, prover, calls, facts))
+                .collect();
+            let parts = parts?;
+            Some(if parts.is_empty() {
+                empty.to_string()
+            } else {
+                format!("({op} {})", parts.join(" "))
+            })
+        };
+        match goal {
+            Exact::Term(e) => {
+                let e = self.abstract_calls(e, calls, facts);
+                prover.lower_term(&e, &|n| self.prover_int_type(n)).ok()
+            }
+            Exact::Sum(ts) => all(ts, "+ 0", "0"),
+            Exact::And(gs) => all(gs, "and", "true"),
+            Exact::Or(gs) => all(gs, "or", "false"),
+            Exact::Le(a, b) => {
+                let a = self.lower_exact(a, prover, calls, facts)?;
+                let b = self.lower_exact(b, prover, calls, facts)?;
+                Some(format!("(<= {a} {b})"))
             }
         }
     }

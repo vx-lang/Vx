@@ -642,6 +642,11 @@ pub struct TypeChecker<'a> {
     /// One frame for each call being checked: the variables that the call can change. Their
     /// prover facts end after the call, because its `requires` is proved before it runs.
     pub(crate) fact_change_frames: Vec<Vec<String>>,
+    /// The raw-pointer facts of the body being checked.
+    pub(crate) pointer_facts: crate::hir::check::pointer_facts::PointerFacts,
+    /// The last id given to a base or a fact. Never saved or restored, so that two branches
+    /// never give one id to two things.
+    pub(crate) pointer_fact_ids: usize,
     /// The `tasks` blocks and tasks around the code being checked.
     pub(crate) tasks: crate::hir::check::tasks::TaskCx,
     /// Expected type of the expression currently being checked, from a `let x: T = …` or a
@@ -721,6 +726,8 @@ impl<'a> TypeChecker<'a> {
             literal_typed_lets: std::collections::HashMap::new(),
             changed_vars: std::collections::HashSet::new(),
             fact_change_frames: Vec::new(),
+            pointer_facts: Default::default(),
+            pointer_fact_ids: 0,
             tasks: Default::default(),
             expected_type: None,
             consteval: Default::default(),
@@ -787,7 +794,9 @@ impl<'a> TypeChecker<'a> {
             self.traffic.scope_chain.pop();
         }
         let depth = self.scopes.len();
-        self.scopes.pop();
+        if let Some(vars) = self.scopes.pop() {
+            self.pointer_facts_end_scope(&vars);
+        }
         self.borrow.moved_vars.pop();
         self.borrow.mutable_vars.pop();
         self.borrow.bound_behind_ref.pop();
@@ -1937,6 +1946,7 @@ impl<'a> TypeChecker<'a> {
         // changes that the caller's calls wait to apply.
         let prev_constraints = std::mem::take(&mut self.consteval.constraints);
         let prev_fact_change_frames = std::mem::take(&mut self.fact_change_frames);
+        let prev_pointer_facts = std::mem::take(&mut self.pointer_facts);
         self.check_atomic_contract(func);
         // An atomic clause is for the race proof, not for the prover.
         let proved: Vec<Expr> = func
@@ -2027,6 +2037,7 @@ impl<'a> TypeChecker<'a> {
         {
             self.consteval.constraints.push(req.clone());
         }
+        self.start_pointer_facts(func);
 
         // Pre-scan: gather the value contracts the consumer's asserts impose, so a
         // transfer seam (checked before the consumer's spawn body) can consult them.
@@ -2182,6 +2193,7 @@ impl<'a> TypeChecker<'a> {
         self.current_function = prev_fn;
         self.consteval.constraints = prev_constraints;
         self.fact_change_frames = prev_fact_change_frames;
+        self.pointer_facts = prev_pointer_facts;
         self.active_topology = prev_top;
         self.set_active_memory(prev_mem);
         self.borrow.current_params = prev_params;
