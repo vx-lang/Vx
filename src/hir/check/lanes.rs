@@ -30,11 +30,26 @@ pub enum LaneOp {
     Sort,
     /// A sort in place, from the largest value down.
     SortDescending,
+    /// A copy of a tile of a tensor into a tile of shared memory, which goes on in the background.
+    /// It gives a token.
+    CopyAsync,
+    /// The end of a copy: `t.wait()` on the token of a `lanes::copy_async`.
+    CopyWait,
 }
 
 impl LaneOp {
     pub fn is_sort(self) -> bool {
         matches!(self, LaneOp::Sort | LaneOp::SortDescending)
+    }
+
+    /// Whether a call is a statement of its own, not the value of a `let`.
+    pub fn is_statement(self) -> bool {
+        self.is_sort() || self == LaneOp::CopyWait
+    }
+
+    /// Whether the call writes the tensor that its first argument borrows.
+    pub fn writes_first(self) -> bool {
+        self.is_sort() || self == LaneOp::CopyAsync
     }
 }
 
@@ -48,6 +63,9 @@ const ROUTINES: &[(&str, LaneOp, bool)] = &[
     ("argmax_unordered", LaneOp::ArgMax, false),
     ("sort", LaneOp::Sort, true),
     ("sort_descending", LaneOp::SortDescending, true),
+    ("copy_async", LaneOp::CopyAsync, true),
+    // The checker writes `t.wait()` as this call. The message of an unknown routine leaves it out.
+    ("copy_wait", LaneOp::CopyWait, true),
 ];
 
 /// The most elements that a block reduces: 32 groups of 32.
@@ -67,14 +85,30 @@ pub fn lane_routine(name: &str) -> Option<(LaneOp, bool)> {
         .map(|&(_, op, ordered)| (op, ordered))
 }
 
+/// A call to a lane routine as a message names it. The checker writes `t.wait()` on a copy token
+/// as `lanes::copy_wait(t)`, which the program does not show.
+pub fn shown_name(name: &str) -> String {
+    if lane_routine(name).is_some_and(|(op, _)| op == LaneOp::CopyWait) {
+        "the `.wait()` of a copy token".to_string()
+    } else {
+        format!("`{name}`")
+    }
+}
+
 /// Whether `e` is a call with the reserved prefix `lanes::`, known or not.
 pub fn is_lanes_call(e: &Expr) -> bool {
     matches!(e, Expr::FunctionCall(fc) if fc.name.as_ref().starts_with("lanes::"))
 }
 
-/// The call to a lane sort that is the whole of `e`, also inside `unsafe { .. }`.
-pub fn bare_lane_sort(e: &Expr) -> Option<&FunctionCallExpr> {
-    bare_lanes_call(e).filter(|fc| lane_routine(&fc.name).is_some_and(|(op, _)| op.is_sort()))
+/// The call to a lane routine that is a statement of its own, the whole of `e`, also inside
+/// `unsafe { .. }`.
+pub fn bare_lane_statement(e: &Expr) -> Option<&FunctionCallExpr> {
+    bare_lanes_call(e).filter(|fc| lane_routine(&fc.name).is_some_and(|(op, _)| op.is_statement()))
+}
+
+/// Whether `op` is a lane routine that `e` calls.
+pub fn calls_routine(e: &Expr, op: LaneOp) -> bool {
+    bare_lanes_call(e).is_some_and(|fc| lane_routine(&fc.name).is_some_and(|(o, _)| o == op))
 }
 
 /// The call to a lane reduction that is the whole of `e`, also inside `unsafe { .. }`.
@@ -96,8 +130,15 @@ impl crate::hir::TypeChecker<'_> {
         call_span: Span,
     ) -> Type {
         let f32_ty = Type::Scalar(ElementType::F32);
-        if lane_routine(name).is_some_and(|(op, _)| op.is_sort()) {
-            return self.check_lane_sort(name, args, arg_types, call_span);
+        match lane_routine(name).map(|(op, _)| op) {
+            Some(op) if op.is_sort() => {
+                return self.check_lane_sort(name, args, arg_types, call_span)
+            }
+            Some(LaneOp::CopyAsync) => {
+                return self.check_copy_async(name, args, arg_types, call_span)
+            }
+            Some(LaneOp::CopyWait) => return self.check_copy_wait(name, arg_types, call_span),
+            _ => {}
         }
         let argmax = lane_routine(name).map(|(op, _)| op) == Some(LaneOp::ArgMax);
         let result = if argmax {
@@ -112,6 +153,7 @@ impl crate::hir::TypeChecker<'_> {
         if lane_routine(name).is_none() {
             let names: Vec<String> = ROUTINES
                 .iter()
+                .filter(|(_, op, _)| *op != LaneOp::CopyWait)
                 .map(|(n, ..)| format!("`lanes::{n}`"))
                 .collect();
             self.errors.error_with_code(
@@ -261,6 +303,128 @@ impl crate::hir::TypeChecker<'_> {
                     arg_types[1]
                 ),
                 span,
+            );
+        }
+        void
+    }
+
+    /// The type of a call `lanes::copy_async(&mut dst, &src, [i, j, ..])`: a token of the copy of
+    /// the tile of `src` that starts at `[i, j, ..]` into `dst`, which is in shared memory. An
+    /// element of the tile past the end of `src` copies as zero.
+    fn check_copy_async(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        arg_types: &[Type],
+        call_span: Span,
+    ) -> Type {
+        let token = crate::hir::check::transfer::token_of(Type::Struct("void".into(), None));
+        if self.speculating {
+            return token;
+        }
+        let span = Some(SourceSpan::from_ast_span(&call_span));
+        if args.len() != 3 {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "`{name}` takes 3 arguments, a `&mut` tile in shared memory, a borrowed \
+                     tensor and the place of the tile in it, such as `[r, c]`, but it got {}",
+                    args.len()
+                ),
+                span,
+            );
+            return token;
+        }
+        let shared = |p: &Option<crate::syntax::Placement>| {
+            p.as_ref().is_some_and(|p| {
+                self.env.memories.values().any(|d| {
+                    crate::syntax::MemorySpace::from_name(d.name.as_ref()) == p.space
+                        && matches!(
+                            d.scope,
+                            Some(crate::syntax::Scope::Cta | crate::syntax::Scope::Sm)
+                        )
+                })
+            })
+        };
+        let dst = match &arg_types[0] {
+            Type::Borrow {
+                inner,
+                is_mut: true,
+                ..
+            } => match inner.as_ref() {
+                Type::Tensor(e, dims, p)
+                    if shared(p)
+                        && dims.iter().all(|d| {
+                            crate::hir::memory::static_extent(d).is_some_and(|n| n >= 1)
+                        })
+                        && matches!(crate::hir::memory::element_bytes(e), Some(4 | 8)) =>
+                {
+                    Some((e.clone(), dims.len()))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some((elem, rank)) = dst else {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the first argument of `{name}` must borrow a tile in shared memory as `&mut`, \
+                     with a size that is a number and elements of 4 or 8 bytes, such as \
+                     `&mut tiles[0]` for `Tensor<f32, [2, 64, 64], Memory::SMEM>`, but it is `{}`",
+                    arg_types[0]
+                ),
+                span,
+            );
+            return token;
+        };
+        // `x` and `&x` for a parameter `x : &Tensor<..>` both name the tensor.
+        let mut src = &arg_types[1];
+        while let Type::Borrow { inner, .. } = src {
+            src = inner;
+        }
+        let src_ok = !matches!(arg_types[1], Type::Tensor(..))
+            && matches!(src, Type::Tensor(e, dims, _) if *e == elem && dims.len() == rank);
+        if !src_ok {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the second argument of `{name}` must borrow a tensor of `{elem}` with {rank} \
+                     dimensions, as the tile has, but it is `{}`",
+                    arg_types[1]
+                ),
+                span.clone(),
+            );
+        }
+        let place_ok = matches!(&args[2], Expr::Array(a) if a.elements.len() == rank)
+            && matches!(
+                &arg_types[2],
+                Type::Tensor(ElementType::I32 | ElementType::I64, ..)
+            );
+        if !place_ok {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!(
+                    "the third argument of `{name}` is the place of the tile, written as a list of \
+                     {rank} integers such as `[r, c]`"
+                ),
+                span,
+            );
+        }
+        token
+    }
+
+    /// The type of `lanes::copy_wait(t)`, which the checker writes for `t.wait()` on the token of
+    /// a `lanes::copy_async`.
+    fn check_copy_wait(&mut self, name: &str, arg_types: &[Type], call_span: Span) -> Type {
+        let void = Type::Struct("void".into(), None);
+        let is_copy_token =
+            arg_types.len() == 1 && crate::syntax::types::is_copy_token(&arg_types[0]);
+        if !is_copy_token && !self.speculating {
+            self.errors.error_with_code(
+                DiagnosticCode::E3003,
+                format!("`{name}` takes the token of a `lanes::copy_async`"),
+                Some(SourceSpan::from_ast_span(&call_span)),
             );
         }
         void

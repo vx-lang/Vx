@@ -116,6 +116,42 @@ the lanes stays in the registers of a lane. Only the steps between them use shar
 barriers: 20 of the 66 steps for 2048 elements on 1024 lanes. The CPU runs the same network in
 loops.
 
+## Copies
+
+`lanes::copy_async(&mut tile, &x, [i, j])` starts a copy of the tile of `x` that starts at
+`[i, j]` into `tile`, and gives a token. `t.wait()` takes the token and waits until the copy
+ends. Between the two, the lanes can work on another tile, so the next copy runs while the lanes
+use the last one:
+
+<!-- vx-doctest: skip (needs a GPU topology) -->
+
+```vx
+let mut tiles = unsafe { Tensor<f32, [2, 64, 64], Memory::SMEM>::uninit() };
+for k in 0..steps / 2 {
+  let even = lanes::copy_async(&mut tiles[0], x, [0, k * 128]);
+  let odd = lanes::copy_async(&mut tiles[1], x, [0, k * 128 + 64]);
+  even.wait();
+  // The lanes read tiles[0] here, while the copy into tiles[1] goes on.
+  odd.wait();
+  // The lanes read tiles[1] here.
+}
+```
+
+- `tile` is a tensor in shared memory with a size that is a number, such as a row of a rank-3
+  tensor. Its elements have 4 or 8 bytes. `x` has the same element type and the same number of
+  dimensions. The place is a list of integers, one for each dimension.
+- An element of the tile past the end of `x`, or before its start, is zero.
+- The token holds `tile` as `&mut` until its wait, so the lanes cannot read the tile before the
+  copy ends. Two tokens can hold two different rows of one tensor.
+- A token must be waited (E6036).
+- The copy is the whole value of a `let`, and the wait a statement of its own, in the code of a
+  loop of blocks. A copy in the code of a subgroup is not supported yet.
+
+On the GPU, each lane starts a `cp.async` for its elements of the tile, and the copies of one
+call are one group. The token is the number of groups that the lane started before it. The wait
+lets the groups that started after the token go on (`cp.async.wait_group`), and then every lane
+of the block waits. The CPU copies the tile at the call, and the wait does nothing.
+
 ## Not yet
 
 - `f64` and the integer types.

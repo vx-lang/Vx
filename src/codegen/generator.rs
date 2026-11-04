@@ -2277,7 +2277,11 @@ impl<'c> MeliorGenerator<'c> {
         &self,
         ty: &syntax::Type,
     ) -> Result<Type<'c>, crate::codegen::lower::LowerError> {
-        // A token of `transfer_async` is its tensor: the copy is done when it is made.
+        // A token of `transfer_async` is its tensor: the copy is done when it is made. A token of
+        // a lane copy is a number.
+        if syntax::types::is_copy_token(ty) {
+            return Ok(melior::ir::r#type::IntegerType::new(self.context, 32).into());
+        }
         if let Some(inner) = syntax::types::transfer_token_inner(ty) {
             return self.lower_type(inner);
         }

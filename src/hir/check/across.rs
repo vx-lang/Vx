@@ -448,14 +448,14 @@ impl Walk<'_> {
                     self.block_tensor(l, ctx);
                 }
                 if let Some(fc) = lanes::bare_lanes_call(&l.expr) {
-                    if lanes::bare_lane_sort(&l.expr).is_none() {
+                    if lanes::bare_lane_statement(&l.expr).is_none() {
                         self.lane_call(fc, ctx);
                     }
                 }
                 self.expr(&l.expr, ctx)
             }
             Statement::ExprStmt(e) => {
-                if let Some(fc) = lanes::bare_lane_sort(&e.expr) {
+                if let Some(fc) = lanes::bare_lane_statement(&e.expr) {
                     self.lane_call(fc, ctx);
                 }
                 self.expr(&e.expr, ctx)
@@ -645,21 +645,36 @@ impl Walk<'_> {
             }
         });
         for (name, at) in elsewhere {
-            let place = if lanes::lane_routine(&name).is_some_and(|(op, _)| op.is_sort()) {
+            let place = if lanes::lane_routine(&name).is_some_and(|(op, _)| op.is_statement()) {
                 "a statement of its own"
             } else {
                 "the whole value of a `let`"
             };
             self.error(
                 format!(
-                    "`{name}` must be {place} in the code of a loop of blocks or subgroups, \
-                     outside its lane loops. Every lane of the block or the subgroup must get to it"
+                    "{} must be {place} in the code of a loop of blocks or subgroups, outside \
+                     its lane loops. Every lane of the block or the subgroup must get to it",
+                    lanes::shown_name(&name)
                 ),
                 at,
             );
         }
         let calls = std::mem::take(&mut self.lane_calls);
         for c in &calls {
+            let copy = lanes::lane_routine(&c.name).is_some_and(|(op, _)| {
+                matches!(op, lanes::LaneOp::CopyAsync | lanes::LaneOp::CopyWait)
+            });
+            if copy && c.scope == LevelKind::Subgroups {
+                self.error(
+                    format!(
+                        "{} must be in the code of a loop of blocks: a copy in the code of a \
+                         subgroup is not supported yet",
+                        lanes::shown_name(&c.name)
+                    ),
+                    c.at,
+                );
+                continue;
+            }
             let Some(&n) = self.lane_sizes.get(&c.at) else {
                 continue;
             };

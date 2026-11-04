@@ -6370,6 +6370,88 @@ fn function_type<'c>(gen: &MeliorGenerator<'c>, args: &[Type<'c>], ret: Type<'c>
     melior::ir::r#type::FunctionType::new(gen.context, args, results).into()
 }
 
+/// The memref of a tensor argument of a lane routine.
+fn lane_tensor_operand<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    tensor: &Expr,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<(Value<'c, 'c>, melior::ir::BlockRef<'c, 'c>), LowerError> {
+    let (mut t, t_ty, block) = gen.generate_expr(tensor, block)?;
+    // A tensor that the code generator keeps behind a pointer.
+    if let Ok(outer) = melior::ir::r#type::MemRefType::try_from(t_ty) {
+        use melior::ir::r#type::ShapedTypeLike;
+        let inner = outer.element();
+        if melior::ir::r#type::MemRefType::try_from(inner).is_ok() {
+            let load = OperationBuilder::new("memref.load", gen.loc())
+                .add_operands(&[t])
+                .add_results(&[inner])
+                .build()?;
+            t = block.append_operation(load).result(0)?.into();
+        }
+    }
+    Ok((t, block))
+}
+
+/// `lanes::copy_async(&mut tile, &x, [i, j, ..])` as `vx.lane_copy_async`, and the wait of its
+/// token as `vx.lane_copy_wait`. Both are `serial`, so the copy ends where it starts.
+fn lower_lane_copy<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    op: crate::hir::check::lanes::LaneOp,
+    args: &[Expr],
+) -> Result<
+    (
+        Value<'c, 'c>,
+        melior::ir::Type<'c>,
+        melior::ir::BlockRef<'c, 'c>,
+    ),
+    LowerError,
+> {
+    let unit = melior::ir::attribute::Attribute::unit(gen.context);
+    let mut attrs = vec![(Identifier::new(gen.context, "serial"), unit)];
+    if op == crate::hir::check::lanes::LaneOp::CopyWait {
+        let [token] = args else {
+            return Err(LowerError::ParseType(
+                "a lane copy wait takes its token".to_string(),
+            ));
+        };
+        let (t, t_ty, block) = gen.generate_expr(token, block)?;
+        let t = gen.coerce_type(&block, t, t_ty, gen.i32_ty)?;
+        let wait = OperationBuilder::new("vx.lane_copy_wait", gen.loc())
+            .add_operands(&[t])
+            .add_attributes(&attrs)
+            .build()?;
+        block.append_operation(wait);
+        let v = constant_i32(gen, block, 0)?;
+        return Ok((v, gen.i32_ty, block));
+    }
+    let [dst, src, Expr::Array(place)] = args else {
+        return Err(LowerError::ParseType(
+            "a lane copy takes a tile, a tensor and a place".to_string(),
+        ));
+    };
+    let (dst, block) = lane_tensor_operand(gen, dst, block)?;
+    let (src, mut block) = lane_tensor_operand(gen, src, block)?;
+    let mut operands = vec![dst, src];
+    for e in &place.elements {
+        let (v, v_ty, b) = gen.generate_expr(e, block)?;
+        block = b;
+        operands.push(gen.coerce_type(&block, v, v_ty, gen.i32_ty)?);
+    }
+    let i64_ty = melior::ir::r#type::IntegerType::new(gen.context, 64).into();
+    attrs.push((
+        Identifier::new(gen.context, "lanes"),
+        IntegerAttribute::new(i64_ty, 1).into(),
+    ));
+    let copy = OperationBuilder::new("vx.lane_copy_async", gen.loc())
+        .add_operands(&operands)
+        .add_attributes(&attrs)
+        .add_results(&[gen.i32_ty])
+        .build()?;
+    let v = block.append_operation(copy).result(0)?.into();
+    Ok((v, gen.i32_ty, block))
+}
+
 /// `lanes::sum(&t, n)` and the other lane reductions, as `vx.lane_reduce` or `vx.lane_argmax`. This code generator
 /// runs `across` loops as plain loops, on one lane, so the op is `serial`: both copies of the
 /// kernel expand it into the loops of the CPU.
@@ -6387,6 +6469,12 @@ fn lower_lane_reduce<'c>(
     ),
     LowerError,
 > {
+    if matches!(
+        op,
+        crate::hir::check::lanes::LaneOp::CopyAsync | crate::hir::check::lanes::LaneOp::CopyWait
+    ) {
+        return lower_lane_copy(gen, block, op, args);
+    }
     let argmax = op == crate::hir::check::lanes::LaneOp::ArgMax;
     let Some((n, tensors)) = args.split_last() else {
         return Err(LowerError::ParseType(
@@ -6397,20 +6485,8 @@ fn lower_lane_reduce<'c>(
     let mut block = block;
     let mut operands = Vec::new();
     for tensor in tensors {
-        let (mut t, t_ty, b) = gen.generate_expr(tensor, block)?;
+        let (t, b) = lane_tensor_operand(gen, tensor, block)?;
         block = b;
-        // A tensor that the code generator keeps behind a pointer.
-        if let Ok(outer) = melior::ir::r#type::MemRefType::try_from(t_ty) {
-            use melior::ir::r#type::ShapedTypeLike;
-            let inner = outer.element();
-            if melior::ir::r#type::MemRefType::try_from(inner).is_ok() {
-                let load = OperationBuilder::new("memref.load", gen.loc())
-                    .add_operands(&[t])
-                    .add_results(&[inner])
-                    .build()?;
-                t = block.append_operation(load).result(0)?.into();
-            }
-        }
         operands.push(t);
     }
     let (count, count_ty, block) = gen.generate_expr(n, block)?;
