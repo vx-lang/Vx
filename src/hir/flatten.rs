@@ -1741,7 +1741,12 @@ impl<'r> Lowerer<'r> {
                     },
                     _ => 0,
                 };
-                let imm = mem_id | ((source as u64) << 32);
+                let shared = if t.shared {
+                    crate::bytecode::TRANSFER_SHARED
+                } else {
+                    0
+                };
+                let imm = mem_id | ((source as u64) << 32) | shared;
                 Ok(self.emit_typed(Opcode::Transfer, src.reg, Register(0), result_ty, imm))
             }
             // `Tensor<T>([..])` allocates a buffer. Any other name is an ordinary function call.

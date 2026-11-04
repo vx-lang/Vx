@@ -1457,6 +1457,203 @@ static void placeTransferFree(vx::TransferOp transfer) {
   }
 }
 
+static LLVM::LLVMFuncOp getOrDeclareRuntimeFn(OpBuilder &builder,
+                                              ModuleOp module, Location loc,
+                                              StringRef name, Type result,
+                                              ArrayRef<Type> params);
+
+// `VX_CTRL_WAIT` in include/vx_hardware_runtime.h.
+constexpr int32_t kCtrlWait = 0x05;
+
+// "Warning at file:line:col: " for an operation from the source, else
+// "Warning in function `f`: ". The driver prints only the message. The flat
+// code generator gives an operation no source position, only a line of its
+// own MLIR text, whose file is "-".
+static std::string warningAt(Operation *op) {
+  std::string prefix;
+  op->getLoc()->walk([&](Location loc) {
+    auto file = dyn_cast<FileLineColLoc>(loc);
+    if (!file || file.getFilename().getValue() == "-")
+      return WalkResult::advance();
+    prefix = ("Warning at " + file.getFilename().getValue() + ":" +
+              Twine(file.getLine()) + ":" + Twine(file.getColumn()) + ": ")
+                 .str();
+    return WalkResult::interrupt();
+  });
+  if (prefix.empty())
+    if (auto func = op->getParentOfType<func::FuncOp>())
+      prefix = ("Warning in function `" + func.getSymName() + "`: ").str();
+  return prefix.empty() ? "Warning: " : prefix;
+}
+
+// Why `user` needs the copy, which it reaches through `value`.
+static std::string whyItNeedsTheCopy(Operation *user, Value value) {
+  if (auto store = dyn_cast<memref::StoreOp>(user)) {
+    if (store.getMemref() != value)
+      return "the program stores the copy somewhere else";
+    if (store.getIndices().empty() && value.getDefiningOp<memref::AllocaOp>())
+      return "the variable that holds the copy is assigned again";
+    return "the program writes an element of the copy";
+  }
+  if (auto call = dyn_cast<func::CallOp>(user))
+    return ("the call to `" + call.getCallee() +
+            "` can change the copy or keep it")
+        .str();
+  if (isa<func::ReturnOp>(user))
+    return "the function returns the copy";
+  return ("`" + user->getName().getStringRef() +
+          "` can change the copy or keep it")
+      .str();
+}
+
+// The operation that needs the copy a transfer makes, and the value it reaches
+// it through. Null when every use of the copy only reads it: an element load,
+// a shape read, a view, a `let` that holds it, or a `&` argument of a call.
+static std::pair<Operation *, Value>
+useThatNeedsTheCopy(Value copy, SmallVectorImpl<vx::DropOp> &drops) {
+  SmallVector<Value> work{copy};
+  llvm::DenseSet<Value> seen;
+  while (!work.empty()) {
+    Value value = work.pop_back_val();
+    if (!seen.insert(value).second)
+      continue;
+    for (OpOperand &use : value.getUses()) {
+      Operation *user = use.getOwner();
+      if (auto drop = dyn_cast<vx::DropOp>(user)) {
+        drops.push_back(drop);
+        continue;
+      }
+      if (auto load = dyn_cast<memref::LoadOp>(user);
+          load && load.getMemRef() == value)
+        continue;
+      if (isa<memref::DimOp>(user))
+        continue;
+      if (isa<ViewLikeOpInterface, memref::CastOp>(user)) {
+        for (Value result : user->getResults())
+          work.push_back(result);
+        continue;
+      }
+      if (auto store = dyn_cast<memref::StoreOp>(user);
+          store && store.getValueToStore() == value) {
+        // A `let` slot whose other users only read it.
+        Value slot = store.getMemref();
+        if (!slot.getDefiningOp<memref::AllocaOp>())
+          return {user, value};
+        for (Operation *u : slot.getUsers())
+          if (u != user && !isa<memref::LoadOp>(u))
+            return {u, slot};
+        for (Operation *u : slot.getUsers())
+          if (auto load = dyn_cast<memref::LoadOp>(u))
+            work.push_back(load.getResult());
+        continue;
+      }
+      if (auto call = dyn_cast<func::CallOp>(user)) {
+        auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+            call, call.getCalleeAttr());
+        if (callee && !callee.isExternal() &&
+            callee.getArgAttr(use.getOperandNumber(), "llvm.readonly"))
+          continue;
+      }
+      return {user, value};
+    }
+  }
+  return {nullptr, nullptr};
+}
+
+// A parameter of the function `v` is in: its block argument, or a load of the
+// argument's slot, which is how the AST code generator reads a `&` parameter.
+static bool isParameter(Value v) {
+  if (auto load = v.getDefiningOp<memref::LoadOp>();
+      load && load.getIndices().empty())
+    v = load.getMemRef();
+  auto arg = dyn_cast<BlockArgument>(v);
+  return arg && arg.getOwner()->isEntryBlock() &&
+         isa<func::FuncOp>(arg.getOwner()->getParentOp());
+}
+
+// Skip the copy of a transfer that sema marked `shared`: its source is a `&`
+// tensor and the edge is `: shared`, so the CPU can read the GPU's memory. The
+// caller cannot change a `&` parameter during the call, so when every use of
+// the copy only reads it, the parameter can stand in for the copy. The transfer
+// then only waits for the GPU. Otherwise the copy stays, and a warning names
+// what needs it.
+static void elideSharedTransfers(ModuleOp module) {
+  SmallVector<vx::TransferOp> transfers;
+  module.walk([&](vx::TransferOp t) {
+    if (t->hasAttr("shared"))
+      transfers.push_back(t);
+  });
+  for (vx::TransferOp t : transfers) {
+    Value src = t.getOperand();
+    auto srcType = dyn_cast<MemRefType>(src.getType());
+    auto copyType = dyn_cast<MemRefType>(t.getResult().getType());
+    if (!srcType || !copyType)
+      continue;
+    if (!isParameter(src)) {
+      t.emitWarning() << warningAt(t)
+                      << "this transfer copies the tensor. The CPU can read "
+                         "it in place only when it is a `&` parameter of this "
+                         "function.";
+      continue;
+    }
+    if (srcType.getShape() != copyType.getShape() ||
+        srcType.getElementType() != copyType.getElementType() ||
+        srcType.getLayout() != copyType.getLayout()) {
+      t.emitWarning() << warningAt(t)
+                      << "this transfer copies the tensor, because the copy "
+                         "has a different shape or layout.";
+      continue;
+    }
+    SmallVector<vx::DropOp> drops;
+    auto [user, through] = useThatNeedsTheCopy(t.getResult(), drops);
+    if (user) {
+      user->emitWarning() << warningAt(user)
+                          << "a transfer to CPU_DRAM copies a tensor, because "
+                          << whyItNeedsTheCopy(user, through)
+                          << ". The CPU reads the tensor in place only when "
+                             "every use of the copy reads it.";
+      continue;
+    }
+
+    // Wait for the GPU, through `vx_plugin_control(VX_CTRL_WAIT, &topology)`.
+    // The slot for the topology goes at the start of the function, so a
+    // transfer in a loop does not grow the stack.
+    Location loc = t.getLoc();
+    OpBuilder builder(t);
+    auto ptrType = LLVM::LLVMPointerType::get(module.getContext());
+    auto i32Type = builder.getI32Type();
+    auto func = t->getParentOfType<func::FuncOp>();
+    Value slot;
+    {
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointToStart(&func.getBody().front());
+      Value one = builder.create<LLVM::ConstantOp>(
+          loc, builder.getI64Type(), builder.getI64IntegerAttr(1));
+      slot = builder.create<LLVM::AllocaOp>(loc, ptrType, i32Type, one);
+    }
+    Value topology = builder.create<LLVM::ConstantOp>(
+        loc, i32Type, builder.getI32IntegerAttr(sourceTopologyOf(t)));
+    builder.create<LLVM::StoreOp>(loc, topology, slot);
+    Value opcode = builder.create<LLVM::ConstantOp>(
+        loc, i32Type, builder.getI32IntegerAttr(kCtrlWait));
+    // An unknown location: LLVM refuses a declaration with debug info.
+    getOrDeclareRuntimeFn(builder, module, UnknownLoc::get(module.getContext()),
+                          "vx_plugin_control", i32Type, {i32Type, ptrType});
+    builder.create<LLVM::CallOp>(
+        loc, TypeRange{i32Type},
+        SymbolRefAttr::get(module.getContext(), "vx_plugin_control"),
+        ValueRange{opcode, slot});
+
+    Value inPlace = src;
+    if (srcType != copyType)
+      inPlace = builder.create<memref::MemorySpaceCastOp>(loc, copyType, src);
+    for (vx::DropOp drop : drops)
+      drop.erase();
+    t.getResult().replaceAllUsesWith(inPlace);
+    t.erase();
+  }
+}
+
 // Give every buffer a transfer allocates a `vx.free` after its last use.
 //
 // Runs before the transfers are lowered, while it is still clear which values
@@ -4790,6 +4987,8 @@ struct ConvertVxToStandardPass
       signalPassFailure();
       return;
     }
+    // Before the frees, so a transfer that copies nothing gets none.
+    elideSharedTransfers(getOperation());
     placeTransferFrees(getOperation());
     readCellsBeforeSpawns(getOperation());
     promoteBufferCells(getOperation());
