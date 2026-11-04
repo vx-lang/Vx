@@ -18,6 +18,7 @@
 //===----------------------------------------------------------------------===//
 
 use super::super::*;
+use crate::syntax::types::transfer_token_inner as token_inner;
 
 /// What resolving a transfer's edge produced: where the value is, where it is going, the route
 /// the hardware takes between them, and what that route costs. Every later phase reads it.
@@ -987,6 +988,24 @@ impl<'a> TypeChecker<'a> {
     /// Whether a memory space is declared `managed: cached` (hardware-coherent), so an implicit
     /// cross-space use of a value there — or a relaxed transfer into it — is safe. Undeclared
     /// spaces are treated as `explicit` (the strict default), preserving the older behavior.
+    /// Whether the fleet may run `top` on a worker of another node (`offload: true`). Such a
+    /// worker does not share this node's memory, so `managed: cached` does not reach it. A
+    /// built-in device has no declaration to mark, and a manifest can send it anywhere, so it
+    /// counts as one. The host does not.
+    pub(crate) fn topology_offloads(&self, top: &Topology) -> bool {
+        match top {
+            Topology::Custom(name) => self
+                .env
+                .topologies
+                .get(name)
+                .is_none_or(|d| d.descriptor.offload),
+            Topology::Slice(inner, ..) => self.topology_offloads(inner),
+            // The host runs the program itself, so its own code reads its own memory.
+            Topology::CPU | Topology::CpuAvx512 | Topology::CpuNeon => false,
+            _ => true,
+        }
+    }
+
     pub(crate) fn space_is_cached(&self, space: &MemorySpace) -> bool {
         self.env.memories.values().any(|d| {
             d.managed == crate::syntax::Management::Cached
@@ -2035,14 +2054,17 @@ impl<'a> TypeChecker<'a> {
                 space: intermediate_space,
                 cost: None,
                 lowering: None,
+                is_async: false,
                 span: t.span,
             });
         }
+        // Only the last hop gives the token of `transfer_async`.
         *expr = Expr::Transfer(TransferExpr {
             expr: Box::new(current_expr),
             space: target_mem,
             cost: None,
             lowering: None,
+            is_async: t.is_async,
             span: t.span,
         });
         // Propagate the relaxed marker so each rewritten single-hop transfer is checked with the
@@ -2539,5 +2561,131 @@ impl<'a> TypeChecker<'a> {
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
+    }
+}
+
+/// The type of `transfer_async(x, M)`: a token of the placed tensor `placed`.
+pub(crate) fn token_of(placed: Type) -> Type {
+    if placed == Type::Unknown {
+        return Type::Unknown;
+    }
+    Type::GenericInstance(Box::new(Type::Struct("Token".into(), None)), vec![placed])
+}
+
+impl TypeChecker<'_> {
+    /// `t.wait()` on a token of `transfer_async`: it takes the token, and its value is the placed
+    /// tensor. The code generators copy at the `transfer_async`, so the wait is the value.
+    pub(crate) fn check_token_wait(&mut self, expr: &mut Expr) -> Option<Type> {
+        let Expr::MethodCall(m) = &*expr else {
+            return None;
+        };
+        if m.method_name.as_ref() != "wait" || !m.args.is_empty() {
+            return None;
+        }
+        let probe = self.check_expr_type_probe(&m.base);
+        let probe = match &*m.base {
+            Expr::Transfer(t) if t.is_async => Type::GenericInstance(
+                Box::new(Type::Struct("Token".into(), None)),
+                vec![Type::Unknown],
+            ),
+            _ => probe,
+        };
+        token_inner(&probe)?;
+        let copy = crate::syntax::types::is_copy_token(&probe);
+        let Expr::MethodCall(m) = std::mem::replace(
+            expr,
+            Expr::Number(crate::syntax::NumberExpr::new(
+                "0".to_string(),
+                None,
+                Span::default(),
+            )),
+        ) else {
+            unreachable!("matched above")
+        };
+        // The token of a lane copy waits at `lanes::copy_wait`, where the copy ends on a GPU.
+        if copy {
+            *expr = Expr::FunctionCall(crate::syntax::expr::FunctionCallExpr::new(
+                "lanes::copy_wait".into(),
+                None,
+                vec![*m.base],
+                m.span,
+            ));
+            return Some(self.check_expr_type_flag(expr, true));
+        }
+        let mut base = *m.base;
+        let ty = self.check_expr_type_flag(&mut base, true);
+        if let Expr::Identifier(id) = &base {
+            self.consume(id.name.as_ref());
+        }
+        *expr = base;
+        Some(token_inner(&ty).cloned().unwrap_or(Type::Unknown))
+    }
+
+    /// A `let` of `name` that holds a token: it must be waited before its scope ends.
+    pub(crate) fn note_token_let(&mut self, name: &crate::symbol::Symbol, span: Span) {
+        if self.speculating {
+            return;
+        }
+        let is_token = self
+            .lookup(name.as_ref())
+            .is_some_and(|(ty, _)| token_inner(ty).is_some());
+        if is_token {
+            self.tokens.push((name.clone(), span, self.scopes.len()));
+        }
+    }
+
+    /// The scope that ends now: each token of it that no `.wait()` took is E6036.
+    pub(crate) fn check_tokens_waited(&mut self) {
+        let depth = self.scopes.len();
+        let ending: Vec<_> = self
+            .tokens
+            .iter()
+            .filter(|(_, _, d)| *d == depth)
+            .cloned()
+            .collect();
+        self.tokens.retain(|(_, _, d)| *d != depth);
+        for (name, span, _) in ending {
+            if !self.is_moved(name.as_ref()) {
+                self.report_dropped_token(&name, &span, "its scope ends");
+            }
+        }
+    }
+
+    /// `name = ..` gives a token variable a new value: the old token must be waited first.
+    pub(crate) fn check_token_overwrite(&mut self, lhs: &Expr, span: &Span) {
+        let Expr::Identifier(id) = lhs else {
+            return;
+        };
+        let is_token = self
+            .lookup(id.name.as_ref())
+            .is_some_and(|(ty, _)| token_inner(ty).is_some());
+        if is_token && !self.is_moved(id.name.as_ref()) {
+            self.report_dropped_token(&id.name, span, "this assignment gives it a new value");
+        }
+    }
+
+    fn report_dropped_token(&mut self, name: &crate::symbol::Symbol, span: &Span, when: &str) {
+        if self.speculating {
+            return;
+        }
+        let copy = self
+            .lookup(name.as_ref())
+            .is_some_and(|(ty, _)| crate::syntax::types::is_copy_token(ty));
+        let message = if copy {
+            format!(
+                "the copy token '{name}' is dropped with no `.wait()` when {when}, so the copy \
+                 may not be done. Call `{name}.wait()`"
+            )
+        } else {
+            format!(
+                "the transfer token '{name}' is dropped with no `.wait()` when {when}, so the copy \
+                 may not be done. Call `{name}.wait()`, which gives the placed tensor"
+            )
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E6036,
+            message,
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
     }
 }

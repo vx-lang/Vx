@@ -22,7 +22,7 @@ use melior::ir::{
 
 use crate::syntax;
 mod control_flow;
-mod expr;
+pub(crate) mod expr;
 mod seam_cert;
 mod stmt;
 mod tensors;
@@ -395,6 +395,42 @@ fn declared_payload_ty(
     gen.lower_type_str(&declared.substitute(&mapping)).ok()
 }
 
+/// The tag of `variant` in the enum that a pattern names. Two enums can have a variant of
+/// the same name at different positions, so the enum's own name decides.
+fn variant_tag(
+    gen: &MeliorGenerator<'_>,
+    enum_name: &str,
+    variant: &str,
+) -> Result<i64, LowerError> {
+    let base = enum_name.split('<').next().unwrap_or(enum_name);
+    let position = |def: &[(crate::symbol::Symbol, Option<Vec<syntax::Type>>)]| {
+        def.iter().position(|(v, _)| v.as_ref() == variant)
+    };
+    let short = base.rsplit("::").next().unwrap_or(base);
+    for name in [base, short] {
+        if let Some(i) = gen
+            .enums
+            .get(&crate::symbol::Symbol::from(name))
+            .and_then(|d| position(d))
+        {
+            return Ok(i as i64);
+        }
+    }
+    // The pattern did not name an enum this generator knows. Search by the variant, but only
+    // when every enum that has it puts it at the same position.
+    let mut tags: Vec<usize> = gen.enums.values().filter_map(|d| position(d)).collect();
+    tags.sort_unstable();
+    tags.dedup();
+    match tags.as_slice() {
+        [i] => Ok(*i as i64),
+        _ => Err(LowerError::from(format!(
+            "cannot find the tag of {enum_name}::{variant}: the enum is unknown, and {} enums \
+             have that variant at different positions",
+            tags.len()
+        ))),
+    }
+}
+
 /// A scalar type spelled plainly, so a mangled name can be split on `_` without guessing.
 fn is_plain_scalar(text: &str) -> bool {
     parse_scalar_type(text).is_some()
@@ -602,17 +638,9 @@ pub fn generate_match_chain<'c>(
     let else_block = parent_region.append_block(melior::ir::Block::new(&[]));
 
     let cond_val = match &arm.pattern {
-        Pattern::EnumVariant(_, variant_name, _) => {
+        Pattern::EnumVariant(enum_name, variant_name, _) => {
             let i32_ty = melior::ir::r#type::IntegerType::new(gen.context, 32).into();
-            let mut tag_val = 0;
-            for enum_def in gen.enums.values() {
-                for (i, v) in enum_def.iter().enumerate() {
-                    if *v.0 == **variant_name {
-                        tag_val = i as i64;
-                        break;
-                    }
-                }
-            }
+            let tag_val = variant_tag(gen, enum_name, variant_name)?;
 
             let tag_op = block.append_operation(
                 OperationBuilder::new("arith.constant", gen.loc())
@@ -719,14 +747,7 @@ pub fn generate_match_chain<'c>(
             let Some(slot_text) = slots.get(position) else {
                 continue;
             };
-            let mut payload_ty_str = slot_text.clone();
-            if payload_ty_str.starts_with("struct<")
-                || payload_ty_str.starts_with("ptr")
-                || payload_ty_str.starts_with("func")
-                || payload_ty_str.starts_with("array")
-            {
-                payload_ty_str = format!("!llvm.{}", payload_ty_str);
-            }
+            let payload_ty_str = crate::codegen::lower::expr::full_llvm_type_text(slot_text);
             let payload_ty =
                 melior::ir::Type::parse(gen.context, &payload_ty_str).ok_or_else(|| {
                     crate::codegen::lower::LowerError::ParseType("Type::parse failed".to_string())
@@ -748,12 +769,47 @@ pub fn generate_match_chain<'c>(
                 .result(0)?
                 .into();
 
+            // The type this variant declares, as the generator recorded it when it laid out
+            // the enum.
+            let struct_name = opt_ty_str.split('"').nth(1).unwrap_or_default();
+            let recorded = gen
+                .enum_payloads
+                .borrow()
+                .get(struct_name)
+                .and_then(|m| m.get(&(vn.to_string(), position)))
+                .cloned();
+            let declared = || {
+                recorded.clone().or_else(|| {
+                    declared_payload_ty(gen, en.as_ref(), vn.as_ref(), position, &opt_ty_str)
+                })
+            };
+
+            // A byte slot holds payloads of different kinds. Read it back as this variant's.
+            if payload_ty_str.starts_with("!llvm.array<") {
+                let declared = declared().ok_or_else(|| {
+                    LowerError::from(format!(
+                        "no payload type recorded for {en}::{vn} in the byte slot of \
+                         {struct_name}"
+                    ))
+                })?;
+                let ty = melior::ir::Type::parse(gen.context, &declared)
+                    .ok_or_else(|| LowerError::ParseType("Type::parse failed".to_string()))?;
+                let val = crate::codegen::lower::expr::reinterpret_through_memory(
+                    gen,
+                    then_block,
+                    payload_val,
+                    ty,
+                    payload_ty,
+                )?;
+                gen.note_shadow(name.as_ref());
+                gen.env.insert(name.to_string().into(), (val, ty));
+                continue;
+            }
+
             // The slot may be wider than this variant declares, so cut the value back
             // to its own type before the arm body sees it.
-            let narrower =
-                declared_payload_ty(gen, en.as_ref(), vn.as_ref(), position, &opt_ty_str).filter(
-                    |text| crate::codegen::lower::expr::is_narrower_int(&payload_ty_str, text),
-                );
+            let narrower = declared()
+                .filter(|text| crate::codegen::lower::expr::is_narrower_int(&payload_ty_str, text));
             let (payload_val, payload_ty) = match narrower {
                 Some(text) => {
                     let ty = melior::ir::Type::parse(gen.context, &text).ok_or_else(|| {
@@ -770,13 +826,9 @@ pub fn generate_match_chain<'c>(
                 None => (payload_val, payload_ty),
             };
             // A float kept in an integer slot comes back out from its bits.
-            let declared_float =
-                declared_payload_ty(gen, en.as_ref(), vn.as_ref(), position, &opt_ty_str).filter(
-                    |text| {
-                        crate::codegen::generator::is_float_text(text)
-                            && payload_ty_str.starts_with('i')
-                    },
-                );
+            let declared_float = declared().filter(|text| {
+                crate::codegen::generator::is_float_text(text) && payload_ty_str.starts_with('i')
+            });
             let (payload_val, payload_ty) = match declared_float {
                 Some(text) => {
                     let bits = crate::codegen::generator::scalar_type_bits(&text)
@@ -1421,6 +1473,47 @@ pub(crate) fn call_runtime_fn<'c>(
             .build()?,
     );
     Ok(call_op.result(0)?.into())
+}
+
+/// A call of the runtime function `fn_name`, which takes nothing and returns nothing.
+pub(crate) fn call_runtime_void<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    fn_name: &str,
+) -> Result<(), LowerError> {
+    if !gen.functions.contains_key(fn_name) {
+        let func_ty = Type::parse(gen.context, "() -> ()")
+            .ok_or_else(|| LowerError::ParseType("() -> ()".to_string()))?;
+        let func_decl = OperationBuilder::new("func.func", gen.loc())
+            .add_attributes(&[
+                (
+                    Identifier::new(gen.context, "sym_name"),
+                    StringAttribute::new(gen.context, fn_name).into(),
+                ),
+                (
+                    Identifier::new(gen.context, "function_type"),
+                    TypeAttribute::new(func_ty).into(),
+                ),
+                (
+                    Identifier::new(gen.context, "sym_visibility"),
+                    StringAttribute::new(gen.context, "private").into(),
+                ),
+            ])
+            .add_regions([melior::ir::Region::new()])
+            .build()?;
+        gen.module.body().append_operation(func_decl);
+        gen.functions
+            .insert(fn_name.to_string().into(), (gen.none_ty, Vec::new()));
+    }
+    block.append_operation(
+        OperationBuilder::new("func.call", gen.loc())
+            .add_attributes(&[(
+                Identifier::new(gen.context, "callee"),
+                FlatSymbolRefAttribute::new(gen.context, fn_name).into(),
+            )])
+            .build()?,
+    );
+    Ok(())
 }
 
 /// The eight `raw::` transfer-lowering primitives (#353), emitted in place.

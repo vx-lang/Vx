@@ -23,6 +23,10 @@
 // - `widening_cast`: an `i64` holds every `i32`, so `b as i64` keeps the value of `b`.
 // - `negated`: `-b + n - 1` fixes `b`, and its coefficients fit an `i32`.
 // - `cast_inside_its_range`: `(b as u8) as i32` keeps the value of `b`, because `b` is below 200.
+// - `first_of_each_block`: only the lane with `l == 0` writes `out[b]`, so no two lanes write it.
+// - `first_when_large`: the same, with `l == 0` as one side of `&&`.
+// - `rope_pairs`: each lane writes `2 * j` and `2 * j + 1`, and no two lanes make them equal.
+// - `rope_halves`: each lane writes `j` and `j + 32`, with `j` below 32.
 //
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-llvm -o /dev/null 2>&1 | FileCheck %s --allow-empty --implicit-check-not=Error
 
@@ -179,6 +183,64 @@ pub fn cast_inside_its_range(y : &mut Tensor<f32, [200], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
     for b in 0..200 across blocks {
       y[(b as u8) as i32] = 1.0;
+    }
+  }
+  return;
+}
+
+pub fn first_of_each_block(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..32 across lanes {
+        if l == 0 {
+          out[b] = x[b * 32 + l];
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn first_when_large(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..32 across lanes {
+        if n > 2 && 0 == l {
+          out[b] = x[b * 32 + l];
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn rope_pairs(out : &mut Tensor<f32, [?, ?, 64], Memory::HBM>, x : &Tensor<f32, [?, ?, 64], Memory::HBM>, c : &Tensor<f32, [?, 32], Memory::HBM>, s : &Tensor<f32, [?, 32], Memory::HBM>, tokens : i32, heads : i32) -> void {
+  spawn on(Topology::Device) {
+    for t in 0..tokens across blocks {
+      for h in 0..heads across blocks {
+        for j in 0..32 across lanes {
+          let a = x[t][h][2 * j];
+          let b = x[t][h][2 * j + 1];
+          out[t][h][2 * j] = a * c[t][j] - b * s[t][j];
+          out[t][h][2 * j + 1] = a * s[t][j] + b * c[t][j];
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn rope_halves(out : &mut Tensor<f32, [?, ?, 64], Memory::HBM>, x : &Tensor<f32, [?, ?, 64], Memory::HBM>, c : &Tensor<f32, [?, 32], Memory::HBM>, s : &Tensor<f32, [?, 32], Memory::HBM>, tokens : i32, heads : i32) -> void {
+  spawn on(Topology::Device) {
+    for t in 0..tokens across blocks {
+      for h in 0..heads across blocks {
+        for j in 0..32 across lanes {
+          let a = x[t][h][j];
+          let b = x[t][h][j + 32];
+          out[t][h][j] = a * c[t][j] - b * s[t][j];
+          out[t][h][j + 32] = a * s[t][j] + b * c[t][j];
+        }
+      }
     }
   }
   return;

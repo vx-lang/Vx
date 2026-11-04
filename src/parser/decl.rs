@@ -323,6 +323,7 @@ impl<'a> Parser<'a> {
         let mut transfers: Vec<crate::arch::TransferEdge> = Vec::new();
         let mut dtypes: Option<Vec<crate::syntax::ElementType>> = None;
         let mut chip: Option<crate::symbol::Symbol> = None;
+        let mut offload = false;
         let mut levels: Option<Vec<crate::arch::Level>> = None;
 
         while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
@@ -468,6 +469,18 @@ impl<'a> Parser<'a> {
                     });
                 }
                 "levels" => levels = Some(self.parse_levels()?),
+                "offload" => {
+                    offload = match &self.advance().kind {
+                        TokenType::Identifier(s) if &**s == "true" => true,
+                        TokenType::Identifier(s) if &**s == "false" => false,
+                        other => {
+                            return Err(self.error(&format!(
+                                "`offload:` expects true or false, got {:?}",
+                                other
+                            )))
+                        }
+                    };
+                }
                 other => return Err(self.error(&format!("Unknown topology field '{}'", other))),
             }
             self.match_token(&TokenType::Comma);
@@ -506,6 +519,7 @@ impl<'a> Parser<'a> {
                 dtypes,
                 chip,
                 levels,
+                offload,
             },
         })
     }
@@ -1285,6 +1299,10 @@ impl<'a> Parser<'a> {
             self.consume(&TokenType::RightParen, "Expected ')'")?;
             self.consume(&TokenType::Arrow, "Expected '->'")?;
             let return_type = self.parse_return_type()?;
+            let mut ensures = Vec::new();
+            while self.match_token(&TokenType::Ensures) {
+                ensures.push(self.parse_expr()?);
+            }
             // A trait method is either a requirement, ending in `;`, or a default, whose body
             // an impl inherits unless it writes its own.
             let default_body = if self.match_token(&TokenType::LeftBrace) {
@@ -1313,6 +1331,7 @@ impl<'a> Parser<'a> {
                 params,
                 mut_params,
                 return_type,
+                ensures,
                 default_body,
                 doc_comment,
             });

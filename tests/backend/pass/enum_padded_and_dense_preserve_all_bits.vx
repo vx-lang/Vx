@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Preserve each variant through copies, borrowed access, fields, calls, and returns.
-// REQUIRES: flat-codegen
 // EXPECT: 1540 1540 1540 1540 22 34
 
 struct Padded {

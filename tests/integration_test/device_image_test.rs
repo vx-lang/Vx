@@ -14,11 +14,11 @@
 //
 // The negative is as load-bearing as the positive. A classified matmul is left
 // at `linalg` level on purpose so the plugin can route it to cuBLAS, which
-// beats anything we would emit; giving it a device copy would be both wasted
-// compile time and a worse kernel. That case broke six backend tests when the
-// image compile first landed, because the `gpu.func` for it was never
+// beats anything we would emit, and giving it a device copy would be both
+// wasted compile time and a worse kernel. That case broke six backend tests
+// when the image compile first landed, because the `gpu.func` for it was never
 // compilable and dropping it unexamined had hidden that. `test_backend` in
-// compile_test.rs is what covers the whole corpus for that regression; these
+// compile_test.rs is what covers the whole corpus for that regression. These
 // two cover the mechanism.
 //
 // Through the binary rather than the library, because the two codegen paths do
@@ -749,7 +749,7 @@ fn a_yielding_spirv_region_says_it_runs_on_the_host() {
 ///
 /// Both of these used to stop the compile with "cannot compile this device
 /// kernel", which turned programs that run on the host into programs that do
-/// not build. Their fixtures check the warning and the result; this is the
+/// not build. Their fixtures check the warning and the result. This is the
 /// other half, that no image was written for either of them.
 #[test]
 fn a_kernel_the_spirv_path_cannot_image_still_compiles() {

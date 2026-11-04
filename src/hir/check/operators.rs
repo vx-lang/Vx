@@ -1130,6 +1130,7 @@ impl<'a> TypeChecker<'a> {
             let method = match op {
                 UnaryOp::Neg => "neg",
                 UnaryOp::Not => "not",
+                UnaryOp::Try => return self.check_try(expr),
             };
             let span = *span;
             if let Some(mut call) = self.operator_method_call(inner, method, None, span) {
@@ -1192,6 +1193,7 @@ impl<'a> TypeChecker<'a> {
                     "`!` does not apply to a `usize`: it would set the top bit, which a \
                      `usize` never has"
                 }
+                UnaryOp::Try => unreachable!("check_try handles `?`"),
             };
             self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E3030,
@@ -1203,6 +1205,7 @@ impl<'a> TypeChecker<'a> {
         let symbol = match op {
             UnaryOp::Neg => "-",
             UnaryOp::Not => "!",
+            UnaryOp::Try => unreachable!("check_try handles `?`"),
         };
         if *op == UnaryOp::Neg
             && matches!(&inner_ty, Type::Scalar(e) if e.is_narrow_float())
@@ -1234,6 +1237,7 @@ impl<'a> TypeChecker<'a> {
                 },
             },
             UnaryOp::Neg => inner_ty,
+            UnaryOp::Try => unreachable!("check_try handles `?`"),
         }
     }
 }

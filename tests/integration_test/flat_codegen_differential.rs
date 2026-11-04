@@ -1119,6 +1119,24 @@ fn flat_matches_ast_closure_capturing_nothing() {
 }
 
 #[test]
+fn flat_matches_ast_closure_cast_to_a_closure_type() {
+    // `c as ||->i32` makes the pair `{ env, func }`. A function takes the pair as a parameter
+    // and calls it, so `func` must get `env` first. (5 * 2 + 1) + (30 + 5) + (1 + 5) = 52.
+    assert_parity(
+        "fn apply(f : ||->i32) -> i32 { return f() + 1; }\n\
+         fn apply_to(f : |i32|->i32, v : i32) -> i32 { return f(v); }\n\
+         fn main() -> i32 {\n\
+           let k = 5;\n\
+           let c = || k * 2;\n\
+           let add = |x : i32| x + k;\n\
+           let g = add as |i32|->i32;\n\
+           return apply(c as ||->i32) + apply_to(g, 30) + g(1);\n\
+         }",
+        52,
+    );
+}
+
+#[test]
 fn flat_matches_ast_const_generic_struct_instance() {
     // A struct generic over a `const`, with a by-value generic field: its base layout is a stub,
     // so the instance `Pair<f32, 4>` gets a synthesized one -- as a return type, at the
@@ -1376,6 +1394,13 @@ fn flat_matches_ast_tensor_reduce() {
     );
 }
 
+// An enum payload of an enum is the whole storage of the inner enum. Each program stores its
+// values, reads them back through the payloads, and gives 42 only when each one is intact. A store
+// past the end of the outer enum, or a payload cut short, gives another answer.
+const READ_INNER: &str = "enum Inner { Value(i64), Empty }\n\
+     fn inner_value(i : Inner) -> i64 { match i { \
+       Inner::Value(n) => { return n; } Inner::Empty => { return 0; } } }\n";
+
 fn assert_enum_layout_declines(src: &str) {
     let mut program = parse(src);
     program.module_path = "crate::diff".into();
@@ -1409,15 +1434,60 @@ fn assert_enum_layout_declines(src: &str) {
 }
 
 #[test]
+fn flat_matches_ast_for_an_enum_with_a_nested_payload() {
+    assert_parity(
+        &format!(
+            "{READ_INNER}enum Outer {{ Number(i32), Nested(Inner) }}\n\
+             fn read(o : Outer) -> i64 {{ match o {{ \
+               Outer::Number(n) => {{ return n as i64; }} \
+               Outer::Nested(i) => {{ return inner_value(i); }} }} }}\n\
+             fn main() -> i32 {{ \
+               let v = Outer::Nested(Inner::Value(9223372036854775807i64)); \
+               if read(v) == 9223372036854775807i64 {{ return 42; }} return 1; }}"
+        ),
+        42,
+    );
+}
+
+#[test]
+fn flat_matches_ast_for_the_first_variant_of_an_enum_with_a_nested_payload() {
+    assert_parity(
+        &format!(
+            "{READ_INNER}enum Outer {{ Nested(Inner), Number(i32) }}\n\
+             fn read(o : Outer) -> i64 {{ match o {{ \
+               Outer::Nested(i) => {{ return inner_value(i); }} \
+               Outer::Number(n) => {{ return n as i64; }} }} }}\n\
+             fn main() -> i32 {{ let v = Outer::Number(7); return (read(v) * 6) as i32; }}"
+        ),
+        42,
+    );
+}
+
+#[test]
 fn flat_declines_an_enum_with_an_unsupported_nested_payload() {
-    // Lower the code but don't run it: without the fix, the store of `Inner` would write
-    // past the end of `Outer`.
+    // A function pointer payload has no layout on the flat path. Lower the code but don't run it: a
+    // layout that let the store through would write past the end of `Outer`.
     assert_enum_layout_declines(
-        "enum Inner { Value(i64), Empty }\n\
-         enum Outer { Number(i32), Nested(Inner) }\n\
+        "fn add_one(x : i32) -> i32 { return x + 1; }\n\
+         enum Outer { Number(i32), Nested(fn(i32) -> i32) }\n\
          fn main() -> i32 { \
-           let _value = Outer::Nested(Inner::Value(9223372036854775807i64)); \
+           let _value = Outer::Nested(add_one); \
            return 0; }",
+    );
+}
+
+#[test]
+fn flat_matches_ast_for_a_nested_payload_after_another_payload() {
+    assert_parity(
+        &format!(
+            "{READ_INNER}enum Outer {{ Numbers(i32, i32), Nested(i32, Inner) }}\n\
+             fn read(o : Outer) -> i64 {{ match o {{ \
+               Outer::Numbers(a, b) => {{ return (a * b) as i64; }} \
+               Outer::Nested(a, i) => {{ return a as i64 + inner_value(i); }} }} }}\n\
+             fn main() -> i32 {{ \
+               let v = Outer::Nested(5, Inner::Value(37)); return read(v) as i32; }}"
+        ),
+        42,
     );
 }
 
@@ -1425,26 +1495,52 @@ fn flat_declines_an_enum_with_an_unsupported_nested_payload() {
 fn flat_declines_an_enum_with_an_unsupported_first_variant() {
     // Even constructing the supported variant must reject the incomplete enum layout.
     assert_enum_layout_declines(
-        "enum Inner { Value(i64), Empty }\n\
-         enum Outer { Nested(Inner), Number(i32) }\n\
+        "enum Outer { Nested(fn(i32) -> i32), Number(i32) }\n\
          fn main() -> i32 { let _value = Outer::Number(7); return 0; }",
+    );
+}
+
+#[test]
+fn flat_matches_ast_for_a_nested_payload_in_the_first_variant() {
+    assert_parity(
+        &format!(
+            "{READ_INNER}enum Outer {{ Nested(i32, Inner), Numbers(i32, i32) }}\n\
+             fn read(o : Outer) -> i64 {{ match o {{ \
+               Outer::Nested(a, i) => {{ return a as i64 + inner_value(i); }} \
+               Outer::Numbers(a, b) => {{ return (a * b * 2) as i64; }} }} }}\n\
+             fn main() -> i32 {{ let v = Outer::Numbers(3, 7); return read(v) as i32; }}"
+        ),
+        42,
     );
 }
 
 #[test]
 fn flat_declines_an_enum_with_an_unsupported_second_payload() {
     assert_enum_layout_declines(
-        "enum Inner { Value(i64), Empty }\n\
-         enum Outer { Numbers(i32, i32), Nested(i32, Inner) }\n\
+        "enum Outer { Numbers(i32, i32), Nested(i32, fn(i32) -> i32) }\n\
          fn main() -> i32 { let _value = Outer::Numbers(3, 7); return 0; }",
+    );
+}
+
+#[test]
+fn flat_matches_ast_for_a_generic_enum_with_a_nested_payload() {
+    assert_parity(
+        &format!(
+            "{READ_INNER}enum Outer<T> {{ Number(i32), Nested(T) }}\n\
+             fn read(o : Outer<Inner>) -> i64 {{ match o {{ \
+               Outer<Inner>::Number(n) => {{ return n as i64; }} \
+               Outer<Inner>::Nested(i) => {{ return inner_value(i); }} }} }}\n\
+             fn main() -> i32 {{ \
+               let v = Outer<Inner>::Nested(Inner::Value(42)); return read(v) as i32; }}"
+        ),
+        42,
     );
 }
 
 #[test]
 fn flat_declines_an_enum_with_an_unsupported_second_payload_in_the_first_variant() {
     assert_enum_layout_declines(
-        "enum Inner { Value(i64), Empty }\n\
-         enum Outer { Nested(i32, Inner), Numbers(i32, i32) }\n\
+        "enum Outer { Nested(i32, fn(i32) -> i32), Numbers(i32, i32) }\n\
          fn main() -> i32 { let _value = Outer::Numbers(3, 7); return 0; }",
     );
 }
@@ -1452,9 +1548,8 @@ fn flat_declines_an_enum_with_an_unsupported_second_payload_in_the_first_variant
 #[test]
 fn flat_declines_an_enum_with_an_unsupported_generic_payload() {
     assert_enum_layout_declines(
-        "enum Inner { Value(i64), Empty }\n\
-         enum Outer<T> { Number(i32), Nested(T) }\n\
-         fn main() -> i32 { let _value = Outer<Inner>::Number(7); return 0; }",
+        "enum Outer<T> { Number(i32), Nested(T) }\n\
+         fn main() -> i32 { let _value = Outer<fn(i32) -> i32>::Number(7); return 0; }",
     );
 }
 
@@ -1469,7 +1564,7 @@ fn non_generic_struct_with_an_option_field_runs(#[case] jobs: Option<usize>) {
     );
 }
 
-fn assert_enum_layout_falls_back(jobs: Option<usize>) {
+fn assert_nested_enum_takes_the_flat_path(jobs: Option<usize>) {
     use melior::ir::operation::OperationLike;
 
     let dir = tempfile::tempdir().expect("create fixture directory");
@@ -1480,6 +1575,67 @@ fn assert_enum_layout_falls_back(jobs: Option<usize>) {
          enum Outer { Number(i32), Nested(Inner) }\n\
          fn main() -> i32 { \
            let _value = Outer::Nested(Inner::Value(9223372036854775807i64)); \
+           return 0; }",
+    )
+    .expect("write fixture");
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_vxc"));
+    command
+        .arg(&path)
+        .arg("--emit-mlir")
+        .env("VX_FLAT_DBG", "1");
+    if let Some(jobs) = jobs {
+        command.arg("-j").arg(jobs.to_string());
+    }
+    // Emit only. The parity tests above run such programs and read the values back.
+    let output = command.output().expect("run compiler");
+    let log = String::from_utf8_lossy(&output.stderr);
+    let context = make_context();
+    let valid_mlir = melior::ir::Module::parse(&context, &String::from_utf8_lossy(&output.stdout))
+        .is_some_and(|module| module.as_operation().verify());
+    let decline = "[flat-codegen] declined main";
+    assert_eq!(
+        (
+            output.status.success(),
+            log.contains(decline),
+            log.contains("[flat-codegen] program outside the flat subset; using the AST path"),
+            log.contains("emitted module via the flat path")
+                || log.contains("[parallel-frontend] emitted module"),
+            jobs.is_none()
+                || log.contains("[parallel-frontend] the flat emitter did not take this program; using the sequential driver"),
+            valid_mlir,
+        ),
+        (true, false, false, true, jobs.is_none(), true),
+        "compilation with jobs={jobs:?}: flags are (success, decline, AST fallback, flat module, \
+         parallel fallback, valid MLIR)\n{log}\nMLIR:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn driver_takes_the_flat_path_for_a_nested_enum() {
+    assert_nested_enum_takes_the_flat_path(None);
+}
+
+#[test]
+fn parallel_driver_takes_the_flat_path_for_a_nested_enum() {
+    if std::thread::available_parallelism().map_or(0, usize::from) < 4 {
+        eprintln!("two-worker compilation requires leaving two CPU cores idle");
+        return;
+    }
+    assert_nested_enum_takes_the_flat_path(Some(2));
+}
+
+fn assert_enum_layout_falls_back(jobs: Option<usize>) {
+    use melior::ir::operation::OperationLike;
+
+    let dir = tempfile::tempdir().expect("create fixture directory");
+    let path = dir.path().join("enum_with_a_function_payload.vx");
+    std::fs::write(
+        &path,
+        "fn add_one(x : i32) -> i32 { return x + 1; }\n\
+         enum Outer { Number(i32), Nested(fn(i32) -> i32) }\n\
+         fn main() -> i32 { \
+           let _value = Outer::Nested(add_one); \
            return 0; }",
     )
     .expect("write fixture");

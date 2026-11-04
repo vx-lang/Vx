@@ -1,0 +1,164 @@
+//===- arc.vx - Vx Standard Library -------------------------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An `Arc` shares one value between tasks, and frees it when the last `Arc` goes away. It works
+// as Rust's `Arc` does.
+//
+// A task can borrow the locals of its parent, so most programs need no `Arc`. Use one when the
+// value must live longer than the `tasks` block, for example a value sent through a channel.
+//
+// The clones share one block on the heap: the count in bytes 0 to 7, and the value from byte 16.
+//
+// A clone adds 1 to the count with `Relaxed`, because the new `Arc` comes from one that already
+// holds the value. A drop takes 1 away with `Release`. The drop that takes the count to 0 runs an
+// `Acquire` fence before it drops the value. So every use of the value through another `Arc`
+// happens before the drop of the value. formal/memory_model/tests/arc_last_drop_*.litmus check
+// this order.
+//===----------------------------------------------------------------------===//
+import core::marker;
+import core::mem;
+import core::option;
+import core::ptr;
+import core::result;
+import core::sync::atomic;
+import std::alloc;
+
+/// A value that tasks can share, with a count of its owners. A clone shares the value, and the
+/// drop of the last clone drops the value.
+struct Arc<T> {
+  // The count, at the start of the block. The value is 16 bytes after it.
+  count : *mut AtomicI64,
+  value : PhantomData<T>,
+}
+
+// Each clone gives `&T` to the task that holds it, and the last drop can be in any task. So an
+// `Arc` can move between tasks, or be shared, only when `T` is `Send` and `Sync`.
+unsafe impl<T : Send + Sync> Send for Arc<T> {}
+unsafe impl<T : Send + Sync> Sync for Arc<T> {}
+// An `Arc<&i64>` holds a reference, although its field is a raw pointer.
+unsafe impl<T : Owned> Owned for Arc<T> {}
+
+/// The byte where the value starts in the block. It keeps a value aligned to 16 bytes or less.
+fn core_arc_value_offset() -> i64 {
+  return 16;
+}
+
+/// The most owners an `Arc` can have. A count past it stops the program, as in Rust.
+fn core_arc_max_count() -> i64 {
+  return 4611686018427387904;
+}
+
+/// The value in the block that starts with `count`.
+fn core_arc_value<T>(count : *mut AtomicI64) -> *mut T {
+  let block : *mut i8 = count;
+  let value : *mut T = offset_mut(block, core_arc_value_offset());
+  return value;
+}
+
+impl<T>
+Arc<T> {
+  /// Move `v` to the heap, with a count of 1. Stops the program when there is no memory.
+  fn new(v : T) -> Arc<T> {
+    let count : *mut AtomicI64 = alloc(core_arc_value_offset() + sizeof<T>(), 16);
+    if is_null_mut(count) {
+      panic("Arc: out of memory");
+    }
+    let value : *mut T = core_arc_value(count);
+    unsafe { *count = AtomicI64::new(1); *value = v; }
+    return Arc<T> {
+      count : count, value : PhantomData<T> {}
+    };
+  }
+
+  /// The shared value.
+  fn get(self : &Arc<T>) -> &T {
+    let value : *mut T = core_arc_value(self.count);
+    return unsafe { &*value };
+  }
+
+  /// The number of `Arc`s that share the value. Another task can change it at any time.
+  fn strong_count(self : &Arc<T>) -> i64 {
+    let count = self.count;
+    return unsafe { (&*count).load(AtomicOrdering::Relaxed) };
+  }
+
+  /// Whether `self` and `other` share one value.
+  fn ptr_eq(self : &Arc<T>, other : &Arc<T>) -> bool {
+    return eq(self.count as *const AtomicI64, other.count as *const AtomicI64);
+  }
+
+  /// The value, when `self` is its only owner. Otherwise `self` comes back in `Err`.
+  fn try_unwrap(self : Arc<T>) -> Result<T, Arc<T>> {
+    let count = self.count;
+    let only = unsafe {
+      (&*count).compare_exchange(1, 0, AtomicOrdering::Relaxed, AtomicOrdering::Relaxed)
+    };
+    match only {
+      Result<i64, i64>::Ok(_one) => {}
+      Result<i64, i64>::Err(_count) => {
+        return Result<T, Arc<T>>::Err(self);
+      }
+    }
+    fence(AtomicOrdering::Acquire);
+    return Result<T, Arc<T>>::Ok(core_arc_take(self));
+  }
+
+  /// The value, when this is the last `Arc` that shares it. Otherwise drops `self` and gives
+  /// `None`. When several tasks call it on the clones of one `Arc`, exactly one gets the value.
+  fn into_inner(self : Arc<T>) -> Option<T> {
+    let count = self.count;
+    let before = unsafe { (&*count).fetch_sub(1, AtomicOrdering::Release) };
+    if before != 1 {
+      forget(self);
+      return Option<T>::None;
+    }
+    fence(AtomicOrdering::Acquire);
+    return Option<T>::Some(core_arc_take(self));
+  }
+}
+
+/// Move the value out of `a`, free the block, and forget `a`. The caller has the only access.
+fn core_arc_take<T>(a : Arc<T>) -> T {
+  let count = a.count;
+  let value_at : *mut T = core_arc_value(count);
+  let value : T = unsafe { read(value_at as *const T) };
+  let block : *mut i8 = count;
+  dealloc(block, 16);
+  forget(a);
+  return value;
+}
+
+impl<T> Clone for Arc<T> {
+  /// Another `Arc` that shares the value. Adds 1 to the count.
+  fn clone(self : &Arc<T>) -> Arc<T> {
+    let count = self.count;
+    let before = unsafe { (&*count).fetch_add(1, AtomicOrdering::Relaxed) };
+    if before > core_arc_max_count() {
+      panic("Arc: too many clones");
+    }
+    return Arc<T> {
+      count : count, value : PhantomData<T> {}
+    };
+  }
+}
+
+impl<T> Drop for Arc<T> {
+  /// Takes 1 from the count. The drop that takes it to 0 drops the value and frees the block.
+  fn drop(self : &mut Arc<T>) -> void {
+    let count = self.count;
+    let before = unsafe { (&*count).fetch_sub(1, AtomicOrdering::Release) };
+    if before != 1 {
+      return;
+    }
+    fence(AtomicOrdering::Acquire);
+    let value_at : *mut T = core_arc_value(count);
+    let value : T = unsafe { read(value_at as *const T) };
+    drop(value);
+    let block : *mut i8 = count;
+    dealloc(block, 16);
+  }
+}

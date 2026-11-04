@@ -9,11 +9,8 @@
 // writes a value, sets the flag, and wakes it with `wake_all`. The waiter then reads the value.
 // Each of 200 rounds uses a new flag, so a lost wake would hang the test.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator runs each task to its end at its `spawn`. A task
-// that waits for a later task then waits forever.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}sum 20100{{$}}
 
 import core::sync::atomic;

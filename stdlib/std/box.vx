@@ -39,7 +39,7 @@ Box<T> {
 
 impl<T> Drop for Box<T> {
   fn drop(self : &mut Box<T>) -> void {
-    let value : T = unsafe { *self.ptr };
+    let value : T = unsafe { read(self.ptr as *const T) };
     drop(value);
     let ptr_i8 : *mut i8 = self.ptr;
     dealloc(ptr_i8, 16);

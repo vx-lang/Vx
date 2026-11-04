@@ -31,6 +31,34 @@ jobs:
         with:
           restore: 'false'
 
+  # build.rs compiles runtime/cuda_dispatch.cpp only on a machine with a CUDA toolkit, and the
+  # test jobs have none. So this job installs the toolkit and compiles the plugin. It needs no GPU.
+  cuda-plugin:
+    name: Compile the CUDA plugin
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # The packages of the CUDA job in release.yml, which says why cuda-nvcc is needed.
+      - name: Install the CUDA toolkit
+        run: |
+          set -euo pipefail
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            cuda-cudart-dev-12-6 libcublas-dev-12-6 cuda-driver-dev-12-6 cuda-nvcc-12-6
+          test -f /usr/local/cuda/include/cuda_runtime.h || sudo ln -sfn /usr/local/cuda-12.6 /usr/local/cuda
+
+      # The command of build.rs, with warnings as errors.
+      - name: Compile runtime/cuda_dispatch.cpp
+        run: |
+          clang++ -std=c++17 -O3 -Wall -Wextra -Werror -shared -fPIC runtime/cuda_dispatch.cpp \
+            -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lffi -lcudart -lcublas -ldl \
+            -o "$RUNNER_TEMP/libvx_cuda_dispatch.so"
+
   test:
     name: Run Tests
     needs: llvm
@@ -264,18 +292,31 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
+      # The C and C++ programs in tests/runtime/ get AddressSanitizer and UndefinedBehaviorSanitizer
+      # here. Our LLVM has no sanitizer runtimes, so they use GCC.
       - name: Run tests (debug)
+        env:
+          VX_TEST_SANITIZERS: 1
+          VX_TEST_CXX: g++
+          VX_TEST_CC: gcc
         run: cargo test --workspace --verbose
 
   # The task stack switch in stdlib/rust_core is assembly, one version for each CPU. This job
   # runs the Rust core tests for aarch64 under qemu-user, and builds the macOS aarch64 library,
   # so that a change to the aarch64 version cannot pass unseen. It needs no LLVM.
+  #
+  # The tests with shadow stacks need QEMU 10.1 or later, which emulates arm64's Guarded Control
+  # Stack. The runner's own QEMU is older, so this job builds one and caches it.
+  # VX_REQUIRE_SHADOW_STACKS makes those tests fail when they find no shadow stacks.
+  # docs/testing_shadow_stacks_with_qemu.md says more.
   rust-core-aarch64:
     name: Rust core tests on aarch64 (qemu)
     runs-on: ubuntu-latest
     env:
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -L /usr/aarch64-linux-gnu
+      # Not QEMU_VERSION: qemu-aarch64 reads that as -version, prints it and runs no test.
+      VX_QEMU_RELEASE: 10.2.1
+      VX_REQUIRE_SHADOW_STACKS: 1
     defaults:
       run:
         working-directory: stdlib/rust_core
@@ -289,11 +330,36 @@ jobs:
         with:
           targets: aarch64-unknown-linux-gnu, aarch64-apple-darwin
 
-      - name: Install qemu-user and the aarch64 linker
-        run: sudo apt-get update && sudo apt-get install -y qemu-user gcc-aarch64-linux-gnu
+      - name: Install the aarch64 linker
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Cache QEMU
+        id: qemu-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/qemu
+          key: qemu-aarch64-linux-user-${{ env.VX_QEMU_RELEASE }}-${{ runner.os }}
+
+      - name: Build QEMU
+        if: steps.qemu-cache.outputs.cache-hit != 'true'
+        working-directory: ${{ runner.temp }}
+        run: |
+          sudo apt-get install -y ninja-build libglib2.0-dev
+          curl -fsSL "https://download.qemu.org/qemu-${VX_QEMU_RELEASE}.tar.xz" | tar -xJ
+          cd "qemu-${VX_QEMU_RELEASE}"
+          ./configure --target-list=aarch64-linux-user --prefix="$HOME/qemu" --disable-docs --disable-tools
+          make -j"$(nproc)" install
+
+      - name: Use the built QEMU
+        run: |
+          "$HOME/qemu/bin/qemu-aarch64" --version
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER=$HOME/qemu/bin/qemu-aarch64 -L /usr/aarch64-linux-gnu" >> "$GITHUB_ENV"
 
       - name: Run tests (aarch64 Linux)
-        run: cargo test --target aarch64-unknown-linux-gnu --verbose
+        shell: bash
+        run: |
+          cargo test --target aarch64-unknown-linux-gnu --verbose 2>&1 | tee "$RUNNER_TEMP/tests.log"
+          grep -q "tasks_switch_with_shadow_stacks_on ... ok" "$RUNNER_TEMP/tests.log"
 
       - name: Build the library (aarch64 macOS)
         run: cargo rustc --lib --target aarch64-apple-darwin --crate-type staticlib --verbose

@@ -312,6 +312,29 @@ that is what keeps "which space did this touch" and "was it in bounds" checkable
 body must guarantee, and what the compiler reads off it rather than trusting, is
 [`custom_transfer_contract.md`](../custom_transfer_contract.md).
 
+### A copy that does not wait: `transfer_async`
+
+`transfer_async(x, M)` starts the copy of `x` to `M`, and gives a token, `Token<T>`, where `T` is
+the placed tensor. `t.wait()` takes the token and gives the placed tensor. So the program can
+start the next copy before it uses the last one:
+
+```rust
+let mut inflight = transfer_async(tiles[0], Memory::VMEM);
+for i in 1..n {
+    let next = transfer_async(tiles[i], Memory::VMEM);   // starts before the wait below
+    let cur = inflight.wait();
+    compute(cur);
+    inflight = next;
+}
+compute(inflight.wait());
+```
+
+- A token is not a tensor, so the program cannot read the data before the wait.
+- A token must be waited. A token that its scope drops, or that an assignment replaces, with no
+  `.wait()` is E6036. A function that takes a token must wait for it.
+- On the CPU the copy is done when it starts, so the wait only gives the tensor. A copy that runs
+  while the program works comes with the GPU and TPU lowering (#244).
+
 ## 6. Control Flow
 
 Standard Rust-like control flow is supported: `if`, `else`, `match`, `for`, `while`, `loop`, `break`, `continue`.
@@ -452,6 +475,8 @@ let x = 10;
 let add = |y: i32| x + y;   // captures x = 10
 let r = add(5);             // 15
 ```
+
+A closure body can also be a block, `|params| { ..; v }`. A `return` in it ends the call of the closure, and the first `return` gives the type that the closure returns. `|params| -> T { .. }` writes that type, and a `?` in the body needs it: `?` passes an `Err` up to the caller of the closure. The block is a plain block, so it does not allow what needs `unsafe`.
 
 A call through the closure's own name is a direct call. A closure can also be cast to its closure type (`add as |i32|->i32`, or `f as ||->i32` for one without parameters): a fat pointer pairing the closure's environment with its code, which a callee taking that type can be handed any closure of that signature.
 

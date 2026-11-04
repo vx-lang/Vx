@@ -35,7 +35,8 @@ fn null_mut<T>() -> *mut T {
   return unsafe { 0 as *mut T };
 }
 
-/// The value the pointer addresses. The caller promises there is one.
+/// The value the pointer addresses. The caller promises there is one, and that only one of
+/// the two copies gets dropped. Safe code cannot move a value out of `*p` (E4008).
 unsafe fn read<T>(p : *const T) -> T {
   return unsafe { *p };
 }

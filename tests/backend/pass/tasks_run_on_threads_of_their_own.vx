@@ -13,6 +13,7 @@
 // lines come in any order.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: the task runs on another thread
 // CHECK: two tasks run on two threads
 // CHECK-DAG: {{^}}copy 0{{$}}

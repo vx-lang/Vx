@@ -1,0 +1,90 @@
+//===- lane_copies_on_the_gpu.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The PTX of `lanes::copy_async`. Each lane starts a `cp.async` of 4 bytes for each of its
+// elements of the tile. The last operand is the number of bytes to read: 0 for an element past
+// the end of the tensor, so the element is zero. The copies of one call are one group
+// (`commit_group`). The wait of a token lets the groups that started after it go on
+// (`wait_group n`), and then every lane of the block waits (`bar.sync`).
+//
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
+// RUN: FileCheck %s < %t.ptx --implicit-check-not=local_depot
+
+// Two tiles in flight: the wait for the first lets the second go on.
+// CHECK-LABEL: .entry sum_tiles(
+// CHECK: .shared .align 16 .b8 {{.*}}[8192];
+// CHECK: selp.b32 %r[[ROW:[0-9]+]], 4, 0, %p{{[0-9]+}};
+// CHECK-NEXT: selp.b32 %r[[BYTES:[0-9]+]], %r[[ROW]], 0, %p{{[0-9]+}};
+// CHECK-NEXT: cp.async.ca.shared.global [%rd{{[0-9]+}}], [%rd{{[0-9]+}}], 4, %r[[BYTES]];
+// CHECK: cp.async.commit_group;
+// CHECK: cp.async.ca.shared.global
+// CHECK: cp.async.commit_group;
+// CHECK-NEXT: cp.async.wait_group 1;
+// CHECK-NEXT: bar.sync 0;
+// CHECK: ld.shared.b32
+// CHECK: cp.async.wait_group 0;
+// CHECK-NEXT: bar.sync 0;
+// CHECK-NOT: cp.async
+// CHECK-LABEL: .entry three_in_flight(
+pub fn sum_tiles(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, steps : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 32, 32], Memory::SMEM>::uninit()
+      };
+      let mut acc = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+      for t in 0..256 across lanes(256) {
+        acc[t] = 0.0;
+      }
+      for k in 0..steps / 2 {
+        let even = lanes::copy_async(&mut tiles[0], x, [0, k * 64]);
+        let odd = lanes::copy_async(&mut tiles[1], x, [0, k * 64 + 32]);
+        even.wait();
+        for t in 0..256 across lanes(256) {
+          acc[t] = acc[t] + tiles[0][t / 8][t % 8];
+        }
+        odd.wait();
+        for t in 0..256 across lanes(256) {
+          acc[t] = acc[t] + tiles[1][t / 8][t % 8];
+        }
+      }
+      for t in 0..256 across lanes(256) {
+        out[t] = acc[t];
+      }
+    }
+  }
+  return;
+}
+
+// Three tiles in flight, waited first, third and second. The first lets the two after it go on,
+// and the third none. The second then lets the third go on, which ended already.
+// CHECK: cp.async.wait_group 2;
+// CHECK-NEXT: bar.sync 0;
+// CHECK-NEXT: cp.async.wait_group 0;
+// CHECK-NEXT: bar.sync 0;
+// CHECK-NEXT: cp.async.wait_group 1;
+// CHECK-NEXT: bar.sync 0;
+// CHECK-NOT: cp.async
+pub fn three_in_flight(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [3, 8, 32], Memory::SMEM>::uninit()
+      };
+      let first = lanes::copy_async(&mut tiles[0], x, [0, 0]);
+      let second = lanes::copy_async(&mut tiles[1], x, [8, 0]);
+      let third = lanes::copy_async(&mut tiles[2], x, [16, 0]);
+      first.wait();
+      third.wait();
+      second.wait();
+      for t in 0..32 across lanes(32) {
+        out[t] = tiles[0][0][t] + tiles[1][0][t] + tiles[2][0][t];
+      }
+    }
+  }
+  return;
+}

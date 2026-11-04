@@ -540,8 +540,7 @@ impl<'a> TypeChecker<'a> {
     ) -> Type {
         self.borrow.enter_block(crate::hir::borrow_cx::BlockUses {
             last_use: branch_uses.into_iter().map(|n| (n.into(), 1)).collect(),
-            declared: Default::default(),
-            is_loop: false,
+            ..Default::default()
         });
         let ty = check(self);
         self.borrow.exit_block();
@@ -588,7 +587,8 @@ impl<'a> TypeChecker<'a> {
         // moved if a branch that reaches the code after the `if` moved it; a branch that
         // returns or breaks does not count.
         let marks_before = self.moved_snapshot();
-        // The same for borrows: the `else` branch does not see what the `then` branch borrowed.
+        // The same for borrows: the `else` branch does not see what the `then` branch borrowed,
+        // and still sees what the `then` branch ended.
         let borrows_before = self.borrow.snapshot();
         // The prover's facts follow the paths: the `then` branch knows the condition and the
         // `else` branch its negation, and what a branch learns ends with it.
@@ -617,8 +617,7 @@ impl<'a> TypeChecker<'a> {
         let marks_after_then = self.branch_end(&if_expr.then_block);
         let values_after_then = std::mem::replace(&mut self.consteval.env, values_before);
         self.restore_moved(marks_before.clone());
-        let then_borrows = self.borrow.added_since(&borrows_before);
-        self.borrow.forget(&then_borrows);
+        let then_borrows = self.borrow.next_branch(&borrows_before);
         let mut marks_after_else = Some(marks_before.clone());
 
         let mut else_ty = Type::Struct("void".into(), None);
@@ -728,12 +727,16 @@ impl<'a> TypeChecker<'a> {
                 ret: ret_expr,
                 span,
                 generated,
+                closure_body,
                 ..
             }) => {
                 let block_span = *span;
-                let written = !*generated;
+                let closure_body = *closure_body;
+                // The block body of a closure is a plain block: it allows nothing more than the
+                // code around the closure.
+                let written = !*generated && !closure_body;
                 let prev_unsafe = self.in_unsafe_block;
-                self.in_unsafe_block = true;
+                self.in_unsafe_block = prev_unsafe || !closure_body;
                 // A block the compiler made is transparent here: what it holds counts for the
                 // written block around it.
                 let prev_written = self.in_written_unsafe_block;
@@ -781,10 +784,14 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.push_scope();
                 self.value_unused = unused;
+                // A `return` of the closure, or its written return type, gives the last value of
+                // its body its type, as the return type of a function does.
+                self.closure_body_next = closure_body;
                 let ret_ty = match ret_expr {
                     Some(r) => self.check_expr_block_with_value(stmts, r, unused, consume),
                     None => self.check_expr_block(stmts, None, consume),
                 };
+                self.closure_body_next = false;
                 self.pop_scope();
                 if written {
                     // An error inside may hide the operation that needed `unsafe`, so only a
@@ -1128,6 +1135,7 @@ impl<'a> TypeChecker<'a> {
                 });
                 // A `match` on a reference moves nothing. Its names are parts of a value that
                 // someone else owns, and so are the names of a `match` on one of them.
+                self.warn_wait_again_after_cancel(&expr_ty, arms);
                 let behind_ref = matches!(expr_ty, Type::Borrow { .. })
                     || matches!(&**match_expr, Expr::Identifier(id)
                         if self.is_bound_behind_ref(id.name.as_ref()));
@@ -1147,13 +1155,13 @@ impl<'a> TypeChecker<'a> {
                 let mut every_arm_ends = !arms.is_empty();
                 let values_before = self.consteval.env.clone();
                 let mut values_after_arms = Vec::new();
-                for arm in arms {
+                for (i, arm) in arms.iter_mut().enumerate() {
                     self.consteval.env = values_before.clone();
                     self.consteval.constraints.truncate(facts_before);
                     self.restore_moved(marks_before.clone());
-                    let added = self.borrow.added_since(&borrows_before);
-                    self.borrow.forget(&added);
-                    arm_borrows.extend(added);
+                    if i > 0 {
+                        arm_borrows.extend(self.borrow.next_branch(&borrows_before));
+                    }
                     match &arm.pattern {
                         Pattern::Wildcard | Pattern::Identifier(_) => has_wildcard = true,
                         Pattern::EnumVariant(_, variant, _) => covered.push(variant.clone()),
@@ -1306,6 +1314,51 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The end of a closure with a block body, whose `return` or written type gives `returned`:
+    /// its last value, of type `ty`, must have that type, and it must not end with no value.
+    fn check_closure_end(&mut self, body: &Expr, ty: &Type, returned: &Type, span: &Span) {
+        if *ty == Type::Unknown || crate::syntax::is_never_ty(ty) {
+            return;
+        }
+        // Only a block body can end in another way than its value: a `comptime` body returns.
+        let Expr::UnsafeBlock(u) = body else {
+            return;
+        };
+        if !u.closure_body {
+            return;
+        }
+        let message = match body {
+            Expr::UnsafeBlock(u) if u.ret.is_none() => {
+                let functions = &self.env.functions;
+                let never = |name: &str| {
+                    functions
+                        .get(name)
+                        .is_some_and(|f| crate::syntax::is_never_ty(&f.0))
+                };
+                let exits = crate::syntax::block_always_exits(&u.stmts, &never);
+                (!exits && !crate::syntax::types::is_void_ty(returned)).then(|| {
+                    format!(
+                        "this closure returns '{returned}', so its body must end with a value \
+                         of that type or with a `return`"
+                    )
+                })
+            }
+            _ => (!self.is_assignable(returned, ty)).then(|| {
+                format!(
+                    "this closure returns '{returned}', so its last value must have that type. \
+                     It gives '{ty}'"
+                )
+            }),
+        };
+        if let Some(message) = message {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E3002,
+                message,
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+        }
+    }
+
     pub(crate) fn check_closure_expr(&mut self, expr: &mut Expr, _consume: bool) -> Type {
         match expr {
             Expr::Closure(e) => {
@@ -1325,12 +1378,20 @@ impl<'a> TypeChecker<'a> {
                 self.mono.closure_captures_stack.push(HashMap::new());
 
                 let old_ret = self.current_return_type.take();
-                self.current_return_type = Some(Type::Unknown);
+                // `|x| -> T { .. }` returns `T`. Otherwise the first `return` gives the type.
+                self.current_return_type = Some(e.ret_ty.clone().unwrap_or(Type::Unknown));
+                // An `ensures` of the function is not about a `return` of the closure.
+                let outer_ensures = std::mem::take(&mut self.consteval.current_ensures);
 
                 self.push_scope();
                 for (name, ty) in &cloned_params {
                     self.insert(name.to_string(), ty.clone());
                 }
+                // The closure's call has its own parameters, which a returned reference may use.
+                let outer_params = self.borrow.current_params.clone();
+                self.borrow
+                    .current_params
+                    .extend(cloned_params.iter().cloned());
                 let mut b = e.body.clone();
                 // A closure is a function, so its body starts a fresh compile-time context.
                 // `comptime` directly inside `comptime` is the thing being refused; a lambda
@@ -1349,12 +1410,34 @@ impl<'a> TypeChecker<'a> {
                 self.consteval.closure_body_depth -= 1;
                 self.consteval.comptime_depth = outer_comptime;
 
+                self.consteval.current_ensures = outer_ensures;
                 let mut ret_ty = expr_ret_ty;
-                if let Some(inferred) = &self.current_return_type {
-                    if *inferred != Type::Unknown {
-                        ret_ty = inferred.clone();
-                    }
+                if let Some(returned) = self
+                    .current_return_type
+                    .clone()
+                    .filter(|t| *t != Type::Unknown)
+                {
+                    self.check_closure_end(&b, &ret_ty, &returned, &e.span);
+                    ret_ty = returned;
                 }
+                if !self.speculating
+                    && self.type_can_hold_reference(&ret_ty)
+                    && matches!(
+                        self.ref_provenance_of(&b),
+                        Some(crate::hir::env::RefProvenance::Local(d)) if d >= closure_depth
+                    )
+                {
+                    self.errors.error_with_code(
+                        crate::diagnostic::DiagnosticCode::E4005,
+                        "this closure returns a value that points into the closure's own call: \
+                         at a parameter, or at the copy the closure keeps of a variable it uses. \
+                         That copy is gone once the call returns. Return the value itself, or a \
+                         reference made outside the closure"
+                            .to_string(),
+                        Some(crate::diagnostic::SourceSpan::from_ast_span(&e.span)),
+                    );
+                }
+                self.borrow.current_params = outer_params;
 
                 self.pop_scope();
                 self.current_return_type = old_ret;

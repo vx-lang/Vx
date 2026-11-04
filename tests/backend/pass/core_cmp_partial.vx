@@ -7,11 +7,8 @@
 //===----------------------------------------------------------------------===//
 // `core::cmp`'s partial order, `then_with`, and the two comparator-taking functions.
 //
-// These are apart from `core_cmp.vx` because each of them declines on the flat path and
-// that file compiles through it. `then_with` takes a `Closure0<Ordering>` and `max_by` a
-// `Closure2<T, T, Ordering>`, which are both "an indirect callee returning a non-scalar";
-// `partial_cmp` answers with an `Option<Ordering>`, which is "a callee return type". The
-// answers here come from the AST path, and the file is listed in KNOWN_DECLINES.
+// `then_with` takes a `Closure0<Ordering>` and `max_by` a `Closure2<T, T, Ordering>`, so the
+// comparison comes back from a call through a closure.
 //
 // NaN is the case the `Option` exists for. It answers false to less, greater and equal
 // alike, so a `partial_cmp` written with a trailing `else` would hand back whichever

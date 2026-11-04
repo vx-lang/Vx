@@ -41,10 +41,11 @@ pub extern "C" fn vx_sigsegv_handler(sig: libc::c_int) {
 
 /// A failed check prints its message with `puts` and then calls `abort`. Standard output is
 /// buffered when it is a pipe, and `abort` does not flush it, so the message was lost. Flush,
-/// then let the abort go on.
+/// then say which task stopped, then let the abort go on.
 extern "C" fn vx_sigabrt_handler(_sig: libc::c_int) {
     unsafe {
         libc::fflush(ptr::null_mut());
+        crate::ffi::tasks::write_site();
         libc::signal(libc::SIGABRT, libc::SIG_DFL);
         libc::raise(libc::SIGABRT);
     }

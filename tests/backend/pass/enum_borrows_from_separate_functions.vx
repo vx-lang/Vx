@@ -6,7 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 // Construct borrowed enum payloads in two functions and read each borrowed value.
-// REQUIRES: flat-codegen
 // EXPECT: 11 23
 
 struct Node {

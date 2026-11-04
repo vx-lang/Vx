@@ -14,15 +14,15 @@ the test suite has one, a program that triggers it.
 
 ## Contents
 
-- [Warnings](#warnings) — `W1001`–`W1034` (25 codes)
+- [Warnings](#warnings) — `W1001`–`W1036` (27 codes)
 - [Parser Errors](#parser-errors) — `E1001`–`E1013` (13 codes)
 - [Name Resolution Errors](#name-resolution-errors) — `E2001`–`E2007` (7 codes)
-- [Type Errors](#type-errors) — `E3001`–`E3060` (59 codes)
-- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4015` (15 codes)
+- [Type Errors](#type-errors) — `E3001`–`E3063` (62 codes)
+- [Borrow/Ownership Errors](#borrowownership-errors) — `E4001`–`E4016` (16 codes)
 - [Safety Errors](#safety-errors) — `E5001`–`E5002` (2 codes)
-- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6035` (35 codes)
+- [Topology/Hardware Errors](#topologyhardware-errors) — `E6001`–`E6036` (36 codes)
 - [Tensor/Math Errors](#tensormath-errors) — `E7001`–`E7004` (4 codes)
-- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8010` (10 codes)
+- [Contract/Verification Errors](#contractverification-errors) — `E8001`–`E8011` (11 codes)
 
 ## Warnings
 
@@ -55,6 +55,8 @@ Reported without stopping the compile. A warning means the program is accepted b
 | [`W1031`](/errors/W1031/) | A proof obligation could not be discharged because no SMT solver was available, so the property is **unverified** rather than proved. Distinct from W1027, which means the solver ran and found a violation. Emitted only under `VX_ALLOW_UNVERIFIED`; without it a missing solver is an error, because silence used to be indistinguishable from success (Vx#374). |
 | [`W1033`](/errors/W1033/) | The loop of a `spawn` region runs on one thread although each pass writes only memory of its own, so its passes could run at the same time. The warning points at what stops it: a call the compiler cannot show writes nothing, inline MLIR, a read of a row another pass writes, bounds not known when compiling, and the like. A region that calls `barrier()` asks for blocks and threads, so it is warned about whenever it runs on one thread, with the first thing that stopped the split: two threads that may write the same element, a `break` out of a loop that holds a `barrier()`, a write to block-shared memory with no `barrier()` after it, and the like. |
 | [`W1034`](/errors/W1034/) | The program writes a variable that a closure copied, and uses the closure after the write. The closure keeps the value that it copied, so it does not see the write. A later release makes this an error (K4). |
+| [`W1035`](/errors/W1035/) | A `match` arm in a `loop` or `while` can take `Cancelled` from a wait and stays in the loop. In a cancelled task each wait gives `Cancelled` at once, so the loop never ends (F4). |
+| [`W1036`](/errors/W1036/) | A `drop` calls `send` or `recv`, which wait with no time limit of their own. A drop runs with cancellation off, so when the other end never acts, the wait holds up the drop until the limit of the drop: `VX_DROP_WAIT_SECONDS`, or 10 seconds. Then the wait gives up, as in a cancelled block. |
 
 ## Parser Errors
 
@@ -152,9 +154,12 @@ Raised by the type checker. Vx performs no implicit numeric conversion, so many 
 | [`E3055`](/errors/E3055/) | A task takes a value that is not `Send`, or reads a variable whose type is not `Sync`. A task that moves a value, copies it or writes it needs `Send`. A task that reads a variable in place shares it with the code around the task, so it needs `Sync`. The error names the field that makes the type fail. |
 | [`E3056`](/errors/E3056/) | `spawn { .. }` outside a `tasks { .. }` block. The end of the `tasks` block waits for each task, so a task cannot outlive the variables it uses. A `spawn` in a closure, or directly in another task, is outside the block too. Put the `spawn` in a `tasks` block of its own. |
 | [`E3057`](/errors/E3057/) | A task handle used in a way other than `h.join()`, or a `spawn` that is not the value of a `let` or a statement of its own. A task must not leave its `tasks` block, so the program cannot return a handle, store it, or pass it to a function. Write `let h = spawn { .. };` and later `h.join()`. |
-| [`E3058`](/errors/E3058/) | A `return`, `break` or `continue` that leaves a task, or a task that joins another task. The last expression of a task body is its result. A task cannot join another task yet. Join both tasks in the `tasks` block. |
+| [`E3058`](/errors/E3058/) | A `break` or `continue` that leaves a task, a `return` with a value in a task that has no handle, or a task that joins another task. A `return` in a task ends the task, and its value is the result of the task. A task cannot join another task yet. Join both tasks in the `tasks` block. |
 | [`E3059`](/errors/E3059/) | An `extern` declaration of `malloc`, `calloc`, `realloc`, `aligned_alloc` or `free` whose type is not C's. The compiler calls these functions too, and it can share only a declaration of C's type. A size is a 64-bit integer: `usize`, `i64` or `u64`. A pointer is a raw pointer to host memory. `free` returns nothing. |
 | [`E3060`](/errors/E3060/) | A task that can fail, used in a way that could lose its failure. A task whose body gives `Result<T, E>` can fail, and its `join()` gives the `T`. When the task failed, the join leaves the `tasks` block, and the block gives the `Err`. So the task needs a handle, `let h = spawn { .. };`, and a join in its own block that always runs after the `spawn`. The block must give a `Result<U, E>` with the same `E`. |
+| [`E3061`](/errors/E3061/) | An impl of a trait does not write a method that the trait requires: one the trait declares with no default body. A call to that method would otherwise fail where it is called, with "method not found", though the fault is in the impl. |
+| [`E3062`](/errors/E3062/) | A struct literal that writes its fields in an order other than the struct's declaration. The fields run in the order the source writes them, so `P { y : f(), x : g() }` would run `f` before `g` and store `y` before `x`. Write the fields in the order the struct declares them. |
+| [`E3063`](/errors/E3063/) | A `?` that cannot pass its error up. `x?` takes a `Result<T, E>`. It gives the `T` of an `Ok`, and it passes an `Err` up unchanged: to the function, which must return a `Result<_, E>` with the same `E`, to its closure, which must return one, or to its task or `tasks` block, which must give one. A `?` in a closure needs the closure's type written, `|x| -> Result<T, E> { .. }`. `?` does not convert the error. `.map_err(..)` converts it. |
 
 ## Borrow/Ownership Errors
 
@@ -166,10 +171,10 @@ Raised by the borrow checker and the linear-type rules. These rule out use-after
 | [`E4002`](/errors/E4002/) | Cannot access mutably borrowed variable |
 | [`E4003`](/errors/E4003/) | Cannot borrow as mutable (already immutably borrowed) |
 | [`E4004`](/errors/E4004/) | Cannot borrow (already mutably borrowed) |
-| [`E4005`](/errors/E4005/) | A value that points into this function's stack frame would outlive the function: a reference to a local, or a closure that uses one, returned (on its own or inside a struct), stored through a reference, or passed to a call that could store it there. What it points at is gone once the function returns. The same holds inside a function for a block: a variable declared outside a block cannot be given a value that points at a variable declared inside it. Nor can a variable keep a reference into a value with no name, such as `make_vec()` in `let r = &make_vec();`, when that value is dropped at the end of its statement. |
+| [`E4005`](/errors/E4005/) | A value that points into this function's stack frame would outlive the function: a reference to a local, or a closure that uses one, returned (on its own or inside a struct), stored through a reference, or passed to a call that could store it there. What it points at is gone once the function returns. The same holds inside a function for a block: a variable declared outside a block cannot be given a value that points at a variable declared inside it. Nor can a variable keep a reference into a value with no name, such as `make_vec()` in `let r = &make_vec();`, when that value is dropped at the end of its statement. A closure cannot return a reference to its own parameter, or to the copy it keeps of a variable it uses (`|| &x`): each call has its own frame. |
 | [`E4006`](/errors/E4006/) | An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`. |
 | [`E4007`](/errors/E4007/) | A value moved while a borrow of it is still used afterwards: `let r = &a; let b = a;` followed by a use of `r`. The borrow would point at a value that has moved away. |
-| [`E4008`](/errors/E4008/) | A value moved out from behind a reference: `let b = *r;` where `r` is a reference to a type that is not `Copy`. The reference does not own the value, so it cannot give it away. Copy or clone it instead. A `match` on a reference names parts of the value behind it, so `match r { Holder::Full(n) => n }` cannot move `n` either. |
+| [`E4008`](/errors/E4008/) | A value moved out from behind a reference: `let b = *r;` where `r` is a reference to a type that is not `Copy`. The reference does not own the value, so it cannot give it away. Copy or clone it instead. A `match` on a reference names parts of the value behind it, so `match r { Holder::Full(n) => n }` cannot move `n` either. Through a raw pointer, `let b = *p;` and `let b = p[i];` are refused when the value has something to drop, since its owner drops it too. Only an `unsafe fn` such as `core::ptr::read(p)` may take it out. |
 | [`E4009`](/errors/E4009/) | An assignment to a variable, or a field or element of it, while a `&` borrow of it is still used afterwards: `let r = &x; x = 2;` and then a use of `r`. The borrow would see the value change under it. |
 | [`E4010`](/errors/E4010/) | A change to a variable declared without `mut`: assigning it, or a field or element of it, borrowing it `&mut`, or calling a method that takes `&mut self` on it. Declare it `let mut x`, or for a parameter `mut x : T`. |
 | [`E4011`](/errors/E4011/) | A view of a tensor (a row `q[i]` or a field `h.t`) used where a tensor of its own is held: stored in a variable that already exists (`t = q[i]`) or a struct field (`h.t = q[i]`, `Holder { t : q[i] }`), or passed to a function that takes the tensor by value (`f(q[i])`). A view shares its owner's memory and is not a copy. Bind it to a new variable with `let`, pass `q[i].clone()`, or take the parameter by reference. |
@@ -177,6 +182,7 @@ Raised by the borrow checker and the linear-type rules. These rule out use-after
 | [`E4013`](/errors/E4013/) | A field moved out of a value that must keep it: `let x = p.a` where `p`'s type implements `Drop`, whose `drop` needs every field, or `let x = make().a`, where the value has no name and drops all its fields at the end of the statement. Borrow the field (`&p.a`), clone it, or bind the value to a variable first. |
 | [`E4014`](/errors/E4014/) | A task that can still run when a variable that it uses ends or changes. A task in a loop that the same pass does not join runs at the same time as the next pass, so it must not write a variable from outside the loop, or read one that the loop writes. A task must not use a variable that ends before its `tasks` block, such as one of the loop body. Join the task in the same block: `let h = spawn { .. };` and then `h.join();`. A `return`, `break` or `continue` that leaves two `tasks` blocks waits only for the tasks of the inner one, so it cannot drop a value from outside the inner block yet. |
 | [`E4015`](/errors/E4015/) | A `spawn` region that moves a value from the code around it: `let x = t;` or `f(t)` with a parameter that takes `t` by value, where `t` is declared before the region. The region only borrows what it uses, and the function drops `t` after the region. Borrow it (`&t`), or clone it (`t.clone()`). |
+| [`E4016`](/errors/E4016/) | A borrow clause that is not well formed, or one that the body does not keep. In `ensures !points_into(return, *p)` the result cannot point into the memory under `*p`, and in `ensures !reaches(return, *p)` it also cannot point where a reference in `*p` points. In `ensures !keeps(p)` the body stores `p`, or a reference read through it, nowhere that outlives the call. `p` is a reference parameter. Each borrow clause is an `ensures` of its own. |
 
 ## Safety Errors
 
@@ -228,6 +234,7 @@ Raised by the placement and capacity rules — the checks that make Vx different
 | [`E6033`](/errors/E6033/) | An index into a tensor in a `scope: thread` space that is not known when compiling. Such a tensor stays in registers, and a register has no address. So each index must be a constant, or made of constants and the variables of `for` loops with constant bounds, at most 1024 passes each. The code generator unrolls those loops. |
 | [`E6034`](/errors/E6034/) | An `aligned(N)` in a tensor type that the compiler cannot give: the space is not one whose storage the compiler lays out (`scope: sm`, `cta` or `thread`), or N is less than the `alignment:` of the space, which every tensor there has. |
 | [`E6035`](/errors/E6035/) | A `Memory` declaration's `within:` names a space that is not built in, and that the program and its machine files do not declare. A typo in the name is the usual cause. |
+| [`E6036`](/errors/E6036/) | A token of `transfer_async` that the program drops with no `.wait()`: at the end of its scope, or when an assignment gives its variable a new value. The copy may not be done then, so its target may not hold the data. Call `.wait()`, which gives the placed tensor. |
 
 ## Tensor/Math Errors
 
@@ -252,11 +259,12 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | [`E8004`](/errors/E8004/) | Compile-time evaluation exceeded the call-depth limit |
 | [`E8005`](/errors/E8005/) | Compile-time evaluation ran more loop iterations than the budget allows. A loop whose end condition is never reached is the usual cause; without this it hung the compiler. |
 | [`E8006`](/errors/E8006/) | A call does not meet the called function's precondition (`requires`) |
-| [`E8007`](/errors/E8007/) | An access clause that does not hold: an `atomic(t)` whose body uses `t` without an atomic operation, or a `writes_only()` whose body may write memory |
+| [`E8007`](/errors/E8007/) | An access clause that does not hold: an `atomic(t)` whose body uses `t` without an atomic operation, a `reads_only(t)` whose body may write `t`, or a `writes_only()` whose body may write memory |
 | [`E8008`](/errors/E8008/) | A loop invariant that the prover cannot show to hold when the loop starts |
 | [`E8009`](/errors/E8009/) | A loop invariant that the prover cannot show to hold after a pass through the loop body |
 | [`E8010`](/errors/E8010/) | An `mlir!` block whose `dialects` list does not match its body: the body uses an operation of a dialect that the list does not name, or the list names something that is not a dialect. The list is what the block says it uses, so it must be right. |
+| [`E8011`](/errors/E8011/) | A pointer clause that is not well formed: `requires valid(p, n)`, `requires initialized(p, n)` or `requires !overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters. The checker cannot prove one at a call yet, so only an `unsafe fn` may have one, and each clause is a `requires` of its own. |
 
 ______________________________________________________________________
 
-169 diagnostics.
+178 diagnostics.

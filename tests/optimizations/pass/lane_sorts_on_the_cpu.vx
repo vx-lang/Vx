@@ -1,0 +1,104 @@
+//===- lane_sorts_on_the_cpu.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lanes::sort` and `lanes::sort_descending` on the CPU copy of a kernel (`CUDA_VISIBLE_DEVICES=`).
+// The keys have repeats and negative values. A block sorts the first 500 of 512 keys up, and then
+// all 512 down. Each of two subgroups sorts the first 50 of its row of 64 keys. For each sort, the
+// host checks the order, and compares the sum and the sum of squares of the sorted keys with those
+// of the keys. The keys past the count must not change.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: up in order true same keys true tail kept true first -499000 last 500000
+// CHECK-NEXT: down in order true same keys true first 500000 last -499000
+// CHECK-NEXT: row 0 in order true same keys true tail kept true
+// CHECK-NEXT: row 1 in order true same keys true tail kept true
+
+// Key `i` of 1000 values from -499000 to 500000, with repeats. The kernels compute it too.
+fn key(i : i32) -> i64 {
+  return (((i * 7919) % 1000) as i64 - 499) * 1000;
+}
+
+// Whether `t[0..n]` goes up, or down with `down`.
+fn in_order(t : &Tensor<i64, [?]>, from : i32, n : i32, down : bool) -> bool {
+  let mut ok = true;
+  for i in from + 1..from + n {
+    if down && t[i - 1] < t[i] {
+      ok = false;
+    }
+    if !down && t[i - 1] > t[i] {
+      ok = false;
+    }
+  }
+  return ok;
+}
+
+// Whether `t[from..from + n]` has the sum and the sum of squares of `key(base)` to
+// `key(base + n - 1)`.
+fn same_keys(t : &Tensor<i64, [?]>, from : i32, base : i32, n : i32) -> bool {
+  let mut sum : i64 = 0;
+  let mut squares : i64 = 0;
+  for i in 0..n {
+    sum = sum + t[from + i] - key(base + i);
+    squares = squares + t[from + i] * t[from + i] / 1000 - key(base + i) * key(base + i) / 1000;
+  }
+  return sum == 0 && squares == 0;
+}
+
+fn main() -> i32 {
+  let mut up = transfer(Tensor<i64, [512]>::fill(0), Memory::HBM);
+  let mut down = transfer(Tensor<i64, [512]>::fill(0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut keys = unsafe { Tensor<i64, [512], Memory::SMEM>::uninit() };
+      for t in 0..512 across lanes(256) {
+        keys[t] = (((t * 7919) % 1000) as i64 - 499) * 1000;
+      }
+      lanes::sort(&mut keys, 500);
+      for t in 0..512 across lanes(256) {
+        up[t] = keys[t];
+      }
+      lanes::sort_descending(&mut keys, 512);
+      for t in 0..512 across lanes(256) {
+        down[t] = keys[t];
+      }
+    }
+  }
+  let mut rows = transfer(Tensor<i64, [128]>::fill(0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut part = unsafe { Tensor<i64, [2, 64], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        for t in 0..64 across lanes(32) {
+          part[w][t] = ((((w * 64 + t) * 7919) % 1000) as i64 - 499) * 1000;
+        }
+        lanes::sort(&mut part[w], 50);
+        for t in 0..64 across lanes(32) {
+          rows[w * 64 + t] = part[w][t];
+        }
+      }
+    }
+  }
+  let u = transfer(up, Memory::CPU_DRAM);
+  let d = transfer(down, Memory::CPU_DRAM);
+  let r = transfer(rows, Memory::CPU_DRAM);
+  let mut tail = true;
+  for i in 500..512 {
+    tail = tail && u[i] == key(i);
+  }
+  println!("up in order {} same keys {} tail kept {} first {} last {}", in_order(&u, 0, 500, false), same_keys(&u, 0, 0, 512), tail, u[0], u[499]);
+  println!("down in order {} same keys {} first {} last {}", in_order(&d, 0, 512, true), same_keys(&d, 0, 0, 512), d[0], d[511]);
+  for w in 0..2 {
+    let mut kept = true;
+    for i in 50..64 {
+      kept = kept && r[w * 64 + i] == key(w * 64 + i);
+    }
+    println!("row {} in order {} same keys {} tail kept {}", w, in_order(&r, w * 64, 50, false), same_keys(&r, w * 64, w * 64, 64), kept);
+  }
+  return 0;
+}

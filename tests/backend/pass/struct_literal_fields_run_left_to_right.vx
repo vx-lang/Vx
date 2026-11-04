@@ -1,0 +1,44 @@
+//===- struct_literal_fields_run_left_to_right.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A struct literal runs its fields left to right, and a nested literal runs completely before
+// the next field. `note` prints its first argument, so `order` lists the calls as they ran.
+// A literal must write its fields in declaration order (E3062), so left to right is that order.
+//
+// EXPECT: order=1 2 3 4 5 ; sum=15;
+
+struct P {
+  x : i32,
+  y : i32,
+}
+
+struct Outer {
+  p : P,
+  z : i32,
+}
+
+fn note(tag : i32, v : i32) -> i32 {
+  print!("{} ", tag);
+  return v;
+}
+
+fn main() -> i32 {
+  print!("order=");
+  let p = P {
+    x: note(1, 1),
+    y: note(2, 2)
+  };
+  let o = Outer {
+    p: P {
+      x: note(3, 3),
+      y: note(4, 4)
+    },
+    z: note(5, 5)
+  };
+  print!("; sum={};", p.x + p.y + o.p.x + o.p.y + o.z);
+  return 0;
+}

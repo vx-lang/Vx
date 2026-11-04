@@ -33,6 +33,7 @@
 import core::marker;
 import core::ops;
 import core::option;
+import core::panic;
 
 enum Result<T, E> {
   Ok(T),
@@ -84,25 +85,25 @@ impl<T, E> Result<T, E> {
   }
 
   /// The value, or a stop. `unwrap_or` is the form with an answer for the failing case.
-  fn unwrap(self : Result<T, E>) -> T {
+  fn unwrap(self : Result<T, E>, at : Caller) -> T {
     match self {
       Result<T, E>::Ok(v) => {
         return v;
       }
       Result<T, E>::Err(e) => {
-        panic("unwrap called on Err");
+        panic("unwrap called on Err", at);
       }
     }
   }
 
   /// The value, or a stop with the message `msg`. `unwrap` with a message of the caller's.
-  fn expect(self : Result<T, E>, msg : *const i8) -> T {
+  fn expect(self : Result<T, E>, msg : *const i8, at : Caller) -> T {
     match self {
       Result<T, E>::Ok(v) => {
         return v;
       }
       Result<T, E>::Err(e) => {
-        panic(msg);
+        panic(msg, at);
       }
     }
   }
@@ -199,10 +200,10 @@ impl<T, E> Result<T, E> {
   }
 
   /// The failure, or a stop. The mirror of `unwrap`.
-  fn unwrap_err(self : Result<T, E>) -> E {
+  fn unwrap_err(self : Result<T, E>, at : Caller) -> E {
     match self {
       Result<T, E>::Ok(v) => {
-        panic("unwrap_err called on Ok");
+        panic("unwrap_err called on Ok", at);
       }
       Result<T, E>::Err(e) => {
         return e;
@@ -211,10 +212,10 @@ impl<T, E> Result<T, E> {
   }
 
   /// The failure, or a stop with the message `msg`. The mirror of `expect`.
-  fn expect_err(self : Result<T, E>, msg : *const i8) -> E {
+  fn expect_err(self : Result<T, E>, msg : *const i8, at : Caller) -> E {
     match self {
       Result<T, E>::Ok(v) => {
-        panic(msg);
+        panic(msg, at);
       }
       Result<T, E>::Err(e) => {
         return e;

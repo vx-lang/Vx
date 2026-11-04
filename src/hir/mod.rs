@@ -250,7 +250,7 @@ fn bad_matmul() -> Tensor<f32, [?, ?]> {
         fn test_pointers(c: &mut Config) -> bool {
             unsafe {
                 let ptr: *mut Config = c;
-                let val = *ptr;
+                let val = &*ptr;
             }
             return c.value < 20.0f32;
         }

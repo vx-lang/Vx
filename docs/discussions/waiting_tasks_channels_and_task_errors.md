@@ -1,6 +1,6 @@
 # Tasks that wait, channels, and errors from tasks
 
-Status: agreed, except decision 9 (who owns a task's error, #1937). Issues:
+Status: agreed. Issues:
 #1865, #1864, #1893. Tracking: #1870.
 Builds on `cpu_tasks_send_sync_and_shared_atomics.md` (T1 to T8, S1 to S6) and the memory model
 (C0 to C7).
@@ -182,12 +182,14 @@ ends. In the example, a task whose receiver is gone fails, and so does the block
 right result: no code reads the values.
 
 **M3. `select`.** Decision 8 chose a library function, not the block expression below (#2384):
-`select(rs : &Vec<Receiver<T>>)` gives the first value from any channel in the list, with the index
-of its channel, or `Closed` when each channel is closed and empty. It waits on `recv` only, and the
-channels have one element type. A program that waits on channels of different types sends an enum
-of its own. A `select` sleeps on one word of the runtime, which each event on any channel changes.
-The rest of this section is the design of the block expression, which can still come later for
-`send` and `sleep` arms.
+`Selector::new(rs : Vec<Receiver<T>>)` makes a selector, and its `select()` gives the first value
+from any channel in the list, with the index of its channel, or `Closed` when each channel is closed
+and empty. The selector keeps the index of its last choice, and the next search starts after it
+(round robin). So a channel with a value gives it within `n` calls (#2548). It waits on `recv` only,
+and the channels have one element type. A program that waits on channels of different types sends
+an enum of its own. A `select` sleeps on one word of the runtime, which each event on any channel
+changes. The rest of this section is the design of the block expression, which can still come later
+for `send` and `sleep` arms.
 
 The block expression waits on several operations, and runs the arm of the first one that can
 continue. It is a block expression, as `tasks` is, not a library type.
@@ -308,8 +310,10 @@ never continues. So `lock` parks the task (W4), and the lock belongs to a task, 
 (W9). `lock` cannot be cancelled (F4). It has the same model check as the channel.
 
 **M8. `Arc`.** #1864 also asks for `Arc`. A task borrows the locals of its parent (T5), so most
-programs need no reference count. `Arc` waits until a program needs data that lives longer than
-its `tasks` block.
+programs need no reference count. `std::sync::arc` has one for data that lives longer than its
+`tasks` block. It follows Rust's `Arc`: a clone adds 1 with `Relaxed`, a drop takes 1 away with
+`Release`, and the last drop runs an `Acquire` fence before it drops the value.
+`formal/memory_model/tests/arc_last_drop_*.litmus` check that order.
 
 ## 4. Errors from tasks (#1893)
 
@@ -323,7 +327,7 @@ requests that worked, or to try another source after a failure, the task returns
 The compiler knows `Result` by name, as it knows `SharedCell`. `panic` still stops the program
 (T6), so Vx needs no unwinding.
 
-**F2. `?`.** Vx has no `?` today. This design adds one:
+**F2. `?`.**
 
 - `x?` returns the `Err` of `x` unchanged. The type of the error must be the `E` of the target. It
   does not convert the error, because Vx has no implicit conversions. `.map_err(..)` converts it.
@@ -333,6 +337,8 @@ The compiler knows `Result` by name, as it knows `SharedCell`. `panic` still sto
   task is (F3). An `Err` that is the last value of the block is also a failure.
 - In a `spawn` body, `return` leaves the task. A `break` or `continue` that targets a loop outside
   the body is a compile error.
+- Done for a function, the code of a `tasks` block, a `spawn` body and a closure (E3063). In a
+  closure, `?` needs the type that the closure returns: `|x| -> Result<T, E> { .. }`.
 
 So passing `Cancelled` up costs more in Vx than in Rust: Rust's `?` converts it with `From`. A
 function with its own error enum needs a `Cancelled` case in it, or a `.map_err(..)` at each wait.
@@ -369,11 +375,9 @@ could drop it, and the block would then have no first failure to return (#1937).
 look at the error of one task makes that task return its own enum, as data.
 
 **F4. Which waits can be cancelled.** `send`, `recv`, `sleep` and I/O can be cancelled. They
-return their error with a `Cancelled` case. A `send` can be cancelled only until it takes its place in the ring of
-the channel: a place that no value fills would stop the `recv` of that place and each later one.
-After that, it waits for room, or gives its value back when the `Receiver` is dropped. One case
-still hangs: the code of a block holds the `Receiver` and leaves the block while a `send` of its
-task has a place (#2417). A `select` runs its `cancelled` arm (M3). `join()`,
+return their error with a `Cancelled` case. A cancelled `send` that already has its place in the
+ring of the channel puts the number of that place in a skip set of the runtime. The `recv` of that
+place passes it, so the place does not stop the later ones (#2417). A `select` runs its `cancelled` arm (M3). `join()`,
 `lock` and the waits for a device cannot be cancelled. A cancelled parent must join its children
 anyway (T3), so a cancelled `join` gives nothing. A wait for a device holds a token that must be
 used once (#244), and an error would lose it. A loop with no wait point does not see the cancel.
@@ -388,8 +392,11 @@ each wait fails at once, and the loop never ends. Dropping a `Cancelled` is not 
 
 - The program must use the `Result` of each wait that can be cancelled.
 - The compiler warns when an arm that matches `Cancelled` can reach the same wait again without
-  leaving the loop. An arm matches `Cancelled` by name, by `_`, or by `Err(_)`. It is a warning,
-  not an error, because the check cannot follow every call.
+  leaving the loop (W1035). An arm matches `Cancelled` by `_`, by `Err(_)`, or by a name that
+  starts with `_`. An arm that gives the error a used name can check it. An arm that changes the
+  condition of its `while` can end the loop. A `while` whose body changes its condition in a
+  statement of its own ends after some passes, and so does a `for` loop. It is a warning, not an
+  error, because the check cannot follow every call.
 - F9 reports the exact case at run time.
 
 **F5. I/O that still owns a buffer.** A cancelled I/O wait does not return until the kernel
@@ -404,8 +411,13 @@ For example, a slot of a KV cache must go back to its pool when a task is cancel
 `pool_tx.send(slot)` gets `Cancelled`, and the slot is lost. The same `send` in the `drop` of a
 guard for the slot works.
 
-- A wait in a `drop` must have a time limit. Cancellation cannot stop it, so a wait for a peer
-  that is gone would never end.
+- A wait in a `drop` has a time limit. Cancellation cannot stop it, so a wait for a peer that is
+  gone would never end. `send_for` and `recv_for` take one, and `wait_while_until` is the wait
+  under them. Each `drop` also has one: `VX_DROP_WAIT_SECONDS`, or 10 seconds. After it, each
+  wait in the `drop` that can be cancelled gives up, as in a cancelled block. How a program
+  sets its own limit is still open (#1893). A task of the shared runtime parks for such a wait, and a timer thread
+  wakes it at the time limit. The compiler warns about a `send` or `recv` in a `drop` (W1036).
+  It does not look into the functions that the `drop` calls.
 - A `tasks` block inside a `drop` does not get the cancel of the task outside it.
 
 **F7. Leaving a `tasks` block early.** `return` or `break` out of the code of a `tasks` block
@@ -425,11 +437,21 @@ of the block (F2). A `join()` of a task that failed leaves the block the same wa
 **F9. Run-time reports.**
 
 - A panic in a task gives the line of its `spawn`, and the `spawn` lines of each parent task.
+  Done: the handler of an abort prints them, so a failed check in a task prints them too. The
+  file is always the file given to `vxc`, so the file of a `spawn` in an imported module is wrong.
 - A deadlock: the runtime stops the program when every task waits, and nothing can wake one. A
   task in a foreign call (W8), work on a device, a timer, or I/O in progress can wake one. Go
   already lists each goroutine, what it waits for and where, and the line that started it. Vx
   also names the channel or lock, with the line that made it, and prints the cycle of waits.
+  Done in `wait.rs`: a watcher thread stops the program. The report lists each wait: `send`,
+  `recv`, `lock`, `select`, or the join of a task, with the `spawn` lines of the task that waits.
+  Two waits on one channel or one lock get the same number. Each wait has its line, and the line
+  that made its channel or lock. The library gets them from a last parameter `at : Caller`, which
+  the compiler fills with the place of each call (#2569). Not done: the cycle of waits.
 - A task that gets `Cancelled` from many waits in a row: the line of the wait (F4).
+  Done in part: at the 1000th time that a task sees the cancel of its block, the runtime warns
+  once, with the `spawn` lines of the task. Not done: the line of the wait. A task checks the
+  cancel at many places, and the warning does not know which wait it came from.
 
 ## 5. Admission
 
@@ -568,8 +590,8 @@ We chose these on 2026-10-19, from the recommendations of a review.
    and the block owns its first failure (F1, F3a). One other choice: `join()` gives a
    `Result<T, &E>`. The code can read it but not pass it up with `?`, so each join needs a `match`.
    Another: `join()` gives the `Err` by value, and the code must pass it up on every path. That
-   needs a flow check, and it can give the block a second error that is not the first. Open. The
-   recommendation is the first.
+   needs a flow check, and it can give the block a second error that is not the first. Chosen:
+   the first (#2105).
 
 The review also settled two earlier questions: `select` starts its search round robin (M3), and
 the memory-space type decides what can go between targets (M6).

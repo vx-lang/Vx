@@ -209,10 +209,12 @@ fn pick(x : i32) -> i32 {
 
 ## Stopping a program
 
-`panic(msg)` prints `panic: ` and the message, then stops the program; `abort()` stops it with no
-message. A function declared `-> !` never returns, like `core::panic`'s `unreachable()`, `todo()`
-and `unimplemented()`. A function can end with a call to one, and the call can stand where any
-value is expected:
+`panic(msg)` prints `panic: ` and the message, and the file and line of the call under it. Then it
+stops the program. `panic(msg, at)` prints the place in the `Caller` `at` instead, so a function
+that takes `at : Caller` can report the line of its own caller. `unwrap`, `expect` and `todo()` do
+this. `abort()` stops the program with no message. A function declared `-> !` never returns, like
+`core::panic`'s `unreachable()`, `todo()` and `unimplemented()`. A function can end with a call to
+one, and the call can stand where any value is expected:
 
 ```rust
 import core::panic;

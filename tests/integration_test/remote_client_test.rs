@@ -23,6 +23,8 @@
 use std::path::PathBuf;
 use std::process::{Child, Command};
 
+use crate::integration_test::runtime_test_build;
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -38,8 +40,7 @@ impl Drop for Worker {
 }
 
 fn compile(cxx: &str, sources: &[PathBuf], out: &PathBuf, extra: &[String]) {
-    let mut cmd = Command::new(cxx);
-    cmd.args(["-std=c++17", "-O1", "-Wall", "-Werror"]);
+    let mut cmd = runtime_test_build::command(cxx, "c++17");
     for s in sources {
         cmd.arg(s);
     }
@@ -107,7 +108,7 @@ fn ffi_flags() -> Vec<String> {
 fn a_dispatch_reaches_a_worker_process_over_tcp() {
     let root = repo_root();
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
     let worker_bin = tmp.join("vx-worker-test");
     compile(
@@ -184,7 +185,7 @@ fn a_dispatch_reaches_a_worker_process_over_tcp() {
 fn a_placed_tensor_can_be_read_home_from_a_worker() {
     let root = repo_root();
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
     let worker_bin = tmp.join("vx-worker-readback");
     compile(
@@ -332,7 +333,7 @@ fn main() -> i32 {
 fn a_handoff_between_two_workers_moves_the_data() {
     let root = repo_root();
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
     let worker_bin = tmp.join("vx-worker-handoff");
     compile(
@@ -484,7 +485,7 @@ fn main() -> i32 {
 fn a_backend_refuses_an_address_that_belongs_to_another_machine() {
     let root = repo_root();
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let cxx = std::env::var("CXX").unwrap_or_else(|_| "clang++".to_string());
+    let cxx = runtime_test_build::cxx();
 
     let bin = tmp.join("routing_refusal_test");
     compile(
@@ -517,4 +518,79 @@ fn a_backend_refuses_an_address_that_belongs_to_another_machine() {
         said.contains("worker 3") && said.contains("a read-back"),
         "the refusal did not name the worker and the operation:\n{said}"
     );
+}
+
+/// The machine description and the kernel of a GPU that shares host memory, with its
+/// `offload:` field. Without the mark, CPU_DRAM is `managed: cached`, so the kernel reads the
+/// host tensors with no `transfer`. With it, the program moves them with `transfer`.
+fn shared_gpu_program(offload: bool) -> String {
+    let machine = format!(
+        "Memory CPU_DRAM {{\n  capacity: 480 GiB, bandwidth: 500 GB/s, managed: cached\n}}\n\
+         Memory HBM {{\n  capacity: 96 GiB, bandwidth: 4 TB/s, managed: explicit, scope: device\n}}\n\
+         Topology SharedGpu {{\n  arch: nvptx64,\n  levels: [blocks(max_lanes: 1024, memory: cta), \
+         subgroups(lanes: 32), lanes(memory: thread)],\n  chip: sm_90,\n  offload: {offload},\n  \
+         memory: Memory::HBM,\n  visible: [Memory::HBM],\n  \
+         transfer Memory::CPU_DRAM -> Memory::HBM : 450 GB/s,\n  \
+         transfer Memory::HBM -> Memory::CPU_DRAM : 450 GB/s\n}}\n"
+    );
+    let kernel = if offload {
+        "fn main() -> i32 {\n  let x = transfer(Tensor<f32, [4]>::fill(3.0), Memory::HBM);\n  \
+         let mut out = transfer(Tensor<f32, [4]>::fill(0.0), Memory::HBM);\n  \
+         spawn on(Topology::SharedGpu) {\n    for i in 0..4 across blocks {\n      \
+         out[i] = 2.0 * x[i];\n    }\n  }\n  let home = transfer(out, Memory::CPU_DRAM);\n  \
+         println!(\"{}\", home[0]);\n  return 0;\n}\n"
+    } else {
+        "fn double(out : &mut Tensor<f32, [?]>, x : &Tensor<f32, [?]>, n : i32) -> void {\n  \
+         spawn on(Topology::SharedGpu) {\n    for i in 0..n across blocks {\n      \
+         out[i] = 2.0 * x[i];\n    }\n  }\n  return;\n}\n\
+         fn main() -> i32 {\n  let x = Tensor<f32, [4]>::fill(3.0);\n  \
+         let mut out = Tensor<f32, [4]>::fill(0.0);\n  double(&mut out, &x, 4);\n  \
+         println!(\"{}\", out[0]);\n  return 0;\n}\n"
+    };
+    machine + kernel
+}
+
+/// A manifest that sends the topology to a worker of another node. Without `offload: true`, the
+/// runtime refuses: the kernel reads host memory that such a worker does not share. With it, the
+/// kernel goes to the worker, and the run stops only because no worker listens there. Port 1 is
+/// a port where nothing listens, and the refusal comes before any connection.
+#[test]
+fn a_remote_worker_takes_only_a_topology_marked_offload() {
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let manifest = tmp.join("offload-manifest");
+    std::fs::write(&manifest, "SharedGpu  127.0.0.1  1\n").expect("failed to write the manifest");
+    let vxc = env!("CARGO_BIN_EXE_vxc");
+    let refusal = "does not say `offload: true`";
+    // Each code generator carries the mark to the payload of the kernel.
+    for (offload, codegen) in [
+        (false, None),
+        (true, None),
+        (false, Some("--legacy-codegen")),
+    ] {
+        let prog = tmp.join(format!("offload-{offload}.vx"));
+        std::fs::write(&prog, shared_gpu_program(offload)).expect("failed to write the program");
+        let run = run_bounded(
+            Command::new(vxc)
+                .args([prog.to_str().unwrap(), "--run"])
+                .args(codegen)
+                .env("VX_FLEET_MANIFEST", &manifest),
+            120,
+        );
+        let stderr = String::from_utf8_lossy(&run.stderr);
+        assert!(
+            !run.status.success(),
+            "the run with offload: {offload} worked:\n{stderr}"
+        );
+        if offload {
+            assert!(
+                !stderr.contains(refusal) && stderr.contains("cannot reach SharedGpu"),
+                "the marked topology did not go to the worker:\n{stderr}"
+            );
+        } else {
+            assert!(
+                stderr.contains(refusal),
+                "the runtime sent a topology with no mark to the worker:\n{stderr}"
+            );
+        }
+    }
 }

@@ -203,6 +203,11 @@ spawn on(Topology::Gpu) {
 - E6032 checks the place and the size of each `across` loop. It also checks that no pass
   touches what another pass writes (L4), and that every lane reaches the end of each lane loop
   (L5, L8, L10).
+- An index of a loop whose size is not a number can wrap. In `for b in 0..n across blocks`,
+  `b * 256 + l` is an `i32`, and blocks `b` and `b + 2^24` write the same element. So the host
+  checks `n <= 8388608` before the launch, and the program stops when `n` is larger. The proof
+  bounds the end of the loop by its type, so `0..(n + 255) / 256` needs no check. An index from
+  `i64` arithmetic needs no check either.
 - An atomic operation races with no other one. It is a call to a function that says
   `ensures atomic(t)`, or an `mlir!` block with `ensures : [atomic(t)]`. Every access to `t` in
   the loop must then be atomic (#2139, `discussions/mlir_declared_writes_in_across.md`).
@@ -210,6 +215,10 @@ spawn on(Topology::Gpu) {
   memory, such as `atomic_fetch_add_u32(&counts, i, 1u32, AtomicOrdering::Relaxed)`.
 - A call to a function that says `ensures writes_only()` accesses no memory, so it races with
   nothing. `scoped_fence(order, FenceScope::Device)` is one.
+- A call to a function that says `ensures reads_only(t)`, or an `mlir!` block with
+  `ensures : [reads_only(t)]`, reads all of `t` and writes none of it. It races with no other
+  read. The function may only read elements of `t`, ask for its length, or pass it to code that
+  says `reads_only` for it.
 - Each lane loop ends with a barrier. Lane 0 runs the code between lane loops that writes
   memory.
 - A condition or a bound around a lane loop may read an element of a `&` tensor parameter. Only

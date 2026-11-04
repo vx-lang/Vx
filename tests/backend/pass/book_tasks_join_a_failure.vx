@@ -1,0 +1,59 @@
+//===- book_tasks_join_a_failure.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on tasks (www/book/src/tasks.md): a task that ends with an `Err`
+// makes its `join` leave the block with that `Err`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}read 1 and 2: Ok 30{{$}}
+// CHECK: {{^}}read 1 and 4: Err 4{{$}}
+
+// ANCHOR: program
+import core::result;
+
+// A read that fails for an even number above 2.
+fn read(n : i32) -> Result<i32, i32> {
+  if n > 2 && n % 2 == 0 {
+    return Result<i32, i32>::Err(n);
+  }
+  return Result<i32, i32>::Ok(n * 10);
+}
+
+fn read_two(a : i32, b : i32) -> Result<i32, i32> {
+  let r = tasks {
+    let x = spawn {
+      read(a)
+    };
+    let y = spawn {
+      read(b)
+    };
+    // Each `join` gives the `Ok` value. An `Err` leaves the block, and is its value.
+    let a = x.join();
+    let b = y.join();
+    Result<i32, i32>::Ok(a + b)
+  };
+  return r;
+}
+
+fn show(a : i32, b : i32) -> void {
+  match read_two(a, b) {
+    Result<i32, i32>::Ok(v) => {
+      println!("read {} and {}: Ok {}", a, b, v);
+    }
+    Result<i32, i32>::Err(e) => {
+      println!("read {} and {}: Err {}", a, b, e);
+    }
+  }
+}
+
+fn main() -> i32 {
+  show(1, 2);
+  show(1, 4);
+  return 0;
+}
+// ANCHOR_END: program

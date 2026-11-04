@@ -103,11 +103,11 @@ vocab_size : i32) -> TransformerWeights {
     TransformerWeights {
       token_embedding_table:
       p0, rms_att_weight : p1,
+      rms_ffn_weight : p6,
       wq : p2,
       wk : p3,
       wv : p4,
       wo : p5,
-      rms_ffn_weight : p6,
       w1 : p7,
       w2 : p8,
       w3

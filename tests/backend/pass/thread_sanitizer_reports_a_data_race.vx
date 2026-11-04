@@ -10,10 +10,6 @@
 // `--sanitize=thread`, the program reports it when it runs, and fails.
 //
 // REQUIRES: thread-sanitizer
-// REQUIRES: flat-codegen
-// Only because the older code generator runs each task to its end at its `spawn`, and then the
-// two tasks never run at the same time.
-//
 // RUN: not vxc --sanitize=thread %s 2>&1 | FileCheck %s
 // CHECK: WARNING: ThreadSanitizer: data race
 // CHECK: {{#0 bump}}

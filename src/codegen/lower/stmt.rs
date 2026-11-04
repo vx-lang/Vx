@@ -15,11 +15,24 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
         let ReturnStmt { expr, span: _ } = self;
+        // A `return` in a task ends the task with the value.
+        if super::expr::leaving_task(gen) {
+            let (val, block) = match expr {
+                Some(e) => {
+                    let (val, _, block) = gen.generate_expr(e, block)?;
+                    (Some(val), block)
+                }
+                None => (None, block),
+            };
+            let block = gen.run_value_drops(block)?;
+            super::expr::emit_task_exit(gen, block, val)?;
+            return Ok(None);
+        }
         // A bare `return;` -- only a `void` function may write one, which the checker enforces.
         // Nothing to compute and nothing to convert, so emit the terminator and stop.
         let Some(expr) = expr else {
             let block = gen.run_value_drops(block)?;
-            block.append_operation(OperationBuilder::new("func.return", gen.loc()).build()?);
+            super::expr::emit_func_return(gen, block, None)?;
             return Ok(None);
         };
         gen.expected_type = gen.current_return_type;
@@ -42,7 +55,7 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
         // the call has run, and there is no value to return.
         if !gen.in_spawn && gen.current_return_type == Some(gen.none_ty) {
             let block = gen.run_value_drops(block)?;
-            block.append_operation(OperationBuilder::new("func.return", gen.loc()).build()?);
+            super::expr::emit_func_return(gen, block, None)?;
             gen.has_returned = true;
             return Ok(None);
         }
@@ -132,16 +145,22 @@ impl<'c> LowerToMelior<'c> for ReturnStmt {
                     .build()?;
                 block.append_operation(drop);
             }
+            // In the region of a `tasks` block, the return leaves the region, and the function
+            // returns after the block.
             let block = gen.run_value_drops(block)?;
-            block.append_operation(OperationBuilder::new(op_name, gen.loc()).build()?);
+            super::expr::emit_func_return(gen, block, None)?;
             gen.has_returned = true;
             return Ok(None);
         }
         let block = gen.run_value_drops(block)?;
-        let ret_op = OperationBuilder::new(op_name, gen.loc())
-            .add_operands(&[val])
-            .build()?;
-        block.append_operation(ret_op);
+        if op_name == "func.return" {
+            super::expr::emit_func_return(gen, block, Some(val))?;
+        } else {
+            let ret_op = OperationBuilder::new(op_name, gen.loc())
+                .add_operands(&[val])
+                .build()?;
+            block.append_operation(ret_op);
+        }
         gen.has_returned = true;
         Ok(None)
     }
@@ -274,6 +293,12 @@ impl<'c> LowerToMelior<'c> for LetDeclStmt {
                     .build()?;
                 let alloca_ref = block.append_operation(alloca_op);
                 let alloca_val = alloca_ref.result(0)?.into();
+                // The checker writes where the struct's lifetime ends (`DropStmt::ends_lifetime`).
+                if ty_str.contains("!llvm.struct") {
+                    gen.emit_lifetime_marker("llvm.intr.lifetime.start", alloca_val, block)?;
+                    gen.started_slots
+                        .insert(MeliorGenerator::slot_key(alloca_val));
+                }
 
                 let store_op = OperationBuilder::new("llvm.store", gen.loc())
                     .add_operands(&[val, alloca_val])

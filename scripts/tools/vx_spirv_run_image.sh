@@ -48,7 +48,7 @@ KERNEL=vx_npu_kernel_0
 EXPECTED_ARGS=28
 mkdir -p "$OUT"
 
-# config.local puts the LLVM tools this branch is pinned to on PATH.
+# config.local puts the LLVM tools this branch builds against on PATH.
 if [ -f "$ROOT/config.local" ]; then
   # shellcheck disable=SC1091
   . "$ROOT/config.local"

@@ -9,11 +9,12 @@
 // returns from the function. Leaving a `tasks` block cancels its tasks before it joins them, so
 // the `recv` gives `Cancelled` and the task ends. Without the cancel, the join would wait forever.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator runs each task to its end at its `spawn`. A task
-// that waits for a later task then waits forever.
+// The last RUN line runs the same program on the shared runtime, with one worker thread
+// for all the tasks.
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}the recv gave Cancelled{{$}}
 // CHECK: {{^}}leave gave 7{{$}}
 
@@ -26,6 +27,9 @@ fn say(e : RecvError) -> void {
     }
     RecvError::Cancelled => {
       println!("the recv gave Cancelled");
+    }
+    RecvError::TimedOut => {
+      println!("the recv gave TimedOut");
     }
   }
 }

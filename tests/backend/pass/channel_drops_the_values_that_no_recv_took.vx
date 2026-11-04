@@ -9,11 +9,8 @@
 // Three values go in, one `recv` takes the first, and the other two are dropped with the
 // channel. Each `Noisy` value prints its number when it is dropped.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator cannot lower `Result<Noisy, RecvError>`: its two
-// variants carry payloads of different kinds.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}took 1{{$}}
 // CHECK-NEXT: {{^}}drop 1{{$}}
 // CHECK-NEXT: {{^}}ends dropped{{$}}

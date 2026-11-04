@@ -729,9 +729,10 @@ pub fn substitute_type_name(
     name: &str,
     mapping: &std::collections::HashMap<Symbol, Type>,
 ) -> String {
-    // `&T` and `&mut T`: the reference stays, what it refers to is substituted.
+    // `&T`, `&mut T`, `*mut T` and `*const T`: the reference or pointer stays, what it refers
+    // to is substituted.
     let trimmed = name.trim();
-    for prefix in ["&mut ", "&"] {
+    for prefix in ["&mut ", "&", "*mut ", "*const "] {
         if let Some(rest) = trimmed.strip_prefix(prefix) {
             return format!("{prefix}{}", substitute_type_name(rest, mapping));
         }
@@ -1606,6 +1607,24 @@ impl Mangle for ElementType {
             _ => write!(w, "{}", self),
         }
     }
+}
+
+/// The placed tensor of the type of `transfer_async(x, M)`, `T` in `Token<T>`. A type that the
+/// program declares has a declaration, so a `struct Token` of the program is not a token. The
+/// code generators lower a token as its tensor.
+pub fn transfer_token_inner(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::GenericInstance(base, args) if args.len() == 1 => match base.as_ref() {
+            Type::Struct(name, None) if name.as_ref() == "Token" => args.first(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether `ty` is the token of a `lanes::copy_async`, `Token<void>`.
+pub fn is_copy_token(ty: &Type) -> bool {
+    matches!(transfer_token_inner(ty), Some(Type::Struct(name, None)) if name.as_ref() == "void")
 }
 
 #[cfg(test)]

@@ -1,0 +1,62 @@
+//===- an_enum_with_a_number_and_a_struct_drops_the_struct.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each enum here puts a number in one variant and a struct with a `Drop` impl in another, at
+// the same payload position. Dropping the enum runs `drop` on the struct when the struct is
+// the variant it holds, and does nothing when it holds the number.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}start{{$}}
+// CHECK-NEXT: {{^}}drop 2{{$}}
+// CHECK-NEXT: {{^}}after take{{$}}
+// CHECK-NEXT: {{^}}drop 3{{$}}
+// CHECK-NEXT: {{^}}drop 1{{$}}
+// CHECK-NEXT: {{^}}end{{$}}
+
+struct Noisy {
+  id : i32
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    println!("drop {}", self.id);
+  }
+}
+
+enum Slot {
+  Number(i32), Thing(Noisy)
+}
+
+enum Pick<T> {
+  Count(i64), Item(T)
+}
+
+fn take(_s : Slot) -> void {
+  println!("start");
+}
+
+fn run() -> void {
+  let _first = Slot::Thing(Noisy {
+    id : 1
+  });
+  let _number = Slot::Number(5);
+  take(Slot::Thing(Noisy {
+    id : 2
+  }));
+  println!("after take");
+  let _count = Pick<Noisy>::Count(4);
+  let _item = Pick<Noisy>::Item(Noisy {
+    id : 3
+  });
+}
+
+fn main() -> i32 {
+  run();
+  println!("end");
+  return 0;
+}

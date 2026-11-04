@@ -14,8 +14,8 @@
 // EXPECT: 4 2
 
 // CHECK-DAG: llvm.func @abs(i32) -> i32
-// CHECK-DAG: llvm.func @main() -> i32 {
-// CHECK-DAG: llvm.func hidden @add_one({{.*}}) -> i32 attributes {dso_local} {
+// CHECK-DAG: llvm.func @main() -> i32 attributes {passthrough = {{\[\[}}"probe-stack", "inline-asm"{{\]\]}}} {
+// CHECK-DAG: llvm.func hidden @add_one({{.*}}) -> i32 attributes {dso_local, passthrough = {{\[\[}}"probe-stack", "inline-asm"{{\]\]}}} {
 // CHECK-DAG: llvm.func hidden @vx_npu_kernel_0({{.*}}) attributes {dso_local,
 // CHECK-DAG: llvm.func @_vx_ciface_vx_npu_kernel_0(
 

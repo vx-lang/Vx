@@ -129,6 +129,47 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
+    /// `return h.f`, where `f` is a `&mut` and `h` is a value of this function whose `drop` can
+    /// use what it holds. `h` is dropped as the function returns, so its `drop` could write
+    /// through the `&mut` while the caller still holds what was returned.
+    pub(crate) fn check_return_of_a_mut_held_by_a_dropped_value(
+        &mut self,
+        expr: &Expr,
+        span: &crate::syntax::Span,
+    ) {
+        let mut place = expr;
+        while let Expr::Borrow(BorrowExpr { expr: inner, .. })
+        | Expr::Dereference(DereferenceExpr { expr: inner, .. }) = place
+        {
+            place = inner;
+        }
+        let mut through_mut = false;
+        let mut part = place;
+        while let Expr::MemberAccess(m) = part {
+            through_mut |= matches!(
+                self.check_expr_type_probe(part),
+                Type::Borrow { is_mut: true, .. }
+            );
+            part = &m.base;
+        }
+        let Expr::Identifier(holder) = part else {
+            return;
+        };
+        if !through_mut || !self.borrow.drops.drop_reads_borrows(holder.name.as_ref()) {
+            return;
+        }
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E4005,
+            format!(
+                "this returns a reference that `{h}` holds in a `&mut`. `{h}` is dropped when \
+                 the function returns, and its `drop` can use that `&mut` while the reference is \
+                 still in use. Take `{h}` by reference, so it is not dropped here",
+                h = holder.name
+            ),
+            Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+        );
+    }
+
     pub(crate) fn report_frame_escape(&mut self, what: &str, span: &crate::syntax::Span) {
         self.errors.error_with_code(
             crate::diagnostic::DiagnosticCode::E4005,
@@ -229,6 +270,13 @@ impl<'a> TypeChecker<'a> {
         for sub in &all {
             self.check_escape_in_calls(sub);
         }
+        // A call stores no argument whose parameter says `!keeps`.
+        let not_kept = match expr {
+            Expr::FunctionCall(c) => self.not_kept_by(c.name.as_ref()),
+            _ => 0,
+        };
+        let kept = |i: usize| i >= 32 || not_kept & (1 << i) == 0;
+        self.hold_borrows_a_call_may_store(&all, receiver.is_some(), &kept);
         // A method call may carry no position of its own; its receiver or first argument
         // does.
         let span = if span == crate::syntax::Span::default() {
@@ -245,7 +293,7 @@ impl<'a> TypeChecker<'a> {
 
         let mut holders: Vec<usize> = Vec::new();
         let mut depth = 0;
-        for (i, arg) in all.iter().enumerate() {
+        for (i, arg) in all.iter().enumerate().filter(|&(i, _)| kept(i)) {
             if let Some(RefProvenance::Local(d)) = self.ref_provenance_of(arg) {
                 if self.type_can_hold_reference(&self.check_expr_type_probe(arg)) {
                     holders.push(i);
@@ -573,6 +621,83 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// A call may store any reference it is given through any `&mut` it is given whose target
+    /// can hold one, as the escape check above assumes. So after the call, the variable that
+    /// `&mut` reaches holds the borrows of the other arguments: `set_r(&mut h, &y)` and
+    /// `v.push(&y)` leave `h` and `v` borrowing `y`. An argument that `kept` says no for, whose
+    /// parameter says `!keeps`, is stored nowhere.
+    fn hold_borrows_a_call_may_store(
+        &mut self,
+        all: &[&Expr],
+        has_receiver: bool,
+        kept: &dyn Fn(usize) -> bool,
+    ) {
+        if self.speculating {
+            return;
+        }
+        for (i, arg) in all.iter().enumerate() {
+            let Some(target) = self.mutable_reference_target(arg, has_receiver && i == 0) else {
+                continue;
+            };
+            if !self.type_can_hold_reference(&target) {
+                continue;
+            }
+            // Through a reference, the store lands in memory this function does not own.
+            let Some((holder, through_deref)) = Self::place_root_through(arg) else {
+                continue;
+            };
+            let borrows_the_variable =
+                matches!(arg, Expr::Borrow(b) if matches!(&*b.expr, Expr::Identifier(_)));
+            if through_deref || (!borrows_the_variable && self.is_reference_variable(&holder)) {
+                continue;
+            }
+            let depth = self.scope_depth_of(&holder);
+            for (j, other) in all.iter().enumerate() {
+                if j == i || !kept(j) {
+                    continue;
+                }
+                let mut made = Vec::new();
+                crate::syntax::visit_expr(other, &mut |e| {
+                    if let Expr::Borrow(b) = e {
+                        made.push(((*b.expr).clone(), b.is_mut));
+                    }
+                });
+                let mut passed_on: Vec<String> = Vec::new();
+                if let Expr::Identifier(id) = other {
+                    passed_on.push(id.name.to_string());
+                }
+                for (place, is_mut) in made {
+                    let Some((base, path)) = Self::extract_base_and_path(&place) else {
+                        continue;
+                    };
+                    if base == holder.as_ref() {
+                        continue;
+                    }
+                    // `&r.f` with `r` a reference points where `r` points.
+                    if self.is_reference_variable(&base.as_str().into()) {
+                        passed_on.push(base);
+                        continue;
+                    }
+                    self.borrow.record(
+                        &base,
+                        crate::hir::env::BorrowRecord {
+                            is_mut,
+                            scope_depth: depth,
+                            borrower_name: Some(holder.to_string()),
+                            path,
+                            carried_from: None,
+                        },
+                    );
+                }
+                for var in passed_on {
+                    if var != holder.as_ref() {
+                        self.borrow.copy_borrows(&var, holder.as_ref(), depth);
+                    }
+                }
+            }
+        }
+    }
+
     /// The type a mutable reference argument points at, when it is one: `&mut x` gives the
     /// type of `x`; a variable of type `&mut T` or `*mut T` gives `T`; a receiver is taken
     /// to be one, since the method may borrow it mutably.
@@ -737,7 +862,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Is `name` a reference or pointer, so that storing through it reaches memory this
     /// function does not own?
-    fn is_reference_variable(&self, name: &crate::symbol::Symbol) -> bool {
+    pub(crate) fn is_reference_variable(&self, name: &crate::symbol::Symbol) -> bool {
         matches!(
             self.lookup(name.as_ref()).map(|(t, _)| t),
             Some(Type::Ref(..)) | Some(Type::Borrow { .. }) | Some(Type::Pointer(..))

@@ -1,0 +1,78 @@
+//===- a_question_mark_that_cannot_pass_its_error_up.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `x?` passes the `Err` of a `Result` up unchanged, to the function or to its `tasks` block.
+// Each function here uses `?` where it cannot do that.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+import core::option;
+import core::result;
+
+fn plus(n : i32) -> Result<i32, i32> {
+  return Result<i32, i32>::Ok(n + 1);
+}
+
+fn wide(n : i32) -> Result<i32, i64> {
+  return Result<i32, i64>::Ok(n);
+}
+
+// CHECK-DAG: Error[E3063] at {{.*}}.vx:[[@LINE+2]]:4: `?` takes a `Result<T, E>`. This value has the type 'i32'
+fn not_a_result(n : i32) -> Result<i32, i32> {
+  n?;
+  return Result<i32, i32>::Ok(n);
+}
+
+// A Rust programmer may write `?` on an `Option`.
+// CHECK-DAG: Error[E3063] at {{.*}}.vx:[[@LINE+3]]:4: `?` takes a `Result<T, E>`. This value has the type 'Option<i32>'. For an `Option`, use a `match`, or `.ok_or(e)?` with an error `e`
+fn on_an_option(n : i32) -> Result<i32, i32> {
+  let o = Option<i32>::Some(n);
+  o?;
+  return Result<i32, i32>::Ok(n);
+}
+
+// CHECK-DAG: Error[E3063] at {{.*}}.vx:[[@LINE+2]]:17: this `?` passes up an error of type 'i32', so the function must return a `Result<_, i32>`. It returns 'i32'
+fn returns_a_number(n : i32) -> i32 {
+  return plus(n)?;
+}
+
+// `?` does not convert an `i64` error to an `i32`.
+// CHECK-DAG: Error[E3063] at {{.*}}.vx:[[@LINE+2]]:18: this `?` passes up an error of type 'i64', so the function must return a `Result<_, i64>`. It returns 'Result<i32, i32>'
+fn other_error(n : i32) -> Result<i32, i32> {
+  let x = wide(n)?;
+  return Result<i32, i32>::Ok(x);
+}
+
+// CHECK-DAG: Error[E3063] at {{.*}}.vx:[[@LINE+3]]:20: this `?` passes up an error of type 'i32', so its `tasks` block must give a `Result<_, i32>`. The block gives 'Result<i32, i64>'
+fn block_of_other_error(n : i32) -> Result<i32, i64> {
+  let r = tasks {
+    let x = plus(n)?;
+    Result<i32, i64>::Ok(x)
+  };
+  return r;
+}
+
+// CHECK-DAG: Error[E3063] at {{.*}}.vx:[[@LINE+4]]:14: this `?` passes up an error of type 'i32', so its task must give a `Result<_, i32>`. The task gives 'i32'
+fn in_a_task_that_gives_no_result(n : i32) -> i32 {
+  let r = tasks {
+    let h = spawn {
+      plus(n)?
+    };
+    h.join()
+  };
+  return r;
+}
+
+// CHECK-DAG: Error[E3063] at {{.*}}.vx:[[@LINE+2]]:28: a `?` in a closure needs the type that the closure returns. Write it: `|..| -> Result<T, i32> { .. }`
+fn in_a_closure_with_no_written_type(n : i32) -> Result<i32, i32> {
+  let f = |x : i32| plus(x)?;
+  return Result<i32, i32>::Ok(f(n));
+}
+
+fn main() -> i32 {
+  return 0;
+}

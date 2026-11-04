@@ -9,11 +9,8 @@
 // second channel, and then waits for a reply. So the send is the only event until `select`
 // returns, and that one event must wake it. A lost wake would hang the test.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator runs each task to its end at its `spawn`. A task
-// that waits for a later task then waits forever.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}sum 4501500{{$}}
 
 import std::sync::channel;
@@ -40,12 +37,13 @@ fn main() -> i32 {
     let mut rs = Vec<Receiver<i64>>::new();
     rs.push(rx0);
     rs.push(rx1);
+    let mut sel = Selector<i64>::new(rs);
     let got = tasks {
       spawn {
         send_then_wait(tx1, reply_rx, round);
       };
       let mut v : i64 = 0;
-      match select(&rs) {
+      match sel.select() {
         Result<Selected<i64>, RecvError>::Ok(s) => {
           v = s.value;
         }

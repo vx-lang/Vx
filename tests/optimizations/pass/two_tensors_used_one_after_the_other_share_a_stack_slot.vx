@@ -1,0 +1,92 @@
+//===- two_tensors_used_one_after_the_other_share_a_stack_slot.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `first` and `second` are tensors of 4000 bytes on the stack of `one_after_the_other`. The
+// program drops `first` before it makes `second`, so one stack slot can hold both. A task stack
+// has a fixed size, so this matters there.
+//
+// The IR checks: the lifetime of `first` ends at its drop, before the lifetime of `second`
+// starts. The ASM checks: `one_tensor` has only `first`, and its frame holds at least 4000
+// bytes, so `first` is on the stack. The frame of `one_after_the_other` has the same size, so
+// `second` uses the same bytes as `first`. Two slots would need about 8000 bytes. The OUT
+// checks: the sums are right, with each code generator. The AST code generator keeps these
+// tensors on the heap.
+//
+// REQUIRES: x86_64
+// REQUIRES: aarch64
+// Only because the ASM checks name the instructions of these two machines.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=IR
+// RUN: vxc %s --action emit-obj -o %t.o
+// The ASM checks need `one_tensor` first. macOS adds `_` to each symbol name.
+// RUN: llvm-objdump -d --no-show-raw-insn --disassemble-symbols=one_tensor,_one_tensor %t.o > %t.asm
+// RUN: llvm-objdump -d --no-show-raw-insn --disassemble-symbols=one_after_the_other,_one_after_the_other %t.o >> %t.asm
+// RUN: FileCheck %s --input-file=%t.asm --check-prefixes=ASM,ASM-%arch
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefix=OUT
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --check-prefix=OUT
+//
+// IR-LABEL: llvm.func hidden @one_after_the_other(
+// IR: llvm.intr.lifetime.start %[[FIRST:[0-9]+]] : !llvm.ptr
+// IR: llvm.intr.lifetime.end %[[FIRST]] : !llvm.ptr
+// IR: llvm.intr.lifetime.start %[[SECOND:[0-9]+]] : !llvm.ptr
+// IR: llvm.intr.lifetime.end %[[SECOND]] : !llvm.ptr
+// The closing brace of `one_after_the_other`:
+// IR-LABEL: {{^  \}$}}
+//
+// The first `sub` of the stack pointer makes the frame. 0xfa0 is 4000.
+// ASM-LABEL: <{{_?}}one_tensor>:
+// ASM-x86_64-NOT: subq
+// ASM-x86_64: subq $[[FRAME:0xf[a-f][0-9a-f]]], %rsp
+// ASM-aarch64-NOT: sub sp
+// ASM-aarch64: sub sp, sp, #[[FRAME:0xf[a-f][0-9a-f]]]{{$}}
+// ASM-LABEL: <{{_?}}one_after_the_other>:
+// ASM-x86_64-NOT: subq
+// ASM-x86_64: subq $[[FRAME]], %rsp
+// ASM-aarch64-NOT: sub sp
+// ASM-aarch64: sub sp, sp, #[[FRAME]]{{$}}
+//
+// OUT: {{^}}sum 62875000{{$}}
+// OUT: {{^}}one 125250{{$}}
+
+import core::convert;
+
+fn one_tensor(n : i64) -> i64 {
+  let mut first : Tensor<i64, [500]> = Tensor<i64, [500]>::fill(0i64);
+  for i in 0..500 {
+    first[i] = n + i64::from(i);
+  }
+  let mut sum : i64 = 0;
+  for i in 0..500 {
+    sum = sum + first[i];
+  }
+  return sum;
+}
+
+fn one_after_the_other(n : i64) -> i64 {
+  let mut first : Tensor<i64, [500]> = Tensor<i64, [500]>::fill(0i64);
+  for i in 0..500 {
+    first[i] = n + i64::from(i);
+  }
+  let mut sum : i64 = 0;
+  for i in 0..500 {
+    sum = sum + first[i];
+  }
+  let mut second : Tensor<i64, [500]> = Tensor<i64, [500]>::fill(0i64);
+  for i in 0..500 {
+    second[i] = sum + i64::from(i);
+  }
+  for i in 0..500 {
+    sum = sum + second[i];
+  }
+  return sum;
+}
+
+fn main() -> i32 {
+  println!("sum {}", one_after_the_other(1));
+  println!("one {}", one_tensor(1));
+  return 0;
+}

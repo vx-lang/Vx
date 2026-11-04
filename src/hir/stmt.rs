@@ -190,6 +190,12 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.borrow.enter_block(uses);
+        // A loop body may start with borrows that its previous pass left.
+        let carried_root = (!is_function_body).then(|| self.borrow.block_count() - 1);
+        if let Some(root) = carried_root {
+            let seeds = self.carried_borrow_seeds(body, root);
+            self.borrow.seed_carried(seeds);
+        }
         self.drops_enter_block(body, None);
 
         // A block is always checked for real, never speculatively. Force `speculating` off for the
@@ -224,6 +230,9 @@ impl<'a> TypeChecker<'a> {
 
             self.warn_if_declared_twice(&body[i], &mut declared);
             self.check_statement(&mut body[i], return_type, true);
+            if is_function_body {
+                self.borrow.clear_stored();
+            }
             match &body[i] {
                 Statement::Return(_) | Statement::Break(_) | Statement::Continue(_)
                     if !terminated =>
@@ -238,9 +247,110 @@ impl<'a> TypeChecker<'a> {
         if let Some(state) = state_at_end {
             self.restore_flow_state(state);
         }
+        if let Some(root) = carried_root {
+            self.borrow.forget_carried(root);
+        }
         self.drops_exit_block(body, terminated_at, false);
         self.speculating = saved_speculating;
         self.borrow.exit_block();
+    }
+
+    /// The borrows that one pass of a loop body may leave for the next: `r = &x` or
+    /// `r = x.get_ref(i)` anywhere in the body, where `r` and `x` are declared before the loop.
+    /// A body that ends in `break` or `return` has no next pass.
+    fn carried_borrow_seeds(
+        &mut self,
+        body: &[Statement],
+        root: usize,
+    ) -> Vec<(crate::symbol::Symbol, crate::hir::env::BorrowRecord)> {
+        if matches!(
+            body.last(),
+            Some(Statement::Break(_) | Statement::Return(_))
+        ) {
+            return Vec::new();
+        }
+        let mut assignments = Vec::new();
+        Self::each_assignment(body, &mut |lhs, rhs| {
+            assignments.push((lhs.clone(), rhs.clone()))
+        });
+        let mut seeds = Vec::new();
+        for (lhs, rhs) in assignments {
+            let Some((holder, _)) = Self::extract_base_and_path(&lhs) else {
+                continue;
+            };
+            let holder_ty = match self.lookup(&holder).map(|(t, _)| t.clone()) {
+                Some(ty) if self.type_can_hold_reference(&ty) => ty,
+                _ => continue,
+            };
+            let depth = self.scope_depth_of(&holder);
+            let mut borrowed = Vec::new();
+            crate::syntax::visit_expr(&rhs, &mut |e| {
+                if let Expr::Borrow(b) = e {
+                    borrowed.push(((*b.expr).clone(), b.is_mut));
+                }
+            });
+            // A method's result may point into its receiver, as a call's may point into a
+            // reference argument. The method may not be instantiated yet, so this does not ask it.
+            if let Expr::MethodCall(m) = &rhs {
+                let is_mut = matches!(holder_ty, Type::Borrow { is_mut: true, .. });
+                borrowed.push(((*m.base).clone(), is_mut));
+            }
+            for (place, is_mut) in borrowed {
+                let Some((base, path)) = Self::extract_base_and_path(&place) else {
+                    continue;
+                };
+                let owned = matches!(
+                    self.lookup(&base).map(|(t, _)| t),
+                    Some(t) if !matches!(t, Type::Borrow { .. } | Type::Pointer(..) | Type::Ref(..))
+                );
+                if base == holder || !owned {
+                    continue;
+                }
+                let seed = (
+                    base.into(),
+                    crate::hir::env::BorrowRecord {
+                        is_mut,
+                        scope_depth: depth,
+                        borrower_name: Some(holder.clone()),
+                        path,
+                        carried_from: Some(root),
+                    },
+                );
+                if !seeds.contains(&seed) {
+                    seeds.push(seed);
+                }
+            }
+        }
+        seeds
+    }
+
+    /// Calls `f` on each `lhs = rhs` in `stmts`, inside nested blocks and loops too.
+    fn each_assignment(stmts: &[Statement], f: &mut dyn FnMut(&Expr, &Expr)) {
+        for stmt in stmts {
+            match stmt {
+                Statement::Assign(a) => f(&a.lhs, &a.rhs),
+                Statement::ForLoop(l) => Self::each_assignment(&l.body, f),
+                Statement::Loop(l) => Self::each_assignment(&l.body, f),
+                _ => {}
+            }
+        }
+        // `visit_exprs` reaches the blocks of every depth, so only their own statements here.
+        crate::syntax::visit_exprs(stmts, &mut |e| {
+            let blocks: Vec<&[Statement]> = match e {
+                Expr::If(i) => std::iter::once(i.then_block.as_slice())
+                    .chain(i.else_block.as_deref())
+                    .collect(),
+                Expr::Match(m) => m.arms.iter().map(|a| a.body.as_slice()).collect(),
+                Expr::UnsafeBlock(u) => vec![u.stmts.as_slice()],
+                Expr::TaskBlock(t) => vec![t.stmts.as_slice()],
+                _ => Vec::new(),
+            };
+            for s in blocks.into_iter().flatten() {
+                if let Statement::Assign(a) = s {
+                    f(&a.lhs, &a.rhs);
+                }
+            }
+        });
     }
 
     /// What the checks after a `return`, `break` or `continue` change, but code that runs
@@ -323,11 +433,48 @@ impl<'a> TypeChecker<'a> {
                 _ => None,
             })
             .collect();
+        let (mut reads, mut assigns): (Vec<_>, Vec<_>) =
+            body.iter().map(Self::reads_and_assigns).unzip();
+        if let Some(tail) = tail {
+            let mut names = HashSet::new();
+            Self::extract_uses_expr(tail, &mut names);
+            reads.push(names.into_iter().map(Into::into).collect());
+            assigns.push(None);
+        }
         BlockUses {
             last_use,
             declared,
             is_loop: false,
+            reads,
+            assigns,
         }
+    }
+
+    /// What `stmt` reads, and the variable it gives a new value without reading it first.
+    fn reads_and_assigns(
+        stmt: &Statement,
+    ) -> (
+        HashSet<crate::symbol::Symbol>,
+        Option<crate::symbol::Symbol>,
+    ) {
+        let (target, value) = match stmt {
+            Statement::Assign(a) => match &a.lhs {
+                Expr::Identifier(id) => (Some(id.name.clone()), Some(&a.rhs)),
+                _ => (None, None),
+            },
+            Statement::LetDecl(l) => (Some(l.name.clone()), Some(&l.expr)),
+            _ => (None, None),
+        };
+        let mut names = HashSet::new();
+        match value {
+            Some(value) => Self::extract_uses_expr(value, &mut names),
+            None => Self::extract_uses_stmt(stmt, &mut names),
+        }
+        let target = target.filter(|t| !names.contains(t.as_ref()));
+        if target.is_none() {
+            Self::extract_uses_stmt(stmt, &mut names);
+        }
+        (names.into_iter().map(Into::into).collect(), target)
     }
 
     pub(crate) fn compute_block_liveness(
@@ -355,7 +502,10 @@ impl<'a> TypeChecker<'a> {
             Statement::LetDecl(decl) if crate::hir::check::tasks::is_spawn(&decl.expr) => {
                 self.check_spawn_let(decl, consume)
             }
-            Statement::LetDecl(decl) => self.check_let_decl_stmt(decl, consume),
+            Statement::LetDecl(decl) => {
+                self.check_let_decl_stmt(decl, consume);
+                self.note_token_let(&decl.name, decl.span);
+            }
             Statement::ForLoop(floop) => self.check_for_loop_stmt(floop, consume, return_type),
             Statement::Loop(lp) => self.check_loop_stmt(lp, return_type),
             // The `Err` arm of the join of a task that failed: it leaves the `tasks` block,
@@ -379,6 +529,7 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::Assign(AssignStmt { lhs, rhs, span }) => {
                 let span = *span;
+                self.check_token_overwrite(lhs, &span);
                 if let Some(call) = self.container_store(lhs, None, rhs, span) {
                     *stmt = Statement::ExprStmt(ExprStmtStmt::new(call, true, span));
                     self.check_statement(stmt, return_type, consume);
@@ -1181,7 +1332,10 @@ impl<'a> TypeChecker<'a> {
             binds: None,
             evaluates: None,
         };
+        self.cancel_loops
+            .push(crate::hir::check::cancel_loops::loop_exits(body));
         self.check_loop_body(body, return_type, header);
+        self.cancel_loops.pop();
         self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
@@ -1411,10 +1565,20 @@ impl<'a> TypeChecker<'a> {
                 self.borrow.forget(&held);
             }
         }
+        let before_rhs = self.borrow.snapshot();
         let mut rhs_ty =
             self.check_expr_expecting(rhs, Some(lhs_ty.clone()), consume && !copies_into_tensor);
         rhs_ty = crate::hir::check::operators::round_narrow_arithmetic(rhs, rhs_ty, Some(&lhs_ty));
-        self.current_assignment_target = None;
+        // What the value left in the target is stored there, not borrowed only for a call.
+        if let Some(target) = self.current_assignment_target.take() {
+            let stored: Vec<_> = self
+                .borrow
+                .added_copies_since(&before_rhs)
+                .into_iter()
+                .filter(|(_, r)| r.borrower_name.as_deref() == Some(target.as_str()))
+                .collect();
+            self.borrow.note_stored(stored);
+        }
         // `*r = &mut y`, with `r` bound to `&mut x`: `r` reaches the borrows `x` now holds.
         if let (Some(var), Expr::Dereference(d)) = (self.store_target_var_of(lhs), &*lhs) {
             if let Expr::Identifier(r) = &*d.expr {
@@ -1800,7 +1964,10 @@ impl<'a> TypeChecker<'a> {
         // `return;` -- valid only where there is no value to return. Everything below types a
         // returned expression, so there is nothing left to do once the function type is checked.
         let Some(expr) = expr else {
-            if !crate::syntax::is_void_ty(return_type) {
+            // The first `return` of a closure or a task gives the type of the others.
+            if self.current_return_type == Some(Type::Unknown) {
+                self.current_return_type = Some(Type::Struct("void".into(), None));
+            } else if !crate::syntax::is_void_ty(return_type) {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E3002,
                     format!("this function returns {return_type}, so `return` needs a value"),
@@ -1848,17 +2015,22 @@ impl<'a> TypeChecker<'a> {
         // Any value that can hold a reference is asked, not only a bare one: a `&local`
         // returned inside a struct, or a closure that uses a local, dangles the same way.
         self.check_view_return(expr, &ty, span);
+        // A `return` in a closure ends only the closure's call, not the function around it.
+        let closure_depth = self.mono.closure_depths.last().copied();
         if !self.speculating
             && self.type_can_hold_reference(&ty)
             && matches!(
                 self.ref_provenance_of(expr),
-                Some(crate::hir::env::RefProvenance::Local(_))
+                Some(crate::hir::env::RefProvenance::Local(d)) if closure_depth.is_none_or(|c| d >= c)
             )
         {
             self.report_frame_escape(
                 "this returns a value that points into this function's stack frame",
                 span,
             );
+        }
+        if !self.speculating && self.type_can_hold_reference(&ty) {
+            self.check_return_of_a_mut_held_by_a_dropped_value(expr, span);
         }
 
         // Each `ensures` must hold here, from what is known on this path, with `return` standing
@@ -1897,7 +2069,13 @@ impl<'a> TypeChecker<'a> {
     /// Check an `assert`: require a boolean condition, evaluate it at comptime when possible, and
     /// either flag a failure or fold it into the SMT constraints (Verified<T> discharge).
     fn check_assert_stmt(&mut self, assert: &mut AssertStmt, consume: bool, return_type: &Type) {
-        let AssertStmt { expr, msg, span } = assert;
+        let AssertStmt {
+            expr,
+            msg,
+            span,
+            at,
+        } = assert;
+        *at = Some(format!("{}:{}", self.file_name(), span.line));
         let ty = self.check_expr_type_flag(expr, consume);
         if ty != Type::Scalar(ElementType::Bool) {
             self.errors
@@ -1976,7 +2154,7 @@ impl<'a> TypeChecker<'a> {
                     for ens in func
                         .ensures
                         .iter()
-                        .filter(|e| !crate::hir::check::atomic_contracts::is_access_clause(e))
+                        .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
                     {
                         facts.push(hir::prover::substitute_names(ens, &names));
                     }

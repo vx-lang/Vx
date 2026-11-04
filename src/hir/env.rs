@@ -134,6 +134,9 @@ pub struct GlobalAstEnv<'a> {
         HashMap<crate::symbol::Symbol, crate::hir::provenance::ReturnProvenance>,
     /// The same summary for each method, under [`crate::hir::provenance::method_key`].
     pub method_provenances: HashMap<String, crate::hir::provenance::ReturnProvenance>,
+    /// The parameters that each function says `!keeps` for, as bits. A function with none is
+    /// absent.
+    pub not_kept: HashMap<crate::symbol::Symbol, u32>,
     /// The struct and enum declarations that a summary reads.
     pub decls: crate::hir::provenance::Decls<'a>,
     /// This compilation's transfer-cost graph: the built-in memory-space edges plus every declared
@@ -174,6 +177,7 @@ impl<'a> GlobalAstEnv<'a> {
             externs: Vec::new(),
             return_provenances: HashMap::new(),
             method_provenances: HashMap::new(),
+            not_kept: HashMap::new(),
             decls: Default::default(),
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
             consts: HashMap::new(),
@@ -319,6 +323,29 @@ impl<'a> GlobalAstEnv<'a> {
         );
         env.return_provenances = functions;
         env.method_provenances = methods;
+        // A `!keeps` clause is in the signature, so a body that was stripped still has it. The
+        // walk adds what it proves from each body that is present.
+        let written = env
+            .syntax_functions
+            .values()
+            .map(|f| {
+                let bits = crate::hir::check::borrow_clauses::not_kept_params(f);
+                (f.name.clone(), bits)
+            })
+            .filter(|(_, bits)| *bits != 0)
+            .collect();
+        let plain: Vec<&Function> = env
+            .syntax_functions
+            .values()
+            .copied()
+            .filter(|f| f.generics.is_empty())
+            .collect();
+        env.not_kept = crate::hir::check::borrow_clauses::infer_not_kept_all(
+            &plain,
+            &env.decls,
+            &env.return_provenances,
+            written,
+        );
         // Build the transfer-cost graph once, now that `topologies` is populated. It used to be
         // built inside `TypeChecker::new` -- that is, once per *function* -- where it ran the
         // all-pairs shortest-path precompute twice (once in `default()`, once in
@@ -371,6 +398,17 @@ impl<'a> GlobalAstEnv<'a> {
             self.impls.values().flatten().copied(),
             &self.decls,
             &self.return_provenances,
+        );
+        let plain: Vec<&Function> = funcs
+            .iter()
+            .copied()
+            .filter(|f| f.generics.is_empty())
+            .collect();
+        self.not_kept = crate::hir::check::borrow_clauses::infer_not_kept_all(
+            &plain,
+            &self.decls,
+            &self.return_provenances,
+            std::mem::take(&mut self.not_kept),
         );
     }
 
@@ -448,6 +486,9 @@ pub struct BorrowRecord {
     pub scope_depth: usize,
     pub borrower_name: Option<String>,
     pub path: Vec<String>,
+    /// A borrow that the previous pass of a loop may have left: the block of that loop's body
+    /// in the borrow context. `None` for a borrow the checker saw being made.
+    pub carried_from: Option<usize>,
 }
 
 /// Where a reference value ultimately points, for return-escape analysis (#243).
@@ -495,8 +536,22 @@ pub struct TypeChecker<'a> {
     pub env: &'a GlobalAstEnv<'a>,
     pub(crate) scopes: Vec<HashMap<crate::symbol::Symbol, (Type, Topology)>>,
     pub allow_cross_topology: bool,
+    /// `vxc --print-borrow-clauses`: print the borrow clauses that the checker can prove for each
+    /// function of this file.
+    pub print_borrow_clauses: Option<crate::symbol::Symbol>,
+    /// The E4016 errors given so far, by where and what, so that a body checked twice gives one.
+    pub(crate) borrow_clause_errors: std::collections::HashSet<(Span, String)>,
     pub errors: crate::diagnostic::DiagnosticsVec,
     pub(crate) in_unsafe_block: bool,
+    /// The variables that hold a token of `transfer_async`, with the place of their `let` and
+    /// the depth of their scope. Each one must be waited before its scope ends (E6036).
+    pub(crate) tokens: Vec<(crate::symbol::Symbol, Span, usize)>,
+    /// The next block with a separate value is the body of a closure. Its value then gets the
+    /// type that a `return` of the closure gave, after the statements, which reset
+    /// `expected_type`.
+    pub(crate) closure_body_next: bool,
+    /// Inside the body of an `unsafe fn`, whose caller keeps the promises the body cannot check.
+    pub(crate) in_unsafe_fn: bool,
     /// Inside an `unsafe` block someone wrote, not only one the compiler made for `vec![..]`.
     pub(crate) in_written_unsafe_block: bool,
     /// Something that needs `unsafe` was checked since the innermost written `unsafe` block
@@ -542,6 +597,13 @@ pub struct TypeChecker<'a> {
     /// statement `match` whose arms yield nothing has no value rather than the function's
     /// return type. Every expression check takes it back to `false` on entry.
     pub(crate) value_unused: bool,
+    /// The `loop`s and `while`s around the code being checked, in this function, task or
+    /// closure, innermost last, for W1035. `None` for a `while` whose body changes its condition
+    /// on every pass. Otherwise the variables that the condition reads: an arm that changes one
+    /// can end the loop.
+    pub(crate) cancel_loops: Vec<Option<Vec<String>>>,
+    /// The function being checked is the `drop` of a `Drop` impl, for W1036.
+    pub(crate) in_drop: bool,
     /// The variables that closures in `let`s copied, for W1034.
     pub(crate) closure_copies: Vec<crate::hir::check::closure_copies::ClosureCopy>,
     /// The `let` being checked, when its value is a closure.
@@ -618,9 +680,14 @@ impl<'a> TypeChecker<'a> {
             scopes: vec![HashMap::new()],
             errors: crate::diagnostic::DiagnosticsVec::new(),
             in_unsafe_block: false,
+            tokens: Vec::new(),
+            closure_body_next: false,
+            in_unsafe_fn: false,
             in_written_unsafe_block: false,
             unsafe_op_seen: false,
             allow_cross_topology: false,
+            print_borrow_clauses: None,
+            borrow_clause_errors: std::collections::HashSet::new(),
             active_topology: Topology::CPU,
             active_memory,
             active_space_declares_dtypes,
@@ -633,6 +700,8 @@ impl<'a> TypeChecker<'a> {
             unreadable_reported: Default::default(),
             indexed_name: None,
             value_unused: false,
+            cancel_loops: Vec::new(),
+            in_drop: false,
             closure_copies: Vec::new(),
             let_closure: None,
             checking_assign_lhs: false,
@@ -709,6 +778,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub fn pop_scope(&mut self) {
+        self.check_tokens_waited();
         if self.traffic.scope_releases.pop().unwrap_or(false) {
             self.traffic.scope_chain.pop();
         }
@@ -1799,8 +1869,14 @@ impl<'a> TypeChecker<'a> {
             walk(&func.return_type, &mut names);
             for n in names {
                 // `void`/`none`/`!` are spelled as nominals but are builtins, and a `Closure_N` is
-                // synthesized by the compiler rather than written by anyone.
-                if n == "void" || n == "none" || n == "!" || n.starts_with("Closure_") {
+                // synthesized by the compiler rather than written by anyone. `Token` is the type
+                // of `transfer_async`.
+                if n == "void"
+                    || n == "none"
+                    || n == "!"
+                    || n == "Token"
+                    || n.starts_with("Closure_")
+                {
                     continue;
                 }
                 let sym = crate::symbol::Symbol::from(n.as_str());
@@ -1860,7 +1936,7 @@ impl<'a> TypeChecker<'a> {
         let proved: Vec<Expr> = func
             .ensures
             .iter()
-            .filter(|e| !crate::hir::check::atomic_contracts::is_access_clause(e))
+            .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
             .cloned()
             .collect();
         let prev_ensures = std::mem::replace(&mut self.consteval.current_ensures, proved);
@@ -1890,6 +1966,7 @@ impl<'a> TypeChecker<'a> {
         // The same for `unsafe`: a generic body is checked at the call that needs it, which may
         // be inside the caller's `unsafe` block, but the body is not inside that block.
         let prev_in_unsafe = std::mem::take(&mut self.in_unsafe_block);
+        let prev_in_unsafe_fn = std::mem::replace(&mut self.in_unsafe_fn, func.is_unsafe);
         let prev_written_unsafe = std::mem::take(&mut self.in_written_unsafe_block);
         let prev_unsafe_op_seen = std::mem::take(&mut self.unsafe_op_seen);
         self.push_scope();
@@ -1919,9 +1996,14 @@ impl<'a> TypeChecker<'a> {
         let prev_borrows = self.borrow.take();
         let prev_shadowed = self.borrow.take_shadowed();
         let prev_closure_copies = std::mem::take(&mut self.closure_copies);
+        let prev_cancel_loops = std::mem::take(&mut self.cancel_loops);
+        let in_drop = self.is_drop_impl(func);
+        let prev_in_drop = std::mem::replace(&mut self.in_drop, in_drop);
         let prev_borrowers = self.borrow.take_borrowers();
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
+            // A token that the caller passes must be waited by the function.
+            self.note_token_let(name, func.span);
             self.borrow.current_params.insert(name.clone(), ty.clone());
             self.set_mutable(name.as_ref(), func.mut_params.contains(name));
         }
@@ -1932,7 +2014,11 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Add preconditions (requires) to our constraints
-        for req in &func.requires {
+        for req in func
+            .requires
+            .iter()
+            .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
+        {
             self.consteval.constraints.push(req.clone());
         }
 
@@ -1971,6 +2057,9 @@ impl<'a> TypeChecker<'a> {
         // made during a probe is not checked again.
         let speculating = std::mem::replace(&mut self.speculating, false);
         self.check_integer_literals_fit(&func.body);
+        self.check_borrow_clauses(func);
+        self.check_pointer_clauses(func);
+        self.print_proved_borrow_clauses(func);
         self.speculating = speculating;
 
         self.seam.contracts = prev_contracts;
@@ -1981,7 +2070,7 @@ impl<'a> TypeChecker<'a> {
             for ens in func
                 .ensures
                 .iter()
-                .filter(|e| !crate::hir::check::atomic_contracts::is_access_clause(e))
+                .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
             {
                 if !self.prove_expr(ens) {
                     self.errors.error_with_code(
@@ -2097,6 +2186,8 @@ impl<'a> TypeChecker<'a> {
         self.borrow.restore(prev_borrows);
         self.borrow.restore_shadowed(prev_shadowed);
         self.closure_copies = prev_closure_copies;
+        self.cancel_loops = prev_cancel_loops;
+        self.in_drop = prev_in_drop;
         self.borrow.restore_borrowers(prev_borrowers);
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;
@@ -2105,6 +2196,7 @@ impl<'a> TypeChecker<'a> {
         self.changed_vars = prev_changed_vars;
         self.tasks.exit_function(prev_tasks);
         self.in_unsafe_block = prev_in_unsafe;
+        self.in_unsafe_fn = prev_in_unsafe_fn;
         self.in_written_unsafe_block = prev_written_unsafe;
         self.unsafe_op_seen = prev_unsafe_op_seen;
         self.errors.file = prev_file;

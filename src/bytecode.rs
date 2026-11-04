@@ -329,6 +329,22 @@ pub enum Opcode {
     RegionExit = 74,
     /// At the end of a task whose value is an `Err`: cancels the `tasks` block of the task (F3).
     TaskFailed = 75,
+    /// Before the call of a `Drop` impl: turns cancellation off for this thread until `CancelOn`
+    /// (F6). A wait in the `drop` then cannot give `Cancelled`.
+    CancelOff = 76,
+    /// After the call of a `Drop` impl: turns cancellation back on.
+    CancelOn = 77,
+    /// `h.join()`: waits for the task whose value is `operand1`, or is in the slot `operand1`.
+    TaskJoin = 78,
+    /// The `let` of a struct or enum: the lifetime of its slot `operand1` (from `Alloca`)
+    /// starts, before the first store into it.
+    LifetimeStart = 79,
+    /// After the last use of a struct or enum: the lifetime of its slot `operand1` ends, so
+    /// LLVM can give the slot's memory to another value.
+    LifetimeEnd = 80,
+    /// The address of one tensor element, as a raw pointer: `&t[i]`. `operand1` is the element
+    /// place, a `TensorIndex` with `imm = 1`. The pointer points into the tensor's own buffer.
+    TensorElementAddress = 81,
 }
 
 /// A zero-based variant and payload field, stored entirely in an instruction's immediate.
@@ -361,6 +377,30 @@ pub const LANE_REDUCE_SUBGROUP: u64 = 4;
 /// `operand2` the tensor of indices, and the `Arg` just before is the count. The result is an
 /// `i32`.
 pub const LANE_REDUCE_ARGMAX: u64 = 8;
+/// `Opcode::LaneReduce` in the code of a subgroup: each tensor is `&tile[w]`, with `w` the index
+/// of the subgroup loop. So it is the row that a `TENSOR_STORE_LANE_ELEMENT` store of the
+/// subgroup writes.
+pub const LANE_REDUCE_OWN_ROW: u64 = 16;
+/// `Opcode::LaneReduce`: `lanes::sort`, an effect with no result. `operand1` is the tensor and
+/// `operand2` the count. The lanes of the block or the subgroup are in `imm >> 32`.
+pub const LANE_REDUCE_SORT: u64 = 32;
+/// `Opcode::LaneReduce` with `LANE_REDUCE_SORT`: from the largest value down.
+pub const LANE_REDUCE_DESCENDING: u64 = 64;
+/// `Opcode::LaneReduce`: `lanes::copy_async`. `operand1` is the tile in shared memory and
+/// `operand2` the tensor. The `Arg`s just before are the place of the tile, one for each of the
+/// `(imm >> 16) & 0xff` dimensions. The lanes of the block are in `imm >> 32`. The result is the
+/// `i32` token.
+pub const LANE_REDUCE_COPY: u64 = 128;
+/// `Opcode::LaneReduce`: the wait for the copy of the token `operand1`, an effect with no result.
+pub const LANE_REDUCE_COPY_WAIT: u64 = 256;
+
+/// `Opcode::TensorStore`: the place is `tile[t]` in a lane loop of the code of a block, with `t`
+/// the index of the loop. The loop goes from 0 over all of its lanes, so only lane `t` writes the
+/// element.
+pub const TENSOR_STORE_BLOCK_LANE_ELEMENT: u64 = 1;
+/// `Opcode::TensorStore`: as `TENSOR_STORE_BLOCK_LANE_ELEMENT`, but `tile[w][t]` in the code of a
+/// subgroup, with `w` the index of the subgroup loop.
+pub const TENSOR_STORE_SUBGROUP_LANE_ELEMENT: u64 = 2;
 
 /// `Opcode::LoopHint`: the loop was `across` a level of blocks.
 pub const LOOP_HINT_BLOCKS: u64 = 0;
@@ -434,6 +474,8 @@ impl Opcode {
             69 => LoopHint,
             70 => EnumPayloadLoad,
             71 => LaneReduce,
+            79 => LifetimeStart,
+            80 => LifetimeEnd,
             8 => Call,
             9 => Ret,
             10 => Matmul,
@@ -476,6 +518,7 @@ impl Opcode {
             49 => TensorReshape,
             50 => TensorTranspose,
             51 => TensorMap,
+            81 => TensorElementAddress,
             _ => return None,
         })
     }

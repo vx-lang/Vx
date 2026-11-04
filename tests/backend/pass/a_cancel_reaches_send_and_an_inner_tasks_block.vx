@@ -9,11 +9,8 @@
 // block of its own, whose task waits in `recv`: the cancel reaches it too. After that, the outer
 // task sees `cancelled()`, and its `send` gives the value back as cancelled.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator runs each task to its end at its `spawn`. A task
-// that waits for a later task then waits forever.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}the inner recv gave no value{{$}}
 // CHECK: {{^}}cancelled true{{$}}
 // CHECK: {{^}}send gave back 5, cancelled true{{$}}

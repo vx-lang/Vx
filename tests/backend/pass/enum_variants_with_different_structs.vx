@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 // Read fields from enum variants that contain different structs or pointers to those structs.
 // One struct has a prefix field before its value.
-// REQUIRES: flat-codegen
 // EXPECT: 17 25 17 25 29
 
 struct First {

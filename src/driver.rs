@@ -198,6 +198,12 @@ pub struct DriverOptions {
     #[arg(long = "verify-seams")]
     pub verify_seams: bool,
 
+    /// Print, for each function of the file, the borrow clauses that the checker can prove from
+    /// its body, such as `ensures !reaches(return, *key)`. A clause can be copied into the
+    /// signature to make it part of the contract.
+    #[arg(long = "print-borrow-clauses")]
+    pub print_borrow_clauses: bool,
+
     /// Transport host-proven `assert` facts across a host->device `spawn` seam as
     /// `llvm.intr.assume` certificates at the kernel entry, so the device backend's
     /// `-O3` can fold on a relation that would otherwise be opaque past the launch
@@ -491,6 +497,7 @@ impl CompilerDriver {
             ),
             (self.options.verify_seams, "--verify-seams"),
             (self.options.emit_seam_certs, "--emit-seam-certs"),
+            (self.options.print_borrow_clauses, "--print-borrow-clauses"),
         ];
         if let Some((_, flag)) = unsupported.iter().find(|(given, _)| *given) {
             return Err(format!(
@@ -875,6 +882,7 @@ impl CompilerDriver {
                     dtypes: None,
                     chip: None,
                     levels: None,
+                    offload: false,
                 },
             }],
             imports: Vec::new(),
@@ -1118,6 +1126,9 @@ impl CompilerDriver {
         let mut worker = LocalWorkerState::new(global_session.clone());
         let mut checker = TypeChecker::new(&env, &mut worker);
         checker.seam.verify = self.options.verify_seams;
+        if self.options.print_borrow_clauses {
+            checker.print_borrow_clauses = ast.file.clone();
+        }
 
         // The checks that look at the whole program's declarations at once can only name a
         // file when the program is one file; a `--host default` module was read from none.
@@ -1630,6 +1641,15 @@ impl CompilerDriver {
                 .as_operation_mut()
                 .set_attribute("vx.export_kernels", melior::ir::Attribute::unit(context));
         }
+        if llvm_lower {
+            // The file that a `spawn` is in, for the line that an abort in a task prints. Only the
+            // lowering to LLVM reads it, so the MLIR that `--emit-mlir` prints does not show it.
+            use melior::ir::operation::OperationMutLike;
+            module.as_operation_mut().set_attribute(
+                "vx.source",
+                melior::ir::attribute::StringAttribute::new(context, filename).into(),
+            );
+        }
         if self.options.weak_relaxed_atomics() {
             use melior::ir::operation::OperationMutLike;
             module.as_operation_mut().set_attribute(
@@ -2089,7 +2109,9 @@ fn get_optimization_pipeline(
     let mut passes = vec![];
 
     if opt_level > 0 || llvm_lower {
-        // First, so that the lowerings below reuse a program's own `malloc` and `free` rather
+        // Before the task lowering takes the address of each task body. See the pass.
+        passes.push("vx-count-callbacks".to_string());
+        // Before the lowerings, so that they reuse a program's own `malloc` and `free` rather
         // than declare a second one. See the pass.
         passes.push("vx-libc-externs-to-llvm".to_string());
         passes.push("convert-vx-to-standard".to_string());
@@ -2171,9 +2193,13 @@ fn get_optimization_pipeline(
         // `lift-cf-to-scf` leaves `ub.poison` placeholders behind; nothing else lowers them.
         passes.push("convert-ub-to-llvm".to_string());
         passes.push("reconcile-unrealized-casts".to_string());
+        // After the memref descriptors are LLVM values. See the pass.
+        passes.push("vx-lifetime-markers-on-allocas".to_string());
         // A function the program defines is not exported, so a `fn write` cannot replace
         // libc's `write` for the runtime library. See the pass.
         passes.push("vx-hide-program-symbols".to_string());
+        // A frame larger than a page cannot reach past the guard page of a stack.
+        passes.push("vx-probe-stack".to_string());
         // Each relaxed atomic read becomes an acquire read, unless `-fweak-relaxed-atomics`.
         passes.push("vx-order-relaxed-reads".to_string());
     }

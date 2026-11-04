@@ -15,13 +15,19 @@
 // An atomic access, through a call or an `mlir!` block with an `atomic(t)` clause, races with no
 // other atomic access. A tensor that the loop changes atomically has only atomic accesses.
 //
+// Two accesses whose index forms differ by a number are apart when that number, as one more
+// digit, keeps the form a mixed-radix number: `2 * j` and `2 * j + 1` never meet.
+//
+// An access in `if v == c`, where `v` is the loop's variable and `c` a number, is made by one
+// pass only. Two such accesses with the same `c` are made by the same pass, so they never race.
+//
 //===----------------------------------------------------------------------===//
 
 use crate::hir::comptime_interpreter::ComptimeInterpreter;
 use crate::hir::flatten::is_tensor_alloc_call;
-use crate::syntax::stmt::{ForLoopStmt, Statement};
+use crate::syntax::stmt::{AcrossClause, ForLoopStmt, Statement};
 use crate::syntax::types::{scalar_of, ElementType};
-use crate::syntax::{BinaryOp, Expr, Span, UnaryOp};
+use crate::syntax::{BinaryOp, Expr, LogicalOp, RelationalOp, Span, UnaryOp};
 use std::collections::{BTreeMap, HashMap};
 
 /// `Σ coefficient · variable + constant`. A variable is a loop index of this pass, by a name that
@@ -92,6 +98,8 @@ struct Access {
     atomic: bool,
     indices: Vec<Option<Affine>>,
     span: Span,
+    /// `c`, when only the pass whose variable is `c` makes the access.
+    pass: Option<i64>,
 }
 
 struct Proof<'c> {
@@ -102,6 +110,14 @@ struct Proof<'c> {
     scopes: Vec<HashMap<String, Binding>>,
     /// The ranges of the loop indices, by key.
     ranges: HashMap<String, Option<(i64, i64)>>,
+    /// The least and the greatest value of each loop index whose range is not numbers, from its
+    /// type and from its range.
+    type_ranges: HashMap<String, (i128, i128)>,
+    /// The most passes of a loop whose size is not a number, by key, for a launch check.
+    limits: HashMap<String, i128>,
+    /// The `across` loops whose size is not a number and whose range starts at a number: the key,
+    /// the position of the `across` clause, the start, and the type of the index.
+    open: Vec<(String, Span, i128, ElementType)>,
     accesses: BTreeMap<String, Vec<Access>>,
     /// Tensors from outside the loop that the pass uses whole, not by element.
     whole: HashMap<String, Span>,
@@ -109,40 +125,83 @@ struct Proof<'c> {
     error: Option<(String, Span)>,
     /// The statement being walked, for an expression with no position of its own.
     at: Span,
+    /// `c` in the `then` block of an `if` that tests that the loop's variable is `c`.
+    pass: Option<i64>,
 }
 
-/// Why the passes of `f` may touch a place that another pass writes, or `None` when the proof
-/// holds. `level` names the loop's level in the message.
+/// The position of an `across` clause, the largest end that its loop may have, and the type of
+/// the loop's index.
+pub(crate) type LargestEnd = (Span, i128, ElementType);
+
+/// Why the passes of `f` may touch a place that another pass writes, as an error. When the proof
+/// holds, the largest end that each `across` loop in `f` may have, by the position of its
+/// `across` clause, with the type of its index. A loop that is not there may have any end.
+/// `level` names the loop's level in the message.
+///
+/// An index of a loop whose size is not a number can have each value of its type, so arithmetic
+/// on it may wrap. When the proof fails, it runs again with fewer passes for each such `across`
+/// loop. If it then holds, the loops get the most passes that it allows, and the program checks
+/// each one at launch. Fewer passes only let more arithmetic fit its type: two indices that are
+/// the same in two passes stay the same, so a race stays an error.
 pub(crate) fn across_loop_race(
     f: &ForLoopStmt,
     level: &str,
     contracts: &HashMap<String, Vec<usize>>,
-) -> Option<(String, Span)> {
+) -> Result<Vec<LargestEnd>, (String, Span)> {
     let range = match &*f.iterable {
         Expr::Range(r) => int(&r.start).zip(int(&r.end)),
         _ => None,
     };
     // One pass races with nothing.
     if matches!(range, Some((lo, hi)) if hi - lo <= 1) {
-        return None;
+        return Ok(Vec::new());
     }
-    let mut p = Proof {
-        contracts,
-        own: String::new(),
-        scopes: vec![HashMap::new()],
-        ranges: HashMap::new(),
-        accesses: BTreeMap::new(),
-        whole: HashMap::new(),
-        next_key: 0,
-        error: None,
-        at: f.span,
+    let prove = |limits: HashMap<String, i128>| {
+        let mut p = Proof {
+            contracts,
+            own: String::new(),
+            scopes: vec![HashMap::new()],
+            ranges: HashMap::new(),
+            type_ranges: HashMap::new(),
+            limits,
+            open: Vec::new(),
+            accesses: BTreeMap::new(),
+            whole: HashMap::new(),
+            next_key: 0,
+            error: None,
+            at: f.span,
+            pass: None,
+        };
+        p.own = p.bind_index(&f.iter, &f.iterable, range, f.across.as_ref());
+        p.stmts(&f.body);
+        let error = p.error.take().or_else(|| p.check(&f.iter, level));
+        (error, p.open)
     };
-    p.own = p.bind_index(&f.iter, range, range_type(&f.iterable));
-    p.stmts(&f.body);
-    if let Some(e) = p.error {
-        return Some(e);
+    let (error, open) = prove(HashMap::new());
+    let Some(error) = error else {
+        return Ok(Vec::new());
+    };
+    // The proof holds for fewer passes, so the most passes that it allows is the largest `k`.
+    let holds = |k: i128| {
+        let limits = open.iter().map(|(key, ..)| (key.clone(), k)).collect();
+        prove(limits).0.is_none()
+    };
+    if open.is_empty() || !holds(1) {
+        return Err(error);
     }
-    p.check(&f.iter, level)
+    let (mut ok, mut bad) = (1i128, 1i128 << 64);
+    while bad - ok > 1 {
+        let mid = ok + (bad - ok) / 2;
+        if holds(mid) {
+            ok = mid;
+        } else {
+            bad = mid;
+        }
+    }
+    Ok(open
+        .into_iter()
+        .map(|(_, at, start, ty)| (at, start + ok, ty))
+        .collect())
 }
 
 fn int(e: &Expr) -> Option<i64> {
@@ -185,12 +244,36 @@ impl Proof<'_> {
     fn bind_index(
         &mut self,
         name: &str,
+        iterable: &Expr,
         range: Option<(i64, i64)>,
-        ty: Option<ElementType>,
+        across: Option<&AcrossClause>,
     ) -> String {
         let key = format!("{name}#{}", self.next_key);
         self.next_key += 1;
         self.ranges.insert(key.clone(), range);
+        let ty = range_type(iterable);
+        if range.is_none() {
+            if let Some((mut lo, mut hi)) = ty.as_ref().and_then(ComptimeInterpreter::integer_range)
+            {
+                if let Expr::Range(r) = iterable {
+                    let full = Some((lo, hi));
+                    if let Some((a, _)) = self.value_bounds(&r.start, full) {
+                        lo = lo.max(a);
+                    }
+                    if let Some((_, b)) = self.value_bounds(&r.end, full) {
+                        hi = hi.min(b - 1);
+                    }
+                    if let (Some(a), Some(start), Some(ty)) = (across, int(&r.start), &ty) {
+                        let start = start as i128;
+                        self.open.push((key.clone(), a.span, start, ty.clone()));
+                        if let Some(&k) = self.limits.get(&key) {
+                            hi = hi.min(start + k - 1);
+                        }
+                    }
+                }
+                self.type_ranges.insert(key.clone(), (lo, hi));
+            }
+        }
         self.bind(
             name,
             Binding::Index {
@@ -199,6 +282,52 @@ impl Proof<'_> {
             },
         );
         key
+    }
+
+    /// The least and the greatest value that `e` can have, when the program computes it with
+    /// integers. An operation that may wrap can give any value of its type. A name from outside
+    /// the loop can have any value of `ty`.
+    fn value_bounds(&self, e: &Expr, ty: Option<(i128, i128)>) -> Option<(i128, i128)> {
+        match e {
+            Expr::Number(n) => n.value.parse::<i128>().ok().map(|v| (v, v)),
+            Expr::Identifier(id) => match self.lookup(id.name.as_ref()) {
+                Some(Binding::Index { key, .. }) => match self.ranges.get(key).copied().flatten() {
+                    Some((a, b)) if b > a => Some((a as i128, b as i128 - 1)),
+                    _ => self.type_ranges.get(key).copied(),
+                },
+                None => ty,
+                _ => None,
+            },
+            Expr::BinaryOp(b) => {
+                let t = b
+                    .operand_ty
+                    .as_ref()
+                    .and_then(ComptimeInterpreter::integer_range)?;
+                let wrapped = |(lo, hi): (i128, i128)| {
+                    if t.0 <= lo && hi <= t.1 {
+                        (lo, hi)
+                    } else {
+                        t
+                    }
+                };
+                let l = self.value_bounds(&b.lhs, Some(t)).unwrap_or(t);
+                let r = self.value_bounds(&b.rhs, Some(t)).unwrap_or(t);
+                let corners = |f: fn(i128, i128) -> Option<i128>| {
+                    let v = [f(l.0, r.0), f(l.0, r.1), f(l.1, r.0), f(l.1, r.1)];
+                    let v: Option<Vec<i128>> = v.into_iter().collect();
+                    v.map_or(t, |v| (*v.iter().min().unwrap(), *v.iter().max().unwrap()))
+                };
+                Some(match b.op {
+                    BinaryOp::Add => wrapped(corners(i128::checked_add)),
+                    BinaryOp::Sub => wrapped(corners(i128::checked_sub)),
+                    BinaryOp::Mul => wrapped(corners(i128::checked_mul)),
+                    // A division by a positive number only brings a value closer to zero.
+                    BinaryOp::Div if r.0 > 0 => corners(i128::checked_div),
+                    _ => t,
+                })
+            }
+            _ => None,
+        }
     }
 
     fn block(&mut self, stmts: &[Statement]) {
@@ -247,7 +376,7 @@ impl Proof<'_> {
                     _ => None,
                 };
                 self.scopes.push(HashMap::new());
-                self.bind_index(&inner.iter, range, range_type(&inner.iterable));
+                self.bind_index(&inner.iter, &inner.iterable, range, inner.across.as_ref());
                 self.stmts(&inner.body);
                 self.scopes.pop();
             }
@@ -296,6 +425,7 @@ impl Proof<'_> {
                 atomic: false,
                 indices,
                 span: at,
+                pass: self.pass,
             });
     }
 
@@ -312,6 +442,7 @@ impl Proof<'_> {
                         atomic: true,
                         indices: Vec::new(),
                         span: arg.span(),
+                        pass: self.pass,
                     });
             }
             Some(_) => {}
@@ -410,6 +541,24 @@ impl Proof<'_> {
                     self.fail(why, fc.span);
                     return;
                 }
+                // A lane sort and a lane copy write the tensor that they borrow first: a row
+                // `t[w]`, or a tensor of this pass.
+                let sort = crate::hir::check::lanes::lane_routine(&fc.name)
+                    .is_some_and(|(op, _)| op.writes_first());
+                if let (true, Some(Expr::Borrow(b))) = (sort, fc.args.first()) {
+                    if let Some((name, indices)) = Self::element(&b.expr) {
+                        for i in &indices {
+                            self.expr(i);
+                        }
+                        if self.outside(name) {
+                            self.record(name, &indices, true, b.span);
+                        }
+                    } else {
+                        self.target(&b.expr, b.span);
+                    }
+                    fc.args[1..].iter().for_each(|a| self.expr(a));
+                    return;
+                }
                 fc.args.iter().for_each(|a| self.expr(a));
             }
             Expr::Borrow(b) => {
@@ -424,7 +573,10 @@ impl Proof<'_> {
             }
             Expr::If(i) => {
                 self.expr(&i.cond);
+                let outer = self.pass;
+                self.pass = self.pass.or(self.one_pass(&i.cond));
                 self.block(&i.then_block);
+                self.pass = outer;
                 if let Some(b) = &i.else_block {
                     self.block(b);
                 }
@@ -521,7 +673,8 @@ impl Proof<'_> {
                     .and_then(scalar_of)
                     .as_ref()
                     .and_then(ComptimeInterpreter::integer_range);
-                (source.is_some_and(holds) || self.bounds(&form).is_some_and(holds)).then_some(form)
+                (source.is_some_and(holds) || self.bounds(&form, false, None).is_some_and(holds))
+                    .then_some(form)
             }
             Expr::UnaryOp(u) if u.op == UnaryOp::Neg => {
                 let form = self.affine(&u.expr)?.scale(-1)?;
@@ -546,6 +699,28 @@ impl Proof<'_> {
         }
     }
 
+    /// `c` when `cond` holds only in the pass whose variable is `c`: `v == c` or `c == v`, also
+    /// as one side of `&&`.
+    fn one_pass(&self, cond: &Expr) -> Option<i64> {
+        match cond {
+            Expr::RelationalOp(r) if r.op == RelationalOp::Eq => {
+                let own = Affine::var(self.own.clone());
+                let (l, r) = (self.affine(&r.lhs)?, self.affine(&r.rhs)?);
+                if l == own {
+                    r.as_constant()
+                } else if r == own {
+                    l.as_constant()
+                } else {
+                    None
+                }
+            }
+            Expr::LogicalOp(l) if l.op == LogicalOp::And => {
+                self.one_pass(&l.lhs).or_else(|| self.one_pass(&l.rhs))
+            }
+            _ => None,
+        }
+    }
+
     /// The integer type of `e`, when the checker recorded it.
     fn int_type(&self, e: &Expr) -> Option<ElementType> {
         match e {
@@ -562,39 +737,63 @@ impl Proof<'_> {
     }
 
     /// The least and the greatest value of `form`, when each of its variables is a loop index
-    /// whose range is numbers.
-    fn bounds(&self, form: &Affine) -> Option<(i128, i128)> {
+    /// with known bounds, or `fallback` gives them. With `passes_only`, a value from outside the
+    /// loop counts as zero.
+    fn bounds(
+        &self,
+        form: &Affine,
+        passes_only: bool,
+        fallback: Option<(i128, i128)>,
+    ) -> Option<(i128, i128)> {
         let (mut lo, mut hi) = (form.constant as i128, form.constant as i128);
         for (v, &c) in &form.terms {
-            let (a, b) = self
-                .ranges
-                .get(v)
-                .copied()
-                .flatten()
-                .filter(|(a, b)| b > a)?;
-            let (x, y) = (c as i128 * a as i128, c as i128 * (b as i128 - 1));
+            if passes_only && v.ends_with("#outside") {
+                continue;
+            }
+            let (a, b) = match self.ranges.get(v).copied().flatten() {
+                Some((a, b)) if b > a => (a as i128, b as i128 - 1),
+                _ => self.type_ranges.get(v).copied().or(fallback)?,
+            };
+            let (x, y) = (c as i128 * a, c as i128 * b);
             lo += x.min(y);
             hi += x.max(y);
         }
         Some((lo, hi))
     }
 
-    /// Whether the program computes `form` in `ty` without wrapping. A coefficient or the
-    /// constant must fit the type, and so must each value over the known ranges.
+    /// Whether the program computes `form` in `ty` without a wrap that can make two passes meet.
+    /// A coefficient or the constant must fit the type. A value from outside the loop is the same
+    /// in every pass, so it moves every pass by the same amount. Then the passes must spread over
+    /// fewer values than the type has. Without such a value, each value must fit the type.
     fn fits(&self, form: &Affine, ty: Option<&ElementType>) -> bool {
         let Some((min, max)) = ty.and_then(ComptimeInterpreter::integer_range) else {
             return false;
         };
         let small = |c: i64| (c.unsigned_abs() as i128) <= max;
-        form.terms.values().all(|&c| small(c))
-            && small(form.constant)
-            && self
-                .bounds(form)
-                .is_none_or(|(lo, hi)| min <= lo && hi <= max)
+        if !(form.terms.values().all(|&c| small(c)) && small(form.constant)) {
+            return false;
+        }
+        // An index whose type the proof does not know has the type of the arithmetic.
+        let Some((lo, hi)) = self.bounds(form, true, Some((min, max))) else {
+            return false;
+        };
+        if form.terms.keys().any(|v| v.ends_with("#outside")) {
+            hi - lo <= max - min
+        } else {
+            min <= lo && hi <= max
+        }
     }
 
     /// Whether two passes that compute `form` to the same value are the same pass.
     fn fixes_own(&self, form: &Affine) -> bool {
+        self.fixes_own_with(form, None)
+    }
+
+    /// As `fixes_own`, for two forms that differ by the constant `gap`: `form` and
+    /// `form + gap`. The gap is one more digit, `gap * d` with `d` 0 or 1. So two passes never
+    /// meet when the passes and the digit together are a mixed-radix number, as for
+    /// `out[2 * j]` and `out[2 * j + 1]`, or `out[j]` and `out[j + 32]` with `j` below 32.
+    fn fixes_own_with(&self, form: &Affine, gap: Option<i64>) -> bool {
         if !form.terms.contains_key(&self.own) {
             return false;
         }
@@ -613,6 +812,9 @@ impl Proof<'_> {
                 (c.abs(), span)
             })
             .collect();
+        if let Some(gap) = gap {
+            digits.push((gap, Some(2)));
+        }
         // For equal coefficients, a smaller range goes first, and a range of unknown size last.
         digits.sort_by_key(|&(c, span)| (c, span.unwrap_or(i64::MAX)));
         let last = digits.len() - 1;
@@ -665,9 +867,23 @@ impl Proof<'_> {
             }
             for w in accesses.iter().filter(|a| a.write) {
                 for other in accesses {
-                    let apart = w.indices.iter().zip(&other.indices).any(|(x, y)| {
-                        matches!((x, y), (Some(x), Some(y)) if x == y && self.fixes_own(x))
-                    });
+                    // One pass makes both.
+                    if w.pass.is_some() && w.pass == other.pass {
+                        continue;
+                    }
+                    let apart = w
+                        .indices
+                        .iter()
+                        .zip(&other.indices)
+                        .any(|(x, y)| match (x, y) {
+                            (Some(x), Some(y)) if x == y => self.fixes_own(x),
+                            (Some(x), Some(y)) if x.terms == y.terms => x
+                                .constant
+                                .checked_sub(y.constant)
+                                .and_then(i64::checked_abs)
+                                .is_some_and(|gap| self.fixes_own_with(x, Some(gap))),
+                            _ => false,
+                        });
                     if apart {
                         continue;
                     }
@@ -679,7 +895,9 @@ impl Proof<'_> {
                     } else if other.write {
                         format!(
                             "two passes of this {level} loop may write the same element of \
-                             `{name}`: the writes must use the same index that fixes `{own}`"
+                             `{name}`: the writes must use the same index that fixes `{own}`, \
+                             or indices that no two passes make equal, such as `2 * {own}` and \
+                             `2 * {own} + 1`"
                         )
                     } else {
                         format!(

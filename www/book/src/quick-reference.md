@@ -44,6 +44,9 @@ when writing Vx with Rust habits.
 - `Option<T>` and `Result<T, E>` (`import core::option;`, `import core::result;`), `Vec<T>`
   (`import std::vec;`), `Box<T>` (`import std::box;`).
 - A function that never returns has the type `-> !`, like `panic("..")`.
+- A last parameter `at : Caller` (`import core::panic;`) gets the place of each call that leaves
+  it out: `at.location.file`, `.line` and `.column`. `Location::here()` is the place of that call.
+  `panic(msg, at)` reports that place instead of its own.
 
 ## Statements and expressions
 
@@ -54,6 +57,7 @@ when writing Vx with Rust habits.
 - `match v { Shape::Square(s) => { .. }, _ => { .. } }`. Each arm's body is a block, and the
   last arm must cover every value that is left.
 - `return x;`, or a final expression with no `;`.
+- `let v = parse(s)?;` gives the value of an `Ok`, or returns the `Err` unchanged.
 - Arithmetic `+ - * / %`, comparisons `== != < <= > >=`, `&&` `||` `!` on `bool`, and `+=`,
   `-=`, `*=` and the like.
 - Closures: `| x : i64 | x * 2`. Parameter types are required.

@@ -1,0 +1,88 @@
+//===- across_loops_get_a_launch_check_only_when_an_index_may_wrap.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// An index of an `across` loop that wraps for a large loop size gets a check before the launch.
+// The program stops when the loop's end is larger than the end that the race proof allows.
+// `rows_of_256` and `rows_of_4` get the check: `b * 256 + 255` fits an `i32` up to
+// `b = 2^23 - 1`, and `b * 4 + 3` up to `b = 2^29 - 1`.
+//
+// The other kernels get no check. With `(n + 255) / 256` blocks, `b * 256 + l` is at most
+// `n + 254`, and a `n` so large that `n + 255` wraps gives no blocks. An `i64` index does not
+// wrap for any `i32` size. A value from outside the loop moves every pass by the same amount, so
+// the passes still write different elements when `off + b * 256 + l` wraps.
+//
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-mlir 2>&1 | FileCheck %s
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-mlir 2>&1 | FileCheck %s --check-prefix=TWO --implicit-check-not="so an index of the loop wraps"
+// TWO-COUNT-2: so an index of the loop wraps
+// CHECK-DAG: cf.assert {{.*}}"the end of the `across` loop at line [[#@LINE+4]] is larger than 8388608, so an index of the loop wraps. Compute the index with a wider type, such as `i64`\0A  at {{.*}}.vx:[[#@LINE+4]]"
+
+fn rows_of_256(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..256 across lanes {
+        o[b * 256 + l] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+// CHECK-DAG: cf.assert {{.*}}"the end of the `across` loop at line [[#@LINE+4]] is larger than 536870912,
+
+pub fn rows_of_4(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..4 across lanes {
+        o[b * 4 + l] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn rounded_up(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes {
+        let i = b * 256 + l;
+        if i < n {
+          o[i] = 1.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+pub fn wide_index(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..n across blocks {
+      for l in 0..256 across lanes {
+        o[b as i64 * 256 + l as i64] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn with_an_offset(o : &mut Tensor<f32, [?], Memory::HBM>, off : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1024 across blocks {
+      for l in 0..256 across lanes {
+        o[off + b * 256 + l] = 1.0;
+      }
+    }
+  }
+  return;
+}
+
+// `main` calls `rows_of_256`, so the checker walks it twice, and the check must still come once.
+fn main() -> i32 {
+  let mut o = transfer(Tensor<f32, [512]>::fill(0.0), Memory::HBM);
+  rows_of_256(&mut o, 2);
+  return 0;
+}

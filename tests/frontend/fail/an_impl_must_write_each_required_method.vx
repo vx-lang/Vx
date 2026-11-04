@@ -1,0 +1,35 @@
+//===- an_impl_must_write_each_required_method.vx - Vx Compiler ----*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// An impl must write each method that its trait declares with no default body. `Counter`
+// requires `next` and `other`, and gives `reset` a default body, so only `other` is missing.
+// This program used to compile and print 7.
+
+trait Counter {
+  fn next(self : Self) -> i64;
+  fn other(self : Self) -> i64;
+  fn reset(self : Self) -> i64 {
+    return 0;
+  }
+}
+
+impl Counter for i32 {
+  fn next(self : i32) -> i64 {
+    return 7;
+  }
+}
+
+fn main() -> i32 {
+  let a : i32 = 1;
+  print(a.next());
+  return 0;
+}
+// CHECK: Error[E3061]{{.*}}`impl Counter for i32` does not write the method 'other' that trait Counter requires
+// CHECK-NOT: 'reset'
+// CHECK: 1 error(s) emitted

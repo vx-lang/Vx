@@ -10,11 +10,8 @@
 // wraps at each value. With room for 1, a slot number that says "full" for one value must not
 // also say "free" for the next, or a `send` would write over a value that no `recv` took.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator runs each task to its end at its `spawn`. A task
-// that waits for a later task then waits forever.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}received 10000 out of order 0{{$}}
 
 import std::sync::channel;

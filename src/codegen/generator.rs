@@ -106,8 +106,23 @@ pub struct MeliorGenerator<'c> {
     /// The open `tasks` blocks that can fail: the block after each, which takes the value of
     /// the block, and the type `Result<U, E>` of that value.
     pub tasks_leaves: Vec<(*const melior::ir::Block<'c>, syntax::Type)>,
+    /// Set inside a `tasks` block that runs its tasks one after another, at their `spawn`s: a
+    /// block that can fail, or that an exit leaves, when `region_value_slot` declines it.
+    pub tasks_inline: bool,
+    /// The open `tasks` blocks whose region a `return`, `break` or `continue` leaves,
+    /// innermost last.
+    pub(crate) tasks_exits: Vec<crate::codegen::lower::expr::TasksExits<'c>>,
+    /// The open task bodies that a `return` or a `?` can leave, innermost last.
+    pub(crate) task_bodies: Vec<crate::codegen::lower::expr::TaskBody<'c>>,
+    /// The lowered type of each variant's payload, by the enum's struct name, then the variant
+    /// and the position. A slot can be wider than a variant's payload, or a byte slot that
+    /// holds payloads of different kinds, so a `match` reads the payload back as this type.
+    pub(crate) enum_payloads: std::cell::RefCell<EnumPayloads>,
     pub continue_blocks: Vec<*const melior::ir::Block<'c>>,
     pub allocs: std::collections::HashSet<String>,
+    /// The struct slots whose lifetime a `let` started, by their `llvm.alloca` value. Only
+    /// these get an end.
+    pub(crate) started_slots: std::collections::HashSet<usize>,
     /// One frame per block being lowered: what each name a `let` in the block shadows meant
     /// before it, put back when the block ends.
     pub(crate) blocks: Vec<Vec<Shadowed<'c>>>,
@@ -261,6 +276,63 @@ pub(crate) fn is_float_text(ty_text: &str) -> bool {
     )
 }
 
+/// The lowered payload type of each enum variant: by the enum's struct name, then by the
+/// variant and the position.
+pub(crate) type EnumPayloads =
+    std::collections::HashMap<String, std::collections::HashMap<(String, usize), String>>;
+
+/// The byte size and alignment of a lowered LLVM type, laid out as C lays out a struct.
+/// `None` for a type this does not model.
+pub(crate) fn llvm_type_size_align(ty_text: &str) -> Option<(usize, usize)> {
+    let t = ty_text.trim();
+    let t = t.strip_prefix("!llvm.").unwrap_or(t);
+    if let Some(bits) = scalar_type_bits(t) {
+        let size = (bits as usize).div_ceil(8).next_power_of_two();
+        return Some((size, size));
+    }
+    if t == "index" || t == "ptr" || t.starts_with("ptr<") {
+        return Some((8, 8));
+    }
+    if let Some(inner) = t.strip_prefix("array<").and_then(|r| r.strip_suffix('>')) {
+        let (n, elem) = inner.split_once(" x ")?;
+        let (size, align) = llvm_type_size_align(elem)?;
+        return Some((n.trim().parse::<usize>().ok()? * size, align));
+    }
+    if t.starts_with("struct<") {
+        let open = t.find('(')?;
+        let fields = crate::codegen::lower::expr::split_top_level(&t[open + 1..t.rfind(')')?]);
+        let (mut offset, mut align) = (0usize, 1usize);
+        for f in fields.iter().filter(|f| !f.is_empty()) {
+            let (fsize, falign) = llvm_type_size_align(f)?;
+            offset = crate::layout::align_up(offset, falign) + fsize;
+            align = align.max(falign);
+        }
+        return Some((crate::layout::align_up(offset, align), align));
+    }
+    None
+}
+
+/// A slot of bytes that holds the payload of any of these variants, when their payloads are
+/// of different kinds: as large as the largest, and aligned as the most strictly aligned.
+fn enum_byte_slot(by_variant: &[(String, String)]) -> Result<String, LowerError> {
+    let (mut size, mut align) = (0usize, 1usize);
+    for (_, ty) in by_variant {
+        let (s, a) = llvm_type_size_align(ty).ok_or_else(|| {
+            LowerError::from(format!(
+                "the legacy code generator cannot put a payload of type {ty} in an enum whose \
+                 variants carry different kinds of payload"
+            ))
+        })?;
+        size = size.max(s);
+        align = align.max(a);
+    }
+    Ok(format!(
+        "!llvm.array<{} x i{}>",
+        crate::layout::align_up(size, align) / align,
+        align * 8
+    ))
+}
+
 /// A drop waiting for the value of the statement it precedes.
 pub(crate) enum WaitingDrop<'c> {
     /// The buffer to free, read where the drop was: the owner, or (`field`) a tensor field of
@@ -270,8 +342,10 @@ pub(crate) enum WaitingDrop<'c> {
         flag: Option<crate::symbol::Symbol>,
         field: bool,
     },
-    /// The statement that calls a `Drop` impl's `drop`.
-    Call(Box<Statement>),
+    /// The statement that runs a drop, and whether it calls a `Drop` impl's `drop`.
+    Call(Box<Statement>, bool),
+    /// The `llvm.alloca` of a struct whose lifetime ends.
+    LifetimeEnd(melior::ir::Value<'c, 'c>),
 }
 
 impl<'c> MeliorGenerator<'c> {
@@ -863,8 +937,13 @@ impl<'c> MeliorGenerator<'c> {
             in_spawn: false,
             break_blocks: Vec::new(),
             tasks_leaves: Vec::new(),
+            tasks_inline: false,
+            tasks_exits: Vec::new(),
+            task_bodies: Vec::new(),
+            enum_payloads: Default::default(),
             continue_blocks: Vec::new(),
             allocs: std::collections::HashSet::new(),
+            started_slots: std::collections::HashSet::new(),
             blocks: Vec::new(),
             is_lvalue_context: false,
             place_indices: None,
@@ -1263,6 +1342,7 @@ impl<'c> MeliorGenerator<'c> {
     ) -> Result<melior::ir::Operation<'c>, LowerError> {
         self.env.clear();
         self.allocs.clear();
+        self.started_slots.clear();
         self.subspace_offsets.clear(); // per-function sub-space bump allocator (SS2)
         self.pointer_taken = syntax::locals_with_pointer_taken(&func.body);
         self.address_taken = syntax::locals_with_address_taken(&func.body);
@@ -1506,10 +1586,7 @@ impl<'c> MeliorGenerator<'c> {
             return Ok(Some(block));
         }
         let (cond, _ty, block) = self.generate_expr(&s.expr, block)?;
-        let msg = s
-            .msg
-            .clone()
-            .unwrap_or_else(|| "assertion failed".to_string());
+        let msg = s.failure_message();
         let op = melior::ir::operation::OperationBuilder::new("cf.assert", self.loc())
             .add_operands(&[cond])
             .add_attributes(&[(
@@ -1550,12 +1627,31 @@ impl<'c> MeliorGenerator<'c> {
         d: &syntax::stmt::DropStmt,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
-        if let Some(stmt) = d.call_statement() {
-            if d.after_value {
-                self.queued_drops.push(WaitingDrop::Call(Box::new(stmt)));
+        if d.ends_lifetime {
+            let (value, _) = *self.env.get(&d.name).ok_or_else(|| {
+                LowerError::from(format!(
+                    "the end of the lifetime of an unknown name {}",
+                    d.name
+                ))
+            })?;
+            // A struct that is not `mut` and not borrowed is a value with no slot.
+            if !self.started_slots.contains(&Self::slot_key(value)) {
                 return Ok(Some(block));
             }
-            return self.generate_statement_inner(&stmt, block);
+            let drop = WaitingDrop::LifetimeEnd(value);
+            if d.after_value {
+                self.queued_drops.push(drop);
+                return Ok(Some(block));
+            }
+            return self.emit_waiting_drop(drop, block).map(Some);
+        }
+        if let Some(stmt) = d.call_statement() {
+            let drop = WaitingDrop::Call(Box::new(stmt), d.call.is_some());
+            if d.after_value {
+                self.queued_drops.push(drop);
+                return Ok(Some(block));
+            }
+            return self.emit_waiting_drop(drop, block).map(Some);
         }
         // The tensor itself, or a tensor field of a struct being dropped.
         let place = d.expr.as_deref().cloned().unwrap_or_else(|| {
@@ -1594,10 +1690,45 @@ impl<'c> MeliorGenerator<'c> {
                 self.emit_drop(buffer, flag, field, block)?;
                 Ok(block)
             }
-            WaitingDrop::Call(stmt) => self
-                .generate_statement_inner(&stmt, block)?
-                .ok_or_else(|| LowerError::from("a drop ended its block".to_string())),
+            // A `Drop` impl runs with cancellation off (F6), so a `send` or a wait in it can
+            // finish.
+            WaitingDrop::Call(stmt, calls_drop) => {
+                if calls_drop {
+                    crate::codegen::lower::call_runtime_void(self, block, "vx_cancel_off")?;
+                }
+                let block = self
+                    .generate_statement_inner(&stmt, block)?
+                    .ok_or_else(|| LowerError::from("a drop ended its block".to_string()))?;
+                if calls_drop {
+                    crate::codegen::lower::call_runtime_void(self, block, "vx_cancel_on")?;
+                }
+                Ok(block)
+            }
+            WaitingDrop::LifetimeEnd(slot) => {
+                self.emit_lifetime_marker("llvm.intr.lifetime.end", slot, block)?;
+                Ok(block)
+            }
         }
+    }
+
+    /// The key of a struct's `llvm.alloca` in `started_slots`.
+    pub(crate) fn slot_key(slot: melior::ir::Value<'c, 'c>) -> usize {
+        melior::ir::ValueLike::to_raw(&slot).ptr as usize
+    }
+
+    /// `llvm.intr.lifetime.start` or `.end` on a struct's `llvm.alloca`. LLVM gives two slots
+    /// one place in the frame when their lifetimes do not overlap.
+    pub(crate) fn emit_lifetime_marker(
+        &mut self,
+        op: &str,
+        slot: melior::ir::Value<'c, 'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Result<(), LowerError> {
+        let marker = melior::ir::operation::OperationBuilder::new(op, self.loc())
+            .add_operands(&[slot])
+            .build()?;
+        block.append_operation(marker);
+        Ok(())
     }
 
     /// `vx.drop %buffer`, or `vx.drop %buffer unless %moved` when the tensor has a moved flag.
@@ -1748,9 +1879,9 @@ impl<'c> MeliorGenerator<'c> {
             // has no Vx-level definition to resolve -- it is a primitive, like `print`. Safe to
             // call; ending a process breaks no memory-safety property.
             //
-            // `panic(msg)` prints `panic: <msg>` and a newline to standard error first, as
-            // `eprintln!`, and then aborts with an empty message, which prints nothing. A kernel
-            // cannot print, so there it only aborts.
+            // `panic(msg)` prints `panic: <msg>`, and `  at <file>:<line>` on the next line, to
+            // standard error first, as `eprintln!`. Then it aborts with an empty message, which
+            // prints nothing. A kernel cannot print, so there it only aborts.
             Expr::FunctionCall(e) if syntax::is_abort_or_panic(e) => {
                 let mut block = block;
                 let mut abort_msg = "abort() called";
@@ -1758,13 +1889,7 @@ impl<'c> MeliorGenerator<'c> {
                     abort_msg = "panic";
                     if !self.in_spawn {
                         let print = Expr::Println(syntax::PrintlnExpr {
-                            args: vec![
-                                Expr::StringLiteral(syntax::StringLiteralExpr::new(
-                                    "panic: ".to_string(),
-                                    e.span,
-                                )),
-                                e.args[0].clone(),
-                            ],
+                            args: syntax::panic_message(e),
                             span: e.span,
                             to_stderr: true,
                         });
@@ -1811,9 +1936,28 @@ impl<'c> MeliorGenerator<'c> {
                     block,
                 ))
             }
-            // This code generator runs the tasks of a `tasks` block one after another, so at a
-            // `return` inside the block each task has ended. The value is never read.
+            // `h.join()`: a use of the task's value here, so that `VxLowering` waits for the task
+            // here. A task that runs in place has ended already.
+            e if syntax::task_join_handle(e).is_some() => {
+                let handle = syntax::task_join_handle(e).expect("matched above");
+                let (val, ty, block) = self.generate_expr(handle, block)?;
+                block.append_operation(
+                    melior::ir::operation::OperationBuilder::new("vx.task_join", self.loc())
+                        .add_operands(&[val])
+                        .build()?,
+                );
+                Ok((val, ty, block))
+            }
+            // A `tasks` block that runs its tasks one after another needs no wait: at an exit,
+            // each task has ended. A block that runs them on threads waits for them. The value is
+            // never read.
             e if syntax::is_tasks_wait(e) => {
+                if !self.tasks_inline {
+                    block.append_operation(
+                        melior::ir::operation::OperationBuilder::new("vx.tasks_wait", self.loc())
+                            .build()?,
+                    );
+                }
                 let zero =
                     melior::ir::operation::OperationBuilder::new("arith.constant", self.loc())
                         .add_attributes(&[(
@@ -1961,9 +2105,11 @@ impl<'c> MeliorGenerator<'c> {
     /// when the caller has them.
     ///
     /// A payload with no width of its own -- a pointer, or a nested aggregate -- keeps
-    /// the old rule and takes the slot only if nothing else has claimed it.
+    /// the old rule and takes the slot only if nothing else has claimed it. When payloads of
+    /// different kinds meet at one position, such as a struct and a number, the slot is bytes.
     fn enum_payload_slot_ty(
         &self,
+        struct_name: &str,
         enum_def: &[(crate::symbol::Symbol, Option<Vec<syntax::Type>>)],
         mapping: Option<&std::collections::HashMap<crate::symbol::Symbol, syntax::Type>>,
     ) -> Result<String, LowerError> {
@@ -1984,7 +2130,9 @@ impl<'c> MeliorGenerator<'c> {
             // Numbers of different kinds, such as `i32` and `f32`, share an integer slot. A float
             // goes in as its bits; an integer in a float slot could read back as a denormal.
             let mut scalars: Vec<String> = Vec::new();
-            for (_v_name, payload) in enum_def {
+            let mut by_variant: Vec<(String, String)> = Vec::new();
+            let mut mixed = false;
+            for (v_name, payload) in enum_def {
                 let Some(types) = payload else { continue };
                 let Some(ty) = types.get(position) else {
                     continue;
@@ -1997,16 +2145,13 @@ impl<'c> MeliorGenerator<'c> {
                 if lowered.starts_with("memref<") {
                     lowered = "!llvm.ptr".to_string();
                 }
-                let is_struct = lowered.starts_with("!llvm.struct");
+                by_variant.push((v_name.to_string(), lowered.clone()));
+                let is_scalar = scalar_type_bits(&lowered).is_some();
                 if payload_ty_str != "none"
-                    && is_struct != payload_ty_str.starts_with("!llvm.struct")
-                    || is_struct && payload_ty_str != "none" && payload_ty_str != lowered
+                    && (is_scalar != scalar_type_bits(&payload_ty_str).is_some()
+                        || !is_scalar && payload_ty_str != lowered)
                 {
-                    return Err(LowerError::from(format!(
-                        "an enum whose variants carry different kinds of payload \
-                         ({payload_ty_str} and {lowered}) cannot be lowered by the legacy code \
-                         generator"
-                    )));
+                    mixed = true;
                 }
                 if scalar_type_bits(&lowered).is_some() && !scalars.contains(&lowered) {
                     scalars.push(lowered.clone());
@@ -2020,7 +2165,15 @@ impl<'c> MeliorGenerator<'c> {
                     _ => {}
                 }
             }
-            if scalars.len() > 1 && scalars.iter().any(|t| is_float_text(t)) {
+            let mut payloads = self.enum_payloads.borrow_mut();
+            let types = payloads.entry(struct_name.to_string()).or_default();
+            for (variant, ty) in &by_variant {
+                types.insert((variant.clone(), position), ty.clone());
+            }
+            drop(payloads);
+            if mixed {
+                payload_ty_str = enum_byte_slot(&by_variant)?;
+            } else if scalars.len() > 1 && scalars.iter().any(|t| is_float_text(t)) {
                 payload_ty_str = format!("i{widest}");
             }
             slots.push(payload_ty_str);
@@ -2090,7 +2243,7 @@ impl<'c> MeliorGenerator<'c> {
         name: &str,
         enum_def: &[(crate::symbol::Symbol, Option<Vec<syntax::Type>>)],
     ) -> Result<Type<'c>, LowerError> {
-        let payload_ty_str = self.enum_payload_slot_ty(enum_def, None)?;
+        let payload_ty_str = self.enum_payload_slot_ty(name, enum_def, None)?;
         Type::parse(
             self.context,
             &format!("!llvm.struct<\"{}\", (i32, {})>", name, payload_ty_str),
@@ -2124,6 +2277,14 @@ impl<'c> MeliorGenerator<'c> {
         &self,
         ty: &syntax::Type,
     ) -> Result<Type<'c>, crate::codegen::lower::LowerError> {
+        // A token of `transfer_async` is its tensor: the copy is done when it is made. A token of
+        // a lane copy is a number.
+        if syntax::types::is_copy_token(ty) {
+            return Ok(melior::ir::r#type::IntegerType::new(self.context, 32).into());
+        }
+        if let Some(inner) = syntax::types::transfer_token_inner(ty) {
+            return self.lower_type(inner);
+        }
         let ty_str = match ty {
             syntax::Type::Tensor(el_ty, dims, top) => {
                 return self.lower_tensor_type(el_ty, dims, top);
@@ -2274,10 +2435,12 @@ impl<'c> MeliorGenerator<'c> {
                                 mapping.insert("T".into(), ty_arg.clone());
                             }
                         }
-                        let payload_ty_str =
-                            self.enum_payload_slot_ty(&enum_def, Some(&mapping))?;
-
                         let args_str = self.type_args_name(args)?;
+                        let payload_ty_str = self.enum_payload_slot_ty(
+                            &format!("{name}_{args_str}"),
+                            &enum_def,
+                            Some(&mapping),
+                        )?;
 
                         format!(
                             "!llvm.struct<\"{}_{}\", (i32, {})>",

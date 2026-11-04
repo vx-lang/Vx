@@ -457,6 +457,13 @@ impl<'a> LayoutComputer<'a> {
                 let layout = self.layout_of(*id)?;
                 Some((layout.size, layout.align, FieldTy::Nominal(*id)))
             }
+            // A field whose type is in another module (`made : Duration`) can reach here with no
+            // GID attached. Its declaration is known by name.
+            Type::Struct(_, None) | Type::Enum(_, None) => {
+                let (_, id) = self.identities.resolve_base(ty.into())?;
+                let layout = self.layout_of(id)?;
+                Some((layout.size, layout.align, FieldTy::Nominal(id)))
+            }
             // A by-value generic-instance aggregate field (`VecMap { iter: VecIter<T>, f: Closure1<..> }`):
             // its layout is the base nominal's when that layout is instance-independent — every generic
             // parameter appears only behind a pointer, so the size is the same for any instantiation

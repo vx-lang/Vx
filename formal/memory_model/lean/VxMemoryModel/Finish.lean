@@ -92,9 +92,21 @@ namespace Fleet
 
 variable {S M : Type} {F : Fleet S M} {A : Act}
 
+/-- Weak fairness of `act` while `P` holds: if `P` holds and `act` can happen at each point from
+`i` on, then `act` happens at some point from `i` on. A scheduler can give this for a thread that
+does not wait, and not for the spin of a thread that waits. -/
+def WeakFairWhen (F : Fleet S M) (r : Nat → Config S M) (act : Act) (P : Config S M → Prop) :
+    Prop :=
+  ∀ i, (∀ j, i ≤ j → P (r j) ∧ F.Enabled act (r j)) → ∃ j, i ≤ j ∧ F.Step act (r j) (r (j + 1))
+
+theorem WeakFair.when {r : Nat → Config S M} {P : Config S M → Prop} (h : F.WeakFair r A) :
+    F.WeakFairWhen r A P := fun i hi => h i fun j hj => (hi j hj).2
+
 /-- WF1 with a condition on the run. If `A` can happen while `P` holds, and `P` holds until `A`
-happens, then in a fair run `A` happens at a point where `P` holds. -/
-theorem wf1_run {r : Nat → Config S M} (hf : F.WeakFair r A) {P : Config S M → Prop} {i : Nat}
+happens, then in a run that is weakly fair to `A` while `P` holds, `A` happens at a point where `P`
+holds. -/
+theorem wf1_run {r : Nat → Config S M} {P : Config S M → Prop} (hf : F.WeakFairWhen r A P)
+    {i : Nat}
     (hkeep : ∀ j, i ≤ j → P (r j) → ¬ F.Step A (r j) (r (j + 1)) → P (r (j + 1)))
     (hen : ∀ j, i ≤ j → P (r j) → F.Enabled A (r j)) (hi : P (r i)) :
     ∃ j, i ≤ j ∧ P (r j) ∧ F.Step A (r j) (r (j + 1)) := by
@@ -107,7 +119,7 @@ theorem wf1_run {r : Nat → Config S M} (hf : F.WeakFair r A) {P : Config S M �
       exact hkeep _ (Nat.le_add_right _ _) ih fun hs => hno ⟨_, Nat.le_add_right _ _, ih, hs⟩
   obtain ⟨j, hij, hj⟩ := hf i fun j hij => by
     obtain ⟨k, rfl⟩ := Nat.exists_eq_add_of_le hij
-    exact hen _ hij (hP k)
+    exact ⟨hP k, hen _ hij (hP k)⟩
   obtain ⟨k, rfl⟩ := Nat.exists_eq_add_of_le hij
   exact hno ⟨_, hij, hP k, hj⟩
 
@@ -148,9 +160,11 @@ theorem move_step (hF : F.node n = node M) {c c' : Fleet.Config Cpu M}
 
 /-- W7: in a fair run, a thread with no loop finishes if it is never stuck except at a wait, each
 of its waits can continue at some point, and a wait that can continue stays so until the thread
-moves. -/
+moves. The run needs to be fair to the thread only while it does not wait. A fair run gives `hf`
+by `WeakFair.when`. -/
 theorem finishes (hF : F.node n = node M) {c₀ : Fleet.Config Cpu M}
-    {r : Nat → Fleet.Config Cpu M} (hr : F.IsRun c₀ r) (hf : F.WeakFair r (.move n t)) {i : Nat}
+    {r : Nat → Fleet.Config Cpu M} (hr : F.IsRun c₀ r)
+    (hf : F.WeakFairWhen r (.move n t) fun c => ¬ (c.state n).Waits t) {i : Nat}
     (hloop : (((r i).state n).code t).NoLoop)
     (hok : ∀ j, i ≤ j → ((r j).state n).code t ≠ .skip → ¬ ((r j).state n).Waits t →
       F.Enabled (.move n t) (r j))

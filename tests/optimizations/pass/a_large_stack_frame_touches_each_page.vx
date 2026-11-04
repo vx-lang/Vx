@@ -1,0 +1,60 @@
+//===- a_large_stack_frame_touches_each_page.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `three_pages` keeps three tensors of 4000 bytes on its stack, so its frame is larger than two
+// pages of 4 KiB. A stack has one guard page below it, and a write past the end of the stack
+// must hit that page. So each function touches each page of its frame, in order, before it
+// uses the frame. A frame that moved the stack pointer by 12 KiB at once could jump past the
+// guard page into other memory.
+//
+// The IR checks: each function the program defines asks LLVM to probe its stack, with both code
+// generators. The ASM checks: the code moves the stack pointer one page at a time, and writes
+// to each page. The OUT check: the program still gives the right sum.
+//
+// REQUIRES: x86_64
+// Only because the ASM checks name x86-64 instructions.
+//
+// RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s --check-prefix=IR
+// RUN: vxc %s --legacy-codegen --action emit-llvm 2>&1 | FileCheck %s --check-prefix=IR
+// RUN: vxc %s --action emit-obj -o %t.o
+// RUN: llvm-objdump -d --no-show-raw-insn %t.o | FileCheck %s --check-prefix=ASM
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefix=OUT
+//
+// IR-DAG: llvm.func @main() {{.*}}passthrough = [{{.*}}["probe-stack", "inline-asm"]
+// IR-DAG: llvm.func hidden @three_pages({{.*}}passthrough = [{{.*}}["probe-stack", "inline-asm"]
+//
+// ASM-LABEL: <three_pages>:
+// ASM: subq $0x1000, %rsp
+// ASM-NEXT: movq $0x0, (%rsp)
+// ASM-NEXT: subq $0x1000, %rsp
+// ASM-NEXT: movq $0x0, (%rsp)
+// ASM-NEXT: subq $0x{{[0-9a-f]+}}, %rsp
+//
+// OUT: {{^}}sum 751500{{$}}
+
+import core::convert;
+
+fn three_pages(n : i64) -> i64 {
+  let mut a : Tensor<i64, [500]> = Tensor<i64, [500]>::fill(0i64);
+  let mut b : Tensor<i64, [500]> = Tensor<i64, [500]>::fill(0i64);
+  let mut c : Tensor<i64, [500]> = Tensor<i64, [500]>::fill(0i64);
+  for i in 0..500 {
+    a[i] = n + i64::from(i);
+    b[i] = a[i] * 2;
+    c[i] = b[i] + a[i];
+  }
+  let mut sum : i64 = 0;
+  for i in 0..500 {
+    sum = sum + a[i] + b[i] + c[i];
+  }
+  return sum;
+}
+
+fn main() -> i32 {
+  println!("sum {}", three_pages(1));
+  return 0;
+}

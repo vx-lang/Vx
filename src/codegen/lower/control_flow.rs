@@ -927,6 +927,37 @@ impl<'c> LowerToMelior<'c> for BreakStmt {
         // The `Err` arm of the join of a task that failed: the block after the `tasks` block
         // takes the failure as the value of the block.
         if let Some(value) = &self.tasks_value {
+            // A `?` in a task: the task ends with `Err(value)`.
+            if super::expr::leaving_task(gen) {
+                let ty = gen
+                    .task_bodies
+                    .last()
+                    .and_then(|t| t.fails())
+                    .expect("the checker passes an error up only to a task that can fail");
+                let failure = crate::syntax::Expr::EnumVariant(crate::syntax::failure_of(
+                    &ty,
+                    (**value).clone(),
+                    self.span,
+                ));
+                let (val, _, block) = gen.generate_expr(&failure, block)?;
+                super::expr::emit_task_exit(gen, block, Some(val))?;
+                return Ok(None);
+            }
+            if let Some((slot, fails_as)) = super::expr::region_failure_slot(gen) {
+                let failure = crate::syntax::Expr::EnumVariant(crate::syntax::failure_of(
+                    &fails_as,
+                    (**value).clone(),
+                    self.span,
+                ));
+                let (val, _, block) = gen.generate_expr(&failure, block)?;
+                block.append_operation(
+                    OperationBuilder::new("llvm.store", gen.loc())
+                        .add_operands(&[val, slot])
+                        .build()?,
+                );
+                super::expr::emit_tasks_exit(gen, block, super::expr::TasksExitKind::Leave)?;
+                return Ok(None);
+            }
             let (after_ptr, fails_as) = gen
                 .tasks_leaves
                 .last()
@@ -945,6 +976,10 @@ impl<'c> LowerToMelior<'c> for BreakStmt {
                     .add_successors(&[after])
                     .build()?,
             );
+            return Ok(None);
+        }
+        if super::expr::leaving_tasks(gen, true) {
+            super::expr::emit_tasks_exit(gen, block, super::expr::TasksExitKind::Break)?;
             return Ok(None);
         }
         if let Some(&break_ptr) = gen.break_blocks.last() {
@@ -968,6 +1003,10 @@ impl<'c> LowerToMelior<'c> for ContinueStmt {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
+        if super::expr::leaving_tasks(gen, true) {
+            super::expr::emit_tasks_exit(gen, block, super::expr::TasksExitKind::Continue)?;
+            return Ok(None);
+        }
         if let Some(&continue_ptr) = gen.continue_blocks.last() {
             let continue_block: &melior::ir::Block<'c> = unsafe { &*continue_ptr };
             block.append_operation(

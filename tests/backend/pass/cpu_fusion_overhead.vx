@@ -149,4 +149,4 @@ fn main() -> i32 {
 // MLIR: memref.alloc() : memref<128x128xf32>
 
 // --emit-llvm stops at the LLVM dialect, so main is still an llvm.func here.
-// LLVM-LABEL: llvm.func {{(hidden )?}}@main() -> i32 {
+// LLVM-LABEL: llvm.func {{(hidden )?}}@main() -> i32 attributes {passthrough = {{\[\[}}"probe-stack", "inline-asm"{{\]\]}}} {

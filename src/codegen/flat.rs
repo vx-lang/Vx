@@ -325,7 +325,7 @@ fn nrvo_candidate(hir: &[HirInstruction]) -> Option<usize> {
 fn is_ptr_ty(ty: &Type) -> bool {
     matches!(
         ty,
-        Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..) | Type::Closure(..)
+        Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..)
     )
 }
 
@@ -371,6 +371,84 @@ pub(crate) fn placed_device(id: u64, ctx: &EmitCtx) -> Option<i32> {
         return None;
     }
     Some(id as i32)
+}
+
+/// The size and alignment in bytes of a scalar element, for the facts `valid(p, n)` gives LLVM.
+fn scalar_bytes(ty: &Type) -> Option<u64> {
+    match ty {
+        Type::Scalar(e) => match e {
+            ElementType::I8 | ElementType::U8 | ElementType::Bool => Some(1),
+            ElementType::I16 | ElementType::U16 | ElementType::F16 | ElementType::BF16 => Some(2),
+            ElementType::I32 | ElementType::U32 | ElementType::F32 => Some(4),
+            ElementType::I64 | ElementType::U64 | ElementType::USize | ElementType::F64 => Some(8),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The attributes of a raw pointer parameter that `requires valid(p, n)` names: it is not null,
+/// and aligned for its element.
+fn valid_pointer_attrs(ty: &Type) -> String {
+    match ty {
+        Type::Pointer(inner, ..) => match scalar_bytes(inner) {
+            Some(align) => format!(" {{llvm.nonnull, llvm.align = {align} : i64}}"),
+            None => " {llvm.nonnull}".to_string(),
+        },
+        _ => String::new(),
+    }
+}
+
+/// An `llvm.intr.assume` for each `valid(p, n)` of `func`, at the start of its body: `p` points at
+/// `n` elements. A length that is not a parameter or a number gives none.
+fn valid_pointer_assumes(
+    func: &Function,
+    valid: &[(usize, crate::hir::check::pointer_clauses::Length)],
+    arg_offset: u32,
+) -> String {
+    use crate::hir::check::pointer_clauses::Length;
+    let mut out = String::new();
+    for (k, (p, len)) in valid.iter().enumerate() {
+        let Type::Pointer(inner, ..) = &func.params[*p].1 else {
+            continue;
+        };
+        let Some(size) = scalar_bytes(inner) else {
+            continue;
+        };
+        let count = match len {
+            Length::Constant(c) => {
+                out += &format!("  %vx_valid{k}_n = arith.constant {c} : i64\n");
+                format!("%vx_valid{k}_n")
+            }
+            Length::Param(j) => {
+                let arg = format!("%arg{}", *j as u32 + arg_offset);
+                match &func.params[*j].1 {
+                    Type::Scalar(ElementType::I64 | ElementType::U64 | ElementType::USize) => arg,
+                    Type::Scalar(e @ (ElementType::I32 | ElementType::I16 | ElementType::I8)) => {
+                        let from = mlir_scalar(e).unwrap_or("i32");
+                        out += &format!("  %vx_valid{k}_n = arith.extsi {arg} : {from} to i64\n");
+                        format!("%vx_valid{k}_n")
+                    }
+                    Type::Scalar(e @ (ElementType::U32 | ElementType::U16 | ElementType::U8)) => {
+                        let from = mlir_scalar(e).unwrap_or("i32");
+                        out += &format!("  %vx_valid{k}_n = arith.extui {arg} : {from} to i64\n");
+                        format!("%vx_valid{k}_n")
+                    }
+                    _ => continue,
+                }
+            }
+            Length::Other => continue,
+        };
+        let ptr = format!("%arg{}", *p as u32 + arg_offset);
+        out += &format!(
+            "  %vx_valid{k}_t = arith.constant true\n  \
+             %vx_valid{k}_s = arith.constant {size} : i64\n  \
+             %vx_valid{k}_b = arith.muli {count}, %vx_valid{k}_s : i64\n  \
+             llvm.intr.assume %vx_valid{k}_t [\"dereferenceable\"({ptr}, %vx_valid{k}_b : \
+             !llvm.ptr, i64)] : i1\n"
+        );
+    }
+    out
 }
 
 fn param_alias_attrs(ty: &Type, ctx: &EmitCtx) -> String {
@@ -587,6 +665,8 @@ pub struct Callee {
     /// The memref spelling when the callee returns a statically shaped tensor (wrappers peeled) --
     /// the call's result is then a memref value tracked in `mem_of`.
     pub ret_tensor: Option<String>,
+    /// The `vector<NxT>` a callee returning `<N x T>` gives back.
+    pub ret_vec: Option<String>,
     /// Whether the returned tensor is placed in another memory. Such a result is handed back
     /// as a buffer, never through a slot on the caller's stack.
     pub ret_placed: bool,
@@ -611,6 +691,11 @@ fn resolve_agg_gid(
     agg_names: &HashMap<String, TypeId>,
     identities: &crate::layout::identity::AggregateIdentities,
 ) -> Option<TypeId> {
+    // A closure value (`||->i32`) is the `{ env, func }` pair that the lowerer made.
+    if matches!(ty, Type::Closure(..)) {
+        let gid = crate::hir::flatten::closure_pair_gid();
+        return aggs.contains_key(&gid).then_some(gid);
+    }
     // A data-carrying enum instance (`Option<i32>`) has a *synthesized* per-instance layout keyed by
     // `enum_instance_gid` (the lowerer recorded it in the side table now folded into `aggs`); try that
     // first. Its `gid` is distinct from any registry layout, so a struct instance (`Vec<i32>`) misses
@@ -719,6 +804,10 @@ pub fn build_callee_map(
                 },
                 ret_void: is_void_ty(&sig.ret_ty),
                 ret_tensor: tensor_memref_of_type(&sig.ret_ty),
+                ret_vec: match peel_wrappers(&sig.ret_ty) {
+                    Type::Simd(e, lanes) => mlir_vector(e, *lanes),
+                    _ => None,
+                },
                 ret_placed: crate::codegen::generator::written_placement(&sig.ret_ty).is_some(),
                 param_tensors: sig
                     .params
@@ -1101,7 +1190,7 @@ pub struct SubspaceInfo {
 /// `func.func private` declaration prepended. Order is load-bearing — the emit records which of
 /// these a function called as a bitmask over this array's indices, so inserting in the middle
 /// renumbers existing entries.
-const RUNTIME_HELPERS: [(&str, &str); 24] = [
+const RUNTIME_HELPERS: [(&str, &str); 26] = [
     ("printMemrefF32", "(memref<*xf32>)"),
     ("printMemrefF64", "(memref<*xf64>)"),
     ("printMemrefI32", "(memref<*xi32>)"),
@@ -1126,6 +1215,8 @@ const RUNTIME_HELPERS: [(&str, &str); 24] = [
     ("printMemrefU8", "(memref<*xi8>)"),
     ("printMemrefU16", "(memref<*xi16>)"),
     ("vx_task_failed", "()"),
+    ("vx_cancel_off", "()"),
+    ("vx_cancel_on", "()"),
 ];
 
 // The helper mask is a `u64`, so the table must not grow past 64 entries.
@@ -1157,11 +1248,12 @@ pub fn local_devices_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i32, i32)>
     crate::arch::local_device_aliases(env.topologies.values().map(|d| (&d.name, &d.descriptor)))
 }
 
-/// A declared topology's `arch:`, and its `chip:` when it gives one.
+/// A declared topology's `arch:`, its `chip:` when it gives one, and its `offload:`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DeclaredArch {
     pub arch: String,
     pub chip: Option<String>,
+    pub offload: bool,
 }
 
 /// The declared-arch table for `EmitCtx::topo_archs`, from the per-compilation env: one entry per
@@ -1184,6 +1276,7 @@ pub fn topo_archs_from_env(env: &crate::hir::GlobalAstEnv) -> Vec<(i64, Declared
                     .chip
                     .as_ref()
                     .map(|c| c.as_ref().to_string()),
+                offload: decl.descriptor.offload,
             };
             Some((id as i64, declared))
         })
@@ -1418,6 +1511,13 @@ fn static_tile_bytes(elem: &ElementType, shape: &[String]) -> Option<u64> {
 /// The single source of truth shared by the `func.func` header and a `FuncConst`'s `func.constant`
 /// signature, so a materialized function pointer's type matches its callee's header exactly. (#242)
 pub(crate) fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
+    // A token of `transfer_async` is spelled as its tensor, and a token of a lane copy as `i32`.
+    if crate::syntax::types::is_copy_token(ty) {
+        return Ok("i32".to_string());
+    }
+    if let Some(inner) = crate::syntax::types::transfer_token_inner(ty) {
+        return ty_mlir(inner, ctx);
+    }
     let ty = peel_wrappers(ty); // Verified/Ref/Pinned spell as their runtime inner type
                                 // A borrowed tensor is spelled as the tensor. A memref is already a reference, and a call
                                 // site hands over the memref itself; `!llvm.ptr` gave the signature a type nothing passes
@@ -1909,7 +2009,7 @@ fn memref_elem(memty: &str) -> Option<&str> {
 
 /// The dims prefix (`2x4x`) and element (`f32`) of a memref type string. `memref<2x4xf32> ->
 /// ("2x4x", "f32")`; a layout suffix (`, strided<…>`) is dropped.
-fn memref_lead_dims_and_elem(memty: &str) -> Option<(&str, &str)> {
+pub(crate) fn memref_lead_dims_and_elem(memty: &str) -> Option<(&str, &str)> {
     let inner = memty.strip_prefix("memref<")?;
     let inner = inner.split(',').next()?.trim_end_matches('>');
     let elem_start = inner.rfind('x').map(|i| i + 1).unwrap_or(0);
@@ -2219,6 +2319,9 @@ pub(crate) struct FnEmit<'a> {
     /// of the element type rather than the rank-0 `memref` a never-borrowed scalar local uses. The
     /// scalar analogue of `pslot_of`, carrying the element so the load/store types match.
     pub(crate) sslot_of: Vec<Option<ElementType>>,
+    /// The memref type a *tensor slot* holds (a `memref<memref<..>>` alloca), for a tensor local
+    /// given a new value in a branch.
+    pub(crate) tslot_of: Vec<Option<String>>,
     /// The function body's MLIR text, appended to as the walk proceeds.
     /// The function's entry block, for allocations that must happen once.
     ///
@@ -2404,6 +2507,7 @@ impl<'a> FnEmit<'a> {
             // the scalar return type. Reconstruct the function type `(arg types)->ret` from the actual
             // args, cast the pointer to it, and `func.call_indirect`. (#242)
             Opcode::CallIndirect => self.op_call_indirect(idx, ins),
+            Opcode::TensorElementAddress => self.op_tensor_element_address(idx, ins),
             Opcode::AutoDiff => self.op_autodiff(idx, ins),
             Opcode::TensorLoad => self.op_tensor_load(idx, ins),
             Opcode::TensorDim => self.op_tensor_dim(idx, ins),
@@ -2488,10 +2592,31 @@ impl<'a> FnEmit<'a> {
                 self.body += "  func.call @vx_task_failed() : () -> ()\n";
                 Ok(())
             }
+            Opcode::CancelOff => {
+                self.body += "  func.call @vx_cancel_off() : () -> ()\n";
+                Ok(())
+            }
+            Opcode::CancelOn => {
+                self.body += "  func.call @vx_cancel_on() : () -> ()\n";
+                Ok(())
+            }
+            // `VxLowering` waits for the task before this use of its value, and erases it.
+            Opcode::TaskJoin => {
+                let r = ins.operand1.0 as usize;
+                let v = self.names.get(r).ok_or(crate::emitter_gap!())?.clone();
+                let ty = self.value_mlir_ty(r)?;
+                self.body += &format!("  \"vx.task_join\"({v}) : ({ty}) -> ()\n");
+                Ok(())
+            }
             // A way out of the region before its end. `VxLowering` sends each `vx.yield` of a
-            // `tasks` block to the code after the block.
+            // `tasks` block to the code after the block. An exit from a task gives the value of
+            // the task, and the task stores it and ends.
             Opcode::RegionExit => {
-                self.body += "  \"vx.yield\"() : () -> ()\n";
+                if self.types.get(ins.type_idx.0 as usize).is_some() {
+                    self.yield_value(idx, ins.operand1.0 as usize)?;
+                } else {
+                    self.body += "  \"vx.yield\"() : () -> ()\n";
+                }
                 self.terminated = true;
                 Ok(())
             }
@@ -2513,6 +2638,8 @@ impl<'a> FnEmit<'a> {
             Opcode::AcrossId => self.op_across_id(idx, ins),
             Opcode::AcrossRegion => self.op_across_region(idx, ins),
             Opcode::TensorDrop => self.op_tensor_drop(idx, ins),
+            Opcode::LifetimeStart => self.op_lifetime(ins, "start"),
+            Opcode::LifetimeEnd => self.op_lifetime(ins, "end"),
             Opcode::Abort => self.op_abort(idx, ins),
             Opcode::PrintStr => self.op_print_str(idx, ins),
             Opcode::PrintStream => self.op_print_stream(idx, ins),
@@ -2578,12 +2705,19 @@ pub fn emit_function_mlir(
     if let Some((slot, memty)) = &ret_slot {
         params.push(format!("{slot}: {memty}"));
     }
+    // `requires valid(p, n)` on an `unsafe fn`, whose callers keep the promise in `unsafe` code.
+    let valid = crate::hir::check::pointer_clauses::valid_params(func);
     for (i, (_, ty)) in func.params.iter().enumerate() {
         // Signature-position MLIR type: scalar, payload-free enum `i32`, `!llvm.ptr` (pointer /
         // fn-pointer), tensor memref, or by-value aggregate `!llvm.struct`; else the function declines.
         let pty = ty_mlir(ty, ctx)?;
         let n = i as u32 + arg_offset;
-        params.push(format!("%arg{n}: {pty}{}", param_alias_attrs(ty, ctx)));
+        let attrs = if valid.iter().any(|(p, _)| *p == i) {
+            valid_pointer_attrs(ty)
+        } else {
+            param_alias_attrs(ty, ctx)
+        };
+        params.push(format!("%arg{n}: {pty}{attrs}"));
     }
     // A `Pinned<i32, ..>` return is the scalar it wraps, as at a call site.
     let ret_elem = match peel_wrappers(&func.return_type) {
@@ -2686,6 +2820,7 @@ pub fn emit_function_mlir(
         ptr_of: vec![false; hir.len()],
         pslot_of: vec![false; hir.len()],
         sslot_of: vec![None; hir.len()],
+        tslot_of: vec![None; hir.len()],
         entry: String::new(),
         body: String::new(),
         terminated: false,
@@ -2711,6 +2846,7 @@ pub fn emit_function_mlir(
     if func.name.as_ref() == "main" {
         em.entry += "  func.call @vx_init_signals() : () -> ()\n";
     }
+    em.entry += &valid_pointer_assumes(func, &valid, arg_offset);
 
     for (idx, ins) in hir.iter().enumerate() {
         em.step(idx, ins)?;

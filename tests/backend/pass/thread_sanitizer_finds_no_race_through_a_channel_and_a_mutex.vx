@@ -11,10 +11,6 @@
 // ThreadSanitizer must see each of these, and report no race.
 //
 // REQUIRES: thread-sanitizer
-// REQUIRES: flat-codegen
-// Only because the older code generator runs each task to its end at its `spawn`. A task
-// that waits for a later task then waits forever.
-//
 // RUN: vxc --sanitize=thread %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
 // CHECK: {{^}}sum 500500{{$}}
 

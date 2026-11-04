@@ -716,7 +716,7 @@ impl<'a> Parser<'a> {
                     name: call_name.into(),
                     fields,
                     type_id: None,
-                    span: Span::default(),
+                    span,
                 }))
             } else if self.match_token(&TokenType::DoubleColon) {
                 self.parse_enum_variant_expr(&mut call_name, parsed_type_args)
@@ -952,6 +952,8 @@ impl<'a> Parser<'a> {
                 task: None,
                 fails_as: None,
                 cancels_on_err: None,
+                value_ty: None,
+                closure_body: false,
             }));
         } else if self.check(&TokenType::If) {
             // The `if` token, so a diagnostic about the `if` points at it.
@@ -1060,8 +1062,8 @@ impl<'a> Parser<'a> {
 
         let peeked_token = self.peek().clone();
         let mut expr = match peeked_token.kind {
-            TokenType::Transfer => {
-                self.advance();
+            TokenType::Transfer | TokenType::TransferAsync => {
+                let is_async = self.advance().kind == TokenType::TransferAsync;
                 self.consume(&TokenType::LeftParen, "Expected '(' after transfer")?;
                 let inner = self.parse_expr()?;
                 self.consume(&TokenType::Comma, "Expected ','")?;
@@ -1072,6 +1074,7 @@ impl<'a> Parser<'a> {
                     space: mem,
                     cost: None,
                     lowering: None,
+                    is_async,
                     span: Span {
                         line: peeked_token.line,
                         column: peeked_token.column,
@@ -1369,11 +1372,25 @@ impl<'a> Parser<'a> {
                             }
                             self.consume(&TokenType::Pipe, "Expected '|' after closure params")?;
                         }
-                        let body = Box::new(self.parse_expr()?);
+                        // `|x| -> T { .. }`: a closure with a return type has a block body.
+                        let ret_ty = if self.match_token(&TokenType::Arrow) {
+                            Some(self.parse_type()?)
+                        } else {
+                            None
+                        };
+                        let body = if self.check(&TokenType::LeftBrace) {
+                            Box::new(self.parse_closure_block()?)
+                        } else if ret_ty.is_some() {
+                            return Err(self.error(
+                                "A closure with a return type needs a block body: `|x| -> T { .. }`",
+                            ));
+                        } else {
+                            Box::new(self.parse_expr()?)
+                        };
                         Expr::Closure(ClosureExpr {
                             params,
                             body,
-                            ret_ty: None,
+                            ret_ty,
                             captures: vec![],
                             span: Span {
                                 line: token.line,
@@ -1440,7 +1457,7 @@ impl<'a> Parser<'a> {
             }
         };
 
-        // Postfix operators: .member, .method(), [index]
+        // Postfix operators: .member, .method(), [index], ?
         loop {
             if self.match_token(&TokenType::Dot) {
                 // The method name's own token, so a diagnostic about the call points at it.
@@ -1528,6 +1545,19 @@ impl<'a> Parser<'a> {
                 });
             } else if self.check(&TokenType::As) {
                 expr = self.parse_as_casts(expr)?;
+            } else if self.check(&TokenType::Question) {
+                let token = self.advance();
+                let span = Span {
+                    line: token.line,
+                    column: token.column,
+                    length: token.length,
+                    expansion: self.expansion(),
+                };
+                expr = Expr::UnaryOp(UnaryOpExpr {
+                    op: UnaryOp::Try,
+                    expr: Box::new(expr),
+                    span,
+                });
             } else {
                 break;
             }
@@ -1573,6 +1603,40 @@ impl<'a> Parser<'a> {
     }
 
     /// `expr as T`, any number of times.
+    /// The block body of a closure, `{ ..; v }`: a plain block whose last expression with no
+    /// `;` is its value.
+    fn parse_closure_block(&mut self) -> ParseResult<'a, Expr> {
+        let brace = self.peek().clone();
+        self.consume(&TokenType::LeftBrace, "Expected '{'")?;
+        let mut stmts = Vec::new();
+        while !self.check(&TokenType::RightBrace) && !self.check(&TokenType::Eof) {
+            self.parse_statement_into(&mut stmts)?;
+        }
+        let mut ret = None;
+        if let Some(Statement::ExprStmt(ExprStmtStmt {
+            has_semi: false, ..
+        })) = stmts.last()
+        {
+            let Some(Statement::ExprStmt(e)) = stmts.pop() else {
+                unreachable!("matched above")
+            };
+            ret = Some(Box::new(e.expr));
+        }
+        self.consume(&TokenType::RightBrace, "Expected '}'")?;
+        let mut block = UnsafeBlockExpr::new(
+            stmts,
+            ret,
+            crate::syntax::Span {
+                line: brace.line,
+                column: brace.column,
+                length: brace.length,
+                expansion: self.expansion(),
+            },
+        );
+        block.closure_body = true;
+        Ok(Expr::UnsafeBlock(block))
+    }
+
     fn parse_as_casts(&mut self, mut expr: Expr) -> ParseResult<'a, Expr> {
         while self.check(&TokenType::As) {
             // The `as` token, so a diagnostic about the cast points at it.
@@ -2384,6 +2448,38 @@ mod tests {
         } else {
             panic!("Expected Closure, got {:?}", expr);
         }
+    }
+
+    #[test]
+    fn a_closure_has_a_block_body_and_a_written_type() {
+        let expr = parse_expr("|x : i32| -> i32 { let y = x; y }");
+        let Expr::Closure(ClosureExpr { body, ret_ty, .. }) = expr else {
+            panic!("expected a closure, got {expr:?}");
+        };
+        assert_eq!(ret_ty, Some(Type::Scalar(ElementType::I32)));
+        let Expr::UnsafeBlock(block) = &*body else {
+            panic!("expected a block body, got {body:?}");
+        };
+        assert!(
+            block.closure_body,
+            "the body is not marked as the body of a closure"
+        );
+        assert_eq!(block.stmts.len(), 1);
+        assert!(block.ret.is_some(), "the block has no last value");
+    }
+
+    #[test]
+    fn a_closure_with_a_written_type_needs_a_block() {
+        let input = "|x : i32| -> i32 x";
+        let tokens = Lexer::new(input).tokenize();
+        let mut parser = Parser::new(&tokens, input);
+        let error = parser
+            .parse_expr()
+            .expect_err("a body that is not a block parsed");
+        assert!(
+            format!("{error:?}").contains("needs a block body"),
+            "another error: {error:?}"
+        );
     }
 
     #[test]

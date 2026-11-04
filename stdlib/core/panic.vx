@@ -7,19 +7,46 @@
 //===----------------------------------------------------------------------===//
 // Stopping a program on purpose. `panic(msg)` and `abort()` are built into the language; these
 // are its common reasons, as functions that never return. A function can end with a call to one
-// and needs no `return` after it.
+// and needs no `return` after it. Each one reports the line of its call, through its `Caller`.
 
 /// Stops the program: code that should never run did.
-fn unreachable() -> ! {
-  panic("internal error: entered unreachable code");
+fn unreachable(at : Caller) -> ! {
+  panic("internal error: entered unreachable code", at);
 }
 
 /// Stops the program: this code is not written yet.
-fn todo() -> ! {
-  panic("not yet implemented");
+fn todo(at : Caller) -> ! {
+  panic("not yet implemented", at);
 }
 
 /// Stops the program: this case is not supported.
-fn unimplemented() -> ! {
-  panic("not implemented");
+fn unimplemented(at : Caller) -> ! {
+  panic("not implemented", at);
 }
+
+/// A place in the program: a file, a line and a column. Lines and columns start at 1.
+struct Location {
+  // The file, as the compiler was given it.
+  file : *const i8,
+  line : i32,
+  column : i32,
+}
+
+// A `Location` is three numbers, so it can be given to many calls.
+impl Copy for Location {}
+
+impl Location {
+  /// The place of this call: `let l = Location::here();`.
+  fn here(at : Caller) -> Location {
+    return at.location;
+  }
+}
+
+/// The place of a call. A function that ends with a parameter of this type gets it filled by the
+/// compiler: a call that leaves the argument out passes the place of the call. A function that
+/// gives its own `Caller` to a call reports the place of its own caller.
+struct Caller {
+  location : Location,
+}
+
+impl Copy for Caller {}

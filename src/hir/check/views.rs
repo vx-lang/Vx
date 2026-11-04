@@ -235,6 +235,7 @@ impl<'a> TypeChecker<'a> {
             self.borrow.record(
                 owner,
                 BorrowRecord {
+                    carried_from: None,
                     is_mut,
                     scope_depth: self.scopes.len(),
                     borrower_name: Some(borrower.to_string()),

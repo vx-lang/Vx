@@ -1,0 +1,184 @@
+//===- a_task_ends_early_with_return_or_a_question_mark.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A `return` in a task ends the task, and its value is the value of the task. A `?` in a task
+// ends the task with the `Err`, and the task fails: that cancels its `tasks` block.
+//
+// - `quarter` halves its number twice with `?`. For 12 the task gives `Ok(3)`. For 6 the second
+//   `?` ends the task with `Err(3)`.
+// - In `fail_while_another_task_waits`, the code of the block waits for `waiter`, which waits up
+//   to 10 seconds for a value that never comes. The `?` of the other task cancels the block, so
+//   `waiter` gives up at once and sees the cancel.
+// - `first_even` returns from a loop in the task.
+// - `noted` returns from a task while its `Note` is still in use, so the `return` drops it. The
+//   note of the function is in use after the task, so the `return` does not drop it.
+// - `say_odd` is a task with no handle. A `return;` ends it before its `println!`.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}quarter of 12 is 3{{$}}
+// CHECK: {{^}}quarter of 6 failed at 3{{$}}
+// CHECK: {{^}}the waiter gave up, cancelled true{{$}}
+// CHECK-NEXT: {{^}}the waiter gave 0{{$}}
+// CHECK-NEXT: {{^}}the block failed at 3{{$}}
+// CHECK: {{^}}the first even number below 9 is 2{{$}}
+// CHECK: {{^}}dropped the note of the task{{$}}
+// CHECK-NEXT: {{^}}the task gave 7{{$}}
+// CHECK-NEXT: {{^}}the note of the function is 1{{$}}
+// CHECK-NEXT: {{^}}dropped the note of the function{{$}}
+// CHECK-NEXT: {{^}}4 is even{{$}}
+
+import core::result;
+import std::sync::channel;
+import std::sync::wait;
+
+fn half(n : i64) -> Result<i64, i64> {
+  if n % 2 == 0 {
+    return Result<i64, i64>::Ok(n / 2);
+  }
+  return Result<i64, i64>::Err(n);
+}
+
+fn wait_for_nothing(rx : Receiver<i64>) -> i64 {
+  match rx.recv_for(10.0) {
+    Result<i64, RecvError>::Ok(_v) => {
+      println!("the waiter got a value");
+    }
+    Result<i64, RecvError>::Err(_e) => {
+      println!("the waiter gave up, cancelled {}", cancelled());
+    }
+  }
+  return 0;
+}
+
+fn quarter(n : i64) -> Result<i64, i64> {
+  let r : Result<i64, i64> = tasks {
+    let h = spawn {
+      let a = half(n)?;
+      let b = half(a)?;
+      Result<i64, i64>::Ok(b)
+    };
+    let v = h.join();
+    Result<i64, i64>::Ok(v)
+  };
+  return r;
+}
+
+fn fail_while_another_task_waits() -> Result<i64, i64> {
+  let (tx, rx) = channel<i64>(1);
+  let r : Result<i64, i64> = tasks {
+    let waiter = spawn {
+      wait_for_nothing(rx)
+    };
+    let h = spawn {
+      let a = half(3)?;
+      Result<i64, i64>::Ok(a)
+    };
+    let w = waiter.join();
+    println!("the waiter gave {}", w);
+    let v = h.join();
+    drop(tx);
+    Result<i64, i64>::Ok(v + w)
+  };
+  return r;
+}
+
+fn first_even(n : i64) -> i64 {
+  let r = tasks {
+    let h = spawn {
+      let one : i64 = 1;
+      for k in one..n {
+        if k % 2 == 0 {
+          return k;
+        }
+      }
+      0
+    };
+    h.join()
+  };
+  return r;
+}
+
+struct Note {
+  text : i64,
+}
+
+impl Drop for Note {
+  fn drop(self : &mut Note) -> void {
+    if self.text == 1 {
+      println!("dropped the note of the function");
+    } else {
+      println!("dropped the note of the task");
+    }
+  }
+}
+
+fn noted() -> void {
+  let outer = Note {
+    text : 1
+  };
+  let r = tasks {
+    let h = spawn {
+      let inner = Note {
+        text : 2
+      };
+      if inner.text == 2 {
+        return 7;
+      }
+      println!("the task did not return, note {}", inner.text);
+      0
+    };
+    h.join()
+  };
+  println!("the task gave {}", r);
+  println!("the note of the function is {}", outer.text);
+}
+
+fn say_odd(n : i64) -> void {
+  tasks {
+    spawn {
+      if n % 2 == 0 {
+        println!("{} is even", n);
+        return;
+      }
+      println!("{} is odd", n);
+    };
+  }
+}
+
+fn main() -> i32 {
+  match quarter(12) {
+    Result<i64, i64>::Ok(v) => {
+      println!("quarter of 12 is {}", v);
+    }
+    Result<i64, i64>::Err(e) => {
+      println!("quarter of 12 failed at {}", e);
+    }
+  }
+  match quarter(6) {
+    Result<i64, i64>::Ok(v) => {
+      println!("quarter of 6 is {}", v);
+    }
+    Result<i64, i64>::Err(e) => {
+      println!("quarter of 6 failed at {}", e);
+    }
+  }
+  match fail_while_another_task_waits() {
+    Result<i64, i64>::Ok(v) => {
+      println!("the block gave {}", v);
+    }
+    Result<i64, i64>::Err(e) => {
+      println!("the block failed at {}", e);
+    }
+  }
+  println!("the first even number below 9 is {}", first_even(9));
+  noted();
+  say_odd(4);
+  return 0;
+}

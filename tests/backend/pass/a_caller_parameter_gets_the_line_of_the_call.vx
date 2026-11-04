@@ -1,0 +1,64 @@
+//===- a_caller_parameter_gets_the_line_of_the_call.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A function whose last parameter has the type `Caller` gets the file, line and column of each
+// call that leaves the argument out. A function that gives its own `Caller` to a call reports the
+// place of its own caller. `Location::here()` is the place of that call.
+//
+// RUN: vxc --package tests=tests %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc --package tests=tests %s -j 4 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc --package tests=tests %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+import core::panic;
+import tests::modules::caller_lines;
+
+struct Counter<T> {
+  n : T,
+}
+
+impl<T>
+Counter<T> {
+  fn make(n : T, at : Caller) -> Counter<T> {
+    show_caller(4, at);
+    return Counter<T> {
+      n : n
+    };
+  }
+
+  fn get(self : &Counter<T>, at : Caller) -> &T {
+    show_caller(5, at);
+    return &self.n;
+  }
+}
+
+// A wrapper gives its own `Caller` to the call.
+fn wrapper(at : Caller) -> void {
+  show_caller(2, at);
+}
+
+fn first<T>(x : T, at : Caller) -> T {
+  show_caller(3, at);
+  return x;
+}
+
+// CHECK:      {{^}}1 at {{.*}}a_caller_parameter_gets_the_line_of_the_call.vx:[[@LINE+8]]:3{{$}}
+// CHECK-NEXT: {{^}}2 at {{.*}}a_caller_parameter_gets_the_line_of_the_call.vx:[[@LINE+8]]:3{{$}}
+// CHECK-NEXT: {{^}}3 at {{.*}}a_caller_parameter_gets_the_line_of_the_call.vx:[[@LINE+8]]:11{{$}}
+// CHECK-NEXT: {{^}}4 at {{.*}}a_caller_parameter_gets_the_line_of_the_call.vx:[[@LINE+8]]:11{{$}}
+// CHECK-NEXT: {{^}}5 at {{.*}}a_caller_parameter_gets_the_line_of_the_call.vx:[[@LINE+8]]:14{{$}}
+// CHECK-NEXT: {{^}}6 at {{.*}}caller_lines.vx:23:3{{$}}
+// CHECK-NEXT: {{^}}7 at {{.*}}a_caller_parameter_gets_the_line_of_the_call.vx:[[@LINE+8]]:14{{$}}
+fn main() -> i32 {
+  show_caller(1);
+  wrapper();
+  let x = first<i64>(7);
+  let c = Counter<i64>::make(x);
+  let n = *c.get();
+  from_the_module();
+  let here = Location::here();
+  show(7, here);
+  return (n - 7) as i32;
+}

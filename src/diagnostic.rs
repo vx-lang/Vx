@@ -136,6 +136,14 @@ pub enum DiagnosticCode {
     /// write. The closure keeps the value that it copied, so it does not see the write. A later
     /// release makes this an error (K4).
     W1034,
+    /// A `match` arm in a `loop` or `while` can take `Cancelled` from a wait and stays in the
+    /// loop. In a cancelled task each wait gives `Cancelled` at once, so the loop never ends (F4).
+    W1035,
+    /// A `drop` calls `send` or `recv`, which wait with no time limit of their own. A drop runs
+    /// with cancellation off, so when the other end never acts, the wait holds up the drop until
+    /// the limit of the drop: `VX_DROP_WAIT_SECONDS`, or 10 seconds. Then the wait gives up, as
+    /// in a cancelled block.
+    W1036,
 
     // --- Parser Errors (E1xxx) ---
     /// Unexpected token
@@ -407,9 +415,10 @@ pub enum DiagnosticCode {
     /// cannot return a handle, store it, or pass it to a function. Write
     /// `let h = spawn { .. };` and later `h.join()`.
     E3057,
-    /// A `return`, `break` or `continue` that leaves a task, or a task that joins another task.
-    /// The last expression of a task body is its result. A task cannot join another task yet.
-    /// Join both tasks in the `tasks` block.
+    /// A `break` or `continue` that leaves a task, a `return` with a value in a task that has no
+    /// handle, or a task that joins another task. A `return` in a task ends the task, and its
+    /// value is the result of the task. A task cannot join another task yet. Join both tasks in
+    /// the `tasks` block.
     E3058,
     /// An `extern` declaration of `malloc`, `calloc`, `realloc`, `aligned_alloc` or `free` whose
     /// type is not C's. The compiler calls these functions too, and it can share only a
@@ -422,6 +431,21 @@ pub enum DiagnosticCode {
     /// `let h = spawn { .. };`, and a join in its own block that always runs after the `spawn`.
     /// The block must give a `Result<U, E>` with the same `E`.
     E3060,
+    /// An impl of a trait does not write a method that the trait requires: one the trait
+    /// declares with no default body. A call to that method would otherwise fail where it is
+    /// called, with "method not found", though the fault is in the impl.
+    E3061,
+    /// A struct literal that writes its fields in an order other than the struct's declaration.
+    /// The fields run in the order the source writes them, so `P { y : f(), x : g() }` would run
+    /// `f` before `g` and store `y` before `x`. Write the fields in the order the struct declares
+    /// them.
+    E3062,
+    /// A `?` that cannot pass its error up. `x?` takes a `Result<T, E>`. It gives the `T` of an
+    /// `Ok`, and it passes an `Err` up unchanged: to the function, which must return a
+    /// `Result<_, E>` with the same `E`, to its closure, which must return one, or to its task or
+    /// `tasks` block, which must give one. A `?` in a closure needs the closure's type written,
+    /// `|x| -> Result<T, E> { .. }`. `?` does not convert the error. `.map_err(..)` converts it.
+    E3063,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
     /// Use of moved or consumed linear variable
@@ -439,7 +463,8 @@ pub enum DiagnosticCode {
     /// for a block: a variable declared outside a block cannot be given a value that points
     /// at a variable declared inside it. Nor can a variable keep a reference into a value with
     /// no name, such as `make_vec()` in `let r = &make_vec();`, when that value is dropped at
-    /// the end of its statement.
+    /// the end of its statement. A closure cannot return a reference to its own parameter, or to
+    /// the copy it keeps of a variable it uses (`|| &x`): each call has its own frame.
     E4005,
     /// An assignment through a shared reference: `*r = v`, `r.f = v` or `r[i] = v` where
     /// `r` is a `&T`. A shared reference only reads; writing needs a `&mut T`.
@@ -450,7 +475,10 @@ pub enum DiagnosticCode {
     /// A value moved out from behind a reference: `let b = *r;` where `r` is a reference to a
     /// type that is not `Copy`. The reference does not own the value, so it cannot give it
     /// away. Copy or clone it instead. A `match` on a reference names parts of the value behind
-    /// it, so `match r { Holder::Full(n) => n }` cannot move `n` either.
+    /// it, so `match r { Holder::Full(n) => n }` cannot move `n` either. Through a raw pointer,
+    /// `let b = *p;` and `let b = p[i];` are refused when the value has something to drop,
+    /// since its owner drops it too. Only an `unsafe fn` such as `core::ptr::read(p)` may take
+    /// it out.
     E4008,
     /// An assignment to a variable, or a field or element of it, while a `&` borrow of it is
     /// still used afterwards: `let r = &x; x = 2;` and then a use of `r`. The borrow would see
@@ -488,6 +516,13 @@ pub enum DiagnosticCode {
     /// region only borrows what it uses, and the function drops `t` after the region. Borrow it
     /// (`&t`), or clone it (`t.clone()`).
     E4015,
+    /// A borrow clause that is not well formed, or one that the body does not keep. In
+    /// `ensures !points_into(return, *p)` the result cannot point into the memory under `*p`, and
+    /// in `ensures !reaches(return, *p)` it also cannot point where a reference in `*p` points. In
+    /// `ensures !keeps(p)` the body stores `p`, or a reference read through it, nowhere that
+    /// outlives the call. `p` is a reference parameter. Each borrow clause is an `ensures` of its
+    /// own.
+    E4016,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block. `Tensor<..>::uninit()` is one: its elements
@@ -660,6 +695,10 @@ pub enum DiagnosticCode {
     /// A `Memory` declaration's `within:` names a space that is not built in, and that the
     /// program and its machine files do not declare. A typo in the name is the usual cause.
     E6035,
+    /// A token of `transfer_async` that the program drops with no `.wait()`: at the end of its
+    /// scope, or when an assignment gives its variable a new value. The copy may not be done
+    /// then, so its target may not hold the data. Call `.wait()`, which gives the placed tensor.
+    E6036,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch
@@ -686,7 +725,8 @@ pub enum DiagnosticCode {
     /// A call does not meet the called function's precondition (`requires`)
     E8006,
     /// An access clause that does not hold: an `atomic(t)` whose body uses `t` without an atomic
-    /// operation, or a `writes_only()` whose body may write memory
+    /// operation, a `reads_only(t)` whose body may write `t`, or a `writes_only()` whose body may
+    /// write memory
     E8007,
     /// A loop invariant that the prover cannot show to hold when the loop starts
     E8008,
@@ -696,6 +736,11 @@ pub enum DiagnosticCode {
     /// operation of a dialect that the list does not name, or the list names something that
     /// is not a dialect. The list is what the block says it uses, so it must be right.
     E8010,
+    /// A pointer clause that is not well formed: `requires valid(p, n)`, `requires
+    /// initialized(p, n)` or `requires !overlaps(p, q, n)`, where `p` and `q` are raw pointer
+    /// parameters. The checker cannot prove one at a call yet, so only an `unsafe fn` may have
+    /// one, and each clause is a `requires` of its own.
+    E8011,
 }
 
 impl std::fmt::Display for DiagnosticCode {

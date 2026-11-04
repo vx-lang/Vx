@@ -49,6 +49,9 @@ pub enum LogicalOp {
 pub enum UnaryOp {
     Not,
     Neg,
+    /// `x?`: the value of an `Ok`, or the `Err` passed up unchanged. The checker turns it into a
+    /// `match`, so no later pass sees it.
+    Try,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -160,6 +163,9 @@ pub struct TransferExpr {
     /// lowering: two machines may implement `Memory::L2 -> Memory::SMEM` differently, and
     /// the one that runs here is the one sema picked, not whichever the lookup finds first.
     pub lowering: Option<(MemorySpace, MemorySpace, String)>,
+    /// `transfer_async(x, M)`: the copy gives a `Token`, whose `.wait()` gives the placed
+    /// tensor. The code generators copy as for `transfer` today, and the wait is the value.
+    pub is_async: bool,
     pub span: Span,
 }
 
@@ -184,6 +190,7 @@ impl TransferExpr {
             space,
             cost: None,
             lowering: None,
+            is_async: false,
             span,
         }
     }
@@ -502,6 +509,12 @@ pub struct UnsafeBlockExpr {
     /// A task body whose value is this `Result` type. When it ends with an `Err`, it cancels its
     /// `tasks` block (F3).
     pub cancels_on_err: Option<Type>,
+    /// A `tasks` block with a value: the type of that value, set by the checker. A code generator
+    /// keeps the value in a slot of this type when an exit can leave the block.
+    pub value_ty: Option<Type>,
+    /// The program wrote this block as the body of a closure, `|x| { .. }`. It is a plain block,
+    /// so the code in it cannot do what needs `unsafe`.
+    pub closure_body: bool,
 }
 impl UnsafeBlockExpr {
     pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -513,6 +526,8 @@ impl UnsafeBlockExpr {
             task: None,
             fails_as: None,
             cancels_on_err: None,
+            value_ty: None,
+            closure_body: false,
         }
     }
 }
@@ -711,13 +726,33 @@ pub fn statement_always_exits(stmt: &Statement, never: &dyn Fn(&str) -> bool) ->
     }
 }
 
-/// Whether this call is `abort()` or `panic(msg)`, the two built-ins that end the program.
+/// Whether this call is `abort()` or `panic(msg)`, the two built-ins that end the program. A
+/// `panic` can also have a `Caller`, and after the checker it has a file and a line instead.
 pub fn is_abort_or_panic(c: &FunctionCallExpr) -> bool {
     match c.name.as_ref() {
         "abort" => c.args.is_empty(),
-        "panic" => c.args.len() == 1,
+        "panic" => (1..=3).contains(&c.args.len()),
         _ => false,
     }
+}
+
+/// What a checked `panic(msg, file, line)` prints, as the arguments of an `eprintln!`:
+/// `panic: <msg>`, and `  at <file>:<line>` on the next line.
+pub fn panic_message(c: &FunctionCallExpr) -> Vec<Expr> {
+    assert_eq!(
+        c.args.len(),
+        3,
+        "the checker gives each panic its file and line"
+    );
+    let text = |s: &str| Expr::StringLiteral(StringLiteralExpr::new(s.to_string(), c.span));
+    vec![
+        text("panic: "),
+        c.args[0].clone(),
+        text("\n  at "),
+        c.args[1].clone(),
+        text(":"),
+        c.args[2].clone(),
+    ]
 }
 
 /// The callee of the statement the checker puts before the drops of an exit from a `tasks`
@@ -736,6 +771,28 @@ pub fn tasks_wait_stmt(span: Span) -> super::Statement {
         has_semi: true,
         span,
     })
+}
+
+/// The callee that `h.join()` becomes, with `h` as its argument. No program can name it. The
+/// code generators wait for the task of `h` at the call, and its value is the value of `h`.
+pub const TASK_JOIN: &str = "$task_join";
+
+/// `$task_join(handle)`, for the join at `span`.
+pub fn task_join_expr(handle: Expr, span: Span) -> Expr {
+    Expr::FunctionCall(FunctionCallExpr::new(
+        TASK_JOIN.into(),
+        None,
+        vec![handle],
+        span,
+    ))
+}
+
+/// The handle of a call of [`task_join_expr`].
+pub fn task_join_handle(e: &Expr) -> Option<&Expr> {
+    match e {
+        Expr::FunctionCall(c) if c.name.as_ref() == TASK_JOIN => c.args.first(),
+        _ => None,
+    }
 }
 
 /// `Err(value)` of the type `Result<U, E>` of a `tasks` block that can fail, as the parser and
@@ -1396,6 +1453,7 @@ impl Expr {
                 space: e.space.clone(),
                 cost: e.cost,
                 lowering: e.lowering.clone(),
+                is_async: e.is_async,
                 span: e.span,
             }),
             // Type substitution does not touch topologies; topology substitution is done
@@ -1516,6 +1574,8 @@ impl Expr {
                 task: e.task,
                 fails_as: e.fails_as.as_ref().map(|t| t.substitute(mapping)),
                 cancels_on_err: e.cancels_on_err.as_ref().map(|t| t.substitute(mapping)),
+                value_ty: e.value_ty.as_ref().map(|t| t.substitute(mapping)),
+                closure_body: e.closure_body,
             }),
             Expr::StructInit(e) => {
                 let mut new_name = e.name.clone();

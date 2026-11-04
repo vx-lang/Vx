@@ -565,6 +565,76 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The arguments of a method call after its receiver, as `commit_reference_arg_reborrows`
+    /// handles a function call's: the result holds what an argument holds where `summary` says it
+    /// can reach it, a bare reference that it points through stays borrowed, and the borrow of an
+    /// argument that it cannot point into ends with the call. The receiver is slot 0 of
+    /// `summary`. `result` is whether the result is a `&mut`, and whether it holds a reference.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_method_arg_borrows(
+        &mut self,
+        receiver: &Expr,
+        args: &[Expr],
+        params: &[(crate::symbol::Symbol, Type)],
+        summary: &crate::hir::provenance::ReturnProvenance,
+        snapshots: &HashMap<String, Option<Vec<BorrowRecord>>>,
+        result: (bool, bool),
+        span: &Span,
+    ) {
+        let (result_is_mut, result_holds_ref) = result;
+        let target = self.current_assignment_target.clone();
+        let mut deriving: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if summary.includes(0) {
+            if let Some((base, _)) = Self::arg_reborrow_base(receiver) {
+                deriving.insert(base);
+            }
+        }
+        for (i, arg) in args.iter().enumerate() {
+            let slot = i + 1;
+            let Some((base, path)) = Self::arg_reborrow_base(arg) else {
+                continue;
+            };
+            let param = params.get(slot).map(|(_, ty)| ty);
+            if summary.includes(slot) {
+                deriving.insert(base.clone());
+                if let Some(pty @ Type::Borrow { .. }) = param {
+                    if !matches!(arg, Expr::Borrow(_))
+                        && self.is_reference_variable(&base.as_str().into())
+                    {
+                        let is_mut = Self::is_mut_ref(pty);
+                        self.track_reference_arg_borrow(
+                            &base,
+                            path,
+                            is_mut,
+                            result_is_mut || (result_holds_ref && is_mut),
+                            true,
+                            span,
+                        );
+                    }
+                }
+            }
+            if summary.holds(slot) {
+                if let Some(target) = &target {
+                    self.borrow
+                        .copy_borrows_through(&base, target, self.scopes.len());
+                }
+            }
+        }
+        for arg in args {
+            let Some((base, _)) = Self::arg_reborrow_base(arg) else {
+                continue;
+            };
+            if deriving.contains(&base) {
+                continue;
+            }
+            if let Some(snap) = snapshots.get(&base) {
+                let prev: &[BorrowRecord] = snap.as_deref().unwrap_or(&[]);
+                self.borrow
+                    .retain_present(base.as_str(), prev, target.as_deref());
+            }
+        }
+    }
+
     /// After the argument loop, decide which reference-argument reborrows persist past the call
     /// and revert the rest (#243). A reborrow outlives the call iff the callee returns a reference
     /// the argument's slot derives from; every other base is restored to the borrows it had before
@@ -673,7 +743,11 @@ impl<'a> TypeChecker<'a> {
             // would resurrect borrows the arg loop legitimately NLL-released, firing
             // spurious conflicts later.
             let prev: &[BorrowRecord] = snap.as_deref().unwrap_or(&[]);
-            self.borrow.retain_present(base.as_str(), prev);
+            self.borrow.retain_present(
+                base.as_str(),
+                prev,
+                self.current_assignment_target.as_deref(),
+            );
         }
     }
 
@@ -702,7 +776,11 @@ impl<'a> TypeChecker<'a> {
             };
             names.insert(param.clone(), value);
         }
-        for req in &func.requires {
+        for req in func
+            .requires
+            .iter()
+            .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
+        {
             let at_call = crate::hir::prover::substitute_names(req, &names);
             if !self.prove_expr(&at_call) {
                 let condition = crate::hir::prover::to_source(req)
@@ -800,9 +878,13 @@ impl<'a> TypeChecker<'a> {
                 let reborrow_plan =
                     self.prepare_reference_arg_reborrows(resolved_name.clone(), args.as_slice());
                 // A lane reduction gives a number, so the borrows of its tensors end with the
-                // call. It has no signature for the plan to read.
+                // call. It has no signature for the plan to read. The token of a lane copy keeps
+                // its borrows until its wait.
                 let lane_bases: Vec<(String, Option<Vec<BorrowRecord>>)> =
-                    if resolved_name.as_ref().starts_with("lanes::") && !self.speculating {
+                    if resolved_name.as_ref().starts_with("lanes::")
+                        && resolved_name.as_ref() != "lanes::copy_async"
+                        && !self.speculating
+                    {
                         args.iter()
                             .filter_map(Self::arg_reborrow_base)
                             .map(|(base, _)| {
@@ -813,6 +895,21 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         Vec::new()
                     };
+                if let Some((params, _)) = self.resolve_callee_ref_signature(&resolved_name) {
+                    self.fill_caller_arg(&params, args, span);
+                }
+                if resolved_name == "panic".into() {
+                    if args.len() == 2 {
+                        let ty = self.check_expr_type_flag(&mut args[1], false);
+                        if !matches!(&ty, Type::Struct(n, _) if n.as_ref() == "Caller") {
+                            self.errors.push(format!(
+                                "Function 'panic' expects a Caller after the message, got {ty}"
+                            ));
+                            args.pop();
+                        }
+                    }
+                    self.give_panic_its_place(args, span);
+                }
                 let errors_before_args = self.errors.inner.len();
                 for arg in args.iter_mut() {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume));
@@ -846,8 +943,11 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.commit_reference_arg_reborrows(&reborrow_plan, &arg_types, span);
                 for (base, snap) in &lane_bases {
-                    self.borrow
-                        .retain_present(base, snap.as_deref().unwrap_or(&[]));
+                    self.borrow.retain_present(
+                        base,
+                        snap.as_deref().unwrap_or(&[]),
+                        self.current_assignment_target.as_deref(),
+                    );
                 }
                 if resolved_name == "print".into() && args.len() == 1 {
                     Self::prepare_print_operand(&mut args[0], &arg_types[0]);
@@ -1240,6 +1340,92 @@ impl<'a> TypeChecker<'a> {
         )
     }
 
+    /// The file of this compile, as the compiler was given it.
+    pub(crate) fn file_name(&self) -> String {
+        self.errors
+            .file
+            .as_ref()
+            .map(|f| f.to_string())
+            .unwrap_or_default()
+    }
+
+    /// `panic(msg)` gets two more arguments: the file and the line of the call. `panic(msg, at)`
+    /// gets the file and the line of the `Caller` `at` in their place. The code generators print
+    /// them under the message.
+    pub(crate) fn give_panic_its_place(&self, args: &mut Vec<Expr>, span: &crate::syntax::Span) {
+        match args.len() {
+            1 => {
+                args.push(Expr::StringLiteral(crate::syntax::StringLiteralExpr::new(
+                    self.file_name(),
+                    *span,
+                )));
+                args.push(Expr::Number(crate::syntax::NumberExpr::new(
+                    span.line.to_string(),
+                    Some(ElementType::I32),
+                    *span,
+                )));
+            }
+            2 => {
+                let at = args.pop().unwrap();
+                let member = |base: Expr, name: &str| {
+                    Expr::MemberAccess(crate::syntax::MemberAccessExpr::new(
+                        Box::new(base),
+                        name.into(),
+                        *span,
+                    ))
+                };
+                let location = member(at, "location");
+                args.push(member(location.clone(), "file"));
+                args.push(member(location, "line"));
+            }
+            _ => {}
+        }
+    }
+
+    /// A call that leaves out a last parameter of type `Caller` gets the place of the call:
+    /// `Caller { location : Location { file : "<file>", line : <line>, column : <column> } }`.
+    /// `params` are the parameters after any receiver.
+    pub(crate) fn fill_caller_arg(
+        &self,
+        params: &[Type],
+        args: &mut Vec<Expr>,
+        span: &crate::syntax::Span,
+    ) -> bool {
+        let wants = params.len() == args.len() + 1
+            && matches!(params.last(), Some(Type::Struct(n, _)) if n.as_ref() == "Caller");
+        if !wants {
+            return false;
+        }
+        let file = self.file_name();
+        let number = |n: usize| {
+            Expr::Number(crate::syntax::NumberExpr::new(
+                n.to_string(),
+                Some(ElementType::I32),
+                *span,
+            ))
+        };
+        let location = Expr::StructInit(crate::syntax::StructInitExpr {
+            name: "Location".into(),
+            fields: vec![
+                (
+                    "file".into(),
+                    Expr::StringLiteral(crate::syntax::StringLiteralExpr::new(file, *span)),
+                ),
+                ("line".into(), number(span.line)),
+                ("column".into(), number(span.column)),
+            ],
+            type_id: None,
+            span: *span,
+        });
+        args.push(Expr::StructInit(crate::syntax::StructInitExpr {
+            name: "Caller".into(),
+            fields: vec![("location".into(), location)],
+            type_id: None,
+            span: *span,
+        }));
+        true
+    }
+
     /// Check a call's arguments against the callee's parameter list: the count first (E3010),
     /// then each argument's type against its parameter (E3003). A literal argument is refined to
     /// the parameter's type before the comparison, so `f(7)` fits an `i64` parameter. Every
@@ -1270,6 +1456,10 @@ impl<'a> TypeChecker<'a> {
         let bound = self.bind_extern_memories(callee, params, arg_types);
         let params = bound.as_deref().unwrap_or(params);
         for (i, param_ty) in params.iter().enumerate() {
+            // `&mut a` passed as a raw pointer keeps no borrow of `a`.
+            if Self::is_raw_pointer(param_ty) {
+                self.borrow.drops.note_raw_pointer();
+            }
             let arg_ty = self.refine_literal_arg(&mut args[i], param_ty, &arg_types[i]);
             // An `Unknown` argument already has its error, a use of a moved value say.
             if !self.is_assignable(param_ty, &arg_ty)
@@ -2563,10 +2753,16 @@ impl<'a> TypeChecker<'a> {
         } else if resolved_name == "panic" {
             // `abort()` with a message. The message is a C string, so it can be a parameter that
             // a caller filled in, as `expect(msg)` needs, not only a literal.
+            // `give_panic_its_place` added the file and the line of the call, or of a `Caller`.
             let c_string = Type::Pointer(Box::new(Type::Scalar(ElementType::I8)), None, false);
-            if args.len() != 1 {
-                self.errors
-                    .push("Function 'panic' expects 1 argument, the message".to_string());
+            let has_place = args.len() == 3
+                && arg_types[1] == c_string
+                && arg_types[2] == Type::Scalar(ElementType::I32);
+            if !has_place {
+                self.errors.push(
+                    "Function 'panic' expects a message, and can take a Caller after it"
+                        .to_string(),
+                );
             } else if arg_types[0] != c_string {
                 self.errors.push(format!(
                     "Function 'panic' expects a string message, got {}",
@@ -2847,6 +3043,24 @@ impl<'a> TypeChecker<'a> {
             crate::hir::provenance::compute_return_provenance_with(inst, &self.env.decls, &callee)
         };
         self.mono.return_provenances.insert(inst.name.clone(), prov);
+        // The walk of the checked body follows each call, so it proves more `!keeps` bits than
+        // the walk of the syntax could.
+        let inferred = {
+            let instances = &self.mono.return_provenances;
+            let functions = &self.env.return_provenances;
+            let callee = |name: &str| instances.get(name).or_else(|| functions.get(name)).copied();
+            let not_kept = |name: &str| self.not_kept_by(name);
+            crate::hir::check::borrow_clauses::inferred_not_kept(
+                inst,
+                &self.env.decls,
+                &callee,
+                &not_kept,
+            )
+        };
+        let not_kept = crate::hir::check::borrow_clauses::not_kept_params(inst) | inferred;
+        if not_kept != 0 {
+            self.mono.not_kept.insert(inst.name.clone(), not_kept);
+        }
     }
 
     /// Names a generic function's body by the function's name and where the body starts. Two
@@ -3107,6 +3321,7 @@ impl<'a> TypeChecker<'a> {
                 let receiver_root = self.changed_root(obj);
                 let mut base_ty = self.check_expr_type_flag(obj, false);
                 self.allow_cross_topology = prev_allow;
+                self.warn_wait_in_drop(&base_ty, _method, &method_span);
 
                 // Pre-infer closure argument types for specific intrinsics before type-checking them
                 let mut reduce_init_ty = None;
@@ -3293,6 +3508,16 @@ impl<'a> TypeChecker<'a> {
                 let mut mapping = HashMap::new();
                 let found_method = self.resolve_method_in_impls(&base_ty, _method, &mut mapping);
                 if let Some((generic_method, ib)) = found_method {
+                    let after_self: Vec<Type> = generic_method
+                        .params
+                        .iter()
+                        .skip(1)
+                        .map(|(_, t)| t.clone())
+                        .collect();
+                    if self.fill_caller_arg(&after_self, args, &method_span) {
+                        let last = args.last_mut().expect("the filled argument");
+                        checked_arg_types.push(self.check_expr_type(last));
+                    }
                     // An `unsafe fn` method needs an unsafe context at its call, exactly as a
                     // free function does. Only the resolution differs, so the rule is repeated
                     // here rather than shared: a method never reaches `env.functions`.
@@ -3392,6 +3617,7 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                     }
+                    let method_params = generic_method.params.clone();
                     let (ret_ty, func_call) = self.instantiate_method_call_rewrite(
                         generic_method,
                         mapping,
@@ -3412,7 +3638,11 @@ impl<'a> TypeChecker<'a> {
                     if holds_no_reference && !self.speculating {
                         for (base, snap) in &borrowed_snapshots {
                             let prev: &[BorrowRecord] = snap.as_deref().unwrap_or(&[]);
-                            self.borrow.retain_present(base.as_str(), prev);
+                            self.borrow.retain_present(
+                                base.as_str(),
+                                prev,
+                                self.current_assignment_target.as_deref(),
+                            );
                         }
                     }
                     // A returned reference keeps the receiver borrowed while it is used.
@@ -3458,6 +3688,17 @@ impl<'a> TypeChecker<'a> {
                                 .copy_borrows_through(&receiver, &target, self.scopes.len());
                         }
                     }
+                    if returns_ref && !self.speculating {
+                        self.commit_method_arg_borrows(
+                            obj,
+                            args,
+                            &method_params,
+                            &summary,
+                            &borrowed_snapshots,
+                            (Self::is_mut_ref(&ret_ty), holds_ref),
+                            &method_span,
+                        );
+                    }
                     *expr = func_call;
                     return ret_ty;
                 }
@@ -3489,6 +3730,7 @@ impl<'a> TypeChecker<'a> {
                         space: target_mem,
                         cost: None,
                         lowering: None,
+                        is_async: false,
                         span: method_span,
                     });
                     // Mark it so the per-seam obligation in `check_transfer_expr` sends
@@ -3503,6 +3745,7 @@ impl<'a> TypeChecker<'a> {
                         space: target_mem,
                         cost: None,
                         lowering: None,
+                        is_async: false,
                         span: Span::default(),
                     });
                 } else if _method.as_ref() == "as_ptr" || **_method == *"as_mut_ptr" {
@@ -3674,7 +3917,7 @@ impl<'a> TypeChecker<'a> {
         // `Type::method(..)`: the method's declared signature, found the way
         // `check_static_method_call` finds it. Before its first instance exists, nothing else
         // knows it, and a reference the call returns would keep no borrow.
-        if let Some(sig) = self.static_method_signature(base) {
+        if let Some(sig) = self.static_method_signature(resolved_name) {
             return Some(sig);
         }
         // A function from an `extern` block. Without its signature, none of the borrows its

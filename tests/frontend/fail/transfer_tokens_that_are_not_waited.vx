@@ -1,0 +1,52 @@
+//===- transfer_tokens_that_are_not_waited.vx - Vx Compiler -------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A token of `transfer_async` must be waited, or the copy may not be done. Each function here
+// drops a token with no `.wait()`, or reads the data before the wait.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn filled(v : f32) -> Tensor<f32, [4]> {
+  let mut t = unsafe { Tensor<f32, [4]>::uninit() };
+  t[0] = v;
+  return t;
+}
+
+fn dropped_at_the_end_of_its_scope() -> void {
+  // CHECK-DAG: Error[E6036] at {{.*}}.vx:[[@LINE+1]]:3: the transfer token '_never' is dropped with no `.wait()` when its scope ends, so the copy may not be done. Call `_never.wait()`, which gives the placed tensor
+  let _never = transfer_async(filled(1.0), Memory::CPU_DRAM);
+}
+
+fn overwritten() -> f32 {
+  let mut t = transfer_async(filled(1.0), Memory::CPU_DRAM);
+  // CHECK-DAG: Error[E6036] at {{.*}}.vx:[[@LINE+1]]:3: the transfer token 't' is dropped with no `.wait()` when this assignment gives it a new value
+  t = transfer_async(filled(2.0), Memory::CPU_DRAM);
+  let x = t.wait();
+  return x[0];
+}
+
+// CHECK-DAG: Error[E6036] at {{.*}}.vx:[[@LINE+1]]:{{[0-9]+}}: the transfer token 't' is dropped with no `.wait()` when its scope ends
+fn takes_a_token_and_drops_it(t : Token<Tensor<f32, [4], Memory::CPU_DRAM>>) -> void {
+}
+
+// A function that waits for the token it takes is right.
+fn takes_a_token_and_waits(t : Token<Tensor<f32, [4], Memory::CPU_DRAM>>) -> f32 {
+  let x = t.wait();
+  return x[0];
+}
+
+fn read_before_wait() -> f32 {
+  let t = transfer_async(filled(1.0), Memory::CPU_DRAM);
+  // CHECK-DAG: Error[E3004] {{.*}}Cannot index a value of type Token<Tensor<f32, [4], Memory::CPU_DRAM>>
+  let v = t[0];
+  let x = t.wait();
+  return v + x[0];
+}
+
+fn main() -> i32 {
+  return 0;
+}

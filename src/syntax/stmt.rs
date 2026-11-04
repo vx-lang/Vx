@@ -152,15 +152,39 @@ impl CompoundAssignStmt {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone)]
 pub struct AssertStmt {
     pub expr: Box<Expr>,
     pub msg: Option<String>,
     pub span: Span,
+    /// `<file>:<line>` of the assert, which a failed assert prints. The checker sets it.
+    pub at: Option<String>,
+}
+
+// `at` comes from `span`, so two asserts are equal without it. The checker can walk a function
+// twice, and it finds the asserts that it added the first time by equality.
+impl PartialEq for AssertStmt {
+    fn eq(&self, other: &Self) -> bool {
+        self.expr == other.expr && self.msg == other.msg && self.span == other.span
+    }
 }
 impl AssertStmt {
     pub fn new(expr: Box<Expr>, msg: Option<String>, span: Span) -> Self {
-        Self { expr, msg, span }
+        Self {
+            expr,
+            msg,
+            span,
+            at: None,
+        }
+    }
+
+    /// What a failed assert prints: its message, and `  at <file>:<line>` on the next line.
+    pub fn failure_message(&self) -> String {
+        let msg = self.msg.as_deref().unwrap_or("assertion failed");
+        match &self.at {
+            Some(at) => format!("{msg}\n  at {at}"),
+            None => msg.to_string(),
+        }
     }
 }
 
@@ -250,6 +274,9 @@ pub struct DropStmt {
     /// Freed only once the next statement has computed its value: a `return`'s, a block's last
     /// expression, or an assignment's right-hand side, which may still read the tensor.
     pub after_value: bool,
+    /// Frees nothing: the struct or enum `name` is no longer used, so its stack slot can hold
+    /// another value. It comes after the other drops of `name`.
+    pub ends_lifetime: bool,
     pub span: Span,
 }
 
@@ -390,6 +417,7 @@ impl Statement {
                 expr: Box::new(e.expr.substitute(mapping)),
                 msg: e.msg.clone(),
                 span: e.span,
+                at: e.at.clone(),
             }),
             Statement::Loop(e) => Statement::Loop(LoopStmt {
                 invariants: e

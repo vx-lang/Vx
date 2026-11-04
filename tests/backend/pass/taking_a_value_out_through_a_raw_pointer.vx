@@ -1,0 +1,76 @@
+//===- taking_a_value_out_through_a_raw_pointer.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The ways that may take a value out through a raw pointer: `core::ptr::read`, an `unsafe fn`
+// of the program's own, `swap` and `replace`, and a copy of a value with nothing to drop.
+// Each `Noisy` prints `d<id>` once when it is dropped.
+
+// EXPECT: read=3; own=4; plain=5; a=2; b=1; old=2; a=6;
+// EXPECT: a=6; end d2 d1 d6 d4 d3 done
+
+import core::mem;
+import core::ptr;
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("d{} ", self.id);
+  }
+}
+
+struct Plain {
+  id : i32,
+}
+
+unsafe fn take(p : *const Noisy) -> Noisy {
+  return unsafe { *p };
+}
+
+fn run() -> void {
+  let three = Noisy {
+    id: 3
+  };
+  let r = unsafe { read((&three) as *const Noisy) };
+  print!("read={}; ", r.id);
+  forget(r);
+
+  let four = Noisy {
+    id: 4
+  };
+  let t = unsafe { take((&four) as *const Noisy) };
+  print!("own={}; ", t.id);
+  forget(t);
+
+  let five = Plain {
+    id: 5
+  };
+  let pp = (&five) as *const Plain;
+  let c = unsafe { *pp };
+  print!("plain={}; ", c.id);
+
+  let mut a = Noisy {
+    id: 1
+  };
+  let mut b = Noisy {
+    id: 2
+  };
+  swap(&mut a, &mut b);
+  print!("a={}; b={}; ", a.id, b.id);
+  let old = replace(&mut a, Noisy {
+    id: 6
+  });
+  print!("old={}; a={}; end ", old.id, a.id);
+}
+
+fn main() -> i32 {
+  run();
+  println!("done");
+  return 0;
+}
