@@ -311,6 +311,32 @@ void test_free_all_frees_only_live_regions() {
         "a second free_all releases only the new buffer");
 }
 
+// After a host disconnects, the next host gets every slot of the table again.
+// A handle from the old host must not resolve to a buffer of the new host.
+void test_free_all_gives_the_slots_back() {
+  vx_remote_region small[2];
+  vx_remote_table t;
+  vx_remote_table_init(&t, small, 2);
+  num_released = 0;
+  uint64_t old_a = vx_remote_table_alloc(&t, 1, 4096, 0, &buffers[0]);
+  uint64_t old_b = vx_remote_table_alloc(&t, 1, 4096, 0, &buffers[1]);
+  vx_remote_table_free_all(&t, record_release);
+
+  uint64_t new_a = vx_remote_table_alloc(&t, 1, 4096, 0, &buffers[2]);
+  uint64_t new_b = vx_remote_table_alloc(&t, 1, 4096, 0, &buffers[3]);
+  check(new_a != 0 && new_b != 0,
+        "a full table holds two new buffers after free_all");
+
+  vx_remote_ref ref;
+  check(!vx_remote_resolve(&t, old_a, &ref) &&
+            !vx_remote_resolve(&t, old_a + 100, &ref) &&
+            !vx_remote_resolve(&t, old_b, &ref),
+        "an address of the old host does not resolve");
+  check(vx_remote_resolve(&t, new_b + 100, &ref) &&
+            ref.region->remote == &buffers[3] && ref.offset == 100,
+        "an address of the new host resolves to its own buffer");
+}
+
 } // namespace
 
 int main() {
@@ -325,6 +351,7 @@ int main() {
   test_allocation_ceiling();
   test_free_does_not_reclaim_space();
   test_free_all_frees_only_live_regions();
+  test_free_all_gives_the_slots_back();
 
   if (failures) {
     fprintf(stderr, "%d check(s) failed\n", failures);
