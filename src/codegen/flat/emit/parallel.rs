@@ -133,6 +133,23 @@ impl FnEmit<'_> {
     // Close the `vx.spawn` region: terminate its last block with `vx.yield` (unless a body
     // terminator already ended it), stamp the `topology` attribute, and resume emitting into
     // the enclosing block (which the spawn op did not terminate).
+    /// The MLIR type of register `r`: a pointer for a slot, or the type of the value.
+    pub(crate) fn value_mlir_ty(&self, r: usize) -> Lowered<String> {
+        if let Some(Some(m)) = self.mem_of.get(r) {
+            return Ok(m.clone());
+        }
+        let in_slot = self.agg_of.get(r).copied().flatten().is_some();
+        if in_slot || self.ptr_of.get(r).copied().unwrap_or(false) {
+            return Ok("!llvm.ptr".to_string());
+        }
+        let by_value = self.agg_val_of.get(r).copied().flatten();
+        if let Some(a) = by_value.and_then(|g| self.ctx.aggs.get(&g)) {
+            return Ok(a.struct_ty.clone());
+        }
+        let elem = self.elem_at(r as u32).ok_or(crate::emitter_gap!())?;
+        Ok(mlir_scalar(&elem).ok_or(crate::emitter_gap!())?.to_string())
+    }
+
     /// Yields the value of register `r` from the region, when the block is not terminated, and
     /// gives its MLIR type. A struct in a slot is yielded as its value, and the struct's id
     /// comes back too.
@@ -173,8 +190,12 @@ impl FnEmit<'_> {
     pub(crate) fn op_spawn_end(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
         let (topo, open_at, name) = self.spawn_stack.pop().ok_or(crate::emitter_gap!())?;
         let across = matches!(self.region_slots.pop(), Some(Some(_)));
-        // The topology's name as the program wrote it, from the function's string table.
+        // The topology's name as the program wrote it, from the function's string table. A task
+        // has no name: its high half is the line of its `spawn`.
         let name = match name.checked_sub(1) {
+            _ if topo == crate::arch::TASK_DISPATCH_ID as i64 => {
+                format!(", vx.line = {name} : i64")
+            }
             Some(i) => {
                 let s = self.strings.get(i as usize).ok_or(crate::emitter_gap!())?;
                 format!(
@@ -248,8 +269,9 @@ impl FnEmit<'_> {
                 Some(chip) => format!(", chip = \"{chip}\""),
                 None => String::new(),
             };
+            let offload = declared.offload;
             self.body += &format!(
-                "  }}) {{arch = \"{arch}\"{chip}, topology = {topo} : i32{name}{trip}{across}}} : () -> ({result_ty})\n"
+                "  }}) {{arch = \"{arch}\"{chip}, offload = {offload}, topology = {topo} : i32{name}{trip}{across}}} : () -> ({result_ty})\n"
             );
         } else {
             self.body += &format!(
@@ -329,6 +351,9 @@ impl FnEmit<'_> {
         }
         if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
             add("subgroup");
+        }
+        if ins.imm & crate::bytecode::LANE_REDUCE_OWN_ROW != 0 {
+            add("own_row");
         }
         let v = format!("%v{idx}");
         if argmax {

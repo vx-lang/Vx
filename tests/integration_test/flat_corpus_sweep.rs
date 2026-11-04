@@ -85,9 +85,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // `Option::take` writes through `&mut Option<T>`, which the flat path declines as "a
     // pointer element type that is not modelled". The answers come from the AST path.
     "backend/pass/core_option.vx",
-    // An `Option` of an `Option` and of a pair: the flat path declines `main` as "an enum
-    // with no modelled instance layout". The answers come from the AST path.
-    "backend/pass/core_option_flatten_unzip.vx",
     // `fetch_update` calls a closure that answers an `Option`, which the flat path declines
     // as "an indirect callee returning a non-scalar". The answers come from the AST path.
     "backend/pass/core_sync_atomic_fetch_update.vx",
@@ -372,6 +369,7 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/across_kernels_from_polybench_and_rodinia.vx",    // needs --machine
             "optimizations/pass/lane_reductions_on_the_cpu.vx",                   // needs --machine
             "optimizations/pass/lane_reductions_on_the_gpu.vx",                   // needs --machine
+            "optimizations/pass/lane_values_stay_in_registers_on_the_gpu.vx",     // needs --machine
             "optimizations/pass/lane_argmax_on_the_cpu.vx",                       // needs --machine
             "optimizations/pass/if_values_that_read_a_tensor.vx",                 // needs --machine
             "optimizations/pass/code_after_the_blocks_runs_on_the_lanes_of_one_block.vx", // needs --machine
@@ -389,6 +387,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/across_loops_get_a_launch_check_only_when_an_index_may_wrap.vx",
             // needs --machine
             "optimizations/pass/an_across_loop_whose_index_wraps_stops_at_the_launch.vx",
+            // needs --machine
+            "optimizations/pass/two_tensors_in_a_gpu_kernel_share_local_memory.vx",
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {
             continue;

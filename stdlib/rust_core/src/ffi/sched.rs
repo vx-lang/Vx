@@ -55,6 +55,8 @@ pub(crate) struct TaskLocals {
     pub(crate) put_aside: Vec<Option<Arc<CancelMark>>>,
     pub(crate) line: Vec<u8>,
     pub(crate) to_stderr: bool,
+    pub(crate) site: Option<crate::ffi::tasks::Site>,
+    pub(crate) cancels: u32,
 }
 
 impl TaskLocals {
@@ -62,6 +64,8 @@ impl TaskLocals {
     fn swap_with_thread(&mut self) {
         crate::ffi::tasks::swap_marks(&mut self.mark, &mut self.put_aside);
         lines::swap_with_thread(&mut self.line, &mut self.to_stderr);
+        crate::ffi::tasks::swap_site(&mut self.site);
+        crate::ffi::tasks::swap_cancels(&mut self.cancels);
     }
 }
 
@@ -120,6 +124,9 @@ pub(crate) struct Scheduler {
     /// The fibers that a worker runs now. A worker counts its fiber from the `pop` until the
     /// fiber is on a queue or a bucket list again, or ended.
     running: AtomicUsize,
+    /// The running fibers that wait on their worker's thread, because foreign code called the Vx
+    /// function they are in (W9). Only a wake can let one go on, so `all_parked` counts them.
+    blocked: AtomicUsize,
     workers: AtomicUsize,
     max_workers: usize,
     /// The monitor wrote the message about the limit.
@@ -154,6 +161,7 @@ impl Scheduler {
             switches: AtomicU64::new(0),
             idle: AtomicUsize::new(0),
             running: AtomicUsize::new(0),
+            blocked: AtomicUsize::new(0),
             workers: AtomicUsize::new(0),
             max_workers,
             told_limit: AtomicBool::new(false),
@@ -316,20 +324,44 @@ impl Scheduler {
     }
 
     /// True when no fiber runs and none is ready. Each fiber that did not end then waits on a
-    /// bucket, and only a thread that is not a worker can wake it. With no fibers, it is true.
+    /// bucket, parked or blocked on its thread, and only a thread that is not a worker can wake
+    /// it. With no fibers, it is true.
     pub(crate) fn all_parked(&self) -> bool {
         // `pop` counts a fiber as running under this lock, so no fiber is between the two.
         let ready = self.ready.lock().unwrap();
-        ready.is_empty() && self.running.load(Ordering::SeqCst) == 0
+        ready.is_empty()
+            && self.running.load(Ordering::SeqCst) == self.blocked.load(Ordering::SeqCst)
+    }
+
+    /// A running fiber starts to wait on its thread, under a callback.
+    pub(crate) fn blocked(&self) {
+        self.blocked.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// A wake ended the wait of a fiber on its thread, or the wait ended with no wake.
+    pub(crate) fn unblocked(&self) {
+        self.blocked.fetch_sub(1, Ordering::SeqCst);
     }
 
     /// Starts `run(env)` as a fiber with the cancel mark `mark`. The caller frees the fiber after
     /// `done` is 1.
+    #[cfg(test)]
     pub(crate) fn spawn(
         &'static self,
         run: VxTaskFn,
         env: *mut u8,
         mark: Option<Arc<CancelMark>>,
+    ) -> Box<Fiber> {
+        self.spawn_at(run, env, mark, None)
+    }
+
+    /// `spawn` for a task with the site `site`.
+    pub(crate) fn spawn_at(
+        &'static self,
+        run: VxTaskFn,
+        env: *mut u8,
+        mark: Option<Arc<CancelMark>>,
+        site: Option<crate::ffi::tasks::Site>,
     ) -> Box<Fiber> {
         let Some(stack) = self.stacks.take() else {
             eprintln!("vx: the system could not map a stack for a task");
@@ -344,6 +376,7 @@ impl Scheduler {
             state: AtomicU8::new(RUNNING),
             locals: TaskLocals {
                 mark,
+                site,
                 ..Default::default()
             },
             done: AtomicI64::new(0),
@@ -472,6 +505,12 @@ pub(crate) fn scheduler_here() -> Option<&'static Scheduler> {
     } else {
         None
     }
+}
+
+/// The scheduler of the fiber that this thread runs, if any.
+pub(crate) fn current_scheduler() -> Option<&'static Scheduler> {
+    let fiber = current_fiber();
+    (!fiber.is_null()).then(|| unsafe { (*fiber).sched })
 }
 
 /// The fiber that this thread runs, or null on a thread that runs no fiber.

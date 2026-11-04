@@ -2148,7 +2148,7 @@ impl<'a> TypeChecker<'a> {
                     for ens in func
                         .ensures
                         .iter()
-                        .filter(|e| !crate::hir::check::atomic_contracts::is_access_clause(e))
+                        .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
                     {
                         facts.push(hir::prover::substitute_names(ens, &names));
                     }

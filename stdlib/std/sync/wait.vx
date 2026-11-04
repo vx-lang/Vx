@@ -12,6 +12,8 @@
 // calls `wait_while` with the value that it read. The waker changes the atomic first, and then
 // calls `wake_all`. So the waiter never sleeps through the change.
 //===----------------------------------------------------------------------===//
+import core::panic;
+import core::ptr;
 import core::sync::atomic;
 
 extern {
@@ -27,6 +29,28 @@ extern {
   fn vx_clock_ns() -> i64;
   /// The Rust core behind `wait_while_until`.
   fn vx_wait_while_until(word : *mut i64, value : i64, deadline : i64, or_cancel : i32) -> void;
+  /// The Rust core behind `waiting_for`.
+  fn vx_waiting_for(what : i32, at_file : *const i8, at_line : i32, made_file : *const i8, made_line : i32) -> void;
+}
+
+/// What a wait is for, for `waiting_for`.
+const WAIT_IN_SEND : i32 = 1;
+const WAIT_IN_RECV : i32 = 2;
+const WAIT_IN_LOCK : i32 = 3;
+const WAIT_IN_SELECT : i32 = 4;
+
+/// Say what the next wait of this task is for, one of the `WAIT_IN_` values. When the program
+/// stops on a deadlock, the report says it for each task, with the line `at` of the wait and the
+/// line `made` that made the channel or the lock.
+fn waiting_for(what : i32, at : Caller, made : Location) -> void {
+  let l = at.location;
+  unsafe { vx_waiting_for(what, l.file, l.line, made.file, made.line); }
+}
+
+/// `waiting_for` a `select` at the line `at`. It waits on many channels, so it has no `made`.
+fn waiting_in_select(at : Caller) -> void {
+  let l = at.location;
+  unsafe { vx_waiting_for(WAIT_IN_SELECT, l.file, l.line, null<i8>(), 0); }
 }
 
 /// A deadline that never comes.

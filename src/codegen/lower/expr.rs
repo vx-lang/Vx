@@ -2780,12 +2780,21 @@ fn lower_task_region<'c>(
         syntax::TaskBlockKind::Tasks => crate::arch::TASKS_BLOCK_DISPATCH_ID,
         syntax::TaskBlockKind::Spawn => crate::arch::TASK_DISPATCH_ID,
     };
+    let mut attributes = vec![(
+        Identifier::new(gen.context, "topology"),
+        IntegerAttribute::new(gen.i32_ty, topology as i64).into(),
+    )];
+    // The line of a task's `spawn`, which an abort in the task prints.
+    if kind == syntax::TaskBlockKind::Spawn {
+        let i64_ty = melior::ir::r#type::IntegerType::new(gen.context, 64).into();
+        attributes.push((
+            Identifier::new(gen.context, "vx.line"),
+            IntegerAttribute::new(i64_ty, this.span.line as i64).into(),
+        ));
+    }
     let spawn = block.append_operation(
         OperationBuilder::new("vx.spawn", location)
-            .add_attributes(&[(
-                Identifier::new(gen.context, "topology"),
-                IntegerAttribute::new(gen.i32_ty, topology as i64).into(),
-            )])
+            .add_attributes(&attributes)
             .add_regions([region])
             .add_results(&result_types)
             .build()?,

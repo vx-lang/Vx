@@ -440,8 +440,9 @@ pub enum DiagnosticCode {
     E3062,
     /// A `?` that cannot pass its error up. `x?` takes a `Result<T, E>`. It gives the `T` of an
     /// `Ok`, and it passes an `Err` up unchanged: to the function, which must return a
-    /// `Result<_, E>` with the same `E`, or to its task or `tasks` block, which must give one. `?`
-    /// does not convert the error. `.map_err(..)` converts it.
+    /// `Result<_, E>` with the same `E`, to its closure, which must return one, or to its task or
+    /// `tasks` block, which must give one. A `?` in a closure needs the closure's type written,
+    /// `|x| -> Result<T, E> { .. }`. `?` does not convert the error. `.map_err(..)` converts it.
     E3063,
 
     // --- Borrow/Ownership Errors (E4xxx) ---
@@ -513,6 +514,13 @@ pub enum DiagnosticCode {
     /// region only borrows what it uses, and the function drops `t` after the region. Borrow it
     /// (`&t`), or clone it (`t.clone()`).
     E4015,
+    /// A borrow clause that is not well formed, or one that the body does not keep. In
+    /// `ensures !points_into(return, *p)` the result cannot point into the memory under `*p`, and
+    /// in `ensures !reaches(return, *p)` it also cannot point where a reference in `*p` points. In
+    /// `ensures !keeps(p)` the body stores `p`, or a reference read through it, nowhere that
+    /// outlives the call. `p` is a reference parameter. Each borrow clause is an `ensures` of its
+    /// own.
+    E4016,
 
     // --- Safety Errors (E5xxx) ---
     /// Unsafe function call outside unsafe block. `Tensor<..>::uninit()` is one: its elements
@@ -726,6 +734,11 @@ pub enum DiagnosticCode {
     /// operation of a dialect that the list does not name, or the list names something that
     /// is not a dialect. The list is what the block says it uses, so it must be right.
     E8010,
+    /// A pointer clause that is not well formed: `requires valid(p, n)`, `requires
+    /// initialized(p, n)` or `requires !overlaps(p, q, n)`, where `p` and `q` are raw pointer
+    /// parameters. The checker cannot prove one at a call yet, so only an `unsafe fn` may have
+    /// one, and each clause is a `requires` of its own.
+    E8011,
 }
 
 impl std::fmt::Display for DiagnosticCode {

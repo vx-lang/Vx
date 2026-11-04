@@ -1,0 +1,54 @@
+//===- a_deadlock_report_names_two_tasks_that_wait_for_each_other.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each task waits in `recv` for a value that only the other task sends. The deadlock report
+// names the line of each wait, the line that made its channel, and the `spawn` of each task. The
+// main code waits for the end of the first task.
+//
+// RUN: not vxc %s --run 2>&1 | FileCheck %s
+// RUN: not vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
+// RUN: env VX_TASK_RUNTIME=shared not vxc %s --run 2>&1 | FileCheck %s
+
+// CHECK: vx: deadlock: each task of the program waits, and nothing can wake one. The program stops.
+// CHECK-NEXT: {{^}}  the main code waits for the end of the task from the `spawn` at {{.*}}.vx:46{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:28 on channel 1, made at {{.*}}.vx:43{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:46{{$}}
+// CHECK-NEXT: {{^}}  a task waits in `recv` at {{.*}}.vx:28 on channel 2, made at {{.*}}.vx:44{{$}}
+// CHECK-NEXT: {{^}}    in the task from the `spawn` at {{.*}}.vx:49{{$}}
+
+import std::sync::channel;
+
+// Waits for a value from `rx`, and only then sends one on `tx`.
+fn pass_on(rx : Receiver<i64>, tx : Sender<i64>) -> void {
+  let mut v : i64 = 0;
+  match rx.recv() {
+    Result<i64, RecvError>::Ok(got) => {
+      v = got;
+    }
+    Result<i64, RecvError>::Err(_e) => {
+      return;
+    }
+  }
+  match tx.send(v + 1) {
+    Result<void, SendError<i64>>::Ok() => {}
+    Result<void, SendError<i64>>::Err(_e) => {}
+  }
+}
+
+fn main() -> i32 {
+  let (a_tx, a_rx) = channel<i64>(1);
+  let (b_tx, b_rx) = channel<i64>(1);
+  tasks {
+    spawn {
+      pass_on(a_rx, b_tx);
+    };
+    spawn {
+      pass_on(b_rx, a_tx);
+    };
+  };
+  return 0;
+}

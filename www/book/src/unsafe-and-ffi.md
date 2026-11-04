@@ -57,6 +57,42 @@ The rule for when to mark a function `unsafe`: if a caller can make it misbehave
 something the compiler cannot check — a dangling pointer, a wrong length — it is `unsafe`. If the
 function checks everything itself, it is not, even if its body uses `unsafe` internally.
 
+## Pointer clauses
+
+An `unsafe fn` can state what its caller must give it as `requires` clauses about its raw
+pointers:
+
+```rust
+unsafe fn sum(p : *mut i64, n : i64) -> i64
+    requires valid(p, n)
+    requires initialized(p, n)
+{
+    let mut total = 0i64;
+    let mut i = 0i64;
+    while i < n {
+        total = total + unsafe { p[i] };
+        i = i + 1i64;
+    }
+    return total;
+}
+
+fn main() -> i32 {
+    return 0;
+}
+```
+
+- `valid(p, n)`: `p` is not null, is aligned, and points at `n` elements of one live allocation.
+  The elements do not have to hold values yet.
+- `initialized(p, n)`: each of the first `n` elements at `p` holds a value.
+- `!overlaps(p, q, n)`: the first `n` elements at `p` and at `q` share no byte.
+
+The compiler cannot prove these clauses at a call yet, so only an `unsafe fn` may have them. The
+author of each `unsafe` block that calls the function keeps the promise. For `valid(p, n)` the
+compiler tells LLVM that `p` is not null and aligned, and that `n` elements at `p` can be read.
+For `!overlaps(p, q, n)` it tells LLVM that an access `p[i]` does not alias an access `q[i]`,
+where `i` is the variable of a `for i in 0..n` loop. A clause that does not hold is undefined
+behavior, as a wrong `*p` is.
+
 ## Calling C
 
 An `extern` block declares functions that exist outside Vx.

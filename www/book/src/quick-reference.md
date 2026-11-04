@@ -44,6 +44,8 @@ when writing Vx with Rust habits.
 - `Option<T>` and `Result<T, E>` (`import core::option;`, `import core::result;`), `Vec<T>`
   (`import std::vec;`), `Box<T>` (`import std::box;`).
 - A function that never returns has the type `-> !`, like `panic("..")`.
+- A last parameter `at : Caller` (`import core::panic;`) gets the place of each call that leaves
+  it out: `at.location.file`, `.line` and `.column`. `Location::here()` is the place of that call.
 
 ## Statements and expressions
 

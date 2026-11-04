@@ -63,7 +63,9 @@ larger value, or the same value and a lower index. Otherwise it is `a`.
 1. `v[i]` is `t[i]` for `i < n`. Past `n`, it is the pad: `0.0` for a sum, `t[0]` for the
    larger value, or negative infinity when `n` is 0, and an empty pair for the argmax.
 1. **A group of 32:** for each offset in 16, 8, 4, 2, 1, `a[i] = a[i] ⊕ a[i + offset]` for each
-   `i` below the offset. The result is `a[0]`. On NVIDIA this is `shfl.sync.down`.
+   `i` below the offset. The result is `a[0]`. On NVIDIA this is `shfl.sync.down`. A sum uses
+   `shfl.sync.bfly`: each lane adds the same two values as lane 0, only maybe in the other
+   order, and `a + b` has the bits of `b + a` there.
 1. **In the code of a subgroup**, the result is the group over `v[0..32]`.
 1. **In the code of a block**, `p[w]` is the group over `v[32w..32w + 32]`, for each `w` below
    `W = (n + 31) / 32`. The result is the group over `q`, where `q[i]` is `p[i]` for `i < W`,
@@ -82,8 +84,13 @@ kernel expands it, and the argmax shuffles a value and an index at each step:
 
 - **GPU, block:** a load for each lane, 5 shuffles, the result of each warp in 32 elements of
   `.shared` memory, a barrier, 5 more shuffles, a broadcast from lane 0, and a barrier, so that a
-  loop can use the scratch again.
-- **GPU, subgroup:** 5 shuffles and a broadcast, with no barrier.
+  loop can use the scratch again. A sum needs no broadcast.
+- **GPU, subgroup:** 5 shuffles and a broadcast, with no barrier. A sum needs no broadcast.
+- **A tensor in registers:** a lane loop from 0 over all the lanes of its level can write
+  `part[t]`, or `part[w][t]` in the code of subgroup `w`. Then only lane `t` writes that element.
+  When only lane reductions read `part`, the GPU kernel keeps each lane's element in a register,
+  and `part` takes no memory. The larger value in the code of a block also needs a count that is
+  a multiple of 32, because its pad is the element of lane 0.
 - **CPU:** loops that compute the same tree. The CPU copy of a kernel and
   `-fauto-schedule-levels` use them. So does the AST code generator (`--legacy-codegen`), which
   runs a kernel on one lane.
@@ -91,4 +98,3 @@ kernel expands it, and the argmax shuffles a value and an index at each step:
 ## Not yet
 
 - `f64` and the integer types.
-- A form that takes each lane's value straight from the lane loop, with no tensor between them.

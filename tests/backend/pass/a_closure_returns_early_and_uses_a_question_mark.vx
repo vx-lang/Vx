@@ -1,0 +1,112 @@
+//===- a_closure_returns_early_and_uses_a_question_mark.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A closure can have a block body, `|x| { .. }`, and a `return` in it ends the call of the
+// closure. `|x| -> T { .. }` writes the type that the closure returns, so a `?` in the body can
+// pass an `Err` up: the call of the closure gives the `Err`.
+//
+// - `tens` returns early for a number above 2. The type of its `return` gives the last value
+//   `x` its type.
+// - `doubled` uses `?`. For 1 it gives `Ok(4)`, and for 9 the `?` passes up `Err(9)`.
+// - `say` returns nothing, and its `return;` ends the call before its last `println!`.
+// - `from_base` uses a variable from outside the closure in its `return`.
+// - In `capped`, the `return` of an `i64` gives the last value `0` the type `i64`.
+// - `five` has an `ensures` about its own `return`, and a `return` of its closure gives another
+//   value. The `ensures` is not about the closure.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}tens: 1 30{{$}}
+// CHECK-NEXT: {{^}}doubled 1: ok 4{{$}}
+// CHECK-NEXT: {{^}}doubled 9: err 9{{$}}
+// CHECK-NEXT: {{^}}1 is positive{{$}}
+// CHECK-NEXT: {{^}}0 is not positive{{$}}
+// CHECK-NEXT: {{^}}from_base: 100 105{{$}}
+// CHECK-NEXT: {{^}}capped: 0 200{{$}}
+// CHECK-NEXT: {{^}}the closure in five gave -1{{$}}
+// CHECK-NEXT: {{^}}five: 5{{$}}
+
+import core::result;
+
+fn plus_one_below_six(n : i32) -> Result<i32, i32> {
+  if n > 5 {
+    return Result<i32, i32>::Err(n);
+  }
+  return Result<i32, i32>::Ok(n + 1);
+}
+
+fn show(name : i32, r : Result<i32, i32>) -> void {
+  match r {
+    Result<i32, i32>::Ok(v) => {
+      println!("doubled {}: ok {}", name, v);
+    }
+    Result<i32, i32>::Err(e) => {
+      println!("doubled {}: err {}", name, e);
+    }
+  }
+}
+
+fn five() -> i32
+ensures return == 5
+{
+  let minus = |x : i32| {
+    if x > 0 {
+      return 0 - x;
+    }
+    x
+  };
+  println!("the closure in five gave {}", minus(1));
+  return 5;
+}
+
+fn main() -> i32 {
+  let tens = |x : i32| {
+    if x > 2 {
+      return x * 10;
+    }
+    x
+  };
+  println!("tens: {} {}", tens(1), tens(3));
+
+  let doubled = |x : i32| -> Result<i32, i32> {
+    let a = plus_one_below_six(x)?;
+    Result<i32, i32>::Ok(a * 2)
+  };
+  show(1, doubled(1));
+  show(9, doubled(9));
+
+  let say = |x : i32| {
+    if x > 0 {
+      println!("{} is positive", x);
+      return;
+    }
+    println!("{} is not positive", x);
+  };
+  say(1);
+  say(0);
+
+  let base : i32 = 100;
+  let from_base = |x : i32| {
+    if x < 0 {
+      return base;
+    }
+    base + x
+  };
+  println!("from_base: {} {}", from_base(-1), from_base(5));
+
+  let capped = |x : i64| {
+    if x > 100 {
+      return x;
+    }
+    0
+  };
+  let (low, high) : (i64, i64) = (5, 200);
+  println!("capped: {} {}", capped(low), capped(high));
+  let f = five();
+  println!("five: {}", f);
+  return 0;
+}

@@ -120,6 +120,9 @@ pub struct MeliorGenerator<'c> {
     pub(crate) enum_payloads: std::cell::RefCell<EnumPayloads>,
     pub continue_blocks: Vec<*const melior::ir::Block<'c>>,
     pub allocs: std::collections::HashSet<String>,
+    /// The struct slots whose lifetime a `let` started, by their `llvm.alloca` value. Only
+    /// these get an end.
+    pub(crate) started_slots: std::collections::HashSet<usize>,
     /// One frame per block being lowered: what each name a `let` in the block shadows meant
     /// before it, put back when the block ends.
     pub(crate) blocks: Vec<Vec<Shadowed<'c>>>,
@@ -341,6 +344,8 @@ pub(crate) enum WaitingDrop<'c> {
     },
     /// The statement that runs a drop, and whether it calls a `Drop` impl's `drop`.
     Call(Box<Statement>, bool),
+    /// The `llvm.alloca` of a struct whose lifetime ends.
+    LifetimeEnd(melior::ir::Value<'c, 'c>),
 }
 
 impl<'c> MeliorGenerator<'c> {
@@ -938,6 +943,7 @@ impl<'c> MeliorGenerator<'c> {
             enum_payloads: Default::default(),
             continue_blocks: Vec::new(),
             allocs: std::collections::HashSet::new(),
+            started_slots: std::collections::HashSet::new(),
             blocks: Vec::new(),
             is_lvalue_context: false,
             place_indices: None,
@@ -1336,6 +1342,7 @@ impl<'c> MeliorGenerator<'c> {
     ) -> Result<melior::ir::Operation<'c>, LowerError> {
         self.env.clear();
         self.allocs.clear();
+        self.started_slots.clear();
         self.subspace_offsets.clear(); // per-function sub-space bump allocator (SS2)
         self.pointer_taken = syntax::locals_with_pointer_taken(&func.body);
         self.address_taken = syntax::locals_with_address_taken(&func.body);
@@ -1623,6 +1630,24 @@ impl<'c> MeliorGenerator<'c> {
         d: &syntax::stmt::DropStmt,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Result<Option<melior::ir::BlockRef<'c, 'c>>, LowerError> {
+        if d.ends_lifetime {
+            let (value, _) = *self.env.get(&d.name).ok_or_else(|| {
+                LowerError::from(format!(
+                    "the end of the lifetime of an unknown name {}",
+                    d.name
+                ))
+            })?;
+            // A struct that is not `mut` and not borrowed is a value with no slot.
+            if !self.started_slots.contains(&Self::slot_key(value)) {
+                return Ok(Some(block));
+            }
+            let drop = WaitingDrop::LifetimeEnd(value);
+            if d.after_value {
+                self.queued_drops.push(drop);
+                return Ok(Some(block));
+            }
+            return self.emit_waiting_drop(drop, block).map(Some);
+        }
         if let Some(stmt) = d.call_statement() {
             let drop = WaitingDrop::Call(Box::new(stmt), d.call.is_some());
             if d.after_value {
@@ -1682,7 +1707,31 @@ impl<'c> MeliorGenerator<'c> {
                 }
                 Ok(block)
             }
+            WaitingDrop::LifetimeEnd(slot) => {
+                self.emit_lifetime_marker("llvm.intr.lifetime.end", slot, block)?;
+                Ok(block)
+            }
         }
+    }
+
+    /// The key of a struct's `llvm.alloca` in `started_slots`.
+    pub(crate) fn slot_key(slot: melior::ir::Value<'c, 'c>) -> usize {
+        melior::ir::ValueLike::to_raw(&slot).ptr as usize
+    }
+
+    /// `llvm.intr.lifetime.start` or `.end` on a struct's `llvm.alloca`. LLVM gives two slots
+    /// one place in the frame when their lifetimes do not overlap.
+    pub(crate) fn emit_lifetime_marker(
+        &mut self,
+        op: &str,
+        slot: melior::ir::Value<'c, 'c>,
+        block: melior::ir::BlockRef<'c, 'c>,
+    ) -> Result<(), LowerError> {
+        let marker = melior::ir::operation::OperationBuilder::new(op, self.loc())
+            .add_operands(&[slot])
+            .build()?;
+        block.append_operation(marker);
+        Ok(())
     }
 
     /// `vx.drop %buffer`, or `vx.drop %buffer unless %moved` when the tensor has a moved flag.
@@ -1895,6 +1944,18 @@ impl<'c> MeliorGenerator<'c> {
                     self.i32_ty,
                     block,
                 ))
+            }
+            // `h.join()`: a use of the task's value here, so that `VxLowering` waits for the task
+            // here. A task that runs in place has ended already.
+            e if syntax::task_join_handle(e).is_some() => {
+                let handle = syntax::task_join_handle(e).expect("matched above");
+                let (val, ty, block) = self.generate_expr(handle, block)?;
+                block.append_operation(
+                    melior::ir::operation::OperationBuilder::new("vx.task_join", self.loc())
+                        .add_operands(&[val])
+                        .build()?,
+                );
+                Ok((val, ty, block))
             }
             // A `tasks` block that runs its tasks one after another needs no wait: at an exit,
             // each task has ended. A block that runs them on threads waits for them. The value is

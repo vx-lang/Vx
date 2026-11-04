@@ -581,23 +581,31 @@ macro_rules! instantiate_file_ffi {
 /// Each socket is non-blocking. A call that would block runs again through `$when_ready`, as
 /// `$when_ready(fd, write, call)`, which waits until the socket is ready (`ffi/io.rs`).
 /// `$connect(addr)` gives a connected non-blocking `std::net::TcpStream`.
+///
+/// Each call gives a status: 0 when it worked, and else `$status(&error)`, which `std/net.vx`
+/// reads as a `NetError`. A call that worked writes its value through its last pointer. A null
+/// pointer or a length that is not a size is the system's `EINVAL`, 22 on Linux and on macOS.
 #[macro_export]
 macro_rules! instantiate_tcp_stream_ffi {
-    ($when_ready:path, $connect:path) => {
+    ($when_ready:path, $connect:path, $status:path) => {
         use std::io::{Read, Write};
         use std::os::fd::AsRawFd;
 
         #[no_mangle]
         pub extern "C" fn vx_tcp_stream_connect(
             c_addr: *const std::ffi::c_char,
-        ) -> *mut std::ffi::c_void {
-            if c_addr.is_null() {
-                return std::ptr::null_mut();
+            out: *mut *mut std::ffi::c_void,
+        ) -> i32 {
+            if c_addr.is_null() || out.is_null() {
+                return 22;
             }
             let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
             match $connect(addr_str.as_ref()) {
-                Ok(stream) => Box::into_raw(Box::new(stream)) as *mut std::ffi::c_void,
-                Err(_) => std::ptr::null_mut(),
+                Ok(stream) => {
+                    unsafe { *out = Box::into_raw(Box::new(stream)) as *mut std::ffi::c_void };
+                    0
+                }
+                Err(e) => $status(&e),
             }
         }
 
@@ -606,14 +614,25 @@ macro_rules! instantiate_tcp_stream_ffi {
             ptr: *mut std::ffi::c_void,
             buffer: *mut u8,
             len: u64,
-        ) -> u64 {
-            if ptr.is_null() || buffer.is_null() || len == 0 || len > isize::MAX as u64 {
+            out: *mut u64,
+        ) -> i32 {
+            if ptr.is_null() || buffer.is_null() || out.is_null() || len > isize::MAX as u64 {
+                return 22;
+            }
+            unsafe { *out = 0 };
+            if len == 0 {
                 return 0;
             }
             let stream = unsafe { &mut *(ptr as *mut std::net::TcpStream) };
             let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len as usize) };
             let fd = stream.as_raw_fd();
-            $when_ready(fd, false, || stream.read(buf_slice)).unwrap_or(0) as u64
+            match $when_ready(fd, false, || stream.read(buf_slice)) {
+                Ok(n) => {
+                    unsafe { *out = n as u64 };
+                    0
+                }
+                Err(e) => $status(&e),
+            }
         }
 
         #[no_mangle]
@@ -621,14 +640,25 @@ macro_rules! instantiate_tcp_stream_ffi {
             ptr: *mut std::ffi::c_void,
             buffer: *const u8,
             len: u64,
-        ) -> u64 {
-            if ptr.is_null() || buffer.is_null() || len == 0 || len > isize::MAX as u64 {
+            out: *mut u64,
+        ) -> i32 {
+            if ptr.is_null() || buffer.is_null() || out.is_null() || len > isize::MAX as u64 {
+                return 22;
+            }
+            unsafe { *out = 0 };
+            if len == 0 {
                 return 0;
             }
             let stream = unsafe { &mut *(ptr as *mut std::net::TcpStream) };
             let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
             let fd = stream.as_raw_fd();
-            $when_ready(fd, true, || stream.write(buf_slice)).unwrap_or(0) as u64
+            match $when_ready(fd, true, || stream.write(buf_slice)) {
+                Ok(n) => {
+                    unsafe { *out = n as u64 };
+                    0
+                }
+                Err(e) => $status(&e),
+            }
         }
 
         #[no_mangle]
@@ -642,25 +672,29 @@ macro_rules! instantiate_tcp_stream_ffi {
 
 /// Macro to instantiate C-ABI compatible FFI wrappers for `std::net::UdpSocket`.
 ///
-/// `$when_ready` is as for `instantiate_tcp_stream_ffi`. `$lookup(addr)` gives the addresses of
-/// `addr`.
+/// `$when_ready` and `$status` are as for `instantiate_tcp_stream_ffi`. `$lookup(addr)` gives
+/// the addresses of `addr`.
 #[macro_export]
 macro_rules! instantiate_udp_socket_ffi {
-    ($when_ready:path, $lookup:path) => {
+    ($when_ready:path, $lookup:path, $status:path) => {
         #[no_mangle]
         pub extern "C" fn vx_udp_socket_bind(
             c_addr: *const std::ffi::c_char,
-        ) -> *mut std::ffi::c_void {
-            if c_addr.is_null() {
-                return std::ptr::null_mut();
+            out: *mut *mut std::ffi::c_void,
+        ) -> i32 {
+            if c_addr.is_null() || out.is_null() {
+                return 22;
             }
             let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
             match $lookup(addr_str.as_ref())
                 .and_then(|a| std::net::UdpSocket::bind(&a[..]))
                 .and_then(|s| s.set_nonblocking(true).map(|()| s))
             {
-                Ok(socket) => Box::into_raw(Box::new(socket)) as *mut std::ffi::c_void,
-                Err(_) => std::ptr::null_mut(),
+                Ok(socket) => {
+                    unsafe { *out = Box::into_raw(Box::new(socket)) as *mut std::ffi::c_void };
+                    0
+                }
+                Err(e) => $status(&e),
             }
         }
 
@@ -669,15 +703,26 @@ macro_rules! instantiate_udp_socket_ffi {
             ptr: *mut std::ffi::c_void,
             buffer: *mut u8,
             len: u64,
-        ) -> u64 {
-            if ptr.is_null() || buffer.is_null() || len == 0 || len > isize::MAX as u64 {
+            out: *mut u64,
+        ) -> i32 {
+            if ptr.is_null() || buffer.is_null() || out.is_null() || len > isize::MAX as u64 {
+                return 22;
+            }
+            unsafe { *out = 0 };
+            if len == 0 {
                 return 0;
             }
             let socket = unsafe { &mut *(ptr as *mut std::net::UdpSocket) };
             let buf_slice = unsafe { std::slice::from_raw_parts_mut(buffer, len as usize) };
             let fd = std::os::fd::AsRawFd::as_raw_fd(socket);
-            // Note: We ignore the peer address for simplicity in the FFI.
-            $when_ready(fd, false, || socket.recv(buf_slice)).unwrap_or(0) as u64
+            // The address of the peer is not given back.
+            match $when_ready(fd, false, || socket.recv(buf_slice)) {
+                Ok(n) => {
+                    unsafe { *out = n as u64 };
+                    0
+                }
+                Err(e) => $status(&e),
+            }
         }
 
         #[no_mangle]
@@ -686,23 +731,35 @@ macro_rules! instantiate_udp_socket_ffi {
             buffer: *const u8,
             len: u64,
             c_addr: *const std::ffi::c_char,
-        ) -> u64 {
+            out: *mut u64,
+        ) -> i32 {
             if ptr.is_null()
                 || buffer.is_null()
-                || len == 0
-                || len > isize::MAX as u64
                 || c_addr.is_null()
+                || out.is_null()
+                || len > isize::MAX as u64
             {
+                return 22;
+            }
+            unsafe { *out = 0 };
+            if len == 0 {
                 return 0;
             }
             let socket = unsafe { &mut *(ptr as *mut std::net::UdpSocket) };
             let buf_slice = unsafe { std::slice::from_raw_parts(buffer, len as usize) };
             let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
             let fd = std::os::fd::AsRawFd::as_raw_fd(socket);
-            let Ok(to) = $lookup(addr_str.as_ref()) else {
-                return 0;
+            let to = match $lookup(addr_str.as_ref()) {
+                Ok(to) => to,
+                Err(e) => return $status(&e),
             };
-            $when_ready(fd, true, || socket.send_to(buf_slice, &to[..])).unwrap_or(0) as u64
+            match $when_ready(fd, true, || socket.send_to(buf_slice, &to[..])) {
+                Ok(n) => {
+                    unsafe { *out = n as u64 };
+                    0
+                }
+                Err(e) => $status(&e),
+            }
         }
 
         #[no_mangle]
@@ -716,33 +773,38 @@ macro_rules! instantiate_udp_socket_ffi {
 
 /// Macro to instantiate C-ABI compatible FFI wrappers for `std::net::TcpListener`.
 ///
-/// `$when_ready` and `$lookup` are as for `instantiate_udp_socket_ffi`.
+/// `$when_ready`, `$lookup` and `$status` are as for `instantiate_udp_socket_ffi`.
 #[macro_export]
 macro_rules! instantiate_tcp_listener_ffi {
-    ($when_ready:path, $lookup:path) => {
+    ($when_ready:path, $lookup:path, $status:path) => {
         #[no_mangle]
         pub extern "C" fn vx_tcp_listener_bind(
             c_addr: *const std::ffi::c_char,
-        ) -> *mut std::ffi::c_void {
-            if c_addr.is_null() {
-                return std::ptr::null_mut();
+            out: *mut *mut std::ffi::c_void,
+        ) -> i32 {
+            if c_addr.is_null() || out.is_null() {
+                return 22;
             }
             let addr_str = unsafe { std::ffi::CStr::from_ptr(c_addr) }.to_string_lossy();
             match $lookup(addr_str.as_ref())
                 .and_then(|a| std::net::TcpListener::bind(&a[..]))
                 .and_then(|l| l.set_nonblocking(true).map(|()| l))
             {
-                Ok(listener) => Box::into_raw(Box::new(listener)) as *mut std::ffi::c_void,
-                Err(_) => std::ptr::null_mut(),
+                Ok(listener) => {
+                    unsafe { *out = Box::into_raw(Box::new(listener)) as *mut std::ffi::c_void };
+                    0
+                }
+                Err(e) => $status(&e),
             }
         }
 
         #[no_mangle]
         pub extern "C" fn vx_tcp_listener_accept(
             ptr: *mut std::ffi::c_void,
-        ) -> *mut std::ffi::c_void {
-            if ptr.is_null() {
-                return std::ptr::null_mut();
+            out: *mut *mut std::ffi::c_void,
+        ) -> i32 {
+            if ptr.is_null() || out.is_null() {
+                return 22;
             }
             let listener = unsafe { &mut *(ptr as *mut std::net::TcpListener) };
             let fd = std::os::fd::AsRawFd::as_raw_fd(listener);
@@ -750,8 +812,11 @@ macro_rules! instantiate_tcp_listener_ffi {
             match $when_ready(fd, false, || listener.accept())
                 .and_then(|(s, _)| s.set_nonblocking(true).map(|()| s))
             {
-                Ok(stream) => Box::into_raw(Box::new(stream)) as *mut std::ffi::c_void,
-                Err(_) => std::ptr::null_mut(),
+                Ok(stream) => {
+                    unsafe { *out = Box::into_raw(Box::new(stream)) as *mut std::ffi::c_void };
+                    0
+                }
+                Err(e) => $status(&e),
             }
         }
 

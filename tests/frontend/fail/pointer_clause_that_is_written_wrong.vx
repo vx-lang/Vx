@@ -1,0 +1,81 @@
+//===- pointer_clause_that_is_written_wrong.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A pointer clause is a `requires` of its own: `valid(p, n)`, `initialized(p, n)` or
+// `!overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters. Only an `unsafe fn` may have
+// one, because the checker cannot prove it at a call yet.
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:9: a pointer clause in `ensures` is not supported yet: write it as a `requires`
+unsafe fn in_ensures(p : *mut i64) -> *mut i64
+ensures valid(return, 1)
+{
+  return p;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:10: write each pointer clause as a `requires` of its own, as in `requires valid(p, n)`
+unsafe fn inside_another_clause(p : *mut i64, n : i64) -> void
+requires valid(p, n) && n > 0
+{
+  return;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:10: `valid` takes a raw pointer parameter and a length, as in `valid(p, n)`
+unsafe fn no_length(p : *mut i64) -> void
+requires valid(p)
+{
+  return;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:10: only `!overlaps(p, q, n)` says something that the body can use
+unsafe fn overlaps_without_not(p : *mut i64, q : *mut i64) -> void
+requires overlaps(p, q, 4)
+{
+  return;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:11: `!valid` says nothing that the body can use
+unsafe fn not_valid(p : *mut i64) -> void
+requires !valid(p, 4)
+{
+  return;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:10: `z` is not a parameter of `no_such_parameter`
+unsafe fn no_such_parameter(_p : *mut i64) -> void
+requires valid(z, 4)
+{
+  return;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:10: `valid` needs a raw pointer, but `r` is `&i64`
+unsafe fn not_a_raw_pointer(r : &i64) -> void
+requires valid(r, 1)
+{
+  return;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:11: `overlaps` needs two different pointers, but both are `p`
+unsafe fn one_pointer_twice(p : *mut i64) -> void
+requires !overlaps(p, p, 4)
+{
+  return;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:10: `not_unsafe` has a pointer clause, so it must be an `unsafe fn` for now: the checker cannot prove the clause at a call yet, and the caller of an `unsafe fn` keeps that promise
+fn not_unsafe(p : *mut i64, n : i64) -> void
+requires valid(p, n)
+{
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: 9 error(s) emitted

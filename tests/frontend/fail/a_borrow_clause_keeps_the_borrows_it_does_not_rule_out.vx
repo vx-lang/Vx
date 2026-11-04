@@ -1,0 +1,103 @@
+//===- a_borrow_clause_keeps_the_borrows_it_does_not_rule_out.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+//
+// A caller trusts a borrow clause only for what the clause rules out. The result of `find` still
+// keeps `v` borrowed, and the result of `next` still holds the borrow of `v` that `c` holds. A
+// clause without `!` keeps the default: the result of `get` keeps `h` borrowed, although the body
+// only returns the reference that `h` holds. `!keeps(x)` says nothing about the result, so the
+// result of `pass` still keeps `x` borrowed.
+
+import std::vec;
+
+struct Cursor {
+  data : &Vec<i64>,
+  pos : i32,
+}
+
+struct Holder {
+  r : &i64,
+}
+
+fn find(v : &Vec<i64>, key : &i64) -> &i64
+ensures !reaches(return, *key)
+{
+  return v.get_ref(0);
+}
+
+fn next(c : &mut Cursor) -> &i64
+ensures !points_into(return, *c)
+{
+  let r = c.data.get_ref(c.pos);
+  c.pos = c.pos + 1;
+  return r;
+}
+
+fn get(h : &Holder) -> &i64
+ensures points_into(return, *h)
+{
+  return h.r;
+}
+
+fn pass(_out : &mut Vec<&i64>, x : &i64) -> &i64
+ensures !keeps(x)
+{
+  return x;
+}
+
+fn found_keeps_the_vector() -> i64 {
+  let mut v = Vec<i64>::new();
+  v.push(1i64);
+  let k = 1i64;
+  let r = find(&v, &k);
+  // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable
+  v.push(2i64);
+  return *r;
+}
+
+fn an_item_holds_the_vector() -> i64 {
+  let mut v = Vec<i64>::new();
+  v.push(1i64);
+  let mut c = Cursor {
+    data : &v, pos : 0
+  };
+  let a = next(&mut c);
+  // CHECK: Error[E4003] at {{.*}}.vx:[[@LINE+1]]:5: Cannot borrow 'v' as mutable because it is also borrowed as immutable
+  v.push(2i64);
+  return *a;
+}
+
+fn get_keeps_the_holder() -> i64 {
+  let x = 1i64;
+  let y = 2i64;
+  let mut h = Holder {
+    r : &x
+  };
+  let r = get(&h);
+  // CHECK: Error[E4009] at {{.*}}.vx:[[@LINE+1]]:3: `h` is assigned while it is borrowed
+  h = Holder {
+    r : &y
+  };
+  return *r;
+}
+
+fn the_result_keeps_what_it_points_into() -> i64 {
+  let mut v = Vec<&i64>::new();
+  let mut local = 1i64;
+  let r = pass(&mut v, &local);
+  // CHECK: Error[E4009] at {{.*}}.vx:[[@LINE+1]]:3: `local` is assigned while it is borrowed
+  local = 2i64;
+  return *r;
+}
+
+fn main() -> i32 {
+  return (found_keeps_the_vector() + an_item_holds_the_vector() + get_keeps_the_holder()
+  + the_result_keeps_what_it_points_into()) as i32;
+}
+
+// CHECK: 4 error(s) emitted

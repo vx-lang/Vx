@@ -23,3 +23,30 @@ fn todo() -> ! {
 fn unimplemented() -> ! {
   panic("not implemented");
 }
+
+/// A place in the program: a file, a line and a column. Lines and columns start at 1.
+struct Location {
+  // The file, as the compiler was given it.
+  file : *const i8,
+  line : i32,
+  column : i32,
+}
+
+// A `Location` is three numbers, so it can be given to many calls.
+impl Copy for Location {}
+
+impl Location {
+  /// The place of this call: `let l = Location::here();`.
+  fn here(at : Caller) -> Location {
+    return at.location;
+  }
+}
+
+/// The place of a call. A function that ends with a parameter of this type gets it filled by the
+/// compiler: a call that leaves the argument out passes the place of the call. A function that
+/// gives its own `Caller` to a call reports the place of its own caller.
+struct Caller {
+  location : Location,
+}
+
+impl Copy for Caller {}
