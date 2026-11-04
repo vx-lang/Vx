@@ -18,7 +18,7 @@
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-mlir 2>&1 | FileCheck %s
 // RUN: vxc %s --host default --machine fleet/h100-sxm.vx --action emit-mlir 2>&1 | FileCheck %s --check-prefix=TWO --implicit-check-not="so an index of the loop wraps"
 // TWO-COUNT-2: so an index of the loop wraps
-// CHECK-DAG: cf.assert {{.*}}"the end of the `across` loop at line [[#@LINE+4]] is larger than 8388608, so an index of the loop wraps. Compute the index with a wider type, such as `i64`"
+// CHECK-DAG: cf.assert {{.*}}"the end of the `across` loop at line [[#@LINE+4]] is larger than 8388608, so an index of the loop wraps. Compute the index with a wider type, such as `i64`\0A  at {{.*}}.vx:[[#@LINE+4]]"
 
 fn rows_of_256(o : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
   spawn on(Topology::Device) {

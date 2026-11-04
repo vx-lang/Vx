@@ -1586,10 +1586,7 @@ impl<'c> MeliorGenerator<'c> {
             return Ok(Some(block));
         }
         let (cond, _ty, block) = self.generate_expr(&s.expr, block)?;
-        let msg = s
-            .msg
-            .clone()
-            .unwrap_or_else(|| "assertion failed".to_string());
+        let msg = s.failure_message();
         let op = melior::ir::operation::OperationBuilder::new("cf.assert", self.loc())
             .add_operands(&[cond])
             .add_attributes(&[(
@@ -1882,9 +1879,9 @@ impl<'c> MeliorGenerator<'c> {
             // has no Vx-level definition to resolve -- it is a primitive, like `print`. Safe to
             // call; ending a process breaks no memory-safety property.
             //
-            // `panic(msg)` prints `panic: <msg>` and a newline to standard error first, as
-            // `eprintln!`, and then aborts with an empty message, which prints nothing. A kernel
-            // cannot print, so there it only aborts.
+            // `panic(msg)` prints `panic: <msg>`, and `  at <file>:<line>` on the next line, to
+            // standard error first, as `eprintln!`. Then it aborts with an empty message, which
+            // prints nothing. A kernel cannot print, so there it only aborts.
             Expr::FunctionCall(e) if syntax::is_abort_or_panic(e) => {
                 let mut block = block;
                 let mut abort_msg = "abort() called";
@@ -1892,13 +1889,7 @@ impl<'c> MeliorGenerator<'c> {
                     abort_msg = "panic";
                     if !self.in_spawn {
                         let print = Expr::Println(syntax::PrintlnExpr {
-                            args: vec![
-                                Expr::StringLiteral(syntax::StringLiteralExpr::new(
-                                    "panic: ".to_string(),
-                                    e.span,
-                                )),
-                                e.args[0].clone(),
-                            ],
+                            args: syntax::panic_message(e),
                             span: e.span,
                             to_stderr: true,
                         });

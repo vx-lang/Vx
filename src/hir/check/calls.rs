@@ -894,6 +894,18 @@ impl<'a> TypeChecker<'a> {
                 if let Some((params, _)) = self.resolve_callee_ref_signature(&resolved_name) {
                     self.fill_caller_arg(&params, args, span);
                 }
+                if resolved_name == "panic".into() {
+                    if args.len() == 2 {
+                        let ty = self.check_expr_type_flag(&mut args[1], false);
+                        if !matches!(&ty, Type::Struct(n, _) if n.as_ref() == "Caller") {
+                            self.errors.push(format!(
+                                "Function 'panic' expects a Caller after the message, got {ty}"
+                            ));
+                            args.pop();
+                        }
+                    }
+                    self.give_panic_its_place(args, span);
+                }
                 let errors_before_args = self.errors.inner.len();
                 for arg in args.iter_mut() {
                     arg_types.push(self.check_expr_type_flag(arg, arg_consume));
@@ -1324,6 +1336,48 @@ impl<'a> TypeChecker<'a> {
         )
     }
 
+    /// The file of this compile, as the compiler was given it.
+    pub(crate) fn file_name(&self) -> String {
+        self.errors
+            .file
+            .as_ref()
+            .map(|f| f.to_string())
+            .unwrap_or_default()
+    }
+
+    /// `panic(msg)` gets two more arguments: the file and the line of the call. `panic(msg, at)`
+    /// gets the file and the line of the `Caller` `at` in their place. The code generators print
+    /// them under the message.
+    pub(crate) fn give_panic_its_place(&self, args: &mut Vec<Expr>, span: &crate::syntax::Span) {
+        match args.len() {
+            1 => {
+                args.push(Expr::StringLiteral(crate::syntax::StringLiteralExpr::new(
+                    self.file_name(),
+                    *span,
+                )));
+                args.push(Expr::Number(crate::syntax::NumberExpr::new(
+                    span.line.to_string(),
+                    Some(ElementType::I32),
+                    *span,
+                )));
+            }
+            2 => {
+                let at = args.pop().unwrap();
+                let member = |base: Expr, name: &str| {
+                    Expr::MemberAccess(crate::syntax::MemberAccessExpr::new(
+                        Box::new(base),
+                        name.into(),
+                        *span,
+                    ))
+                };
+                let location = member(at, "location");
+                args.push(member(location.clone(), "file"));
+                args.push(member(location, "line"));
+            }
+            _ => {}
+        }
+    }
+
     /// A call that leaves out a last parameter of type `Caller` gets the place of the call:
     /// `Caller { location : Location { file : "<file>", line : <line>, column : <column> } }`.
     /// `params` are the parameters after any receiver.
@@ -1338,12 +1392,7 @@ impl<'a> TypeChecker<'a> {
         if !wants {
             return false;
         }
-        let file = self
-            .errors
-            .file
-            .as_ref()
-            .map(|f| f.to_string())
-            .unwrap_or_default();
+        let file = self.file_name();
         let number = |n: usize| {
             Expr::Number(crate::syntax::NumberExpr::new(
                 n.to_string(),
@@ -2700,10 +2749,16 @@ impl<'a> TypeChecker<'a> {
         } else if resolved_name == "panic" {
             // `abort()` with a message. The message is a C string, so it can be a parameter that
             // a caller filled in, as `expect(msg)` needs, not only a literal.
+            // `give_panic_its_place` added the file and the line of the call, or of a `Caller`.
             let c_string = Type::Pointer(Box::new(Type::Scalar(ElementType::I8)), None, false);
-            if args.len() != 1 {
-                self.errors
-                    .push("Function 'panic' expects 1 argument, the message".to_string());
+            let has_place = args.len() == 3
+                && arg_types[1] == c_string
+                && arg_types[2] == Type::Scalar(ElementType::I32);
+            if !has_place {
+                self.errors.push(
+                    "Function 'panic' expects a message, and can take a Caller after it"
+                        .to_string(),
+                );
             } else if arg_types[0] != c_string {
                 self.errors.push(format!(
                     "Function 'panic' expects a string message, got {}",

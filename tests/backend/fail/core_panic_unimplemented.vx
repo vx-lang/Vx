@@ -5,13 +5,14 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `unimplemented()` from `core::panic` stops the program with its message. `pick` ends with the call and
-// needs no `return` after it.
+// `unimplemented()` from `core::panic` stops the program with its message and the line of the call.
+// `pick` ends with the call and needs no `return` after it.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
 // CHECK: 1
 // CHECK-NEXT: panic: not implemented
+// CHECK-NEXT: {{^}}  at {{.*}}core_panic_unimplemented.vx:23{{$}}
 // CHECK-NOT: after the panic
 import core::panic;
 

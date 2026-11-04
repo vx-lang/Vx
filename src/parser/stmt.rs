@@ -201,11 +201,11 @@ impl<'a> Parser<'a> {
                     "Expected ')' after assert condition",
                 )?;
                 self.consume(&TokenType::Semicolon, "Expected ';' after assert statement")?;
-                Ok(Statement::Assert(AssertStmt {
-                    expr: Box::new(expr),
+                Ok(Statement::Assert(AssertStmt::new(
+                    Box::new(expr),
                     msg,
-                    span: token_span,
-                }))
+                    token_span,
+                )))
             }
             TokenType::Return => {
                 self.advance();

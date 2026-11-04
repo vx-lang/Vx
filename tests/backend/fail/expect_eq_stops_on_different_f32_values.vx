@@ -12,6 +12,7 @@
 // CHECK: the equal values passed
 // CHECK: expect_eq failed: expected 2.5, actual 1.5
 // CHECK: panic: expect_eq failed
+// CHECK-NEXT: {{^}}  at {{.*}}expect_eq_stops_on_different_f32_values.vx:25{{$}}
 // CHECK-NOT: after the failure
 import std::googletest;
 

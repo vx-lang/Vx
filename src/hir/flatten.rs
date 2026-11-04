@@ -7124,11 +7124,7 @@ impl<'r> Lowerer<'r> {
             Statement::Assert(a) => {
                 let cond = self.lower_expr(&a.expr)?;
                 let imm = self.strings.len() as u64;
-                self.strings.push(
-                    a.msg
-                        .clone()
-                        .unwrap_or_else(|| "assertion failed".to_string()),
-                );
+                self.strings.push(a.failure_message());
                 self.emit_effect(Opcode::Abort, cond.reg, Register(0), imm);
                 Ok(())
             }
@@ -7170,8 +7166,9 @@ impl<'r> Lowerer<'r> {
                 // `__assertfail`. Safe to call; ending a process violates no memory-safety
                 // property.
                 //
-                // `panic(msg)` prints `panic: <msg>` and a newline to standard error first, and then
-                // aborts with an empty message, as the AST code generator does.
+                // `panic(msg)` prints `panic: <msg>`, and `  at <file>:<line>` on the next line, to
+                // standard error first. The checker added the file and the line. Then it aborts
+                // with an empty message, as the AST code generator does.
                 expr if crate::syntax::is_tasks_wait(expr) => {
                     assert!(
                         self.leaving_tasks(false),
@@ -7185,12 +7182,8 @@ impl<'r> Lowerer<'r> {
                     if fc.name.as_ref() == "panic" {
                         abort_msg = "panic";
                         if self.device_depth == 0 {
-                            let panic_label =
-                                Expr::StringLiteral(crate::syntax::StringLiteralExpr::new(
-                                    "panic: ".to_string(),
-                                    fc.span,
-                                ));
-                            self.lower_print(&[panic_label, fc.args[0].clone()], true, true)?;
+                            let print = crate::syntax::panic_message(fc);
+                            self.lower_print(&print, true, true)?;
                             abort_msg = "";
                         }
                     }

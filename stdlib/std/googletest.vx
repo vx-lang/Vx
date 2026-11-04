@@ -9,21 +9,23 @@
 // `expect_eq` compares a value with the one a test expects. When they differ, it prints both
 // and stops the program, so the test fails with a non-zero exit code.
 
+import core::panic;
+
 trait GoogletestEq {
   /// Answers 0 when this value equals `expected`. Otherwise prints both and stops the program.
-  fn expect_eq(self : Self, expected : Self)->i32;
+  fn expect_eq(self : Self, expected : Self, at : Caller)->i32;
 }
 
 impl GoogletestEq for f32 {
   /// Compared exactly, so two values a rounding step apart are reported as different.
-  fn expect_eq(self : f32, expected : f32) -> i32 {
+  fn expect_eq(self : f32, expected : f32, at : Caller) -> i32 {
     if self != expected {
       print!("expect_eq failed: expected ");
       print(expected);
       print!(", actual ");
       print(self);
       print!("\n");
-      panic("expect_eq failed");
+      panic("expect_eq failed", at);
     }
     return 0;
   }
@@ -31,20 +33,20 @@ impl GoogletestEq for f32 {
 
 impl GoogletestEq for i32 {
   /// Compared exactly.
-  fn expect_eq(self : i32, expected : i32) -> i32 {
+  fn expect_eq(self : i32, expected : i32, at : Caller) -> i32 {
     if self != expected {
       print!("expect_eq failed: expected ");
       print(expected);
       print!(", actual ");
       print(self);
       print!("\n");
-      panic("expect_eq failed");
+      panic("expect_eq failed", at);
     }
     return 0;
   }
 }
 
 /// `actual.expect_eq(expected)` written the way a test reads: the value under test first.
-fn expect_eq<T : GoogletestEq>(actual : T, expected : T) -> i32 {
-  return actual.expect_eq(expected);
+fn expect_eq<T : GoogletestEq>(actual : T, expected : T, at : Caller) -> i32 {
+  return actual.expect_eq(expected, at);
 }
