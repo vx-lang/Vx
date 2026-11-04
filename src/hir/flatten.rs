@@ -1993,6 +1993,25 @@ impl<'r> Lowerer<'r> {
                             ty: LoweredTy::Ptr,
                         })
                     }
+                    // A temporary number or pointer, such as `&(a + b)`, `&f(x)` or the outer `&`
+                    // of `&&a`: nothing else names it, so a fresh slot of this function holds it,
+                    // as for a struct above. A place (`&x`, `&p.f`, `&t[i]`) declines: a copy of
+                    // it would lose a write through `&mut`, and give `&x` two addresses.
+                    LoweredTy::Scalar(_) | LoweredTy::Ptr if !names_a_place(&b.expr) => {
+                        let address_taken = matches!(v.ty, LoweredTy::Scalar(_)) as u64;
+                        let slot = self.emit_typed(
+                            Opcode::Alloca,
+                            Register(0),
+                            Register(0),
+                            v.ty.clone(),
+                            address_taken,
+                        );
+                        self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
+                        Ok(Val {
+                            reg: slot.reg,
+                            ty: LoweredTy::Ptr,
+                        })
+                    }
                     _ => Err(Decline::TypeNotModelled {
                         what: "a borrow of something that is not a tensor",
                     }),
@@ -8030,6 +8049,15 @@ fn agg_gid_of_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<TypeId
 /// blocks; mutation flows through the pointer to the pointee, not to the register). (#242)
 fn is_ptr_to_agg(ty: &Type, registry: &ImmutableGlobalRegistry) -> bool {
     matches!(ty, Type::Borrow { .. } | Type::Pointer(..)) && agg_gid_of_ty(ty, registry).is_some()
+}
+
+/// Whether `e` names a place that a borrow must point at: a local, a field, an element or a
+/// dereference. The parser keeps no parentheses, so `&(x)` is `&x` here.
+fn names_a_place(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Identifier(_) | Expr::MemberAccess(_) | Expr::IndexAccess(_) | Expr::Dereference(_)
+    )
 }
 
 /// Whether `ty` is a nominal closure type, `Closure0` to `Closure3`, which holds `{ env, func }`.
