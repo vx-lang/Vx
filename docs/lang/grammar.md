@@ -47,6 +47,8 @@ struct_decl ::= "struct" identifier generic_params? "{" ( identifier ":" type ",
 enum_decl ::= "enum" identifier generic_params? "{" ( identifier ( "(" type ( "," type )* ")" )? ","? )* "}"
 
 function_decl ::= "fn" identifier generic_params? "(" param_list? ")" ( "on" topology )? "->" type where_clause? ( "requires" expr )* ( "ensures" expr )* "{" statement* "}"
+// `on Topology::Any` says that the function runs where it is called. `Topology::Any` can
+// appear only here.
 
 // `Reachable<A, B>` asks whether a transfer path exists between two topologies. It was
 // spelled `Transfer<A, B>` until Vx#353; the old name now names an edge lowering instead

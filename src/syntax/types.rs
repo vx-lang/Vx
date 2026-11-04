@@ -421,6 +421,12 @@ impl MemorySpace {
     }
 }
 
+/// `on Topology::Any` says that a function runs where it is called. The parser writes it as a
+/// generic topology parameter named `ANY_TOPOLOGY_PARAM`. No program can write that name, so no
+/// parameter type can bind it.
+pub const ANY_TOPOLOGY: &str = "Any";
+pub const ANY_TOPOLOGY_PARAM: &str = "$Any";
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum TopologyKind {
     CPU,
