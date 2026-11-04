@@ -37,16 +37,9 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/matmul_into_a_tensor_read_through_a_view.vx",
     // The tuple's enum subject has no concrete type recorded for the flat match path.
     "backend/pass/tuple_match_with_enum_variants_as_a_value.vx",
-    // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
-    // ("an aggregate slot with no struct type").
-    "backend/pass/tensor_views_end_at_their_last_use.vx",
     // A struct passed to `grad`: the flat path declines it ("an autodiff argument that is not a
     // scalar"). The file is about the AST path.
     "backend/pass/autodiff/autodiff_for_variable_argument.vx",
-    // `t = pass(t)` inside an `if`: on the flat path a tensor local is one register, so the
-    // new value cannot leave the branch. The flat path used to read the wrong tensor after it.
-    "frontend/pass/tensor_drops_written_into_the_program.vx",
-    "backend/pass/tensor_given_a_new_value_on_one_path.vx",
     // `(&mut c[0][1]).as_mut_ptr()`: "as_ptr() on something that is not a tensor".
     "backend/pass/cast_a_borrow_to_a_raw_pointer.vx",
     // A raw pointer held in a `let` ("a place-bound reference in value position"): the flat
@@ -80,16 +73,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // a dropped vx.transfer. Declining is the honest answer until the flat lowerer carries
     // run-time extents.
     "warnings/pass/lowering_declined_for_dynamic_tile.vx",
-    // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
-    // ("an aggregate slot with no struct type").
-    "backend/pass/let_if_tensor_inside_an_if.vx",
-    // `c = a.clone()` inside a `spawn`: the flat path declines it ("a tensor given a new value
-    // inside a branch or loop"). The kernel has to write `c` for `c` to be passed as a slot,
-    // which is what the file checks.
-    "optimizations/pass/dispatch_abi_tags.vx",
-    // `t = ..` inside the value of `t[1] = ..`: the flat path declines "a tensor given a new
-    // value inside a branch or loop". The file checks the AST path.
-    "backend/pass/assignment_reads_the_tensor_variable_at_the_write.vx",
 ];
 
 /// Every `.vx` file under `dir`, recursively, sorted for a stable report.

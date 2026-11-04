@@ -1155,8 +1155,12 @@ impl<'r> Lowerer<'r> {
                 field: true,
             }
         } else {
-            let reg = match self.scope.get(&d.name) {
+            let reg = match self.scope.get(&d.name).cloned() {
                 Some(Binding::Reg(v)) if matches!(v.ty, LoweredTy::Tensor { .. }) => v.reg,
+                Some(Binding::Slot { reg, ty }) if matches!(ty, LoweredTy::Tensor { .. }) => {
+                    self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0)
+                        .reg
+                }
                 _ => {
                     return Err(Decline::Unsupported {
                         what: "a drop of a tensor not held in a register",
@@ -1364,6 +1368,34 @@ impl<'r> Lowerer<'r> {
             }
             _ => false,
         }
+    }
+
+    /// Whether the name under the indexes of `ix` is a tensor held in a slot.
+    fn index_root_is_tensor_slot(&self, ix: &crate::syntax::expr::IndexAccessExpr) -> bool {
+        let mut root = &*ix.base;
+        while let Expr::IndexAccess(inner) = root {
+            root = &*inner.base;
+        }
+        matches!(root, Expr::Identifier(id) if matches!(
+            self.scope.get(&id.name),
+            Some(Binding::Slot { ty: LoweredTy::Tensor { .. }, .. })
+        ))
+    }
+
+    /// Whether each index of the place `e` is a literal or a name that is never given a new value.
+    fn indexes_cannot_change(&self, mut e: &Expr) -> bool {
+        while let Expr::IndexAccess(ix) = e {
+            let fixed = match &*ix.index {
+                Expr::Number(_) => true,
+                Expr::Identifier(id) => !self.mutated.contains(&id.name),
+                _ => false,
+            };
+            if !fixed {
+                return false;
+            }
+            e = &ix.base;
+        }
+        true
     }
 
     fn assign_local(&mut self, name: &Symbol, v: Val) -> Option<()> {
@@ -6314,10 +6346,23 @@ impl<'r> Lowerer<'r> {
                 Some(t) => self.pointer_elem_synth(&t).is_some(),
                 None => false,
             };
-            let place = self.lower_place(lhs)?;
             // The stored scalar already matches the place's element type (the checker types a literal
             // RHS to the element and rejects a genuine mismatch, #240).
-            let value = self.lower_value_for(lhs, rhs)?;
+            //
+            // A tensor in a slot is read at the write, because the value can give it a new tensor.
+            // The value then runs first, which is only the same when no index can change.
+            let (place, value) = if self.index_root_is_tensor_slot(ix) {
+                if !self.indexes_cannot_change(lhs) {
+                    return Err(Decline::Unsupported {
+                        what: "a store into a tensor in a slot with an index that may change",
+                    });
+                }
+                let value = self.lower_value_for(lhs, rhs)?;
+                (self.lower_place(lhs)?, value)
+            } else {
+                let place = self.lower_place(lhs)?;
+                (place, self.lower_value_for(lhs, rhs)?)
+            };
             let store = if is_ptr {
                 Opcode::PtrStore
             } else {
@@ -6767,9 +6812,23 @@ impl<'r> Lowerer<'r> {
                     }
                 }
                 // A tensor local is a reference (memref) — bind it as an SSA register, not a slot;
-                // stores write through the descriptor to the buffer.
+                // stores write through the descriptor to the buffer. A tensor given a new value in a
+                // function with branches keeps its memref in a slot, so the new value can leave the
+                // branch.
                 if matches!(v.ty, LoweredTy::Tensor { .. }) {
-                    self.scope.insert(l.name.clone(), Binding::Reg(v));
+                    if self.has_control_flow && self.mutated.contains(&l.name) {
+                        let slot = self.emit_alloca(v.ty.clone());
+                        self.emit_effect(Opcode::Store, slot.reg, v.reg, 0);
+                        self.scope.insert(
+                            l.name.clone(),
+                            Binding::Slot {
+                                reg: slot.reg,
+                                ty: v.ty,
+                            },
+                        );
+                    } else {
+                        self.scope.insert(l.name.clone(), Binding::Reg(v));
+                    }
                 } else {
                     // The initializer already carries the local's type: an annotated `let` types its
                     // literal initializer to the annotation, and a genuine mismatch is rejected (no
@@ -7671,7 +7730,10 @@ impl BorrowScan {
                 }
                 Statement::ExprStmt(e) => self.expr(&e.expr),
                 Statement::Assign(a) => {
-                    if let Expr::Identifier(id) = &a.lhs {
+                    // `c = a @ b` fills the tensor `c` in place, and gives `c` no new value.
+                    let fills =
+                        matches!(&a.rhs, Expr::BinaryOp(b) if matches!(b.op, BinaryOp::MatMul));
+                    if let (Expr::Identifier(id), false) = (&a.lhs, fills) {
                         self.mutated.insert(id.name.clone());
                     }
                     self.expr(&a.lhs);
