@@ -42,6 +42,8 @@ mod integration_test {
     // It builds the Mac dispatcher, which needs CoreML.
     #[cfg(target_os = "macos")]
     mod npu_affine_views_test;
+    #[cfg(target_os = "macos")]
+    mod objects_need_the_macos_of_the_host;
     mod output_does_not_depend_on_the_current_directory;
     mod payload_test;
     mod pipeline_scale_test;
