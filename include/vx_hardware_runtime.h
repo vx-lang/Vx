@@ -669,6 +669,11 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload);
 // start of `main`. A name the fleet manifest lists is still remote. Returns 1
 // if kept.
 #define VX_CTRL_LOCAL_DEVICE 0x04
+// Wait until every launch on a topology has finished. `payload` points to the
+// int32_t topology id. A backend may wait for more than that topology. A
+// transfer over a `: shared` edge sends it before the CPU reads GPU memory in
+// place. A backend whose launches finish before they return ignores it.
+#define VX_CTRL_WAIT 0x05
 #define VX_CTRL_VENDOR_BASE 0x1000 // Vendors start their custom opcodes here
 
 #ifdef __cplusplus

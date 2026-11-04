@@ -1343,6 +1343,8 @@ impl<'a> TypeChecker<'a> {
         self.traffic.consumed_by_transfer = prev_consumed;
         self.allow_cross_topology = prev;
         // A transfer of a borrowed tensor copies the tensor it points to, and the owner keeps it.
+        let shared_borrow = matches!(&inner_ty, Type::Borrow { inner, is_mut: false, .. }
+            if matches!(**inner, Type::Tensor(..)));
         let inner_ty = match inner_ty {
             Type::Borrow { inner, .. } if matches!(*inner, Type::Tensor(..)) => *inner,
             other => other,
@@ -1380,6 +1382,10 @@ impl<'a> TypeChecker<'a> {
             }
         };
         let target_mem = t.space.clone();
+        t.shared = shared_borrow
+            && self
+                .transfer_cost_graph
+                .is_shared_edge(&source_mem, &target_mem);
 
         // Capacity: a statically-shaped tensor transferred into a declared space must fit.
         if let Some((e, d)) = Self::tensor_of(&inner_ty) {
@@ -2071,6 +2077,7 @@ impl<'a> TypeChecker<'a> {
                 cost: None,
                 lowering: None,
                 is_async: false,
+                shared: false,
                 span: t.span,
             });
         }
@@ -2081,6 +2088,7 @@ impl<'a> TypeChecker<'a> {
             cost: None,
             lowering: None,
             is_async: t.is_async,
+            shared: false,
             span: t.span,
         });
         // Propagate the relaxed marker so each rewritten single-hop transfer is checked with the

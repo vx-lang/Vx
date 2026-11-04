@@ -48,7 +48,7 @@ impl FnEmit<'_> {
         };
         let n = format!("%v{idx}");
         let space_id = ins.imm & 0xffff_ffff;
-        let source = ins.imm >> 32;
+        let source = (ins.imm & !crate::bytecode::TRANSFER_SHARED) >> 32;
         // A space declaring `node: N` is dispatched by its NUMA band id rather than by the hash
         // of its name. The hash says which space; the backend has to know which NODE, and cannot
         // recover a node number from a hash. Copied out rather than held, so the descriptor's
@@ -63,6 +63,9 @@ impl FnEmit<'_> {
         let mut attrs = format!("target_topology = {} : i32", target);
         if source != 0 {
             attrs += &format!(", source_topology = {source} : i32");
+        }
+        if ins.imm & crate::bytecode::TRANSFER_SHARED != 0 {
+            attrs += ", shared";
         }
         if let Some(desc) = self.ctx.subspaces.get(&space_id) {
             // Descriptor attrs, in the AST path's emission order (MLIR sorts on print, so the

@@ -1,0 +1,128 @@
+// The machine below declares `transfer Memory::HBM -> Memory::CPU_DRAM : shared`: the CPU can
+// read the GPU's memory. `transfer(t, Memory::CPU_DRAM)` of a borrowed tensor is still a copy,
+// so every function prints what a copy gives. But when `t` is a `&` parameter and the program
+// only reads the copy, the compiler skips the copy: the function waits for the GPU through
+// `vx_plugin_control` and reads `t` in place.
+//
+// - `first_in_place` reads an element of the copy, so it reads in place.
+// - `sum_in_place` also passes `&copy` to a function that takes a `&`. The flat code generator
+//   marks that parameter read-only and reads in place. The AST code generator does not, so it
+//   copies and warns.
+// - `write_the_copy` writes the copy, so it copies and warns.
+// - `read_through_mut` has a `&mut` parameter, so it copies with no warning.
+// - `main` transfers `&g`, which is not a parameter, so it copies and warns.
+//
+// The RUN lines name the code generator themselves: plain is the flat path, and
+// `--legacy-codegen` is the AST path.
+// REQUIRES: flat-codegen
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefixes=FLAT,OUT --implicit-check-not="copies a tensor" --implicit-check-not="copies the tensor"
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --check-prefixes=AST,OUT --implicit-check-not="copies a tensor" --implicit-check-not="copies the tensor"
+// RUN: vxc %s --action emit-llvm 2>/dev/null | FileCheck %s --check-prefix=IN_PLACE
+// RUN: vxc %s --action emit-llvm --legacy-codegen 2>/dev/null | FileCheck %s --check-prefixes=IN_PLACE,CAST
+// RUN: vxc %s --action emit-llvm 2>/dev/null | FileCheck %s --check-prefix=CALL
+// RUN: vxc %s --action emit-llvm 2>/dev/null | FileCheck %s --check-prefix=KEPT
+// RUN: vxc %s --action emit-llvm --legacy-codegen 2>/dev/null | FileCheck %s --check-prefix=KEPT
+//
+// The warnings come in the order of the functions in each code generator's module.
+// FLAT: Warning in function `main`: this transfer copies the tensor. The CPU can read it in place only when it is a `&` parameter of this function.
+// FLAT: Warning in function `write_the_copy`: a transfer to CPU_DRAM copies a tensor, because the program writes an element of the copy.
+// AST: .vx:{{[0-9]+}}:{{[0-9]+}}: a transfer to CPU_DRAM copies a tensor, because the call to `total` can change the copy or keep it.
+// AST: .vx:{{[0-9]+}}:{{[0-9]+}}: a transfer to CPU_DRAM copies a tensor, because the program writes an element of the copy.
+// AST: .vx:{{[0-9]+}}:{{[0-9]+}}: this transfer copies the tensor. The CPU can read it in place only when it is a `&` parameter of this function.
+//
+// OUT: first=10;
+// OUT-NEXT: sum=1236;
+// OUT-NEXT: write=1000;
+// OUT-NEXT: unchanged=1236;
+// OUT-NEXT: mut=10;
+// OUT-NEXT: local=12;
+//
+// The wait is opcode 5, VX_CTRL_WAIT. No copy is made, and nothing is freed. The AST code
+// generator keeps the GPU's memory space on a `&` parameter, so it casts the parameter's pointer
+// to a host pointer.
+// IN_PLACE-LABEL: llvm.func hidden @first_in_place(
+// IN_PLACE-NOT: llvm.func
+// IN_PLACE: %[[WAIT:[0-9]+]] = llvm.mlir.constant(5 : i32) : i32
+// IN_PLACE-NOT: llvm.func
+// IN_PLACE: llvm.call @vx_plugin_control(%[[WAIT]], %{{[0-9]+}})
+// IN_PLACE-NOT: llvm.func
+// IN_PLACE-NOT: vx_plugin_transfer_device_to_host
+// IN_PLACE-NOT: vx_plugin_free
+// IN_PLACE-NOT: @free(
+// CAST: llvm.addrspacecast %{{[0-9]+}} : !llvm.ptr<1> to !llvm.ptr
+// IN_PLACE-NOT: llvm.func
+// IN_PLACE-NOT: vx_plugin_transfer_device_to_host
+// IN_PLACE-NOT: vx_plugin_free
+// IN_PLACE-NOT: @free(
+// IN_PLACE: llvm.return
+//
+// CALL-LABEL: llvm.func hidden @sum_in_place(
+// CALL-NOT: llvm.func
+// CALL: llvm.call @vx_plugin_control(
+// CALL-NOT: llvm.func
+// CALL-NOT: vx_plugin_transfer_device_to_host
+// CALL: llvm.call @total(
+//
+// KEPT-LABEL: llvm.func hidden @write_the_copy(
+// KEPT-NOT: llvm.func
+// KEPT: llvm.call @vx_plugin_transfer_device_to_host(
+
+Memory CPU_DRAM {}
+Memory HBM {
+  capacity: 1 GiB, managed: explicit, scope: device
+}
+Topology Gpu {
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 64 GB/s,
+  transfer Memory::HBM -> Memory::CPU_DRAM : shared
+}
+
+fn total(t : &Tensor<i32, [?, ?]>, h : i32, w : i32) -> i32 {
+  let mut s = 0;
+  for y in 0..h {
+    for x in 0..w {
+      s = s + t[y][x];
+    }
+  }
+  return s;
+}
+
+fn first_in_place(t : &Tensor<i32, [?, ?], Memory::HBM>) -> i32 {
+  let host = transfer(t, Memory::CPU_DRAM);
+  return host[1][0];
+}
+
+fn sum_in_place(t : &Tensor<i32, [?, ?], Memory::HBM>, h : i32, w : i32) -> i32 {
+  let host = transfer(t, Memory::CPU_DRAM);
+  return host[1][2] * 100 + total(&host, h, w);
+}
+
+fn write_the_copy(t : &Tensor<i32, [?, ?], Memory::HBM>) -> i32 {
+  let mut host = transfer(t, Memory::CPU_DRAM);
+  host[0][0] = 1000;
+  return host[0][0];
+}
+
+fn read_through_mut(t : &mut Tensor<i32, [?, ?], Memory::HBM>) -> i32 {
+  let host = transfer(t, Memory::CPU_DRAM);
+  return host[1][0];
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<i32, [2, 3]>::fill(0);
+  for y in 0..2 {
+    for x in 0..3 {
+      a[y][x] = y * 10 + x;
+    }
+  }
+  let mut g = transfer(a, Memory::HBM);
+  println!("first={};", first_in_place(&g));
+  println!("sum={};", sum_in_place(&g, 2, 3));
+  println!("write={};", write_the_copy(&g));
+  println!("unchanged={};", sum_in_place(&g, 2, 3));
+  println!("mut={};", read_through_mut(&mut g));
+  let back = transfer(&g, Memory::CPU_DRAM);
+  println!("local={};", back[1][2]);
+  return 0;
+}

@@ -49,7 +49,7 @@ Data movement across distinct memory hierarchies is explicit.
 1. Evaluates to a target reference $T$ in space $M_2$.
 1. The runtime schedules an asynchronous or synchronous DMA transfer from $M_1$ to $M_2$.
 1. Linearity: If $S$ represents uniquely owned data, the `transfer` consumes $S$. Future use of $S$ in space $M_1$ is invalid.
-1. Borrowed source: If $S$ is a borrowed tensor (`&` or `&mut`), the `transfer` copies it. $T$ is a new tensor that the caller owns, and the owner of $S$ keeps $S$.
+1. Borrowed source: If $S$ is a borrowed tensor (`&` or `&mut`), the `transfer` copies it. $T$ is a new tensor that the caller owns, and the owner of $S$ keeps $S$. Over a `: shared` edge, the compiler may skip the copy of a `&` parameter when every use of $T$ only reads it. The program gives the same values either way.
 
 ### 2.3 Declared Memory Spaces & Sub-space Scheduling
 

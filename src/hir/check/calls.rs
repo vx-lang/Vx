@@ -3767,6 +3767,7 @@ impl<'a> TypeChecker<'a> {
                         cost: None,
                         lowering: None,
                         is_async: false,
+                        shared: false,
                         span: method_span,
                     });
                     // Mark it so the per-seam obligation in `check_transfer_expr` sends
@@ -3782,6 +3783,7 @@ impl<'a> TypeChecker<'a> {
                         cost: None,
                         lowering: None,
                         is_async: false,
+                        shared: false,
                         span: Span::default(),
                     });
                 } else if _method.as_ref() == "as_ptr" || **_method == *"as_mut_ptr" {
