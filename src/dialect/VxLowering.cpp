@@ -3128,6 +3128,10 @@ static BufferOrigin commonOrigin(ArrayRef<Value> values,
     // A value already being looked at, round a loop: the other paths decide.
     if (seen.contains(v.getAsOpaquePointer()))
       continue;
+    // The poison that promoting a cell gives a path with no store: no buffer
+    // arrives that way, so the other paths decide.
+    if (v.getDefiningOp<ub::PoisonOp>())
+      continue;
     std::optional<int32_t> here;
     BufferOrigin o = originOf(v, seen, here);
     if ((common && *common != o) || (topology && here && *topology != *here))
