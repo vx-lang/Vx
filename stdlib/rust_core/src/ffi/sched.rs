@@ -1238,7 +1238,7 @@ mod tests {
     struct Order {
         tasks: usize,
         arrived: AtomicUsize,
-        gate: AtomicI64,
+        gate: &'static AtomicI64,
         seen: Mutex<Vec<usize>>,
         threads: Mutex<HashSet<std::thread::ThreadId>>,
     }
@@ -1258,15 +1258,22 @@ mod tests {
             .insert(std::thread::current().id());
         o.seen.lock().unwrap().push(n.number);
         if o.arrived.fetch_add(1, Ordering::SeqCst) + 1 == o.tasks {
-            open(&o.gate);
+            open(o.gate);
         } else {
-            wait_for(&o.gate);
+            wait_for(o.gate);
         }
         o.seen.lock().unwrap().push(100 + n.number);
     }
 
     /// The order in which 8 tasks run with `seed`, and the threads that they ran on.
-    fn order_with_seed(seed: u64) -> (Vec<usize>, HashSet<std::thread::ThreadId>) {
+    ///
+    /// A wake on the address of `gate` puts a waiting task back on the ready queue and changes
+    /// the order. Another test can wake an address after it stops using it, so `gate` is a
+    /// static that no other test uses.
+    fn order_with_seed(
+        seed: u64,
+        gate: &'static AtomicI64,
+    ) -> (Vec<usize>, HashSet<std::thread::ThreadId>) {
         // The scheduler comes from this thread, as the deadlock watcher can make it. The thread
         // that starts the `tasks` block runs the tasks.
         let sched = Scheduler::start_with_seed(seed);
@@ -1274,7 +1281,7 @@ mod tests {
             let o = Order {
                 tasks: 8,
                 arrived: AtomicUsize::new(0),
-                gate: AtomicI64::new(0),
+                gate,
                 seen: Mutex::new(Vec::new()),
                 threads: Mutex::new(HashSet::new()),
             };
@@ -1298,9 +1305,10 @@ mod tests {
     #[test]
     fn a_seed_gives_the_same_order_each_time() {
         let _watchdog = Watchdog::new("a_seed_gives_the_same_order_each_time");
-        let (first, first_threads) = order_with_seed(1);
-        let (again, _) = order_with_seed(1);
-        let (other, _) = order_with_seed(2);
+        static GATES: [AtomicI64; 3] = [AtomicI64::new(0), AtomicI64::new(0), AtomicI64::new(0)];
+        let (first, first_threads) = order_with_seed(1, &GATES[0]);
+        let (again, _) = order_with_seed(1, &GATES[1]);
+        let (other, _) = order_with_seed(2, &GATES[2]);
         assert_eq!(first.len(), 16);
         assert_eq!(first, again, "the same seed gave another order");
         assert_ne!(first, other, "two seeds gave the same order");
