@@ -25,12 +25,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // The same shape again, with a warning added: it states that a program checked by both
     // frontends has its warnings reported once, which needs a program that declines.
     "frontend/pass/jobs_warns_once_when_it_falls_back.vx",
-    // A parameter with run-time extents (Vx#409). It used to compile through the flat path
-    // while the dims-less spelling let it read as rank-0: `topology.vx` got a `memref<f32>`
-    // signature where the AST oracle gives `memref<?x?xf32>`, two ABIs for one function, plus
-    // a dropped vx.transfer. Declining is the honest answer until the flat lowerer carries
-    // run-time extents.
-    "warnings/pass/lowering_declined_for_dynamic_tile.vx",
 ];
 
 /// Every `.vx` file under `dir`, recursively, sorted for a stable report.
