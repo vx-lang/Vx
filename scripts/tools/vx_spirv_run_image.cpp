@@ -348,7 +348,7 @@ static uint64_t runDirect(const char *image, size_t imageSize,
 static uint64_t runLibrary(std::vector<char> &payload, const char *kernelName,
                            const char *mode) {
   const bool wrongCount = std::strcmp(mode, "wrong-param-count") == 0;
-  const bool shiftOffset = std::strcmp(mode, "shift-offset") == 0;
+  const bool shiftBase = std::strcmp(mode, "shift-base") == 0;
 
   std::vector<float> a, b, c, expected;
   fillReference(a, b, c, expected);
@@ -391,7 +391,7 @@ static uint64_t runLibrary(std::vector<char> &payload, const char *kernelName,
   for (uint64_t t = 0; t < kOperands; ++t) {
     desc[t].allocated = dev[t];
     desc[t].aligned = dev[t];
-    desc[t].offset = (shiftOffset && t == 0) ? 1 : 0;
+    desc[t].offset = 0;
     desc[t].sizes[0] = kRows;
     desc[t].sizes[1] = kCols;
     desc[t].strides[0] = kCols;
@@ -400,8 +400,15 @@ static uint64_t runLibrary(std::vector<char> &payload, const char *kernelName,
     deviceArgs[t] = &descPtr[t];
     tags[t] = VX_ABI_MEMREF_TAG(VX_DTYPE_F32, 2);
   }
-  if (shiftOffset)
-    std::printf("sabotage: gave the first tensor offset 1 instead of 0\n");
+  /* The sabotage moves the first tensor's base pointer by one element, which
+     is the field the kernel reads its addresses from. The offset field would
+     be the other candidate, and it is not: the image this compiler emits
+     indexes from the aligned pointer and never loads the offset, so changing
+     it changes nothing and the check would pass while proving nothing. */
+  if (shiftBase) {
+    desc[0].aligned = static_cast<char *>(dev[0]) + sizeof(float);
+    std::printf("sabotage: moved the first tensor 4 bytes past its allocation\n");
+  }
 
   // The library caches the loaded module and its kernel, so the first dispatch
   // pays the driver's compile and the timed ones pay the launch.

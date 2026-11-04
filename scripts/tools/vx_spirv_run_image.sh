@@ -177,12 +177,12 @@ else
   echo "    the library refused as it should: see the line above"
 fi
 
-echo "==> sabotage 4: a changed argument (the first tensor's offset)"
-if VX_DISPATCH_VERBOSE=1 ./run_image loop.payload "$KERNEL" shift-offset; then
+echo "==> sabotage 4: a changed argument (the first tensor's base pointer)"
+if VX_DISPATCH_VERBOSE=1 ./run_image loop.payload "$KERNEL" shift-base; then
   echo "error: the check passed with a changed argument; it cannot fail" >&2
   exit 1
 else
-  echo "    the check failed as it should: the offset really reaches the kernel"
+  echo "    the check failed as it should: the pointer really reaches the kernel"
 fi
 
 echo "==> done"
