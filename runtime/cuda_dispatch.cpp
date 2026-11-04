@@ -60,6 +60,7 @@
 #include "vx_kernel_launch.h"
 #include "vx_remote_routing.h"
 #include "vx_stream_policy.h"
+#include "vx_view_copy.h"
 
 #include <atomic>
 #include <cstdio>
@@ -1408,15 +1409,9 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   // the outlined kernel, three frames below anything that names the reason.
   //
   // So each operand in device memory is copied to the host for the call, and
-  // copied back after it.
-  struct HostCopy {
-    void **desc; // {allocated, aligned, ...}, pointed at the copy for the call
-    void *allocated;
-    void *aligned;
-    void *host;
-    size_t first; // the byte offset of the view's first element
-    size_t bytes; // the bytes the view reaches, from its first element
-  };
+  // copied back after it. vx_view_copy.h plans the copies: views that share
+  // memory share one copy, and a copy holds only the bytes its views reach.
+  //
   // The descriptor argument i refers to, or null. A slot holds a pointer to
   // one.
   auto arg_desc = [&](int64_t i) -> void * {
@@ -1429,7 +1424,8 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     }
     return desc;
   };
-  std::vector<HostCopy> copies;
+  std::vector<vx_view_copy> views;
+  std::vector<int64_t> view_arg; // the argument of each view
   for (int64_t i = 0; i < num_args; ++i) {
     void *desc = arg_desc(i);
     if (!desc) {
@@ -1439,49 +1435,48 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     if (!aligned || !is_device_ptr(aligned)) {
       continue;
     }
-    const int32_t rank = (int32_t)VX_ABI_RANK(arg_tags[i]);
-    const int64_t *sizes = vx_memref_sizes(desc);
-    const int64_t *strides = vx_memref_strides(desc, rank);
-    const int32_t elem = (int32_t)VX_ABI_ELEM(arg_tags[i]);
-    const size_t bytes = vx_memref_view_bytes(sizes, strides, rank, elem);
-    /* The host buffer starts at the base, so the offset still holds. The copies
-       cover only the view's span, so views whose spans do not overlap, such as
-       two rows of one tensor, keep each other's writes. */
-    const int64_t offset = vx_memref_offset(desc);
-    size_t first = 0, end = 1;
-    if (bytes &&
-        (offset < 0 ||
-         __builtin_mul_overflow((size_t)offset, vx_dtype_bytes(elem), &first) ||
-         __builtin_add_overflow(first, bytes, &end))) {
-      fprintf(stderr,
-              "[Vx CUDA] FATAL: argument %lld of %s has the offset %lld, and "
-              "its view does not fit in host memory\n",
-              (long long)i, kernel_name, (long long)offset);
-      abort();
-    }
-    void *host = malloc(end);
-    if (!host) {
-      fprintf(stderr,
-              "[Vx CUDA] FATAL: out of host memory copying %zu bytes "
-              "for %s\n",
-              end, kernel_name);
-      abort();
-    }
+    vx_view_copy v = {};
+    v.desc = desc;
+    v.rank = (int32_t)VX_ABI_RANK(arg_tags[i]);
+    v.elem = (int32_t)VX_ABI_ELEM(arg_tags[i]);
+    views.push_back(v);
+    view_arg.push_back(i);
+  }
+  std::vector<vx_copy_span> spans(views.size());
+  int64_t num_spans = 0, bad = 0;
+  if (!vx_view_copy_plan(views.data(), (int64_t)views.size(), spans.data(),
+                         &num_spans, &bad)) {
+    fprintf(stderr,
+            "[Vx CUDA] FATAL: argument %lld of %s has the offset %lld, and "
+            "its view does not fit in the address space\n",
+            (long long)view_arg[bad], kernel_name,
+            (long long)vx_memref_offset(views[bad].desc));
+    abort();
+  }
+  if (num_spans > 0) {
     wait_for_kernels("Vx copied a tensor to host memory to run a region on "
                      "the CPU");
-    VX_CUDA_CHECK(cudaMemcpy((char *)host + first, (char *)aligned + first,
-                             bytes, cudaMemcpyDeviceToHost));
-    void **ptrs = (void **)desc;
-    copies.push_back({ptrs, ptrs[0], aligned, host, first, bytes});
-    ptrs[0] = host;
-    ptrs[1] = host;
+  }
+  for (int64_t s = 0; s < num_spans; ++s) {
+    vx_copy_span &span = spans[s];
+    span.copy = malloc(span.bytes);
+    if (!span.copy) {
+      fprintf(stderr,
+              "[Vx CUDA] FATAL: out of host memory copying %llu bytes "
+              "for %s\n",
+              (unsigned long long)span.bytes, kernel_name);
+      abort();
+    }
+    VX_CUDA_CHECK(cudaMemcpy(span.copy, (const void *)span.start, span.bytes,
+                             cudaMemcpyDeviceToHost));
     if (verbose()) {
       fprintf(stderr,
-              "[Vx CUDA] %s runs on the host; argument %lld (%zu bytes) is "
-              "copied from device memory and back\n",
-              kernel_name, (long long)i, bytes);
+              "[Vx CUDA] %s runs on the host; %llu bytes are copied from "
+              "device memory and back\n",
+              kernel_name, (unsigned long long)span.bytes);
     }
   }
+  vx_view_copy_point_at(views.data(), (int64_t)views.size(), spans.data());
 
   vx_host_refuse_coop(binary_payload, payload_size, kernel_name, "CUDA");
   void *kernel = vx_host_kernel_symbol(kernel_name);
@@ -1497,22 +1492,20 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
             kernel_name);
     abort();
   }
+  for (int64_t s = 0; s < num_spans; ++s) {
+    VX_CUDA_CHECK(cudaMemcpy((void *)spans[s].start, spans[s].copy,
+                             spans[s].bytes, cudaMemcpyHostToDevice));
+  }
   // A region that ends in an operand publishes that operand's descriptor, so
   // every descriptor still pointing at a copy gets the device memory back.
-  for (const HostCopy &c : copies) {
-    VX_CUDA_CHECK(cudaMemcpy((char *)c.aligned + c.first,
-                             (char *)c.host + c.first, c.bytes,
-                             cudaMemcpyHostToDevice));
-    c.desc[0] = c.allocated;
-    c.desc[1] = c.aligned;
-    for (int64_t i = 0; i < num_args; ++i) {
-      void **d = (void **)arg_desc(i);
-      if (d && d[1] == c.host) {
-        d[0] = c.allocated;
-        d[1] = c.aligned;
-      }
-    }
-    free(c.host);
+  std::vector<void *> descs;
+  for (int64_t i = 0; i < num_args; ++i) {
+    descs.push_back(arg_desc(i));
+  }
+  vx_view_copy_restore(views.data(), (int64_t)views.size(), spans.data(),
+                       descs.data(), (int64_t)descs.size());
+  for (int64_t s = 0; s < num_spans; ++s) {
+    free(spans[s].copy);
   }
   return 1;
 }
