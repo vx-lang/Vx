@@ -14,6 +14,12 @@
 // CHECK: WARNING: ThreadSanitizer: data race
 // CHECK: {{#0 bump}}
 //
+// The shared runtime runs the tasks on a few threads. With a seed, it runs them one after the
+// other on one thread. The race is still found, because the switch to a task does not order it
+// after the task that ran before.
+// RUN: env VX_TASK_RUNTIME=shared not vxc --sanitize=thread %s 2>&1 | FileCheck %s
+// RUN: env VX_TASK_SEED=3 not vxc --sanitize=thread %s 2>&1 | FileCheck %s
+//
 // The sanitizer works only when vxc runs the program.
 // RUN: not vxc --sanitize=thread --action emit-mlir %s 2>&1 | FileCheck %s --check-prefix=NO-RUN
 // NO-RUN: --sanitize=thread works only when vxc runs the program
