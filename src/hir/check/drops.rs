@@ -989,8 +989,10 @@ impl<'a> TypeChecker<'a> {
     fn lives_in_a_stack_slot(ty: &Type) -> bool {
         match ty {
             Type::Verified(inner) | Type::Pinned(inner, _) => Self::lives_in_a_stack_slot(inner),
-            // A closure's environment holds borrows of what it captured.
-            Type::Struct(name, _) => !name.starts_with("Closure_"),
+            // A closure's environment holds borrows of what it captured. A `void` holds nothing.
+            Type::Struct(name, _) => {
+                !name.starts_with("Closure_") && !crate::syntax::is_void_ty(ty)
+            }
             Type::Enum(..) => true,
             Type::GenericInstance(base, _) => {
                 matches!(base.as_ref(), Type::Struct(..) | Type::Enum(..))

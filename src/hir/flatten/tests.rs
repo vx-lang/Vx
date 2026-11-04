@@ -2519,6 +2519,23 @@ fn call_to_unknown_fn_declines() {
 }
 
 #[test]
+fn unmodelled_aggregate_param_is_declined() {
+    // A tensor inside a payload enum has no supported storage layout.
+    let (did, w) = lower_with_registry(
+        "enum Outer { Nested(Tensor<f32, [2]>), Empty } fn f(value: Outer) -> i32 { return 0; }",
+        "f",
+    );
+    assert!(
+        !did,
+        "an unmodelled aggregate param should decline lowering"
+    );
+    assert!(
+        w.local_hir_stream.is_empty(),
+        "no partial lowering committed"
+    );
+}
+
+#[test]
 fn an_enum_inside_a_payload_enum_has_a_layout() {
     // The payload of `Nested` is the whole storage of `Inner`, as for a generic struct.
     let (did, w) = lower_with_registry(

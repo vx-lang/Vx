@@ -40,9 +40,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
     // ("an aggregate slot with no struct type").
     "backend/pass/tensor_views_end_at_their_last_use.vx",
-    // `let u = if c { ..; };`: the flat path declines a `let` of a `void` value, with or
-    // without `: void` ("a let with no type annotation"). The file is about the AST path.
-    "backend/pass/if_else_with_no_value_bound_by_let.vx",
     // A struct passed to `grad`: the flat path declines it ("an autodiff argument that is not a
     // scalar"). The file is about the AST path.
     "backend/pass/autodiff/autodiff_for_variable_argument.vx",
@@ -63,7 +60,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/raw_pointers_compare_by_address.vx",
     // "A compound assignment to something other than a simple name" is not modelled.
     "backend/pass/compound_assignment_through_a_reference.vx",
-    "backend/pass/core_iter_zip.vx",
     // A generic struct, which the flat path declines as "a struct with no GID". The file
     // exists to pin that `>>` still closes two generics now that it is also the right
     // shift, and that question is settled in the parser, so the decline costs it nothing.
@@ -93,9 +89,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // A row chosen by an `if` used as a value: the flat path has no slot for a tensor view
     // ("an aggregate slot with no struct type").
     "backend/pass/let_if_tensor_inside_an_if.vx",
-    // `a && b` in a `print!` argument: the flat path declines it ("a logical operator lowers only
-    // in memory mode"). The file is about the AST path.
-    "frontend/pass/print_argument_with_and_or.vx",
     // `c = a.clone()` inside a `spawn`: the flat path declines it ("a tensor given a new value
     // inside a branch or loop"). The kernel has to write `c` for `c` to be passed as a slot,
     // which is what the file checks.
