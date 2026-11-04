@@ -374,6 +374,19 @@ impl CompilerDriver {
                     .to_string(),
             );
         }
+        // run-jit builds and runs in one step. It never writes `-o`. Saying nothing
+        // made readers think `vxc prog.vx -o out` produced an executable.
+        if self.options.action == Action::RunJit {
+            if let Some(out) = &self.options.output {
+                return Err(format!(
+                    "-o '{}' has no effect with run-jit, the default action. \
+                     run-jit runs the program and writes no file. \
+                     To write an object file, use --action emit-obj. \
+                     To run the program, remove -o.",
+                    out.display()
+                ));
+            }
+        }
         if self.options.inputs.len() == 1 {
             return self.execute_one();
         }
@@ -437,17 +450,6 @@ impl CompilerDriver {
 
     /// Compile the one input in `options`: the path every run ends in, once per input.
     fn execute_one(&self) -> Result<(), String> {
-        // run-jit builds and runs in one step; it never writes `-o`. Saying nothing
-        // made readers think `vxc prog.vx -o out` produced an executable.
-        if self.options.action == Action::RunJit {
-            if let Some(out) = &self.options.output {
-                return Err(format!(
-                    "-o '{}' is not used with run-jit (the default action), which builds and runs the program without writing a file; pass --action emit-obj to write an object, or omit -o to run",
-                    out.display()
-                ));
-            }
-        }
-
         let main_file = &self.options.inputs[0];
         let filename = main_file.to_string_lossy().to_string();
 
@@ -2557,12 +2559,33 @@ mod tests {
     /// ignoring the flag.
     #[test]
     fn run_jit_refuses_minus_o() {
-        let driver = driver_for(&["vxc", "prog.vx", "-o", "out"]);
+        // Use a path the message cannot contain by chance ("out" sits inside "without").
+        let driver = driver_for(&["vxc", "prog.vx", "-o", "not_written.bin"]);
         let err = driver.execute().expect_err("run-jit must refuse -o");
         assert!(
-            err.contains("is not used with run-jit"),
+            err.contains("has no effect with run-jit"),
             "unexpected error: {err}"
         );
-        assert!(err.contains("out"), "error should name the path: {err}");
+        assert!(
+            err.contains("not_written.bin"),
+            "error should name the path: {err}"
+        );
+    }
+
+    /// With several inputs, `-o` must still be refused before each unit runs.
+    #[test]
+    fn run_jit_refuses_minus_o_with_two_inputs() {
+        let driver = driver_for(&["vxc", "one.vx", "two.vx", "-o", "not_written.bin"]);
+        let err = driver
+            .execute()
+            .expect_err("run-jit must refuse -o with two inputs");
+        assert!(
+            err.contains("has no effect with run-jit"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("not_written.bin"),
+            "error should name the path: {err}"
+        );
     }
 }
