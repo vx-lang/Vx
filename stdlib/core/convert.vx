@@ -43,12 +43,15 @@ trait From<T> {
   fn from(v : T) -> Self;
 }
 
-/// A widening is a cast: the target holds every value of the source.
+/// A widening is a cast: the target holds every value of the source. It writes no memory, so
+/// the passes of an `across` loop can call it.
 macro_rules stamp_from {
   ($from : ident , $to : ident) => {
     impl From<$from> for $to {
       /// The value widened, which cannot lose anything at these two widths.
-      fn from(v : $from) -> $to {
+      fn from(v : $from) -> $to
+      ensures writes_only()
+      {
         return v as $to;
       }
     }
