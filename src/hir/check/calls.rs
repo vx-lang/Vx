@@ -878,9 +878,13 @@ impl<'a> TypeChecker<'a> {
                 let reborrow_plan =
                     self.prepare_reference_arg_reborrows(resolved_name.clone(), args.as_slice());
                 // A lane reduction gives a number, so the borrows of its tensors end with the
-                // call. It has no signature for the plan to read.
+                // call. It has no signature for the plan to read. The token of a lane copy keeps
+                // its borrows until its wait.
                 let lane_bases: Vec<(String, Option<Vec<BorrowRecord>>)> =
-                    if resolved_name.as_ref().starts_with("lanes::") && !self.speculating {
+                    if resolved_name.as_ref().starts_with("lanes::")
+                        && resolved_name.as_ref() != "lanes::copy_async"
+                        && !self.speculating
+                    {
                         args.iter()
                             .filter_map(Self::arg_reborrow_base)
                             .map(|(base, _)| {

@@ -383,6 +383,13 @@ pub const LANE_REDUCE_OWN_ROW: u64 = 16;
 pub const LANE_REDUCE_SORT: u64 = 32;
 /// `Opcode::LaneReduce` with `LANE_REDUCE_SORT`: from the largest value down.
 pub const LANE_REDUCE_DESCENDING: u64 = 64;
+/// `Opcode::LaneReduce`: `lanes::copy_async`. `operand1` is the tile in shared memory and
+/// `operand2` the tensor. The `Arg`s just before are the place of the tile, one for each of the
+/// `(imm >> 16) & 0xff` dimensions. The lanes of the block are in `imm >> 32`. The result is the
+/// `i32` token.
+pub const LANE_REDUCE_COPY: u64 = 128;
+/// `Opcode::LaneReduce`: the wait for the copy of the token `operand1`, an effect with no result.
+pub const LANE_REDUCE_COPY_WAIT: u64 = 256;
 
 /// `Opcode::TensorStore`: the place is `tile[t]` in a lane loop of the code of a block, with `t`
 /// the index of the loop. The loop goes from 0 over all of its lanes, so only lane `t` writes the

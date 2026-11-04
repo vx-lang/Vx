@@ -1,0 +1,100 @@
+//===- lane_copies_on_the_cpu.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `lanes::copy_async` on the CPU copy of a kernel (`CUDA_VISIBLE_DEVICES=`). Element `[r][c]` of
+// `x` is `100 * r + c + 1`. A block copies three 4x4 tiles of `x`, and the host prints the first
+// and the last element of each row of each tile. An element of a tile past the end of `x`, or
+// before its start, is zero. A loop then adds the tiles at `[0, 4 * k]` with two copies in each
+// pass.
+//
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
+
+// The tile at `[2, 3]`.
+// CHECK: tile 0 row 0: 204 207
+// CHECK-NEXT: tile 0 row 1: 304 307
+// CHECK-NEXT: tile 0 row 2: 404 407
+// CHECK-NEXT: tile 0 row 3: 504 507
+// The tile at `[8, 8]`: rows 10 and 11, and columns 10 and 11, are past the end.
+// CHECK-NEXT: tile 1 row 0: 809 0
+// CHECK-NEXT: tile 1 row 1: 909 0
+// CHECK-NEXT: tile 1 row 2: 0 0
+// CHECK-NEXT: tile 1 row 3: 0 0
+// The tile at `[-1, 0]`: row -1 is before the start.
+// CHECK-NEXT: tile 2 row 0: 0 0
+// CHECK-NEXT: tile 2 row 1: 1 4
+// CHECK-NEXT: tile 2 row 2: 101 104
+// CHECK-NEXT: tile 2 row 3: 201 204
+// The first element of row `r` of the sum adds columns 0, 4, 8 and 12 of row `r` of `x`, and the
+// last element columns 3, 7, 11 and 15. The columns from 10 on are past the end.
+// CHECK-NEXT: sum row 0: 15 12
+// CHECK-NEXT: sum row 3: 915 612
+
+fn main() -> i32 {
+  let mut src = Tensor<f32, [10, 10]>::fill(0.0);
+  for r in 0..10 {
+    for c in 0..10 {
+      src[r][c] = (100 * r + c + 1) as f32;
+    }
+  }
+  let x = transfer(src, Memory::HBM);
+  let mut out = transfer(Tensor<f32, [48]>::fill(-1.0), Memory::HBM);
+  let mut sums = transfer(Tensor<f32, [16]>::fill(-1.0), Memory::HBM);
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tiles = unsafe {
+        Tensor<f32, [2, 4, 4], Memory::SMEM>::uninit()
+      };
+      let first = lanes::copy_async(&mut tiles[0], &x, [2, 3]);
+      let second = lanes::copy_async(&mut tiles[1], &x, [8, 8]);
+      first.wait();
+      for t in 0..16 across lanes(32) {
+        out[t] = tiles[0][t / 4][t % 4];
+      }
+      second.wait();
+      for t in 0..16 across lanes(32) {
+        out[16 + t] = tiles[1][t / 4][t % 4];
+      }
+      let third = lanes::copy_async(&mut tiles[0], &x, [-1, 0]);
+      third.wait();
+      for t in 0..16 across lanes(32) {
+        out[32 + t] = tiles[0][t / 4][t % 4];
+      }
+      let mut acc = unsafe { Tensor<f32, [16], Memory::SMEM>::uninit() };
+      for t in 0..16 across lanes(32) {
+        acc[t] = 0.0;
+      }
+      for k in 0..2 {
+        let even = lanes::copy_async(&mut tiles[0], &x, [0, 8 * k]);
+        let odd = lanes::copy_async(&mut tiles[1], &x, [0, 8 * k + 4]);
+        even.wait();
+        for t in 0..16 across lanes(32) {
+          acc[t] = acc[t] + tiles[0][t / 4][t % 4];
+        }
+        odd.wait();
+        for t in 0..16 across lanes(32) {
+          acc[t] = acc[t] + tiles[1][t / 4][t % 4];
+        }
+      }
+      for t in 0..16 across lanes(32) {
+        sums[t] = acc[t];
+      }
+    }
+  }
+  let o = transfer(out, Memory::CPU_DRAM);
+  for tile in 0..3 {
+    for row in 0..4 {
+      let at = tile * 16 + row * 4;
+      println!("tile {} row {}: {} {}", tile, row, o[at], o[at + 3]);
+    }
+  }
+  let s = transfer(sums, Memory::CPU_DRAM);
+  println!("sum row 0: {} {}", s[0], s[3]);
+  println!("sum row 3: {} {}", s[12], s[15]);
+  return 0;
+}

@@ -20,9 +20,9 @@ use super::*;
 use crate::arch::LevelKind;
 use crate::bytecode::{
     ACROSS_BLOCK, ACROSS_BLOCKS, ACROSS_LANE, ACROSS_STRIDE, BARRIER_SUBGROUP, LANE_REDUCE_ARGMAX,
-    LANE_REDUCE_DESCENDING, LANE_REDUCE_MAX, LANE_REDUCE_ORDERED, LANE_REDUCE_OWN_ROW,
-    LANE_REDUCE_SORT, LANE_REDUCE_SUBGROUP, TENSOR_STORE_BLOCK_LANE_ELEMENT,
-    TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
+    LANE_REDUCE_COPY, LANE_REDUCE_COPY_WAIT, LANE_REDUCE_DESCENDING, LANE_REDUCE_MAX,
+    LANE_REDUCE_ORDERED, LANE_REDUCE_OWN_ROW, LANE_REDUCE_SORT, LANE_REDUCE_SUBGROUP,
+    TENSOR_STORE_BLOCK_LANE_ELEMENT, TENSOR_STORE_SUBGROUP_LANE_ELEMENT,
 };
 use crate::hir::check::across_lanes;
 
@@ -416,6 +416,29 @@ impl Lowerer<'_> {
         if op.is_sort() {
             return self.lower_lane_sort(fc, op);
         }
+        match op {
+            crate::hir::check::lanes::LaneOp::CopyAsync => return self.lower_lane_copy(fc),
+            crate::hir::check::lanes::LaneOp::CopyWait => {
+                let [t] = fc.args.as_slice() else {
+                    return Err(crate::emitter_gap!());
+                };
+                let t = self.lower_expr(t)?;
+                self.emit_effect(
+                    Opcode::LaneReduce,
+                    t.reg,
+                    Register(0),
+                    LANE_REDUCE_COPY_WAIT,
+                );
+                return Ok(self.emit_value(
+                    Opcode::Const,
+                    Register(0),
+                    Register(0),
+                    ElementType::I32,
+                    0,
+                ));
+            }
+            _ => {}
+        }
         let argmax = op == crate::hir::check::lanes::LaneOp::ArgMax;
         let (n, tensors) = fc.args.split_last().ok_or(crate::emitter_gap!())?;
         if tensors.len() != if argmax { 2 } else { 1 } {
@@ -493,6 +516,37 @@ impl Lowerer<'_> {
         imm |= lanes << 32;
         self.emit_effect(Opcode::LaneReduce, t.reg, n.reg, imm);
         Ok(self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0))
+    }
+
+    /// `lanes::copy_async(&mut tile, &x, [i, j, ..])`: the place goes in `Arg`s, and the value is
+    /// the token.
+    fn lower_lane_copy(&mut self, fc: &crate::syntax::expr::FunctionCallExpr) -> Lowered<Val> {
+        let [dst, src, Expr::Array(place)] = fc.args.as_slice() else {
+            return Err(crate::emitter_gap!());
+        };
+        let dst = self.lower_expr(dst)?;
+        let src = self.lower_expr(src)?;
+        let rank = match (&dst.ty, &src.ty) {
+            (LoweredTy::Tensor { shape: d, .. }, LoweredTy::Tensor { shape: s, .. })
+                if d.len() == s.len() && d.len() == place.elements.len() =>
+            {
+                d.len() as u64
+            }
+            _ => {
+                return Err(Decline::TypeNotModelled {
+                    what: "a lane copy of something that is not a tensor",
+                })
+            }
+        };
+        let mut at = Vec::new();
+        for e in &place.elements {
+            at.push(self.lower_expr(e)?.reg);
+        }
+        for r in at {
+            self.emit_effect(Opcode::Arg, r, Register(0), 0);
+        }
+        let imm = LANE_REDUCE_COPY | (rank << 16) | (self.across.lanes << 32);
+        Ok(self.emit_value(Opcode::LaneReduce, dst.reg, src.reg, ElementType::I32, imm))
     }
 
     /// `TENSOR_STORE_BLOCK_LANE_ELEMENT` or `TENSOR_STORE_SUBGROUP_LANE_ELEMENT` when the store

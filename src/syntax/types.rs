@@ -1622,6 +1622,11 @@ pub fn transfer_token_inner(ty: &Type) -> Option<&Type> {
     }
 }
 
+/// Whether `ty` is the token of a `lanes::copy_async`, `Token<void>`.
+pub fn is_copy_token(ty: &Type) -> bool {
+    matches!(transfer_token_inner(ty), Some(Type::Struct(name, None)) if name.as_ref() == "void")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

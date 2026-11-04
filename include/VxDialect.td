@@ -250,6 +250,23 @@ def Vx_LaneSortOp : Vx_Op<"lane_sort", [MemoryEffects<[MemRead, MemWrite]>]> {
                      UnitAttr:$serial);
 }
 
+// `lanes::copy_async`: the lanes of a block copy the tile of `source` at `place`
+// into `tile`, in the background. An element past the end of `source` copies as
+// zero. The result is a token for `vx.lane_copy_wait`.
+def Vx_LaneCopyAsyncOp : Vx_Op<"lane_copy_async", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Start a copy of a tile into shared memory.";
+    let arguments = (ins AnyMemRef:$tile, AnyMemRef:$source,
+                     Variadic<AnySignlessInteger>:$place, I64Attr:$lanes,
+                     UnitAttr:$serial);
+    let results = (outs I32:$token);
+}
+
+// Waits until the copy of `token` ends, and then for every lane of the block.
+def Vx_LaneCopyWaitOp : Vx_Op<"lane_copy_wait", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Wait for a copy of a tile into shared memory.";
+    let arguments = (ins I32:$token, UnitAttr:$serial);
+}
+
 // The launch shape of a `vx.spawn` region with `across` loops (#252): the
 // blocks on grid axis 0 to 2, or the threads of a block (axis 3). The outlining passes the value after the kernel's arguments,
 // and the runtime reads it there.

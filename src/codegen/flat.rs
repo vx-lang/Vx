@@ -1500,7 +1500,10 @@ fn static_tile_bytes(elem: &ElementType, shape: &[String]) -> Option<u64> {
 /// The single source of truth shared by the `func.func` header and a `FuncConst`'s `func.constant`
 /// signature, so a materialized function pointer's type matches its callee's header exactly. (#242)
 pub(crate) fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
-    // A token of `transfer_async` is spelled as its tensor.
+    // A token of `transfer_async` is spelled as its tensor, and a token of a lane copy as `i32`.
+    if crate::syntax::types::is_copy_token(ty) {
+        return Ok("i32".to_string());
+    }
     if let Some(inner) = crate::syntax::types::transfer_token_inner(ty) {
         return ty_mlir(inner, ctx);
     }

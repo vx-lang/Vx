@@ -307,6 +307,18 @@ impl FnEmit<'_> {
     /// `vx.lane_reduce`: the lowering of each copy of the kernel expands it, into shuffles on the
     /// GPU and into loops on the CPU.
     pub(crate) fn op_lane_reduce(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        if ins.imm & crate::bytecode::LANE_REDUCE_COPY_WAIT != 0 {
+            let t = self
+                .names
+                .get(ins.operand1.0 as usize)
+                .ok_or(crate::emitter_gap!())?
+                .clone();
+            self.body += &format!("  \"vx.lane_copy_wait\"({t}) : (i32) -> ()\n");
+            return Ok(());
+        }
+        if ins.imm & crate::bytecode::LANE_REDUCE_COPY != 0 {
+            return self.op_lane_copy(idx, ins);
+        }
         let t = self
             .names
             .get(ins.operand1.0 as usize)
@@ -397,6 +409,58 @@ impl FnEmit<'_> {
             &format!("  {v} = \"vx.lane_reduce\"({t}, {n}) {{{attrs}}} : ({memty}, i32) -> f32\n");
         self.names[idx] = v;
         self.etypes[idx] = Some(ElementType::F32);
+        Ok(())
+    }
+
+    /// `vx.lane_copy_async`: the tile, the tensor and the place of the tile, which the `Arg`s
+    /// before hold. The result is the token.
+    fn op_lane_copy(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
+        let rank = ((ins.imm >> 16) & 0xff) as usize;
+        if self.pending_args.len() < rank {
+            return Err(crate::emitter_gap!());
+        }
+        let at = self.pending_args.split_off(self.pending_args.len() - rank);
+        let mut operands = Vec::new();
+        let mut types = Vec::new();
+        for r in [ins.operand1.0, ins.operand2.0] {
+            operands.push(
+                self.names
+                    .get(r as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone(),
+            );
+            types.push(
+                self.mem_of
+                    .get(r as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone()
+                    .ok_or(crate::emitter_gap!())?,
+            );
+        }
+        for r in at {
+            operands.push(
+                self.names
+                    .get(r as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone(),
+            );
+            let e = self
+                .etypes
+                .get(r as usize)
+                .cloned()
+                .flatten()
+                .ok_or(crate::emitter_gap!())?;
+            types.push(mlir_scalar(&e).ok_or(crate::emitter_gap!())?.to_string());
+        }
+        let v = format!("%v{idx}");
+        self.body += &format!(
+            "  {v} = \"vx.lane_copy_async\"({}) {{lanes = {} : i64}} : ({}) -> i32\n",
+            operands.join(", "),
+            ins.imm >> 32,
+            types.join(", ")
+        );
+        self.names[idx] = v;
+        self.etypes[idx] = Some(ElementType::I32);
         Ok(())
     }
 

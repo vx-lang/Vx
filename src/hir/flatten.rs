@@ -6982,8 +6982,12 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Lowe
 /// (generic, tensor, pointer, closure) or an aggregate whose layout is the not-yet-computed 0/0 stub
 /// (`align_bytes == 0`) — the caller then aborts, keeping the lowering atomic.
 fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy> {
-    // A token of `transfer_async` is its tensor: the copy is done when it is made.
+    // A token of `transfer_async` is its tensor: the copy is done when it is made. A token of a
+    // lane copy is a number.
     if let Some(inner) = crate::syntax::types::transfer_token_inner(ty) {
+        if crate::syntax::types::is_copy_token(ty) {
+            return Some(LoweredTy::Scalar(ElementType::I32));
+        }
         return lowered_ty(inner, registry);
     }
     if let Some(elem) = scalar_of(ty) {
