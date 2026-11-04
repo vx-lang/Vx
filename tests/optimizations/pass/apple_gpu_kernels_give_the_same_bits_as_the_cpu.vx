@@ -1,5 +1,6 @@
 // Kernels for the Apple GPU run there, and again on the CPU with VX_METAL=0, which runs the
-// CPU copy of each kernel. Both runs must print the same numbers, to the last digit.
+// CPU copy of each kernel on 4 workers. Both runs must print the same numbers, to the last
+// digit.
 // The kernels: a blur of the rows and the columns of an image, the image moved by part of a
 // pixel through calls to functions, a matrix product that keeps tiles in shared memory, and a
 // brightness change of a BGRA frame, a u8 tensor with padded rows.
@@ -7,7 +8,7 @@
 // REQUIRES: macos
 // RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s --check-prefix=OUT
 // RUN: FileCheck %s --check-prefix=GPU --input-file=%t.gpu
-// RUN: env VX_METAL=0 VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.cpu | FileCheck %s --check-prefix=OUT
+// RUN: env VX_METAL=0 VX_HOST_THREADS=4 VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.cpu | FileCheck %s --check-prefix=OUT
 // RUN: FileCheck %s --check-prefix=CPU --input-file=%t.cpu
 //
 // Eight launches: three fill the inputs, and five are the kernels above.
@@ -20,12 +21,14 @@
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 40 x 1 x 1, block 256
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 40 x 1 x 1, block 256
 // CPU-NOT: [Vx Metal]
-// CPU: Falling back to CPU libffi dispatch
+// CPU: Falling back to CPU libffi dispatch on 4 workers!
 //
 // OUT: {{^}}blur 43195.65725585073{{$}}
 // OUT-NEXT: {{^}}shift 43210.20744516142{{$}}
 // OUT-NEXT: {{^}}product -4.6026072315871716{{$}}
 // OUT-NEXT: {{^}}frame 5157808{{$}}
+
+import core::convert;
 
 // Each pixel becomes the average of 9 pixels of its row.
 pub fn blur_rows(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> void {
@@ -155,13 +158,13 @@ pub fn product(c : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f32, [?, ?
 
 // A frame of BGRA bytes: each row of the tensor is a row of the frame with its padding, so
 // it holds more than 4 * w bytes. The kernel scales the colors of each pixel by `gain`, keeps
-// the alpha byte, and leaves the padding alone.
+// the alpha byte, and leaves the padding alone. It widens a byte with `f32::from`.
 pub fn brighten(dst : &mut Tensor<u8, [?, ?], Memory::HBM>, src : &Tensor<u8, [?, ?], Memory::HBM>, h : i32, w : i32, gain : f32) -> void {
   spawn on(Topology::Device) {
     for y in 0..h across blocks {
       for x in 0..w across lanes(256) {
         for c in 0..4 {
-          let mut v = src[y][x * 4 + c] as f32;
+          let mut v = f32::from(src[y][x * 4 + c]);
           if c < 3 {
             v = v * gain;
           }
