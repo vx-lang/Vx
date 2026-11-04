@@ -18,7 +18,6 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
-    "frontend/pass/control_flow_rigorous.vx",
     // The `vxc -j` fallback fixture: a program the flat path declines, chosen so the parallel
     // frontend has something to hand back to the sequential driver. It declines "a match in
     // value position".
@@ -58,9 +57,7 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 /// Programs where the flat path declines AND the AST fallback then fails to compile --
 /// invalid MLIR or a panic on the default `--action emit-mlir` (Vx#398). Each is a real
 /// compiler defect; the list exists so the set can only shrink, never silently grow.
-const KNOWN_BROKEN: &[&str] = &[
-    "frontend/pass/control_flow_rigorous.vx", // multi-payload variant binding (Vx#233)
-];
+const KNOWN_BROKEN: &[&str] = &[];
 
 /// Which codegen path the compiler took for one program, and -- when it fell back -- the reasons
 /// the flat path gave.

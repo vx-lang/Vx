@@ -1103,7 +1103,103 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// A `match` with string literal arms as a chain of `if`s, since each arm compares the
+    /// text with `==`. `match s { "a" => A, _ => B }` is `if s == "a" { A } else { B }`. A subject
+    /// that is not a variable is bound to one first, by a match arm that only binds it, so it
+    /// runs once. `None` for any other `match`.
+    fn string_match_as_ifs(expr: &Expr) -> Option<Expr> {
+        let Expr::Match(MatchExpr {
+            expr: subject,
+            arms,
+            span,
+        }) = expr
+        else {
+            return None;
+        };
+        let span = *span;
+        if !arms
+            .iter()
+            .any(|arm| crate::syntax::is_string_pattern(&arm.pattern))
+            || !arms.iter().all(|arm| {
+                crate::syntax::is_string_pattern(&arm.pattern)
+                    || matches!(arm.pattern, Pattern::Wildcard | Pattern::Identifier(_))
+            })
+        {
+            return None;
+        }
+        // A first arm of `_` or a name is the only arm that can run.
+        if !crate::syntax::is_string_pattern(&arms[0].pattern) {
+            return Some(Expr::Match(MatchExpr::new(
+                subject.clone(),
+                vec![arms[0].clone()],
+                span,
+            )));
+        }
+        let name: crate::symbol::Symbol = match &**subject {
+            Expr::Identifier(id) => id.name.clone(),
+            _ => "match_subject".into(),
+        };
+        let value = || Expr::Identifier(IdentifierExpr::new(name.clone(), span));
+        // From the last arm to the first: each arm is an `if` whose `else` is the arms after it.
+        let mut rest: Option<Vec<Statement>> = None;
+        for arm in arms.iter().rev() {
+            rest = Some(match &arm.pattern {
+                Pattern::Wildcard => arm.body.clone(),
+                Pattern::Identifier(bound) => {
+                    let mut body = vec![Statement::LetDecl(crate::syntax::LetDeclStmt::new(
+                        bound.to_string(),
+                        false,
+                        None,
+                        value(),
+                        span,
+                    ))];
+                    body.extend(arm.body.iter().cloned());
+                    body
+                }
+                Pattern::Literal(text) => {
+                    let cond = Expr::RelationalOp(crate::syntax::RelationalOpExpr::new(
+                        Box::new(value()),
+                        crate::syntax::RelationalOp::Eq,
+                        text.clone(),
+                        span,
+                    ));
+                    let chain = IfExpr::new(false, Box::new(cond), arm.body.clone(), rest, span);
+                    vec![Statement::ExprStmt(crate::syntax::ExprStmtStmt::new(
+                        Expr::If(chain),
+                        false,
+                        span,
+                    ))]
+                }
+                Pattern::EnumVariant(..) => unreachable!("only string, `_` and name arms"),
+            });
+        }
+        // The first arm is a string literal, so `rest` is one `if`.
+        let first = match rest?.pop()? {
+            Statement::ExprStmt(e) => e.expr,
+            _ => return None,
+        };
+        if matches!(&**subject, Expr::Identifier(_)) {
+            return Some(first);
+        }
+        let arm = crate::syntax::MatchArm {
+            pattern: Pattern::Identifier(name),
+            body: vec![Statement::ExprStmt(crate::syntax::ExprStmtStmt::new(
+                first, false, span,
+            ))],
+            span: Span::default(),
+        };
+        Some(Expr::Match(MatchExpr::new(
+            subject.clone(),
+            vec![arm],
+            span,
+        )))
+    }
+
     pub(crate) fn check_match_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
+        if let Some(chain) = Self::string_match_as_ifs(expr) {
+            *expr = chain;
+            return self.check_expr_type_flag(expr, consume);
+        }
         let unused = std::mem::replace(&mut self.value_unused, false);
         match expr {
             Expr::Match(MatchExpr {

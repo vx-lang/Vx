@@ -1273,6 +1273,29 @@ pub fn locals_with_address_taken(stmts: &[Statement]) -> std::collections::HashS
     names
 }
 
+/// Whether `stmts` compare with a string literal: `==` or `!=` with one, or a `match` arm with a
+/// string literal pattern. Such code calls `core::c_str`.
+pub fn compares_with_a_string_literal(stmts: &[Statement]) -> bool {
+    let mut found = false;
+    visit_exprs(stmts, &mut |e| match e {
+        Expr::RelationalOp(r)
+            if matches!(r.op, RelationalOp::Eq | RelationalOp::NotEq)
+                && (matches!(&*r.lhs, Expr::StringLiteral(_))
+                    || matches!(&*r.rhs, Expr::StringLiteral(_))) =>
+        {
+            found = true
+        }
+        Expr::Match(m) if m.arms.iter().any(|arm| is_string_pattern(&arm.pattern)) => found = true,
+        _ => {}
+    });
+    found
+}
+
+/// Whether `pattern` is a string literal, such as `"hello" => ..`.
+pub fn is_string_pattern(pattern: &Pattern) -> bool {
+    matches!(pattern, Pattern::Literal(lit) if matches!(&**lit, Expr::StringLiteral(_)))
+}
+
 /// Calls `f` on every expression in `stmts`, each one before the expressions inside it. The
 /// tokens of a macro that was not expanded are not expressions, and are not visited.
 pub fn visit_exprs(stmts: &[Statement], f: &mut dyn FnMut(&Expr)) {
