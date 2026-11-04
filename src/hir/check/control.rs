@@ -736,15 +736,21 @@ impl<'a> TypeChecker<'a> {
                 span,
                 generated,
                 closure_body,
+                within,
                 ..
             }) => {
                 let block_span = *span;
                 let closure_body = *closure_body;
-                // The block body of a closure is a plain block: it allows nothing more than the
-                // code around the closure.
+                let within = *within;
+                // The block body of a closure, and a `within` block, are plain blocks: they
+                // allow nothing more than the code around them.
                 let written = !*generated && !closure_body;
                 let prev_unsafe = self.in_unsafe_block;
-                self.in_unsafe_block = prev_unsafe || !closure_body;
+                self.in_unsafe_block = prev_unsafe || !(closure_body || within);
+                if within {
+                    self.within_depth += 1;
+                    self.within_start_next = true;
+                }
                 // A block the compiler made is transparent here: what it holds counts for the
                 // written block around it.
                 let prev_written = self.in_written_unsafe_block;
@@ -831,6 +837,9 @@ impl<'a> TypeChecker<'a> {
                     self.in_written_unsafe_block = prev_written;
                 }
                 self.in_unsafe_block = prev_unsafe;
+                if within {
+                    self.within_depth -= 1;
+                }
                 ret_ty
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),

@@ -260,6 +260,10 @@ impl MacroCallStmt {
 pub const CANCEL_OFF: &str = "vx::cancel_off";
 /// The call that turns cancellation back on after a `drop`.
 pub const CANCEL_ON: &str = "vx::cancel_on";
+/// The first statement of a `within(limit) { .. }` block: its deadline starts.
+pub const WITHIN_START: &str = "vx::within_start";
+/// The drop that ends a `within` block, on each path out of it.
+pub const WITHIN_END: &str = "vx::within_end";
 
 /// `Statement::Drop`: the tensor named here is freed at this point.
 #[derive(Debug, PartialEq, Clone)]
@@ -282,6 +286,8 @@ pub struct DropStmt {
     /// Frees nothing: the struct or enum `name` is no longer used, so its stack slot can hold
     /// another value. It comes after the other drops of `name`.
     pub ends_lifetime: bool,
+    /// Ends a `within` block (F6a): `vx::within_end()`. `name` is the block's hidden owner.
+    pub ends_within: bool,
     pub span: Span,
     /// With `call`: how long the waits in the `drop` can take, in seconds. The call
     /// `wait_limit(&name.path)`, or the default when the impl has no copy of it.
@@ -296,15 +302,6 @@ impl DropStmt {
     /// until its time limit (F6a): `vx::cancel_off(wait_limit(&x)); drop(&mut x);
     /// vx::cancel_on();`. The code generators lower the two `vx::` calls to the runtime.
     pub fn call_statements(&self) -> Option<Vec<Statement>> {
-        let payload = matches!(self.expr.as_deref(), Some(Expr::Match(_)));
-        if self.call.is_none() && !payload {
-            return None;
-        }
-        let call = self
-            .expr
-            .as_deref()
-            .expect("a drop that runs code has it")
-            .clone();
         let stmt = |e: Expr| Statement::ExprStmt(ExprStmtStmt::new(e, true, Span::default()));
         let runtime = |name: &str, args: Vec<Expr>| {
             stmt(Expr::FunctionCall(FunctionCallExpr::new(
@@ -314,6 +311,18 @@ impl DropStmt {
                 Span::default(),
             )))
         };
+        if self.ends_within {
+            return Some(vec![runtime(WITHIN_END, Vec::new())]);
+        }
+        let payload = matches!(self.expr.as_deref(), Some(Expr::Match(_)));
+        if self.call.is_none() && !payload {
+            return None;
+        }
+        let call = self
+            .expr
+            .as_deref()
+            .expect("a drop that runs code has it")
+            .clone();
         let mut body = vec![stmt(call)];
         if self.call.is_some() {
             let limit = self

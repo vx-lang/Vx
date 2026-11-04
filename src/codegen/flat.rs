@@ -1190,7 +1190,7 @@ pub struct SubspaceInfo {
 /// `func.func private` declaration prepended. Order is load-bearing — the emit records which of
 /// these a function called as a bitmask over this array's indices, so inserting in the middle
 /// renumbers existing entries.
-const RUNTIME_HELPERS: [(&str, &str); 26] = [
+const RUNTIME_HELPERS: [(&str, &str); 28] = [
     ("printMemrefF32", "(memref<*xf32>)"),
     ("printMemrefF64", "(memref<*xf64>)"),
     ("printMemrefI32", "(memref<*xi32>)"),
@@ -1217,6 +1217,8 @@ const RUNTIME_HELPERS: [(&str, &str); 26] = [
     ("vx_task_failed", "()"),
     ("vx_cancel_off", "(f64)"),
     ("vx_cancel_on", "()"),
+    ("vx_within_start", "(f64)"),
+    ("vx_within_end", "()"),
 ];
 
 // The helper mask is a `u64`, so the table must not grow past 64 entries.
@@ -2590,6 +2592,19 @@ impl<'a> FnEmit<'a> {
             }
             Opcode::TaskFailed => {
                 self.body += "  func.call @vx_task_failed() : () -> ()\n";
+                Ok(())
+            }
+            Opcode::WithinStart => {
+                let limit = self
+                    .names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                self.body += &format!("  func.call @vx_within_start({limit}) : (f64) -> ()\n");
+                Ok(())
+            }
+            Opcode::WithinEnd => {
+                self.body += "  func.call @vx_within_end() : () -> ()\n";
                 Ok(())
             }
             Opcode::CancelOff => {

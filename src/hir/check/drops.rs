@@ -126,6 +126,8 @@ pub(crate) struct GluePart {
     call: Option<crate::symbol::Symbol>,
     /// With `call`: the mangled name of the type's `Drop::wait_limit`.
     limit: Option<crate::symbol::Symbol>,
+    /// The end of a `within` block (F6a): the drop of the block's hidden owner.
+    within_end: bool,
     /// For an enum: what dropping each variant's payload does, by element. Dropping it
     /// matches on the value.
     payload: Option<EnumGlue>,
@@ -348,6 +350,7 @@ fn drop_stmt(name: &str, flag: Option<&str>) -> Statement {
         flag: flag.map(Into::into),
         after_value: false,
         ends_lifetime: false,
+        ends_within: false,
         span: Span::default(),
     })
 }
@@ -364,6 +367,7 @@ fn lifetime_end(name: &str) -> Statement {
         flag: None,
         after_value: false,
         ends_lifetime: true,
+        ends_within: false,
         span: Span::default(),
     })
 }
@@ -513,6 +517,20 @@ fn glue_drops_at(
                 access.struct_name = Some(struct_ty.as_str().into());
                 place = Expr::MemberAccess(access);
             }
+            if part.within_end {
+                return Statement::Drop(DropStmt {
+                    name: name.into(),
+                    path: Vec::new(),
+                    call: None,
+                    expr: None,
+                    flag: None,
+                    after_value: false,
+                    ends_lifetime: false,
+                    ends_within: true,
+                    span: Span::default(),
+                    limit: None,
+                });
+            }
             if let Some(payload) = &part.payload {
                 return Statement::Drop(DropStmt {
                     name: name.into(),
@@ -523,6 +541,7 @@ fn glue_drops_at(
                     flag: flag.map(Into::into),
                     after_value: false,
                     ends_lifetime: false,
+                    ends_within: false,
                     span: Span::default(),
                 });
             }
@@ -571,6 +590,7 @@ fn glue_drops_at(
                 flag: flag.map(Into::into),
                 after_value: false,
                 ends_lifetime: false,
+                ends_within: false,
                 span: Span::default(),
             })
         })
@@ -629,6 +649,7 @@ impl<'a> TypeChecker<'a> {
                 path: Vec::new(),
                 call: None,
                 limit: None,
+                within_end: false,
                 payload: None,
             }],
             // The same value as the type inside, with a proof or a location attached.
@@ -660,6 +681,7 @@ impl<'a> TypeChecker<'a> {
                         path: Vec::new(),
                         call: Some(call),
                         limit: self.drops_impl_method(ty, "wait_limit"),
+                        within_end: false,
                         payload: None,
                     });
                 }
@@ -725,6 +747,7 @@ impl<'a> TypeChecker<'a> {
                 path: Vec::new(),
                 call: Some(call),
                 limit: self.drops_impl_method(ty, "wait_limit"),
+                within_end: false,
                 payload: None,
             });
         }
@@ -733,6 +756,7 @@ impl<'a> TypeChecker<'a> {
                 path: Vec::new(),
                 call: None,
                 limit: None,
+                within_end: false,
                 payload: Some(EnumGlue {
                     name: ty.to_string(),
                     arms,
@@ -1027,6 +1051,39 @@ impl<'a> TypeChecker<'a> {
                 ends_lifetime,
             });
         }
+    }
+
+    /// The start of a `within` block (F6a): an owner with no name in the program, whose drop
+    /// ends the block's deadline. It is dropped at the end of the block, so each `return`,
+    /// `break` and `continue` out of the block drops it first, as it drops a value with a `Drop`
+    /// impl.
+    pub(crate) fn drops_note_within(&mut self) {
+        let scope = self.scopes.len() - 1;
+        let Some(FrameKind::Block { owners, stmt, .. }) = self.borrow.drops.frames.last_mut()
+        else {
+            panic!("a `within` block starts in a block");
+        };
+        let name = format!("$within{}", owners.len());
+        owners.push(Owner {
+            name,
+            given_by: None,
+            decl: Some(*stmt),
+            to_block_end: true,
+            drop_reads_borrows: false,
+            scope,
+            moved: Moved::No,
+            moved_at: None,
+            flag: None,
+            glue: vec![GluePart {
+                path: Vec::new(),
+                call: None,
+                limit: None,
+                within_end: true,
+                payload: None,
+            }],
+            fields: Vec::new(),
+            ends_lifetime: false,
+        });
     }
 
     /// Whether a local of type `ty` lives in a stack slot of its own: a struct or an enum. A

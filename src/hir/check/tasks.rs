@@ -322,6 +322,7 @@ impl TypeChecker<'_> {
             cancels_on_err,
             value_ty,
             closure_body: false,
+            within: false,
         });
     }
 

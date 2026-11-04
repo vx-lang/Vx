@@ -7,11 +7,14 @@
 //===----------------------------------------------------------------------===//
 // A `drop` runs with cancellation off, so a `send` or `recv` in it can wait until the limit of the
 // drop. The compiler warns about each one (W1036). `send_for` and `recv_for` have a time limit, and
-// the same `send` in a normal method gets no warning.
+// the same `send` in a normal method gets no warning. A wait in a `within` block has the block's
+// limit, so it gets no warning. `wait_limit` should only return a number, so a wait in it gets
+// the warning too.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Warning --implicit-check-not=Error
-// CHECK: Warning[W1036] at {{.*}}a_drop_that_waits_with_no_time_limit.vx:[[@LINE+14]]:{{[0-9]+}}: 'send' waits with no time limit of its own in a 'drop'. A drop runs with cancellation off, so if the other end of the channel never acts, this wait holds up the drop until the limit of the drop: its type's 'wait_limit', 10 seconds by default. Use 'send_for' with a time limit
-// CHECK: Warning[W1036] at {{.*}}a_drop_that_waits_with_no_time_limit.vx:[[@LINE+14]]:{{[0-9]+}}: 'recv' waits with no time limit of its own in a 'drop'. {{.*}} Use 'recv_for' with a time limit
+// CHECK: Warning[W1036] at {{.*}}a_drop_that_waits_with_no_time_limit.vx:[[@LINE+15]]:{{[0-9]+}}: 'send' waits with no time limit of its own in a 'drop'. A drop runs with cancellation off, so if the other end of the channel never acts, this wait holds up the drop until the limit of the drop: its type's 'wait_limit', 10 seconds by default. Use 'send_for' with a time limit, or put the wait in a 'within' block
+// CHECK: Warning[W1036] at {{.*}}a_drop_that_waits_with_no_time_limit.vx:[[@LINE+15]]:{{[0-9]+}}: 'recv' waits with no time limit of its own in a 'drop'. {{.*}} Use 'recv_for' with a time limit
+// CHECK: Warning[W1036] at {{.*}}a_drop_that_waits_with_no_time_limit.vx:[[@LINE+26]]:{{[0-9]+}}: 'recv' waits in 'wait_limit'. 'wait_limit' runs before the drop, to say how long its waits can take, so it should return a number and not wait
 
 import std::sync::channel;
 
@@ -29,6 +32,16 @@ impl Drop for SlotGuard {
     // These two calls have a time limit.
     let _sent_for = self.to_pool.send_for(self.slot, 0.1);
     let _got_for = self.from_pool.recv_for(0.1);
+    // So does this one: the limit of its block.
+    within(0.1) {
+      let _got_within = self.from_pool.recv();
+    }
+  }
+
+  fn wait_limit(self : &SlotGuard) -> f64 {
+    // This call waits before the drop starts.
+    let _got = self.from_pool.recv();
+    return 0.5;
   }
 }
 

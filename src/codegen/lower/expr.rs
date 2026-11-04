@@ -3722,6 +3722,21 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(name) {
             return lower_lane_reduce(gen, block, op, ordered, args);
         }
+        // The start and the end of a `within` block (F6a).
+        if name.as_ref() == crate::syntax::stmt::WITHIN_START {
+            let (limit, _, block) = gen.generate_expr(&args[0], block)?;
+            crate::codegen::lower::call_runtime_void_with(
+                gen,
+                block,
+                "vx_within_start",
+                &[(limit, "f64")],
+            )?;
+            return cancel_call_value(gen, block);
+        }
+        if name.as_ref() == crate::syntax::stmt::WITHIN_END {
+            crate::codegen::lower::call_runtime_void(gen, block, "vx_within_end")?;
+            return cancel_call_value(gen, block);
+        }
         // Around the call of a `Drop` impl's `drop` (F6, F6a), with the time limit of the
         // drop in seconds.
         if name.as_ref() == crate::syntax::stmt::CANCEL_OFF {

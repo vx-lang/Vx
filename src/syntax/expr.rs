@@ -519,6 +519,10 @@ pub struct UnsafeBlockExpr {
     /// The program wrote this block as the body of a closure, `|x| { .. }`. It is a plain block,
     /// so the code in it cannot do what needs `unsafe`.
     pub closure_body: bool,
+    /// The program wrote this block as `within(limit) { .. }` (F6a). It is a plain block whose
+    /// first statement is `vx::within_start(limit)`, so the code in it cannot do what needs
+    /// `unsafe`.
+    pub within: bool,
 }
 impl UnsafeBlockExpr {
     pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -532,6 +536,7 @@ impl UnsafeBlockExpr {
             cancels_on_err: None,
             value_ty: None,
             closure_body: false,
+            within: false,
         }
     }
 }
@@ -1581,6 +1586,7 @@ impl Expr {
                 cancels_on_err: e.cancels_on_err.as_ref().map(|t| t.substitute(mapping)),
                 value_ty: e.value_ty.as_ref().map(|t| t.substitute(mapping)),
                 closure_body: e.closure_body,
+                within: e.within,
             }),
             Expr::StructInit(e) => {
                 let mut new_name = e.name.clone();

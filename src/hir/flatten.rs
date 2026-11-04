@@ -1771,6 +1771,23 @@ impl<'r> Lowerer<'r> {
                 if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(&fc.name) {
                     return self.lower_lane_reduce(fc, op, ordered);
                 }
+                // The start and the end of a `within` block (F6a): an effect on the runtime.
+                if fc.name.as_ref() == crate::syntax::stmt::WITHIN_START
+                    || fc.name.as_ref() == crate::syntax::stmt::WITHIN_END
+                {
+                    let (op, limit) = match fc.args.first() {
+                        Some(limit) => (Opcode::WithinStart, self.lower_expr(limit)?.reg),
+                        None => (Opcode::WithinEnd, Register(0)),
+                    };
+                    self.emit_effect(op, limit, Register(0), 0);
+                    return Ok(self.emit_value(
+                        Opcode::Const,
+                        Register(0),
+                        Register(0),
+                        ElementType::I32,
+                        0,
+                    ));
+                }
                 // Around the call of a `Drop` impl's `drop` (F6, F6a): an effect on the
                 // runtime, with the time limit of the drop in seconds.
                 if fc.name.as_ref() == crate::syntax::stmt::CANCEL_OFF
