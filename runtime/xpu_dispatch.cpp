@@ -103,6 +103,11 @@ sycl::device *xpu_device() {
         }
         for (const auto &dev : platform.get_devices()) {
           if (dev.is_gpu()) {
+            /* Which card was picked, so a run can say what it ran on. */
+            if (verbose()) {
+              fprintf(stderr, "[Vx XPU] target: %s (Level Zero)\n",
+                      dev.get_info<sycl::info::device::name>().c_str());
+            }
             return new sycl::device(dev);
           }
         }
@@ -388,6 +393,18 @@ bool run_device_image(const void *payload, size_t payload_size,
     return false;
   }
 
+  /* What the image is and that it ran is a property of the kernel, not of one
+     dispatch, so the opt-in diagnostic says it once rather than once per launch
+     of a timing loop. */
+  static std::unordered_map<std::string, bool> announced;
+  const bool announce =
+      verbose() && announced.emplace(kernel_name, true).second;
+
+  if (announce) {
+    fprintf(stderr, "[Vx XPU] %s: format=spirv accepted, %lld-byte image\n",
+            kernel_name, (long long)image_size);
+  }
+
   vx_launch_params params;
   if (!vx_launch_build_params(device_args, arg_tags, num_args, &params)) {
     if (verbose()) {
@@ -465,7 +482,7 @@ bool run_device_image(const void *payload, size_t payload_size,
       zeCommandQueueExecuteCommandLists(lq.queue, 1, &lq.list, nullptr));
   VX_XPU_CHECK(zeCommandQueueSynchronize(lq.queue, UINT64_MAX));
 
-  if (verbose()) {
+  if (announce) {
     fprintf(stderr, "[Vx XPU] %s ran from its own image (%d params, %ux%u)\n",
             kernel_name, params.count, groups, group_size);
   }
