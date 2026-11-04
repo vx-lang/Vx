@@ -280,4 +280,21 @@ static inline int vx_remote_table_free(vx_remote_table *t, uint64_t base) {
   return 0;
 }
 
+/// Mark every live region dead, and call `release` with the worker's pointer of
+/// each one. A worker calls this when its host disconnects. Returns the number
+/// of regions it freed.
+static inline size_t vx_remote_table_free_all(vx_remote_table *t,
+                                              void (*release)(void *remote)) {
+  size_t i, freed = 0;
+  for (i = 0; i < t->count; ++i) {
+    if (t->regions[i].live) {
+      release(t->regions[i].remote);
+      t->regions[i].live = 0;
+      t->regions[i].generation = t->generation++;
+      ++freed;
+    }
+  }
+  return freed;
+}
+
 #endif /* VX_REMOTE_REGION_H */

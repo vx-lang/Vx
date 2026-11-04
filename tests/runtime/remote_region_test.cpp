@@ -272,6 +272,45 @@ void test_free_does_not_reclaim_space() {
       "and the offset does not rewind -- reuse would resurrect stale handles");
 }
 
+// Stand-ins for the worker's device buffers, and a record of each release.
+int buffers[4];
+void *released[4];
+int num_released = 0;
+
+void record_release(void *remote) {
+  if (num_released < 4) {
+    released[num_released] = remote;
+  }
+  ++num_released;
+}
+
+// When a host disconnects, the worker frees every buffer that the host did not
+// free. A buffer that the host already freed must not be freed again.
+void test_free_all_frees_only_live_regions() {
+  vx_remote_table t = fresh();
+  num_released = 0;
+  uint64_t a = vx_remote_table_alloc(&t, 1, 4096, 0, &buffers[0]);
+  uint64_t b = vx_remote_table_alloc(&t, 1, 4096, 0, &buffers[1]);
+  uint64_t c = vx_remote_table_alloc(&t, 1, 4096, 0, &buffers[2]);
+  check(vx_remote_table_free(&t, b), "the host frees the second buffer");
+
+  check(vx_remote_table_free_all(&t, record_release) == 2,
+        "free_all reports two buffers");
+  check(num_released == 2, "free_all releases two buffers");
+  check(released[0] == &buffers[0] && released[1] == &buffers[2],
+        "free_all releases the first and the third buffer");
+
+  vx_remote_ref ref;
+  check(!vx_remote_resolve(&t, a, &ref) && !vx_remote_resolve(&t, c, &ref),
+        "after free_all, no buffer resolves");
+
+  // The next host places a buffer.
+  vx_remote_table_alloc(&t, 1, 4096, 0, &buffers[3]);
+  check(vx_remote_table_free_all(&t, record_release) == 1 &&
+            num_released == 3 && released[2] == &buffers[3],
+        "a second free_all releases only the new buffer");
+}
+
 } // namespace
 
 int main() {
@@ -285,6 +324,7 @@ int main() {
   test_large_regions();
   test_allocation_ceiling();
   test_free_does_not_reclaim_space();
+  test_free_all_frees_only_live_regions();
 
   if (failures) {
     fprintf(stderr, "%d check(s) failed\n", failures);
