@@ -38,10 +38,17 @@ fn main() -> i32 {
     }
   }
 
-  let mut c = unsafe { Tensor<f32, [1024, 1024]>::uninit() };
+  // The GPU sees only GPU memory, so the operands are copied there and the
+  // result is copied back.
+  let a_g = transfer(a, Memory::GPU_HBM);
+  let b_g = transfer(b, Memory::GPU_HBM);
+  let mut c_g = unsafe {
+    Tensor<f32, [1024, 1024], Memory::GPU_HBM>::uninit()
+  };
   spawn on(Topology::GPU) {
-    c = a @b;
+    c_g = a_g @b_g;
   }
+  let c = transfer(c_g, Memory::CPU_DRAM);
 
   print(c[0][0]);
   return 0;

@@ -32,10 +32,17 @@ fn main() -> i32 {
     }
   }
 
-  let mut c = unsafe { Tensor<f32, [8192, 8192]>::uninit() };
+  // Three 8192-square f32 tensors are 768 MiB of GPU memory, well under the
+  // helper's ceiling, and the CPU copies are what the fill and the print use.
+  let a_g = transfer(a, Memory::GPU_HBM);
+  let b_g = transfer(b, Memory::GPU_HBM);
+  let mut c_g = unsafe {
+    Tensor<f32, [8192, 8192], Memory::GPU_HBM>::uninit()
+  };
   spawn on(Topology::GPU) {
-    c = a @b;
+    c_g = a_g @b_g;
   }
+  let c = transfer(c_g, Memory::CPU_DRAM);
 
   print(c[0][0]);
   return 0;
