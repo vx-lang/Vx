@@ -1,4 +1,4 @@
-//===- f32_kernel_on_the_arc.vx - a region the compiler cannot give a kernel -===//
+//===- elementwise_on_the_arc.vx - a loop region on the machine's own GPU ---===//
 //
 // Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
@@ -7,18 +7,19 @@
 //===----------------------------------------------------------------------===//
 // An elementwise region placed on the Arc's own topology, with its operands
 // transferred into the machine file's HBM. That space is declared `managed:
-// explicit` -- memory the host cannot read -- and the region is not one the
-// compiler can emit a device kernel for (only a matmul is routed today). The
-// host fallback would therefore dereference device memory, so the compiler
-// refuses the region by name instead.
+// explicit` -- memory the host cannot read -- so the region has to run on the
+// device: the host fallback would dereference device memory.
 //
-// The element type is f32, which the device does declare, so the refusal is
-// about the region and not about the type. The runner compiles it with
-// `--machine fleet/arc-a770.vx --host default` and checks the message.
+// The compiler used to refuse this region, because only a matmul was given a
+// device kernel. It now emits an image for any placed region, so this is the
+// case that says so: the runner compiles it with
+// `--machine fleet/arc-a770.vx --host default`, runs it on both backends and
+// compares the two printed numbers, and requires the Arc run to say it loaded
+// the image rather than falling back to the host.
 //
-// The same region placed on a topology whose memory is `managed: cached` does
-// get a device image -- that is what scripts/tools/xpu_conformance/transpose.vx
-// is, and what the runner compares against the CPU.
+// transpose.vx covers the same region shape on a declared `arch: spirv64`
+// topology. This one goes through the machine file, which is what a real
+// program does.
 
 fn main() -> i32 {
   let mut a = unsafe { Tensor<f32, [8, 8]>::uninit() };
@@ -30,7 +31,7 @@ fn main() -> i32 {
     }
   }
 
-  let mut c = unsafe { Tensor<f32, [8, 8]>::uninit() };
+  let c = unsafe { Tensor<f32, [8, 8]>::uninit() };
   let ga = transfer(a, Memory::HBM);
   let gb = transfer(b, Memory::HBM);
   let mut gc = transfer(c, Memory::HBM);

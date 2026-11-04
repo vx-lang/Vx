@@ -401,7 +401,41 @@ refuse() {
   head -1 "$err" | sed 's/^/      /'
 }
 refuse f64_on_the_arc "E6026"
-refuse f32_kernel_on_the_arc "cannot emit a device kernel"
+
+# An elementwise loop on the machine file's own topology, whose memory the host
+# cannot read. The compiler used to refuse it -- only a matmul got a device
+# kernel -- and now emits an image for it, so the check is that it runs on the
+# card and prints the same number the CPU backend prints.
+echo "==> a loop region on the Arc's own topology, through the machine file"
+machine_run() {
+  local side="$1"
+  if [ "$side" = cpu ]; then
+    VX_DISPATCH_LIB="$OUT/libvx_x86_dispatch.so" \
+      timeout 600 "$VXC" --machine "$ROOT/fleet/arc-a770.vx" --host default \
+      "$PROGRAMS/elementwise_on_the_arc.vx" --run 2>/dev/null
+  else
+    VX_DISPATCH_VERBOSE=1 timeout 600 "$VXC" --machine "$ROOT/fleet/arc-a770.vx" \
+      --host default "$PROGRAMS/elementwise_on_the_arc.vx" --run \
+      2>"$OUT/elementwise_on_the_arc.arc.run.txt"
+  fi | grep -E '^-?[0-9]+( +-?[0-9]+)* *$' || true
+}
+machine_run cpu >"$OUT/elementwise_on_the_arc.cpu.out"
+machine_run arc >"$OUT/elementwise_on_the_arc.arc.out"
+grep -h "ran from its own image" "$OUT/elementwise_on_the_arc.arc.run.txt" |
+  sed 's/^/    arc  /'
+if ! grep -q "ran from its own image" "$OUT/elementwise_on_the_arc.arc.run.txt"; then
+  echo "error: the Arc run did not load a device image, so this says nothing" >&2
+  echo "       about the device path" >&2
+  exit 1
+fi
+echo "    cpu: $(cat "$OUT/elementwise_on_the_arc.cpu.out")"
+echo "    arc: $(cat "$OUT/elementwise_on_the_arc.arc.out")"
+if ! diff -q "$OUT/elementwise_on_the_arc.cpu.out" \
+  "$OUT/elementwise_on_the_arc.arc.out" >/dev/null; then
+  echo "error: the two backends disagree on the machine-file program" >&2
+  exit 1
+fi
+echo "    both backends print the same number"
 
 echo "==> the card after the run"
 clinfo -l 2>/dev/null | grep "Arc" | sed 's/^/    /'

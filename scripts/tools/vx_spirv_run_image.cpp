@@ -407,7 +407,8 @@ static uint64_t runLibrary(std::vector<char> &payload, const char *kernelName,
      it changes nothing and the check would pass while proving nothing. */
   if (shiftBase) {
     desc[0].aligned = static_cast<char *>(dev[0]) + sizeof(float);
-    std::printf("sabotage: moved the first tensor 4 bytes past its allocation\n");
+    std::printf(
+        "sabotage: moved the first tensor 4 bytes past its allocation\n");
   }
 
   // The library caches the loaded module and its kernel, so the first dispatch

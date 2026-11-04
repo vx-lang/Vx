@@ -931,8 +931,7 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
      and put back after the call. Refusing instead would make a kernel that
      computes the right numbers on a machine with no backend fail on a machine
      with one, which is the opposite of what a backend is for. */
-  std::vector<HostMirror> mirrors(
-      (size_t)(num_args > 0 ? num_args : 1));
+  std::vector<HostMirror> mirrors((size_t)(num_args > 0 ? num_args : 1));
   for (int64_t i = 0; i < num_args; ++i) {
     if (!device_args || !device_args[i] ||
         VX_ABI_KIND(arg_tags[i]) != VX_ABI_KIND_MEMREF) {
@@ -946,8 +945,8 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
          rather than writing a host pointer into a device space. */
       const void *slot = *(const void *const *)device_args[i];
       const void *held = slot ? vx_memref_aligned(slot) : nullptr;
-      if (held &&
-          is_device_ptr(vx_memref_data(held, (int32_t)VX_ABI_ELEM(arg_tags[i])))) {
+      if (held && is_device_ptr(vx_memref_data(
+                      held, (int32_t)VX_ABI_ELEM(arg_tags[i])))) {
         fprintf(stderr,
                 "[Vx XPU] FATAL: %s was not routed, and argument %lld is a "
                 "publication slot\n"
