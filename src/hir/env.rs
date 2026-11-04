@@ -639,6 +639,9 @@ pub struct TypeChecker<'a> {
     /// The variables the current function changes: assigns, borrows `&mut`, or calls a
     /// `&mut self` method on.
     pub(crate) changed_vars: std::collections::HashSet<String>,
+    /// One frame for each call being checked: the variables that the call can change. Their
+    /// prover facts end after the call, because its `requires` is proved before it runs.
+    pub(crate) fact_change_frames: Vec<Vec<String>>,
     /// The `tasks` blocks and tasks around the code being checked.
     pub(crate) tasks: crate::hir::check::tasks::TaskCx,
     /// Expected type of the expression currently being checked, from a `let x: T = …` or a
@@ -717,6 +720,7 @@ impl<'a> TypeChecker<'a> {
             declared_mut_vars: Vec::new(),
             literal_typed_lets: std::collections::HashMap::new(),
             changed_vars: std::collections::HashSet::new(),
+            fact_change_frames: Vec::new(),
             tasks: Default::default(),
             expected_type: None,
             consteval: Default::default(),
@@ -1929,8 +1933,10 @@ impl<'a> TypeChecker<'a> {
         }
 
         // A function's proofs start from its own `requires`. A generic instance is checked from
-        // inside its caller, and the caller's facts are about the caller's variables.
+        // inside its caller, and the caller's facts are about the caller's variables. So are the
+        // changes that the caller's calls wait to apply.
         let prev_constraints = std::mem::take(&mut self.consteval.constraints);
+        let prev_fact_change_frames = std::mem::take(&mut self.fact_change_frames);
         self.check_atomic_contract(func);
         // An atomic clause is for the race proof, not for the prover.
         let proved: Vec<Expr> = func
@@ -2175,6 +2181,7 @@ impl<'a> TypeChecker<'a> {
         self.current_return_type = prev_ret_ty;
         self.current_function = prev_fn;
         self.consteval.constraints = prev_constraints;
+        self.fact_change_frames = prev_fact_change_frames;
         self.active_topology = prev_top;
         self.set_active_memory(prev_mem);
         self.borrow.current_params = prev_params;
