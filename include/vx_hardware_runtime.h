@@ -394,18 +394,19 @@ static inline size_t vx_payload_text_end(const void *payload,
 /// guessing from buffer shapes -- which cannot be done for square operands,
 /// where every operand assignment conforms), `roles=`, `outkind=`, `topo=` (the
 /// dispatch id, decoded by vx_payload_topology), `toponame=`, `launch=`,
-/// `coop=`, `format=` (`ptx`, what the image is), and `image=` (a device image
-/// that is text, which today means PTX).
+/// `coop=`, `format=` (`ptx` or `spirv`, what the image is), and `image=` (a
+/// device image that is text, which today means PTX).
 ///
 /// Every entry is optional to a reader, and that is what let each of them land
 /// without breaking a consumer that predates it. `kind=` absent means
-/// unclassified, which is not an error: the kernel takes the ordinary path.
+/// unclassified, which is not an error: the kernel takes the ordinary path. A
+/// `format=` entry with no `image=` says the image is in the section.
 ///
 /// A payload may also carry a binary device image in a section after the
-/// entries, which vx_payload_section reads. Nothing writes one yet: the
-/// compiler writes the text `image=` entry only, and the section is there for
-/// the image a text entry cannot carry. The empty entry just before the section
-/// ends this walk, so a lookup never reads an image byte as the start of a key.
+/// entries, which vx_payload_section reads. That is where a SPIR-V image goes:
+/// its first word holds NUL bytes, which would end an `image=` entry early. The
+/// empty entry just before the section ends this walk, so a lookup never reads
+/// an image byte as the start of a key.
 ///
 /// One more key is read but not written yet: `chip=`, the PTX target, which
 /// cuda_dispatch.cpp takes `sm_80` for when it is absent.

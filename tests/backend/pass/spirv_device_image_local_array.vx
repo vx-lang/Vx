@@ -1,0 +1,50 @@
+//===- spirv_device_image_local_array.vx - a scratch array stays at home -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A placed region that keeps a scratch array of its own gets no SPIR-V image,
+// because the image addresses the kernel's arguments and nothing else. The
+// region runs on the host, the compiler says so, and the values come out right.
+//
+// RUN: vxc %s --emit-llvm 2>&1 >/dev/null | FileCheck %s
+// CHECK: cannot become a `spirv64` device image: it keeps a scratch buffer
+// CHECK-SAME: It will run on the host instead.
+// EXPECT: [2,  4,  6,  8]
+
+Memory CPU_DRAM {}
+Memory GPU_HBM {
+  within: Memory::CPU_DRAM, capacity: 40 GiB, bandwidth: 3 TB/s, managed: cached
+}
+Topology Dev {
+  arch: spirv64,
+  memory: Memory::GPU_HBM,
+  visible: [Memory::GPU_HBM],
+  transfer Memory::CPU_DRAM -> Memory::GPU_HBM : 63 GB/s
+}
+
+fn main() -> i32 {
+  let mut a = unsafe { Tensor<f32, [4]>::uninit() };
+  let mut o = unsafe { Tensor<f32, [4]>::uninit() };
+  for i in 0..4 {
+    a[i] = ((i + 1) as f32);
+    o[i] = 0.0;
+  }
+  let ad = transfer(a, Memory::GPU_HBM);
+  let mut od = transfer(o, Memory::GPU_HBM);
+  spawn on(Topology::Dev) {
+    // A rank-1 buffer of the region's own, indexed at run time.
+    let mut scratch : Tensor<f32, [4]> = [1.0, 1.0, 1.0, 1.0];
+    for i in 0..4 {
+      scratch[i] = ad[i] * 2.0;
+    }
+    for i in 0..4 {
+      od[i] = scratch[i];
+    }
+  }
+  let home = transfer(od, Memory::CPU_DRAM);
+  print(home);
+  return 0;
+}
