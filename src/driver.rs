@@ -1796,6 +1796,7 @@ impl CompilerDriver {
                         output_path.display()
                     ));
                 }
+                crate::jit::set_macos_minimum_version(output_path.to_str().unwrap())?;
             }
             _ => {}
         }
