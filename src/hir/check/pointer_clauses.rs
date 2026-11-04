@@ -9,9 +9,9 @@
 // Pointer clauses: `requires` clauses about raw pointers. `valid(p, n)` says that `p` is not null,
 // is aligned, and points at `n` elements of one live allocation. `initialized(p, n)` says that
 // those elements hold values, and `!overlaps(p, q, n)` that the first `n` elements at `p` and at
-// `q` share no byte. The body may assume them, and the code generator tells LLVM what `valid`
-// says. The checker cannot prove them at a call yet, so only an `unsafe fn` may have them: each of
-// its calls is in `unsafe` code, whose author keeps the promise.
+// `q` share no byte. The body may assume them. A call in safe code must prove them
+// (`pointer_facts.rs`), and the author of `unsafe` code keeps the promise. The code generator
+// tells LLVM what `valid` says in an `unsafe fn`.
 // docs/discussions/borrow_facts_in_contracts.md, section 6, has the design.
 //
 //===----------------------------------------------------------------------===//
@@ -76,6 +76,11 @@ pub(crate) fn valid_params(f: &Function) -> Vec<(usize, Length)> {
             _ => None,
         })
         .collect()
+}
+
+/// Whether `f` has a pointer `requires`.
+pub(crate) fn has_pointer_requires(f: &Function) -> bool {
+    f.requires.iter().any(|e| first_pointer_call(e).is_some())
 }
 
 /// The position of the raw pointer parameter `name` of `f`.
@@ -173,15 +178,67 @@ impl<'a> TypeChecker<'a> {
             }
             seen.push(p);
         }
-        if !f.is_unsafe {
-            return Err(format!(
-                "`{}` has a pointer clause, so it must be an `unsafe fn` for now: the checker \
-                 cannot prove the clause at a call yet, and the caller of an `unsafe fn` keeps \
-                 that promise",
-                f.name
-            ));
-        }
         Ok(())
+    }
+
+    /// E8011 for the function `name` used as a value, when it is safe and has a pointer
+    /// `requires`: a call through the value proves no clause.
+    pub(crate) fn check_function_value(&mut self, name: &str, at: Span) {
+        if self.speculating {
+            return;
+        }
+        let refused = self
+            .env
+            .syntax_functions
+            .get(name)
+            .copied()
+            .or_else(|| {
+                self.mono
+                    .functions
+                    .iter()
+                    .find(|(f, _)| f.name.as_ref() == name)
+                    .map(|(f, _)| f)
+            })
+            .is_some_and(|f| !f.is_unsafe && has_pointer_requires(f));
+        if refused {
+            self.pointer_clause_error(
+                format!(
+                    "`{name}` has a pointer `requires`, so it cannot be a function value yet: a \
+                     call through the value would not prove the clause"
+                ),
+                at,
+            );
+        }
+    }
+
+    /// E8011 for a safe method of a trait impl with a pointer `requires`: a call through a trait
+    /// bound reads the clauses of the trait, not of the impl.
+    pub(crate) fn check_trait_impl_pointer_clauses(&mut self) {
+        let mut found = Vec::new();
+        for (trait_name, blocks) in &self.env.impls {
+            if trait_name.as_ref() == "_inherent" {
+                continue;
+            }
+            for block in blocks {
+                for m in block.methods.iter().filter(|m| !m.is_unsafe) {
+                    if let Some(at) = m.requires.iter().find_map(first_pointer_call) {
+                        found.push((
+                            format!(
+                                "`{}` is a method of an impl of `{trait_name}`, so it must be an \
+                             `unsafe fn` to have a pointer clause: a call through the trait would \
+                             not prove the clause",
+                                m.name
+                            ),
+                            at,
+                        ));
+                    }
+                }
+            }
+        }
+        found.sort_by_key(|(_, at)| (at.line, at.column));
+        for (message, at) in found {
+            self.pointer_clause_error(message, at);
+        }
     }
 
     /// E8011, once for each place and message: an instance of a generic function is checked for

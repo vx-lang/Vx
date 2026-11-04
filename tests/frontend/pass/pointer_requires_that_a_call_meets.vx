@@ -1,0 +1,143 @@
+//===- pointer_requires_that_a_call_meets.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A call of a function with a pointer `requires` compiles when the facts at the call prove each
+// clause. The facts here come from the `requires` of the caller and from a pointer to a local
+// variable. `offset`, `add` and `sub` move a pointer within its buffer. A call that gets only
+// numbers ends no fact. A call in `unsafe` code needs no proof: its author keeps the promise.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E8006
+// CHECK: func.func @main
+
+import core::ptr;
+
+fn sum(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let mut total = 0i64;
+  for i in 0i64..n {
+    total = total + unsafe { p[i] };
+  }
+  return total;
+}
+
+fn copy(dst : *mut i64, src : *const i64, n : i64) -> void
+requires valid(dst, n)
+requires valid(src, n)
+requires initialized(src, n)
+requires !overlaps(dst, src, n)
+{
+  for i in 0i64..n {
+    unsafe { dst[i] = src[i]; }
+  }
+}
+
+fn log(x : i64) -> void {
+  return;
+}
+
+fn the_first_part(p : *const i64, n : i64, k : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+requires 0i64 <= k && k <= n
+{
+  return sum(p, k);
+}
+
+fn the_last_part(p : *const i64, n : i64, k : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+requires 0i64 <= k && k <= n
+{
+  return sum(offset(p, k), n - k);
+}
+
+fn a_pointer_to_a_local() -> i64 {
+  let x = 5i64;
+  let p : *const i64 = &x;
+  return sum(p, 1i64);
+}
+
+fn after_a_call_that_gets_only_numbers(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  log(n);
+  return sum(p, n);
+}
+
+fn through_a_copy_and_a_cast(p : *mut i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let q = p;
+  return sum(q as *const i64, n);
+}
+
+fn add_then_sub(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+requires n >= 2i64
+{
+  let q = add(p, 2usize);
+  return sum(sub(q, 2usize), n);
+}
+
+fn after_a_match(p : *const i64, n : i64, k : i32) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let m = match k {
+    0 => {
+      1i64
+    },
+    _ => {
+      2i64
+    },
+  };
+  return sum(p, n) + m;
+}
+
+// The loop only reads elements, so no pass ends a fact.
+fn after_a_loop_that_only_reads(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let mut t = 0i64;
+  for i in 0i64..n {
+    t = t + unsafe { p[i] };
+  }
+  return t + sum(p, n);
+}
+
+fn buffers_that_do_not_overlap(d : *mut i64, s : *const i64, n : i64) -> void
+requires valid(d, n)
+requires valid(s, n)
+requires initialized(s, n)
+requires !overlaps(d, s, n)
+{
+  copy(d, s, n);
+}
+
+fn two_halves_of_one_buffer(p : *mut i64, n : i64) -> void
+requires valid(p, n + n)
+requires initialized(p, n + n)
+requires n >= 0i64
+{
+  let second = offset_mut(p, n);
+  copy(p, second as *const i64, n);
+}
+
+fn in_unsafe_code(p : *const i64, n : i64) -> i64 {
+  return unsafe { sum(p, n) };
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1341,6 +1341,7 @@ impl<'a> TypeChecker<'a> {
     /// as a forged out-of-bounds proof. Overwritten in place rather than removed so
     /// the scope-exit truncation (`constraints.truncate(prev_len)`) keeps its meaning.
     pub(crate) fn neutralize_facts_mentioning(&mut self, name: &str) {
+        self.pointer_facts.forget(name);
         for c in self.consteval.constraints.iter_mut() {
             if expr_mentions(c, name) {
                 *c = Expr::RelationalOp(RelationalOpExpr {
@@ -1444,6 +1445,14 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The callee can change the memory behind the argument `name`, but not the argument: the
+    /// facts about `name` end, and its pointer value stays.
+    fn neutralize_facts_behind(&mut self, name: &str) {
+        let value = self.pointer_facts.entry_of(name);
+        self.neutralize_facts_mentioning(name);
+        self.note_pointer_value(name, value);
+    }
+
     pub(crate) fn note_a_change_to_variable(&mut self, root: String) {
         match self.fact_change_frames.last_mut() {
             Some(frame) => frame.push(root),
@@ -1461,6 +1470,7 @@ impl<'a> TypeChecker<'a> {
     ) -> Type {
         self.fact_change_frames.push(Vec::new());
         let ty = check(self, expr);
+        self.pointer_facts_at_call(expr);
         let args: &[Expr] = match &*expr {
             Expr::FunctionCall(fc) => &fc.args,
             Expr::MethodCall(m) => &m.args,
@@ -1472,11 +1482,11 @@ impl<'a> TypeChecker<'a> {
             .filter(|arg| self.callee_can_write_through(arg))
             .filter_map(|arg| Self::arg_reborrow_base(arg).map(|(root, _)| root))
             .collect();
-        for root in written {
-            self.note_a_change_to_variable(root);
-        }
         for name in self.fact_change_frames.pop().unwrap_or_default() {
             self.neutralize_facts_mentioning(&name);
+        }
+        for root in written {
+            self.neutralize_facts_behind(&root);
         }
         ty
     }

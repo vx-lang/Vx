@@ -99,6 +99,16 @@ impl SmtProver {
         Ok(())
     }
 
+    /// The SMT term of the value `expr`, for a goal that the caller builds.
+    pub fn lower_term(&mut self, expr: &Expr, type_of: IntTypeOf) -> Result<String, String> {
+        self.lower_expr(expr, type_of, None)
+    }
+
+    /// Adds `smt`, a term that the caller built from `lower_term`, as a fact.
+    pub fn add_smt(&mut self, smt: String) {
+        self.assertions.push(smt);
+    }
+
     /// `expected` is the integer type that the context gives `expr`: in a contract, which the
     /// checker does not type, `return == p.x + p.y` adds at the width of `return`.
     fn lower_expr(

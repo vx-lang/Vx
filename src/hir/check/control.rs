@@ -593,6 +593,7 @@ impl<'a> TypeChecker<'a> {
         // The prover's facts follow the paths: the `then` branch knows the condition and the
         // `else` branch its negation, and what a branch learns ends with it.
         let facts_before = self.consteval.constraints.len();
+        let pointers_before = self.pointer_facts.clone();
         let cond_fact = (!if_expr.is_comptime && crate::hir::prover::is_modelled(&if_expr.cond))
             .then(|| (*if_expr.cond).clone());
         if let Some(c) = &cond_fact {
@@ -609,6 +610,7 @@ impl<'a> TypeChecker<'a> {
         }
         self.pop_scope();
         let then_facts = self.consteval.constraints.split_off(facts_before);
+        let pointers_then = std::mem::replace(&mut self.pointer_facts, pointers_before);
         if let Some(c) = &cond_fact {
             self.consteval
                 .constraints
@@ -670,6 +672,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
         let else_facts = self.consteval.constraints.split_off(facts_before);
+        let pointers_else = std::mem::take(&mut self.pointer_facts);
         // When one branch ends early, the code after the `if` is reached only through the other,
         // so what that branch knew at its end still holds. When both end early, it is not reached.
         let then_ends = self.branch_ends_early(&if_expr.then_block);
@@ -682,6 +685,11 @@ impl<'a> TypeChecker<'a> {
             (Some(true), _, _) | (None, false, true) => values_after_then,
             (Some(false), _, _) | (None, true, false) => values_after_else,
             (None, _, _) => Self::join_known_values(vec![values_after_then, values_after_else]),
+        };
+        self.pointer_facts = match (then_ends, else_ends) {
+            (true, false) => pointers_else,
+            (false, true) => pointers_then,
+            _ => pointers_then.join(&pointers_else),
         };
         match (then_ends, else_ends) {
             (true, false) => self.consteval.constraints.extend(else_facts),
@@ -1155,8 +1163,12 @@ impl<'a> TypeChecker<'a> {
                 let mut every_arm_ends = !arms.is_empty();
                 let values_before = self.consteval.env.clone();
                 let mut values_after_arms = Vec::new();
+                let pointers_before = self.pointer_facts.clone();
+                let mut pointers_after: Option<crate::hir::check::pointer_facts::PointerFacts> =
+                    None;
                 for (i, arm) in arms.iter_mut().enumerate() {
                     self.consteval.env = values_before.clone();
+                    self.pointer_facts = pointers_before.clone();
                     self.consteval.constraints.truncate(facts_before);
                     self.restore_moved(marks_before.clone());
                     if i > 0 {
@@ -1214,6 +1226,11 @@ impl<'a> TypeChecker<'a> {
                     every_arm_ends &= self.branch_ends_early(&arm.body);
                     if !self.branch_ends_early(&arm.body) {
                         values_after_arms.push(self.consteval.env.clone());
+                        let arm_pointers = std::mem::take(&mut self.pointer_facts);
+                        pointers_after = Some(match pointers_after.take() {
+                            Some(joined) => joined.join(&arm_pointers),
+                            None => arm_pointers,
+                        });
                     }
                     if let Some(after) = self.branch_end(&arm.body) {
                         joined = Some(match joined.take() {
@@ -1245,6 +1262,11 @@ impl<'a> TypeChecker<'a> {
                 if !has_wildcard || values_after_arms.is_empty() {
                     values_after_arms.push(values_before);
                 }
+                self.pointer_facts = match pointers_after {
+                    Some(joined) if has_wildcard => joined,
+                    Some(joined) => joined.join(&pointers_before),
+                    None => pointers_before,
+                };
                 self.consteval.env = Self::join_known_values(values_after_arms);
                 self.consteval.constraints.truncate(facts_before);
                 if every_arm_ends {
@@ -1403,7 +1425,10 @@ impl<'a> TypeChecker<'a> {
                 self.drops_enter_function(Vec::new(), &[]);
                 self.traffic.closure_depth += 1;
                 self.consteval.comptime_return_is_value = matches!(*b, Expr::ComptimeBlock(_));
+                // The body runs when a call runs it, so it starts with no fact of its parent.
+                let outer_pointers = std::mem::take(&mut self.pointer_facts);
                 let expr_ret_ty = self.check_expr_type(&mut b);
+                self.pointer_facts = outer_pointers;
                 self.consteval.comptime_return_is_value = false;
                 self.traffic.closure_depth -= 1;
                 self.drops_exit_function();

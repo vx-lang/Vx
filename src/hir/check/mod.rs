@@ -36,6 +36,7 @@ pub mod mlir_dialects;
 pub mod operators;
 pub mod parallel;
 pub mod pointer_clauses;
+pub mod pointer_facts;
 pub mod projection;
 pub mod raw;
 pub mod region_traffic;
