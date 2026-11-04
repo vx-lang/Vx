@@ -24,6 +24,7 @@
 //===----------------------------------------------------------------------===//
 
 use crate::ffi::sched::{self, FiberRef};
+use crate::ffi::tsan;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -235,43 +236,6 @@ impl std::ops::Deref for Held<'_> {
 impl std::ops::DerefMut for Held<'_> {
     fn deref_mut(&mut self) -> &mut Waiters {
         self.guard.as_mut().expect("a held lock")
-    }
-}
-
-/// The calls of ThreadSanitizer that order two threads, when the program runs under it.
-mod tsan {
-    use std::sync::OnceLock;
-
-    type Hook = unsafe extern "C" fn(*const libc::c_void);
-
-    fn hooks() -> Option<(Hook, Hook)> {
-        static HOOKS: OnceLock<Option<(Hook, Hook)>> = OnceLock::new();
-        *HOOKS.get_or_init(|| {
-            let find =
-                |name: &std::ffi::CStr| unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) };
-            let (acquire, release) = (find(c"__tsan_acquire"), find(c"__tsan_release"));
-            if acquire.is_null() || release.is_null() {
-                return None;
-            }
-            unsafe {
-                Some((
-                    std::mem::transmute::<*mut libc::c_void, Hook>(acquire),
-                    std::mem::transmute::<*mut libc::c_void, Hook>(release),
-                ))
-            }
-        })
-    }
-
-    pub(super) fn acquire<T>(at: &T) {
-        if let Some((acquire, _)) = hooks() {
-            unsafe { acquire(at as *const T as *const libc::c_void) };
-        }
-    }
-
-    pub(super) fn release<T>(at: &T) {
-        if let Some((_, release)) = hooks() {
-            unsafe { release(at as *const T as *const libc::c_void) };
-        }
     }
 }
 

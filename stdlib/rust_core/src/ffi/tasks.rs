@@ -221,6 +221,7 @@ fn wait(task: &mut Task) {
             crate::ffi::wait::waiting_for_join(task.site.clone());
             unsafe { crate::ffi::wait::vx_wait_while(done, 0) };
         }
+        crate::ffi::tsan::acquire(&fiber.done);
     }
     if let Some(thread) = task.thread.take() {
         // The wait goes through `wait.rs`, so the deadlock watcher stops counting this thread

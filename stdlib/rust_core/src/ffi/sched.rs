@@ -17,6 +17,9 @@
 // The state that the runtime keeps per thread (the cancel mark and the line that `print` keeps)
 // belongs to the task. So the worker swaps it in before the switch to a task, and out after.
 //
+// Under ThreadSanitizer, each task is a fiber of ThreadSanitizer too, and tsan.rs tells it of
+// each switch.
+//
 // The runtime is used only when VX_TASK_RUNTIME=shared, with VX_TASK_WORKERS worker threads or
 // one for each CPU.
 //
@@ -29,6 +32,7 @@
 
 use crate::ffi::stack::{self, Stack, StackPool};
 use crate::ffi::tasks::{CancelMark, VxTaskFn, TASK_STACK_BYTES};
+use crate::ffi::tsan;
 use crate::io::lines;
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -81,6 +85,8 @@ pub(crate) struct Fiber {
     locals: TaskLocals,
     /// 0 while the task runs, and 1 after it ended. A join waits on this word.
     pub(crate) done: AtomicI64,
+    /// The fiber of ThreadSanitizer for this task, or null without ThreadSanitizer.
+    tsan: *mut std::ffi::c_void,
 }
 
 /// A fiber that a queue or a bucket holds. A fiber is in at most one of them at once.
@@ -101,6 +107,8 @@ struct Worker {
     sp: *mut u8,
     running: *mut Fiber,
     why: Why,
+    /// The fiber of ThreadSanitizer of the worker loop, or null without ThreadSanitizer.
+    tsan: *mut std::ffi::c_void,
 }
 
 thread_local! {
@@ -259,6 +267,7 @@ impl Scheduler {
             sp: std::ptr::null_mut(),
             running: std::ptr::null_mut(),
             why: Why::Ended,
+            tsan: tsan::current_fiber(),
         };
         // The fibers write the worker through this pointer too.
         let worker: *mut Worker = &raw mut worker;
@@ -274,6 +283,7 @@ impl Scheduler {
         (*fiber).state.store(RUNNING, Ordering::SeqCst);
         (*fiber).locals.swap_with_thread();
         (*worker).running = fiber;
+        tsan::switch_to_fiber((*fiber).tsan);
         stack::switch(&raw mut (*worker).sp, (*fiber).sp);
         (*fiber).locals.swap_with_thread();
         match (*worker).why {
@@ -290,6 +300,7 @@ impl Scheduler {
                 }
             }
             Why::Ended => {
+                tsan::destroy_fiber((*fiber).tsan);
                 self.stacks.give_back((*fiber).stack.take().unwrap());
                 // After this store, a join can free the fiber. Its address is all that the wake
                 // needs.
@@ -316,6 +327,7 @@ impl Scheduler {
             sp: std::ptr::null_mut(),
             running: std::ptr::null_mut(),
             why: Why::Ended,
+            tsan: tsan::current_fiber(),
         };
         let worker: *mut Worker = &raw mut worker;
         WORKER.with(|w| w.set(worker));
@@ -380,6 +392,7 @@ impl Scheduler {
                 ..Default::default()
             },
             done: AtomicI64::new(0),
+            tsan: tsan::create_fiber(),
         });
         let raw: *mut Fiber = &mut *fiber;
         fiber.sp = unsafe { stack::start_on(&stack, fiber_entry, raw as *mut u8) };
@@ -462,6 +475,8 @@ unsafe extern "C" fn fiber_entry(arg: *mut u8) -> ! {
     let fiber = arg as *mut Fiber;
     ((*fiber).run)((*fiber).env);
     lines::task_ended();
+    // The task happens before the end of its join, which acquires `done`.
+    tsan::release(&(*fiber).done);
     to_worker(Why::Ended);
     unreachable!("nothing continues a task that ended");
 }
@@ -536,6 +551,7 @@ fn to_worker(why: Why) {
         let fiber = (*worker).running;
         (*worker).why = why;
         let worker_sp = (*worker).sp;
+        tsan::switch_to_fiber((*worker).tsan);
         stack::switch(&raw mut (*fiber).sp, worker_sp);
     }
 }

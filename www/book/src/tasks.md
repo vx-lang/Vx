@@ -165,6 +165,17 @@ An `Arc<T>` can move to another task only when `T` is `Send` and `Sync`
 It prints `scale 10, owners 2`, and then `owners 1`. To change a shared value, put a `Mutex` in the
 `Arc`.
 
+## Finding a data race at run time
+
+The compiler cannot see a race through a raw pointer in `unsafe` code. To find one, run the program
+with `vxc --sanitize=thread program.vx`. LLVM's ThreadSanitizer then checks each memory access of
+the program. It prints `WARNING: ThreadSanitizer: data race` for each race, and the program fails.
+
+ThreadSanitizer sees the start and the end of a task, the atomics, and the waits of channels and
+`Mutex`. This is also true for the runtime that runs many tasks on a few OS threads
+(`VX_TASK_RUNTIME=shared`). It finds only the races that happen in that run. The option works only when `vxc` runs the program.
+On Ubuntu, the runtime of ThreadSanitizer is in the package `libclang-rt-22-dev`.
+
 ## Why Vx has no `async`
 
 In Vx, a function that waits is a normal function. `recv`, `join`, `lock` and a network read wait
