@@ -5,8 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A panic in a task stops the program. After the message, it prints the line of the `spawn` that
-// started the task, and then the line of the `spawn` of each task around it.
+// A panic in a task stops the program. After the message and its line, it prints the line of the
+// `spawn` that started the task, and then the line of the `spawn` of each task around it.
 //
 // RUN: not vxc %s --run 2>&1 | FileCheck %s
 // RUN: not vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
@@ -34,8 +34,9 @@ fn inner(n : i32) -> i32 {
 }
 
 // CHECK: panic: too big in the body
+// CHECK-NEXT: {{^}}  at {{.*}}a_panic_in_a_task_names_the_spawn_of_each_task.vx:27{{$}}
 // CHECK-NEXT: {{^}}  in the task from the `spawn` at {{.*}}a_panic_in_a_task_names_the_spawn_of_each_task.vx:25{{$}}
-// CHECK-NEXT: {{^}}  in the task from the `spawn` at {{.*}}a_panic_in_a_task_names_the_spawn_of_each_task.vx:45{{$}}
+// CHECK-NEXT: {{^}}  in the task from the `spawn` at {{.*}}a_panic_in_a_task_names_the_spawn_of_each_task.vx:46{{$}}
 // CHECK-NOT: in the task
 fn main() -> i32 {
   let r = tasks {

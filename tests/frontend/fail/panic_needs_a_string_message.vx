@@ -5,17 +5,22 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// `panic` takes exactly one argument, a string message.
+// `panic` takes a string message, and can take a `Caller` after it.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 // CHECK-DAG: Function 'panic' expects a string message, got i32
-// CHECK-DAG: Function 'panic' expects 1 argument, the message
+// CHECK-DAG: Function 'panic' expects a message, and can take a Caller after it
+// CHECK-DAG: Function 'panic' expects a Caller after the message, got i32
 fn number_message() -> i32 {
   panic(3);
 }
 
 fn no_message() -> i32 {
   panic();
+}
+
+fn not_a_caller() -> i32 {
+  panic("stop", 3);
 }
 
 fn main() -> i32 {
