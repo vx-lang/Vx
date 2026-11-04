@@ -2132,18 +2132,35 @@ impl<'a> TypeChecker<'a> {
 
     /// `e` with each call replaced by a fresh name, `$call_N`. For a callee that declares
     /// `ensures`, each one is pushed onto `facts` with the call's arguments in place of the
-    /// parameters and the fresh name in place of `return`.
+    /// parameters and the fresh name in place of `return`. A method call is a call of its
+    /// instance by then, with the receiver as the first argument.
     fn abstract_calls(&self, e: &Expr, calls: &mut usize, facts: &mut Vec<Expr>) -> Expr {
         let mut sub = |x: &Expr| Box::new(self.abstract_calls(x, calls, facts));
         match e {
             Expr::FunctionCall(c) => {
-                let args: Vec<Expr> = c.args.iter().map(|a| *sub(a)).collect();
+                let args: Vec<Expr> = c
+                    .args
+                    .iter()
+                    .map(|a| *sub(hir::prover::without_borrow(a)))
+                    .collect();
                 let result = Expr::Identifier(IdentifierExpr {
                     name: format!("$call_{}", *calls).into(),
                     span: c.span,
                 });
                 *calls += 1;
-                if let Some(func) = self.env.syntax_functions.get(c.name.as_ref()) {
+                let callee = self
+                    .env
+                    .syntax_functions
+                    .get(c.name.as_ref())
+                    .copied()
+                    .or_else(|| {
+                        self.mono
+                            .functions
+                            .iter()
+                            .find(|(f, _)| f.name == c.name)
+                            .map(|(f, _)| f)
+                    });
+                if let Some(func) = callee {
                     let mut names: HashMap<crate::symbol::Symbol, Expr> = func
                         .params
                         .iter()
@@ -2183,6 +2200,11 @@ impl<'a> TypeChecker<'a> {
                 let mut u = u.clone();
                 u.expr = sub(&u.expr);
                 Expr::UnaryOp(u)
+            }
+            Expr::AsCast(c) => {
+                let mut c = c.clone();
+                c.expr = sub(&c.expr);
+                Expr::AsCast(c)
             }
             _ => e.clone(),
         }
