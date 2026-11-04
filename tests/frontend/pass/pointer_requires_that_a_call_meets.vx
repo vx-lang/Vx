@@ -8,7 +8,8 @@
 // A call of a function with a pointer `requires` compiles when the facts at the call prove each
 // clause. The facts here come from the `requires` of the caller and from a pointer to a local
 // variable. `offset`, `add` and `sub` move a pointer within its buffer. A call that gets only
-// numbers ends no fact. A call in `unsafe` code needs no proof: its author keeps the promise.
+// numbers ends no fact. A method call proves the clauses of the method. A call in `unsafe` code
+// needs no proof: its author keeps the promise.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
 // CHECK-NOT: E8006
@@ -136,6 +137,27 @@ requires n >= 0i64
 
 fn in_unsafe_code(p : *const i64, n : i64) -> i64 {
   return unsafe { sum(p, n) };
+}
+
+struct Buffer {
+  p : *const i64,
+  n : i64,
+}
+
+impl Buffer {
+  fn count(self : &Buffer, q : *const i64, n : i64) -> i64
+  requires valid(q, n)
+  {
+    return n;
+  }
+}
+
+// The receiver holds a raw pointer, so the call can free memory. It ends the facts only after
+// the clause is proved.
+fn through_a_method(b : &Buffer, q : *const i64, n : i64) -> i64
+requires valid(q, n)
+{
+  return b.count(q, n);
 }
 
 fn main() -> i32 {
