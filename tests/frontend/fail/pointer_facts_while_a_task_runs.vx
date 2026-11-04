@@ -1,0 +1,69 @@
+//===- pointer_facts_while_a_task_runs.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A task that a `spawn` starts can free memory until its `join()` or the end of its `tasks`
+// block. So in that time no fact about other memory starts, from an `ensures` or from an
+// `assume`, and each call here gets E8006 with a note on the line of the `spawn`.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+import core::ptr;
+import std::alloc;
+
+fn need_valid(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  return n;
+}
+
+fn alloc_i64(n : i64) -> *mut i64
+requires n > 0i64
+ensures valid(return, n)
+{
+  let p : *mut i64 = alloc(n * 8i64, 16i64);
+  if is_null_mut(p) {
+    panic("out of memory");
+  }
+  unsafe { assume valid(p, n); }
+  return p;
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_while_a_task_runs.vx:[[@LINE+11]]:9: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the `spawn`, whose task can free memory until its `join()` (at [[@LINE+6]]:13)
+fn a_call_before_the_join(n : i64) -> i64
+requires n > 0i64
+{
+  let mut t = 0i64;
+  tasks {
+    let h = spawn {
+      0i64
+    };
+    let p = alloc_i64(n);
+    t = need_valid(p as *const i64, n) + h.join();
+  }
+  return t;
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_while_a_task_runs.vx:[[@LINE+9]]:9: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the `spawn`, whose task can free memory until its `join()` (at [[@LINE+4]]:13)
+fn an_assume_before_the_join(p : *const i64, n : i64) -> i64 {
+  let mut t = 0i64;
+  tasks {
+    let h = spawn {
+      0i64
+    };
+    unsafe { assume valid(p, n); }
+    t = need_valid(p, n) + h.join();
+  }
+  return t;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: 2 error(s) emitted

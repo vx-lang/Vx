@@ -134,6 +134,54 @@ fn main() -> i32 {
 `!frees(p)` for it. An `extern` function can say `!frees(p)` after its return type, and the
 compiler trusts it.
 
+A function can also promise a pointer clause in an `ensures`, where `return` is the result. A
+caller gets each such clause as a fact when the call returns. The body proves each one at each
+`return` and at its end, after the storage of its local variables ends. So a function cannot
+promise a pointer to one of its local variables. In an `unsafe` block, `assume e;` adds the fact
+`e` without a proof, and it generates no code. Use it for a fact that the compiler cannot see,
+such as the size of the memory that `alloc` gives. A wrong `assume` is undefined behavior.
+
+```rust
+import core::ptr;
+import std::alloc;
+
+fn alloc_i64(n : i64) -> *mut i64
+    requires n > 0i64
+    ensures valid(return, n)
+{
+    let p : *mut i64 = alloc(n * 8i64, 16i64);
+    if is_null_mut(p) {
+        panic("out of memory");
+    }
+    unsafe {
+        assume valid(p, n);
+    }
+    return p;
+}
+
+fn first(p : *const i64) -> i64
+    requires valid(p, 1i64)
+    requires initialized(p, 1i64)
+{
+    return unsafe { p[0] };
+}
+
+fn main() -> i32 {
+    let p = alloc_i64(1i64);
+    unsafe {
+        p[0] = 7i64;
+        assume initialized(p, 1i64);
+    }
+    let x = first(p as *const i64);
+    let bytes : *mut i8 = p;
+    dealloc(bytes, 16i64);
+    return (x - 7i64) as i32;
+}
+```
+
+From a `spawn` until its `join()` or the end of its `tasks` block, the task can free memory, so
+no fact about other memory starts in that time.
+
 In an `unsafe fn`, for `valid(p, n)` the compiler tells LLVM that `p` is not null and aligned,
 and that `n` elements at `p` can be read. For `!overlaps(p, q, n)` it tells LLVM that an access
 `p[i]` does not alias an access `q[i]`, where `i` is the variable of a `for i in 0..n` loop. A

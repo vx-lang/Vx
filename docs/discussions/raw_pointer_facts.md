@@ -134,10 +134,11 @@ prover the fact `n >= 0`.
 
 Each fact has the memory of its base (section 3).
 
-Before a call, the checker gives the value of each argument a fresh name, as `check_call_requires`
-does today for an argument that the prover cannot model. The facts of the `ensures` use those
-names. So in `grab(k, &mut k)`, a fact `Valid(b, 0, k)` is about the value of `k` before the call,
-also when the call changes `k`.
+The facts of the `ensures` use each argument that the prover can model, and a fresh name for each
+other argument, as `check_call_requires` does. A call that can change a variable drops each fact
+that names the variable, after it adds the facts of its `ensures`. So in `grab(k, &mut k)`, the
+fact `Valid(b, 0, k)` ends at the call. A `let` of the result gives `return` in a length its
+name, as in `let got = read(buf, cap)`.
 
 ## 5. Where a fact ends
 
@@ -290,7 +291,7 @@ the call. So in v1, a body must not assign a parameter that a pointer `ensures` 
 | --- | --- |
 | A call in safe code | E8006. The message names the clause. If an event ended the fact, the message also gives the line of the event and its reason. |
 | A call in an `unsafe` block | The checker trusts the clause. The audit lists it. |
-| A `return` in a function with a pointer `ensures` | An error (open question 1) |
+| A `return` in a function with a pointer `ensures` | E8012 |
 
 **`assume e`** adds the fact `e`, without a proof. It is a statement, and only an `unsafe` block can
 hold it. The audit lists each one. `e` can be a pointer clause or a boolean expression that the
@@ -685,19 +686,26 @@ needs a fact there. Open question 6 asks about a warning for it.
 - A fact about other memory ends at each event that can free memory. That includes memory that the
   pointer cannot point into, such as a vector that the body made itself.
 - One fact must prove a clause. The checker does not join two ranges.
-- A write through a pointer makes no `Init` fact. So a loop that fills a buffer gives no fact.
+- A write through a pointer makes no `Init` fact. So a loop that fills a buffer gives no fact. The
+  write keeps the facts that the pointer has.
+- An `extern` function can state only `frees` clauses and pointer clauses. It cannot state a
+  value `ensures` such as `0i64 <= return`, so the `c_read_some` of section 8 cannot be written
+  yet.
+- A `spawn on` region ends the facts about other memory at its start. The code waits for the
+  region at its end, so no task of it runs after the region.
 - The inference from the syntax stops at a method call, as the inference of `!keeps` does. Only a
   method or an instance of a generic function gets `!frees` from its checked body.
 
 ## 12. Open questions
 
-1. The error for a body that breaks a pointer `ensures`. A body that breaks a value `ensures` gets
-   an error with no code today. E8012, the error for a body that breaks `!frees(p)`, is one choice.
+1. Decided (#2674): a body that breaks a pointer `ensures` gets E8012, as a body that breaks
+   `!frees(p)` does. A body that breaks a value `ensures` still gets an error with no code.
 1. Decided (#2673): the name stays `frees`. The extern note has `ensures freed(p)` for a call that
    ends the life of a handle. `frees(p)` says that it can, and a later `freed(p)` can say that it
    does.
-1. `assume` as a statement. The other choice is to trust each clause about a value that an
-   `unsafe` block gives as its value.
+1. Decided (#2674): `assume` is a statement, and only an `unsafe` block can hold it. Outside one
+   it gets E5002. The other choice was to trust each clause about a value that an `unsafe` block
+   gives as its value.
 1. A function value of a safe function with a pointer `requires`. V1 refuses it. Later, the value
    can have an `unsafe fn` type, so that each call through it needs `unsafe`.
 1. Safe code that reads `p[i]` when the facts prove `valid`, `initialized` and the bounds. V1 still

@@ -1453,6 +1453,15 @@ impl<'a> TypeChecker<'a> {
         self.note_pointer_value(name, value);
     }
 
+    /// A write through the raw pointer `root`, such as `root[i] = v`: the facts about the memory
+    /// end, and the pointer keeps its value.
+    pub(crate) fn note_a_change_behind(&mut self, root: String) {
+        match self.fact_change_frames.last_mut() {
+            Some(frame) => frame.push((root, true)),
+            None => self.neutralize_facts_behind(&root),
+        }
+    }
+
     pub(crate) fn note_a_change_to_variable(&mut self, root: String) {
         match self.fact_change_frames.last_mut() {
             Some(frame) => frame.push((root, false)),

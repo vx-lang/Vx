@@ -87,7 +87,20 @@ pub(crate) struct LoopExit {
 
 /// The raw-pointer state of the code around a body that starts with none of it: a closure body, a
 /// task body or the body of another function.
-pub(crate) struct OuterPointerState(PointerFacts, Vec<LoopExit>, Vec<String>);
+pub(crate) struct OuterPointerState(PointerFacts, Vec<LoopExit>, Vec<String>, PointerFunction);
+
+/// The function whose body the checker checks.
+#[derive(Clone, Default)]
+pub(crate) struct PointerFunction {
+    /// How a message names the function.
+    name: String,
+    /// Its pointer `ensures`. Each `return` must prove them. A closure or a task body has none.
+    ensures: Vec<Expr>,
+    /// The index of the scope that holds the parameters.
+    scope: usize,
+    /// The parameters that the body assigns or takes a `&mut` to.
+    params_changed: std::collections::HashSet<String>,
+}
 
 /// A pointer value: a base, and an offset in elements that is the exact sum of its terms.
 #[derive(Clone, Debug, PartialEq)]
@@ -99,13 +112,21 @@ pub(crate) struct PointerValue {
 /// What the checker knows about the raw pointers of the body that it checks.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PointerFacts {
-    /// The memory of each base.
-    memory: HashMap<usize, Memory>,
+    /// The memories of each base. A call result can point into other memory and into the local
+    /// memory of each variable that an argument points into.
+    memory: HashMap<usize, Vec<Memory>>,
     /// The value of each local variable of a raw pointer type.
     entries: HashMap<String, PointerValue>,
     ranges: Vec<Range>,
     aparts: Vec<Apart>,
     ended: Vec<Ended>,
+    /// The value of each call result that a pointer `ensures` is about, by the line and the
+    /// column of the call.
+    results: HashMap<(usize, usize), PointerValue>,
+    /// The tasks that a `spawn` started and that no `join()` or end of a `tasks` block ended
+    /// yet, by an id and the name of the handle. While one runs, it can free memory, so no fact
+    /// about other memory starts.
+    tasks: Vec<(usize, Option<String>, Span)>,
 }
 
 impl PointerFacts {
@@ -130,11 +151,13 @@ impl PointerFacts {
     }
 
     /// Ends each range that `ends` selects, and records the event for the note of E8006.
-    fn end_ranges(&mut self, at: Span, why: &str, ends: impl Fn(&Range, Option<&Memory>) -> bool) {
+    fn end_ranges(&mut self, at: Span, why: &str, ends: impl Fn(&Range, &Memory) -> bool) {
         let memory = &self.memory;
-        let (gone, kept) = std::mem::take(&mut self.ranges)
-            .into_iter()
-            .partition(|r| ends(r, memory.get(&r.base)));
+        let (gone, kept) = std::mem::take(&mut self.ranges).into_iter().partition(|r| {
+            memory
+                .get(&r.base)
+                .is_some_and(|ms| ms.iter().any(|m| ends(r, m)))
+        });
         self.ranges = kept;
         self.ended.extend(gone.into_iter().map(|range| Ended {
             range,
@@ -148,8 +171,8 @@ impl PointerFacts {
     /// event ends an `Apart` fact: a free does not change an address.
     fn end_other_memory(&mut self, at: Span, why: &str) {
         self.end_ranges(at, why, |r, memory| match memory {
-            Some(Memory::Local { drops, .. }) => *drops && r.kind == Kind::Init,
-            _ => true,
+            Memory::Local { drops, .. } => *drops && r.kind == Kind::Init,
+            Memory::Other => true,
         });
     }
 
@@ -158,21 +181,24 @@ impl PointerFacts {
         self.end_ranges(
             at,
             why,
-            |_, memory| matches!(memory, Some(Memory::Local { var: v, .. }) if v == var),
+            |_, memory| matches!(memory, Memory::Local { var: v, .. } if v == var),
         );
     }
 
     /// A move takes the value out of the local variable `var`.
     fn end_init_of_local(&mut self, var: &str, at: Span, why: &str) {
         self.end_ranges(at, why, |r, memory| {
-            r.kind == Kind::Init && matches!(memory, Some(Memory::Local { var: v, .. }) if v == var)
+            r.kind == Kind::Init && matches!(memory, Memory::Local { var: v, .. } if v == var)
         });
     }
 
     fn has_local(&self, var: &str) -> bool {
-        self.ranges.iter().any(
-            |r| matches!(self.memory.get(&r.base), Some(Memory::Local { var: v, .. }) if v == var),
-        )
+        self.ranges.iter().any(|r| {
+            self.memory.get(&r.base).is_some_and(|ms| {
+                ms.iter()
+                    .any(|m| matches!(m, Memory::Local { var: v, .. } if v == var))
+            })
+        })
     }
 
     /// The facts that hold at the end of both `self` and `other`, each of which started from
@@ -192,6 +218,11 @@ impl PointerFacts {
         }
         for (base, memory) in &other.memory {
             self.memory.entry(*base).or_insert_with(|| memory.clone());
+        }
+        for t in &other.tasks {
+            if !self.tasks.contains(t) {
+                self.tasks.push(t.clone());
+            }
         }
         self
     }
@@ -218,6 +249,9 @@ fn plain_name(name: &str) -> &str {
     let name = name.split(['<', '$']).next().unwrap_or(name);
     name.rsplit("::").next().unwrap_or(name)
 }
+
+/// The parameters of a function, with their types.
+type Params = Vec<(crate::symbol::Symbol, Type)>;
 
 /// A `let` of a loop body: its name, its written type and its value.
 type BodyLet = (String, Option<Type>, Expr);
@@ -304,6 +338,31 @@ fn le(a: Exact, b: Exact) -> Exact {
     Exact::Le(Box::new(a), Box::new(b))
 }
 
+/// `a + b`.
+fn plus(a: Expr, b: Expr) -> Expr {
+    Expr::BinaryOp(BinaryOpExpr {
+        lhs: Box::new(a),
+        op: BinaryOp::Add,
+        rhs: Box::new(b),
+        span: Span::default(),
+        operand_ty: None,
+    })
+}
+
+/// The sum of the terms of an offset.
+fn offset_sum(terms: &[Expr]) -> Expr {
+    terms.iter().cloned().reduce(plus).unwrap_or_else(zero)
+}
+
+/// The name of the result of the call at `at` in the facts of its `ensures`. A `let` of the
+/// result gives the facts its own name.
+fn result_name(at: Span) -> Expr {
+    Expr::Identifier(IdentifierExpr {
+        name: format!("$result_{}_{}", at.line, at.column).into(),
+        span: at,
+    })
+}
+
 fn zero() -> Expr {
     Expr::Number(NumberExpr {
         value: "0".to_string().into(),
@@ -334,6 +393,10 @@ fn read_clause(e: &Expr) -> Option<(&str, Vec<&Expr>, &Expr)> {
 
 impl<'a> TypeChecker<'a> {
     fn new_base(&mut self, memory: Memory) -> usize {
+        self.new_base_in(vec![memory])
+    }
+
+    fn new_base_in(&mut self, memory: Vec<Memory>) -> usize {
         self.pointer_fact_ids += 1;
         self.pointer_facts
             .memory
@@ -357,6 +420,23 @@ impl<'a> TypeChecker<'a> {
     /// its own, and each pointer `requires` is a fact. `valid(p, n)` also says that `n >= 0`.
     pub(crate) fn start_pointer_facts(&mut self, func: &Function) {
         self.pointer_facts = PointerFacts::default();
+        let well_formed = |e: &&Expr| {
+            read_clause(e).is_some()
+                && crate::hir::check::pointer_clauses::read_pointer_clause(
+                    "",
+                    &func.params,
+                    &func.return_type,
+                    true,
+                    e,
+                )
+                .is_ok()
+        };
+        self.pointer_function = PointerFunction {
+            name: self.clause_owner_name(func),
+            ensures: func.ensures.iter().filter(well_formed).cloned().collect(),
+            scope: self.scopes.len() - 1,
+            params_changed: crate::hir::check::raw::names_a_body_writes(&func.body),
+        };
         for (name, ty) in &func.params {
             if matches!(ty, Type::Pointer(..)) {
                 let base = self.new_base(Memory::Other);
@@ -423,6 +503,14 @@ impl<'a> TypeChecker<'a> {
             offset: Vec::new(),
         };
         match e {
+            Expr::FunctionCall(fc)
+                if self
+                    .pointer_facts
+                    .results
+                    .contains_key(&(fc.span.line, fc.span.column)) =>
+            {
+                self.pointer_facts.results[&(fc.span.line, fc.span.column)].clone()
+            }
             Expr::Identifier(id) => {
                 if let Some(v) = self.pointer_facts.entries.get(id.name.as_ref()) {
                     return v.clone();
@@ -618,6 +706,18 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         vars: &HashMap<crate::symbol::Symbol, (Type, Topology)>,
     ) {
+        self.pointer_facts_end_storage(vars);
+        for name in vars.keys() {
+            self.pointer_facts.forget(name.as_ref());
+        }
+    }
+
+    /// The storage of the variables `vars` ends, and the program drops each value of a type with
+    /// a drop.
+    fn pointer_facts_end_storage(
+        &mut self,
+        vars: &HashMap<crate::symbol::Symbol, (Type, Topology)>,
+    ) {
         let at = self.current_statement_span;
         let mut dropped: Vec<&str> = Vec::new();
         for (name, (ty, _)) in vars {
@@ -625,7 +725,6 @@ impl<'a> TypeChecker<'a> {
                 let why = self.in_branch(format!("the end of the scope of `{name}`"));
                 self.pointer_facts.end_local(name.as_ref(), at, &why);
             }
-            self.pointer_facts.forget(name.as_ref());
             if !self.drops_glue(ty).is_empty() || matches!(ty, Type::Generic(..)) {
                 dropped.push(name.as_ref());
             }
@@ -634,6 +733,202 @@ impl<'a> TypeChecker<'a> {
             self.pointer_facts_event(at, |_| {
                 format!("the end of the scope of `{name}`, which drops its value")
             });
+        }
+    }
+
+    /// At a `return` of `value`, or at the end of the body for `None`: E8012 for each pointer
+    /// `ensures` that the facts do not prove after the end of the storage of each local variable
+    /// and parameter, and their drops. `place` says where, as in "at this `return`".
+    pub(crate) fn prove_pointer_ensures(&mut self, value: Option<&Expr>, at: Span, place: &str) {
+        if self.pointer_function.ensures.is_empty() || self.speculating {
+            return;
+        }
+        let returned = match value {
+            Some(v) if matches!(self.check_expr_type_probe(v), Type::Pointer(..)) => {
+                Some(self.pointer_value(v, None))
+            }
+            _ => None,
+        };
+        let saved = self.pointer_facts.clone();
+        for i in (self.pointer_function.scope..self.scopes.len()).rev() {
+            let vars = self.scopes[i].clone();
+            self.pointer_facts_end_storage(&vars);
+        }
+        let mut names = HashMap::new();
+        if let Some(v) = value.filter(|v| crate::hir::prover::is_modelled(v)) {
+            names.insert(crate::symbol::Symbol::from("return"), v.clone());
+        }
+        let PointerFunction {
+            name: shown,
+            ensures,
+            ..
+        } = self.pointer_function.clone();
+        for clause in &ensures {
+            let Some((function, pointers, len)) = read_clause(clause) else {
+                continue;
+            };
+            let values: Option<Vec<PointerValue>> = pointers
+                .iter()
+                .map(|p| match p {
+                    Expr::Identifier(id) if id.name.as_ref() == "return" => returned.clone(),
+                    p => Some(self.pointer_value(p, None)),
+                })
+                .collect();
+            let m = if expr_mentions(len, "return") && !names.contains_key("return") {
+                result_name(at)
+            } else {
+                crate::hir::prover::substitute_names(len, &names)
+            };
+            let proved = values.as_ref().is_some_and(|v| {
+                let goal = self.pointer_goal(function, v, &m, None);
+                self.prove_exact(&goal)
+            });
+            if proved {
+                continue;
+            }
+            let ended = values
+                .as_ref()
+                .and_then(|v| self.ended_fact_that_proves(function, v, &m));
+            let error = self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E8012,
+                format!(
+                    "`{shown}` says `{}`, but the compiler cannot prove it {place}",
+                    clause_source(clause)
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
+            );
+            if let Some((at, why)) = ended {
+                error.notes.push(crate::diagnostic::Note {
+                    message: format!("a fact that proves it ended at {why}").into(),
+                    span: Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
+                });
+            }
+        }
+        self.pointer_facts = saved;
+    }
+
+    /// `assume fact;` at `at`: the fact without a proof. Only an `unsafe` block can hold it. The
+    /// fact is a pointer clause, or a boolean expression for the prover.
+    pub(crate) fn check_assume(&mut self, fact: &Expr, at: Span) {
+        if self.unsafe_is_missing() {
+            self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E5002,
+                "`assume` adds a fact that the compiler does not prove, so it must be in an \
+                 `unsafe` block"
+                    .to_string(),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
+            );
+        }
+        let Some((function, pointers, len)) = read_clause(fact) else {
+            if crate::hir::check::pointer_clauses::first_pointer_call(fact).is_some() {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E8011,
+                    "write the fact of `assume` as one pointer clause, as in `assume valid(p, n)`"
+                        .to_string(),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
+                );
+                return;
+            }
+            let mut fact = fact.clone();
+            let ty = self.check_expr_type_flag(&mut fact, false);
+            if ty != Type::Scalar(ElementType::Bool) && ty != Type::Unknown {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E3003,
+                    format!("the fact of `assume` must be a `bool`, but it is `{ty}`"),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
+                );
+            } else if !self.speculating {
+                self.consteval.constraints.push(fact);
+            }
+            return;
+        };
+        for p in &pointers {
+            let mut arg = (*p).clone();
+            let ty = self.check_expr_type_flag(&mut arg, false);
+            if !matches!(ty, Type::Pointer(..) | Type::Unknown) {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E8011,
+                    format!(
+                        "`{function}` needs a raw pointer, but `{}` is `{ty}`",
+                        crate::hir::prover::to_source(p).unwrap_or_default()
+                    ),
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
+                );
+                return;
+            }
+        }
+        let mut n = len.clone();
+        self.check_expr_type_flag(&mut n, false);
+        if self.speculating {
+            return;
+        }
+        let values: Vec<PointerValue> = pointers
+            .iter()
+            .map(|p| self.pointer_value(p, None))
+            .collect();
+        self.add_pointer_fact(function, &values, len.clone());
+    }
+
+    /// The `spawn` at `at` started a task. Its handle has no name yet.
+    pub(crate) fn pointer_facts_task_started(&mut self, at: Span) {
+        self.pointer_fact_ids += 1;
+        self.pointer_facts
+            .tasks
+            .push((self.pointer_fact_ids, None, at));
+    }
+
+    /// `let name = spawn { .. }`: the task that the `spawn` started has the handle `name`.
+    pub(crate) fn pointer_facts_name_the_task(&mut self, name: &str) {
+        if let Some(t) = self
+            .pointer_facts
+            .tasks
+            .iter_mut()
+            .rev()
+            .find(|t| t.1.is_none())
+        {
+            t.1 = Some(name.to_string());
+        }
+    }
+
+    /// `name.join()` ended the task of the handle `name`.
+    pub(crate) fn pointer_facts_task_joined(&mut self, name: &str) {
+        self.pointer_facts
+            .tasks
+            .retain(|t| t.1.as_deref() != Some(name));
+    }
+
+    /// The ids of the tasks that run, for the start of a `tasks` block.
+    pub(crate) fn pointer_facts_running_tasks(&self) -> Vec<usize> {
+        self.pointer_facts.tasks.iter().map(|t| t.0).collect()
+    }
+
+    /// The end of a `tasks` block, which `running` ran before: each task started in it ended.
+    pub(crate) fn pointer_facts_tasks_ended(&mut self, running: &[usize]) {
+        self.pointer_facts.tasks.retain(|t| running.contains(&t.0));
+    }
+
+    /// `let name = f(..)`: the facts of the `ensures` of `f` call its result `name`.
+    pub(crate) fn pointer_facts_name_the_result(&mut self, name: &str, init: &Expr) {
+        let Expr::FunctionCall(fc) = crate::syntax::bare_unsafe_value(init) else {
+            return;
+        };
+        let Expr::Identifier(from) = result_name(fc.span) else {
+            return;
+        };
+        let to = Expr::Identifier(IdentifierExpr {
+            name: name.into(),
+            span: fc.span,
+        });
+        let names = HashMap::from([(from.name, to)]);
+        let rename = |e: &mut Expr| *e = crate::hir::prover::substitute_names(e, &names);
+        for r in &mut self.pointer_facts.ranges {
+            rename(&mut r.lo);
+            rename(&mut r.hi);
+        }
+        for a in &mut self.pointer_facts.aparts {
+            rename(&mut a.first.1);
+            rename(&mut a.second.1);
+            rename(&mut a.len);
         }
     }
 
@@ -660,19 +955,30 @@ impl<'a> TypeChecker<'a> {
     /// The start of a body that starts with no raw-pointer fact, no loop and no branch of the code
     /// around it.
     pub(crate) fn pointer_facts_enter_body(&mut self) -> OuterPointerState {
+        let params_changed = self.pointer_function.params_changed.clone();
         OuterPointerState(
             std::mem::take(&mut self.pointer_facts),
             std::mem::take(&mut self.pointer_loops),
             std::mem::take(&mut self.pointer_branches),
+            // A `return` in the body returns from the body, so the function's `ensures` do not
+            // apply there.
+            std::mem::replace(
+                &mut self.pointer_function,
+                PointerFunction {
+                    params_changed,
+                    ..Default::default()
+                },
+            ),
         )
     }
 
     /// The end of a body that `pointer_facts_enter_body` started.
     pub(crate) fn pointer_facts_leave_body(&mut self, outer: OuterPointerState) {
-        let OuterPointerState(facts, loops, branches) = outer;
+        let OuterPointerState(facts, loops, branches, function) = outer;
         self.pointer_facts = facts;
         self.pointer_loops = loops;
         self.pointer_branches = branches;
+        self.pointer_function = function;
     }
 
     /// The start of a loop body. `self.scopes` holds the scopes outside the body.
@@ -727,11 +1033,29 @@ impl<'a> TypeChecker<'a> {
         let declared = self.types_of_body_variables(body);
         let mut events = Vec::new();
         self.statement_events(body, &declared, &mut events);
+        // The fact of an `assume` runs no code.
+        let mut in_an_assume = std::collections::HashSet::new();
+        crate::syntax::visit_exprs(body, &mut |e| match e {
+            Expr::FunctionCall(fc) if fc.name.as_ref() == crate::syntax::stmt::ASSUME => {
+                for a in &fc.args {
+                    crate::syntax::visit_expr(a, &mut |x| {
+                        let at = x.span();
+                        if at != Span::default() {
+                            in_an_assume.insert((at.line, at.column));
+                        }
+                    });
+                }
+            }
+            _ => {}
+        });
         for s in body {
             // The parser gives some calls no place. Their note gives the line of the statement.
             let first = events.len();
             crate::syntax::visit_exprs(std::slice::from_ref(s), &mut |e| {
-                self.expression_events(e, &declared, &mut events)
+                let at = e.span();
+                if !in_an_assume.contains(&(at.line, at.column)) {
+                    self.expression_events(e, &declared, &mut events)
+                }
             });
             for event in &mut events[first..] {
                 if event.1 == Span::default() {
@@ -929,7 +1253,7 @@ impl<'a> TypeChecker<'a> {
         declared: &HashMap<String, Type>,
     ) -> Option<String> {
         let name = fc.name.as_ref();
-        if ADDRESS_FUNCTIONS.contains(&plain_name(name)) {
+        if ADDRESS_FUNCTIONS.contains(&plain_name(name)) || name == crate::syntax::stmt::ASSUME {
             return None;
         }
         // A call of a local variable, such as a closure.
@@ -1177,6 +1501,244 @@ impl<'a> TypeChecker<'a> {
         };
         if let Some(why) = why {
             self.pointer_facts_event(at, |_| why);
+        }
+        if !self.speculating && !local_call && matches!(expr, Expr::FunctionCall(_)) {
+            self.add_facts_of_ensures(name, args, at);
+        }
+    }
+
+    /// The parameters and the pointer `ensures` of the function `name`, when the checker knows
+    /// it: a Vx function, an instance or an `extern` function.
+    fn pointer_ensures_of(&self, name: &str) -> Option<(Params, Vec<Expr>)> {
+        let clauses = |params: &[(crate::symbol::Symbol, Type)], ret: &Type, ensures: &[Expr]| {
+            ensures
+                .iter()
+                .filter(|e| {
+                    read_clause(e).is_some()
+                        && crate::hir::check::pointer_clauses::read_pointer_clause(
+                            "", params, ret, true, e,
+                        )
+                        .is_ok()
+                })
+                .cloned()
+                .collect::<Vec<Expr>>()
+        };
+        let function = self.env.syntax_functions.get(name).copied().or_else(|| {
+            self.mono
+                .functions
+                .iter()
+                .find(|(f, _)| f.name.as_ref() == name)
+                .map(|(f, _)| f)
+        });
+        if let Some(f) = function {
+            return Some((
+                f.params.clone(),
+                clauses(&f.params, &f.return_type, &f.ensures),
+            ));
+        }
+        let ext = self.env.externs.iter().find(|e| e.name.as_ref() == name)?;
+        let ensures = clauses(&ext.params, &ext.return_type, &ext.ensures);
+        Some((ext.params.clone(), ensures))
+    }
+
+    /// After the events of the call at `at` to `name`: the facts of its pointer `ensures`. In
+    /// each clause, each parameter stands for its argument, and `return` for the result. The
+    /// result gets a new base.
+    fn add_facts_of_ensures(&mut self, name: &str, args: &[Expr], at: Span) {
+        let Some((params, clauses)) = self.pointer_ensures_of(name) else {
+            return;
+        };
+        if clauses.is_empty() {
+            return;
+        }
+        let mut names = HashMap::new();
+        for (i, ((param, _), arg)) in params.iter().zip(args).enumerate() {
+            let arg = crate::hir::prover::without_borrow(arg);
+            let value = if crate::hir::prover::is_modelled(arg) {
+                arg.clone()
+            } else {
+                Expr::Identifier(IdentifierExpr {
+                    name: format!("$arg_{}_{}_{i}", at.line, at.column).into(),
+                    span: at,
+                })
+            };
+            names.insert(param.clone(), value);
+        }
+        names.insert("return".into(), result_name(at));
+        let is_return =
+            |p: &&Expr| matches!(p, Expr::Identifier(id) if id.name.as_ref() == "return");
+        let about_the_result = clauses
+            .iter()
+            .any(|c| read_clause(c).is_some_and(|(_, pointers, _)| pointers.iter().any(is_return)));
+        let result = if about_the_result {
+            self.call_result_value(args)
+        } else {
+            None
+        };
+        if let Some(v) = &result {
+            self.pointer_facts
+                .results
+                .insert((at.line, at.column), v.clone());
+        }
+        for clause in &clauses {
+            let Some((function, pointers, len)) = read_clause(clause) else {
+                continue;
+            };
+            let values: Option<Vec<PointerValue>> = pointers
+                .iter()
+                .map(|p| match p {
+                    Expr::Identifier(id) if id.name.as_ref() == "return" => result.clone(),
+                    Expr::Identifier(id) => {
+                        let i = params.iter().position(|(n, _)| n == &id.name)?;
+                        let arg = args.get(i)?.clone();
+                        Some(self.pointer_value(&arg, None))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let Some(values) = values else {
+                continue;
+            };
+            let n = crate::hir::prover::substitute_names(len, &names);
+            self.add_pointer_fact(function, &values, n);
+        }
+    }
+
+    /// The fact `function(values, n)`, such as `valid(p, n)`, from an `ensures` or an `assume`.
+    fn add_pointer_fact(&mut self, function: &str, values: &[PointerValue], n: Expr) {
+        if function == "overlaps" {
+            self.pointer_fact_ids += 1;
+            let id = self.pointer_fact_ids;
+            self.pointer_facts.aparts.push(Apart {
+                id,
+                first: (values[0].base, offset_sum(&values[0].offset)),
+                second: (values[1].base, offset_sum(&values[1].offset)),
+                len: n,
+            });
+            return;
+        }
+        let v = &values[0];
+        let kind = if function == "valid" {
+            Kind::Valid
+        } else {
+            Kind::Init
+        };
+        if kind == Kind::Valid && crate::hir::prover::is_modelled(&n) {
+            self.consteval
+                .constraints
+                .push(Expr::RelationalOp(RelationalOpExpr {
+                    lhs: Box::new(n.clone()),
+                    op: RelationalOp::Ge,
+                    rhs: Box::new(zero()),
+                    span: Span::default(),
+                    operand_ty: None,
+                }));
+        }
+        let other_memory = self
+            .pointer_facts
+            .memory
+            .get(&v.base)
+            .is_some_and(|ms| ms.contains(&Memory::Other));
+        let lo = offset_sum(&v.offset);
+        let hi = plus(lo.clone(), n.clone());
+        if let Some(&(_, _, spawn)) = self.pointer_facts.tasks.last().filter(|_| other_memory) {
+            // The fact does not start, and the note of E8006 names the `spawn`.
+            self.pointer_fact_ids += 1;
+            let range = Range {
+                id: self.pointer_fact_ids,
+                kind,
+                base: v.base,
+                lo,
+                hi,
+            };
+            let why = "the `spawn`, whose task can free memory until its `join()`".to_string();
+            self.pointer_facts.ended.push(Ended {
+                range,
+                at: spawn,
+                why,
+            });
+            return;
+        }
+        self.add_range(kind, v.base, lo, hi);
+    }
+
+    /// A new base for the result of a call with the arguments `args`. Its memory is other memory
+    /// and the local memory of each variable that an argument can point into. `None` when the
+    /// checker does not know where an argument can point.
+    fn call_result_value(&mut self, args: &[Expr]) -> Option<PointerValue> {
+        let mut memory = vec![Memory::Other];
+        for arg in args {
+            for m in self.locals_an_argument_reaches(arg)? {
+                if !memory.contains(&m) {
+                    memory.push(m);
+                }
+            }
+        }
+        Some(PointerValue {
+            base: self.new_base_in(memory),
+            offset: Vec::new(),
+        })
+    }
+
+    /// The local memory of each variable that the argument `arg` can point into, or `None` when
+    /// the checker does not know it. A reference parameter that the body does not assign or hide
+    /// points into the memory of the caller.
+    fn locals_an_argument_reaches(&mut self, arg: &Expr) -> Option<Vec<Memory>> {
+        fn root(e: &Expr) -> Option<&str> {
+            match e {
+                Expr::Identifier(id) => Some(id.name.as_ref()),
+                Expr::MemberAccess(m) => root(&m.base),
+                _ => None,
+            }
+        }
+        // A number, and arithmetic on numbers, points nowhere.
+        if crate::hir::prover::is_modelled(arg) && !matches!(arg, Expr::Identifier(_)) {
+            return Some(Vec::new());
+        }
+        let ty = self.check_expr_type_probe(arg);
+        if matches!(ty, Type::Scalar(ref e) if !matches!(e, ElementType::Generic(_)))
+            || matches!(ty, Type::Function(..) | Type::Simd(..))
+        {
+            return Some(Vec::new());
+        }
+        let a_caller_reference = |c: &Self, name: &str| {
+            c.borrow.current_params.contains_key(name)
+                && !c.declared_vars.iter().any(|(v, _)| v.as_ref() == name)
+                && !c.pointer_function.params_changed.contains(name)
+                && matches!(c.lookup(name), Some((Type::Borrow { .. }, _)))
+        };
+        match arg {
+            Expr::Borrow(b) => {
+                let var = root(&b.expr)?;
+                if a_caller_reference(self, var) {
+                    return Some(Vec::new());
+                }
+                let var_ty = self.lookup(var).map(|(t, _)| t.clone())?;
+                if matches!(
+                    var_ty,
+                    Type::Borrow { .. } | Type::Pointer(..) | Type::Ref(..)
+                ) {
+                    return None;
+                }
+                let drops =
+                    matches!(var_ty, Type::Generic(..)) || !self.drops_glue(&var_ty).is_empty();
+                Some(vec![Memory::Local {
+                    var: var.to_string(),
+                    drops,
+                }])
+            }
+            Expr::Identifier(id) if a_caller_reference(self, id.name.as_ref()) => Some(Vec::new()),
+            _ if matches!(ty, Type::Pointer(..)) => {
+                let v = self.pointer_value(arg, None);
+                let memory = self
+                    .pointer_facts
+                    .memory
+                    .get(&v.base)
+                    .cloned()
+                    .unwrap_or_default();
+                Some(memory.into_iter().filter(|m| *m != Memory::Other).collect())
+            }
+            _ => None,
         }
     }
 

@@ -737,17 +737,20 @@ pub enum DiagnosticCode {
     /// operation of a dialect that the list does not name, or the list names something that
     /// is not a dialect. The list is what the block says it uses, so it must be right.
     E8010,
-    /// A pointer clause that is not well formed: `requires valid(p, n)`, `requires
-    /// initialized(p, n)` or `requires !overlaps(p, q, n)`, where `p` and `q` are raw pointer
-    /// parameters, and each clause is a `requires` of its own. A call through a function value or
-    /// a trait would not prove the clause, so a safe function with one cannot be a function value,
-    /// and a safe method of a trait impl cannot have one. A `frees` clause is an `ensures` of its
+    /// A pointer clause that is not well formed: `valid(p, n)`, `initialized(p, n)` or
+    /// `!overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters, and each clause is a
+    /// `requires` or an `ensures` of its own. In an `ensures`, `return` can be the pointer. The
+    /// fact of an `assume` is one such clause. A call through a function value or a trait would
+    /// not prove a `requires`, so a safe function with one cannot be a function value, and a safe
+    /// method of a trait impl cannot have one. A `frees` clause is an `ensures` of its
     /// own, `ensures frees(p)` or `ensures !frees(p)` for a parameter `p`, and a method of a trait
     /// impl cannot add a `!frees` that the trait method does not have.
     E8011,
-    /// A function that says `ensures !frees(p)`, when its body can free memory through `p`: the
-    /// body gives `p`, or a value that it gets from `p`, to code that can free memory, such as a
-    /// call without `!frees` for that parameter, a store or an `mlir!` block.
+    /// A body that breaks a pointer `ensures` of its function. The facts at a `return`, or at the
+    /// end of the body, do not prove a clause such as `ensures valid(return, n)`. Or the body
+    /// changes a parameter that such a clause names. Or the function says `ensures !frees(p)`,
+    /// and its body gives `p`, or a value that it gets from `p`, to code that can free memory,
+    /// such as a call without `!frees` for that parameter, a store or an `mlir!` block.
     E8012,
 }
 

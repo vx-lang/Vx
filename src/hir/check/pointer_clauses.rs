@@ -81,6 +81,51 @@ fn read_frees_clause(
     }
 }
 
+/// Where `body` first assigns `name`, takes a `&mut` to it, or hides it with a `let`. A write
+/// through a pointer, such as `p[i] = v`, does not change the pointer.
+fn first_change_of(body: &[Statement], name: &str) -> Option<Span> {
+    fn root(e: &Expr) -> Option<&str> {
+        match e {
+            Expr::Identifier(id) => Some(id.name.as_ref()),
+            Expr::MemberAccess(m) => root(&m.base),
+            _ => None,
+        }
+    }
+    let mut found: Option<Span> = None;
+    let mut note = |at: Span| {
+        if found.is_none_or(|f| (at.line, at.column) < (f.line, f.column)) {
+            found = Some(at);
+        }
+    };
+    fn own(stmts: &[Statement], name: &str, note: &mut dyn FnMut(Span)) {
+        for s in stmts {
+            match s {
+                Statement::LetDecl(l) if l.name.as_ref() == name => note(l.span),
+                Statement::Assign(a) if root(&a.lhs) == Some(name) => note(a.span),
+                Statement::CompoundAssign(c) if root(&c.lhs) == Some(name) => note(c.span),
+                Statement::ForLoop(l) => own(&l.body, name, note),
+                Statement::Loop(l) => own(&l.body, name, note),
+                _ => {}
+            }
+        }
+    }
+    own(body, name, &mut note);
+    crate::syntax::visit_exprs(body, &mut |e| match e {
+        Expr::If(i) => {
+            own(&i.then_block, name, &mut note);
+            if let Some(b) = &i.else_block {
+                own(b, name, &mut note);
+            }
+        }
+        Expr::Match(m) => m.arms.iter().for_each(|a| own(&a.body, name, &mut note)),
+        Expr::UnsafeBlock(u) => own(&u.stmts, name, &mut note),
+        Expr::TaskBlock(t) => own(&t.stmts, name, &mut note),
+        Expr::Borrow(b) if b.is_mut && root(&b.expr) == Some(name) => note(b.span),
+        _ => {}
+    });
+    found
+}
+
 /// The parameters that the clauses `ensures` say `!frees` for, as bits. A parameter that a
 /// clause also says `frees` for gets no bit, and E8011 reports the two clauses.
 pub(crate) fn not_freed_params(params: &[(crate::symbol::Symbol, Type)], ensures: &[Expr]) -> u32 {
@@ -160,6 +205,78 @@ fn pointer_param(f: &Function, name: &str) -> Option<usize> {
         .position(|(p, ty)| p.as_ref() == name && matches!(ty, Type::Pointer(..)))
 }
 
+/// Check one `requires` or `ensures` of the function `owner` that uses a pointer function.
+/// In an `ensures`, `return` can be the pointer when the function returns a raw pointer.
+pub(crate) fn read_pointer_clause(
+    owner: &str,
+    params: &[(crate::symbol::Symbol, Type)],
+    return_type: &Type,
+    in_ensures: bool,
+    e: &Expr,
+) -> Result<(), String> {
+    let (negated, call) = match e {
+        Expr::UnaryOp(u) if u.op == UnaryOp::Not => (true, &*u.expr),
+        e => (false, e),
+    };
+    let place = if in_ensures { "ensures" } else { "requires" };
+    let own =
+        format!("write each pointer clause as a `{place}` of its own, as in `{place} valid(p, n)`");
+    let Expr::FunctionCall(fc) = call else {
+        return Err(own);
+    };
+    if !is_pointer_call(call) {
+        return Err(own);
+    }
+    let name = fc.name.as_ref();
+    let pointers = if name == "overlaps" { 2 } else { 1 };
+    let usage = if name == "overlaps" {
+        "`overlaps` takes two raw pointer parameters and a length, as in `!overlaps(p, q, n)`"
+            .to_string()
+    } else {
+        format!("`{name}` takes a raw pointer parameter and a length, as in `{name}(p, n)`")
+    };
+    if fc.args.len() != pointers + 1 {
+        return Err(usage);
+    }
+    let user = if in_ensures { "a caller" } else { "the body" };
+    match (name, negated) {
+        ("overlaps", false) => {
+            return Err(format!(
+                "only `!overlaps(p, q, n)` says something that {user} can use"
+            ));
+        }
+        (_, true) if name != "overlaps" => {
+            return Err(format!("`!{name}` says nothing that {user} can use"));
+        }
+        _ => {}
+    }
+    let mut seen = Vec::new();
+    for arg in &fc.args[..pointers] {
+        let Expr::Identifier(id) = arg else {
+            return Err(usage);
+        };
+        let p = id.name.as_ref();
+        let ty = if in_ensures && p == "return" {
+            return_type
+        } else {
+            match params.iter().find(|(n, _)| n.as_ref() == p) {
+                None => return Err(format!("`{p}` is not a parameter of `{owner}`")),
+                Some((_, ty)) => ty,
+            }
+        };
+        if !matches!(ty, Type::Pointer(..)) {
+            return Err(format!("`{name}` needs a raw pointer, but `{p}` is `{ty}`"));
+        }
+        if seen.contains(&p) {
+            return Err(format!(
+                "`overlaps` needs two different pointers, but both are `{p}`"
+            ));
+        }
+        seen.push(p);
+    }
+    Ok(())
+}
+
 impl<'a> TypeChecker<'a> {
     /// E8011 for the pointer clauses of `f`: each one is a `requires` of its own, names raw
     /// pointer parameters, and is on an `unsafe fn`.
@@ -167,26 +284,54 @@ impl<'a> TypeChecker<'a> {
         if self.speculating {
             return;
         }
-        for e in &f.ensures {
-            if let Some(at) = first_pointer_call(e) {
-                self.pointer_clause_error(
-                    "a pointer clause in `ensures` is not supported yet: write it as a `requires`"
-                        .to_string(),
-                    at,
+        let owner = self.clause_owner_name(f);
+        self.check_parameters_of_pointer_ensures(&owner, f);
+        for (in_ensures, clauses) in [(false, &f.requires), (true, &f.ensures)] {
+            for e in clauses {
+                let Some(at) = first_pointer_call(e) else {
+                    continue;
+                };
+                if let Err(message) =
+                    read_pointer_clause(&owner, &f.params, &f.return_type, in_ensures, e)
+                {
+                    self.pointer_clause_error(message, at);
+                }
+            }
+        }
+        self.check_frees_clauses(&owner, &f.params, &f.requires, &f.ensures);
+        self.check_frees_promises(f);
+    }
+
+    /// E8012 for a body that assigns, hides or takes a `&mut` to a parameter that a pointer
+    /// `ensures` names. A caller sees only the value of the parameter at the start of the call.
+    fn check_parameters_of_pointer_ensures(&mut self, owner: &str, f: &Function) {
+        let mut named: Vec<String> = Vec::new();
+        for e in f.ensures.iter().filter(|e| first_pointer_call(e).is_some()) {
+            crate::syntax::visit_expr(e, &mut |x| {
+                if let Expr::Identifier(id) = x {
+                    let p = id.name.to_string();
+                    if f.params.iter().any(|(n, _)| n.as_ref() == p) && !named.contains(&p) {
+                        named.push(p);
+                    }
+                }
+            });
+        }
+        for p in named {
+            let Some(at) = first_change_of(&f.body, &p) else {
+                continue;
+            };
+            let message = format!(
+                "`{owner}` has a pointer `ensures` that names `{p}`, so its body must not change \
+                 `{p}`: a caller knows only the value that it gives"
+            );
+            if self.borrow_clause_errors.insert((at, message.clone())) {
+                self.errors.error_with_code(
+                    crate::diagnostic::DiagnosticCode::E8012,
+                    message,
+                    Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
                 );
             }
         }
-        for e in &f.requires {
-            let Some(at) = first_pointer_call(e) else {
-                continue;
-            };
-            if let Err(message) = self.read_pointer_clause(f, e) {
-                self.pointer_clause_error(message, at);
-            }
-        }
-        let owner = self.clause_owner_name(f);
-        self.check_frees_clauses(&owner, &f.params, &f.requires, &f.ensures);
-        self.check_frees_promises(f);
     }
 
     /// E8011 for the `frees` clauses of the function `owner` with the parameters `params`: each
@@ -315,71 +460,6 @@ impl<'a> TypeChecker<'a> {
             .unwrap_or(0)
     }
 
-    /// Check one `requires` that uses a pointer function.
-    fn read_pointer_clause(&self, f: &Function, e: &Expr) -> Result<(), String> {
-        let (negated, call) = match e {
-            Expr::UnaryOp(u) if u.op == UnaryOp::Not => (true, &*u.expr),
-            e => (false, e),
-        };
-        let Expr::FunctionCall(fc) = call else {
-            return Err(
-                "write each pointer clause as a `requires` of its own, as in \
-                        `requires valid(p, n)`"
-                    .to_string(),
-            );
-        };
-        if !is_pointer_call(call) {
-            return Err(
-                "write each pointer clause as a `requires` of its own, as in \
-                        `requires valid(p, n)`"
-                    .to_string(),
-            );
-        }
-        let name = fc.name.as_ref();
-        let pointers = if name == "overlaps" { 2 } else { 1 };
-        let usage = if name == "overlaps" {
-            "`overlaps` takes two raw pointer parameters and a length, as in `!overlaps(p, q, n)`"
-                .to_string()
-        } else {
-            format!("`{name}` takes a raw pointer parameter and a length, as in `{name}(p, n)`")
-        };
-        if fc.args.len() != pointers + 1 {
-            return Err(usage);
-        }
-        match (name, negated) {
-            ("overlaps", false) => {
-                return Err(
-                    "only `!overlaps(p, q, n)` says something that the body can use".to_string(),
-                );
-            }
-            (_, true) if name != "overlaps" => {
-                return Err(format!("`!{name}` says nothing that the body can use"));
-            }
-            _ => {}
-        }
-        let mut seen = Vec::new();
-        for arg in &fc.args[..pointers] {
-            let Expr::Identifier(id) = arg else {
-                return Err(usage);
-            };
-            let p = id.name.as_ref();
-            match f.params.iter().find(|(n, _)| n.as_ref() == p) {
-                None => return Err(format!("`{p}` is not a parameter of `{}`", f.name)),
-                Some((_, ty)) if !matches!(ty, Type::Pointer(..)) => {
-                    return Err(format!("`{name}` needs a raw pointer, but `{p}` is `{ty}`"));
-                }
-                Some(_) => {}
-            }
-            if seen.contains(&p) {
-                return Err(format!(
-                    "`overlaps` needs two different pointers, but both are `{p}`"
-                ));
-            }
-            seen.push(p);
-        }
-        Ok(())
-    }
-
     /// E8011 for the function `name` used as a value, when it is safe and has a pointer
     /// `requires`: a call through the value proves no clause.
     pub(crate) fn check_function_value(&mut self, name: &str, at: Span) {
@@ -463,15 +543,22 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// E8011 for the `ensures` of each `extern` function: the compiler trusts them, so each one
-    /// is a well formed `frees` clause.
+    /// is a well formed `frees` clause or pointer clause.
     pub(crate) fn check_extern_clauses(&mut self) {
         let externs: Vec<&crate::syntax::ExternDecl> = self.env.externs.clone();
         for ext in externs {
             for e in &ext.ensures {
-                if first_frees_call(e).is_none() {
+                if let Some(at) = first_pointer_call(e) {
+                    let owner = ext.name.as_ref();
+                    if let Err(message) =
+                        read_pointer_clause(owner, &ext.params, &ext.return_type, true, e)
+                    {
+                        self.pointer_clause_error(message, at);
+                    }
+                } else if first_frees_call(e).is_none() {
                     self.pointer_clause_error(
-                        "an `extern` function can have only a `frees` clause in its `ensures`, \
-                         as in `ensures !frees(p)`"
+                        "an `extern` function can have only a `frees` clause or a pointer clause \
+                         in its `ensures`, as in `ensures !frees(p)`"
                             .to_string(),
                         e.span(),
                     );

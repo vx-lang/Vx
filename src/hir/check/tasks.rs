@@ -275,6 +275,7 @@ impl TypeChecker<'_> {
             });
             self.pointer_facts_enter_body()
         });
+        let running = self.pointer_facts_running_tasks();
         let mut ty = self.check_expr_block(stmts, ret.as_deref(), consume);
         if let Some(r) = ret {
             self.value_unused = unused;
@@ -289,8 +290,12 @@ impl TypeChecker<'_> {
             ty = self.check_expr_type_flag(r, consume);
             self.expected_type = outer;
         }
-        if let Some(outer) = outer_pointers {
-            self.pointer_facts_leave_body(outer);
+        match outer_pointers {
+            Some(outer) => {
+                self.pointer_facts_leave_body(outer);
+                self.pointer_facts_task_started(block_span);
+            }
+            None => self.pointer_facts_tasks_ended(&running),
         }
         ty
     }
@@ -966,6 +971,7 @@ impl TypeChecker<'_> {
         let Some((task, result)) = self.tasks.last_spawn.take() else {
             return;
         };
+        self.pointer_facts_name_the_task(decl.name.as_ref());
         if let Some(ann) = annotation {
             let matches = match &ann {
                 Type::GenericInstance(base, args) => {
@@ -1084,6 +1090,9 @@ impl TypeChecker<'_> {
                 ),
                 &span,
             );
+        }
+        if !self.speculating {
+            self.pointer_facts_task_joined(id.name.as_ref());
         }
         if let (Some((ok_ty, _)), false) = (fails, in_other_task) {
             let name = id.name.clone();

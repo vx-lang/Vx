@@ -815,6 +815,19 @@ impl<'a> TypeChecker<'a> {
     }
 
     pub(crate) fn check_functioncall_expr(&mut self, expr: &mut Expr) -> Type {
+        // `assume e;`: the checker adds the fact, and the call becomes an empty block, so it
+        // generates no code.
+        if let Expr::FunctionCall(fc) = expr {
+            if fc.name.as_ref() == crate::syntax::stmt::ASSUME {
+                assert_eq!(fc.args.len(), 1, "the parser gives `assume` one fact");
+                let (fact, at) = (fc.args[0].clone(), fc.span);
+                self.check_assume(&fact, at);
+                let mut block = UnsafeBlockExpr::new(Vec::new(), None, at);
+                block.generated = true;
+                *expr = Expr::UnsafeBlock(block);
+                return Type::Struct("void".into(), None);
+            }
+        }
         // The first statement of a `within(limit) { .. }` block (F6a): the limit is a number of
         // seconds, and the block gets an owner whose drop ends its deadline.
         if let Expr::FunctionCall(fc) = expr {
