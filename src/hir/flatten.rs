@@ -7871,6 +7871,20 @@ fn parse_scalar_type_arg(s: &str) -> Type {
     if let Some(inner) = s.strip_prefix("*const ") {
         return Type::Pointer(Box::new(parse_scalar_type_arg(inner.trim())), None, false);
     }
+    // A reference argument (`Closure1<&i64, bool>`, a `filter` predicate). A reference is a
+    // pointer in a layout, whatever it points to.
+    if let Some(rest) = s.strip_prefix('&') {
+        let (inner, is_mut) = match rest.trim_start().strip_prefix("mut ") {
+            Some(inner) => (inner, true),
+            None => (rest, false),
+        };
+        return Type::Borrow {
+            inner: Box::new(parse_scalar_type_arg(inner.trim())),
+            mem_space: None,
+            is_mut,
+            region_id: 0,
+        };
+    }
     // A `const` argument (`Array<f32, 10>`) is the literal it was written as.
     if s.chars().all(|c| c.is_ascii_digit()) && !s.is_empty() {
         return Type::Const(Box::new(Expr::Number(crate::syntax::NumberExpr::new(
