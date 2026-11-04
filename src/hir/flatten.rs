@@ -1926,6 +1926,27 @@ impl<'r> Lowerer<'r> {
                         });
                     }
                 }
+                // `&t[i]` or `&mut t[i][j]`, one number of a tensor: the address of the element in
+                // the tensor's own buffer, so a write through `&mut` reaches the tensor.
+                if let Expr::IndexAccess(ix) = &*b.expr {
+                    if self.tensor_number_at(ix).is_some() {
+                        let place = self.lower_place(&b.expr)?;
+                        let reg = Register(self.code.len() as u32);
+                        let type_idx = TypeIdx(self.types.len() as u32);
+                        self.types.push(ptr_gid());
+                        self.code.push(HirInstruction::new(
+                            Opcode::TensorElementAddress,
+                            place.reg,
+                            Register(0),
+                            type_idx,
+                            0,
+                        ));
+                        return Ok(Val {
+                            reg,
+                            ty: LoweredTy::Ptr,
+                        });
+                    }
+                }
                 // `&self.data[i]`: the address of an element behind a raw pointer, as `Vec::get_ref`
                 // takes it. Lowering the element as a value would hand back a copy in this
                 // function's frame, which dangles once it returns.
@@ -2317,11 +2338,13 @@ impl<'r> Lowerer<'r> {
             },
             // `t[i]` on a tensor: the row, a tensor of the remaining extents, or the element
             // when there is one extent.
-            Expr::IndexAccess(ix) => match self.infer_ast_type(&ix.base)? {
-                Type::Tensor(el, dims, place) if dims.len() > 1 => {
+            Expr::IndexAccess(ix) => match self.infer_ast_type(&ix.base) {
+                Some(Type::Tensor(el, dims, place)) if dims.len() > 1 => {
                     Some(Type::Tensor(el, dims[1..].to_vec(), place))
                 }
-                Type::Tensor(el, dims, _) if dims.len() == 1 => Some(Type::Scalar(el)),
+                Some(Type::Tensor(el, dims, _)) if dims.len() == 1 => Some(Type::Scalar(el)),
+                // A tensor local has no AST type, but its binding gives the element.
+                None => self.tensor_number_at(ix).map(Type::Scalar),
                 _ => None,
             },
             Expr::MemberAccess(m) => {
@@ -2392,11 +2415,21 @@ impl<'r> Lowerer<'r> {
         if let Expr::Dereference(d) = base {
             let gid = self.agg_base_gid(base)?; // the pointee (Vec<T>)
             let v = self.lower_expr(&d.expr)?; // lower the pointer, not the deref
-            return matches!(v.ty, LoweredTy::Ptr)
-                .then_some((v.reg, gid))
-                .ok_or(Decline::TypeNotModelled {
+            if !matches!(v.ty, LoweredTy::Ptr) {
+                return Err(Decline::TypeNotModelled {
                     what: "an aggregate base that is not a pointer",
                 });
+            }
+            // A pointer loaded from a local does not say what it points to. The cast tells the
+            // emitter, so the field op can address the field.
+            let tagged = self.emit_typed(
+                Opcode::Cast,
+                v.reg,
+                Register(0),
+                LoweredTy::Aggregate(gid),
+                0,
+            );
+            return Ok((tagged.reg, gid));
         }
         // A field as a base. A by-value nested-aggregate field (`outer.inner.a`) is addressed with a
         // `FieldAddr`, and a pointer field (`make(p).p.x`) is loaded. `m.base` is lowered only here:
@@ -4361,6 +4394,30 @@ impl<'r> Lowerer<'r> {
 
     /// The lowered type of a tensor field, from the struct's declaration: the layout carries
     /// only the element and rank, the extents are in the declared field type.
+    /// The element type when `t[i]..[k]` picks one number out of a tensor: its root names a
+    /// tensor of exactly as many dimensions as there are indices. A tensor local has no AST type
+    /// here, so the root's binding decides.
+    fn tensor_number_at(&self, ix: &crate::syntax::IndexAccessExpr) -> Option<ElementType> {
+        let mut indices = 1;
+        let mut root = &*ix.base;
+        while let Expr::IndexAccess(inner) = root {
+            indices += 1;
+            root = &*inner.base;
+        }
+        let Expr::Identifier(id) = root else {
+            return None;
+        };
+        let ty = match self.scope.get(&id.name)? {
+            Binding::Reg(v) => v.ty.clone(),
+            Binding::Slot { ty, .. } => ty.clone(),
+            Binding::Place { .. } => return None,
+        };
+        match ty {
+            LoweredTy::Tensor { elem, shape } if shape.len() == indices => Some(elem),
+            _ => None,
+        }
+    }
+
     /// The declared type of field `member` of the struct `name`, as written in the declaration.
     /// A generic instance's name (`Holder<i32>`) names the declaration by its base.
     fn declared_struct_field_ty(&self, name: &Symbol, member: &Symbol) -> Option<Type> {

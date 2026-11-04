@@ -43,18 +43,12 @@ const KNOWN_DECLINES: &[&str] = &[
     // A struct passed to `grad`: the flat path declines it ("an autodiff argument that is not a
     // scalar"). The file is about the AST path.
     "backend/pass/autodiff/autodiff_for_variable_argument.vx",
-    // `&mut arr[0]`: the flat path declines any borrow of a tensor element ("a borrow of
-    // something that is not a tensor").
-    "frontend/pass/two_mutable_borrows_one_after_the_other.vx",
     // `t = pass(t)` inside an `if`: on the flat path a tensor local is one register, so the
     // new value cannot leave the branch. The flat path used to read the wrong tensor after it.
     "frontend/pass/tensor_drops_written_into_the_program.vx",
     "backend/pass/tensor_given_a_new_value_on_one_path.vx",
-    // "A borrow of something that is not a tensor": the flat path borrows tensors only.
-    "backend/pass/borrow_of_a_value.vx",
+    // `(&mut c[0][1]).as_mut_ptr()`: "as_ptr() on something that is not a tensor".
     "backend/pass/cast_a_borrow_to_a_raw_pointer.vx",
-    "backend/pass/write_through_a_borrow_of_a_tensor_element.vx",
-    "backend/pass/borrow_element_through_pointer.vx",
     // A raw pointer held in a `let` ("a place-bound reference in value position"): the flat
     // path has no pointer values yet.
     "backend/pass/raw_pointers_compare_by_address.vx",
