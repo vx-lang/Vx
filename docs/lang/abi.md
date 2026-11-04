@@ -400,8 +400,9 @@ run on the Apple GPU through Metal (`runtime/metal_dispatch.mm`).
   uses the pages that the tensor touches, with no copy. A tensor that the kernel writes is
   ready when the call returns, because each launch waits for the GPU.
 - **CPU or GPU.** `void vx_metal_set_enabled(int on)` sets the device for the calling thread.
-  With 0, each launch runs the CPU copy of its kernel on the same memory. `VX_METAL=0` turns
-  the GPU off for every thread.
+  With 0, each launch runs the CPU copy of its kernel on the same memory, with the blocks
+  shared among the CPU's cores (`docs/spawn_on.md`). `VX_METAL=0` turns the GPU off for every
+  thread.
 - **Rows.** Vx reads every tensor as packed, so row y of a `Tensor<T, [?, ?]>` starts at y times
   the size of axis 1, on the CPU and on the GPU. Give a frame with padded rows as
   `[height, bytes in a row]`, and index the pixels within each row.
