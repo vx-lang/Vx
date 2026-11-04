@@ -143,11 +143,16 @@ where its caller runs. Host code and a `spawn on(Topology::Device)` region can b
 function written this way, and each one gets its own copy.
 
 `on Topology::Any` is short for that form, with a `D` that no parameter names. These two
-functions are the same:
+functions differ only in their names:
 
 ```rust
-fn clamp<D: Topology>(v: i32, lo: i32, hi: i32) on Topology::D -> i32 { .. }
-fn clamp(v: i32, lo: i32, hi: i32) on Topology::Any -> i32 { .. }
+fn add_one<D: Topology>(x: i32) on Topology::D -> i32 {
+    return x + 1;
+}
+
+fn add_one_any(x: i32) on Topology::Any -> i32 {
+    return x + 1;
+}
 ```
 
 `Topology::Any` can follow only `on` in a function signature, and no topology can be called
