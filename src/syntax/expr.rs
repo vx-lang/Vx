@@ -166,6 +166,9 @@ pub struct TransferExpr {
     /// `transfer_async(x, M)`: the copy gives a `Token`, whose `.wait()` gives the placed
     /// tensor. The code generators copy as for `transfer` today, and the wait is the value.
     pub is_async: bool,
+    /// Set by sema when the source is a `&` tensor and the edge is `: shared`. The result is still
+    /// a copy, but the lowering may skip the copy when every use of it only reads.
+    pub shared: bool,
     pub span: Span,
 }
 
@@ -191,6 +194,7 @@ impl TransferExpr {
             cost: None,
             lowering: None,
             is_async: false,
+            shared: false,
             span,
         }
     }
@@ -1454,6 +1458,7 @@ impl Expr {
                 cost: e.cost,
                 lowering: e.lowering.clone(),
                 is_async: e.is_async,
+                shared: e.shared,
                 span: e.span,
             }),
             // Type substitution does not touch topologies; topology substitution is done

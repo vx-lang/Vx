@@ -364,6 +364,11 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
             transfer_builder = transfer_builder
                 .add_attributes(&[(Identifier::new(gen.context, "cost"), cost_attr)]);
         }
+        if self.shared {
+            let unit = melior::ir::attribute::Attribute::unit(gen.context);
+            transfer_builder =
+                transfer_builder.add_attributes(&[(Identifier::new(gen.context, "shared"), unit)]);
+        }
 
         // Sub-space descriptor as IR metadata (SS1, subspace_scheduling.md): the target space name
         // plus, when declared, its containment/granule/capacity/scope. A later vx.* pass reads this

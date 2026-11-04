@@ -1739,7 +1739,12 @@ impl<'r> Lowerer<'r> {
                     },
                     _ => 0,
                 };
-                let imm = mem_id | ((source as u64) << 32);
+                let shared = if t.shared {
+                    crate::bytecode::TRANSFER_SHARED
+                } else {
+                    0
+                };
+                let imm = mem_id | ((source as u64) << 32) | shared;
                 let flag = Register(if body.is_some() {
                     crate::bytecode::TRANSFER_USER_LOWERED
                 } else {
