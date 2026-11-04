@@ -261,6 +261,17 @@ def Vx_LaneCopyAsyncOp : Vx_Op<"lane_copy_async", [MemoryEffects<[MemRead, MemWr
     let results = (outs I32:$token);
 }
 
+// `vx.lane_copy_async` with `map`, the address of a tensor map of `source` in
+// device memory, or 0. The host makes the map before the launch. The GPU
+// copies the tile with TMA when the map is not 0.
+def Vx_LaneCopyAsyncMapOp : Vx_Op<"lane_copy_async_map", [MemoryEffects<[MemRead, MemWrite]>]> {
+    let summary = "Start a copy of a tile into shared memory, with a tensor map.";
+    let arguments = (ins AnyMemRef:$tile, AnyMemRef:$source, I64:$map,
+                     Variadic<AnySignlessInteger>:$place, I64Attr:$lanes,
+                     UnitAttr:$serial, UnitAttr:$subgroup);
+    let results = (outs I32:$token);
+}
+
 // Waits until the copy of `token` ends, and then for every lane of the block,
 // or of the subgroup with `subgroup`.
 def Vx_LaneCopyWaitOp : Vx_Op<"lane_copy_wait", [MemoryEffects<[MemRead, MemWrite]>]> {

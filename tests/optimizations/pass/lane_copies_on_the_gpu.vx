@@ -15,6 +15,15 @@
 //
 // RUN: vxc %s --host default --machine fleet/a100-80.vx --emit-ptx -o %t.ptx
 // RUN: FileCheck %s < %t.ptx --implicit-check-not=local_depot
+//
+// On an `sm_90a` GPU, a copy can use TMA, with a tensor map that the host makes before the
+// launch. The launcher of a kernel from `--emit-ptx` passes only the parameters of the function,
+// so these kernels use `cp.async` there too.
+// RUN: vxc %s --host default --machine fleet/h100-sxm.vx --emit-ptx -o %t90.ptx
+// RUN: FileCheck %s --check-prefix=SM90 < %t90.ptx
+// SM90: .target sm_90a
+// SM90: cp.async.ca.shared.global
+// SM90-NOT: cp.async.bulk
 
 // Two tiles in flight: the wait for the first lets the second go on.
 // CHECK-LABEL: .entry sum_tiles(

@@ -659,6 +659,93 @@ static std::string launchSizeText(Value v, func::FuncOp func, int depth = 0) {
 
 // Inline `vx.spawn` in place for the CPU topology, or outline it into a
 // kernel + `vx.launch` for device topologies.
+/// Whether kernels for `chip` copy tiles with TMA: `sm_90a`, and every chip
+/// from `sm_100` on. The kernel reads the tensor map from device memory, which
+/// needs `fence.proxy.tensormap` and so PTX ISA 8.3. Plain `sm_90` gets 7.8.
+static bool chipHasTensorMaps(StringRef chip);
+
+/// Gives each lane copy in a GPU region a tensor map of its source, which the
+/// host makes before the launch, when the GPU can copy the tile with TMA. The
+/// copy becomes `vx.lane_copy_async_map`, and the map goes to the kernel as one
+/// more captured value. The source must come from outside the region, and the
+/// tile must fit a TMA box: at most 5 dimensions of at most 256 elements, and
+/// a last dimension of a multiple of 16 bytes. A kernel with a copy in the
+/// code of a subgroup gets no maps, because the lanes of different subgroups
+/// count different copies. Kernels that `--emit-ptx` writes get no maps
+/// either: their launcher passes only the parameters of the function.
+static void addLaneCopyTensorMaps(PatternRewriter &rewriter, Operation *spawn,
+                                  Region &body) {
+  StringRef chip;
+  if (const char *env = ::getenv("VX_GPU_CHIP"); env && *env)
+    chip = env;
+  else if (auto attr = spawn->getAttrOfType<StringAttr>("chip"))
+    chip = attr.getValue();
+  if (chip.empty() || !chipHasTensorMaps(chip) ||
+      spawn->getParentOfType<ModuleOp>()->hasAttr("vx.export_kernels"))
+    return;
+  SmallVector<vx::LaneCopyAsyncOp> copies;
+  bool subgroup = false;
+  body.walk([&](vx::LaneCopyAsyncOp c) {
+    subgroup |= c.getSubgroup();
+    copies.push_back(c);
+  });
+  if (subgroup)
+    return;
+  auto module = spawn->getParentOfType<ModuleOp>();
+  Location loc = spawn->getLoc();
+  Type i64 = rewriter.getI64Type();
+  constexpr int64_t most = 5;
+  auto encode = module.lookupSymbol<func::FuncOp>("vx_plugin_tensor_map");
+  if (!encode) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(module.getBody());
+    encode = rewriter.create<func::FuncOp>(
+        loc, "vx_plugin_tensor_map",
+        rewriter.getFunctionType(SmallVector<Type>(3 + 3 * most, i64), {i64}));
+    encode.setPrivate();
+  }
+  for (vx::LaneCopyAsyncOp copy : copies) {
+    auto tile = cast<MemRefType>(copy.getTile().getType());
+    int64_t bytes = tile.getElementTypeBitWidth() / 8;
+    Value source = copy.getSource();
+    if (copy.getSerial() || body.isAncestor(source.getParentRegion()) ||
+        tile.getRank() > most ||
+        llvm::any_of(tile.getShape(), [](int64_t n) { return n > 256; }) ||
+        tile.getShape().back() * bytes % 16 != 0)
+      continue;
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(spawn);
+    auto meta = rewriter.create<memref::ExtractStridedMetadataOp>(loc, source);
+    Value base =
+        rewriter.create<memref::ExtractAlignedPointerAsIndexOp>(loc, source);
+    Value at = rewriter.create<arith::AddIOp>(
+        loc, base,
+        rewriter.create<arith::MulIOp>(
+            loc, meta.getOffset(),
+            rewriter.create<arith::ConstantIndexOp>(loc, bytes)));
+    auto asI64 = [&](Value v) -> Value {
+      return rewriter.create<arith::IndexCastOp>(loc, i64, v);
+    };
+    auto constant = [&](int64_t n) -> Value {
+      return rewriter.create<arith::ConstantIntOp>(loc, i64, n);
+    };
+    SmallVector<Value> args{asI64(at), constant(tile.getRank()),
+                            constant(bytes)};
+    for (auto range : {meta.getSizes(), meta.getStrides()})
+      for (int64_t d = 0; d < most; ++d)
+        args.push_back(d < tile.getRank() ? asI64(range[d]) : constant(0));
+    for (int64_t d = 0; d < most; ++d)
+      args.push_back(constant(d < tile.getRank() ? tile.getDimSize(d) : 0));
+    Value map = rewriter.create<func::CallOp>(loc, encode, args).getResult(0);
+    rewriter.setInsertionPoint(copy);
+    auto mapped = rewriter.create<vx::LaneCopyAsyncMapOp>(
+        copy.getLoc(), rewriter.getI32Type(), copy.getTile(), source, map,
+        copy.getPlace(), copy.getLanesAttr(), copy.getSerialAttr(),
+        copy.getSubgroupAttr());
+    rewriter.replaceOp(copy, mapped.getToken());
+  }
+}
+
 struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
   using OpRewritePattern<SpawnOp>::OpRewritePattern;
 
@@ -789,6 +876,8 @@ struct SpawnOpLowering : public OpRewritePattern<SpawnOp> {
         rewriter.eraseOp(d);
       }
     }
+
+    addLaneCopyTensorMaps(rewriter, op, spawnBody);
 
     SetVector<Value> captures;
     getUsedValuesDefinedAbove(spawnBody, captures);
@@ -2343,15 +2432,45 @@ static void expandLaneSortOnDevice(OpBuilder &b, vx::LaneSortOp op) {
   }
 }
 
+/// The operands of a lane copy, with a tensor map or without one.
+struct LaneCopy {
+  Operation *op;
+  Value tile, source, map;
+  OperandRange place;
+  int64_t lanes;
+  bool subgroup;
+  Value token;
+};
+
+static LaneCopy laneCopyOf(Operation *op) {
+  if (auto c = dyn_cast<vx::LaneCopyAsyncMapOp>(op))
+    return {op,
+            c.getTile(),
+            c.getSource(),
+            c.getMap(),
+            c.getPlace(),
+            static_cast<int64_t>(c.getLanes()),
+            c.getSubgroup(),
+            c.getToken()};
+  auto c = cast<vx::LaneCopyAsyncOp>(op);
+  return {op,
+          c.getTile(),
+          c.getSource(),
+          Value(),
+          c.getPlace(),
+          static_cast<int64_t>(c.getLanes()),
+          c.getSubgroup(),
+          c.getToken()};
+}
+
 /// The index of the element of the source for dimension `d` of the tile, and
 /// whether it is in the source.
 static std::pair<Value, Value> laneCopySourceIndex(OpBuilder &b, Location loc,
-                                                   vx::LaneCopyAsyncOp op,
+                                                   const LaneCopy &op,
                                                    unsigned d, Value i) {
-  Value at =
-      b.create<arith::IndexCastOp>(loc, b.getIndexType(), op.getPlace()[d]);
+  Value at = b.create<arith::IndexCastOp>(loc, b.getIndexType(), op.place[d]);
   Value index = b.create<arith::AddIOp>(loc, at, i);
-  Value dim = b.create<memref::DimOp>(loc, op.getSource(), d);
+  Value dim = b.create<memref::DimOp>(loc, op.source, d);
   // A place below zero is a large unsigned number, past the end too.
   Value in =
       b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, index, dim);
@@ -2360,15 +2479,15 @@ static std::pair<Value, Value> laneCopySourceIndex(OpBuilder &b, Location loc,
 
 /// A lane copy on the CPU: a loop over the elements of the tile. The copy ends
 /// here, so the token is 0 and the wait does nothing.
-static void expandLaneCopyOnHost(OpBuilder &b, vx::LaneCopyAsyncOp op) {
-  Location loc = op.getLoc();
-  auto tile = cast<MemRefType>(op.getTile().getType());
+static void expandLaneCopyOnHost(OpBuilder &b, const LaneCopy &op) {
+  Location loc = op.op->getLoc();
+  auto tile = cast<MemRefType>(op.tile.getType());
   Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
   Value one = b.create<arith::ConstantIndexOp>(loc, 1);
   SmallVector<Value> lower(tile.getRank(), zero), upper,
       steps(tile.getRank(), one);
   for (int64_t d = 0; d < tile.getRank(); ++d)
-    upper.push_back(b.create<memref::DimOp>(loc, op.getTile(), d));
+    upper.push_back(b.create<memref::DimOp>(loc, op.tile, d));
   scf::buildLoopNest(
       b, loc, lower, upper, steps,
       [&](OpBuilder &nb, Location l, ValueRange ivs) {
@@ -2385,39 +2504,178 @@ static void expandLaneCopyOnHost(OpBuilder &b, vx::LaneCopyAsyncOp op) {
         {
           OpBuilder::InsertionGuard guard(nb);
           nb.setInsertionPointToStart(&pick.getThenRegion().front());
-          nb.create<scf::YieldOp>(l, ValueRange{nb.create<memref::LoadOp>(
-                                         l, op.getSource(), from)});
+          nb.create<scf::YieldOp>(
+              l, ValueRange{nb.create<memref::LoadOp>(l, op.source, from)});
           nb.setInsertionPointToStart(&pick.getElseRegion().front());
           nb.create<scf::YieldOp>(l, ValueRange{nb.create<arith::ConstantOp>(
                                          l, nb.getZeroAttr(elem))});
         }
-        nb.create<memref::StoreOp>(l, pick.getResult(0), op.getTile(), ivs);
+        nb.create<memref::StoreOp>(l, pick.getResult(0), op.tile, ivs);
       });
-  op.getToken().replaceAllUsesWith(
+  Value(op.token).replaceAllUsesWith(
       b.create<arith::ConstantIntOp>(loc, b.getI32Type(), 0));
 }
 
-/// The number of copy groups that this lane of the kernel started: a slot at
-/// the start of the kernel, made on the first call.
-static Value laneCopyCount(gpu::GPUFuncOp func, Value &count) {
-  if (count)
-    return count;
-  Block &entry = func.getBody().front();
+/// The number of mbarriers in the ring of a kernel whose copies use TMA. Copy
+/// `c` of a lane uses mbarrier `c % 8`, in its phase `c / 8`.
+constexpr int64_t laneCopyRing = 8;
+/// The bit of a token that says the copy went with TMA.
+constexpr int64_t laneCopyTmaBit = int64_t(1) << 30;
+
+/// The state of the lane copies of one kernel: the number of copies that this
+/// lane started, in a slot at the start of the kernel. With TMA, also a ring of
+/// mbarriers, and the number of copies whose phase thread 0 saw end.
+struct LaneCopyState {
+  gpu::GPUFuncOp func;
+  bool ring = false;
+  Value count, done, barriers;
+};
+
+/// One PTX instruction, with no result.
+static void lanePtx(OpBuilder &b, Location loc, StringRef text,
+                    StringRef constraints, ValueRange operands) {
+  b.create<LLVM::InlineAsmOp>(loc, Type(), operands, text, constraints,
+                              /*has_side_effects=*/true,
+                              /*is_align_stack=*/false,
+                              LLVM::tailcallkind::TailCallKind::None,
+                              LLVM::AsmDialectAttr(), ArrayAttr());
+}
+
+/// The address of the first element of `buffer`, as an i64.
+static Value laneAddress(OpBuilder &b, Location loc, Value buffer) {
+  auto type = cast<MemRefType>(buffer.getType());
+  auto meta = b.create<memref::ExtractStridedMetadataOp>(loc, buffer);
+  Value base = b.create<memref::ExtractAlignedPointerAsIndexOp>(loc, buffer);
+  Value at = b.create<arith::AddIOp>(
+      loc, base,
+      b.create<arith::MulIOp>(loc, meta.getOffset(),
+                              b.create<arith::ConstantIndexOp>(
+                                  loc, type.getElementTypeBitWidth() / 8)));
+  return b.create<arith::IndexCastOp>(loc, b.getI64Type(), at);
+}
+
+/// Code that only thread 0 of the block runs.
+static void onThreadZero(OpBuilder &b, Location loc,
+                         function_ref<void(OpBuilder &)> body) {
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  auto first = b.create<scf::IfOp>(
+      loc,
+      b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, tid,
+                              b.create<arith::ConstantIndexOp>(loc, 0)),
+      /*withElseRegion=*/false);
+  OpBuilder::InsertionGuard guard(b);
+  b.setInsertionPoint(first.getThenRegion().front().getTerminator());
+  body(b);
+}
+
+/// The slots of the copies of the kernel, made at its start on the first call.
+/// With a ring, thread 0 also makes the mbarriers, and every lane waits for it.
+static Value laneCopyCount(LaneCopyState &s) {
+  if (s.count)
+    return s.count;
+  Block &entry = s.func.getBody().front();
   OpBuilder b(&entry, entry.begin());
-  Location loc = func.getLoc();
-  count = b.create<memref::AllocaOp>(loc, MemRefType::get({}, b.getI32Type()));
-  b.create<memref::StoreOp>(
-      loc, b.create<arith::ConstantIntOp>(loc, b.getI32Type(), 0), count);
-  return count;
+  Location loc = s.func.getLoc();
+  Type i32 = b.getI32Type();
+  Value zero = b.create<arith::ConstantIntOp>(loc, i32, 0);
+  s.count = b.create<memref::AllocaOp>(loc, MemRefType::get({}, i32));
+  b.create<memref::StoreOp>(loc, zero, s.count);
+  if (!s.ring)
+    return s.count;
+  s.done = b.create<memref::AllocaOp>(loc, MemRefType::get({}, i32));
+  b.create<memref::StoreOp>(loc, zero, s.done);
+  auto ringType =
+      MemRefType::get({laneCopyRing}, b.getI64Type(),
+                      MemRefLayoutAttrInterface{}, b.getI64IntegerAttr(3));
+  s.barriers =
+      b.create<memref::AllocaOp>(loc, ringType, b.getI64IntegerAttr(8));
+  Value ring = s.barriers;
+  onThreadZero(b, loc, [&](OpBuilder &t) {
+    Value at = laneAddress(t, loc, ring);
+    Value one = t.create<arith::ConstantIntOp>(loc, i32, 1);
+    for (int64_t i = 0; i < laneCopyRing; ++i)
+      lanePtx(t, loc, "mbarrier.init.shared::cta.b64 [$0], $1;", "l,r",
+              {t.create<arith::AddIOp>(
+                   loc, at,
+                   t.create<arith::ConstantIntOp>(loc, t.getI64Type(), i * 8)),
+               one});
+    lanePtx(t, loc, "fence.mbarrier_init.release.cluster;", "", {});
+  });
+  b.create<gpu::BarrierOp>(loc);
+  return s.count;
+}
+
+/// The address of the mbarrier of copy `c` (an i32).
+static Value laneCopyBarrier(OpBuilder &b, Location loc, LaneCopyState &s,
+                             Value c) {
+  Type i64 = b.getI64Type();
+  Value slot = b.create<arith::RemUIOp>(
+      loc, b.create<arith::ExtUIOp>(loc, i64, c),
+      b.create<arith::ConstantIntOp>(loc, i64, laneCopyRing));
+  return b.create<arith::AddIOp>(
+      loc, laneAddress(b, loc, s.barriers),
+      b.create<arith::MulIOp>(loc, slot,
+                              b.create<arith::ConstantIntOp>(loc, i64, 8)));
+}
+
+/// On thread 0: waits until the mbarrier phase of each copy up to `last` (an
+/// i32) ended, in order. Thread 0 starts copy `c + 8` only after the phase of
+/// copy `c` ended, so the mbarrier that it waits on is never a whole phase
+/// ahead.
+static void laneCopyWaitThrough(OpBuilder &b, Location loc, LaneCopyState &s,
+                                Value last) {
+  Type i32 = b.getI32Type();
+  Value done = b.create<memref::LoadOp>(loc, s.done);
+  auto loop = b.create<scf::WhileOp>(
+      loc, TypeRange{i32}, ValueRange{done},
+      [&](OpBuilder &nb, Location l, ValueRange args) {
+        Value more = nb.create<arith::CmpIOp>(l, arith::CmpIPredicate::sle,
+                                              args[0], last);
+        nb.create<scf::ConditionOp>(l, more, args);
+      },
+      [&](OpBuilder &nb, Location l, ValueRange args) {
+        Value c = args[0];
+        Value bar = laneCopyBarrier(nb, l, s, c);
+        Value parity = nb.create<arith::AndIOp>(
+            l,
+            nb.create<arith::DivUIOp>(
+                l, c, nb.create<arith::ConstantIntOp>(l, i32, laneCopyRing)),
+            nb.create<arith::ConstantIntOp>(l, i32, 1));
+        nb.create<scf::WhileOp>(
+            l, TypeRange{}, ValueRange{},
+            [&](OpBuilder &wb, Location wl, ValueRange) {
+              Value ended =
+                  wb.create<LLVM::InlineAsmOp>(
+                        wl, i32, ValueRange{bar, parity},
+                        "{ .reg .pred p; mbarrier.try_wait.parity.shared::cta."
+                        "b64 p, [$1], $2; selp.u32 $0, 1, 0, p; }",
+                        "=r,l,r", /*has_side_effects=*/true,
+                        /*is_align_stack=*/false,
+                        LLVM::tailcallkind::TailCallKind::None,
+                        LLVM::AsmDialectAttr(), ArrayAttr())
+                      .getResult(0);
+              Value waiting = wb.create<arith::CmpIOp>(
+                  wl, arith::CmpIPredicate::eq, ended,
+                  wb.create<arith::ConstantIntOp>(wl, i32, 0));
+              wb.create<scf::ConditionOp>(wl, waiting, ValueRange{});
+            },
+            [&](OpBuilder &wb, Location wl, ValueRange) {
+              wb.create<scf::YieldOp>(wl);
+            });
+        nb.create<scf::YieldOp>(
+            l, ValueRange{nb.create<arith::AddIOp>(
+                   l, c, nb.create<arith::ConstantIntOp>(l, i32, 1))});
+      });
+  b.create<memref::StoreOp>(loc, loop.getResult(0), s.done);
 }
 
 /// Whether a lane copy can go 16 bytes at a time, `v` elements: the last
 /// dimension of the tile and of the source has a stride of 1, every other
 /// stride is a multiple of `v`, both start at a multiple of 16 bytes, and so
 /// does the place of the tile in its last dimension.
-static Value laneCopyGoesWide(OpBuilder &b, Location loc,
-                              vx::LaneCopyAsyncOp op, int64_t v,
-                              int64_t bytes) {
+static Value laneCopyGoesWide(OpBuilder &b, Location loc, const LaneCopy &op,
+                              int64_t v, int64_t bytes) {
   Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
   Value one = b.create<arith::ConstantIndexOp>(loc, 1);
   Value vValue = b.create<arith::ConstantIndexOp>(loc, v);
@@ -2430,7 +2688,7 @@ static Value laneCopyGoesWide(OpBuilder &b, Location loc,
   auto add = [&](Value c) {
     ok = ok ? b.create<arith::AndIOp>(loc, ok, c) : c;
   };
-  for (Value buffer : {op.getTile(), op.getSource()}) {
+  for (Value buffer : {op.tile, op.source}) {
     auto meta = b.create<memref::ExtractStridedMetadataOp>(loc, buffer);
     Value base = b.create<memref::ExtractAlignedPointerAsIndexOp>(loc, buffer);
     Value at = b.create<arith::AddIOp>(
@@ -2445,7 +2703,7 @@ static Value laneCopyGoesWide(OpBuilder &b, Location loc,
       add(isZero(stride, vValue));
   }
   Value last =
-      b.create<arith::IndexCastOp>(loc, b.getIndexType(), op.getPlace().back());
+      b.create<arith::IndexCastOp>(loc, b.getIndexType(), op.place.back());
   add(isZero(last, vValue));
   return ok;
 }
@@ -2454,15 +2712,15 @@ static Value laneCopyGoesWide(OpBuilder &b, Location loc,
 /// time: each lane starts the copies of slots `lane`, `lane + lanes`, and so
 /// on. The source size is the number of the `v` elements in the source, 0 past
 /// its end, which fills the rest with zeros.
-static void laneCopyLoop(OpBuilder &b, Location loc, vx::LaneCopyAsyncOp op,
+static void laneCopyLoop(OpBuilder &b, Location loc, const LaneCopy &op,
                          Value lane, int64_t v) {
-  auto tile = cast<MemRefType>(op.getTile().getType());
+  auto tile = cast<MemRefType>(op.tile.getType());
   int64_t last = tile.getRank() - 1;
   int64_t slots = tile.getNumElements() / v;
   Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
   b.create<scf::ForOp>(
       loc, lane, b.create<arith::ConstantIndexOp>(loc, slots),
-      b.create<arith::ConstantIndexOp>(loc, op.getLanes()), ValueRange{},
+      b.create<arith::ConstantIndexOp>(loc, op.lanes), ValueRange{},
       [&](OpBuilder &nb, Location l, Value e, ValueRange) {
         SmallVector<Value> to(tile.getRank()), from(tile.getRank());
         Value in;
@@ -2483,67 +2741,185 @@ static void laneCopyLoop(OpBuilder &b, Location loc, vx::LaneCopyAsyncOp op,
             count = nb.create<arith::MinUIOp>(
                 l,
                 nb.create<arith::SubIOp>(
-                    l, nb.create<memref::DimOp>(l, op.getSource(), d), index),
+                    l, nb.create<memref::DimOp>(l, op.source, d), index),
                 nb.create<arith::ConstantIndexOp>(l, v));
         }
         Value srcElements = nb.create<arith::SelectOp>(l, in, count, zero);
         nb.create<nvgpu::DeviceAsyncCopyOp>(
-            l, nvgpu::DeviceAsyncTokenType::get(nb.getContext()), op.getTile(),
-            to, op.getSource(), from, nb.getIndexAttr(v), srcElements,
+            l, nvgpu::DeviceAsyncTokenType::get(nb.getContext()), op.tile, to,
+            op.source, from, nb.getIndexAttr(v), srcElements,
             v > 1 ? nb.getUnitAttr() : UnitAttr());
         nb.create<scf::YieldOp>(l);
       });
 }
 
-/// A lane copy on the GPU. Each lane starts a `cp.async` for its elements of
-/// the tile: 16 bytes at a time when the addresses allow it, and otherwise one
-/// element at a time. The copies of the lane are one group. The token is the
-/// number of groups that the lane started before this one.
-static void expandLaneCopyOnDevice(OpBuilder &b, vx::LaneCopyAsyncOp op,
-                                   Value count) {
-  Location loc = op.getLoc();
-  auto tile = cast<MemRefType>(op.getTile().getType());
+/// The `cp.async`s of a lane copy: 16 bytes at a time when the addresses allow
+/// it, and otherwise one element at a time.
+static void laneCopyWithCpAsync(OpBuilder &b, Location loc, const LaneCopy &op,
+                                Value lane) {
+  auto tile = cast<MemRefType>(op.tile.getType());
   int64_t bytes = tile.getElementTypeBitWidth() / 8;
   int64_t v = 16 / bytes;
+  if (tile.getDimSize(tile.getRank() - 1) % v != 0) {
+    laneCopyLoop(b, loc, op, lane, 1);
+    return;
+  }
+  auto wide = b.create<scf::IfOp>(loc, laneCopyGoesWide(b, loc, op, v, bytes),
+                                  /*withElseRegion=*/true);
+  OpBuilder::InsertionGuard guard(b);
+  b.setInsertionPoint(wide.getThenRegion().front().getTerminator());
+  laneCopyLoop(b, loc, op, lane, v);
+  b.setInsertionPoint(wide.getElseRegion().front().getTerminator());
+  laneCopyLoop(b, loc, op, lane, 1);
+}
+
+/// The TMA copy of a tile, on thread 0: `cp.async.bulk.tensor` of the box of
+/// the tensor map at the place, which completes on the mbarrier of copy `n`.
+/// TMA writes zeros for the part of the box outside the tensor. Before it,
+/// thread 0 waits for the copy that last used the mbarrier, and orders the
+/// reads of the tile by the lanes before the TMA writes.
+static void laneCopyWithTma(OpBuilder &b, Location loc, const LaneCopy &op,
+                            LaneCopyState &s, Value n, Value dst) {
+  auto tile = cast<MemRefType>(op.tile.getType());
+  int64_t rank = tile.getRank();
+  int64_t bytes = tile.getNumElements() * tile.getElementTypeBitWidth() / 8;
+  onThreadZero(b, loc, [&](OpBuilder &t) {
+    Type i32 = t.getI32Type();
+    laneCopyWaitThrough(
+        t, loc, s,
+        t.create<arith::SubIOp>(
+            loc, n, t.create<arith::ConstantIntOp>(loc, i32, laneCopyRing)));
+    Value bar = laneCopyBarrier(t, loc, s, n);
+    lanePtx(t, loc, "fence.proxy.tensormap::generic.acquire.sys [$0], 128;",
+            "l", {op.map});
+    lanePtx(t, loc, "fence.proxy.async.shared::cta;", "", {});
+    lanePtx(t, loc,
+            "{ .reg .b64 st; mbarrier.arrive.expect_tx.shared::cta.b64 st, "
+            "[$0], $1; }",
+            "l,r", {bar, t.create<arith::ConstantIntOp>(loc, i32, bytes)});
+    // The coordinates start with the innermost dimension.
+    SmallVector<Value> operands{dst, op.map};
+    std::string coords, constraints = "l,l";
+    for (int64_t d = rank - 1; d >= 0; --d) {
+      Value at = op.place[d];
+      unsigned width = at.getType().getIntOrFloatBitWidth();
+      if (width > 32)
+        at = t.create<arith::TruncIOp>(loc, i32, at);
+      else if (width < 32)
+        at = t.create<arith::ExtSIOp>(loc, i32, at);
+      if (!coords.empty())
+        coords += ", ";
+      coords += "$" + std::to_string(operands.size());
+      operands.push_back(at);
+      constraints += ",r";
+    }
+    operands.push_back(bar);
+    constraints += ",l";
+    std::string text =
+        "cp.async.bulk.tensor." + std::to_string(rank) +
+        "d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [$0], "
+        "[$1, {" +
+        coords + "}], [$" + std::to_string(operands.size() - 1) + "];";
+    lanePtx(t, loc, text, constraints, operands);
+  });
+}
+
+/// The `memref.alloca` that `tile` is a part of, or null.
+static memref::AllocaOp laneCopyTileAlloca(Value tile) {
+  while (Operation *def = tile.getDefiningOp()) {
+    if (auto alloca = dyn_cast<memref::AllocaOp>(def))
+      return alloca;
+    if (!isa<memref::ReinterpretCastOp, memref::SubViewOp, memref::CastOp>(def))
+      return {};
+    tile = def->getOperand(0);
+  }
+  return {};
+}
+
+/// A lane copy on the GPU. With a tensor map that is not 0, and a tile that
+/// starts at a multiple of 128 bytes, thread 0 copies the tile with TMA.
+/// Otherwise each lane starts a `cp.async` for its elements of the tile. The
+/// copies of the lane are one group, empty with TMA, so that the groups of the
+/// lanes stay in step. The token is the number of copies that the lane started
+/// before this one, with `laneCopyTmaBit` for TMA. In a kernel with TMA, thread
+/// 0 also ends the phase of the mbarrier of a `cp.async` copy, so that copy `c`
+/// always has phase `c / 8`.
+static void expandLaneCopyOnDevice(OpBuilder &b, const LaneCopy &op,
+                                   LaneCopyState &s) {
+  Location loc = op.op->getLoc();
+  Type i32 = b.getI32Type();
+  Value count = laneCopyCount(s);
+  Value n = b.create<memref::LoadOp>(loc, count);
   Value tid =
       b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
-  Value lane = op.getSubgroup()
+  Value lane = op.subgroup
                    ? b.create<arith::RemUIOp>(
                          loc, tid, b.create<arith::ConstantIndexOp>(loc, 32))
                    : tid;
-  if (tile.getDimSize(tile.getRank() - 1) % v == 0) {
-    auto wide = b.create<scf::IfOp>(loc, laneCopyGoesWide(b, loc, op, v, bytes),
-                                    /*withElseRegion=*/true);
-    OpBuilder::InsertionGuard guard(b);
-    b.setInsertionPoint(wide.getThenRegion().front().getTerminator());
-    laneCopyLoop(b, loc, op, lane, v);
-    b.setInsertionPoint(wide.getElseRegion().front().getTerminator());
-    laneCopyLoop(b, loc, op, lane, 1);
+  auto cpAsync = [&](OpBuilder &nb) {
+    laneCopyWithCpAsync(nb, loc, op, lane);
+    if (s.ring)
+      onThreadZero(nb, loc, [&](OpBuilder &t) {
+        laneCopyWaitThrough(
+            t, loc, s,
+            t.create<arith::SubIOp>(
+                loc, n,
+                t.create<arith::ConstantIntOp>(loc, i32, laneCopyRing)));
+        lanePtx(t, loc,
+                "{ .reg .b64 st; mbarrier.arrive.shared::cta.b64 st, [$0]; }",
+                "l", {laneCopyBarrier(t, loc, s, n)});
+      });
+  };
+  Value token = n;
+  if (op.map) {
+    // TMA writes to a multiple of 128 bytes.
+    if (memref::AllocaOp alloca = laneCopyTileAlloca(op.tile))
+      if (alloca.getAlignment().value_or(0) < 128)
+        alloca.setAlignment(128);
+    Type i64 = b.getI64Type();
+    Value dst = laneAddress(b, loc, op.tile);
+    Value tma = b.create<arith::AndIOp>(
+        loc,
+        b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ne, op.map,
+                                b.create<arith::ConstantIntOp>(loc, i64, 0)),
+        b.create<arith::CmpIOp>(
+            loc, arith::CmpIPredicate::eq,
+            b.create<arith::RemUIOp>(
+                loc, dst, b.create<arith::ConstantIntOp>(loc, i64, 128)),
+            b.create<arith::ConstantIntOp>(loc, i64, 0)));
+    auto pick = b.create<scf::IfOp>(loc, tma, /*withElseRegion=*/true);
+    {
+      OpBuilder::InsertionGuard guard(b);
+      b.setInsertionPoint(pick.getThenRegion().front().getTerminator());
+      laneCopyWithTma(b, loc, op, s, n, dst);
+      b.setInsertionPoint(pick.getElseRegion().front().getTerminator());
+      cpAsync(b);
+    }
+    token = b.create<arith::SelectOp>(
+        loc, tma,
+        b.create<arith::OrIOp>(
+            loc, n, b.create<arith::ConstantIntOp>(loc, i32, laneCopyTmaBit)),
+        n);
   } else {
-    laneCopyLoop(b, loc, op, lane, 1);
+    cpAsync(b);
   }
   b.create<NVVM::CpAsyncCommitGroupOp>(loc);
-  Value token = b.create<memref::LoadOp>(loc, count);
   b.create<memref::StoreOp>(
       loc,
-      b.create<arith::AddIOp>(
-          loc, token, b.create<arith::ConstantIntOp>(loc, b.getI32Type(), 1)),
+      b.create<arith::AddIOp>(loc, n,
+                              b.create<arith::ConstantIntOp>(loc, i32, 1)),
       count);
-  op.getToken().replaceAllUsesWith(token);
+  Value(op.token).replaceAllUsesWith(token);
 }
 
-/// The wait of a lane copy on the GPU. The groups that the lane started after
-/// the one of the token may still run: `cp.async.wait_group` takes that number
-/// as a constant, so each case of a small number has its own wait, and a larger
-/// number waits for all but the last 3, which is earlier than it must. Then
-/// every lane of the block or the subgroup waits, so each lane sees the whole
-/// tile.
-static void expandLaneCopyWaitOnDevice(OpBuilder &b, vx::LaneCopyWaitOp op,
-                                       Value count) {
-  Location loc = op.getLoc();
-  Value started = b.create<memref::LoadOp>(loc, count);
+/// Waits for the `cp.async` groups of the copy of `token`. The groups that the
+/// lane started after it may still run: `cp.async.wait_group` takes that number
+/// as a constant, so each case of a small number has its own wait, and a
+/// larger number waits for all but the last 3, which is earlier than it must.
+static void laneCopyWaitGroups(OpBuilder &b, Location loc, Value started,
+                               Value token) {
   Value after = b.create<arith::SubIOp>(
-      loc, b.create<arith::SubIOp>(loc, started, op.getToken()),
+      loc, b.create<arith::SubIOp>(loc, started, token),
       b.create<arith::ConstantIntOp>(loc, b.getI32Type(), 1));
   constexpr int64_t most = 3;
   auto cases = b.create<scf::IndexSwitchOp>(
@@ -2559,6 +2935,36 @@ static void expandLaneCopyWaitOnDevice(OpBuilder &b, vx::LaneCopyWaitOp op,
   for (int64_t n = 0; n < most; ++n)
     fill(cases.getCaseRegions()[n], n);
   fill(cases.getDefaultRegion(), most);
+}
+
+/// The wait of a lane copy on the GPU: for a `cp.async` copy, its groups, and
+/// for a TMA copy, the phases of the mbarriers up to it, on thread 0. Then
+/// every lane of the block or the subgroup waits, so each lane sees the whole
+/// tile.
+static void expandLaneCopyWaitOnDevice(OpBuilder &b, vx::LaneCopyWaitOp op,
+                                       LaneCopyState &s) {
+  Location loc = op.getLoc();
+  Type i32 = b.getI32Type();
+  Value started = b.create<memref::LoadOp>(loc, laneCopyCount(s));
+  if (s.ring) {
+    Value bit = b.create<arith::ConstantIntOp>(loc, i32, laneCopyTmaBit);
+    Value c = b.create<arith::AndIOp>(
+        loc, op.getToken(),
+        b.create<arith::ConstantIntOp>(loc, i32, ~laneCopyTmaBit));
+    Value tma = b.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::ne,
+        b.create<arith::AndIOp>(loc, op.getToken(), bit),
+        b.create<arith::ConstantIntOp>(loc, i32, 0));
+    auto pick = b.create<scf::IfOp>(loc, tma, /*withElseRegion=*/true);
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPoint(pick.getThenRegion().front().getTerminator());
+    onThreadZero(b, loc,
+                 [&](OpBuilder &t) { laneCopyWaitThrough(t, loc, s, c); });
+    b.setInsertionPoint(pick.getElseRegion().front().getTerminator());
+    laneCopyWaitGroups(b, loc, started, c);
+  } else {
+    laneCopyWaitGroups(b, loc, started, op.getToken());
+  }
   if (op.getSubgroup()) {
     auto bar = b.create<vx::BarrierOp>(loc);
     bar->setAttr("subgroup", b.getUnitAttr());
@@ -2952,7 +3358,7 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
   // A `vx.launch_dim` leaves the region when it is outlined.
   if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp,
           vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp,
-          vx::LaneCopyAsyncOp, vx::LaneCopyWaitOp>(op))
+          vx::LaneCopyAsyncOp, vx::LaneCopyAsyncMapOp, vx::LaneCopyWaitOp>(op))
     return true;
   // A DYNAMIC shared-memory tile cannot become a `.shared` global (those
   // need a static shape), and leaving the alloca as-is ships a kernel that
@@ -4508,22 +4914,23 @@ struct ConvertVxToStandardPass
           OpBuilder b(op);
           expandLaneSort(b, op, /*device=*/true);
         }
-        Value copies;
+        LaneCopyState copies{gpuFunc};
         SmallVector<Operation *> copyOps;
         gpuFunc.walk([&](Operation *op) {
-          if (isa<vx::LaneCopyAsyncOp, vx::LaneCopyWaitOp>(op))
+          if (isa<vx::LaneCopyAsyncOp, vx::LaneCopyAsyncMapOp,
+                  vx::LaneCopyWaitOp>(op))
             copyOps.push_back(op);
+          copies.ring |= isa<vx::LaneCopyAsyncMapOp>(op);
         });
         for (Operation *op : copyOps) {
           OpBuilder b(op);
-          if (auto copy = dyn_cast<vx::LaneCopyAsyncOp>(op)) {
-            if (copy.getSerial())
-              expandLaneCopyOnHost(b, copy);
-            else
-              expandLaneCopyOnDevice(b, copy, laneCopyCount(gpuFunc, copies));
-          } else if (!cast<vx::LaneCopyWaitOp>(op).getSerial()) {
-            expandLaneCopyWaitOnDevice(b, cast<vx::LaneCopyWaitOp>(op),
-                                       laneCopyCount(gpuFunc, copies));
+          if (auto wait = dyn_cast<vx::LaneCopyWaitOp>(op)) {
+            if (!wait.getSerial())
+              expandLaneCopyWaitOnDevice(b, wait, copies);
+          } else if (op->hasAttr("serial")) {
+            expandLaneCopyOnHost(b, laneCopyOf(op));
+          } else {
+            expandLaneCopyOnDevice(b, laneCopyOf(op), copies);
           }
           op->erase();
         }
@@ -5909,12 +6316,13 @@ struct LaneReductionLowering : public OpRewritePattern<OpTy> {
   }
 };
 
-struct LaneCopyAsyncLowering : public OpRewritePattern<vx::LaneCopyAsyncOp> {
-  using OpRewritePattern<vx::LaneCopyAsyncOp>::OpRewritePattern;
+template <typename CopyOp>
+struct LaneCopyAsyncLowering : public OpRewritePattern<CopyOp> {
+  using OpRewritePattern<CopyOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(vx::LaneCopyAsyncOp op,
+  LogicalResult matchAndRewrite(CopyOp op,
                                 PatternRewriter &rewriter) const override {
-    expandLaneCopyOnHost(rewriter, op);
+    expandLaneCopyOnHost(rewriter, laneCopyOf(op));
     rewriter.eraseOp(op);
     return success();
   }
@@ -5975,6 +6383,13 @@ static std::string ptxFeatureFor(StringRef chip) {
   if (number >= 89)
     return "+ptx78";
   return "+ptx76";
+}
+
+static bool chipHasTensorMaps(StringRef chip) {
+  unsigned number = 0, version = 0;
+  chip.drop_front(3).take_while(llvm::isDigit).getAsInteger(10, number);
+  StringRef(ptxFeatureFor(chip)).drop_front(4).getAsInteger(10, version);
+  return number >= 90 && version >= 83;
 }
 
 /// libdevice.10.bc, if this machine has it.
@@ -6942,7 +7357,8 @@ struct ConvertVxToLLVMPass
     // not know the vx dialect (Vx#379).
     target.addIllegalOp<vx::BarrierOp>();
     target.addIllegalOp<vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp,
-                        vx::LaneCopyAsyncOp, vx::LaneCopyWaitOp>();
+                        vx::LaneCopyAsyncOp, vx::LaneCopyAsyncMapOp,
+                        vx::LaneCopyWaitOp>();
 
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
@@ -6956,7 +7372,9 @@ struct ConvertVxToLLVMPass
     patterns.add<BarrierOpLowering>(&getContext());
     patterns.add<LaneReductionLowering<vx::LaneReduceOp>,
                  LaneReductionLowering<vx::LaneArgmaxOp>, LaneSortLowering,
-                 LaneCopyAsyncLowering, LaneCopyWaitLowering>(&getContext());
+                 LaneCopyAsyncLowering<vx::LaneCopyAsyncOp>,
+                 LaneCopyAsyncLowering<vx::LaneCopyAsyncMapOp>,
+                 LaneCopyWaitLowering>(&getContext());
 
     adoptDeclaredRuntimeFns(getOperation());
     markArrivalCounts(getOperation());
