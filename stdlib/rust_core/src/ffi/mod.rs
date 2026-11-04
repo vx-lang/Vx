@@ -18,4 +18,5 @@ pub mod rt;
 pub mod sched;
 pub mod stack;
 pub mod tasks;
+pub(crate) mod tsan;
 pub mod wait;

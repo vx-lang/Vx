@@ -950,6 +950,51 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// `s == "hello"` as `c_str_equals(s, "hello", 6)`, and `!=` as its `!`. The bound is the
+    /// literal's length and its NUL. When both sides are literals, the call is in a `comptime`
+    /// block, so the comparison becomes `true` or `false` while compiling.
+    fn text_compare(expr: &Expr) -> Option<Expr> {
+        let Expr::RelationalOp(RelationalOpExpr {
+            lhs, op, rhs, span, ..
+        }) = expr
+        else {
+            return None;
+        };
+        let literal = match (&**lhs, &**rhs) {
+            (Expr::StringLiteral(l), _) | (_, Expr::StringLiteral(l)) => l,
+            _ => return None,
+        };
+        if !matches!(op, RelationalOp::Eq | RelationalOp::NotEq) {
+            return None;
+        }
+        let bound = Expr::Number(crate::syntax::NumberExpr::new(
+            (literal.value.as_ref().len() + 1).to_string(),
+            Some(ElementType::I64),
+            *span,
+        ));
+        let mut compare = Expr::FunctionCall(crate::syntax::FunctionCallExpr::new(
+            "c_str_equals".into(),
+            None,
+            vec![(**lhs).clone(), (**rhs).clone(), bound],
+            *span,
+        ));
+        if matches!(op, RelationalOp::NotEq) {
+            compare = Expr::UnaryOp(crate::syntax::UnaryOpExpr::new(
+                crate::syntax::UnaryOp::Not,
+                Box::new(compare),
+                *span,
+            ));
+        }
+        if matches!(**lhs, Expr::StringLiteral(_)) && matches!(**rhs, Expr::StringLiteral(_)) {
+            compare = Expr::ComptimeBlock(crate::syntax::ComptimeBlockExpr::new(
+                Vec::new(),
+                Some(Box::new(compare)),
+                *span,
+            ));
+        }
+        Some(compare)
+    }
+
     pub(crate) fn check_relationalop_expr(&mut self, expr: &mut Expr) -> Type {
         // A placement query compares at check time: `x.topology()` is a fact of `x`'s type,
         // and nothing at run time holds one. The comparison becomes its answer.
@@ -965,6 +1010,12 @@ impl<'a> TypeChecker<'a> {
                 ));
                 return Type::Scalar(ElementType::Bool);
             }
+        }
+        // `==` or `!=` with a string literal compares the text: it is a call of `core::c_str`'s
+        // `c_str_equals`, which the parser imports for such a program.
+        if let Some(call) = Self::text_compare(expr) {
+            *expr = call;
+            return self.check_expr_type_flag(expr, false);
         }
         // `a == b` on a struct or an enum is `a.eq(&b)`, through `PartialEq`, and `a < b` is
         // `a.lt(&b)`, through `Ord`.

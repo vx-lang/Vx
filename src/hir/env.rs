@@ -604,6 +604,14 @@ pub struct TypeChecker<'a> {
     pub(crate) cancel_loops: Vec<Option<Vec<String>>>,
     /// The function being checked is the `drop` of a `Drop` impl, for W1036.
     pub(crate) in_drop: bool,
+    /// The function being checked is the `wait_limit` of a `Drop` impl, for W1036.
+    pub(crate) in_wait_limit: bool,
+    /// The number of `within` blocks around the code being checked, in this function. A wait in
+    /// one has the block's time limit, so W1036 does not warn about it.
+    pub(crate) within_depth: usize,
+    /// The next call is the `vx::within_start` of a `within` block. A program cannot write that
+    /// call itself.
+    pub(crate) within_start_next: bool,
     /// The variables that closures in `let`s copied, for W1034.
     pub(crate) closure_copies: Vec<crate::hir::check::closure_copies::ClosureCopy>,
     /// The `let` being checked, when its value is a closure.
@@ -641,7 +649,8 @@ pub struct TypeChecker<'a> {
     pub(crate) changed_vars: std::collections::HashSet<String>,
     /// One frame for each call being checked: the variables that the call can change. Their
     /// prover facts end after the call, because its `requires` is proved before it runs.
-    pub(crate) fact_change_frames: Vec<Vec<String>>,
+    /// `true` marks a variable whose pointer value stays: only the memory behind it changes.
+    pub(crate) fact_change_frames: Vec<Vec<(String, bool)>>,
     /// The raw-pointer facts of the body being checked.
     pub(crate) pointer_facts: crate::hir::check::pointer_facts::PointerFacts,
     /// The last id given to a base or a fact. Never saved or restored, so that two branches
@@ -650,6 +659,10 @@ pub struct TypeChecker<'a> {
     /// The method name and the place of a method call that the check turns into a call of its
     /// function, for the note of E8006.
     pub(crate) method_call_written: Option<(crate::symbol::Symbol, crate::syntax::Span)>,
+    /// The raw-pointer facts at the `break`s of each loop that the checker is in.
+    pub(crate) pointer_loops: Vec<crate::hir::check::pointer_facts::LoopExit>,
+    /// The branches of `if` and the arms of `match` that the checker is in, for the note of E8006.
+    pub(crate) pointer_branches: Vec<String>,
     /// The `tasks` blocks and tasks around the code being checked.
     pub(crate) tasks: crate::hir::check::tasks::TaskCx,
     /// Expected type of the expression currently being checked, from a `let x: T = …` or a
@@ -713,6 +726,9 @@ impl<'a> TypeChecker<'a> {
             value_unused: false,
             cancel_loops: Vec::new(),
             in_drop: false,
+            in_wait_limit: false,
+            within_depth: 0,
+            within_start_next: false,
             closure_copies: Vec::new(),
             let_closure: None,
             checking_assign_lhs: false,
@@ -732,6 +748,8 @@ impl<'a> TypeChecker<'a> {
             pointer_facts: Default::default(),
             pointer_fact_ids: 0,
             method_call_written: None,
+            pointer_loops: Vec::new(),
+            pointer_branches: Vec::new(),
             tasks: Default::default(),
             expected_type: None,
             consteval: Default::default(),
@@ -1952,7 +1970,7 @@ impl<'a> TypeChecker<'a> {
         // changes that the caller's calls wait to apply.
         let prev_constraints = std::mem::take(&mut self.consteval.constraints);
         let prev_fact_change_frames = std::mem::take(&mut self.fact_change_frames);
-        let prev_pointer_facts = std::mem::take(&mut self.pointer_facts);
+        let prev_pointer_state = self.pointer_facts_enter_body();
         self.check_atomic_contract(func);
         // An atomic clause is for the race proof, not for the prover.
         let proved: Vec<Expr> = func
@@ -2021,6 +2039,9 @@ impl<'a> TypeChecker<'a> {
         let prev_cancel_loops = std::mem::take(&mut self.cancel_loops);
         let in_drop = self.is_drop_impl(func);
         let prev_in_drop = std::mem::replace(&mut self.in_drop, in_drop);
+        let in_wait_limit = self.is_wait_limit_impl(func);
+        let prev_in_wait_limit = std::mem::replace(&mut self.in_wait_limit, in_wait_limit);
+        let prev_within_depth = std::mem::replace(&mut self.within_depth, 0);
         let prev_borrowers = self.borrow.take_borrowers();
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
@@ -2199,7 +2220,7 @@ impl<'a> TypeChecker<'a> {
         self.current_function = prev_fn;
         self.consteval.constraints = prev_constraints;
         self.fact_change_frames = prev_fact_change_frames;
-        self.pointer_facts = prev_pointer_facts;
+        self.pointer_facts_leave_body(prev_pointer_state);
         self.active_topology = prev_top;
         self.set_active_memory(prev_mem);
         self.borrow.current_params = prev_params;
@@ -2213,6 +2234,8 @@ impl<'a> TypeChecker<'a> {
         self.closure_copies = prev_closure_copies;
         self.cancel_loops = prev_cancel_loops;
         self.in_drop = prev_in_drop;
+        self.in_wait_limit = prev_in_wait_limit;
+        self.within_depth = prev_within_depth;
         self.borrow.restore_borrowers(prev_borrowers);
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;

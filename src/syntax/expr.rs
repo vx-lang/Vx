@@ -519,6 +519,10 @@ pub struct UnsafeBlockExpr {
     /// The program wrote this block as the body of a closure, `|x| { .. }`. It is a plain block,
     /// so the code in it cannot do what needs `unsafe`.
     pub closure_body: bool,
+    /// The program wrote this block as `within(limit) { .. }` (F6a). It is a plain block whose
+    /// first statement is `vx::within_start(limit)`, so the code in it cannot do what needs
+    /// `unsafe`.
+    pub within: bool,
 }
 impl UnsafeBlockExpr {
     pub fn new(stmts: Vec<Statement>, ret: Option<Box<Expr>>, span: Span) -> Self {
@@ -532,6 +536,7 @@ impl UnsafeBlockExpr {
             cancels_on_err: None,
             value_ty: None,
             closure_body: false,
+            within: false,
         }
     }
 }
@@ -1277,6 +1282,29 @@ pub fn locals_with_address_taken(stmts: &[Statement]) -> std::collections::HashS
     names
 }
 
+/// Whether `stmts` compare with a string literal: `==` or `!=` with one, or a `match` arm with a
+/// string literal pattern. Such code calls `core::c_str`.
+pub fn compares_with_a_string_literal(stmts: &[Statement]) -> bool {
+    let mut found = false;
+    visit_exprs(stmts, &mut |e| match e {
+        Expr::RelationalOp(r)
+            if matches!(r.op, RelationalOp::Eq | RelationalOp::NotEq)
+                && (matches!(&*r.lhs, Expr::StringLiteral(_))
+                    || matches!(&*r.rhs, Expr::StringLiteral(_))) =>
+        {
+            found = true
+        }
+        Expr::Match(m) if m.arms.iter().any(|arm| is_string_pattern(&arm.pattern)) => found = true,
+        _ => {}
+    });
+    found
+}
+
+/// Whether `pattern` is a string literal, such as `"hello" => ..`.
+pub fn is_string_pattern(pattern: &Pattern) -> bool {
+    matches!(pattern, Pattern::Literal(lit) if matches!(&**lit, Expr::StringLiteral(_)))
+}
+
 /// Calls `f` on every expression in `stmts`, each one before the expressions inside it. The
 /// tokens of a macro that was not expanded are not expressions, and are not visited.
 pub fn visit_exprs(stmts: &[Statement], f: &mut dyn FnMut(&Expr)) {
@@ -1581,6 +1609,7 @@ impl Expr {
                 cancels_on_err: e.cancels_on_err.as_ref().map(|t| t.substitute(mapping)),
                 value_ty: e.value_ty.as_ref().map(|t| t.substitute(mapping)),
                 closure_body: e.closure_body,
+                within: e.within,
             }),
             Expr::StructInit(e) => {
                 let mut new_name = e.name.clone();

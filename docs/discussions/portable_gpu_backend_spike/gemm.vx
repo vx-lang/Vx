@@ -1,0 +1,43 @@
+// A tiled matrix product c = a * b of two n x n matrices (n a multiple of 256).
+// One block makes 256 elements of one row of c. For each step of 16 along k, the lanes copy
+// 16 elements of a and a 16 x 256 tile of b into the block's shared memory, wait at the end of
+// the lane loop, and then add the products from shared memory.
+pub fn gemm(c : &mut Tensor<f32, [?, ?], Memory::HBM>, a : &Tensor<f32, [?, ?], Memory::HBM>, b : &Tensor<f32, [?, ?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for row in 0..n across blocks {
+      for strip in 0..n / 256 across blocks {
+        let mut ta = unsafe { Tensor<f32, [16], Memory::SMEM>::uninit() };
+        let mut tb = unsafe { Tensor<f32, [4096], Memory::SMEM>::uninit() };
+        let mut acc = unsafe { Tensor<f32, [256], Memory::SMEM>::uninit() };
+        for t in 0..256 across lanes {
+          acc[t] = 0.0;
+        }
+        for kt in 0..n / 16 {
+          for t in 0..256 across lanes {
+            if t < 16 {
+              ta[t] = a[row][kt * 16 + t];
+            }
+            for r in 0..16 {
+              tb[r * 256 + t] = b[kt * 16 + r][strip * 256 + t];
+            }
+          }
+          for t in 0..256 across lanes {
+            let mut s = acc[t];
+            for k in 0..16 {
+              s = s + ta[k] * tb[k * 256 + t];
+            }
+            acc[t] = s;
+          }
+        }
+        for t in 0..256 across lanes {
+          c[row][strip * 256 + t] = acc[t];
+        }
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

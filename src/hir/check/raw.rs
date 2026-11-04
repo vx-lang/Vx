@@ -1455,7 +1455,7 @@ impl<'a> TypeChecker<'a> {
 
     pub(crate) fn note_a_change_to_variable(&mut self, root: String) {
         match self.fact_change_frames.last_mut() {
-            Some(frame) => frame.push(root),
+            Some(frame) => frame.push((root, false)),
             None => self.neutralize_facts_mentioning(&root),
         }
     }
@@ -1468,11 +1468,23 @@ impl<'a> TypeChecker<'a> {
         expr: &mut Expr,
         check: impl FnOnce(&mut Self, &mut Expr) -> Type,
     ) -> Type {
+        // The check of a method call checks the call of its function only to get its type. That
+        // check leaves the changes of the call to the check of the method call, which proves the
+        // `requires` of the method first.
+        let in_a_method_call = self.method_call_written.is_some();
         self.fact_change_frames.push(Vec::new());
         // The check can turn the call into another call, such as a method call into a call of
         // its function, so the raw-pointer facts read the call as the program wrote it.
         let written = self.written_call(expr);
         let ty = check(self, expr);
+        if in_a_method_call {
+            let changed = self.fact_change_frames.pop().unwrap_or_default();
+            self.fact_change_frames
+                .last_mut()
+                .expect("the method call is checked as a call too")
+                .extend(changed);
+            return ty;
+        }
         self.pointer_facts_at_call(expr, written);
         let args: &[Expr] = match &*expr {
             Expr::FunctionCall(fc) => &fc.args,
@@ -1480,16 +1492,27 @@ impl<'a> TypeChecker<'a> {
             Expr::IndirectCall(ic) => &ic.args,
             _ => &[],
         };
-        let written: Vec<String> = args
+        let written = args
             .iter()
             .filter(|arg| self.callee_can_write_through(arg))
-            .filter_map(|arg| Self::arg_reborrow_base(arg).map(|(root, _)| root))
-            .collect();
-        for name in self.fact_change_frames.pop().unwrap_or_default() {
-            self.neutralize_facts_mentioning(&name);
+            .filter_map(|arg| Self::arg_reborrow_base(arg).map(|(root, _)| (root, true)))
+            .collect::<Vec<_>>();
+        let mut changes = self.fact_change_frames.pop().unwrap_or_default();
+        changes.extend(written);
+        // A method call checks the call of its function speculatively, before it proves the
+        // `requires`. So in a speculative check the changes go to the outer call.
+        if self.speculating {
+            if let Some(outer) = self.fact_change_frames.last_mut() {
+                outer.extend(changes);
+                return ty;
+            }
         }
-        for root in written {
-            self.neutralize_facts_behind(&root);
+        for (name, behind) in changes {
+            if behind {
+                self.neutralize_facts_behind(&name);
+            } else {
+                self.neutralize_facts_mentioning(&name);
+            }
         }
         ty
     }

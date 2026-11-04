@@ -273,7 +273,7 @@ impl TypeChecker<'_> {
             self.pointer_facts_event(block_span, |_| {
                 "the `spawn`, whose task can free memory".to_string()
             });
-            std::mem::take(&mut self.pointer_facts)
+            self.pointer_facts_enter_body()
         });
         let mut ty = self.check_expr_block(stmts, ret.as_deref(), consume);
         if let Some(r) = ret {
@@ -290,7 +290,7 @@ impl TypeChecker<'_> {
             self.expected_type = outer;
         }
         if let Some(outer) = outer_pointers {
-            self.pointer_facts = outer;
+            self.pointer_facts_leave_body(outer);
         }
         ty
     }
@@ -322,6 +322,7 @@ impl TypeChecker<'_> {
             cancels_on_err,
             value_ty,
             closure_body: false,
+            within: false,
         });
     }
 

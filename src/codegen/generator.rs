@@ -342,8 +342,9 @@ pub(crate) enum WaitingDrop<'c> {
         flag: Option<crate::symbol::Symbol>,
         field: bool,
     },
-    /// The statement that runs a drop, and whether it calls a `Drop` impl's `drop`.
-    Call(Box<Statement>, bool),
+    /// The statements that run a drop: a `Drop` impl's `drop`, with cancellation off around
+    /// it, or a `match` on an enum whose arms hold more drops.
+    Call(Vec<Statement>),
     /// The `llvm.alloca` of a struct whose lifetime ends.
     LifetimeEnd(melior::ir::Value<'c, 'c>),
 }
@@ -1643,8 +1644,8 @@ impl<'c> MeliorGenerator<'c> {
             }
             return self.emit_waiting_drop(drop, block).map(Some);
         }
-        if let Some(stmt) = d.call_statement() {
-            let drop = WaitingDrop::Call(Box::new(stmt), d.call.is_some());
+        if let Some(stmts) = d.call_statements() {
+            let drop = WaitingDrop::Call(stmts);
             if d.after_value {
                 self.queued_drops.push(drop);
                 return Ok(Some(block));
@@ -1688,17 +1689,12 @@ impl<'c> MeliorGenerator<'c> {
                 self.emit_drop(buffer, flag, field, block)?;
                 Ok(block)
             }
-            // A `Drop` impl runs with cancellation off (F6), so a `send` or a wait in it can
-            // finish.
-            WaitingDrop::Call(stmt, calls_drop) => {
-                if calls_drop {
-                    crate::codegen::lower::call_runtime_void(self, block, "vx_cancel_off")?;
-                }
-                let block = self
-                    .generate_statement_inner(&stmt, block)?
-                    .ok_or_else(|| LowerError::from("a drop ended its block".to_string()))?;
-                if calls_drop {
-                    crate::codegen::lower::call_runtime_void(self, block, "vx_cancel_on")?;
+            WaitingDrop::Call(stmts) => {
+                let mut block = block;
+                for stmt in &stmts {
+                    block = self
+                        .generate_statement_inner(stmt, block)?
+                        .ok_or_else(|| LowerError::from("a drop ended its block".to_string()))?;
                 }
                 Ok(block)
             }
@@ -2617,6 +2613,11 @@ impl<'c> MeliorGenerator<'c> {
             // to a type the checker already computed -- and a redundant annotation then decides
             // which code is generated. The flat path's inference already sees through it.
             Expr::UnsafeBlock(u) => self.infer_ast_type(u.ret.as_deref()?),
+            // An `if` that gives a value has the type of its first branch's last expression.
+            Expr::If(i) => match i.then_block.last()? {
+                syntax::Statement::ExprStmt(e) if !e.has_semi => self.infer_ast_type(&e.expr),
+                _ => None,
+            },
             // A number has the type the checker gave it.
             Expr::Number(n) => n.ty.clone().map(syntax::Type::Scalar),
             // `let p = &mut x` binds a reference. Recording that is what tells a later read of

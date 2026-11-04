@@ -25,9 +25,12 @@
 //     The same view inside a slot must also copy all 12.
 //   * A 2x4 broadcast view, whose rows are the same 4 elements. The client
 //     must copy exactly those 4.
-//   * A 2x2 view with padded rows. The client must copy only the elements from
-//     the view's first element to its last, in both directions. The view ends
-//     at a page that cannot be read, so a longer copy crashes the test.
+//   * A 2x2 view with padded rows. The client must copy only the view's 4
+//     elements, in both directions. The view ends at a page that cannot be
+//     read, so a longer copy crashes the test.
+//   * One column of a matrix. The client must copy only the column's elements,
+//     and not the elements between them. A column of a 4097x4097 matrix with
+//     those elements does not fit in the client's 64 MiB staging buffer.
 //   * Two views that share memory: one buffer passed twice, and the even and
 //     the odd columns of one tensor. The kernel doubles the first view. The
 //     copy back of the second view must not undo that.
@@ -61,6 +64,7 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
 
 namespace {
 
@@ -639,10 +643,43 @@ void test_a_view_whose_span_overflows_stops_the_program() {
         "a view of more than 2^64 bytes stops the program");
 }
 
+// One column of an n x n matrix, as an n x 1 view. Element [r][c] is r + c.
+void check_a_column(int fd, int64_t n) {
+  std::vector<float> data((size_t)(n * n));
+  for (int64_t r = 0; r < n; ++r) {
+    for (int64_t c = 0; c < n; ++c) {
+      data[(size_t)(r * n + c)] = (float)(r + c);
+    }
+  }
+  char what[96];
+  snprintf(what, sizeof(what),
+           "the dispatch of a column of a %lldx%lld matrix "
+           "succeeds",
+           (long long)n, (long long)n);
+  check(dispatch_view(fd, data.data(), 2, n, 1, n) == 1, what);
+  bool right = true;
+  for (int64_t r = 0; r < n; ++r) {
+    for (int64_t c = 0; c < 4; ++c) {
+      float want = (float)(r + c) * (c == 2 ? 2 : 1);
+      right &= data[(size_t)(r * n + c)] == want;
+    }
+  }
+  snprintf(what, sizeof(what),
+           "a %lldx%lld matrix: column 2 doubled, and "
+           "columns 0, 1 and 3 did not change",
+           (long long)n, (long long)n);
+  check(right, what);
+}
+
+void test_a_column_copies_only_its_elements(int fd) {
+  check_a_column(fd, 64);
+  check_a_column(fd, 4097);
+}
+
 void test_a_padded_view_copies_only_what_it_reaches(int fd) {
   // Seven elements that end where an unreadable page starts. The view starts
   // at element 1, has two rows of two, and its rows are 4 elements apart. It
-  // reaches elements 1, 2, 5 and 6, so the copy is elements 1 to 6.
+  // reaches elements 1, 2, 5 and 6, and the copy holds only those.
   long page = sysconf(_SC_PAGESIZE);
   char *pages = (char *)mmap(nullptr, 2 * page, PROT_READ | PROT_WRITE,
                              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -697,6 +734,7 @@ int main() {
   test_a_view_outside_the_address_space_stops_the_program();
   test_a_broken_view_stops_the_program();
   test_a_view_whose_span_overflows_stops_the_program();
+  test_a_column_copies_only_its_elements(sv[0]);
   // Last, because the code before the fix crashes on it.
   test_a_padded_view_copies_only_what_it_reaches(sv[0]);
 

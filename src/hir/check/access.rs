@@ -655,7 +655,10 @@ impl<'a> TypeChecker<'a> {
 
                                     let old_allow = self.allow_cross_topology;
                                     self.allow_cross_topology = true;
-                                    let ret_ty = self.check_methodcall_expr(expr, consume);
+                                    let ret_ty = self
+                                        .check_a_call_that_can_change_facts(expr, |c, e| {
+                                            c.check_methodcall_expr(e, consume)
+                                        });
                                     self.allow_cross_topology = old_allow;
                                     return ret_ty;
                                 } else {

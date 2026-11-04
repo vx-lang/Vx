@@ -90,8 +90,9 @@ At a call in safe code, the compiler proves each clause from what it knows there
 of the caller, a pointer made from `&x` for a local variable `x`, and the pointer functions
 `offset`, `add` and `sub`. For now a call that gets a raw pointer can free memory, so after it
 the compiler knows nothing about memory that the caller does not own. When such code ended a
-fact that the call needs, the error has a note with its line. A call in `unsafe` code
-needs no proof: its author keeps the promise. A safe function with a pointer clause cannot be a
+fact that the call needs, the error has a note with its line. In a loop, such code anywhere in
+the body ends the facts at the start of the body, because an earlier pass can run it. A call in
+`unsafe` code needs no proof: its author keeps the promise. A safe function with a pointer clause cannot be a
 function value yet, because a call through the value would not prove the clause.
 
 In an `unsafe fn`, for `valid(p, n)` the compiler tells LLVM that `p` is not null and aligned,

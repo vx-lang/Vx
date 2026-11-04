@@ -3722,6 +3722,37 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(name) {
             return lower_lane_reduce(gen, block, op, ordered, args);
         }
+        // The start and the end of a `within` block (F6a).
+        if name.as_ref() == crate::syntax::stmt::WITHIN_START {
+            let (limit, _, block) = gen.generate_expr(&args[0], block)?;
+            crate::codegen::lower::call_runtime_void_with(
+                gen,
+                block,
+                "vx_within_start",
+                &[(limit, "f64")],
+            )?;
+            return cancel_call_value(gen, block);
+        }
+        if name.as_ref() == crate::syntax::stmt::WITHIN_END {
+            crate::codegen::lower::call_runtime_void(gen, block, "vx_within_end")?;
+            return cancel_call_value(gen, block);
+        }
+        // Around the call of a `Drop` impl's `drop` (F6, F6a), with the time limit of the
+        // drop in seconds.
+        if name.as_ref() == crate::syntax::stmt::CANCEL_OFF {
+            let (limit, _, block) = gen.generate_expr(&args[0], block)?;
+            crate::codegen::lower::call_runtime_void_with(
+                gen,
+                block,
+                "vx_cancel_off",
+                &[(limit, "f64")],
+            )?;
+            return cancel_call_value(gen, block);
+        }
+        if name.as_ref() == crate::syntax::stmt::CANCEL_ON {
+            crate::codegen::lower::call_runtime_void(gen, block, "vx_cancel_on")?;
+            return cancel_call_value(gen, block);
+        }
         // `tensor_view_2d(ptr, rows, cols)` -- a rank-2 tensor over memory it
         // does not own, with no copy (#336).
         //
@@ -6449,6 +6480,29 @@ fn lower_lane_copy<'c>(
         .add_results(&[gen.i32_ty])
         .build()?;
     let v = block.append_operation(copy).result(0)?.into();
+    Ok((v, gen.i32_ty, block))
+}
+
+/// The value of `vx::cancel_off(..)` and `vx::cancel_on()`, which nothing reads: the constant 0.
+fn cancel_call_value<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+) -> Result<
+    (
+        Value<'c, 'c>,
+        melior::ir::Type<'c>,
+        melior::ir::BlockRef<'c, 'c>,
+    ),
+    LowerError,
+> {
+    let zero = OperationBuilder::new("arith.constant", gen.loc())
+        .add_attributes(&[(
+            Identifier::new(gen.context, "value"),
+            IntegerAttribute::new(gen.i32_ty, 0).into(),
+        )])
+        .add_results(&[gen.i32_ty])
+        .build()?;
+    let v = block.append_operation(zero).result(0)?.into();
     Ok((v, gen.i32_ty, block))
 }
 

@@ -1,0 +1,50 @@
+// A separable 9-tap box blur of one f32 image plane, as two GPU passes.
+// One block of lanes handles one row (or one column); the lanes step over the pixels.
+
+pub fn blur_rows(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> void {
+  spawn on(Topology::Device) {
+    for y in 0..h across blocks {
+      for x in 0..w across lanes(256) {
+        let mut acc : f32 = 0.0;
+        for d in 0..9 {
+          let mut xx = x + d - 4;
+          if xx < 0 {
+            xx = 0;
+          }
+          if xx > w - 1 {
+            xx = w - 1;
+          }
+          acc = acc + src[y][xx];
+        }
+        dst[y][x] = acc / 9.0;
+      }
+    }
+  }
+  return;
+}
+
+pub fn blur_cols(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> void {
+  spawn on(Topology::Device) {
+    for x in 0..w across blocks {
+      for y in 0..h across lanes(256) {
+        let mut acc : f32 = 0.0;
+        for d in 0..9 {
+          let mut yy = y + d - 4;
+          if yy < 0 {
+            yy = 0;
+          }
+          if yy > h - 1 {
+            yy = h - 1;
+          }
+          acc = acc + src[yy][x];
+        }
+        dst[y][x] = acc / 9.0;
+      }
+    }
+  }
+  return;
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -31,7 +31,7 @@ enum ComptimeFold {
 }
 
 /// The names that `pattern` binds, in order.
-fn pattern_names(pattern: &Pattern, out: &mut Vec<crate::symbol::Symbol>) {
+pub(crate) fn pattern_names(pattern: &Pattern, out: &mut Vec<crate::symbol::Symbol>) {
     match pattern {
         Pattern::Identifier(n) => out.push(n.clone()),
         Pattern::EnumVariant(_, _, Some(parts)) => {
@@ -602,6 +602,9 @@ impl<'a> TypeChecker<'a> {
         // Each branch starts from the values known before the `if`, and the paths join after it.
         let taken = taken.or_else(|| self.known_condition(&if_expr.cond));
         let values_before = self.consteval.env.clone();
+        let (then_name, else_name) = Self::pointer_branch_names(if_expr).unzip();
+        let named = then_name.is_some();
+        self.pointer_branches.extend(then_name);
         self.push_releasing_scope();
         let mut then_ty = Type::Struct("void".into(), None);
         if !self.speculating && !if_expr.then_block.is_empty() {
@@ -609,6 +612,9 @@ impl<'a> TypeChecker<'a> {
             then_ty = self.check_expr_block(&mut if_expr.then_block, None, consume);
         }
         self.pop_scope();
+        if named {
+            self.pointer_branches.pop();
+        }
         let then_facts = self.consteval.constraints.split_off(facts_before);
         let pointers_then = std::mem::replace(&mut self.pointer_facts, pointers_before);
         if let Some(c) = &cond_fact {
@@ -625,12 +631,16 @@ impl<'a> TypeChecker<'a> {
         let mut else_ty = Type::Struct("void".into(), None);
         if let Some(else_b) = if_expr.else_block.as_mut() {
             if !else_b.is_empty() {
+                self.pointer_branches.extend(else_name);
                 self.push_releasing_scope();
                 if !self.speculating {
                     self.value_unused = unused;
                     else_ty = self.check_expr_block(else_b, None, consume);
                 }
                 self.pop_scope();
+                if named {
+                    self.pointer_branches.pop();
+                }
                 marks_after_else = self.branch_end(else_b);
 
                 // A branch that never finishes, `todo()`, has no value: the other branch decides.
@@ -736,15 +746,21 @@ impl<'a> TypeChecker<'a> {
                 span,
                 generated,
                 closure_body,
+                within,
                 ..
             }) => {
                 let block_span = *span;
                 let closure_body = *closure_body;
-                // The block body of a closure is a plain block: it allows nothing more than the
-                // code around the closure.
+                let within = *within;
+                // The block body of a closure, and a `within` block, are plain blocks: they
+                // allow nothing more than the code around them.
                 let written = !*generated && !closure_body;
                 let prev_unsafe = self.in_unsafe_block;
-                self.in_unsafe_block = prev_unsafe || !closure_body;
+                self.in_unsafe_block = prev_unsafe || !(closure_body || within);
+                if within {
+                    self.within_depth += 1;
+                    self.within_start_next = true;
+                }
                 // A block the compiler made is transparent here: what it holds counts for the
                 // written block around it.
                 let prev_written = self.in_written_unsafe_block;
@@ -831,6 +847,9 @@ impl<'a> TypeChecker<'a> {
                     self.in_written_unsafe_block = prev_written;
                 }
                 self.in_unsafe_block = prev_unsafe;
+                if within {
+                    self.within_depth -= 1;
+                }
                 ret_ty
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
@@ -1111,7 +1130,103 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// A `match` with string literal arms as a chain of `if`s, since each arm compares the
+    /// text with `==`. `match s { "a" => A, _ => B }` is `if s == "a" { A } else { B }`. A subject
+    /// that is not a variable is bound to one first, by a match arm that only binds it, so it
+    /// runs once. `None` for any other `match`.
+    fn string_match_as_ifs(expr: &Expr) -> Option<Expr> {
+        let Expr::Match(MatchExpr {
+            expr: subject,
+            arms,
+            span,
+        }) = expr
+        else {
+            return None;
+        };
+        let span = *span;
+        if !arms
+            .iter()
+            .any(|arm| crate::syntax::is_string_pattern(&arm.pattern))
+            || !arms.iter().all(|arm| {
+                crate::syntax::is_string_pattern(&arm.pattern)
+                    || matches!(arm.pattern, Pattern::Wildcard | Pattern::Identifier(_))
+            })
+        {
+            return None;
+        }
+        // A first arm of `_` or a name is the only arm that can run.
+        if !crate::syntax::is_string_pattern(&arms[0].pattern) {
+            return Some(Expr::Match(MatchExpr::new(
+                subject.clone(),
+                vec![arms[0].clone()],
+                span,
+            )));
+        }
+        let name: crate::symbol::Symbol = match &**subject {
+            Expr::Identifier(id) => id.name.clone(),
+            _ => "match_subject".into(),
+        };
+        let value = || Expr::Identifier(IdentifierExpr::new(name.clone(), span));
+        // From the last arm to the first: each arm is an `if` whose `else` is the arms after it.
+        let mut rest: Option<Vec<Statement>> = None;
+        for arm in arms.iter().rev() {
+            rest = Some(match &arm.pattern {
+                Pattern::Wildcard => arm.body.clone(),
+                Pattern::Identifier(bound) => {
+                    let mut body = vec![Statement::LetDecl(crate::syntax::LetDeclStmt::new(
+                        bound.to_string(),
+                        false,
+                        None,
+                        value(),
+                        span,
+                    ))];
+                    body.extend(arm.body.iter().cloned());
+                    body
+                }
+                Pattern::Literal(text) => {
+                    let cond = Expr::RelationalOp(crate::syntax::RelationalOpExpr::new(
+                        Box::new(value()),
+                        crate::syntax::RelationalOp::Eq,
+                        text.clone(),
+                        span,
+                    ));
+                    let chain = IfExpr::new(false, Box::new(cond), arm.body.clone(), rest, span);
+                    vec![Statement::ExprStmt(crate::syntax::ExprStmtStmt::new(
+                        Expr::If(chain),
+                        false,
+                        span,
+                    ))]
+                }
+                Pattern::EnumVariant(..) => unreachable!("only string, `_` and name arms"),
+            });
+        }
+        // The first arm is a string literal, so `rest` is one `if`.
+        let first = match rest?.pop()? {
+            Statement::ExprStmt(e) => e.expr,
+            _ => return None,
+        };
+        if matches!(&**subject, Expr::Identifier(_)) {
+            return Some(first);
+        }
+        let arm = crate::syntax::MatchArm {
+            pattern: Pattern::Identifier(name),
+            body: vec![Statement::ExprStmt(crate::syntax::ExprStmtStmt::new(
+                first, false, span,
+            ))],
+            span: Span::default(),
+        };
+        Some(Expr::Match(MatchExpr::new(
+            subject.clone(),
+            vec![arm],
+            span,
+        )))
+    }
+
     pub(crate) fn check_match_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
+        if let Some(chain) = Self::string_match_as_ifs(expr) {
+            *expr = chain;
+            return self.check_expr_type_flag(expr, consume);
+        }
         let unused = std::mem::replace(&mut self.value_unused, false);
         match expr {
             Expr::Match(MatchExpr {
@@ -1193,6 +1308,8 @@ impl<'a> TypeChecker<'a> {
                     }
                     self.refuse_payload_subpattern(&arm.pattern, &arm.span);
                     self.check_variant_pattern(&arm.pattern, &expr_ty, &arm.span);
+                    self.pointer_branches
+                        .push(Self::pointer_arm_name(&arm.pattern));
                     self.push_scope();
                     self.check_literal_pattern_range(&arm.pattern, &expr_ty);
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);
@@ -1223,6 +1340,7 @@ impl<'a> TypeChecker<'a> {
                         Type::Struct("void".into(), None)
                     };
                     self.pop_scope();
+                    self.pointer_branches.pop();
                     every_arm_ends &= self.branch_ends_early(&arm.body);
                     if !self.branch_ends_early(&arm.body) {
                         values_after_arms.push(self.consteval.env.clone());
@@ -1426,9 +1544,9 @@ impl<'a> TypeChecker<'a> {
                 self.traffic.closure_depth += 1;
                 self.consteval.comptime_return_is_value = matches!(*b, Expr::ComptimeBlock(_));
                 // The body runs when a call runs it, so it starts with no fact of its parent.
-                let outer_pointers = std::mem::take(&mut self.pointer_facts);
+                let outer_pointers = self.pointer_facts_enter_body();
                 let expr_ret_ty = self.check_expr_type(&mut b);
-                self.pointer_facts = outer_pointers;
+                self.pointer_facts_leave_body(outer_pointers);
                 self.consteval.comptime_return_is_value = false;
                 self.traffic.closure_depth -= 1;
                 self.drops_exit_function();
