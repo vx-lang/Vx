@@ -69,6 +69,32 @@ impl FnEmit<'_> {
             }
             self.names[idx] = n;
             self.etypes[idx] = Some(e);
+        } else if let (Some(Some(va)), Some(Some(vb))) = (
+            self.vec_of.get(ins.operand1.0 as usize),
+            self.vec_of.get(ins.operand2.0 as usize),
+        ) {
+            // `a + b` on two `<N x T>` values: the same op on each lane.
+            if va != vb {
+                return Err(crate::emitter_gap!());
+            }
+            let vecty = va.clone();
+            let float = vecty.contains("xf") || vecty.contains("xbf");
+            let op = match (ins.opcode, float) {
+                (Opcode::Add, true) => "arith.addf",
+                (Opcode::Sub, true) => "arith.subf",
+                (Opcode::Mul, true) => "arith.mulf",
+                (Opcode::Div, true) => "arith.divf",
+                (Opcode::Add, false) => "arith.addi",
+                (Opcode::Sub, false) => "arith.subi",
+                (Opcode::Mul, false) => "arith.muli",
+                _ => return Err(crate::emitter_gap!()),
+            };
+            let a = &self.names[ins.operand1.0 as usize];
+            let b = &self.names[ins.operand2.0 as usize];
+            let n = format!("%v{idx}");
+            self.body += &format!("  {n} = {op} {a}, {b} : {vecty}\n");
+            self.names[idx] = n;
+            self.vec_of[idx] = Some(vecty);
         } else {
             let (elem, shape) = self
                 .ctx
@@ -301,18 +327,18 @@ impl FnEmit<'_> {
     // Scalar comparison → `i1`; the relation is in `imm`, the operand type comes from the
     // first operand's tracked type (this instruction's own type is `bool`, the result).
     pub(crate) fn op_cmp(&mut self, idx: usize, ins: &HirInstruction) -> Lowered<()> {
-        // `a == b` or `a != b` on two raw pointers compares their addresses.
+        // A comparison of two raw pointers compares their addresses, as unsigned numbers.
         if self.is_pointer_value(ins.operand1.0 as usize)?
             && self.is_pointer_value(ins.operand2.0 as usize)?
         {
             let pred = match ins.imm {
                 0 => "eq",
                 1 => "ne",
-                _ => {
-                    return Err(Decline::TypeNotModelled {
-                        what: "an ordering comparison of two pointers",
-                    })
-                }
+                2 => "ult",
+                3 => "ugt",
+                4 => "ule",
+                5 => "uge",
+                _ => return Err(crate::emitter_gap!()),
             };
             let a = self
                 .names
