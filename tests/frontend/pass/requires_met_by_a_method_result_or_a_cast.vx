@@ -1,0 +1,129 @@
+//===- requires_met_by_a_method_result_or_a_cast.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The `ensures` of a method gives the prover its result, through a receiver of any kind and on a
+// generic type. A cast tells the prover the value of its operand when no value can change in it,
+// as in `i32 as i64`, `u32 as i64` and `usize as i64`. A `&mut c` argument stands for `c` in the
+// `requires` of the call.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E8006
+// CHECK: func.func @main
+
+struct C {
+  n : i64,
+  small : i32,
+}
+
+impl C {
+  fn get(self : &C) -> i64
+  ensures return == self.n
+  {
+    return self.n;
+  }
+
+  fn get32(self : &C) -> i32
+  ensures return == self.small
+  {
+    return self.small;
+  }
+}
+
+struct Holder<T> {
+  value : T,
+  n : i64,
+}
+
+impl<T> Holder<T> {
+  fn count(self : &Holder<T>) -> i64
+  ensures return == self.n
+  {
+    return self.n;
+  }
+}
+
+fn need(x : i64, y : i64) -> i64
+requires x == y
+{
+  return x;
+}
+
+fn need_below_5(x : i64) -> i64
+requires x < 5i64
+{
+  return x;
+}
+
+// The contract has untyped literals, so the cast gives `x + 1` its width.
+fn need_one_more_below_6(x : i64) -> i64
+requires x + 1 < 6
+{
+  return x;
+}
+
+fn bump_below_5(c : &mut C) -> void
+requires c.n < 5i64
+{
+  c.n = c.n + 10i64;
+}
+
+fn through_a_reference(c : &C) -> i64 {
+  return need(c.get(), c.n);
+}
+
+fn through_a_value(c : C) -> i64 {
+  return need(c.get(), c.n);
+}
+
+fn on_a_generic_type(h : &Holder<i32>) -> i64 {
+  return need(h.count(), h.n);
+}
+
+fn from_i32(k : i32) -> i64
+requires k < 5
+{
+  return need_below_5(k as i64);
+}
+
+fn from_u32(k : u32) -> i64
+requires k < 5u32
+{
+  return need_below_5(k as i64);
+}
+
+fn from_usize(k : usize) -> i64
+requires k < 5
+{
+  return need_below_5(k as i64);
+}
+
+fn a_cast_in_arithmetic(k : i32) -> i64
+requires k < 5
+{
+  return need_one_more_below_6(k as i64);
+}
+
+// A length that a method gives as an `i32`, used as an `i64`.
+fn a_method_result_cast_to_i64(c : &C) -> i64
+requires c.small < 5
+{
+  return need_below_5(c.get32() as i64);
+}
+
+fn a_borrowed_argument_with_a_fact() -> i64 {
+  let mut c = C {
+    n : 0i64, small : 0
+  };
+  if c.n < 5i64 {
+    bump_below_5(&mut c);
+  }
+  return c.n;
+}
+
+fn main() -> i32 {
+  return 0;
+}

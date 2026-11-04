@@ -239,6 +239,10 @@ impl SmtProver {
                 self.declarations.insert(name.clone());
                 Ok(name)
             }
+            // A cast that keeps every value of its operand is the operand.
+            Expr::AsCast(c) if keeps_every_value(c) => {
+                self.lower_expr(&c.expr, type_of, cast_int_types(c).map(|(from, _)| from))
+            }
             _ => Err(format!("a `{}` expression", kind_name(expr))),
         }
     }
@@ -255,7 +259,44 @@ fn int_type(e: &Expr, type_of: IntTypeOf) -> Option<ElementType> {
             .or_else(|| int_type(&b.lhs, type_of))
             .or_else(|| int_type(&b.rhs, type_of)),
         Expr::UnaryOp(u) => int_type(&u.expr, type_of),
+        Expr::AsCast(c) => cast_int_types(c).map(|(_, to)| to),
         _ => None,
+    }
+}
+
+/// The integer types that the cast `c` converts between, after the checker typed it.
+fn cast_int_types(c: &AsCastExpr) -> Option<(ElementType, ElementType)> {
+    let int = |ty: &Type| match ty {
+        Type::Scalar(e) if e.int_bits().is_some() && *e != ElementType::Bool => Some(e.clone()),
+        _ => None,
+    };
+    Some((int(c.source_ty.as_ref()?)?, int(&c.target_ty)?))
+}
+
+/// Whether each value of the operand of `c` fits in the target type, as in `i32 as i64` or
+/// `u32 as i64`. Then the cast changes no value. A `usize` holds 0 to `i64::MAX`.
+fn keeps_every_value(c: &AsCastExpr) -> bool {
+    let Some((from, to)) = cast_int_types(c) else {
+        return false;
+    };
+    let width = |e: &ElementType| match e {
+        ElementType::USize => (63, false),
+        e => (e.int_bits().unwrap_or(0), e.is_signed_int()),
+    };
+    let ((from_bits, from_signed), (to_bits, to_signed)) = (width(&from), width(&to));
+    match (from_signed, to_signed) {
+        (true, false) => false,
+        (false, true) => to_bits > from_bits,
+        _ => to_bits >= from_bits,
+    }
+}
+
+/// `e` without the `&` or `&mut` before a place. At a call, the field `self.n` of a `&c`
+/// argument is the field `c.n`.
+pub fn without_borrow(e: &Expr) -> &Expr {
+    match e {
+        Expr::Borrow(b) => without_borrow(&b.expr),
+        _ => e,
     }
 }
 
@@ -306,12 +347,13 @@ fn wrap(exact: String, ty: Option<ElementType>) -> Result<String, String> {
 }
 
 /// Whether the prover can model `e`: names, numbers, `+`, `-`, `*`, comparisons, `&&`, `||`, `!`,
-/// negation, field and element reads of those, and calls with such arguments, whose results are
-/// known through the callee's `ensures`.
+/// negation, field and element reads of those, casts that keep every value, and calls with such
+/// arguments, or references to them, whose results are known through the callee's `ensures`.
 pub fn is_modelled(e: &Expr) -> bool {
     match e {
         Expr::Number(_) | Expr::Identifier(_) => true,
-        Expr::FunctionCall(c) => c.args.iter().all(is_modelled),
+        Expr::FunctionCall(c) => c.args.iter().all(|a| is_modelled(without_borrow(a))),
+        Expr::AsCast(c) => keeps_every_value(c) && is_modelled(&c.expr),
         Expr::BinaryOp(b) => {
             matches!(b.op, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul)
                 && is_modelled(&b.lhs)
@@ -413,6 +455,7 @@ pub fn to_source(e: &Expr) -> Option<String> {
         },
         Expr::MemberAccess(m) => format!("{}.{}", to_source(&m.base)?, m.member),
         Expr::IndexAccess(i) => format!("{}[{}]", to_source(&i.base)?, to_source(&i.index)?),
+        Expr::AsCast(c) => format!("{} as {}", to_source(&c.expr)?, c.target_ty),
         _ => return None,
     })
 }
