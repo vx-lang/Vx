@@ -1471,13 +1471,11 @@ impl<'c> MeliorGenerator<'c> {
                         .add_operands(&[c0])
                         .build()?,
                 );
-            } else if let syntax::Type::Struct(name, _) = &func.return_type {
-                if syntax::is_void_ty(&func.return_type) && name.as_ref() != "none" {
-                    current_block.append_operation(
-                        melior::ir::operation::OperationBuilder::new("func.return", self.loc())
-                            .build()?,
-                    );
-                }
+            } else if syntax::is_void_ty(&func.return_type) {
+                current_block.append_operation(
+                    melior::ir::operation::OperationBuilder::new("func.return", self.loc())
+                        .build()?,
+                );
             }
         }
 
@@ -2357,7 +2355,7 @@ impl<'c> MeliorGenerator<'c> {
                         field_types.push(self.field_type_str(ty)?);
                     }
                     format!("!llvm.struct<\"{}\", ({})>", name, field_types.join(","))
-                } else if name.as_ref() == "void" || name.as_ref() == "!" {
+                } else if syntax::is_void_ty(ty) {
                     "none".to_string()
                 } else if name.contains('<') {
                     // A generic instance that was flattened to a bracketed nominal
