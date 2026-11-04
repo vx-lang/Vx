@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds the LLVM that Vx uses, from source, into toolchain/ in this checkout: LLVM, MLIR, clang
-# (vxc runs it to link programs), FileCheck for the tests, and Enzyme built against that LLVM.
+# (vxc runs it to link programs), the ThreadSanitizer runtime of compiler-rt (`vxc
+# --sanitize=thread` links it), FileCheck for the tests, and Enzyme built against that LLVM.
 # Run it from the repository root, then run ./setup.sh, which points config.local at the result.
 #
 #   toolchain/src/llvm-project   a shallow clone of the pinned commit, with only the parts we build
@@ -64,7 +65,7 @@ fetch() {
 
 echo "Fetching LLVM $LLVM_TAG..."
 fetch "$SRC/llvm-project" https://github.com/llvm/llvm-project.git "$LLVM_COMMIT" \
-    llvm mlir clang cmake third-party
+    llvm mlir clang compiler-rt runtimes cmake third-party
 
 echo "Fetching Enzyme $ENZYME_TAG..."
 fetch "$SRC/enzyme" https://github.com/EnzymeAD/Enzyme.git "$ENZYME_COMMIT"
@@ -77,12 +78,26 @@ esac
 
 # Only what Vx runs is built: no tests, examples or benchmarks, code generation for the host and
 # for NVIDIA GPUs, and no optional system libraries that a user's machine would then need too.
+# Of compiler-rt, only the ThreadSanitizer runtime is built.
 echo "Building LLVM, MLIR and clang with $JOBS jobs (log: $BUILD/llvm.log)..."
 mkdir -p "$BUILD/llvm"
 cmake -S "$SRC/llvm-project/llvm" -B "$BUILD/llvm" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$INSTALL" \
     -DLLVM_ENABLE_PROJECTS="mlir;clang" \
+    -DLLVM_ENABLE_RUNTIMES="compiler-rt" \
+    -DCOMPILER_RT_BUILD_SANITIZERS=ON \
+    -DCOMPILER_RT_SANITIZERS_TO_BUILD="tsan" \
+    -DCOMPILER_RT_BUILD_BUILTINS=OFF \
+    -DCOMPILER_RT_BUILD_CRT=OFF \
+    -DCOMPILER_RT_BUILD_LIBFUZZER=OFF \
+    -DCOMPILER_RT_BUILD_MEMPROF=OFF \
+    -DCOMPILER_RT_BUILD_PROFILE=OFF \
+    -DCOMPILER_RT_BUILD_CTX_PROFILE=OFF \
+    -DCOMPILER_RT_BUILD_XRAY=OFF \
+    -DCOMPILER_RT_BUILD_ORC=OFF \
+    -DCOMPILER_RT_BUILD_GWP_ASAN=OFF \
+    -DCOMPILER_RT_INCLUDE_TESTS=OFF \
     -DLLVM_TARGETS_TO_BUILD="$HOST_TARGET;NVPTX" \
     -DLLVM_INCLUDE_TESTS=OFF \
     -DLLVM_INCLUDE_EXAMPLES=OFF \
