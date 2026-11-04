@@ -522,7 +522,8 @@ std::optional<std::string> spirvRefusalOf(Operation *op) {
 }
 
 LogicalResult flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule,
-                                     std::string &error) {
+                                     std::string &error,
+                                     std::string &failedKernel) {
   SmallVector<gpu::GPUFuncOp> kernels;
   gpuModule.walk([&](gpu::GPUFuncOp f) { kernels.push_back(f); });
   if (kernels.empty()) {
@@ -530,8 +531,10 @@ LogicalResult flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule,
     return failure();
   }
   for (gpu::GPUFuncOp kernel : kernels)
-    if (failed(flattenKernel(kernel, error)))
+    if (failed(flattenKernel(kernel, error))) {
+      failedKernel = kernel.getName().str();
       return failure();
+    }
 
   // Nothing left anywhere in the module may mention a memref, including in a
   // function the kernel calls and in a global a kernel reads: a memref that
@@ -547,6 +550,8 @@ LogicalResult flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule,
     }
     if (mentionsMemref(op)) {
       error = memrefRefusal(op);
+      if (auto kernel = op->getParentOfType<gpu::GPUFuncOp>())
+        failedKernel = kernel.getName().str();
       return WalkResult::interrupt();
     }
     return WalkResult::advance();
@@ -579,8 +584,8 @@ struct FlattenSpirvKernelArgsPass
   }
 
   void runOnOperation() override {
-    std::string error;
-    if (succeeded(flattenSpirvKernelArgs(getOperation(), error)))
+    std::string error, failedKernel;
+    if (succeeded(flattenSpirvKernelArgs(getOperation(), error, failedKernel)))
       return;
     getOperation().emitError() << error;
     signalPassFailure();

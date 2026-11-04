@@ -11,7 +11,7 @@
 // warning is needed.
 //
 // RUN: vxc %s --action emit-llvm 2>&1 | FileCheck %s
-// CHECK: kernel `{{[a-z0-9_]+}}` cannot become a `spirv64` device image: it passes a tensor to `add_one`
+// CHECK: the region placed on `Topology::Dev` in `main` (kernel `{{[a-z0-9_]+}}`) cannot become a `spirv64` device image: it passes a tensor to `add_one`
 // CHECK: It will run on the host instead.
 // EXPECT: [1,  1,  1,  1]
 

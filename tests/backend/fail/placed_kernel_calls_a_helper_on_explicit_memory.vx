@@ -11,8 +11,8 @@
 //
 // RUN: not vxc %s --action emit-llvm 2>&1 | FileCheck %s
 // CHECK: cannot become a `spirv64` device image: it passes a tensor to `first`
-// CHECK: Its operands are in 'GPU_HBM', declared `managed: explicit`
-// CHECK: Either the kernel must be one the target can compile
+// CHECK: This region's operands are in 'GPU_HBM', declared `managed: explicit`
+// CHECK: Either every region in the image must be one the target can compile
 // CHECK-NOT: will run on the host instead
 
 Memory CPU_DRAM {}

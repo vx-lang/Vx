@@ -41,8 +41,13 @@ std::optional<std::string> spirvRefusalOf(Operation *op);
 /// kernel holds something the rewrite cannot express. It never leaves a kernel
 /// half-rewritten: a mistranslated kernel is a wrong answer on a machine the
 /// compiler is not running on.
+///
+/// `failedKernel` gets the name of the kernel that holds the construct. It
+/// stays empty when the construct is outside every kernel, for example in a
+/// global or in a function that a kernel calls.
 LogicalResult flattenSpirvKernelArgs(gpu::GPUModuleOp gpuModule,
-                                     std::string &error);
+                                     std::string &error,
+                                     std::string &failedKernel);
 
 /// The flattening as a pass, for `vx-opt`, which is where the address
 /// arithmetic it builds can be read without a GPU.
