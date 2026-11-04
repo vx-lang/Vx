@@ -618,12 +618,9 @@ enum PendingDrop {
         flag: Option<Symbol>,
         field: bool,
     },
-    /// The statement that runs a drop: a `Drop` impl's `drop` (`calls_drop`), or a `match` on
-    /// an enum whose arms hold more drops.
-    Call {
-        stmt: Box<Statement>,
-        calls_drop: bool,
-    },
+    /// The statements that run a drop: a `Drop` impl's `drop`, with cancellation off around
+    /// it, or a `match` on an enum whose arms hold more drops.
+    Call { stmts: Vec<Statement> },
     /// The end of the lifetime of a struct's or enum's stack slot.
     LifetimeEnd { slot: Register },
 }
@@ -1146,11 +1143,8 @@ impl<'r> Lowerer<'r> {
                     })
                 }
             }
-        } else if let Some(stmt) = d.call_statement() {
-            PendingDrop::Call {
-                stmt: Box::new(stmt),
-                calls_drop: d.call.is_some(),
-            }
+        } else if let Some(stmts) = d.call_statements() {
+            PendingDrop::Call { stmts }
         } else if let Some(place) = d.expr.as_deref() {
             let v = self.lower_expr(place)?;
             if !matches!(v.ty, LoweredTy::Tensor { .. }) {
@@ -1197,15 +1191,9 @@ impl<'r> Lowerer<'r> {
                 self.emit_effect(Opcode::LifetimeEnd, slot, Register(0), 0);
                 return Ok(());
             }
-            // A `Drop` impl runs with cancellation off (F6), so a `send` or a wait in it can
-            // finish.
-            PendingDrop::Call { stmt, calls_drop } => {
-                if calls_drop {
-                    self.emit_effect(Opcode::CancelOff, Register(0), Register(0), 0);
-                }
-                self.lower_stmt_inner(&stmt)?;
-                if calls_drop {
-                    self.emit_effect(Opcode::CancelOn, Register(0), Register(0), 0);
+            PendingDrop::Call { stmts } => {
+                for stmt in &stmts {
+                    self.lower_stmt_inner(stmt)?;
                 }
                 return Ok(());
             }
@@ -1782,6 +1770,46 @@ impl<'r> Lowerer<'r> {
                 // nobody should be using it in.
                 if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(&fc.name) {
                     return self.lower_lane_reduce(fc, op, ordered);
+                }
+                // The start and the end of a `within` block (F6a): an effect on the runtime.
+                if fc.name.as_ref() == crate::syntax::stmt::WITHIN_START
+                    || fc.name.as_ref() == crate::syntax::stmt::WITHIN_END
+                {
+                    let (op, limit) = match fc.args.first() {
+                        Some(limit) => (Opcode::WithinStart, self.lower_expr(limit)?.reg),
+                        None => (Opcode::WithinEnd, Register(0)),
+                    };
+                    self.emit_effect(op, limit, Register(0), 0);
+                    return Ok(self.emit_value(
+                        Opcode::Const,
+                        Register(0),
+                        Register(0),
+                        ElementType::I32,
+                        0,
+                    ));
+                }
+                // Around the call of a `Drop` impl's `drop` (F6, F6a): an effect on the
+                // runtime, with the time limit of the drop in seconds.
+                if fc.name.as_ref() == crate::syntax::stmt::CANCEL_OFF
+                    || fc.name.as_ref() == crate::syntax::stmt::CANCEL_ON
+                {
+                    let limit = match fc.args.first() {
+                        Some(limit) => self.lower_expr(limit)?.reg,
+                        None => Register(0),
+                    };
+                    let op = if fc.args.is_empty() {
+                        Opcode::CancelOn
+                    } else {
+                        Opcode::CancelOff
+                    };
+                    self.emit_effect(op, limit, Register(0), 0);
+                    return Ok(self.emit_value(
+                        Opcode::Const,
+                        Register(0),
+                        Register(0),
+                        ElementType::I32,
+                        0,
+                    ));
                 }
                 if fc.name.as_ref() == "barrier" {
                     self.emit_effect(Opcode::Barrier, Register(0), Register(0), 0);

@@ -120,9 +120,30 @@ the program with the message `vx: deadlock: ...`, so that it does not hang.
 
 A `drop` runs with cancellation off, so that a cleanup can finish. So a wait in a `drop` should
 have a time limit: `send_for(v, seconds)` and `recv_for(seconds)` give `timed_out` and `TimedOut`
-after it. The compiler warns about a `send` or `recv` in a `drop` (W1036). A `drop` also has a
-limit of its own, 10 seconds, which `VX_DROP_WAIT_SECONDS` sets. After it, a `send` or `recv` in
-the `drop` gives up as in a cancelled block.
+after it. The compiler warns about a `send` or `recv` in a `drop` that has no limit (W1036).
+
+A `drop` also has a limit of its own. Its type says how long its waits can take, with a method of
+`Drop` that returns 10 seconds unless the type writes its own:
+
+```rust
+impl Drop for SlotGuard {
+  fn drop(self : &mut SlotGuard) -> void { .. }
+
+  fn wait_limit(self : &SlotGuard) -> f64 {
+    return 0.05;
+  }
+}
+```
+
+After the limit, a `send` or `recv` in the `drop` gives up as in a cancelled block.
+`VX_DROP_WAIT_SECONDS` can make the limit of each `drop` shorter, for a test or to find a `drop`
+that hangs, but never longer.
+
+`within(seconds) { .. }` gives the waits in a block one time limit, in a `drop` or anywhere else.
+A flush, a close and a send in `within(0.05) { .. }` share the 50 ms. The limit also holds in the
+functions that the block calls. After the limit, a wait gives up as in a cancelled block, and
+`cancelled()` is true until the block ends. Outside a `drop`, a cancel still stops the waits in
+the block.
 
 ## `select`
 

@@ -1481,9 +1481,20 @@ pub(crate) fn call_runtime_void<'c>(
     block: melior::ir::BlockRef<'c, 'c>,
     fn_name: &str,
 ) -> Result<(), LowerError> {
+    call_runtime_void_with(gen, block, fn_name, &[])
+}
+
+/// `call_runtime_void` with arguments, each with its MLIR type.
+pub(crate) fn call_runtime_void_with<'c>(
+    gen: &mut MeliorGenerator<'c>,
+    block: melior::ir::BlockRef<'c, 'c>,
+    fn_name: &str,
+    args: &[(Value<'c, 'c>, &str)],
+) -> Result<(), LowerError> {
     if !gen.functions.contains_key(fn_name) {
-        let func_ty = Type::parse(gen.context, "() -> ()")
-            .ok_or_else(|| LowerError::ParseType("() -> ()".to_string()))?;
+        let arg_tys: Vec<&str> = args.iter().map(|(_, ty)| *ty).collect();
+        let text = format!("({}) -> ()", arg_tys.join(", "));
+        let func_ty = Type::parse(gen.context, &text).ok_or(LowerError::ParseType(text))?;
         let func_decl = OperationBuilder::new("func.func", gen.loc())
             .add_attributes(&[
                 (
@@ -1505,12 +1516,14 @@ pub(crate) fn call_runtime_void<'c>(
         gen.functions
             .insert(fn_name.to_string().into(), (gen.none_ty, Vec::new()));
     }
+    let operands: Vec<Value> = args.iter().map(|(v, _)| *v).collect();
     block.append_operation(
         OperationBuilder::new("func.call", gen.loc())
             .add_attributes(&[(
                 Identifier::new(gen.context, "callee"),
                 FlatSymbolRefAttribute::new(gen.context, fn_name).into(),
             )])
+            .add_operands(&operands)
             .build()?,
     );
     Ok(())

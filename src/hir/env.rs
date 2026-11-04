@@ -604,6 +604,14 @@ pub struct TypeChecker<'a> {
     pub(crate) cancel_loops: Vec<Option<Vec<String>>>,
     /// The function being checked is the `drop` of a `Drop` impl, for W1036.
     pub(crate) in_drop: bool,
+    /// The function being checked is the `wait_limit` of a `Drop` impl, for W1036.
+    pub(crate) in_wait_limit: bool,
+    /// The number of `within` blocks around the code being checked, in this function. A wait in
+    /// one has the block's time limit, so W1036 does not warn about it.
+    pub(crate) within_depth: usize,
+    /// The next call is the `vx::within_start` of a `within` block. A program cannot write that
+    /// call itself.
+    pub(crate) within_start_next: bool,
     /// The variables that closures in `let`s copied, for W1034.
     pub(crate) closure_copies: Vec<crate::hir::check::closure_copies::ClosureCopy>,
     /// The `let` being checked, when its value is a closure.
@@ -714,6 +722,9 @@ impl<'a> TypeChecker<'a> {
             value_unused: false,
             cancel_loops: Vec::new(),
             in_drop: false,
+            in_wait_limit: false,
+            within_depth: 0,
+            within_start_next: false,
             closure_copies: Vec::new(),
             let_closure: None,
             checking_assign_lhs: false,
@@ -2022,6 +2033,9 @@ impl<'a> TypeChecker<'a> {
         let prev_cancel_loops = std::mem::take(&mut self.cancel_loops);
         let in_drop = self.is_drop_impl(func);
         let prev_in_drop = std::mem::replace(&mut self.in_drop, in_drop);
+        let in_wait_limit = self.is_wait_limit_impl(func);
+        let prev_in_wait_limit = std::mem::replace(&mut self.in_wait_limit, in_wait_limit);
+        let prev_within_depth = std::mem::replace(&mut self.within_depth, 0);
         let prev_borrowers = self.borrow.take_borrowers();
         for (name, ty) in &func.params {
             self.insert(name.to_string(), ty.clone());
@@ -2214,6 +2228,8 @@ impl<'a> TypeChecker<'a> {
         self.closure_copies = prev_closure_copies;
         self.cancel_loops = prev_cancel_loops;
         self.in_drop = prev_in_drop;
+        self.in_wait_limit = prev_in_wait_limit;
+        self.within_depth = prev_within_depth;
         self.borrow.restore_borrowers(prev_borrowers);
         self.used_vars = prev_used_vars;
         self.declared_vars = prev_declared_vars;

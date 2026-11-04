@@ -36,6 +36,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 /// generic instantiation can be checked again from a copy of it.
 pub(crate) const DROP_MARK: &str = "\u{1}drop";
 
+/// The default body of `Drop::wait_limit` in `stdlib/core/ops.vx`, in seconds.
+pub(crate) const DEFAULT_WAIT_LIMIT: &str = "10.0";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Moved {
     No,
@@ -121,6 +124,10 @@ pub(crate) struct GluePart {
     /// Each field followed, with the type of the struct it is a field of.
     path: Vec<(crate::symbol::Symbol, String)>,
     call: Option<crate::symbol::Symbol>,
+    /// With `call`: the mangled name of the type's `Drop::wait_limit`.
+    limit: Option<crate::symbol::Symbol>,
+    /// The end of a `within` block (F6a): the drop of the block's hidden owner.
+    within_end: bool,
     /// For an enum: what dropping each variant's payload does, by element. Dropping it
     /// matches on the value.
     payload: Option<EnumGlue>,
@@ -338,10 +345,12 @@ fn drop_stmt(name: &str, flag: Option<&str>) -> Statement {
         name: name.into(),
         path: Vec::new(),
         call: None,
+        limit: None,
         expr: None,
         flag: flag.map(Into::into),
         after_value: false,
         ends_lifetime: false,
+        ends_within: false,
         span: Span::default(),
     })
 }
@@ -353,10 +362,12 @@ fn lifetime_end(name: &str) -> Statement {
         name: name.into(),
         path: Vec::new(),
         call: None,
+        limit: None,
         expr: None,
         flag: None,
         after_value: false,
         ends_lifetime: true,
+        ends_within: false,
         span: Span::default(),
     })
 }
@@ -506,18 +517,56 @@ fn glue_drops_at(
                 access.struct_name = Some(struct_ty.as_str().into());
                 place = Expr::MemberAccess(access);
             }
+            if part.within_end {
+                return Statement::Drop(DropStmt {
+                    name: name.into(),
+                    path: Vec::new(),
+                    call: None,
+                    expr: None,
+                    flag: None,
+                    after_value: false,
+                    ends_lifetime: false,
+                    ends_within: true,
+                    span: Span::default(),
+                    limit: None,
+                });
+            }
             if let Some(payload) = &part.payload {
                 return Statement::Drop(DropStmt {
                     name: name.into(),
                     path: part.path.iter().map(|(f, _)| f.clone()).collect(),
                     call: None,
+                    limit: None,
                     expr: Some(Box::new(payload_match(name, place, payload))),
                     flag: flag.map(Into::into),
                     after_value: false,
                     ends_lifetime: false,
+                    ends_within: false,
                     span: Span::default(),
                 });
             }
+            // `wait_limit(&place)`, which the code before the call of `drop` asks. An impl that
+            // does not write `wait_limit` has a copy of the default only when the resolver saw
+            // `core::ops`, so without one the limit is the default itself.
+            let limit = part.call.as_ref().map(|_| {
+                Box::new(match &part.limit {
+                    Some(limit) => Expr::FunctionCall(FunctionCallExpr::new(
+                        limit.clone(),
+                        None,
+                        vec![Expr::Borrow(BorrowExpr::new(
+                            Box::new(place.clone()),
+                            false,
+                            Span::default(),
+                        ))],
+                        Span::default(),
+                    )),
+                    None => Expr::Number(NumberExpr::new(
+                        DEFAULT_WAIT_LIMIT.to_string(),
+                        Some(ElementType::F64),
+                        Span::default(),
+                    )),
+                })
+            });
             let expr = match &part.call {
                 Some(call) => Some(Expr::FunctionCall(FunctionCallExpr::new(
                     call.clone(),
@@ -536,10 +585,12 @@ fn glue_drops_at(
                 name: name.into(),
                 path: part.path.iter().map(|(f, _)| f.clone()).collect(),
                 call: part.call.clone(),
+                limit,
                 expr: expr.map(Box::new),
                 flag: flag.map(Into::into),
                 after_value: false,
                 ends_lifetime: false,
+                ends_within: false,
                 span: Span::default(),
             })
         })
@@ -597,6 +648,8 @@ impl<'a> TypeChecker<'a> {
             Type::Tensor(..) => vec![GluePart {
                 path: Vec::new(),
                 call: None,
+                limit: None,
+                within_end: false,
                 payload: None,
             }],
             // The same value as the type inside, with a proof or a location attached.
@@ -627,6 +680,8 @@ impl<'a> TypeChecker<'a> {
                     glue.push(GluePart {
                         path: Vec::new(),
                         call: Some(call),
+                        limit: self.drops_impl_method(ty, "wait_limit"),
+                        within_end: false,
                         payload: None,
                     });
                 }
@@ -691,6 +746,8 @@ impl<'a> TypeChecker<'a> {
             glue.push(GluePart {
                 path: Vec::new(),
                 call: Some(call),
+                limit: self.drops_impl_method(ty, "wait_limit"),
+                within_end: false,
                 payload: None,
             });
         }
@@ -698,6 +755,8 @@ impl<'a> TypeChecker<'a> {
             glue.push(GluePart {
                 path: Vec::new(),
                 call: None,
+                limit: None,
+                within_end: false,
                 payload: Some(EnumGlue {
                     name: ty.to_string(),
                     arms,
@@ -745,6 +804,16 @@ impl<'a> TypeChecker<'a> {
     /// The mangled name of `ty`'s `Drop::drop`, instantiated for `ty` when the impl is
     /// generic, or `None` when `ty` does not implement `Drop`.
     pub(crate) fn drops_impl_call(&mut self, ty: &Type) -> Option<crate::symbol::Symbol> {
+        self.drops_impl_method(ty, "drop")
+    }
+
+    /// The mangled name of the method `method` of `ty`'s `Drop` impl, as for `drop`. A default
+    /// method, such as `wait_limit`, is in the impl too.
+    pub(crate) fn drops_impl_method(
+        &mut self,
+        ty: &Type,
+        method: &str,
+    ) -> Option<crate::symbol::Symbol> {
         let impls: Vec<&decl::ImplBlock> = self.env.impls.get("Drop")?.clone();
         let base_name = |t: &Type| -> Option<String> {
             match t {
@@ -767,7 +836,7 @@ impl<'a> TypeChecker<'a> {
         let method = ib
             .methods
             .iter()
-            .find(|m| m.name.as_ref() == "drop")?
+            .find(|m| m.name.as_ref() == method)?
             .clone();
         let mut mapping = HashMap::new();
         self.unify_types(&ib.target_type, ty, &mut mapping);
@@ -982,6 +1051,39 @@ impl<'a> TypeChecker<'a> {
                 ends_lifetime,
             });
         }
+    }
+
+    /// The start of a `within` block (F6a): an owner with no name in the program, whose drop
+    /// ends the block's deadline. It is dropped at the end of the block, so each `return`,
+    /// `break` and `continue` out of the block drops it first, as it drops a value with a `Drop`
+    /// impl.
+    pub(crate) fn drops_note_within(&mut self) {
+        let scope = self.scopes.len() - 1;
+        let Some(FrameKind::Block { owners, stmt, .. }) = self.borrow.drops.frames.last_mut()
+        else {
+            panic!("a `within` block starts in a block");
+        };
+        let name = format!("$within{}", owners.len());
+        owners.push(Owner {
+            name,
+            given_by: None,
+            decl: Some(*stmt),
+            to_block_end: true,
+            drop_reads_borrows: false,
+            scope,
+            moved: Moved::No,
+            moved_at: None,
+            flag: None,
+            glue: vec![GluePart {
+                path: Vec::new(),
+                call: None,
+                limit: None,
+                within_end: true,
+                payload: None,
+            }],
+            fields: Vec::new(),
+            ends_lifetime: false,
+        });
     }
 
     /// Whether a local of type `ty` lives in a stack slot of its own: a struct or an enum. A
@@ -2015,5 +2117,21 @@ impl<'a> TypeChecker<'a> {
         if let Some(FrameKind::Block { stmt, edits, .. }) = self.borrow.drops.frames.last_mut() {
             edits.before.entry(*stmt).or_default().extend(dropped);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The checker writes the default of `Drop::wait_limit` when an impl has no copy of it, so
+    /// the two must say the same number.
+    #[test]
+    fn the_default_wait_limit_is_the_one_in_core_ops() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib/core/ops.vx");
+        let ops = std::fs::read_to_string(path).expect("stdlib/core/ops.vx can be read");
+        let method = ops
+            .find("fn wait_limit(self : &Self) -> f64 {")
+            .expect("`Drop` has `wait_limit` with a default body");
+        let body = ops[method..].lines().nth(1).unwrap_or_default().trim();
+        assert_eq!(body, format!("return {};", super::DEFAULT_WAIT_LIMIT));
     }
 }

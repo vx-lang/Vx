@@ -296,7 +296,8 @@ pub unsafe extern "C" fn vx_wait_while(word: *const i64, value: i64) {
 /// task or thread was not cancelled. With a deadline of `vx_clock_ns`, it also returns at the
 /// deadline: a thread sleeps with a time limit, and a fiber asks the timer to wake its bucket.
 unsafe fn wait(word: *const i64, value: i64, or_cancel: bool, deadline_ns: Option<i64>) {
-    // In a `drop`, a wait that can be cancelled ends at the deadline of the `drop` (F6).
+    // In a `drop` or a `within` block, a wait that can be cancelled ends at the earliest deadline
+    // of the scopes around it (F6, F6a).
     let deadline_ns = match crate::ffi::tasks::drop_deadline().filter(|_| or_cancel) {
         Some(d) => Some(deadline_ns.map_or(d, |own| own.min(d))),
         None => deadline_ns,
