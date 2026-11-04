@@ -1,0 +1,71 @@
+//===- requires_of_a_method_that_a_call_does_not_meet.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A method call must meet the `requires` of the method, as a function call must. Each call here
+// can break it (E8006).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+struct C {
+  n : i64,
+}
+
+impl C {
+  fn take_below_5(self : &C, x : i64) -> i64
+  requires x < 5i64
+  {
+    return x;
+  }
+
+  fn take_one(self : &mut C) -> void
+  requires self.n > 0i64
+  {
+    self.n = self.n - 1i64;
+  }
+}
+
+struct Holder<T> {
+  value : T,
+  n : i64,
+}
+
+impl<T> Holder<T> {
+  fn take_below_n(self : &Holder<T>, x : i64) -> i64
+  requires x < self.n
+  {
+    return x;
+  }
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_method_that_a_call_does_not_meet.vx:[[@LINE+5]]:12: this call to 'take_below_5' may not meet its precondition `x < 5`
+fn an_argument_that_breaks_it() -> i64 {
+  let c = C {
+    n : 0i64
+  };
+  return c.take_below_5(10i64);
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_method_that_a_call_does_not_meet.vx:[[@LINE+2]]:12: this call to 'take_below_5' may not meet its precondition `x < 5`
+fn through_a_reference(c : &C) -> i64 {
+  return c.take_below_5(10i64);
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_method_that_a_call_does_not_meet.vx:[[@LINE+2]]:5: this call to 'take_one' may not meet its precondition `self.n > 0`
+fn a_receiver_with_no_fact(c : &mut C) -> void {
+  c.take_one();
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_of_a_method_that_a_call_does_not_meet.vx:[[@LINE+2]]:12: this call to 'take_below_n' may not meet its precondition `x < self.n`
+fn on_a_generic_type(h : &Holder<i32>) -> i64 {
+  return h.take_below_n(3i64);
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: 4 error(s) emitted
