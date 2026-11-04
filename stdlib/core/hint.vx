@@ -13,9 +13,6 @@
 
 /// Tells the optimizer that `cond` is true, so it may drop checks that follow from it.
 /// Nothing checks it: if `cond` is false, the program's behaviour is undefined.
-///
-/// A module that uses this is skipped by the pass that frees heap buffers, because the
-/// `llvm.intr.assume` it becomes does not declare its memory effects.
 unsafe fn assert_unchecked(cond : bool) -> void {
   let _kept : bool = mlir!( inputs : (%c = cond : i1), returns : bool, dialects : ["llvm"]) {
     llvm.intr.assume %c : i1
