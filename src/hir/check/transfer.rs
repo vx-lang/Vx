@@ -2483,9 +2483,9 @@ impl<'a> TypeChecker<'a> {
                 self.pointer_facts_event(*span, |_| {
                     "the `spawn`, whose task can free memory".to_string()
                 });
-                let outer_pointers = std::mem::take(&mut self.pointer_facts);
+                let outer_pointers = self.pointer_facts_enter_body();
                 self.check_expr_block(stmts, ret.as_deref(), consume);
-                self.pointer_facts = outer_pointers;
+                self.pointer_facts_leave_body(outer_pointers);
                 // Checked once the region's own frame is closed, so a variable from outside that
                 // the region hands out moves in the enclosing function.
                 self.drops_exit_spawn();

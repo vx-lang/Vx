@@ -650,6 +650,10 @@ pub struct TypeChecker<'a> {
     /// The method name and the place of a method call that the check turns into a call of its
     /// function, for the note of E8006.
     pub(crate) method_call_written: Option<(crate::symbol::Symbol, crate::syntax::Span)>,
+    /// The raw-pointer facts at the `break`s of each loop that the checker is in.
+    pub(crate) pointer_loops: Vec<crate::hir::check::pointer_facts::LoopExit>,
+    /// The branches of `if` and the arms of `match` that the checker is in, for the note of E8006.
+    pub(crate) pointer_branches: Vec<String>,
     /// The `tasks` blocks and tasks around the code being checked.
     pub(crate) tasks: crate::hir::check::tasks::TaskCx,
     /// Expected type of the expression currently being checked, from a `let x: T = …` or a
@@ -732,6 +736,8 @@ impl<'a> TypeChecker<'a> {
             pointer_facts: Default::default(),
             pointer_fact_ids: 0,
             method_call_written: None,
+            pointer_loops: Vec::new(),
+            pointer_branches: Vec::new(),
             tasks: Default::default(),
             expected_type: None,
             consteval: Default::default(),
@@ -1952,7 +1958,7 @@ impl<'a> TypeChecker<'a> {
         // changes that the caller's calls wait to apply.
         let prev_constraints = std::mem::take(&mut self.consteval.constraints);
         let prev_fact_change_frames = std::mem::take(&mut self.fact_change_frames);
-        let prev_pointer_facts = std::mem::take(&mut self.pointer_facts);
+        let prev_pointer_state = self.pointer_facts_enter_body();
         self.check_atomic_contract(func);
         // An atomic clause is for the race proof, not for the prover.
         let proved: Vec<Expr> = func
@@ -2199,7 +2205,7 @@ impl<'a> TypeChecker<'a> {
         self.current_function = prev_fn;
         self.consteval.constraints = prev_constraints;
         self.fact_change_frames = prev_fact_change_frames;
-        self.pointer_facts = prev_pointer_facts;
+        self.pointer_facts_leave_body(prev_pointer_state);
         self.active_topology = prev_top;
         self.set_active_memory(prev_mem);
         self.borrow.current_params = prev_params;

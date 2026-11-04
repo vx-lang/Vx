@@ -31,7 +31,7 @@ enum ComptimeFold {
 }
 
 /// The names that `pattern` binds, in order.
-fn pattern_names(pattern: &Pattern, out: &mut Vec<crate::symbol::Symbol>) {
+pub(crate) fn pattern_names(pattern: &Pattern, out: &mut Vec<crate::symbol::Symbol>) {
     match pattern {
         Pattern::Identifier(n) => out.push(n.clone()),
         Pattern::EnumVariant(_, _, Some(parts)) => {
@@ -602,6 +602,9 @@ impl<'a> TypeChecker<'a> {
         // Each branch starts from the values known before the `if`, and the paths join after it.
         let taken = taken.or_else(|| self.known_condition(&if_expr.cond));
         let values_before = self.consteval.env.clone();
+        let (then_name, else_name) = Self::pointer_branch_names(if_expr).unzip();
+        let named = then_name.is_some();
+        self.pointer_branches.extend(then_name);
         self.push_releasing_scope();
         let mut then_ty = Type::Struct("void".into(), None);
         if !self.speculating && !if_expr.then_block.is_empty() {
@@ -609,6 +612,9 @@ impl<'a> TypeChecker<'a> {
             then_ty = self.check_expr_block(&mut if_expr.then_block, None, consume);
         }
         self.pop_scope();
+        if named {
+            self.pointer_branches.pop();
+        }
         let then_facts = self.consteval.constraints.split_off(facts_before);
         let pointers_then = std::mem::replace(&mut self.pointer_facts, pointers_before);
         if let Some(c) = &cond_fact {
@@ -625,12 +631,16 @@ impl<'a> TypeChecker<'a> {
         let mut else_ty = Type::Struct("void".into(), None);
         if let Some(else_b) = if_expr.else_block.as_mut() {
             if !else_b.is_empty() {
+                self.pointer_branches.extend(else_name);
                 self.push_releasing_scope();
                 if !self.speculating {
                     self.value_unused = unused;
                     else_ty = self.check_expr_block(else_b, None, consume);
                 }
                 self.pop_scope();
+                if named {
+                    self.pointer_branches.pop();
+                }
                 marks_after_else = self.branch_end(else_b);
 
                 // A branch that never finishes, `todo()`, has no value: the other branch decides.
@@ -1289,6 +1299,8 @@ impl<'a> TypeChecker<'a> {
                     }
                     self.refuse_payload_subpattern(&arm.pattern, &arm.span);
                     self.check_variant_pattern(&arm.pattern, &expr_ty, &arm.span);
+                    self.pointer_branches
+                        .push(Self::pointer_arm_name(&arm.pattern));
                     self.push_scope();
                     self.check_literal_pattern_range(&arm.pattern, &expr_ty);
                     self.bind_pattern_variables(&arm.pattern, &expr_ty);
@@ -1319,6 +1331,7 @@ impl<'a> TypeChecker<'a> {
                         Type::Struct("void".into(), None)
                     };
                     self.pop_scope();
+                    self.pointer_branches.pop();
                     every_arm_ends &= self.branch_ends_early(&arm.body);
                     if !self.branch_ends_early(&arm.body) {
                         values_after_arms.push(self.consteval.env.clone());
@@ -1522,9 +1535,9 @@ impl<'a> TypeChecker<'a> {
                 self.traffic.closure_depth += 1;
                 self.consteval.comptime_return_is_value = matches!(*b, Expr::ComptimeBlock(_));
                 // The body runs when a call runs it, so it starts with no fact of its parent.
-                let outer_pointers = std::mem::take(&mut self.pointer_facts);
+                let outer_pointers = self.pointer_facts_enter_body();
                 let expr_ret_ty = self.check_expr_type(&mut b);
-                self.pointer_facts = outer_pointers;
+                self.pointer_facts_leave_body(outer_pointers);
                 self.consteval.comptime_return_is_value = false;
                 self.traffic.closure_depth -= 1;
                 self.drops_exit_function();

@@ -15,7 +15,9 @@
 // call with an argument that can free memory, an assignment that drops a value, the drop of a
 // local, an `mlir!` block with such an input or a clobber, and a `spawn`. No callee is known to
 // keep memory alive yet, so a call that gets a raw pointer is such an event. Each ended fact
-// keeps the place and the reason of its event, for the note of E8006.
+// keeps the place and the reason of its event, for the note of E8006. Before a loop body, a scan
+// of the body finds its first event, which ends the facts for each pass. After a loop, the facts
+// are those that hold at each place where the loop ends.
 //
 //===----------------------------------------------------------------------===//
 
@@ -75,6 +77,17 @@ pub(crate) struct WrittenCall {
     local_can_free: Option<bool>,
     at: Span,
 }
+
+/// The facts at the `break`s of a loop that the checker is in.
+pub(crate) struct LoopExit {
+    /// The number of scopes outside the loop body.
+    depth: usize,
+    at_break: Option<PointerFacts>,
+}
+
+/// The raw-pointer state of the code around a body that starts with none of it: a closure body, a
+/// task body or the body of another function.
+pub(crate) struct OuterPointerState(PointerFacts, Vec<LoopExit>, Vec<String>);
 
 /// A pointer value: a base, and an offset in elements that is the exact sum of its terms.
 #[derive(Clone, Debug, PartialEq)]
@@ -204,6 +217,63 @@ const ADDRESS_FUNCTIONS: [&str; 11] = [
 fn plain_name(name: &str) -> &str {
     let name = name.split(['<', '$']).next().unwrap_or(name);
     name.rsplit("::").next().unwrap_or(name)
+}
+
+/// A `let` of a loop body: its name, its written type and its value.
+type BodyLet = (String, Option<Type>, Expr);
+
+/// The variables that `body` declares at any depth, with the number of declarations of each:
+/// each `let`, the variable of each `for`, each name that a pattern binds and each parameter of a
+/// closure. Also each `let`.
+fn declarations_of_a_body(body: &[Statement]) -> (HashMap<String, usize>, Vec<BodyLet>) {
+    fn own(stmts: &[Statement], out: &mut HashMap<String, usize>, lets: &mut Vec<BodyLet>) {
+        for s in stmts {
+            match s {
+                Statement::LetDecl(l) => {
+                    *out.entry(l.name.to_string()).or_default() += 1;
+                    lets.push((l.name.to_string(), l.ty_ann.clone(), l.expr.clone()));
+                }
+                Statement::ForLoop(l) => {
+                    *out.entry(l.iter.clone()).or_default() += 1;
+                    own(&l.body, out, lets);
+                }
+                Statement::Loop(l) => own(&l.body, out, lets),
+                _ => {}
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    let mut lets = Vec::new();
+    own(body, &mut out, &mut lets);
+    crate::syntax::visit_exprs(body, &mut |e| match e {
+        Expr::If(i) => {
+            own(&i.then_block, &mut out, &mut lets);
+            if let Some(b) = &i.else_block {
+                own(b, &mut out, &mut lets);
+            }
+        }
+        Expr::Match(m) => {
+            for arm in &m.arms {
+                let mut bound = Vec::new();
+                crate::hir::check::control::pattern_names(&arm.pattern, &mut bound);
+                for n in bound {
+                    *out.entry(n.to_string()).or_default() += 1;
+                }
+                own(&arm.body, &mut out, &mut lets);
+            }
+        }
+        Expr::UnsafeBlock(u) => own(&u.stmts, &mut out, &mut lets),
+        Expr::ComptimeBlock(c) => own(&c.stmts, &mut out, &mut lets),
+        Expr::TaskBlock(t) => own(&t.stmts, &mut out, &mut lets),
+        Expr::SpawnOn(s) => own(&s.stmts, &mut out, &mut lets),
+        Expr::Closure(c) => {
+            for (n, _) in &c.params {
+                *out.entry(n.to_string()).or_default() += 1;
+            }
+        }
+        _ => {}
+    });
+    (out, lets)
 }
 
 /// A term of an exact goal for the prover: program values are compared and added as exact
@@ -498,8 +568,47 @@ impl<'a> TypeChecker<'a> {
     /// event for the note of E8006, such as "the call to 'push'".
     pub(crate) fn pointer_facts_event(&mut self, at: Span, why: impl FnOnce(&Self) -> String) {
         if !self.pointer_facts.ranges.is_empty() {
-            let why = why(self);
+            let why = self.in_branch(why(self));
             self.pointer_facts.end_other_memory(at, &why);
+        }
+    }
+
+    /// `why` with the branch of an `if` or the arm of a `match` that the checker is in.
+    fn in_branch(&self, why: String) -> String {
+        match self.pointer_branches.last() {
+            Some(branch) => format!("{why}, {branch}"),
+            None => why,
+        }
+    }
+
+    /// The names of the two branches of `if_expr`, for the note of E8006. The `if` of a `while`
+    /// has none: its `else` only leaves the loop.
+    pub(crate) fn pointer_branch_names(if_expr: &IfExpr) -> Option<(String, String)> {
+        let is_a_while = matches!(
+            if_expr.else_block.as_deref(),
+            Some([Statement::Break(b)]) if b.span == if_expr.span
+        );
+        if is_a_while {
+            return None;
+        }
+        Some(match crate::hir::prover::to_source(&if_expr.cond) {
+            Some(c) => (
+                format!("in the branch where `{c}` is true"),
+                format!("in the branch where `{c}` is false"),
+            ),
+            None => (
+                "in the first branch of the `if`".to_string(),
+                "in the `else` branch of the `if`".to_string(),
+            ),
+        })
+    }
+
+    /// The name of the `match` arm with the pattern `pattern`, for the note of E8006.
+    pub(crate) fn pointer_arm_name(pattern: &Pattern) -> String {
+        match pattern {
+            Pattern::EnumVariant(_, variant, _) => format!("in the arm for `{variant}`"),
+            Pattern::Wildcard => "in the `_` arm of the `match`".to_string(),
+            _ => "in an arm of the `match`".to_string(),
         }
     }
 
@@ -513,7 +622,7 @@ impl<'a> TypeChecker<'a> {
         let mut dropped: Vec<&str> = Vec::new();
         for (name, (ty, _)) in vars {
             if self.pointer_facts.has_local(name.as_ref()) {
-                let why = format!("the end of the scope of `{name}`");
+                let why = self.in_branch(format!("the end of the scope of `{name}`"));
                 self.pointer_facts.end_local(name.as_ref(), at, &why);
             }
             self.pointer_facts.forget(name.as_ref());
@@ -531,7 +640,7 @@ impl<'a> TypeChecker<'a> {
     /// A move took the value out of the local variable `var`, or out of a field of it.
     pub(crate) fn pointer_facts_move_out(&mut self, var: &str) {
         if self.pointer_facts.has_local(var) {
-            let why = format!("the move out of `{var}`");
+            let why = self.in_branch(format!("the move out of `{var}`"));
             let at = self.current_statement_span;
             self.pointer_facts.end_init_of_local(var, at, &why);
         }
@@ -540,85 +649,414 @@ impl<'a> TypeChecker<'a> {
     /// At the start of a loop: a fact holds in the body only when no pass ends it, so an event
     /// that the body can have ends the facts before the body.
     pub(crate) fn end_pointer_facts_a_loop_can_end(&mut self, body: &[Statement]) {
-        if self.loop_body_can_free(body) {
-            let at = self.current_statement_span;
-            self.pointer_facts_event(at, |_| "the loop, whose body can free memory".to_string());
+        if self.pointer_facts.ranges.is_empty() {
+            return;
+        }
+        if let Some((at, why)) = self.loop_body_event(body) {
+            self.pointer_facts_event(at, |_| format!("{why}, in a pass of the loop"));
         }
     }
 
-    /// After a loop: the checker made one pass over the body, and a variable that the body
-    /// writes can hold the value of any pass, or its value before the loop. The events of the
-    /// body ended their facts before the body.
-    pub(crate) fn pointer_facts_after_a_loop(&mut self, body: &[Statement]) {
-        for name in crate::hir::check::raw::names_a_body_writes(body) {
-            self.pointer_facts.forget(&name);
-        }
+    /// The start of a body that starts with no raw-pointer fact, no loop and no branch of the code
+    /// around it.
+    pub(crate) fn pointer_facts_enter_body(&mut self) -> OuterPointerState {
+        OuterPointerState(
+            std::mem::take(&mut self.pointer_facts),
+            std::mem::take(&mut self.pointer_loops),
+            std::mem::take(&mut self.pointer_branches),
+        )
     }
 
-    /// Whether a pass of `body` can have an event. The body is not checked yet, so this reads
-    /// its syntax, and anything that it cannot show to free nothing counts.
-    fn loop_body_can_free(&self, body: &[Statement]) -> bool {
-        let mut frees = self.statements_can_free(body);
-        crate::syntax::visit_exprs(body, &mut |e| {
-            frees |= match e {
-                Expr::FunctionCall(fc) => {
-                    !ADDRESS_FUNCTIONS.contains(&plain_name(fc.name.as_ref()))
-                }
-                Expr::MethodCall(_)
-                | Expr::IndirectCall(_)
-                | Expr::InlineMlir(_)
-                | Expr::SpawnOn(_)
-                | Expr::TaskBlock(_) => true,
-                Expr::If(i) => {
-                    self.statements_can_free(&i.then_block)
-                        || i.else_block
-                            .as_ref()
-                            .is_some_and(|b| self.statements_can_free(b))
-                }
-                Expr::Match(m) => m.arms.iter().any(|a| self.statements_can_free(&a.body)),
-                Expr::UnsafeBlock(u) => self.statements_can_free(&u.stmts),
-                Expr::ComptimeBlock(c) => self.statements_can_free(&c.stmts),
-                _ => false,
-            };
+    /// The end of a body that `pointer_facts_enter_body` started.
+    pub(crate) fn pointer_facts_leave_body(&mut self, outer: OuterPointerState) {
+        let OuterPointerState(facts, loops, branches) = outer;
+        self.pointer_facts = facts;
+        self.pointer_loops = loops;
+        self.pointer_branches = branches;
+    }
+
+    /// The start of a loop body. `self.scopes` holds the scopes outside the body.
+    pub(crate) fn pointer_facts_enter_loop(&mut self) {
+        self.pointer_loops.push(LoopExit {
+            depth: self.scopes.len(),
+            at_break: None,
         });
-        frees
     }
 
-    /// Whether a statement of `stmts`, or of a loop in it, can drop a value: a `drop`, a `let`
-    /// whose value is not a plain number, or an assignment to a variable that can hold memory.
-    fn statements_can_free(&self, stmts: &[Statement]) -> bool {
-        stmts.iter().any(|s| match s {
-            Statement::Drop(_) => true,
-            Statement::LetDecl(l) => !self.is_plain_number(&l.expr),
-            Statement::Assign(a) => !self.is_plain_number(&a.lhs),
-            Statement::CompoundAssign(a) => !self.is_plain_number(&a.lhs),
-            Statement::ForLoop(l) => self.statements_can_free(&l.body),
-            Statement::Loop(l) => self.statements_can_free(&l.body),
-            _ => false,
+    /// A `break` leaves the innermost loop, and each scope of the loop body ends there.
+    pub(crate) fn pointer_facts_at_break(&mut self) {
+        let Some(depth) = self.pointer_loops.last().map(|l| l.depth) else {
+            return;
+        };
+        let before = self.pointer_facts.clone();
+        for i in (depth..self.scopes.len()).rev() {
+            let vars = self.scopes[i].clone();
+            self.pointer_facts_end_scope(&vars);
+        }
+        let state = std::mem::replace(&mut self.pointer_facts, before);
+        let exit = self.pointer_loops.last_mut().expect("checked above");
+        exit.at_break = Some(match exit.at_break.take() {
+            Some(joined) => joined.join(&state),
+            None => state,
+        });
+    }
+
+    /// After a loop: a fact holds when it holds at each place where the loop ends. A `for` loop
+    /// also ends at its head, where `head` holds. A `loop` ends only at a `break`.
+    pub(crate) fn pointer_facts_after_a_loop(&mut self, head: Option<PointerFacts>) {
+        let exit = self
+            .pointer_loops
+            .pop()
+            .expect("pushed at the start of the loop");
+        self.pointer_facts = match (head, exit.at_break) {
+            (Some(head), Some(at_break)) => head.join(&at_break),
+            (Some(state), None) | (None, Some(state)) => state,
+            // No path leaves the loop, so no code after it runs.
+            (None, None) => PointerFacts::default(),
+        };
+    }
+
+    /// The first event that a pass of the loop `body` can have, as its place and its reason.
+    /// The body is not checked yet. So the type of an argument comes from the parameter of the
+    /// callee, or from the variables before the loop and the `let`s of the body. A value of a type
+    /// that the scan does not know can free memory.
+    ///
+    /// An event of a value whose type the scan does not know comes after the other events,
+    /// because the value can have a type with no drop.
+    fn loop_body_event(&mut self, body: &[Statement]) -> Option<(Span, String)> {
+        let declared = self.types_of_body_variables(body);
+        let mut events = Vec::new();
+        self.statement_events(body, &declared, &mut events);
+        for s in body {
+            // The parser gives some calls no place. Their note gives the line of the statement.
+            let first = events.len();
+            crate::syntax::visit_exprs(std::slice::from_ref(s), &mut |e| {
+                self.expression_events(e, &declared, &mut events)
+            });
+            for event in &mut events[first..] {
+                if event.1 == Span::default() {
+                    event.1 = s.span();
+                }
+            }
+        }
+        events
+            .into_iter()
+            .min_by_key(|(unknown, at, _)| (*unknown, at.line, at.column))
+            .map(|(_, at, why)| (at, why))
+    }
+
+    /// The type of each variable that the loop `body` declares, before the body is checked. A
+    /// variable that the body declares once, with a `let`, has the type of its value, when a
+    /// variable of the same name before the loop has that type too. Each other one is `Unknown`.
+    fn types_of_body_variables(&self, body: &[Statement]) -> HashMap<String, Type> {
+        let (counts, lets) = declarations_of_a_body(body);
+        let mut types: HashMap<String, Type> =
+            counts.keys().map(|n| (n.clone(), Type::Unknown)).collect();
+        // A value can name the variable of another `let`. So the scan repeats until it finds no
+        // new type.
+        for _ in 0..lets.len() {
+            let mut found = false;
+            for (name, written, value) in &lets {
+                if counts[name] != 1 || types[name] != Type::Unknown {
+                    continue;
+                }
+                let ty = match written {
+                    Some(t) => t.clone(),
+                    None => self.scan_type(value, &types),
+                };
+                let outer = self.lookup(name).map(|(t, _)| t.clone());
+                if ty != Type::Unknown && outer.is_none_or(|o| o == ty) {
+                    types.insert(name.clone(), ty);
+                    found = true;
+                }
+            }
+            if !found {
+                break;
+            }
+        }
+        types
+    }
+
+    /// The events of the statements of one block, and of the loops in it, that are not in an
+    /// expression: a drop, the end of the scope of a `let` whose value has a drop, an assignment
+    /// that drops the old value, and the call of `next` in a `for` loop over an iterator.
+    fn statement_events(
+        &mut self,
+        stmts: &[Statement],
+        declared: &HashMap<String, Type>,
+        events: &mut Vec<(bool, Span, String)>,
+    ) {
+        for s in stmts {
+            match s {
+                // The checker writes a drop after it checks a block. So the scan sees one only
+                // when the driver checks a body again, for the flat code generator. A drop that
+                // only ends the lifetime of a value frees nothing.
+                Statement::Drop(d) if !d.ends_lifetime => {
+                    let at = self.current_statement_span;
+                    events.push((false, at, format!("the drop of `{}`", d.name)))
+                }
+                Statement::LetDecl(l) => {
+                    let ty = match &l.ty_ann {
+                        Some(t) => t.clone(),
+                        None => self.scan_type(&l.expr, declared),
+                    };
+                    if self.scan_type_drops(&ty) {
+                        let why = format!(
+                            "the end of the scope of `{}`, which drops its value",
+                            l.name
+                        );
+                        events.push((ty == Type::Unknown, l.span, why));
+                    }
+                }
+                Statement::Assign(AssignStmt { lhs, span, .. })
+                | Statement::CompoundAssign(CompoundAssignStmt { lhs, span, .. }) => {
+                    let ty = self.scan_type(lhs, declared);
+                    if self.scan_type_drops(&ty) {
+                        let why = "an assignment that drops the old value".to_string();
+                        events.push((ty == Type::Unknown, *span, why));
+                    }
+                }
+                Statement::ForLoop(l) => {
+                    // A `for` loop over a tensor reads it by index, with no call of `next`.
+                    let ty = self.scan_type(&l.iterable, declared);
+                    if !matches!(*l.iterable, Expr::Range(_))
+                        && !matches!(ty, Type::Tensor(..))
+                        && self.type_can_free(&ty, 0)
+                    {
+                        let why = format!(
+                            "the call to 'next' of the `for` loop, which can free memory through \
+                             {}",
+                            shown_argument(&l.iterable)
+                        );
+                        events.push((false, l.span, why));
+                    }
+                    self.statement_events(&l.body, declared, events);
+                }
+                Statement::Loop(l) => self.statement_events(&l.body, declared, events),
+                _ => {}
+            }
+        }
+    }
+
+    /// The events of the expression `e` alone, and of the statements of each block in it.
+    fn expression_events(
+        &mut self,
+        e: &Expr,
+        declared: &HashMap<String, Type>,
+        events: &mut Vec<(bool, Span, String)>,
+    ) {
+        let spawn = "the `spawn`, whose task can free memory";
+        match e {
+            Expr::FunctionCall(fc) => {
+                if let Some(why) = self.scan_call_event(fc, declared) {
+                    events.push((false, fc.span, why));
+                }
+            }
+            Expr::MethodCall(m) => {
+                let arg = std::iter::once(&*m.base)
+                    .chain(&m.args)
+                    .find(|a| self.scan_can_free(a, None, declared));
+                if let Some(a) = arg {
+                    let why = format!(
+                        "the call to '{}', which can free memory through {}",
+                        m.method_name,
+                        shown_argument(a)
+                    );
+                    events.push((false, m.span, why));
+                }
+            }
+            Expr::IndirectCall(ic) => {
+                let callee = self.scan_type(&ic.callee, declared);
+                let params = match &callee {
+                    Type::Function(params, ..) => Some(params.clone()),
+                    _ => None,
+                };
+                let why = if params.is_none() && self.type_can_free(&callee, 0) {
+                    Some(format!(
+                        "the call of the closure {}, which can free memory through what it \
+                         captures",
+                        shown_argument(&ic.callee)
+                    ))
+                } else {
+                    self.scan_argument_that_can_free(&ic.args, params.as_deref(), declared)
+                        .map(|a| {
+                            format!(
+                                "the call through {}, which can free memory through {a}",
+                                shown_argument(&ic.callee)
+                            )
+                        })
+                };
+                if let Some(why) = why {
+                    events.push((false, ic.span, why));
+                }
+            }
+            Expr::InlineMlir(m)
+                if !m.clobbers.is_empty()
+                    || m.inputs
+                        .iter()
+                        .any(|(_, a, _)| self.scan_can_free(a, None, declared)) =>
+            {
+                let why = "the `mlir!` block, which can free memory".to_string();
+                events.push((false, m.span, why));
+            }
+            Expr::SpawnOn(s) => events.push((false, s.span, spawn.to_string())),
+            Expr::TaskBlock(t) if t.kind == TaskBlockKind::Spawn => {
+                events.push((false, t.span, spawn.to_string()))
+            }
+            Expr::TaskBlock(t) => self.statement_events(&t.stmts, declared, events),
+            Expr::If(i) => {
+                self.statement_events(&i.then_block, declared, events);
+                if let Some(b) = &i.else_block {
+                    self.statement_events(b, declared, events);
+                }
+            }
+            Expr::Match(m) => {
+                for arm in &m.arms {
+                    self.statement_events(&arm.body, declared, events);
+                }
+            }
+            Expr::UnsafeBlock(u) => self.statement_events(&u.stmts, declared, events),
+            // A `comptime` block runs when the program compiles, so its statements drop nothing
+            // when the program runs.
+            _ => {}
+        }
+    }
+
+    /// The reason that the call `fc` in a loop body can free memory, if it can.
+    fn scan_call_event(
+        &mut self,
+        fc: &FunctionCallExpr,
+        declared: &HashMap<String, Type>,
+    ) -> Option<String> {
+        let name = fc.name.as_ref();
+        if ADDRESS_FUNCTIONS.contains(&plain_name(name)) {
+            return None;
+        }
+        // A call of a local variable, such as a closure.
+        let local = match declared.get(name) {
+            Some(t) => Some(t.clone()),
+            None => self.lookup(name).map(|(t, _)| t.clone()),
+        };
+        let params = match &local {
+            Some(Type::Function(params, ..)) => Some(params.clone()),
+            Some(t) if self.type_can_free(t, 0) => {
+                return Some(format!(
+                    "the call of the closure `{name}`, which can free memory through what it \
+                     captures"
+                ));
+            }
+            Some(_) => None,
+            None => self.function_param_types(name),
+        };
+        let arg = self.scan_argument_that_can_free(&fc.args, params.as_deref(), declared)?;
+        Some(match local {
+            Some(_) => format!("the call through `{name}`, which can free memory through {arg}"),
+            None => format!("the call to '{name}', which can free memory through {arg}"),
         })
     }
 
-    /// Whether `e` is a number that the syntax shows: a literal, a variable of a scalar type, an
-    /// element of a pointer to a scalar, or an operation on those.
-    fn is_plain_number(&self, e: &Expr) -> bool {
-        let scalar = |name: &str| matches!(self.lookup(name), Some((Type::Scalar(_), _)));
+    /// The first argument of `args` that can free memory, as the program wrote it.
+    fn scan_argument_that_can_free(
+        &mut self,
+        args: &[Expr],
+        params: Option<&[Type]>,
+        declared: &HashMap<String, Type>,
+    ) -> Option<String> {
+        args.iter()
+            .enumerate()
+            .find(|(i, a)| self.scan_can_free(a, params.and_then(|p| p.get(*i)), declared))
+            .map(|(_, a)| shown_argument(a))
+    }
+
+    /// Whether the argument `arg` in a loop body that is not checked yet can free memory. The
+    /// type of its parameter `param` says it, and a type parameter counts as one that can.
+    fn scan_can_free(
+        &mut self,
+        arg: &Expr,
+        param: Option<&Type>,
+        declared: &HashMap<String, Type>,
+    ) -> bool {
+        let ty = match param {
+            Some(p) => p.clone(),
+            None => self.scan_type(arg, declared),
+        };
+        self.type_can_free(&ty, 0)
+    }
+
+    /// Whether the drop of a value of the type `ty` can free memory.
+    fn scan_type_drops(&mut self, ty: &Type) -> bool {
+        matches!(ty, Type::Unknown | Type::Generic(..)) || !self.drops_glue(ty).is_empty()
+    }
+
+    /// The type of `e` in a loop body that is not checked yet, or `Unknown`. `declared` has the
+    /// type of each variable of the body.
+    fn scan_type(&self, e: &Expr, declared: &HashMap<String, Type>) -> Type {
+        let scalar = |t: &Type| matches!(t, Type::Scalar(_));
+        let both_scalar = |a: &Expr, b: &Expr| {
+            scalar(&self.scan_type(a, declared)) && scalar(&self.scan_type(b, declared))
+        };
         match crate::syntax::bare_unsafe_value(e) {
-            Expr::Number(_) => true,
-            Expr::Identifier(id) => scalar(id.name.as_ref()),
-            Expr::IndexAccess(ix) => match &*ix.base {
-                Expr::Identifier(id) => {
-                    matches!(
-                        self.lookup(id.name.as_ref()),
-                        Some((Type::Pointer(inner, ..), _)) if matches!(**inner, Type::Scalar(_))
-                    ) && self.is_plain_number(&ix.index)
-                }
-                _ => false,
+            Expr::Number(n) => Type::Scalar(n.ty.clone().unwrap_or(ElementType::I64)),
+            Expr::Identifier(id) => match declared.get(id.name.as_ref()) {
+                Some(t) => t.clone(),
+                None => self.check_expr_type_probe(e),
             },
-            Expr::BinaryOp(b) => self.is_plain_number(&b.lhs) && self.is_plain_number(&b.rhs),
-            Expr::RelationalOp(r) => self.is_plain_number(&r.lhs) && self.is_plain_number(&r.rhs),
-            Expr::LogicalOp(l) => self.is_plain_number(&l.lhs) && self.is_plain_number(&l.rhs),
-            Expr::UnaryOp(u) => self.is_plain_number(&u.expr),
-            _ => false,
+            Expr::BinaryOp(b) if both_scalar(&b.lhs, &b.rhs) => self.scan_type(&b.lhs, declared),
+            Expr::RelationalOp(r) if both_scalar(&r.lhs, &r.rhs) => Type::Scalar(ElementType::Bool),
+            Expr::LogicalOp(l) if both_scalar(&l.lhs, &l.rhs) => Type::Scalar(ElementType::Bool),
+            Expr::UnaryOp(u) => match self.scan_type(&u.expr, declared) {
+                t if scalar(&t) => t,
+                _ => Type::Unknown,
+            },
+            // `offset(p, k)` has the type of `p`.
+            Expr::FunctionCall(fc)
+                if matches!(
+                    plain_name(fc.name.as_ref()),
+                    "offset" | "offset_mut" | "add" | "add_mut" | "sub" | "sub_mut"
+                ) && !fc.args.is_empty() =>
+            {
+                self.scan_type(&fc.args[0], declared)
+            }
+            // A function that is not a variable has the return type that it declares.
+            Expr::FunctionCall(fc)
+                if !declared.contains_key(fc.name.as_ref())
+                    && self.lookup(fc.name.as_ref()).is_none() =>
+            {
+                self.check_expr_type_probe(e)
+            }
+            Expr::Dereference(d) => match self.scan_type(&d.expr, declared) {
+                Type::Pointer(inner, ..) | Type::Borrow { inner, .. } | Type::Ref(inner, _) => {
+                    *inner
+                }
+                _ => Type::Unknown,
+            },
+            Expr::IndexAccess(ix) => match self.scan_type(&ix.base, declared) {
+                Type::Pointer(inner, ..) if scalar(&inner) => *inner,
+                Type::Tensor(el, dims, _) if dims.len() <= 1 => Type::Scalar(el),
+                _ => Type::Unknown,
+            },
+            // A block with a value has the type of its last expression.
+            Expr::UnsafeBlock(UnsafeBlockExpr { ret: Some(r), .. })
+            | Expr::ComptimeBlock(ComptimeBlockExpr { ret: Some(r), .. }) => {
+                self.scan_type(r, declared)
+            }
+            Expr::InlineMlir(m) => m
+                .returns
+                .clone()
+                .unwrap_or_else(|| Type::Struct("void".into(), None)),
+            e => {
+                let mut names_the_body = false;
+                crate::syntax::visit_expr(e, &mut |x| {
+                    if let Expr::Identifier(id) = x {
+                        names_the_body |= declared.contains_key(id.name.as_ref());
+                    }
+                });
+                if names_the_body {
+                    Type::Unknown
+                } else {
+                    self.check_expr_type_probe(e)
+                }
+            }
         }
     }
 
@@ -738,21 +1176,25 @@ impl<'a> TypeChecker<'a> {
             Expr::IndirectCall(ic) => from_type(self.check_expr_type_probe(&ic.callee)),
             Expr::FunctionCall(_) => match self.lookup(name) {
                 Some((t, _)) => from_type(t.clone()),
-                None => self
-                    .env
-                    .functions
-                    .get(name)
-                    .map(|f| f.2.clone())
-                    .or_else(|| {
-                        self.mono
-                            .functions
-                            .iter()
-                            .find(|(f, _)| f.name.as_ref() == name)
-                            .map(|(f, _)| f.params.iter().map(|(_, t)| t.clone()).collect())
-                    }),
+                None => self.function_param_types(name),
             },
             _ => None,
         }
+    }
+
+    /// The parameter types of the function `name`, when the checker knows them.
+    fn function_param_types(&self, name: &str) -> Option<Vec<Type>> {
+        self.env
+            .functions
+            .get(name)
+            .map(|f| f.2.clone())
+            .or_else(|| {
+                self.mono
+                    .functions
+                    .iter()
+                    .find(|(f, _)| f.name.as_ref() == name)
+                    .map(|(f, _)| f.params.iter().map(|(_, t)| t.clone()).collect())
+            })
     }
 
     /// Whether the argument `arg` can free memory. The type of its parameter `param` says it
