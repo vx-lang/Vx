@@ -325,7 +325,7 @@ fn nrvo_candidate(hir: &[HirInstruction]) -> Option<usize> {
 fn is_ptr_ty(ty: &Type) -> bool {
     matches!(
         ty,
-        Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..) | Type::Closure(..)
+        Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..)
     )
 }
 
@@ -691,6 +691,11 @@ fn resolve_agg_gid(
     agg_names: &HashMap<String, TypeId>,
     identities: &crate::layout::identity::AggregateIdentities,
 ) -> Option<TypeId> {
+    // A closure value (`||->i32`) is the `{ env, func }` pair that the lowerer made.
+    if matches!(ty, Type::Closure(..)) {
+        let gid = crate::hir::flatten::closure_pair_gid();
+        return aggs.contains_key(&gid).then_some(gid);
+    }
     // A data-carrying enum instance (`Option<i32>`) has a *synthesized* per-instance layout keyed by
     // `enum_instance_gid` (the lowerer recorded it in the side table now folded into `aggs`); try that
     // first. Its `gid` is distinct from any registry layout, so a struct instance (`Vec<i32>`) misses

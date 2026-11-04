@@ -163,6 +163,12 @@ pub fn struct_instance_gid<'a>(
     Some(TypeId::new(0, sym, 0, 0))
 }
 
+/// The GID of the `{ env, func }` layout of a closure value (`||->i32`).
+pub fn closure_pair_gid() -> TypeId {
+    let sym = crate::hash::DefPath::Named("$closure_pair").compute_symbol_hash();
+    TypeId::new(0, sym, 0, 0)
+}
+
 /// The tensor GID of a `Type::Tensor`, or `None` if it is not a tensor, its element is generic, or a
 /// dim is not a literal or a plain name (canonicalizing an arbitrary expression would not be stable).
 pub fn tensor_gid_of(ty: &Type) -> Option<TypeId> {
@@ -1570,6 +1576,11 @@ impl<'r> Lowerer<'r> {
             }
             // A scalar `as` cast: the result carries the (scalar) target type.
             Expr::AsCast(c) => {
+                // `c as ||->i32`: the closure becomes the pair `{ env, func }`.
+                if matches!(c.target_ty, Type::Closure(..)) {
+                    let pair = self.closure_pair_layout();
+                    return self.closure_value(&c.expr, pair);
+                }
                 let v = self.lower_expr(&c.expr)?;
                 // An integer cast to a pointer (`0 as *mut T`, the null-pointer idiom): the
                 // result is a bare `!llvm.ptr` value, spelled with the pointer GID so codegen
@@ -4397,6 +4408,9 @@ impl<'r> Lowerer<'r> {
     /// call's return (`VecIter::next -> Option<i32>`), a `let` binding. Falls back to `lowered_ty`
     /// for everything else. (#242)
     fn lower_ty_synth(&mut self, ty: &Type) -> Option<LoweredTy> {
+        if matches!(ty, Type::Closure(..)) {
+            return Some(LoweredTy::Aggregate(self.closure_pair_layout()));
+        }
         let (base, args) = match ty {
             Type::GenericInstance(base, args) => (base.as_ref(), args.as_slice()),
             _ => (ty, &[][..]),
@@ -4587,6 +4601,36 @@ impl<'r> Lowerer<'r> {
             self.completed_layout_identities.insert(gid, identity);
         }
         result
+    }
+
+    /// The layout of a closure value (`||->i32`): the pair `{ env, func }` of two pointers, as on
+    /// the AST path. A program need not declare `Closure1`, so the lowerer makes this layout.
+    fn closure_pair_layout(&mut self) -> TypeId {
+        let gid = closure_pair_gid();
+        if self.generated_layout(gid).is_none() {
+            let field = |name: &str, offset| crate::layout::GeneratedFieldLayout {
+                layout: crate::layout::FieldLayout {
+                    name: name.into(),
+                    offset,
+                    size: 8,
+                    ty: FieldTy::Opaque,
+                },
+                mlir_type: "!llvm.ptr".to_string(),
+                aggregate_id: None,
+                pointer_target_id: None,
+            };
+            let layout = crate::layout::GeneratedAggregateLayout {
+                type_id: gid,
+                name: "closure".to_string(),
+                size_bytes: 16,
+                align_bytes: 8,
+                fields: vec![field("env", 0), field("func", 8)],
+                variant_payloads: Vec::new(),
+            };
+            self.instance_layouts.insert(gid, layout.type_definition());
+            self.record_generated_layout(layout);
+        }
+        gid
     }
 
     fn generated_layout(&self, gid: TypeId) -> Option<&crate::layout::GeneratedAggregateLayout> {
@@ -5786,6 +5830,18 @@ impl<'r> Lowerer<'r> {
     /// the eventual `CallIndirect`, which rebuilds the function type from the actual arguments. Returns
     /// the adapted value (passed by value), or `None` if `arg` isn't a closure. (#242)
     fn try_adapt_closure_arg(&mut self, arg: &Expr) -> Lowered<Val> {
+        // Target `ClosureK` layout `{ env: ptr, func: ptr }` — structurally identical for every arity.
+        let ck_gid =
+            self.registry
+                .layout_gid_by_base_name("Closure1")
+                .ok_or(Decline::TypeNotModelled {
+                    what: "the Closure1 layout",
+                })?;
+        self.closure_value(arg, ck_gid)
+    }
+
+    /// The `{ env, func }` value of the closure literal `arg`, in the pair layout `ck_gid`.
+    fn closure_value(&mut self, arg: &Expr, ck_gid: TypeId) -> Lowered<Val> {
         let cn_name = match self.infer_ast_type(arg).ok_or(Decline::TypeNotModelled {
             what: "an argument whose type cannot be inferred",
         })? {
@@ -5807,13 +5863,6 @@ impl<'r> Lowerer<'r> {
             .ok_or(Decline::TypeNotModelled {
                 what: "a closure callee that is not a function constant",
             })?;
-        // Target `ClosureK` layout `{ env: ptr, func: ptr }` — structurally identical for every arity.
-        let ck_gid =
-            self.registry
-                .layout_gid_by_base_name("Closure1")
-                .ok_or(Decline::TypeNotModelled {
-                    what: "the Closure1 layout",
-                })?;
         let (env_off, func_off) = {
             let fields = &self
                 .layout_of(&ck_gid)
@@ -5881,8 +5930,21 @@ impl<'r> Lowerer<'r> {
         fc: &crate::syntax::FunctionCallExpr,
         callee: Binding,
     ) -> Lowered<Val> {
-        // Load the callee function pointer (an SSA alias, or a `SlotLoad` from its slot).
+        // A closure pair `{ env, func }` (`let f = c as ||->i32; f()`): call `func` with `env`
+        // as its first argument.
+        let mut env = None;
         let fnptr = match callee {
+            Binding::Slot {
+                reg,
+                ty: LoweredTy::Aggregate(gid),
+            } if matches!(
+                self.ast_types.get(fc.name.as_ref()),
+                Some(Type::Closure(..))
+            ) =>
+            {
+                env = Some(self.load_field(reg, &gid, "env")?.reg);
+                self.load_field(reg, &gid, "func")?
+            }
             Binding::Reg(v) => v,
             Binding::Slot { reg, ty } => self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0),
             // A place-bound reference is not a function pointer — decline. (#275)
@@ -5926,17 +5988,18 @@ impl<'r> Lowerer<'r> {
                 }
             },
         };
-        let mut arg_regs = Vec::with_capacity(fc.args.len());
+        let mut arg_regs: Vec<Register> = env.into_iter().collect();
         for arg in &fc.args {
             arg_regs.push(self.lower_expr(arg)?.reg);
         }
+        let argc = arg_regs.len() as u64;
         for reg in arg_regs {
             self.emit_effect(Opcode::Arg, reg, Register(0), 0);
         }
         let type_idx = TypeIdx(self.types.len() as u32);
         self.types.push(ty.gid());
         let reg = Register(self.code.len() as u32);
-        let imm = fc.args.len() as u64 | if void { CALL_INDIRECT_VOID } else { 0 };
+        let imm = argc | if void { CALL_INDIRECT_VOID } else { 0 };
         self.code.push(HirInstruction::new(
             Opcode::CallIndirect,
             fnptr.reg,
@@ -7343,11 +7406,11 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
     // A raw pointer (`*const T`/`*mut T`, `&T`) is an opaque `!llvm.ptr` — the ABI of the string-value
     // and FFI-pointer programs (`vx_stdout_write(buffer: *const u8, …)`, an extern returning
     // `*mut i8`). Matches the AST codegen's `lower_type` for `Type::Pointer`/`Type::Borrow`. (#231/#235)
-    // A function/closure type (`fn(i32)->i32`, a `Closure1`'s `func` field) is also an opaque
+    // A function type (`fn(i32)->i32`, a `Closure1`'s `func` field) is also an opaque
     // `!llvm.ptr` — a materialized function pointer, called via `CallIndirect`. (#242)
     if matches!(
         ty,
-        Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..) | Type::Closure(..)
+        Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..)
     ) {
         return Some(LoweredTy::Ptr);
     }
