@@ -6264,6 +6264,60 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
 // `VX_CTRL_LOCAL_DEVICE` in include/vx_hardware_runtime.h.
 constexpr int32_t kCtrlLocalDevice = 0x04;
 
+// Vx reads every tensor as packed. A C caller can pass a tensor with gaps, for
+// example rows with padding, so each `pub fn` checks the strides of its tensor
+// parameters and stops the program on a gap. The check reads the strides from
+// the descriptor, because MLIR takes a stride that the type fixes from the
+// type.
+static void checkPackedTensorArguments(ModuleOp module) {
+  LLVMTypeConverter converter(module.getContext());
+  for (auto f : module.getOps<func::FuncOp>()) {
+    if (!f->hasAttr("vx.pub") || f.isExternal())
+      continue;
+    Block &entry = f.front();
+    OpBuilder b = OpBuilder::atBlockBegin(&entry);
+    Location loc = entry.empty() ? f.getLoc() : entry.front().getLoc();
+    Type i64 = b.getI64Type();
+    auto eq = [&](Value x, Value y) {
+      return arith::CmpIOp::create(b, loc, arith::CmpIPredicate::eq, x, y);
+    };
+    for (BlockArgument arg : f.getArguments()) {
+      auto type = dyn_cast<MemRefType>(arg.getType());
+      if (!type || type.getRank() == 0 || !type.getLayout().isIdentity())
+        continue;
+      Value descriptor =
+          UnrealizedConversionCastOp::create(
+              b, loc, converter.convertType(type), ValueRange{arg})
+              .getResult(0);
+      Value one = arith::ConstantIntOp::create(b, loc, i64, 1);
+      Value zero = arith::ConstantIntOp::create(b, loc, i64, 0);
+      Value packed = arith::ConstantIntOp::create(b, loc, b.getI1Type(), 1);
+      Value empty = arith::ConstantIntOp::create(b, loc, b.getI1Type(), 0);
+      Value expected = one;
+      // The stride of a dimension of size 1 is never used, so any value works.
+      for (int64_t i = type.getRank() - 1; i >= 0; --i) {
+        Value size = LLVM::ExtractValueOp::create(b, loc, descriptor,
+                                                  ArrayRef<int64_t>{3, i});
+        Value stride = LLVM::ExtractValueOp::create(b, loc, descriptor,
+                                                    ArrayRef<int64_t>{4, i});
+        Value fits =
+            arith::OrIOp::create(b, loc, eq(stride, expected), eq(size, one));
+        packed = arith::AndIOp::create(b, loc, packed, fits);
+        empty = arith::OrIOp::create(b, loc, empty, eq(size, zero));
+        expected = arith::MulIOp::create(b, loc, expected, size);
+      }
+      Value ok = arith::OrIOp::create(b, loc, packed, empty);
+      cf::AssertOp::create(
+          b, loc, ok,
+          "parameter " + std::to_string(arg.getArgNumber() + 1) + " of `" +
+              f.getSymName().str() +
+              "` is a tensor with gaps between its elements. Vx needs a "
+              "packed tensor: the last stride is 1, and each other stride is "
+              "the product of the sizes after it");
+    }
+  }
+}
+
 // Tell the backend which local device each declared GPU topology and its
 // memory is. Their ids are hashes of their names, so the backend cannot work it
 // out from an id. The pairs (declared id, built-in id) come from the front end
@@ -6884,6 +6938,7 @@ struct ConvertVxToLLVMPass
       return;
     }
     declareLocalDevices(getOperation());
+    checkPackedTensorArguments(getOperation());
   }
 };
 
@@ -6927,9 +6982,15 @@ struct PromoteBuffersToStackPass
   static const char *reasonToKeepOnHeap(func::FuncOp func) {
     const char *reason = nullptr;
     auto isMemRef = [](Type t) { return isa<BaseMemRefType>(t); };
+    // A parameter is never a buffer that this function allocates.
+    auto isLocalMemRef = [&](Value v) {
+      auto arg = dyn_cast<BlockArgument>(v);
+      return isMemRef(v.getType()) &&
+             !(arg && arg.getOwner() == &func.getBody().front());
+    };
     func.walk([&](Operation *op) {
       if (isa<UnrealizedConversionCastOp>(op) &&
-          llvm::any_of(op->getOperandTypes(), isMemRef))
+          llvm::any_of(op->getOperands(), isLocalMemRef))
         reason = "a buffer is converted into a value the analysis cannot "
                  "follow, such as a struct field";
       else if (auto store = dyn_cast<memref::StoreOp>(op);
