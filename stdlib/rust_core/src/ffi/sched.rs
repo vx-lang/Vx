@@ -52,7 +52,7 @@ const WOKEN: u8 = 3;
 pub(crate) struct TaskLocals {
     pub(crate) mark: Option<Arc<CancelMark>>,
     /// The marks that `vx_cancel_off` put aside. A `drop` can park between the off and the on.
-    pub(crate) put_aside: Vec<Option<Arc<CancelMark>>>,
+    pub(crate) put_aside: crate::ffi::tasks::PutAside,
     pub(crate) line: Vec<u8>,
     pub(crate) to_stderr: bool,
     pub(crate) site: Option<crate::ffi::tasks::Site>,

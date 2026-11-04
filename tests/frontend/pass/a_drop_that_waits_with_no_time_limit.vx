@@ -5,13 +5,13 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// A `drop` runs with cancellation off, so a `send` or `recv` in it can wait forever. The
-// compiler warns about each one (W1036). `send_for` and `recv_for` have a time limit, and the
-// same `send` in a normal method gets no warning.
+// A `drop` runs with cancellation off, so a `send` or `recv` in it can wait until the limit of the
+// drop. The compiler warns about each one (W1036). `send_for` and `recv_for` have a time limit, and
+// the same `send` in a normal method gets no warning.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Warning --implicit-check-not=Error
-// CHECK: Warning[W1036] at {{.*}}a_drop_that_waits_with_no_time_limit.vx:[[@LINE+14]]:{{[0-9]+}}: 'send' waits with no time limit in a 'drop'. A drop runs with cancellation off, so this wait never ends if the other end of the channel never acts. Use 'send_for' with a time limit
-// CHECK: Warning[W1036] at {{.*}}a_drop_that_waits_with_no_time_limit.vx:[[@LINE+14]]:{{[0-9]+}}: 'recv' waits with no time limit in a 'drop'. {{.*}} Use 'recv_for' with a time limit
+// CHECK: Warning[W1036] at {{.*}}a_drop_that_waits_with_no_time_limit.vx:[[@LINE+14]]:{{[0-9]+}}: 'send' waits with no time limit of its own in a 'drop'. A drop runs with cancellation off, so if the other end of the channel never acts, this wait holds up the drop until the limit of the drop: VX_DROP_WAIT_SECONDS, or 10 seconds. Use 'send_for' with a time limit
+// CHECK: Warning[W1036] at {{.*}}a_drop_that_waits_with_no_time_limit.vx:[[@LINE+14]]:{{[0-9]+}}: 'recv' waits with no time limit of its own in a 'drop'. {{.*}} Use 'recv_for' with a time limit
 
 import std::sync::channel;
 
