@@ -148,6 +148,10 @@ consistency grade (`relaxed` or `sync`, default `sync`), and an optional `copy_e
 legal in a lowering for that edge. Omitting the cost declares that the move is possible and leaves
 the number to be derived from the endpoints.
 
+The cost `: shared` says that both sides address the same memory, as on a Mac with unified memory.
+The hop copies no bytes, so the cost model gives it a cost of 0 and the JSON report says
+`"cost_source": "shared"`.
+
 ### Memory fields
 
 `capacity`, `bandwidth`, `clock`, `granule`, `within`, `scope`, `managed`, `replicas`, `crossing`,

@@ -1408,10 +1408,19 @@ impl<'a> TypeChecker<'a> {
         let moved_bytes: Option<u64> = Self::tensor_of(&inner_ty)
             .and_then(|(e, d)| crate::hir::memory::static_tensor_bytes(e, d));
 
-        // Which of the two cost sources applied. They are mutually exclusive by construction
-        // (E6013), so this names the one that fired rather than a precedence winner.
+        // Which cost source applied. They are mutually exclusive by construction (E6013), so this
+        // names the one that fired rather than a precedence winner.
         let link_bw = self.transfer_cost_graph.link_rate(&source_mem, &target_mem);
+        let shared = self
+            .transfer_cost_graph
+            .is_shared_edge(&source_mem, &target_mem);
         let derived: Option<crate::hir::memory::DerivedCost> = moved_bytes.and_then(|bytes| {
+            if shared {
+                return Some(crate::hir::memory::DerivedCost {
+                    value: 0,
+                    per: crate::syntax::RatePer::Second,
+                });
+            }
             link_bw
                 .and_then(|bw| {
                     crate::hir::memory::hop_cost(bytes, bw)
@@ -1425,7 +1434,9 @@ impl<'a> TypeChecker<'a> {
         let derived_cost = derived.map(|d| d.value);
         let derived_unit = derived.map(|d| d.per);
         let cost_source = derived.map(|_| {
-            if link_bw.is_some() {
+            if shared {
+                crate::report::CostSource::Shared
+            } else if link_bw.is_some() {
                 crate::report::CostSource::LinkRate
             } else {
                 crate::report::CostSource::Containment
