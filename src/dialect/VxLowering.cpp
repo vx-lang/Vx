@@ -2750,6 +2750,32 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
 
 /// Whether the kernel outlined from `spawn` will get a device twin, by the
 /// rules `materializeGpuKernels` applies to it later.
+/// Whether `buffer` is a tile that `spawn` makes: an alloc in the region, or a
+/// load of a slot of the region that holds only such allocs. The legacy code
+/// generator keeps a tensor in a slot.
+static bool dropsOwnBuffer(vx::SpawnOp spawn, Value buffer) {
+  Operation *def = buffer.getDefiningOp();
+  if (!def || !spawn->isProperAncestor(def))
+    return false;
+  if (isa<memref::AllocOp, memref::AllocaOp>(def))
+    return true;
+  auto load = dyn_cast<memref::LoadOp>(def);
+  auto slot = load ? load.getMemRef().getDefiningOp<memref::AllocaOp>()
+                   : memref::AllocaOp();
+  if (!slot || !spawn->isProperAncestor(slot))
+    return false;
+  return llvm::all_of(slot->getUsers(), [&](Operation *user) {
+    if (isa<memref::LoadOp>(user))
+      return true;
+    auto store = dyn_cast<memref::StoreOp>(user);
+    if (!store || store.getValue() == slot.getResult())
+      return false;
+    Operation *from = store.getValue().getDefiningOp();
+    return from && isa<memref::AllocOp, memref::AllocaOp>(from) &&
+           spawn->isProperAncestor(from);
+  });
+}
+
 static bool spawnRunsOnDevice(vx::SpawnOp spawn) {
   // No pipeline compiles the region, so it gets no device twin.
   if (pipelineOfKernel(spawn, spawn.getTopology()) == DevicePipeline::None)
@@ -2769,13 +2795,9 @@ static bool spawnRunsOnDevice(vx::SpawnOp spawn) {
       return WalkResult::skip();
     // A drop of a tensor the region made becomes a `memref.dealloc`. A drop of
     // a stack slot, such as a register or shared tensor, is erased.
-    if (auto drop = dyn_cast<vx::DropOp>(op)) {
-      Operation *def = drop.getBuffer().getDefiningOp();
-      return def && isa<memref::AllocOp, memref::AllocaOp>(def) &&
-                     spawn->isProperAncestor(def)
-                 ? WalkResult::advance()
-                 : WalkResult::interrupt();
-    }
+    if (auto drop = dyn_cast<vx::DropOp>(op))
+      return dropsOwnBuffer(spawn, drop.getBuffer()) ? WalkResult::advance()
+                                                     : WalkResult::interrupt();
     return runsOnDevice(op, module, callees) ? WalkResult::advance()
                                              : WalkResult::interrupt();
   });
