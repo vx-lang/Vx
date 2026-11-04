@@ -6236,6 +6236,11 @@ struct LaunchOpLowering : public OpRewritePattern<vx::LaunchOp> {
         payload += "grid_loops=1";
         payload.push_back('\0');
       }
+      // The host copy takes its blocks of axis x from the host worker.
+      if (op->hasAttr("vx.host_blocks")) {
+        payload += "host_blocks=1";
+        payload.push_back('\0');
+      }
     }
 
     if (auto trip = op->getAttrOfType<IntegerAttr>("vx_parallel_trip")) {
@@ -7999,6 +8004,45 @@ struct ConvertVxToLLVMPass
     // to translate and started silently returning 1. A gpu op the compiler did
     // not put there still reaches LLVM translation and still fails loudly,
     // which is the right outcome for something nothing here knows how to lower.
+    //
+    // An `across` loop of blocks starts at the block id and steps by the grid
+    // size, so the host workers can share its blocks: worker w of W runs blocks
+    // w, w + W, ... of axis x, and the lanes of each block in order. The other
+    // axes have one block, the first. Each launch of such a kernel says
+    // `host_blocks=1` (`vx_host_worker_count_for` in runtime/vx_host_call.h).
+    llvm::StringSet<> sharing;
+    module.walk([&](vx::KernelOp kernel) {
+      if (!kernel->hasAttr("vx.across"))
+        return;
+      bool id = false, count = false;
+      kernel.walk([&](gpu::BlockIdOp o) {
+        id |= o.getDimension() == gpu::Dimension::x;
+      });
+      kernel.walk([&](gpu::GridDimOp o) {
+        count |= o.getDimension() == gpu::Dimension::x;
+      });
+      if (id && count)
+        sharing.insert(kernel.getSymName());
+    });
+    func::FuncOp workerId, workerCount;
+    auto declareQuery = [&](StringRef name) {
+      if (auto existing = module.lookupSymbol<func::FuncOp>(name))
+        return existing;
+      OpBuilder b = OpBuilder::atBlockBegin(module.getBody());
+      auto decl =
+          func::FuncOp::create(b, UnknownLoc::get(module.getContext()), name,
+                               b.getFunctionType({}, {b.getI64Type()}));
+      decl.setPrivate();
+      return decl;
+    };
+    if (!sharing.empty()) {
+      workerId = declareQuery("vx_host_worker_id");
+      workerCount = declareQuery("vx_host_worker_count");
+      module.walk([&](vx::LaunchOp launch) {
+        if (sharing.contains(launch.getCalleeAttr().getValue()))
+          launch->setAttr("vx.host_blocks", UnitAttr::get(module.getContext()));
+      });
+    }
     getOperation().walk([&](vx::KernelOp kernel) {
       kernel.walk([&](gpu::ThreadIdOp t) {
         OpBuilder b(t);
@@ -8012,18 +8056,25 @@ struct ConvertVxToLLVMPass
         d.getResult().replaceAllUsesWith(one);
         d.erase();
       });
-      // An `across` loop of blocks: one block, the first.
+      bool share = sharing.contains(kernel.getSymName());
+      // The block id or the grid size of axis x from the worker, else `value`.
+      auto blocks = [&](OpBuilder &b, Location loc, gpu::Dimension axis,
+                        func::FuncOp query, int64_t value) -> Value {
+        if (!share || axis != gpu::Dimension::x)
+          return b.create<arith::ConstantOp>(loc, b.getIndexAttr(value));
+        Value v = func::CallOp::create(b, loc, query).getResult(0);
+        return arith::IndexCastOp::create(b, loc, b.getIndexType(), v);
+      };
       kernel.walk([&](gpu::BlockIdOp id) {
         OpBuilder b(id);
-        Value zero =
-            b.create<arith::ConstantOp>(id.getLoc(), b.getIndexAttr(0));
-        id.getResult().replaceAllUsesWith(zero);
+        id.getResult().replaceAllUsesWith(
+            blocks(b, id.getLoc(), id.getDimension(), workerId, 0));
         id.erase();
       });
       kernel.walk([&](gpu::GridDimOp d) {
         OpBuilder b(d);
-        Value one = b.create<arith::ConstantOp>(d.getLoc(), b.getIndexAttr(1));
-        d.getResult().replaceAllUsesWith(one);
+        d.getResult().replaceAllUsesWith(
+            blocks(b, d.getLoc(), d.getDimension(), workerCount, 1));
         d.erase();
       });
       kernel.walk([](gpu::BarrierOp bar) { bar.erase(); });

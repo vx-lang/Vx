@@ -6,12 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 // Without each `across`, a program means the same (#252, L6), so its loops can run in order.
-// The regions run on the CPU here (`CUDA_VISIBLE_DEVICES=`): the CPU copy of a kernel has one
-// block of one lane. The kernels are a warp for each row with 40 columns, a 16x16 tile, a block
-// with lane loops of 256 and 128 and code between them that writes memory, blocks with no lane
-// loop, a sum that lane 0 makes and later lane-0 code reads, a plain loop and an `if` around lane
-// loops, `blocks(4)` with two axes of blocks and three of lanes, and `lanes(8)` beside a wider
-// lane loop. Each line is the sum of what a kernel wrote.
+// The regions run on the CPU here (`CUDA_VISIBLE_DEVICES=`): the CPU copy of a kernel runs each
+// block with one lane, and the host's workers share the blocks. The kernels are a warp for each
+// row with 40 columns, a 16x16 tile, a block with lane loops of 256 and 128 and code between
+// them that writes memory, blocks with no lane loop, a sum that lane 0 makes and later lane-0
+// code reads, a plain loop and an `if` around lane loops, `blocks(4)` with two axes of blocks
+// and three of lanes, and `lanes(8)` beside a wider lane loop. Each line is the sum of what a
+// kernel wrote.
 //
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s --legacy-codegen --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error

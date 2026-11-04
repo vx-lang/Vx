@@ -393,9 +393,12 @@ static inline size_t vx_payload_text_end(const void *payload,
 /// computes, "matmul", so a plugin can route it to a vendor library instead of
 /// guessing from buffer shapes -- which cannot be done for square operands,
 /// where every operand assignment conforms), `roles=`, `outkind=`, `topo=` (the
-/// dispatch id, decoded by vx_payload_topology), `toponame=`, `launch=`,
-/// `coop=`, `format=` (`ptx` or `spirv`, what the image is), and `image=` (a
-/// device image that is text, which today means PTX).
+/// dispatch id, decoded by vx_payload_topology), `toponame=`, `grid=`, `block=`
+/// and `grid_loops=` (the launch shape of an `across` kernel, vx_launch_shape),
+/// `host_blocks=` (the host copy shares the blocks of axis x among the host's
+/// workers, vx_host_worker_count_for), `launch=`, `coop=`, `format=` (`ptx` or
+/// `spirv`, what the image is), and `image=` (a device image that is text,
+/// which today means PTX).
 ///
 /// Every entry is optional to a reader, and that is what let each of them land
 /// without breaking a consumer that predates it. `kind=` absent means
