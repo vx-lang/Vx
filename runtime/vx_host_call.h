@@ -41,6 +41,10 @@
 #include <sched.h> /* vx_host_worker_count_for: sched_getaffinity */
 #endif
 
+#if defined(__x86_64__)
+#include <xmmintrin.h> /* vx_host_ffi_call: _mm_getcsr */
+#endif
+
 // Homebrew's libffi is not on the default include path on macOS, where the SDK
 // instead provides the header under a directory of its own.
 #if defined(__APPLE__)
@@ -232,6 +236,42 @@ static inline int vx_host_worker_count_for(const void *payload,
   return (int)(cpus < trip ? cpus : trip);
 }
 
+/// Whether the payload holds a kernel for the Apple GPU (`format=msl`). The GPU
+/// flushes a subnormal f32 to 0, so the CPU copy of such a kernel must too.
+static inline bool vx_host_flushes_subnormals(const void *payload,
+                                              size_t payload_size) {
+  const char *format = vx_payload_field(payload, payload_size, "format=");
+  return format && strcmp(format, "msl") == 0;
+}
+
+/// Calls the kernel once. With `flush`, a subnormal float that the call reads
+/// or makes is 0: FPCR.FZ on arm64, and FTZ and DAZ in MXCSR on x86-64. The
+/// thread gets its old mode back after the call.
+static inline void vx_host_ffi_call(ffi_cif *cif, void *kernel, void **args,
+                                    bool flush) {
+  void (*fn)(void) = reinterpret_cast<void (*)(void)>(kernel);
+  if (!flush) {
+    ffi_call(cif, fn, nullptr, args);
+    return;
+  }
+#if defined(__aarch64__)
+  uint64_t fpcr;
+  __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+  __asm__ volatile("msr fpcr, %0" : : "r"(fpcr | (1ull << 24)) : "memory");
+  ffi_call(cif, fn, nullptr, args);
+  __asm__ volatile("msr fpcr, %0" : : "r"(fpcr) : "memory");
+#elif defined(__x86_64__)
+  unsigned csr = _mm_getcsr();
+  _mm_setcsr(csr | 0x8040);
+  ffi_call(cif, fn, nullptr, args);
+  _mm_setcsr(csr);
+#else
+  fprintf(stderr, "[Vx] FATAL: the CPU copy of an Apple GPU kernel must flush "
+                  "subnormal floats to 0, and Vx cannot do that on this CPU\n");
+  abort();
+#endif
+}
+
 /// One worker's call.
 struct vx_host_worker_job {
   ffi_cif *cif;
@@ -239,14 +279,14 @@ struct vx_host_worker_job {
   void **args;
   int64_t index;
   int64_t total;
+  bool flush;
 };
 
 static void *vx_host_worker_main(void *p) {
   vx_host_worker_job *job = static_cast<vx_host_worker_job *>(p);
   vx_host_worker_index = job->index;
   vx_host_worker_total = job->total;
-  ffi_call(job->cif, reinterpret_cast<void (*)(void)>(job->kernel), nullptr,
-           job->args);
+  vx_host_ffi_call(job->cif, job->kernel, job->args, job->flush);
   return nullptr;
 }
 
@@ -266,7 +306,8 @@ static void vx_host_worker_apply(void *jobs, size_t w) {
 ///
 /// `workers` is how many disjoint slices to run at once, from
 /// `vx_host_worker_count_for`. At 1 this is one `ffi_call` on the calling
-/// thread, which is what this function has always been.
+/// thread, which is what this function has always been. `flush_subnormals`
+/// comes from `vx_host_flushes_subnormals`, and each worker applies it.
 ///
 /// Threads are created per dispatch rather than kept in a standing pool. That
 /// costs roughly 20us per worker, which is nothing against a kernel that reads
@@ -280,7 +321,8 @@ static void vx_host_worker_apply(void *jobs, size_t w) {
 /// threads, and 17us with 8 workers from the pool.
 static inline bool vx_host_call_kernel(void *kernel, void **device_args,
                                        const int32_t *arg_tags,
-                                       int64_t num_args, int workers = 1) {
+                                       int64_t num_args, int workers,
+                                       bool flush_subnormals) {
   std::vector<ffi_type *> types(num_args > 0 ? (size_t)num_args : 1);
   for (int64_t i = 0; i < num_args; ++i) {
     types[i] = vx_abi_ffi_type(arg_tags[i]);
@@ -293,8 +335,7 @@ static inline bool vx_host_call_kernel(void *kernel, void **device_args,
   }
 
   if (workers <= 1) {
-    ffi_call(&cif, reinterpret_cast<void (*)(void)>(kernel), nullptr,
-             device_args);
+    vx_host_ffi_call(&cif, kernel, device_args, flush_subnormals);
     return true;
   }
 
@@ -303,7 +344,7 @@ static inline bool vx_host_call_kernel(void *kernel, void **device_args,
   // has already run.
   std::vector<vx_host_worker_job> jobs((size_t)workers);
   for (int w = 0; w < workers; ++w) {
-    jobs[(size_t)w] = {&cif, kernel, device_args, w, workers};
+    jobs[(size_t)w] = {&cif, kernel, device_args, w, workers, flush_subnormals};
   }
 #if defined(__APPLE__)
   dispatch_apply_f((size_t)workers, DISPATCH_APPLY_AUTO, jobs.data(),
