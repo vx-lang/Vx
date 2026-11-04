@@ -57,7 +57,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/raw_pointers_compare_by_address.vx",
     // "A compound assignment to something other than a simple name" is not modelled.
     "backend/pass/compound_assignment_through_a_reference.vx",
-    "backend/pass/core_iter_zip.vx",
     // A generic struct, which the flat path declines as "a struct with no GID". The file
     // exists to pin that `>>` still closes two generics now that it is also the right
     // shift, and that question is settled in the parser, so the decline costs it nothing.

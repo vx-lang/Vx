@@ -3529,10 +3529,13 @@ impl<'r> Lowerer<'r> {
         );
 
         self.emit_effect(Opcode::BlockStart, Register(0), Register(0), body_b as u64);
-        // Bind the loop variable to the payload.
-        let lty = lowered_ty(&payload_type, self.registry).ok_or(Decline::TypeNotModelled {
-            what: "an enum payload type that is not modelled",
-        })?;
+        // Bind the loop variable to the payload. An instance payload, such as the
+        // `Tuple2<i64, i64>` that `zip` gives, gets its own layout, as in a `match`.
+        let lty = self
+            .payload_lowered_ty(&payload_type)
+            .ok_or(Decline::TypeNotModelled {
+                what: "an enum payload type that is not modelled",
+            })?;
         let x = self.emit_typed(
             Opcode::EnumPayloadLoad,
             opt_slot.reg,
