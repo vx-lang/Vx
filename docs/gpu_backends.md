@@ -78,6 +78,9 @@ copy. `--emit-msl` writes the MSL and the same manifest as `--emit-ptx`.
   and the runtime refuses a tensor of 2^31 elements or more.
 - `VX_METAL=0`, or `vx_metal_set_enabled(0)` on one thread, runs the CPU copy
   of each kernel on the same memory instead.
+- The GPU flushes a subnormal `f32` to 0, and the CPU copy does too, so the two
+  give the same bits. The CPU copy sets FPCR.FZ on arm64, and FTZ and DAZ on
+  x86-64, while it runs.
 - Each launch waits for the GPU to finish.
 - Not yet: atomics, dynamic shared memory and `vector` ops. Each is a compile
   error that names the op. Kernels for two GPU architectures in one program

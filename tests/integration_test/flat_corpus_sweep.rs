@@ -246,6 +246,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/apple_gpu_kernels_in_metal_shading_language.vx",
             // needs --machine
             "optimizations/pass/the_cpu_workers_share_the_blocks_of_an_across_loop.vx",
+            // needs --machine
+            "optimizations/pass/the_cpu_copy_of_an_apple_gpu_kernel_flushes_subnormals.vx",
         ];
         if NOT_STANDALONE.contains(&name.as_str()) {
             continue;
