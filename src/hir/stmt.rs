@@ -1720,7 +1720,8 @@ impl<'a> TypeChecker<'a> {
         }
         // The old value of a type with a drop is dropped, which can free memory.
         if !self.drops_glue(&lhs_ty).is_empty() {
-            self.pointer_facts_event();
+            let at = self.current_statement_span;
+            self.pointer_facts_event(at, |_| "an assignment that drops the old value".to_string());
         }
         // Keep the compile-time value of the assigned variable in step with the assignment.
         // An assignment the evaluator cannot compute makes the variable unknown rather than

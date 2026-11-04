@@ -14,7 +14,8 @@
 // Each event that can free memory ends each fact about memory that the body does not name: a
 // call with an argument that can free memory, an assignment that drops a value, the drop of a
 // local, an `mlir!` block with such an input or a clobber, and a `spawn`. No callee is known to
-// keep memory alive yet, so a call that gets a raw pointer is such an event.
+// keep memory alive yet, so a call that gets a raw pointer is such an event. Each ended fact
+// keeps the place and the reason of its event, for the note of E8006.
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,8 +26,8 @@ use std::collections::HashMap;
 /// Where the memory of a base is.
 #[derive(Clone, Debug, PartialEq)]
 enum Memory {
-    /// The storage of this local variable.
-    Local(String),
+    /// The storage of the local variable `var`. `drops` is true when its type has a drop.
+    Local { var: String, drops: bool },
     /// Memory that the body does not name.
     Other,
 }
@@ -56,6 +57,25 @@ struct Apart {
     len: Expr,
 }
 
+/// A fact that an event ended, with the place and the reason of the event, for the note of
+/// E8006.
+#[derive(Clone, Debug)]
+struct Ended {
+    range: Range,
+    at: Span,
+    why: String,
+}
+
+/// A call as the program wrote it, before the check can turn it into another call, such as a
+/// method call into a call of its function.
+pub(crate) struct WrittenCall {
+    /// The name of the function or the method.
+    name: Option<crate::symbol::Symbol>,
+    /// For a call of a local variable, such as a closure: whether its value can free memory.
+    local_can_free: Option<bool>,
+    at: Span,
+}
+
 /// A pointer value: a base, and an offset in elements that is the exact sum of its terms.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PointerValue {
@@ -72,6 +92,7 @@ pub(crate) struct PointerFacts {
     entries: HashMap<String, PointerValue>,
     ranges: Vec<Range>,
     aparts: Vec<Apart>,
+    ended: Vec<Ended>,
 }
 
 impl PointerFacts {
@@ -85,8 +106,9 @@ impl PointerFacts {
         self.entries.remove(name);
         self.entries
             .retain(|_, v| !v.offset.iter().any(|t| expr_mentions(t, name)));
-        self.ranges
-            .retain(|r| !expr_mentions(&r.lo, name) && !expr_mentions(&r.hi, name));
+        let names = |r: &Range| expr_mentions(&r.lo, name) || expr_mentions(&r.hi, name);
+        self.ranges.retain(|r| !names(r));
+        self.ended.retain(|e| !names(&e.range));
         self.aparts.retain(|a| {
             ![&a.first.1, &a.second.1, &a.len]
                 .iter()
@@ -94,19 +116,50 @@ impl PointerFacts {
         });
     }
 
-    /// An event that can free memory that the body does not name. No event ends an `Apart`
-    /// fact: a free does not change an address.
-    fn end_other_memory(&mut self) {
+    /// Ends each range that `ends` selects, and records the event for the note of E8006.
+    fn end_ranges(&mut self, at: Span, why: &str, ends: impl Fn(&Range, Option<&Memory>) -> bool) {
         let memory = &self.memory;
-        self.ranges
-            .retain(|r| !matches!(memory.get(&r.base), Some(Memory::Other) | None));
+        let (gone, kept) = std::mem::take(&mut self.ranges)
+            .into_iter()
+            .partition(|r| ends(r, memory.get(&r.base)));
+        self.ranges = kept;
+        self.ended.extend(gone.into_iter().map(|range| Ended {
+            range,
+            at,
+            why: why.to_string(),
+        }));
+    }
+
+    /// An event that can free memory that the body does not name. It also ends `Init` for a
+    /// local variable whose type has a drop: the event can move its value out and drop it. No
+    /// event ends an `Apart` fact: a free does not change an address.
+    fn end_other_memory(&mut self, at: Span, why: &str) {
+        self.end_ranges(at, why, |r, memory| match memory {
+            Some(Memory::Local { drops, .. }) => *drops && r.kind == Kind::Init,
+            _ => true,
+        });
     }
 
     /// The storage of the local variable `var` ends.
-    fn end_local(&mut self, var: &str) {
-        let memory = &self.memory;
-        self.ranges
-            .retain(|r| !matches!(memory.get(&r.base), Some(Memory::Local(v)) if v == var));
+    fn end_local(&mut self, var: &str, at: Span, why: &str) {
+        self.end_ranges(
+            at,
+            why,
+            |_, memory| matches!(memory, Some(Memory::Local { var: v, .. }) if v == var),
+        );
+    }
+
+    /// A move takes the value out of the local variable `var`.
+    fn end_init_of_local(&mut self, var: &str, at: Span, why: &str) {
+        self.end_ranges(at, why, |r, memory| {
+            r.kind == Kind::Init && matches!(memory, Some(Memory::Local { var: v, .. }) if v == var)
+        });
+    }
+
+    fn has_local(&self, var: &str) -> bool {
+        self.ranges.iter().any(
+            |r| matches!(self.memory.get(&r.base), Some(Memory::Local { var: v, .. }) if v == var),
+        )
     }
 
     /// The facts that hold at the end of both `self` and `other`, each of which started from
@@ -118,6 +171,12 @@ impl PointerFacts {
             .retain(|r| other.ranges.iter().any(|o| o.id == r.id));
         self.aparts
             .retain(|a| other.aparts.iter().any(|o| o.id == a.id));
+        // A fact that ended in either branch keeps the record of its event.
+        for e in &other.ended {
+            if !self.ended.iter().any(|s| s.range.id == e.range.id) {
+                self.ended.push(e.clone());
+            }
+        }
         for (base, memory) in &other.memory {
             self.memory.entry(*base).or_insert_with(|| memory.clone());
         }
@@ -341,8 +400,8 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// A pointer made from `&place`. When `place` is a local variable or a field of one, the
-    /// pointer points at its storage, which holds one value of the type: `Valid(b, 0, 1)`, and
-    /// `Init(b, 0, 1)` when the type is `Copy`, so that no move can take the value away.
+    /// pointer points at its storage, which holds one value of the type: `Valid(b, 0, 1)` and
+    /// `Init(b, 0, 1)`.
     fn pointer_to_a_local(&mut self, place: &Expr, pointee: Option<&Type>) -> PointerValue {
         fn root(e: &Expr) -> Option<&str> {
             match e {
@@ -363,16 +422,21 @@ impl<'a> TypeChecker<'a> {
                 offset: Vec::new(),
             };
         };
-        let base = self.new_base(Memory::Local(var.to_string()));
+        let var_ty = self.lookup(var).map(|(t, _)| t.clone());
+        let drops = var_ty
+            .is_none_or(|t| matches!(t, Type::Generic(..)) || !self.drops_glue(&t).is_empty());
+        let memory = Memory::Local {
+            var: var.to_string(),
+            drops,
+        };
+        let base = self.new_base(memory);
         let one = Expr::Number(NumberExpr {
             value: "1".to_string().into(),
             ty: None,
             span: Span::default(),
         });
         self.add_range(Kind::Valid, base, zero(), one.clone());
-        if self.is_copy(&place_ty) {
-            self.add_range(Kind::Init, base, zero(), one);
-        }
+        self.add_range(Kind::Init, base, zero(), one);
         PointerValue {
             base,
             offset: Vec::new(),
@@ -430,9 +494,13 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// An event that can free memory that the body does not name.
-    pub(crate) fn pointer_facts_event(&mut self) {
-        self.pointer_facts.end_other_memory();
+    /// An event at `at` that can free memory that the body does not name. `why` gives the
+    /// event for the note of E8006, such as "the call to 'push'".
+    pub(crate) fn pointer_facts_event(&mut self, at: Span, why: impl FnOnce(&Self) -> String) {
+        if !self.pointer_facts.ranges.is_empty() {
+            let why = why(self);
+            self.pointer_facts.end_other_memory(at, &why);
+        }
     }
 
     /// The variables of a scope end. Their storage ends, and the drop of a value of a type with a
@@ -441,14 +509,31 @@ impl<'a> TypeChecker<'a> {
         &mut self,
         vars: &HashMap<crate::symbol::Symbol, (Type, Topology)>,
     ) {
-        let mut drops = false;
+        let at = self.current_statement_span;
+        let mut dropped: Vec<&str> = Vec::new();
         for (name, (ty, _)) in vars {
-            self.pointer_facts.end_local(name.as_ref());
+            if self.pointer_facts.has_local(name.as_ref()) {
+                let why = format!("the end of the scope of `{name}`");
+                self.pointer_facts.end_local(name.as_ref(), at, &why);
+            }
             self.pointer_facts.forget(name.as_ref());
-            drops = drops || !self.drops_glue(ty).is_empty() || matches!(ty, Type::Generic(..));
+            if !self.drops_glue(ty).is_empty() || matches!(ty, Type::Generic(..)) {
+                dropped.push(name.as_ref());
+            }
         }
-        if drops {
-            self.pointer_facts_event();
+        if let Some(name) = dropped.iter().min() {
+            self.pointer_facts_event(at, |_| {
+                format!("the end of the scope of `{name}`, which drops its value")
+            });
+        }
+    }
+
+    /// A move took the value out of the local variable `var`, or out of a field of it.
+    pub(crate) fn pointer_facts_move_out(&mut self, var: &str) {
+        if self.pointer_facts.has_local(var) {
+            let why = format!("the move out of `{var}`");
+            let at = self.current_statement_span;
+            self.pointer_facts.end_init_of_local(var, at, &why);
         }
     }
 
@@ -456,7 +541,8 @@ impl<'a> TypeChecker<'a> {
     /// that the body can have ends the facts before the body.
     pub(crate) fn end_pointer_facts_a_loop_can_end(&mut self, body: &[Statement]) {
         if self.loop_body_can_free(body) {
-            self.pointer_facts_event();
+            let at = self.current_statement_span;
+            self.pointer_facts_event(at, |_| "the loop, whose body can free memory".to_string());
         }
     }
 
@@ -536,30 +622,148 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The call `expr` as the program wrote it, read before the check.
+    pub(crate) fn written_call(&mut self, expr: &Expr) -> WrittenCall {
+        let (name, at) = match (self.method_call_written.take(), expr) {
+            (Some((name, at)), _) => (Some(name), at),
+            (None, Expr::FunctionCall(fc)) => (Some(fc.name.clone()), fc.span),
+            (None, Expr::MethodCall(m)) => (Some(m.method_name.clone()), m.span),
+            (None, e) => (None, e.span()),
+        };
+        // The parser gives some calls no place, such as `(h.f)()`.
+        let at = if at == Span::default() {
+            self.current_statement_span
+        } else {
+            at
+        };
+        let local = match expr {
+            Expr::FunctionCall(fc) => self.lookup(fc.name.as_ref()).map(|(t, _)| t.clone()),
+            _ => None,
+        };
+        let local_can_free = local.map(|t| self.type_can_free(&t, 0));
+        WrittenCall {
+            name,
+            local_can_free,
+            at,
+        }
+    }
+
     /// After the call `expr` is checked and its value `requires` is proved: prove each pointer
     /// `requires` of the callee in safe code, and then apply the events of the call.
-    pub(crate) fn pointer_facts_at_call(&mut self, expr: &Expr) {
-        let (name, args): (&str, &[Expr]) = match expr {
-            Expr::FunctionCall(fc) => (fc.name.as_ref(), &fc.args),
-            Expr::MethodCall(m) => (m.method_name.as_ref(), &m.args),
-            Expr::IndirectCall(ic) => ("", &ic.args),
+    pub(crate) fn pointer_facts_at_call(&mut self, expr: &Expr, written: WrittenCall) {
+        let WrittenCall {
+            name: written,
+            local_can_free,
+            at,
+        } = written;
+        let written = written.as_deref();
+        // The receiver of a method call that the check kept, and the function value of an
+        // indirect call, are arguments too.
+        let (name, args, callee): (&str, &[Expr], Option<&Expr>) = match expr {
+            Expr::FunctionCall(fc) => (fc.name.as_ref(), &fc.args, None),
+            Expr::MethodCall(m) => (m.method_name.as_ref(), &m.args, Some(&*m.base)),
+            Expr::IndirectCall(ic) => ("", &ic.args, Some(&*ic.callee)),
             _ => return,
         };
         if !self.speculating && !self.in_unsafe_block && !self.in_unsafe_fn {
-            self.prove_pointer_requires(name, args, &expr.span());
+            self.prove_pointer_requires(name, args, &at);
         }
-        let is_address_function = ADDRESS_FUNCTIONS.contains(&plain_name(name));
-        // A call of a local, such as a closure, runs code that can use what it captured.
-        let calls_a_local = self.lookup(name).is_some();
-        let frees = !is_address_function
-            && (matches!(expr, Expr::IndirectCall(_) | Expr::MethodCall(_))
-                || calls_a_local
-                || args.iter().any(|a| {
-                    let ty = self.check_expr_type_probe(a);
-                    self.type_can_free(&ty, 0)
-                }));
-        if frees {
-            self.pointer_facts_event();
+        if ADDRESS_FUNCTIONS.contains(&plain_name(name)) {
+            return;
+        }
+        let shown = written.unwrap_or(name);
+        // A call of a local closure gets the values that the closure captures. Its type does not
+        // show them, so the call can free memory.
+        let local_call = local_can_free.is_some();
+        let why = if local_can_free == Some(true) {
+            Some(format!(
+                "the call of the closure `{shown}`, which can free memory through what it captures"
+            ))
+        } else {
+            let params = self.call_param_types(name, expr);
+            let mut through = callee.filter(|c| self.argument_can_free(c, None));
+            for (i, a) in args.iter().enumerate() {
+                if through.is_none()
+                    && self.argument_can_free(a, params.as_ref().and_then(|p| p.get(i)))
+                {
+                    through = Some(a);
+                }
+            }
+            // The check gives a call of a closure the closure value as an argument.
+            let is_the_closure = |a: &Expr| match a {
+                Expr::Borrow(b) => {
+                    matches!(&*b.expr, Expr::Identifier(id) if id.name.as_ref() == shown)
+                }
+                Expr::Identifier(id) => id.name.as_ref() == shown,
+                _ => false,
+            };
+            let closure = |c: String| {
+                format!(
+                    "the call of the closure {c}, which can free memory through what it captures"
+                )
+            };
+            through.map(|a| match expr {
+                Expr::IndirectCall(ic) if std::ptr::eq(&*ic.callee, a) => {
+                    closure(shown_argument(a))
+                }
+                Expr::IndirectCall(ic) => format!(
+                    "the call through {}, which can free memory through {}",
+                    shown_argument(&ic.callee),
+                    shown_argument(a)
+                ),
+                _ if local_call && is_the_closure(a) => closure(format!("`{shown}`")),
+                _ if local_call => format!(
+                    "the call through `{shown}`, which can free memory through {}",
+                    shown_argument(a)
+                ),
+                _ => format!(
+                    "the call to '{shown}', which can free memory through {}",
+                    shown_argument(a)
+                ),
+            })
+        };
+        if let Some(why) = why {
+            self.pointer_facts_event(at, |_| why);
+        }
+    }
+
+    /// The parameter types of the function that the call `expr` to `name` calls, when the
+    /// checker knows them.
+    fn call_param_types(&self, name: &str, expr: &Expr) -> Option<Vec<Type>> {
+        let from_type = |t: Type| match t {
+            Type::Function(params, ..) | Type::Closure(params, _) => Some(params),
+            _ => None,
+        };
+        match expr {
+            Expr::IndirectCall(ic) => from_type(self.check_expr_type_probe(&ic.callee)),
+            Expr::FunctionCall(_) => match self.lookup(name) {
+                Some((t, _)) => from_type(t.clone()),
+                None => self
+                    .env
+                    .functions
+                    .get(name)
+                    .map(|f| f.2.clone())
+                    .or_else(|| {
+                        self.mono
+                            .functions
+                            .iter()
+                            .find(|(f, _)| f.name.as_ref() == name)
+                            .map(|(f, _)| f.params.iter().map(|(_, t)| t.clone()).collect())
+                    }),
+            },
+            _ => None,
+        }
+    }
+
+    /// Whether the argument `arg` can free memory. The type of its parameter `param` says it
+    /// when it has no type parameter, because an argument has the type of its parameter.
+    fn argument_can_free(&mut self, arg: &Expr, param: Option<&Type>) -> bool {
+        match param {
+            Some(p) if !p.has_generic_params() => self.type_can_free(p, 0),
+            _ => {
+                let ty = self.check_expr_type_probe(arg);
+                self.type_can_free(&ty, 0)
+            }
         }
     }
 
@@ -617,20 +821,48 @@ impl<'a> TypeChecker<'a> {
                 continue;
             };
             let m = crate::hir::prover::substitute_names(len, &names);
-            let goal = self.pointer_goal(function, &values, &m);
-            if !self.prove_exact(&goal) {
-                self.errors.error_with_code(
-                    crate::diagnostic::DiagnosticCode::E8006,
-                    format!(
-                        "this call to '{}' may not meet its precondition `{}`: the compiler \
-                         cannot prove it from what is known here",
-                        self.shown_callee(name),
-                        clause_source(clause)
-                    ),
-                    Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
-                );
+            let goal = self.pointer_goal(function, &values, &m, None);
+            if self.prove_exact(&goal) {
+                continue;
+            }
+            let ended = self.ended_fact_that_proves(function, &values, &m);
+            let error = self.errors.error_with_code(
+                crate::diagnostic::DiagnosticCode::E8006,
+                format!(
+                    "this call to '{}' may not meet its precondition `{}`: the compiler cannot \
+                     prove it from what is known here",
+                    self.shown_callee(name),
+                    clause_source(clause)
+                ),
+                Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
+            );
+            if let Some((at, why)) = ended {
+                error.notes.push(crate::diagnostic::Note {
+                    message: format!("a fact that proves it ended at {why}").into(),
+                    span: Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
+                });
             }
         }
+    }
+
+    /// The last event that ended a fact that would prove the clause, as its place and reason.
+    fn ended_fact_that_proves(
+        &mut self,
+        function: &str,
+        values: &[PointerValue],
+        m: &Expr,
+    ) -> Option<(Span, String)> {
+        let ended: Vec<Ended> = self
+            .pointer_facts
+            .ended
+            .iter()
+            .filter(|e| values.iter().any(|v| v.base == e.range.base))
+            .cloned()
+            .collect();
+        ended.into_iter().rev().find_map(|e| {
+            let goal = self.pointer_goal(function, values, m, Some(&e.range));
+            self.prove_exact(&goal).then_some((e.at, e.why))
+        })
     }
 
     /// The callee `name` as the program wrote it: an instance of a generic function, such as
@@ -643,9 +875,16 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// The goal that proves `valid`, `initialized` or `!overlaps` for the pointer values
-    /// `values` and the length `m`, from one fact.
-    fn pointer_goal(&self, function: &str, values: &[PointerValue], m: &Expr) -> Exact {
+    /// `values` and the length `m`, from one fact. `extra` is one more range to use.
+    fn pointer_goal(
+        &self,
+        function: &str,
+        values: &[PointerValue],
+        m: &Expr,
+        extra: Option<&Range>,
+    ) -> Exact {
         let facts = &self.pointer_facts;
+        let ranges = || facts.ranges.iter().chain(extra);
         let within = |r: &Range, v: &PointerValue| {
             Exact::And(vec![
                 le(term(r.lo.clone()), sum(&v.offset, &[])),
@@ -660,9 +899,7 @@ impl<'a> TypeChecker<'a> {
                     Kind::Init
                 };
                 let v = &values[0];
-                let goals = facts
-                    .ranges
-                    .iter()
+                let goals = ranges()
                     .filter(|r| r.kind == kind && r.base == v.base)
                     .map(|r| within(r, v))
                     .collect();
@@ -672,11 +909,7 @@ impl<'a> TypeChecker<'a> {
                 let (a, b) = (&values[0], &values[1]);
                 let mut goals = vec![le(term(m.clone()), term(zero()))];
                 if a.base == b.base {
-                    for r in facts
-                        .ranges
-                        .iter()
-                        .filter(|r| r.kind == Kind::Valid && r.base == a.base)
-                    {
+                    for r in ranges().filter(|r| r.kind == Kind::Valid && r.base == a.base) {
                         goals.push(Exact::And(vec![
                             within(r, a),
                             within(r, b),
@@ -710,6 +943,23 @@ impl<'a> TypeChecker<'a> {
             }
         }
     }
+}
+
+/// The argument `e` as the program wrote it, for the note of E8006.
+fn shown_argument(e: &Expr) -> String {
+    fn text(e: &Expr) -> Option<String> {
+        match e {
+            Expr::Borrow(b) => {
+                let mutable = if b.is_mut { "mut " } else { "" };
+                Some(format!("&{mutable}{}", text(&b.expr)?))
+            }
+            Expr::Dereference(d) => Some(format!("*{}", text(&d.expr)?)),
+            Expr::AsCast(c) => text(&c.expr),
+            e => crate::hir::prover::to_source(e),
+        }
+    }
+    text(crate::syntax::bare_unsafe_value(e))
+        .map_or_else(|| "an argument".to_string(), |t| format!("`{t}`"))
 }
 
 /// The clause as the program wrote it, for an error.

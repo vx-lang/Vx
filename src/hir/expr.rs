@@ -475,7 +475,9 @@ impl<'a> TypeChecker<'a> {
                         self.type_can_free(&ty, 0)
                     });
                 if frees {
-                    self.pointer_facts_event();
+                    self.pointer_facts_event(e.span, |_| {
+                        "the `mlir!` block, which can free memory".to_string()
+                    });
                 }
                 // Typecheck clobbers. The block writes to each of them, so each one changes.
                 for clobber in &mut e.clobbers {

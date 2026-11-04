@@ -2456,7 +2456,9 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 self.drops_enter_spawn();
-                self.pointer_facts_event();
+                self.pointer_facts_event(*span, |_| {
+                    "the `spawn`, whose task can free memory".to_string()
+                });
                 let outer_pointers = std::mem::take(&mut self.pointer_facts);
                 self.check_expr_block(stmts, ret.as_deref(), consume);
                 self.pointer_facts = outer_pointers;
