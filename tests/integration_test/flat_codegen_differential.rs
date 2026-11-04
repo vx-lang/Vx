@@ -1119,6 +1119,24 @@ fn flat_matches_ast_closure_capturing_nothing() {
 }
 
 #[test]
+fn flat_matches_ast_closure_cast_to_a_closure_type() {
+    // `c as ||->i32` makes the pair `{ env, func }`. A function takes the pair as a parameter
+    // and calls it, so `func` must get `env` first. (5 * 2 + 1) + (30 + 5) + (1 + 5) = 52.
+    assert_parity(
+        "fn apply(f : ||->i32) -> i32 { return f() + 1; }\n\
+         fn apply_to(f : |i32|->i32, v : i32) -> i32 { return f(v); }\n\
+         fn main() -> i32 {\n\
+           let k = 5;\n\
+           let c = || k * 2;\n\
+           let add = |x : i32| x + k;\n\
+           let g = add as |i32|->i32;\n\
+           return apply(c as ||->i32) + apply_to(g, 30) + g(1);\n\
+         }",
+        52,
+    );
+}
+
+#[test]
 fn flat_matches_ast_const_generic_struct_instance() {
     // A struct generic over a `const`, with a by-value generic field: its base layout is a stub,
     // so the instance `Pair<f32, 4>` gets a synthesized one -- as a return type, at the

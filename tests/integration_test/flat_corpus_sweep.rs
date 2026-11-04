@@ -21,9 +21,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // A `return` of a tensor from inside a `tasks` block: the flat path declines it ("a return
     // of a value of this type from inside a tasks block"). The file is about the AST path.
     "backend/pass/a_return_of_a_tensor_leaves_a_tasks_block.vx",
-    // `c as ||->i32`: the flat path declines a cast to the built-in closure type ("a cast to a
-    // non-scalar"); the AST path compiles it.
-    "backend/pass/returning_a_closure_that_uses_nothing.vx",
     // A user `impl Transfer` lowering: the flat path declines its body, which the AST path
     // copies into the caller.
     "backend/pass/custom_topology_user_lowering.vx",
@@ -35,7 +32,6 @@ const KNOWN_DECLINES: &[&str] = &[
     "backend/pass/user_lowering_name_collisions.vx",
     "backend/pass/user_lowering_uncountable.vx",
     "backend/pass/user_lowering_waste.vx",
-    "frontend/pass/closure_fat_ptr.vx",
     "frontend/pass/control_flow_rigorous.vx",
     // The `vxc -j` fallback fixture: a program the flat path declines, chosen so the parallel
     // frontend has something to hand back to the sequential driver. It declines "a match in
