@@ -313,7 +313,12 @@ impl FnEmit<'_> {
                 .get(ins.operand1.0 as usize)
                 .ok_or(crate::emitter_gap!())?
                 .clone();
-            self.body += &format!("  \"vx.lane_copy_wait\"({t}) : (i32) -> ()\n");
+            let attrs = if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
+                " {subgroup}"
+            } else {
+                ""
+            };
+            self.body += &format!("  \"vx.lane_copy_wait\"({t}){attrs} : (i32) -> ()\n");
             return Ok(());
         }
         if ins.imm & crate::bytecode::LANE_REDUCE_COPY != 0 {
@@ -454,9 +459,14 @@ impl FnEmit<'_> {
         }
         let v = format!("%v{idx}");
         self.body += &format!(
-            "  {v} = \"vx.lane_copy_async\"({}) {{lanes = {} : i64}} : ({}) -> i32\n",
+            "  {v} = \"vx.lane_copy_async\"({}) {{lanes = {} : i64{}}} : ({}) -> i32\n",
             operands.join(", "),
             ins.imm >> 32,
+            if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
+                ", subgroup"
+            } else {
+                ""
+            },
             types.join(", ")
         );
         self.names[idx] = v;

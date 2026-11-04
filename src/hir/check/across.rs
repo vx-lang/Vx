@@ -664,15 +664,13 @@ impl Walk<'_> {
             let copy = lanes::lane_routine(&c.name).is_some_and(|(op, _)| {
                 matches!(op, lanes::LaneOp::CopyAsync | lanes::LaneOp::CopyWait)
             });
-            if copy && c.scope == LevelKind::Subgroups {
-                self.error(
-                    format!(
-                        "{} must be in the code of a loop of blocks: a copy in the code of a \
-                         subgroup is not supported yet",
-                        lanes::shown_name(&c.name)
-                    ),
-                    c.at,
-                );
+            if copy {
+                // The copy reports the size, so its wait does not report it again.
+                let start = lanes::lane_routine(&c.name)
+                    .is_some_and(|(op, _)| op == lanes::LaneOp::CopyAsync);
+                if start && c.scope == LevelKind::Subgroups {
+                    self.needs_subgroups_of_32(c);
+                }
                 continue;
             }
             let Some(&n) = self.lane_sizes.get(&c.at) else {
@@ -702,25 +700,7 @@ impl Walk<'_> {
             }
             match c.scope {
                 LevelKind::Subgroups => {
-                    let sub = c
-                        .region
-                        .levels
-                        .iter()
-                        .flatten()
-                        .find(|l| l.kind == LevelKind::Subgroups)
-                        .and_then(|l| l.lanes);
-                    if sub != Some(32) {
-                        self.error(
-                            format!(
-                                "`{}` in the code of a subgroup needs subgroups of 32 lanes, but \
-                                 the topology `{}` gives {}",
-                                c.name,
-                                c.region.name,
-                                sub.map_or("no size".to_string(), |s| s.to_string())
-                            ),
-                            c.at,
-                        );
-                    }
+                    self.needs_subgroups_of_32(c);
                 }
                 _ => {
                     let lanes = block_lanes
@@ -744,30 +724,39 @@ impl Walk<'_> {
         }
     }
 
+    /// A lane routine in the code of a subgroup of a region that launches needs subgroups of 32
+    /// lanes. Gives whether it has them, and reports an error if not.
+    fn needs_subgroups_of_32(&mut self, c: &LaneCall) -> bool {
+        let sub = c
+            .region
+            .levels
+            .iter()
+            .flatten()
+            .find(|l| l.kind == LevelKind::Subgroups)
+            .and_then(|l| l.lanes);
+        if !c.region.launches || sub == Some(32) {
+            return true;
+        }
+        self.error(
+            format!(
+                "{} in the code of a subgroup needs subgroups of 32 lanes, but the topology `{}` \
+                 gives {}",
+                lanes::shown_name(&c.name),
+                c.region.name,
+                sub.map_or("no size".to_string(), |s| s.to_string())
+            ),
+            c.at,
+        );
+        false
+    }
+
     /// The checks of a lane sort of `n` elements. Each lane holds at most
     /// `MAX_SORT_ELEMENTS_A_LANE` of them. A block needs a number of lanes that is a power of two
     /// and at least 32, and a subgroup 32 lanes.
     fn lane_sort_sizes(&mut self, c: &LaneCall, n: u64, block_lanes: &HashMap<Span, Option<u64>>) {
         let lanes = match c.scope {
             LevelKind::Subgroups => {
-                let sub = c
-                    .region
-                    .levels
-                    .iter()
-                    .flatten()
-                    .find(|l| l.kind == LevelKind::Subgroups)
-                    .and_then(|l| l.lanes);
-                if c.region.launches && sub != Some(32) {
-                    self.error(
-                        format!(
-                            "`{}` in the code of a subgroup needs subgroups of 32 lanes, but the \
-                             topology `{}` gives {}",
-                            c.name,
-                            c.region.name,
-                            sub.map_or("no size".to_string(), |s| s.to_string())
-                        ),
-                        c.at,
-                    );
+                if !self.needs_subgroups_of_32(c) {
                     return;
                 }
                 32
