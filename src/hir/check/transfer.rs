@@ -1342,6 +1342,11 @@ impl<'a> TypeChecker<'a> {
         let inner_ty = self.check_expr_type_flag(&mut t.expr, false);
         self.traffic.consumed_by_transfer = prev_consumed;
         self.allow_cross_topology = prev;
+        // A transfer of a borrowed tensor copies the tensor it points to, and the owner keeps it.
+        let inner_ty = match inner_ty {
+            Type::Borrow { inner, .. } if matches!(*inner, Type::Tensor(..)) => *inner,
+            other => other,
+        };
 
         // Extract source memory space, preferring exact space from an inner transfer if present
         let source_mem = if let Expr::Transfer(inner_t) = &*t.expr {

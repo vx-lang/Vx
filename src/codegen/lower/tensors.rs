@@ -200,8 +200,26 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         gen: &mut MeliorGenerator<'c>,
         block: melior::ir::BlockRef<'c, 'c>,
     ) -> Self::Output {
-        let (src_val, src_ty, block) = gen.generate_expr(&self.expr, block)?;
+        let (mut src_val, mut src_ty, block) = gen.generate_expr(&self.expr, block)?;
         let location = gen.loc();
+        // `&g` is the slot that holds g's memref, so the transfer reads the tensor out of it.
+        if matches!(
+            gen.infer_ast_type(&self.expr),
+            Some(syntax::Type::Borrow { .. })
+        ) {
+            if let Ok(outer) = melior::ir::r#type::MemRefType::try_from(src_ty) {
+                use melior::ir::r#type::ShapedTypeLike;
+                let inner = outer.element();
+                if melior::ir::r#type::MemRefType::try_from(inner).is_ok() {
+                    let load = OperationBuilder::new("memref.load", location)
+                        .add_operands(&[src_val])
+                        .add_results(&[inner])
+                        .build()?;
+                    src_val = block.append_operation(load).result(0)?.into();
+                    src_ty = inner;
+                }
+            }
+        }
 
         // Static byte size of the transferred tile, for the SS2 sub-space bump allocator.
         let tile_bytes = gen.infer_ast_type(&self.expr).and_then(|ty| {
@@ -242,8 +260,15 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         // at the first variable the value was bound to -- every `let` is an `alloca` and a store,
         // and the read is a load whose operand is the slot. The way home was compiled into a
         // `memcpy` from device memory for exactly that reason (#321, #348).
+        // A borrowed tensor says it with its placement, and no transfer made it there.
         let source_topology_id = match gen.infer_ast_type(&self.expr) {
             Some(syntax::Type::Pinned(_, top)) => crate::arch::topology_dispatch_id(&top),
+            Some(syntax::Type::Borrow { inner, .. }) => match *inner {
+                syntax::Type::Tensor(_, _, Some(p)) => {
+                    crate::arch::topology_dispatch_id(&p.topology)
+                }
+                _ => 0,
+            },
             _ => 0,
         };
 
@@ -314,7 +339,6 @@ impl<'c> LowerToMelior<'c> for syntax::TransferExpr {
         // Reconcile the operand with the static result: `memref.cast` is exactly the
         // dynamic-to-static reconciliation, and the AST type is the authority for the
         // shape it asserts.
-        let mut src_val = src_val;
         if let Some(t) = static_target {
             if src_ty != t {
                 src_val = crate::codegen::lower::cast_memref(gen, &block, src_val, src_ty, t)?;

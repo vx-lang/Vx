@@ -2777,7 +2777,18 @@ impl<'c> MeliorGenerator<'c> {
             }
             // `transfer(x, space)` relocates x but preserves its shape, so a slice of a
             // transferred tensor (`q[i]` inside a spawn) can still recover its static dims.
-            Expr::Transfer(e) => self.infer_ast_type(&e.expr),
+            // The transfer of a borrowed tensor is a new tensor in `space`, not a borrow.
+            Expr::Transfer(e) => match self.infer_ast_type(&e.expr)? {
+                syntax::Type::Borrow { inner, .. } => match *inner {
+                    syntax::Type::Tensor(el, dims, _) => Some(syntax::Type::Tensor(
+                        el,
+                        dims,
+                        Some(syntax::Placement::at(e.space.clone())),
+                    )),
+                    _ => None,
+                },
+                other => Some(other),
+            },
             Expr::Dereference(d) => match self.infer_ast_type(&d.expr)? {
                 syntax::Type::Pointer(inner, ..)
                 | syntax::Type::Borrow { inner, .. }
