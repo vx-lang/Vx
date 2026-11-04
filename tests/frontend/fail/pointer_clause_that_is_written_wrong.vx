@@ -8,8 +8,27 @@
 // RUN: not vxc %s 2>&1 | FileCheck %s
 //
 // A pointer clause is a `requires` of its own: `valid(p, n)`, `initialized(p, n)` or
-// `!overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters. Only an `unsafe fn` may have
-// one, because the checker cannot prove it at a call yet.
+// `!overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters. A safe function with one
+// cannot be a function value, and a safe method of a trait impl cannot have one, because a call
+// through the value or the trait would not prove the clause.
+
+// The checks of the whole program come before the checks of the bodies.
+trait Fills {
+  fn fill(self : &Self, p : *mut i64, n : i64) -> void;
+}
+
+struct Filler {
+  k : i64,
+}
+
+impl Fills for Filler {
+  // CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:12: `fill` is a method of an impl of `Fills`, so it must be an `unsafe fn` to have a pointer clause: a call through the trait would not prove the clause
+  fn fill(self : &Filler, p : *mut i64, n : i64) -> void
+  requires valid(p, n)
+  {
+    return;
+  }
+}
 
 // CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:9: a pointer clause in `ensures` is not supported yet: write it as a `requires`
 unsafe fn in_ensures(p : *mut i64) -> *mut i64
@@ -67,15 +86,19 @@ requires !overlaps(p, p, 4)
   return;
 }
 
-// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:10: `not_unsafe` has a pointer clause, so it must be an `unsafe fn` for now: the checker cannot prove the clause at a call yet, and the caller of an `unsafe fn` keeps that promise
-fn not_unsafe(p : *mut i64, n : i64) -> void
+fn safe_with_a_clause(p : *mut i64, n : i64) -> void
 requires valid(p, n)
 {
   return;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:12: `safe_with_a_clause` has a pointer `requires`, so it cannot be a function value yet: a call through the value would not prove the clause
+fn as_a_function_value() -> void {
+  let _f = safe_with_a_clause;
 }
 
 fn main() -> i32 {
   return 0;
 }
 
-// CHECK: 9 error(s) emitted
+// CHECK: 10 error(s) emitted

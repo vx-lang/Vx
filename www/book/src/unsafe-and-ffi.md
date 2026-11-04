@@ -86,12 +86,18 @@ fn main() -> i32 {
 - `initialized(p, n)`: each of the first `n` elements at `p` holds a value.
 - `!overlaps(p, q, n)`: the first `n` elements at `p` and at `q` share no byte.
 
-The compiler cannot prove these clauses at a call yet, so only an `unsafe fn` may have them. The
-author of each `unsafe` block that calls the function keeps the promise. For `valid(p, n)` the
-compiler tells LLVM that `p` is not null and aligned, and that `n` elements at `p` can be read.
-For `!overlaps(p, q, n)` it tells LLVM that an access `p[i]` does not alias an access `q[i]`,
-where `i` is the variable of a `for i in 0..n` loop. A clause that does not hold is undefined
-behavior, as a wrong `*p` is.
+At a call in safe code, the compiler proves each clause from what it knows there: the clauses
+of the caller, a pointer made from `&x` for a local variable `x`, and the pointer functions
+`offset`, `add` and `sub`. For now a call that gets a raw pointer can free memory, so after it
+the compiler knows nothing about memory that the caller does not own. When such code ended a
+fact that the call needs, the error has a note with its line. A call in `unsafe` code
+needs no proof: its author keeps the promise. A safe function with a pointer clause cannot be a
+function value yet, because a call through the value would not prove the clause.
+
+In an `unsafe fn`, for `valid(p, n)` the compiler tells LLVM that `p` is not null and aligned,
+and that `n` elements at `p` can be read. For `!overlaps(p, q, n)` it tells LLVM that an access
+`p[i]` does not alias an access `q[i]`, where `i` is the variable of a `for i in 0..n` loop. A
+clause that does not hold is undefined behavior, as a wrong `*p` is.
 
 ## Calling C
 

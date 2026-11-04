@@ -754,18 +754,35 @@ impl<'a> TypeChecker<'a> {
     /// E8006: a call must meet the called function's `requires`. Each one, with the call's
     /// arguments in place of the parameters, must follow from what the prover knows at the call.
     /// An argument the prover cannot model, such as another call, is an unknown value.
-    fn check_call_requires(&mut self, name: &str, args: &[Expr], span: &crate::syntax::Span) {
+    /// Proves the `requires` of the call of `name`, which an error calls `shown`. A method call
+    /// reaches here as a call of the instance of the method, with the receiver as the first
+    /// argument.
+    pub(crate) fn check_call_requires(
+        &mut self,
+        name: &str,
+        shown: &str,
+        args: &[Expr],
+        span: &crate::syntax::Span,
+    ) {
         if self.speculating {
             return;
         }
-        let Some(func) = self.env.syntax_functions.get(name) else {
+        let callee = self.env.syntax_functions.get(name).copied().or_else(|| {
+            self.mono
+                .functions
+                .iter()
+                .find(|(f, _)| f.name.as_ref() == name)
+                .map(|(f, _)| f)
+        });
+        let Some((params, requires)) = callee.filter(|f| !f.requires.is_empty()).map(|f| {
+            let params: Vec<_> = f.params.iter().map(|(p, _)| p.clone()).collect();
+            (params, f.requires.clone())
+        }) else {
             return;
         };
-        if func.requires.is_empty() {
-            return;
-        }
         let mut names = HashMap::new();
-        for (i, ((param, _), arg)) in func.params.iter().zip(args).enumerate() {
+        for (i, (param, arg)) in params.iter().zip(args).enumerate() {
+            let arg = crate::hir::prover::without_borrow(arg);
             let value = if crate::hir::prover::is_modelled(arg) {
                 arg.clone()
             } else {
@@ -776,8 +793,7 @@ impl<'a> TypeChecker<'a> {
             };
             names.insert(param.clone(), value);
         }
-        for req in func
-            .requires
+        for req in requires
             .iter()
             .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
         {
@@ -789,7 +805,7 @@ impl<'a> TypeChecker<'a> {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E8006,
                     format!(
-                        "this call to '{name}' may not meet its precondition{condition}: \
+                        "this call to '{shown}' may not meet its precondition{condition}: \
                          the compiler cannot prove it from what is known here"
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
@@ -1125,7 +1141,12 @@ impl<'a> TypeChecker<'a> {
                         &arg_types,
                         span,
                     );
-                    self.check_call_requires(resolved_name.as_ref(), args, span);
+                    self.check_call_requires(
+                        resolved_name.as_ref(),
+                        resolved_name.as_ref(),
+                        args,
+                        span,
+                    );
                     ret_ty.clone()
                 } else if let Some((mono_topology, param_types, mono_ret, mono_unsafe)) = self
                     .mono
@@ -3273,7 +3294,9 @@ impl<'a> TypeChecker<'a> {
         // for independent subtrees. Replaces the old `silent = true` argument (#279 R3).
         let saved_speculating = self.speculating;
         self.speculating = true;
+        self.method_call_written = Some((generic_method.name.clone(), span));
         let ret_ty = self.check_expr_type_flag(&mut func_call, consume);
+        self.method_call_written = None;
         self.speculating = saved_speculating;
         // A call to a comptime method has to fold. The probe tried with diagnostics off, so
         // try again here, where a call that cannot fold is reported.
@@ -3588,6 +3611,9 @@ impl<'a> TypeChecker<'a> {
                     {
                         self.changed_vars.extend(receiver_root.clone());
                     }
+                    if takes_mut_self {
+                        self.note_a_change_to(obj);
+                    }
                     // `x.drop()` would run `drop`, and `x` would be dropped again when its owner
                     // gives it up, as in Rust.
                     if ib.trait_name.as_deref() == Some("Drop") && !self.speculating {
@@ -3699,6 +3725,16 @@ impl<'a> TypeChecker<'a> {
                             &method_span,
                         );
                     }
+                    // The rewritten call is checked only speculatively, so its `requires` is
+                    // proved here.
+                    if let Expr::FunctionCall(fc) = &func_call {
+                        self.check_call_requires(
+                            fc.name.as_ref(),
+                            _method.as_ref(),
+                            &fc.args,
+                            &method_span,
+                        );
+                    }
                     *expr = func_call;
                     return ret_ty;
                 }
@@ -3731,6 +3767,7 @@ impl<'a> TypeChecker<'a> {
                         cost: None,
                         lowering: None,
                         is_async: false,
+                        shared: false,
                         span: method_span,
                     });
                     // Mark it so the per-seam obligation in `check_transfer_expr` sends
@@ -3746,6 +3783,7 @@ impl<'a> TypeChecker<'a> {
                         cost: None,
                         lowering: None,
                         is_async: false,
+                        shared: false,
                         span: Span::default(),
                     });
                 } else if _method.as_ref() == "as_ptr" || **_method == *"as_mut_ptr" {
@@ -3764,6 +3802,7 @@ impl<'a> TypeChecker<'a> {
                             // The tensor can be written through the pointer, so it changes.
                             if is_mut {
                                 self.changed_vars.extend(receiver_root.clone());
+                                self.note_a_change_to(obj);
                             }
                             base_ty = element_pointer(is_mut, el, place);
                         }

@@ -507,6 +507,7 @@ impl<'a> TypeChecker<'a> {
                             None => decl.ty.clone(),
                         };
                     }
+                    self.check_function_value(name.as_ref(), span);
                     if let Some((ret_ty, is_unsafe, params, _, _, _)) =
                         self.env.functions.get(name.as_ref())
                     {
@@ -1763,6 +1764,7 @@ impl<'a> TypeChecker<'a> {
                     && self.check_expr_type_probe(inner).placement().is_some();
                 if *is_mut {
                     self.record_change(inner);
+                    self.note_a_change_to(inner);
                 }
                 let old_allow = self.allow_cross_topology;
                 self.allow_cross_topology |= borrows_placed;

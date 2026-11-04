@@ -48,7 +48,7 @@ impl FnEmit<'_> {
         };
         let n = format!("%v{idx}");
         let space_id = ins.imm & 0xffff_ffff;
-        let source = ins.imm >> 32;
+        let source = (ins.imm & !crate::bytecode::TRANSFER_SHARED) >> 32;
         // A space declaring `node: N` is dispatched by its NUMA band id rather than by the hash
         // of its name. The hash says which space; the backend has to know which NODE, and cannot
         // recover a node number from a hash. Copied out rather than held, so the descriptor's
@@ -63,6 +63,9 @@ impl FnEmit<'_> {
         let mut attrs = format!("target_topology = {} : i32", target);
         if source != 0 {
             attrs += &format!(", source_topology = {source} : i32");
+        }
+        if ins.imm & crate::bytecode::TRANSFER_SHARED != 0 {
+            attrs += ", shared";
         }
         if let Some(desc) = self.ctx.subspaces.get(&space_id) {
             // Descriptor attrs, in the AST path's emission order (MLIR sorts on print, so the
@@ -321,7 +324,12 @@ impl FnEmit<'_> {
                 .get(ins.operand1.0 as usize)
                 .ok_or(crate::emitter_gap!())?
                 .clone();
-            self.body += &format!("  \"vx.lane_copy_wait\"({t}) : (i32) -> ()\n");
+            let attrs = if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
+                " {subgroup}"
+            } else {
+                ""
+            };
+            self.body += &format!("  \"vx.lane_copy_wait\"({t}){attrs} : (i32) -> ()\n");
             return Ok(());
         }
         if ins.imm & crate::bytecode::LANE_REDUCE_COPY != 0 {
@@ -462,9 +470,14 @@ impl FnEmit<'_> {
         }
         let v = format!("%v{idx}");
         self.body += &format!(
-            "  {v} = \"vx.lane_copy_async\"({}) {{lanes = {} : i64}} : ({}) -> i32\n",
+            "  {v} = \"vx.lane_copy_async\"({}) {{lanes = {} : i64{}}} : ({}) -> i32\n",
             operands.join(", "),
             ins.imm >> 32,
+            if ins.imm & crate::bytecode::LANE_REDUCE_SUBGROUP != 0 {
+                ", subgroup"
+            } else {
+                ""
+            },
             types.join(", ")
         );
         self.names[idx] = v;

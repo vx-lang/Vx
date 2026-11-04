@@ -116,7 +116,8 @@ pub enum Opcode {
     /// Move a tensor to a memory space: `operand1` is the source, `type_idx` the result tensor (same
     /// element + shape, so the destination is sized to hold it). The low 32 bits of `imm` are the
     /// target space's dispatch id (`arch::memory_space_dispatch_id`); the high 32 bits are the
-    /// topology id of where the source is now, when its type is `Pinned`, and 0 otherwise. Backs
+    /// topology id of where the source is now, when its type is `Pinned`, and 0 otherwise. A
+    /// topology id is a positive `i32`, so bit 63 is free: it is [`TRANSFER_SHARED`]. Backs
     /// `transfer(src, Memory::X)`.
     Transfer = 28,
     /// One argument of the following `Call`: `operand1` is the argument's value register. The N-ary
@@ -388,8 +389,8 @@ pub const LANE_REDUCE_SORT: u64 = 32;
 pub const LANE_REDUCE_DESCENDING: u64 = 64;
 /// `Opcode::LaneReduce`: `lanes::copy_async`. `operand1` is the tile in shared memory and
 /// `operand2` the tensor. The `Arg`s just before are the place of the tile, one for each of the
-/// `(imm >> 16) & 0xff` dimensions. The lanes of the block are in `imm >> 32`. The result is the
-/// `i32` token.
+/// `(imm >> 16) & 0xff` dimensions. The lanes of the block or the subgroup are in `imm >> 32`.
+/// The result is the `i32` token.
 pub const LANE_REDUCE_COPY: u64 = 128;
 /// `Opcode::LaneReduce`: the wait for the copy of the token `operand1`, an effect with no result.
 pub const LANE_REDUCE_COPY_WAIT: u64 = 256;
@@ -540,6 +541,9 @@ pub struct Register(pub u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TypeIdx(pub u32);
+
+/// Bit 63 of a `Transfer`'s `imm`: the source is a `&` tensor and the edge is `: shared`.
+pub const TRANSFER_SHARED: u64 = 1 << 63;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]

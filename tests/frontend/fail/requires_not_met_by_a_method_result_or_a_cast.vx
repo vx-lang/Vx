@@ -1,0 +1,99 @@
+//===- requires_not_met_by_a_method_result_or_a_cast.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// The `ensures` of a method gives its result only as the `ensures` says. A cast tells the prover
+// nothing when a value can change in it, as in `i64 as i32`, `i32 as u64` and `u64 as i64`. A
+// `&mut c` argument stands for `c` in the `requires`, so the facts about `c` must prove it. Each
+// call here can break its `requires` (E8006).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+struct C {
+  n : i64,
+}
+
+impl C {
+  fn get(self : &C) -> i64
+  ensures return == self.n
+  {
+    return self.n;
+  }
+}
+
+fn need(x : i64, y : i64) -> i64
+requires x == y
+{
+  return x;
+}
+
+fn need_i32_below_5(x : i32) -> i32
+requires x < 5
+{
+  return x;
+}
+
+fn need_u64_below_5(x : u64) -> u64
+requires x < 5u64
+{
+  return x;
+}
+
+fn need_above_5(x : i64) -> i64
+requires x > 5i64
+{
+  return x;
+}
+
+fn bump_below_5(c : &mut C) -> void
+requires c.n < 5i64
+{
+  c.n = c.n + 10i64;
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_not_met_by_a_method_result_or_a_cast.vx:[[@LINE+2]]:10: this call to 'need' may not meet its precondition `x == y`
+fn a_result_that_the_ensures_does_not_give(c : &C) -> i64 {
+  return need(c.get(), c.n + 1i64);
+}
+
+// `k` can be -4294967291, and `k as i32` is then 5.
+// CHECK-DAG: E8006] at {{.*}}requires_not_met_by_a_method_result_or_a_cast.vx:[[@LINE+4]]:10: this call to 'need_i32_below_5' may not meet its precondition `x < 5`
+fn a_cast_to_a_narrower_type(k : i64) -> i32
+requires k < 5i64
+{
+  return need_i32_below_5(k as i32);
+}
+
+// `-1 as u64` is `u64::MAX`.
+// CHECK-DAG: E8006] at {{.*}}requires_not_met_by_a_method_result_or_a_cast.vx:[[@LINE+4]]:10: this call to 'need_u64_below_5' may not meet its precondition `x < 5`
+fn a_cast_from_signed_to_unsigned(k : i32) -> u64
+requires k < 5
+{
+  return need_u64_below_5(k as u64);
+}
+
+// `u64::MAX as i64` is -1.
+// CHECK-DAG: E8006] at {{.*}}requires_not_met_by_a_method_result_or_a_cast.vx:[[@LINE+4]]:10: this call to 'need_above_5' may not meet its precondition `x > 5`
+fn a_cast_from_unsigned_to_signed_of_the_same_width(k : u64) -> i64
+requires k > 5u64
+{
+  return need_above_5(k as i64);
+}
+
+// CHECK-DAG: E8006] at {{.*}}requires_not_met_by_a_method_result_or_a_cast.vx:[[@LINE+5]]:3: this call to 'bump_below_5' may not meet its precondition `c.n < 5`
+fn a_borrowed_argument_with_no_fact() -> i64 {
+  let mut c = C {
+    n : 7i64
+  };
+  bump_below_5(&mut c);
+  return c.n;
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: 5 error(s) emitted

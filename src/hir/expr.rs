@@ -358,14 +358,17 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr_type_flag(&mut fc.args[0], consume)
             }
             Expr::FunctionCall(..) => {
-                let ty = self.check_functioncall_expr(expr);
+                let ty = self
+                    .check_a_call_that_can_change_facts(expr, |c, e| c.check_functioncall_expr(e));
                 // A comptime lambda runs while compiling, so its calls fold here. With every
                 // call folded the lambda is unused, and the `let` that bound it is dropped.
                 let span = expr.span();
                 self.fold_comptime_lambda_call(expr, &span, &ty);
                 ty
             }
-            Expr::IndirectCall(..) => self.check_indirectcall_expr(expr, consume),
+            Expr::IndirectCall(..) => self.check_a_call_that_can_change_facts(expr, |c, e| {
+                c.check_indirectcall_expr(e, consume)
+            }),
             Expr::Array(..) => self.check_array_expr(expr),
             Expr::MemberAccess(..) => {
                 let ty = self.check_memberaccess_expr(expr);
@@ -382,13 +385,15 @@ impl<'a> TypeChecker<'a> {
                 self.expected_type = expected;
                 ty
             }
-            Expr::MethodCall(..) => match self.check_token_wait(expr) {
-                Some(ty) => ty,
-                None => match self.check_task_join(expr, consume && !value_unused) {
+            Expr::MethodCall(..) => {
+                self.check_a_call_that_can_change_facts(expr, |c, e| match c.check_token_wait(e) {
                     Some(ty) => ty,
-                    None => self.check_methodcall_expr(expr, consume),
-                },
-            },
+                    None => match c.check_task_join(e, consume && !value_unused) {
+                        Some(ty) => ty,
+                        None => c.check_methodcall_expr(e, consume),
+                    },
+                })
+            }
             Expr::BinaryOp(..) => self.check_binaryop_expr(expr, consume),
             Expr::RelationalOp(..) => self.check_relationalop_expr(expr),
             Expr::LogicalOp(..) => self.check_logicalop_expr(expr),
@@ -463,9 +468,21 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.check_atomic_block(e);
                 self.check_block_dialects(e);
+                // The block can free memory through a pointer that it gets.
+                let frees = !e.clobbers.is_empty()
+                    || e.inputs.iter().any(|(_, arg, _)| {
+                        let ty = self.check_expr_type_probe(arg);
+                        self.type_can_free(&ty, 0)
+                    });
+                if frees {
+                    self.pointer_facts_event(e.span, |_| {
+                        "the `mlir!` block, which can free memory".to_string()
+                    });
+                }
                 // Typecheck clobbers. The block writes to each of them, so each one changes.
                 for clobber in &mut e.clobbers {
                     self.record_change(clobber);
+                    self.note_a_change_to(clobber);
                     self.check_expr_type_flag(clobber, consume);
                 }
 

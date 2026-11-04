@@ -1075,6 +1075,7 @@ impl<'a> Parser<'a> {
                     cost: None,
                     lowering: None,
                     is_async,
+                    shared: false,
                     span: Span {
                         line: peeked_token.line,
                         column: peeked_token.column,

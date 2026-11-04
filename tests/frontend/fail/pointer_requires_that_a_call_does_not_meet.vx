@@ -1,0 +1,97 @@
+//===- pointer_requires_that_a_call_does_not_meet.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each call here can break a pointer `requires` (E8006), because the facts at the call do not
+// prove the clause. A closure body starts with no facts. After a branch or a loop that assigns a
+// pointer, the checker does not know its value. pointer_facts_that_an_event_ends.vx has the calls
+// after code that can free memory.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+import core::ptr;
+
+fn need_valid(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  return n;
+}
+
+fn copy(dst : *mut i64, src : *const i64, n : i64) -> void
+requires valid(dst, n)
+requires valid(src, n)
+requires !overlaps(dst, src, n)
+{
+  return;
+}
+
+// CHECK-DAG: E8006] at {{.*}}pointer_requires_that_a_call_does_not_meet.vx:[[@LINE+4]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+fn one_element_too_many(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  return need_valid(p, n + 1i64);
+}
+
+// CHECK-DAG: E8006] at {{.*}}pointer_requires_that_a_call_does_not_meet.vx:[[@LINE+5]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+fn past_the_end(p : *const i64, n : i64, k : i64) -> i64
+requires valid(p, n)
+requires 0i64 < k && k <= n
+{
+  return need_valid(offset(p, k), n);
+}
+
+// CHECK-DAG: E8006] at {{.*}}pointer_requires_that_a_call_does_not_meet.vx:[[@LINE+2]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+fn with_no_facts(p : *const i64, n : i64) -> i64 {
+  return need_valid(p, n);
+}
+
+// `q` is `p` after one branch, and a pointer to one `i64` after the other.
+// CHECK-DAG: E8006] at {{.*}}pointer_requires_that_a_call_does_not_meet.vx:[[@LINE+10]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+fn a_pointer_that_a_branch_assigns(p : *const i64, n : i64, c : bool) -> i64
+requires valid(p, n)
+requires n > 1i64
+{
+  let x = 5i64;
+  let mut q = p;
+  if c {
+    q = &x;
+  }
+  return need_valid(q, n);
+}
+
+// CHECK-DAG: E8006] at {{.*}}pointer_requires_that_a_call_does_not_meet.vx:[[@LINE+4]]:23: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+fn in_a_closure(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let f = | k : i64 | need_valid(p, n) + k;
+  return f(1i64);
+}
+
+// CHECK-DAG: E8006] at {{.*}}pointer_requires_that_a_call_does_not_meet.vx:[[@LINE+6]]:3: this call to 'copy' may not meet its precondition `!overlaps(dst, src, n)`
+fn windows_that_meet(p : *mut i64, n : i64) -> void
+requires valid(p, n + n)
+requires n > 0i64
+{
+  let second = offset_mut(p, n - 1i64);
+  copy(p, second as *const i64, n);
+}
+
+// After the loop, `q` is null when `k` is 0.
+// CHECK-DAG: E8006] at {{.*}}pointer_requires_that_a_call_does_not_meet.vx:[[@LINE+7]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+fn a_pointer_that_a_loop_assigns(k : i64) -> i64 {
+  let a = 1i64;
+  let mut q = null<i64>();
+  for i in 0i64..k {
+    q = &a;
+  }
+  return need_valid(q, 1i64);
+}
+
+fn main() -> i32 {
+  return 0;
+}
+
+// CHECK: 7 error(s) emitted

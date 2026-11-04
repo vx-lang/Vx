@@ -1727,12 +1727,24 @@ impl<'r> Lowerer<'r> {
                     }
                 };
                 let mem_id = crate::arch::memory_space_dispatch_id(&t.space) as u32 as u64;
-                // Where the value is now, which its type says when it is pinned to a topology.
+                // Where the value is now, which its type says when it is pinned to a topology. A
+                // borrowed tensor says it with its placement, and no transfer made it here.
                 let source = match self.infer_ast_type(&t.expr) {
                     Some(Type::Pinned(_, top)) => crate::arch::topology_dispatch_id(&top) as u32,
+                    Some(Type::Borrow { inner, .. }) => match *inner {
+                        Type::Tensor(_, _, Some(p)) => {
+                            crate::arch::topology_dispatch_id(&p.topology) as u32
+                        }
+                        _ => 0,
+                    },
                     _ => 0,
                 };
-                let imm = mem_id | ((source as u64) << 32);
+                let shared = if t.shared {
+                    crate::bytecode::TRANSFER_SHARED
+                } else {
+                    0
+                };
+                let imm = mem_id | ((source as u64) << 32) | shared;
                 let flag = Register(if body.is_some() {
                     crate::bytecode::TRANSFER_USER_LOWERED
                 } else {

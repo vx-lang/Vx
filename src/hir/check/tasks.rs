@@ -230,11 +230,16 @@ impl TypeChecker<'_> {
     ) -> Type {
         let unused = std::mem::replace(&mut self.value_unused, false);
         let Expr::TaskBlock(TaskBlockExpr {
-            stmts, ret, kind, ..
+            stmts,
+            ret,
+            kind,
+            span: block_span,
+            ..
         }) = expr
         else {
             unreachable!("only a task block reaches here")
         };
+        let block_span = *block_span;
         // As in an `unsafe` block: the block's drops are placed when its statements are checked,
         // so a last value that a variable of the block holds moves into a `$value` first.
         let held = match ret.as_deref() {
@@ -262,6 +267,14 @@ impl TypeChecker<'_> {
         self.push_scope();
         before(self);
         self.value_unused = unused;
+        // A task can free memory at any point until its join, and its body starts with no fact
+        // of its parent.
+        let outer_pointers = matches!(kind, TaskBlockKind::Spawn).then(|| {
+            self.pointer_facts_event(block_span, |_| {
+                "the `spawn`, whose task can free memory".to_string()
+            });
+            std::mem::take(&mut self.pointer_facts)
+        });
         let mut ty = self.check_expr_block(stmts, ret.as_deref(), consume);
         if let Some(r) = ret {
             self.value_unused = unused;
@@ -275,6 +288,9 @@ impl TypeChecker<'_> {
             self.expected_type = returned.filter(|t| *t != Type::Unknown).or(outer.clone());
             ty = self.check_expr_type_flag(r, consume);
             self.expected_type = outer;
+        }
+        if let Some(outer) = outer_pointers {
+            self.pointer_facts = outer;
         }
         ty
     }

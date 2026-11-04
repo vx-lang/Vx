@@ -1,0 +1,73 @@
+//===- requires_of_a_method_that_a_call_meets.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A method call meets the `requires` of the method from what is known at the call, as a function
+// call does. The receiver stands for `self`.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E8006
+// CHECK: func.func @main
+
+struct C {
+  n : i64,
+}
+
+impl C {
+  fn take_below_5(self : &C, x : i64) -> i64
+  requires x < 5i64
+  {
+    return x;
+  }
+
+  fn take_one(self : &mut C) -> void
+  requires self.n > 0i64
+  {
+    self.n = self.n - 1i64;
+  }
+}
+
+struct Holder<T> {
+  value : T,
+  n : i64,
+}
+
+impl<T> Holder<T> {
+  fn take_below_n(self : &Holder<T>, x : i64) -> i64
+  requires x < self.n
+  {
+    return x;
+  }
+}
+
+fn a_literal_that_meets_it() -> i64 {
+  let c = C {
+    n : 0i64
+  };
+  return c.take_below_5(3i64);
+}
+
+fn through_a_reference(c : &C, x : i64) -> i64
+requires x < 5i64
+{
+  return c.take_below_5(x);
+}
+
+fn a_receiver_with_a_fact(c : &mut C) -> void
+requires c.n > 0i64
+{
+  c.take_one();
+}
+
+fn on_a_generic_type(h : &Holder<i32>) -> i64
+requires h.n > 3i64
+{
+  return h.take_below_n(3i64);
+}
+
+fn main() -> i32 {
+  return 0;
+}

@@ -1,0 +1,91 @@
+// `transfer(t, Memory::CPU_DRAM)` of a borrowed GPU tensor gives a new CPU tensor, a copy. The
+// borrow can be a `&` parameter, a `&mut` parameter, or `&g` in the function that owns `g`.
+// A write to the copy leaves the GPU tensor unchanged, and `g` stays usable after the transfer.
+// The checks also pin that each transfer fetches the copy from the GPU through the runtime, and
+// that the copy is a CPU tensor: a transfer of it back to the GPU does not name the GPU as its
+// source.
+//
+// The RUN lines name the code generator themselves: plain is the flat path, and
+// `--legacy-codegen` is the AST path.
+// REQUIRES: flat-codegen
+// RUN: vxc %s 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=W1022
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --check-prefix=OUT --implicit-check-not=W1022
+// RUN: vxc %s --action emit-llvm 2>/dev/null | FileCheck %s --check-prefix=LLVM
+// RUN: vxc %s --action emit-llvm --legacy-codegen 2>/dev/null | FileCheck %s --check-prefix=LLVM
+// RUN: vxc %s --action emit-llvm 2>/dev/null | FileCheck %s --check-prefix=MAIN
+// RUN: vxc %s --action emit-llvm --legacy-codegen 2>/dev/null | FileCheck %s --check-prefix=MAIN
+// RUN: vxc %s --action emit-mlir 2>/dev/null | FileCheck %s --check-prefix=SOURCE
+// RUN: vxc %s --action emit-mlir --legacy-codegen 2>/dev/null | FileCheck %s --check-prefix=SOURCE
+//
+// OUT: param=36;
+// OUT-NEXT: mut_param=1000;
+// OUT-NEXT: param_again=36;
+// OUT-NEXT: local=12;
+// OUT-NEXT: after=36;
+//
+// LLVM-LABEL: llvm.func hidden @sum_on_cpu(
+// LLVM: %[[COPY:[0-9]+]] = llvm.call @vx_plugin_alloc_and_transfer(
+// LLVM: llvm.call @vx_plugin_transfer_device_to_host({{.*}}, %[[COPY]],
+// LLVM-LABEL: llvm.func hidden @change_the_copy(
+// LLVM: %[[COPY:[0-9]+]] = llvm.call @vx_plugin_alloc_and_transfer(
+// LLVM: llvm.call @vx_plugin_transfer_device_to_host({{.*}}, %[[COPY]],
+//
+// MAIN-LABEL: llvm.func @main()
+// MAIN-NOT: llvm.func
+// MAIN: llvm.call @vx_plugin_transfer_device_to_host(
+//
+// A `source_topology` attribute would sit between `scope` and `space`.
+// SOURCE-LABEL: func.func @copy_back(
+// SOURCE: space = "CPU_DRAM"
+// SOURCE-NEXT: "vx.transfer"({{.*}}scope = "device", space = "HBM"}
+
+Memory CPU_DRAM {}
+Memory HBM {
+  capacity: 1 GiB, managed: explicit, scope: device
+}
+Topology Gpu {
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 64 GB/s,
+  transfer Memory::HBM -> Memory::CPU_DRAM : 64 GB/s
+}
+
+fn sum_on_cpu(t : &Tensor<i32, [?, ?], Memory::HBM>, h : i32, w : i32) -> i32 {
+  let host = transfer(t, Memory::CPU_DRAM);
+  let mut s = 0;
+  for y in 0..h {
+    for x in 0..w {
+      s = s + host[y][x];
+    }
+  }
+  return s;
+}
+
+fn change_the_copy(t : &mut Tensor<i32, [?, ?], Memory::HBM>) -> i32 {
+  let mut host = transfer(t, Memory::CPU_DRAM);
+  host[0][0] = 1000;
+  return host[0][0];
+}
+
+fn copy_back(t : &Tensor<i32, [?, ?], Memory::HBM>) -> void {
+  let _up = transfer(transfer(t, Memory::CPU_DRAM), Memory::HBM);
+  return;
+}
+
+fn main() -> i32 {
+  let mut a = Tensor<i32, [2, 3]>::fill(0);
+  for y in 0..2 {
+    for x in 0..3 {
+      a[y][x] = y * 10 + x;
+    }
+  }
+  let mut g = transfer(a, Memory::HBM);
+  println!("param={};", sum_on_cpu(&g, 2, 3));
+  println!("mut_param={};", change_the_copy(&mut g));
+  println!("param_again={};", sum_on_cpu(&g, 2, 3));
+  let back = transfer(&g, Memory::CPU_DRAM);
+  println!("local={};", back[1][2]);
+  println!("after={};", sum_on_cpu(&g, 2, 3));
+  copy_back(&g);
+  return 0;
+}

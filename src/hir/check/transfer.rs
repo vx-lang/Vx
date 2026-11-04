@@ -1342,6 +1342,13 @@ impl<'a> TypeChecker<'a> {
         let inner_ty = self.check_expr_type_flag(&mut t.expr, false);
         self.traffic.consumed_by_transfer = prev_consumed;
         self.allow_cross_topology = prev;
+        // A transfer of a borrowed tensor copies the tensor it points to, and the owner keeps it.
+        let shared_borrow = matches!(&inner_ty, Type::Borrow { inner, is_mut: false, .. }
+            if matches!(**inner, Type::Tensor(..)));
+        let inner_ty = match inner_ty {
+            Type::Borrow { inner, .. } if matches!(*inner, Type::Tensor(..)) => *inner,
+            other => other,
+        };
 
         // Extract source memory space, preferring exact space from an inner transfer if present
         let source_mem = if let Expr::Transfer(inner_t) = &*t.expr {
@@ -1375,6 +1382,10 @@ impl<'a> TypeChecker<'a> {
             }
         };
         let target_mem = t.space.clone();
+        t.shared = shared_borrow
+            && self
+                .transfer_cost_graph
+                .is_shared_edge(&source_mem, &target_mem);
 
         // Capacity: a statically-shaped tensor transferred into a declared space must fit.
         if let Some((e, d)) = Self::tensor_of(&inner_ty) {
@@ -1408,10 +1419,19 @@ impl<'a> TypeChecker<'a> {
         let moved_bytes: Option<u64> = Self::tensor_of(&inner_ty)
             .and_then(|(e, d)| crate::hir::memory::static_tensor_bytes(e, d));
 
-        // Which of the two cost sources applied. They are mutually exclusive by construction
-        // (E6013), so this names the one that fired rather than a precedence winner.
+        // Which cost source applied. They are mutually exclusive by construction (E6013), so this
+        // names the one that fired rather than a precedence winner.
         let link_bw = self.transfer_cost_graph.link_rate(&source_mem, &target_mem);
+        let shared = self
+            .transfer_cost_graph
+            .is_shared_edge(&source_mem, &target_mem);
         let derived: Option<crate::hir::memory::DerivedCost> = moved_bytes.and_then(|bytes| {
+            if shared {
+                return Some(crate::hir::memory::DerivedCost {
+                    value: 0,
+                    per: crate::syntax::RatePer::Second,
+                });
+            }
             link_bw
                 .and_then(|bw| {
                     crate::hir::memory::hop_cost(bytes, bw)
@@ -1425,7 +1445,9 @@ impl<'a> TypeChecker<'a> {
         let derived_cost = derived.map(|d| d.value);
         let derived_unit = derived.map(|d| d.per);
         let cost_source = derived.map(|_| {
-            if link_bw.is_some() {
+            if shared {
+                crate::report::CostSource::Shared
+            } else if link_bw.is_some() {
                 crate::report::CostSource::LinkRate
             } else {
                 crate::report::CostSource::Containment
@@ -2055,6 +2077,7 @@ impl<'a> TypeChecker<'a> {
                 cost: None,
                 lowering: None,
                 is_async: false,
+                shared: false,
                 span: t.span,
             });
         }
@@ -2065,6 +2088,7 @@ impl<'a> TypeChecker<'a> {
             cost: None,
             lowering: None,
             is_async: t.is_async,
+            shared: false,
             span: t.span,
         });
         // Propagate the relaxed marker so each rewritten single-hop transfer is checked with the
@@ -2456,7 +2480,12 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 self.drops_enter_spawn();
+                self.pointer_facts_event(*span, |_| {
+                    "the `spawn`, whose task can free memory".to_string()
+                });
+                let outer_pointers = std::mem::take(&mut self.pointer_facts);
                 self.check_expr_block(stmts, ret.as_deref(), consume);
+                self.pointer_facts = outer_pointers;
                 // Checked once the region's own frame is closed, so a variable from outside that
                 // the region hands out moves in the enclosing function.
                 self.drops_exit_spawn();

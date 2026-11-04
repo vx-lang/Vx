@@ -145,12 +145,32 @@ for k in 0..steps / 2 {
   copy ends. Two tokens can hold two different rows of one tensor.
 - A token must be waited (E6036).
 - The copy is the whole value of a `let`, and the wait a statement of its own, in the code of a
-  loop of blocks. A copy in the code of a subgroup is not supported yet.
+  loop of blocks or subgroups. In the code of a subgroup, the lanes of the subgroup copy the
+  tile, and the tile is usually the row of the subgroup, such as `&mut tiles[w]`.
 
 On the GPU, each lane starts a `cp.async` for its elements of the tile, and the copies of one
-call are one group. The token is the number of groups that the lane started before it. The wait
+call are one group. A copy goes 16 bytes at a time when the last dimension of the tile is a
+multiple of 16 bytes, and the rows of `x`, the start of `x` and the place of the tile let each 16
+bytes start at a multiple of 16. The kernel checks that when the copy starts, and otherwise copies
+one element at a time.
+
+On a GPU with TMA and PTX ISA 8.3 (`sm_90a`, and `sm_100` on), the host makes a tensor map of
+`x` before the launch, and thread 0 copies the whole tile with one `cp.async.bulk.tensor`. TMA
+writes zeros for the part of the tile outside `x`. The copy waits on an mbarrier, one of a ring of
+8\. The kernel uses `cp.async` when the host gives no map, or when the tile does not start at a
+multiple of 128 bytes. The host gives no map when there is no GPU, or when `x` does not fit the
+rules of TMA:
+
+- `x` comes from outside the `spawn` region, and starts at a multiple of 16 bytes.
+- Its rows are multiples of 16 bytes, and its last dimension has a stride of 1.
+- The tile has at most 5 dimensions of at most 256 elements, and its last dimension is a multiple
+  of 16 bytes.
+
+A kernel with a copy in the code of a subgroup, and a kernel that `--emit-ptx` writes, use
+`cp.async` only. The token is the number of groups that the lane started before it. The wait
 lets the groups that started after the token go on (`cp.async.wait_group`), and then every lane
-of the block waits. The CPU copies the tile at the call, and the wait does nothing.
+of the block or the subgroup waits. The CPU copies the tile at the call, and the wait does
+nothing.
 
 ## Not yet
 

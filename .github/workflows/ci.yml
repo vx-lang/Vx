@@ -179,10 +179,6 @@ jobs:
           VX_TESTS_NEED_THREAD_SANITIZER: 1
         run: cargo test --release --workspace --verbose
 
-      # ThreadSanitizer reports each data race that a test program with tasks has.
-      - name: Run the programs with tasks under ThreadSanitizer
-        run: VXC=target/release/vxc python3 scripts/tools/run_task_tests_with_tsan.py
-
       # Generated programs, each run on both code generators and as a Rust twin. A program
       # whose output differs, or that does not free everything it allocates, fails the build.
       - name: Fuzz, and check each program frees what it allocates

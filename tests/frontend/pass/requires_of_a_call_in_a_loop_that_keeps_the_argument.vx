@@ -1,0 +1,52 @@
+//===- requires_of_a_call_in_a_loop_that_keeps_the_argument.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A call in a loop body meets its `requires` from a fact before the loop when the body does not
+// change the argument.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E8006
+// CHECK: func.func @main
+
+fn need(n : i64) -> i64
+requires n < 5i64
+{
+  return n;
+}
+
+fn need_below(i : i64, m : i64) -> i64
+requires i < m
+{
+  return i;
+}
+
+// `n` changes after the loop only.
+fn not_changed_in_the_loop() -> i64 {
+  let mut n = 0i64;
+  let mut total = 0i64;
+  if n < 5i64 {
+    for i in 0i64..3i64 {
+      total = total + need(n);
+    }
+  }
+  n = 7i64;
+  return n + total;
+}
+
+fn range_end_not_changed(m : i64) -> i64 {
+  let mut total = 0i64;
+  for i in 0i64..m {
+    total = total + need_below(i, m);
+  }
+  return total;
+}
+
+fn main() -> i32 {
+  println!("{}", not_changed_in_the_loop());
+  println!("{}", range_end_not_changed(4i64));
+  return 0;
+}

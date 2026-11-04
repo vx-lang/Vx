@@ -138,6 +138,9 @@ pub enum EdgeCost {
     /// not scale with transfer size; kept for edges no bandwidth figure describes, and reported as
     /// such rather than quoted as a time.
     Fixed(u32),
+    /// `transfer A -> B : shared` -- both sides address the same memory, as on a Mac with unified
+    /// memory. The hop moves no bytes: the program only waits for the GPU.
+    Shared,
 }
 
 impl EdgeCost {
@@ -151,12 +154,13 @@ impl EdgeCost {
     /// hops instead picked a route 3.57x slower than one the same graph already contained.
     pub fn routing_weight(self) -> u32 {
         match self {
-            EdgeCost::Derived | EdgeCost::Rate(_) => 1,
+            EdgeCost::Derived | EdgeCost::Rate(_) | EdgeCost::Shared => 1,
             EdgeCost::Fixed(c) => c,
         }
     }
 
-    /// This edge's own cost per byte in attoseconds, when the edge declares a link rate.
+    /// This edge's own cost per byte in attoseconds, when the edge declares a link rate. A
+    /// `Shared` edge costs 0, because it copies nothing.
     ///
     /// `None` for `Derived` (the containment tree prices it -- see `resolve_derived_route_costs`),
     /// for `Fixed` (a relative latency is not a time), and for a link declared in `B/cyc`, which
@@ -168,6 +172,7 @@ impl EdgeCost {
             EdgeCost::Rate(bw) if bw.per == crate::syntax::RatePer::Second && bw.bytes > 0 => {
                 u64::try_from(ATTOS_PER_SEC / bw.bytes as u128).ok()
             }
+            EdgeCost::Shared => Some(0),
             _ => None,
         }
     }
@@ -1394,6 +1399,15 @@ impl TransferCostGraph {
             d.transfers
                 .iter()
                 .any(|e| &e.from == from && &e.to == to && !e.sync)
+        })
+    }
+
+    /// Whether a machine file declares `from -> to` as `: shared`, a hop that moves no bytes.
+    pub fn is_shared_edge(&self, from: &MemorySpace, to: &MemorySpace) -> bool {
+        self.descriptors.values().any(|d| {
+            d.transfers
+                .iter()
+                .any(|e| &e.from == from && &e.to == to && e.cost == EdgeCost::Shared)
         })
     }
 
