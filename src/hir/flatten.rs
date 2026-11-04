@@ -3982,7 +3982,10 @@ impl<'r> Lowerer<'r> {
         let zero = self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0);
         self.emit_effect(Opcode::Store, code.reg, zero.reg, 0);
         let ret = match self.ret_ty.clone() {
-            Some(ty @ (LoweredTy::Scalar(_) | LoweredTy::Ptr)) if !self.ret_void => {
+            // A tensor waits as its memref, in a tensor slot.
+            Some(ty @ (LoweredTy::Scalar(_) | LoweredTy::Ptr | LoweredTy::Tensor { .. }))
+                if !self.ret_void =>
+            {
                 Some(self.emit_alloca(ty))
             }
             _ => None,
