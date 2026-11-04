@@ -726,6 +726,9 @@ pub struct MonoState {
     pub return_provenances: HashMap<Symbol, crate::hir::provenance::ReturnProvenance>,
     /// The parameters that each checked instance says `!keeps` for, as bits, by its name.
     pub not_kept: HashMap<Symbol, u32>,
+    /// The parameters that each checked instance says `!frees` for, or that the walk of its
+    /// body proves, as bits, by its name.
+    pub not_freed: HashMap<Symbol, u32>,
 }
 
 /// How deep a chain of generic instantiations the checker will follow before giving up.

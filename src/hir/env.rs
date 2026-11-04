@@ -137,6 +137,9 @@ pub struct GlobalAstEnv<'a> {
     /// The parameters that each function says `!keeps` for, as bits. A function with none is
     /// absent.
     pub not_kept: HashMap<crate::symbol::Symbol, u32>,
+    /// The parameters that each function says `!frees` for, or that the walk of its body
+    /// proves, as bits. A function with none is absent.
+    pub not_freed: HashMap<crate::symbol::Symbol, u32>,
     /// The struct and enum declarations that a summary reads.
     pub decls: crate::hir::provenance::Decls<'a>,
     /// This compilation's transfer-cost graph: the built-in memory-space edges plus every declared
@@ -178,6 +181,7 @@ impl<'a> GlobalAstEnv<'a> {
             return_provenances: HashMap::new(),
             method_provenances: HashMap::new(),
             not_kept: HashMap::new(),
+            not_freed: HashMap::new(),
             decls: Default::default(),
             transfer_cost_graph: crate::arch::TransferCostGraph::default(),
             consts: HashMap::new(),
@@ -306,7 +310,8 @@ impl<'a> GlobalAstEnv<'a> {
         env.decls = crate::hir::provenance::Decls::new(
             env.structs.values().copied(),
             env.enums.values().copied(),
-        );
+        )
+        .with_drop_impls(env.impls.get("Drop").into_iter().flatten().copied());
         let decls = &env.decls;
         let funcs: Vec<&Function> = env
             .syntax_functions
@@ -346,6 +351,23 @@ impl<'a> GlobalAstEnv<'a> {
             &env.return_provenances,
             written,
         );
+        // A `frees` clause is in the signature too. The compiler trusts one on an `extern`
+        // function, because it cannot read the body.
+        let not_freed = crate::hir::check::pointer_clauses::not_freed_params;
+        let written = env
+            .syntax_functions
+            .values()
+            .copied()
+            .chain(env.generic_functions.values().map(|(f, _)| *f))
+            .map(|f| (f.name.clone(), not_freed(&f.params, &f.ensures)))
+            .chain(
+                env.externs
+                    .iter()
+                    .map(|e| (e.name.clone(), not_freed(&e.params, &e.ensures))),
+            )
+            .filter(|(_, bits)| *bits != 0)
+            .collect();
+        env.not_freed = env.infer_not_freed(&plain, written);
         // Build the transfer-cost graph once, now that `topologies` is populated. It used to be
         // built inside `TypeChecker::new` -- that is, once per *function* -- where it ran the
         // all-pairs shortest-path precompute twice (once in `default()`, once in
@@ -410,6 +432,53 @@ impl<'a> GlobalAstEnv<'a> {
             &self.return_provenances,
             std::mem::take(&mut self.not_kept),
         );
+        let written = std::mem::take(&mut self.not_freed);
+        self.not_freed = self.infer_not_freed(&plain, written);
+    }
+
+    /// The `!frees` bits of each function: the written ones, `written`, and those that the walk
+    /// proves for each function in `funcs`. A bit that the walk proves lets the walk of a caller
+    /// prove more, so the walk runs again until nothing changes. Each pass reads only bits proved
+    /// before it, so each bit stays sound.
+    fn infer_not_freed(
+        &self,
+        funcs: &[&Function],
+        mut bits: HashMap<crate::symbol::Symbol, u32>,
+    ) -> HashMap<crate::symbol::Symbol, u32> {
+        let returns = |name: &str| {
+            self.functions.get(name).map(|f| f.0.clone()).or_else(|| {
+                self.generic_functions
+                    .get(name)
+                    .map(|(f, _)| f.return_type.clone())
+            })
+        };
+        for _ in 0..16 {
+            let mut changed = false;
+            for f in funcs {
+                let inferred = {
+                    let callee = |name: &str| {
+                        Some(crate::hir::frees::Callee {
+                            not_freed: bits.get(name).copied().unwrap_or(0),
+                            returns: returns(name)?,
+                            shown: name.to_string(),
+                        })
+                    };
+                    crate::hir::frees::inferred_not_freed(f, &self.decls, &callee)
+                        & !crate::hir::check::pointer_clauses::frees_clause_params(
+                            &f.params, &f.ensures,
+                        )
+                };
+                let old = bits.get(&f.name).copied().unwrap_or(0);
+                if old | inferred != old {
+                    bits.insert(f.name.clone(), old | inferred);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        bits
     }
 
     /// Fill [`GlobalAstEnv::comptime_bodies`] from modules that still carry bodies.

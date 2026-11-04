@@ -221,13 +221,20 @@ It infers `!frees(p)` when the body uses each value that it follows only in thes
 - It returns it.
 
 A read of a value of a type with a drop is a move. The body can then drop the value and free the
-memory that the value owns. So `ptr::read<T>` does not get `!frees(p)`. For the same reason, a
-parameter of a type with a drop that the function gets by value never gets `!frees`. The function
-drops it, or moves it to another owner.
+memory that the value owns. So `ptr::read<T>` gets `!frees(p)` only for a `T` without a drop. For
+the same reason, a parameter of a type with a drop that the function gets by value never gets
+`!frees`. The function drops it, or moves it to another owner.
 
 Each other use stops the inference, for example a store of `p` or a method call that the syntax
-cannot resolve. The checker checks a written `!frees(p)` on a Vx function by the same rules. It
-trusts one on an `extern` function, and the audit lists it.
+cannot resolve. The checker checks a written `!frees(p)` on a Vx function by the same rules, and a
+body that breaks it gets E8012. It trusts one on an `extern` function, and the audit lists it. An
+`extern` function states it after its return type, as in
+`safe fn strlen(s : *const i8) -> i64 ensures !frees(s);`. A written `frees(p)` says that the call
+can free that memory, so the compiler infers no `!frees(p)` for it.
+
+A method and an instance of a generic function get `!frees` from their checked body, as they get
+`!keeps`. There a method call is a call by name. A method of a trait impl gets only the clauses
+that it states, and it cannot add a `!frees` that the trait method does not have (section 7).
 
 ## 6. Joins
 
@@ -679,14 +686,16 @@ needs a fact there. Open question 6 asks about a warning for it.
   pointer cannot point into, such as a vector that the body made itself.
 - One fact must prove a clause. The checker does not join two ranges.
 - A write through a pointer makes no `Init` fact. So a loop that fills a buffer gives no fact.
-- The inference of `!frees` stops at a method call, as the inference of `!keeps` does.
+- The inference from the syntax stops at a method call, as the inference of `!keeps` does. Only a
+  method or an instance of a generic function gets `!frees` from its checked body.
 
 ## 12. Open questions
 
 1. The error for a body that breaks a pointer `ensures`. A body that breaks a value `ensures` gets
-   an error with no code today. A new code next to E8011 is one choice.
-1. The name `frees`. The extern note has `ensures freed(p)` for a call that ends the life of a
-   handle. `frees(p)` says that it can, and `freed(p)` says that it does.
+   an error with no code today. E8012, the error for a body that breaks `!frees(p)`, is one choice.
+1. Decided (#2673): the name stays `frees`. The extern note has `ensures freed(p)` for a call that
+   ends the life of a handle. `frees(p)` says that it can, and a later `freed(p)` can say that it
+   does.
 1. `assume` as a statement. The other choice is to trust each clause about a value that an
    `unsafe` block gives as its value.
 1. A function value of a safe function with a pointer `requires`. V1 refuses it. Later, the value

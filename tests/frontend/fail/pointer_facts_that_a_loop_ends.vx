@@ -7,7 +7,8 @@
 //===----------------------------------------------------------------------===//
 // Each call here gets E8006, because a pass of a loop can free memory before it. The compiler
 // reads the loop body before it checks it, so an event anywhere in the body ends the facts at the
-// start of the body. The note gives the line of the first event in the body.
+// start of the body. The note gives the line of the first event in the body. `keep` says
+// `ensures frees(p)`, so each call of it can free memory.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
@@ -26,7 +27,9 @@ requires initialized(p, n)
   return n;
 }
 
-fn keep(_p : *const Vec<i64>) -> void {
+fn keep(_p : *const Vec<i64>) -> void
+ensures frees(_p)
+{
   return;
 }
 

@@ -1,0 +1,258 @@
+//===- pointer_facts_that_a_call_frees.vx - Vx Compiler ----------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each function here that gets a pointer does one thing that can free the memory of the
+// pointer, so the compiler does not find `!frees` for it. A call of the function then ends the
+// facts about that memory, and the next call gets E8006 with a note on the line of the first
+// call. A function that only reads through the pointer keeps the facts
+// (pointer_facts_that_a_call_keeps.vx).
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+
+import core::ptr;
+import std::alloc;
+import std::vec;
+
+fn need_valid(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  return n;
+}
+
+fn need_bytes(p : *mut i8, n : i64) -> i64
+requires valid(p, n)
+{
+  return n;
+}
+
+fn need_noisy(p : *const Noisy, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  return n;
+}
+
+struct Noisy {
+  id : i32,
+}
+
+impl Drop for Noisy {
+  fn drop(self : &mut Noisy) -> void {
+    print!("d{} ", self.id);
+  }
+}
+
+struct Holder {
+  p : *const i64,
+}
+
+fn frees_it(p : *mut i8) -> void {
+  dealloc(p, 8i64);
+}
+
+fn stores_it(h : &mut Holder, p : *const i64) -> void {
+  h.p = p;
+}
+
+fn puts_it_in_a_value(p : *const i64) -> i64 {
+  let h = Holder {
+    p: p
+  };
+  return 0i64;
+}
+
+// `Noisy` has a drop, so a read of one through the pointer moves it.
+unsafe fn moves_a_value_out(p : *const Noisy) -> i32 {
+  let v = unsafe { *p };
+  return v.id;
+}
+
+// The write drops the old `Noisy`.
+fn writes_a_value(p : *mut Noisy) -> void {
+  unsafe { *p = Noisy { id: 2 }; }
+}
+
+// The compiler does not look into a method call.
+fn gives_it_to_a_method(p : *const i64) -> void {
+  let mut v : Vec<*const i64> = Vec::new();
+  v.push(p);
+}
+
+fn gives_it_to_a_closure(p : *const i64) -> i64 {
+  let f = || -> i64 {
+    unsafe { p[0] }
+  };
+  return f();
+}
+
+fn gives_it_to_an_mlir_block(p : *const i64) -> i64 {
+  return mlir!( inputs : (%p = p : !llvm.ptr), returns : i64, dialects : ["llvm"]) {
+    %v = llvm.load %p : !llvm.ptr -> i64
+    macro.yield %v : i64
+  };
+}
+
+// `q` points into the memory of `p`, and `frees_it` frees it.
+fn gives_a_moved_pointer_to_a_call(p : *mut i8) -> void {
+  let q = offset_mut(p, 0i64);
+  frees_it(q);
+}
+
+// `same` frees nothing, but it returns `p`, and `frees_it` frees what it returns.
+fn same(p : *mut i8) -> *mut i8 {
+  return p;
+}
+
+fn frees_what_a_call_returns(p : *mut i8) -> void {
+  let q = same(p);
+  frees_it(q);
+}
+
+// The trait method says no `!frees`, so a call through the trait keeps no fact. That holds
+// even though this impl only reads through `p`.
+trait Looks {
+  fn look_at(self : &Self, p : *const i64) -> i64;
+}
+
+struct Reader {
+  k : i64,
+}
+
+impl Looks for Reader {
+  fn look_at(self : &Reader, p : *const i64) -> i64 {
+    return unsafe { p[0] } + self.k;
+  }
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_a_call_frees.vx:[[@LINE+6]]:10: this call to 'need_bytes' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'frees_it', which can free memory through `p` (at [[@LINE+4]]:3)
+fn after_a_call_that_frees(p : *mut i8, n : i64) -> i64
+requires valid(p, n)
+{
+  frees_it(p);
+  return need_bytes(p, n);
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_a_call_frees.vx:[[@LINE+6]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'stores_it', which can free memory through `p` (at [[@LINE+4]]:3)
+fn after_a_call_that_stores(h : &mut Holder, p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  stores_it(h, p);
+  return need_valid(p, n);
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_a_call_frees.vx:[[@LINE+6]]:14: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'puts_it_in_a_value', which can free memory through `p` (at [[@LINE+4]]:11)
+fn after_a_call_that_puts_it_in_a_value(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let a = puts_it_in_a_value(p);
+  return a + need_valid(p, n);
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_a_call_frees.vx:[[@LINE+9]]:10: this call to 'need_noisy' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'moves_a_value_out', which can free memory through `p` (at [[@LINE+7]]:20)
+// CHECK: E8006] at {{.*}}pointer_facts_that_a_call_frees.vx:[[@LINE+7]]:10: this call to 'need_noisy' may not meet its precondition `initialized(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'moves_a_value_out', which can free memory through `p` (at [[@LINE+5]]:20)
+fn after_a_call_that_moves_a_value_out(p : *const Noisy, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let a = unsafe { moves_a_value_out(p) };
+  return need_noisy(p, n);
+}
+
+// `read` with a `Noisy` moves the value out too.
+// CHECK: E8006] at {{.*}}pointer_facts_that_a_call_frees.vx:[[@LINE+9]]:10: this call to 'need_noisy' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'read', which can free memory through `p` (at [[@LINE+7]]:20)
+// CHECK: E8006] at {{.*}}pointer_facts_that_a_call_frees.vx:[[@LINE+7]]:10: this call to 'need_noisy' may not meet its precondition `initialized(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'read', which can free memory through `p` (at [[@LINE+5]]:20)
+fn after_a_call_of_read(p : *const Noisy, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let v = unsafe { read(p) };
+  return need_noisy(p, n);
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_a_call_frees.vx:[[@LINE+9]]:10: this call to 'need_noisy' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'writes_a_value', which can free memory through `p` (at [[@LINE+7]]:3)
+// CHECK: E8006] at {{.*}}pointer_facts_that_a_call_frees.vx:[[@LINE+7]]:10: this call to 'need_noisy' may not meet its precondition `initialized(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'writes_a_value', which can free memory through `p` (at [[@LINE+5]]:3)
+fn after_a_call_that_writes_a_value(p : *mut Noisy, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  writes_a_value(p);
+  return need_noisy(p as *const Noisy, n);
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_a_call_frees.vx:[[@LINE+6]]:10: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'gives_it_to_a_method', which can free memory through `p` (at [[@LINE+4]]:3)
+fn after_a_call_that_gives_it_to_a_method(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  gives_it_to_a_method(p);
+  return need_valid(p, n);
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_a_call_frees.vx:[[@LINE+6]]:14: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'gives_it_to_a_closure', which can free memory through `p` (at [[@LINE+4]]:11)
+fn after_a_call_that_gives_it_to_a_closure(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let a = gives_it_to_a_closure(p);
+  return a + need_valid(p, n);
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_a_call_frees.vx:[[@LINE+6]]:14: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'gives_it_to_an_mlir_block', which can free memory through `p` (at [[@LINE+4]]:11)
+fn after_a_call_that_gives_it_to_an_mlir_block(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let a = gives_it_to_an_mlir_block(p);
+  return a + need_valid(p, n);
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_a_call_frees.vx:[[@LINE+6]]:10: this call to 'need_bytes' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'gives_a_moved_pointer_to_a_call', which can free memory through `p` (at [[@LINE+4]]:3)
+fn after_a_call_that_gives_a_moved_pointer_to_a_call(p : *mut i8, n : i64) -> i64
+requires valid(p, n)
+{
+  gives_a_moved_pointer_to_a_call(p);
+  return need_bytes(p, n);
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_a_call_frees.vx:[[@LINE+6]]:10: this call to 'need_bytes' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'frees_what_a_call_returns', which can free memory through `p` (at [[@LINE+4]]:3)
+fn after_a_call_that_frees_what_a_call_returns(p : *mut i8, n : i64) -> i64
+requires valid(p, n)
+{
+  frees_what_a_call_returns(p);
+  return need_bytes(p, n);
+}
+
+// CHECK: E8006] at {{.*}}pointer_facts_that_a_call_frees.vx:[[@LINE+6]]:14: this call to 'need_valid' may not meet its precondition `valid(p, n)`
+// CHECK-NEXT: note: a fact that proves it ended at the call to 'look_at', which can free memory through `p` (at [[@LINE+4]]:13)
+fn through_a_bound<L : Looks>(l : &L, p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let a = l.look_at(p);
+  return a + need_valid(p, n);
+}
+
+fn main() -> i32 {
+  let x = 5i64;
+  let p : *const i64 = &x;
+  let r = Reader {
+    k: 1i64
+  };
+  return through_a_bound(&r, p, 1i64) as i32;
+}
+
+// CHECK: 15 error(s) emitted

@@ -10,7 +10,8 @@
 // memory: a call with an argument that can free memory, an assignment or a drop of a value with a
 // drop, an `mlir!` block, or a `spawn`. The end of the scope of a local ends the facts about its
 // storage, and a move out of it ends `initialized`. When the event is in a branch of an `if` or
-// an arm of a `match`, the note names that branch.
+// an arm of a `match`, the note names that branch. The functions that get a pointer say
+// `ensures frees(p)`, so each call of them can free memory.
 //
 // RUN: not vxc %s 2>&1 | FileCheck %s
 
@@ -19,6 +20,7 @@ import std::vec;
 
 fn need_valid(p : *const i64, n : i64) -> i64
 requires valid(p, n)
+ensures frees(p)
 {
   return n;
 }
@@ -29,11 +31,15 @@ requires initialized(p, n)
   return n;
 }
 
-fn touch(_p : *const i64) -> void {
+fn touch(_p : *const i64) -> void
+ensures frees(_p)
+{
   return;
 }
 
-fn change(_v : &mut Vec<i64>) -> void {
+fn change(_v : &mut Vec<i64>) -> void
+ensures frees(_v)
+{
   return;
 }
 
