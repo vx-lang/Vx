@@ -8,6 +8,9 @@
 // i128::MIN / (2^64 - 1) is not overflow. A 64-bit-only -1 constant made the
 // overflow guard treat this divisor as -1 and stop the program.
 //
+// Build MIN as (i64::MIN as i128) << 64 so the test does not need a 39-digit
+// literal (flat-codegen cannot encode that literal yet).
+//
 // RUN: vxc %s --run 2>&1 | FileCheck %s
 // RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
 //
@@ -19,8 +22,10 @@ fn div(a : i128, b : i128) -> i128 {
 }
 
 fn main() -> i32 {
-  let min = -170141183460469231731687303715884105727i128 - 1i128;
-  let u64_max_as_i128 = 18446744073709551615i128;
+  let min64 : i64 = -9223372036854775807 - 1;
+  let min : i128 = (min64 as i128) << 64;
+  let one : i128 = 1;
+  let u64_max_as_i128 : i128 = (one << 64) - 1;
   print(div(min, u64_max_as_i128));
   println!("");
   print!("ok");
