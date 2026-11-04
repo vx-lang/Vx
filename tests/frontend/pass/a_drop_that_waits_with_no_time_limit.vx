@@ -10,7 +10,7 @@
 // the same `send` in a normal method gets no warning.
 //
 // RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Warning --implicit-check-not=Error
-// CHECK: Warning[W1036] at {{.*}}a_drop_that_waits_with_no_time_limit.vx:[[@LINE+14]]:{{[0-9]+}}: 'send' waits with no time limit of its own in a 'drop'. A drop runs with cancellation off, so if the other end of the channel never acts, this wait holds up the drop until the limit of the drop: VX_DROP_WAIT_SECONDS, or 10 seconds. Use 'send_for' with a time limit
+// CHECK: Warning[W1036] at {{.*}}a_drop_that_waits_with_no_time_limit.vx:[[@LINE+14]]:{{[0-9]+}}: 'send' waits with no time limit of its own in a 'drop'. A drop runs with cancellation off, so if the other end of the channel never acts, this wait holds up the drop until the limit of the drop: its type's 'wait_limit', 10 seconds by default. Use 'send_for' with a time limit
 // CHECK: Warning[W1036] at {{.*}}a_drop_that_waits_with_no_time_limit.vx:[[@LINE+14]]:{{[0-9]+}}: 'recv' waits with no time limit of its own in a 'drop'. {{.*}} Use 'recv_for' with a time limit
 
 import std::sync::channel;

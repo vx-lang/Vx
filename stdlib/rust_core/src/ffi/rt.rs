@@ -53,6 +53,8 @@ extern "C" fn vx_sigabrt_handler(_sig: libc::c_int) {
 
 #[no_mangle]
 pub extern "C" fn vx_init_signals() {
+    // A bad value stops the program now, and not at its first `drop`.
+    crate::ffi::tasks::drop_wait_cap_ns();
     unsafe {
         libc::signal(
             libc::SIGABRT,

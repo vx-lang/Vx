@@ -256,6 +256,11 @@ impl MacroCallStmt {
     }
 }
 
+/// The call that turns cancellation off before a `drop`, with the drop's time limit in seconds.
+pub const CANCEL_OFF: &str = "vx::cancel_off";
+/// The call that turns cancellation back on after a `drop`.
+pub const CANCEL_ON: &str = "vx::cancel_on";
+
 /// `Statement::Drop`: the tensor named here is freed at this point.
 #[derive(Debug, PartialEq, Clone)]
 pub struct DropStmt {
@@ -278,12 +283,19 @@ pub struct DropStmt {
     /// another value. It comes after the other drops of `name`.
     pub ends_lifetime: bool,
     pub span: Span,
+    /// With `call`: how long the waits in the `drop` can take, in seconds. The call
+    /// `wait_limit(&name.path)`, or the default when the impl has no copy of it.
+    pub limit: Option<Box<super::Expr>>,
 }
 
 impl DropStmt {
-    /// For a drop that calls a `Drop` impl, or drops an enum's payload: the statement that
-    /// does it, inside `if !moved { .. }` when the value may have been moved.
-    pub fn call_statement(&self) -> Option<Statement> {
+    /// For a drop that calls a `Drop` impl, or drops an enum's payload: the statements that do
+    /// it, inside `if !moved { .. }` when the value may have been moved.
+    ///
+    /// A `Drop` impl's `drop` runs with cancellation off (F6), so that a wait in it can finish,
+    /// until its time limit (F6a): `vx::cancel_off(wait_limit(&x)); drop(&mut x);
+    /// vx::cancel_on();`. The code generators lower the two `vx::` calls to the runtime.
+    pub fn call_statements(&self) -> Option<Vec<Statement>> {
         let payload = matches!(self.expr.as_deref(), Some(Expr::Match(_)));
         if self.call.is_none() && !payload {
             return None;
@@ -293,9 +305,27 @@ impl DropStmt {
             .as_deref()
             .expect("a drop that runs code has it")
             .clone();
-        let call = Statement::ExprStmt(ExprStmtStmt::new(call, true, Span::default()));
+        let stmt = |e: Expr| Statement::ExprStmt(ExprStmtStmt::new(e, true, Span::default()));
+        let runtime = |name: &str, args: Vec<Expr>| {
+            stmt(Expr::FunctionCall(FunctionCallExpr::new(
+                name.into(),
+                None,
+                args,
+                Span::default(),
+            )))
+        };
+        let mut body = vec![stmt(call)];
+        if self.call.is_some() {
+            let limit = self
+                .limit
+                .as_deref()
+                .expect("a drop that calls `Drop::drop` asks `wait_limit`")
+                .clone();
+            body.insert(0, runtime(CANCEL_OFF, vec![limit]));
+            body.push(runtime(CANCEL_ON, Vec::new()));
+        }
         let Some(flag) = &self.flag else {
-            return Some(call);
+            return Some(body);
         };
         let not_moved = Expr::UnaryOp(UnaryOpExpr::new(
             UnaryOp::Not,
@@ -305,17 +335,17 @@ impl DropStmt {
             ))),
             Span::default(),
         ));
-        Some(Statement::ExprStmt(ExprStmtStmt::new(
+        Some(vec![Statement::ExprStmt(ExprStmtStmt::new(
             Expr::If(IfExpr::new(
                 false,
                 Box::new(not_moved),
-                vec![call],
+                body,
                 None,
                 Span::default(),
             )),
             true,
             Span::default(),
-        )))
+        ))])
     }
 }
 

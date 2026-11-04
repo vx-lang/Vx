@@ -919,7 +919,7 @@ mod tests {
     extern "C" fn first_drop(env: *mut u8) {
         let d = unsafe { &**(env as *const *const Drops) };
         let mine = current_mark();
-        crate::ffi::tasks::vx_cancel_off();
+        crate::ffi::tasks::vx_cancel_off(10.0);
         open(&d.first_off);
         wait_for(&d.second_off);
         crate::ffi::tasks::vx_cancel_on();
@@ -934,7 +934,7 @@ mod tests {
         let d = unsafe { &**(env as *const *const Drops) };
         wait_for(&d.first_off);
         let mine = current_mark();
-        crate::ffi::tasks::vx_cancel_off();
+        crate::ffi::tasks::vx_cancel_off(10.0);
         open(&d.second_off);
         wait_for(&d.first_on);
         crate::ffi::tasks::vx_cancel_on();

@@ -1215,7 +1215,7 @@ const RUNTIME_HELPERS: [(&str, &str); 26] = [
     ("printMemrefU8", "(memref<*xi8>)"),
     ("printMemrefU16", "(memref<*xi16>)"),
     ("vx_task_failed", "()"),
-    ("vx_cancel_off", "()"),
+    ("vx_cancel_off", "(f64)"),
     ("vx_cancel_on", "()"),
 ];
 
@@ -2593,7 +2593,12 @@ impl<'a> FnEmit<'a> {
                 Ok(())
             }
             Opcode::CancelOff => {
-                self.body += "  func.call @vx_cancel_off() : () -> ()\n";
+                let limit = self
+                    .names
+                    .get(ins.operand1.0 as usize)
+                    .ok_or(crate::emitter_gap!())?
+                    .clone();
+                self.body += &format!("  func.call @vx_cancel_off({limit}) : (f64) -> ()\n");
                 Ok(())
             }
             Opcode::CancelOn => {

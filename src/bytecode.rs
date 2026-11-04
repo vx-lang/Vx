@@ -331,7 +331,8 @@ pub enum Opcode {
     /// At the end of a task whose value is an `Err`: cancels the `tasks` block of the task (F3).
     TaskFailed = 75,
     /// Before the call of a `Drop` impl: turns cancellation off for this thread until `CancelOn`
-    /// (F6). A wait in the `drop` then cannot give `Cancelled`.
+    /// (F6). A wait in the `drop` then cannot give `Cancelled`, until the time limit in
+    /// `operand1`, an `f64` in seconds from the type's `Drop::wait_limit` (F6a).
     CancelOff = 76,
     /// After the call of a `Drop` impl: turns cancellation back on.
     CancelOn = 77,

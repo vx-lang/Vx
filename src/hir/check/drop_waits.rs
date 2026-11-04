@@ -69,8 +69,8 @@ impl TypeChecker<'_> {
             format!(
                 "'{method}' waits with no time limit of its own in a 'drop'. A drop runs with \
                  cancellation off, so if the other end of the channel never acts, this wait \
-                 holds up the drop until the limit of the drop: VX_DROP_WAIT_SECONDS, or 10 \
-                 seconds. Use '{timed}' with a time limit"
+                 holds up the drop until the limit of the drop: its type's 'wait_limit', 10 \
+                 seconds by default. Use '{timed}' with a time limit"
             ),
             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
         );

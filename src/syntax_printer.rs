@@ -152,6 +152,7 @@ impl AstPrinter {
                     name,
                     path,
                     call,
+                    limit: _,
                     expr,
                     flag,
                     after_value,
