@@ -693,6 +693,10 @@ pub enum DiagnosticCode {
     /// A `Memory` declaration's `within:` names a space that is not built in, and that the
     /// program and its machine files do not declare. A typo in the name is the usual cause.
     E6035,
+    /// A token of `transfer_async` that the program drops with no `.wait()`: at the end of its
+    /// scope, or when an assignment gives its variable a new value. The copy may not be done
+    /// then, so its target may not hold the data. Call `.wait()`, which gives the placed tensor.
+    E6036,
 
     // --- Tensor/Math Errors (E7xxx) ---
     /// Matmul dimension mismatch

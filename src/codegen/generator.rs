@@ -2286,6 +2286,10 @@ impl<'c> MeliorGenerator<'c> {
         &self,
         ty: &syntax::Type,
     ) -> Result<Type<'c>, crate::codegen::lower::LowerError> {
+        // A token of `transfer_async` is its tensor: the copy is done when it is made.
+        if let Some(inner) = syntax::types::transfer_token_inner(ty) {
+            return self.lower_type(inner);
+        }
         let ty_str = match ty {
             syntax::Type::Tensor(el_ty, dims, top) => {
                 return self.lower_tensor_type(el_ty, dims, top);

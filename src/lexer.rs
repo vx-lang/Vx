@@ -33,6 +33,7 @@ pub enum TokenTypeBase<S, C> {
     On,
     Where,
     Transfer,
+    TransferAsync,
     Unroll,
     Across,
     Match,
@@ -150,6 +151,7 @@ impl<S: std::fmt::Display, C: std::fmt::Display> std::fmt::Display for TokenType
             TokenTypeBase::On => write!(f, "on"),
             TokenTypeBase::Where => write!(f, "where"),
             TokenTypeBase::Transfer => write!(f, "transfer"),
+            TokenTypeBase::TransferAsync => write!(f, "transfer_async"),
             TokenTypeBase::Unroll => write!(f, "unroll"),
             TokenTypeBase::Across => write!(f, "across"),
             TokenTypeBase::Match => write!(f, "match"),
@@ -263,6 +265,7 @@ impl<S, C> TokenTypeBase<S, C> {
                 | TokenTypeBase::On
                 | TokenTypeBase::Where
                 | TokenTypeBase::Transfer
+                | TokenTypeBase::TransferAsync
                 | TokenTypeBase::Unroll
                 | TokenTypeBase::Across
                 | TokenTypeBase::Match
@@ -333,6 +336,7 @@ static KEYWORDS: Lazy<
     m.insert("on", TokenTypeBase::On);
     m.insert("where", TokenTypeBase::Where);
     m.insert("transfer", TokenTypeBase::Transfer);
+    m.insert("transfer_async", TokenTypeBase::TransferAsync);
     m.insert("unroll", TokenTypeBase::Unroll);
     m.insert("across", TokenTypeBase::Across);
     m.insert("match", TokenTypeBase::Match);
@@ -923,6 +927,7 @@ impl<'a> Token<'a> {
             TokenTypeBase::On => TokenTypeBase::On,
             TokenTypeBase::Where => TokenTypeBase::Where,
             TokenTypeBase::Transfer => TokenTypeBase::Transfer,
+            TokenTypeBase::TransferAsync => TokenTypeBase::TransferAsync,
             TokenTypeBase::Unroll => TokenTypeBase::Unroll,
             TokenTypeBase::Across => TokenTypeBase::Across,
             TokenTypeBase::Match => TokenTypeBase::Match,
@@ -1040,6 +1045,7 @@ impl OwnedToken {
             TokenTypeBase::On => TokenTypeBase::On,
             TokenTypeBase::Where => TokenTypeBase::Where,
             TokenTypeBase::Transfer => TokenTypeBase::Transfer,
+            TokenTypeBase::TransferAsync => TokenTypeBase::TransferAsync,
             TokenTypeBase::Unroll => TokenTypeBase::Unroll,
             TokenTypeBase::Across => TokenTypeBase::Across,
             TokenTypeBase::Match => TokenTypeBase::Match,

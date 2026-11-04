@@ -1609,6 +1609,19 @@ impl Mangle for ElementType {
     }
 }
 
+/// The placed tensor of the type of `transfer_async(x, M)`, `T` in `Token<T>`. A type that the
+/// program declares has a declaration, so a `struct Token` of the program is not a token. The
+/// code generators lower a token as its tensor.
+pub fn transfer_token_inner(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::GenericInstance(base, args) if args.len() == 1 => match base.as_ref() {
+            Type::Struct(name, None) if name.as_ref() == "Token" => args.first(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

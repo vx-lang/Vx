@@ -1062,8 +1062,8 @@ impl<'a> Parser<'a> {
 
         let peeked_token = self.peek().clone();
         let mut expr = match peeked_token.kind {
-            TokenType::Transfer => {
-                self.advance();
+            TokenType::Transfer | TokenType::TransferAsync => {
+                let is_async = self.advance().kind == TokenType::TransferAsync;
                 self.consume(&TokenType::LeftParen, "Expected '(' after transfer")?;
                 let inner = self.parse_expr()?;
                 self.consume(&TokenType::Comma, "Expected ','")?;
@@ -1074,6 +1074,7 @@ impl<'a> Parser<'a> {
                     space: mem,
                     cost: None,
                     lowering: None,
+                    is_async,
                     span: Span {
                         line: peeked_token.line,
                         column: peeked_token.column,

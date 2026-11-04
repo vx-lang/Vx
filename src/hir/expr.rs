@@ -333,6 +333,10 @@ impl<'a> TypeChecker<'a> {
                 None,
                 false, // const
             ),
+            Expr::Transfer(t) if t.is_async => {
+                let placed = self.check_transfer_expr(expr, consume);
+                crate::hir::check::transfer::token_of(placed)
+            }
             Expr::Transfer(..) => self.check_transfer_expr(expr, consume),
             // `Reachable<A, B>` is a comptime boolean.
             Expr::TransferPredicate(..) => Type::Scalar(ElementType::Bool),
@@ -378,9 +382,12 @@ impl<'a> TypeChecker<'a> {
                 self.expected_type = expected;
                 ty
             }
-            Expr::MethodCall(..) => match self.check_task_join(expr, consume && !value_unused) {
+            Expr::MethodCall(..) => match self.check_token_wait(expr) {
                 Some(ty) => ty,
-                None => self.check_methodcall_expr(expr, consume),
+                None => match self.check_task_join(expr, consume && !value_unused) {
+                    Some(ty) => ty,
+                    None => self.check_methodcall_expr(expr, consume),
+                },
             },
             Expr::BinaryOp(..) => self.check_binaryop_expr(expr, consume),
             Expr::RelationalOp(..) => self.check_relationalop_expr(expr),

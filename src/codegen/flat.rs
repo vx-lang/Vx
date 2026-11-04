@@ -1500,6 +1500,10 @@ fn static_tile_bytes(elem: &ElementType, shape: &[String]) -> Option<u64> {
 /// The single source of truth shared by the `func.func` header and a `FuncConst`'s `func.constant`
 /// signature, so a materialized function pointer's type matches its callee's header exactly. (#242)
 pub(crate) fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
+    // A token of `transfer_async` is spelled as its tensor.
+    if let Some(inner) = crate::syntax::types::transfer_token_inner(ty) {
+        return ty_mlir(inner, ctx);
+    }
     let ty = peel_wrappers(ty); // Verified/Ref/Pinned spell as their runtime inner type
                                 // A borrowed tensor is spelled as the tensor. A memref is already a reference, and a call
                                 // site hands over the memref itself; `!llvm.ptr` gave the signature a type nothing passes

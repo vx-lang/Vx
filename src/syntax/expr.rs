@@ -163,6 +163,9 @@ pub struct TransferExpr {
     /// lowering: two machines may implement `Memory::L2 -> Memory::SMEM` differently, and
     /// the one that runs here is the one sema picked, not whichever the lookup finds first.
     pub lowering: Option<(MemorySpace, MemorySpace, String)>,
+    /// `transfer_async(x, M)`: the copy gives a `Token`, whose `.wait()` gives the placed
+    /// tensor. The code generators copy as for `transfer` today, and the wait is the value.
+    pub is_async: bool,
     pub span: Span,
 }
 
@@ -187,6 +190,7 @@ impl TransferExpr {
             space,
             cost: None,
             lowering: None,
+            is_async: false,
             span,
         }
     }
@@ -1429,6 +1433,7 @@ impl Expr {
                 space: e.space.clone(),
                 cost: e.cost,
                 lowering: e.lowering.clone(),
+                is_async: e.is_async,
                 span: e.span,
             }),
             // Type substitution does not touch topologies; topology substitution is done
