@@ -5,9 +5,10 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-// The PTX of `lanes::copy_async`. Each lane starts a `cp.async` of 4 bytes for each of its
-// elements of the tile. The last operand is the number of bytes to read: 0 for an element past
-// the end of the tensor, so the element is zero. The copies of one call are one group
+// The PTX of `lanes::copy_async`. Each lane starts a `cp.async` of 16 bytes (`cg`) for each 16
+// bytes of its part of the tile, if the addresses let it. Otherwise each lane starts a `cp.async`
+// of 4 bytes (`ca`) for each of its elements. The last operand is the number of bytes to read: 0
+// for an element past the end of the tensor, so the element is zero. The copies of one call are one group
 // (`commit_group`). The wait of a token lets the groups that started after it go on
 // (`wait_group n`), and then every lane of the block waits (`bar.sync`). In the code of a
 // subgroup, only the lanes of the subgroup wait (`bar.warp.sync`).
@@ -91,14 +92,16 @@ pub fn three_in_flight(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32
   return;
 }
 
-// Each of 4 subgroups copies a tile of 64 elements into its own row. Lane `t % 32` of the
-// subgroup copies elements `t % 32` and `t % 32 + 32`: no branch skips the loop, and the loop goes
-// 32 elements at a time.
-// CHECK: $L__BB{{[0-9_]+}}:
-// CHECK-NOT: bra
+// Each of 4 subgroups copies a tile of 64 elements into its own row. In 16 bytes at a time, the
+// tile is 16 copies, so lane `t % 32` of the subgroup starts one if `t % 32` is at most 15. In 4
+// bytes at a time, the loop goes 32 elements at a time.
+// CHECK: and.b32 %r[[LANE:[0-9]+]], %r{{[0-9]+}}, 31;
+// CHECK: setp.gt.u32 %p{{[0-9]+}}, %r[[LANE]], 15;
 // CHECK: cp.async.ca.shared.global
 // CHECK-NEXT: add.s64 %rd{{[0-9]+}}, %rd{{[0-9]+}}, 32;
-// CHECK: cp.async.commit_group;
+// CHECK: cp.async.cg.shared.global [%rd{{[0-9]+}}], [%rd{{[0-9]+}}], 16, %r{{[0-9]+}};
+// CHECK-NEXT: $L__BB{{[0-9_]+}}:
+// CHECK-NEXT: cp.async.commit_group;
 // CHECK-NEXT: cp.async.wait_group 0;
 // CHECK-NEXT: bar.warp.sync -1;
 // CHECK-NOT: bar.sync
@@ -116,6 +119,104 @@ pub fn rows_of_subgroups(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f
         for t in 0..32 across lanes(32) {
           out[w * 32 + t] = part[w][0][t] + part[w][1][t];
         }
+      }
+    }
+  }
+  return;
+}
+
+// A place that the host gives. The copy goes 16 bytes at a time if the rows of `x` and the column
+// `c` are multiples of 4 elements. The number of bytes to read is 4 for each of the 4 elements
+// that is in `x`, so a copy at the end of a row reads fewer. Lane `t` copies the 4 elements from
+// column `4 * (t % 8)` of row `t / 8` of the tile.
+// CHECK-LABEL: .entry one_wide_tile(
+// CHECK: ld.param.b32 %r[[C:[0-9]+]], [one_wide_tile_param_12];
+// CHECK: ld.param.b64 %rd[[ROW:[0-9]+]], [one_wide_tile_param_10];
+// CHECK: mov.u32 %r[[T:[0-9]+]], %tid.x;
+// CHECK: and.b64 %rd[[ROW4:[0-9]+]], %rd[[ROW]], 3;
+// CHECK-NEXT: setp.eq.b64 %p[[ROWOK:[0-9]+]], %rd[[ROW4]], 0;
+// CHECK: and.b32 %r[[C4:[0-9]+]], %r[[C]], 3;
+// CHECK-NEXT: setp.eq.b32 %p[[COK:[0-9]+]], %r[[C4]], 0;
+// CHECK-NEXT: and.pred %p[[OK:[0-9]+]], %p[[ROWOK]], %p[[COK]];
+// CHECK-NEXT: @%p[[OK]] bra
+// CHECK: shl.b32 %r[[T4:[0-9]+]], %r[[T]], 2;
+// CHECK-NEXT: and.b32 %r{{[0-9]+}}, %r[[T4]], 28;
+// CHECK: min.u64 %rd[[N:[0-9]+]], %rd{{[0-9]+}}, 4;
+// CHECK: cvt.u32.u64 %r[[N32:[0-9]+]], %rd[[N]];
+// CHECK-NEXT: shl.b32 %r[[BYTES:[0-9]+]], %r[[N32]], 2;
+// CHECK: selp.b32 %r[[COL:[0-9]+]], %r[[BYTES]], 0, %p{{[0-9]+}};
+// CHECK: selp.b32 %r[[ALL:[0-9]+]], %r[[COL]], 0, %p{{[0-9]+}};
+// CHECK-NEXT: cp.async.cg.shared.global [%rd{{[0-9]+}}], [%rd{{[0-9]+}}], 16, %r[[ALL]];
+// CHECK: cp.async.ca.shared.global [%rd{{[0-9]+}}], [%rd{{[0-9]+}}], 4,
+// CHECK-NOT: cp.async.cg
+pub fn one_wide_tile(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>, c : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [8, 32], Memory::SMEM>::uninit() };
+      let copy = lanes::copy_async(&mut tile, x, [0, c]);
+      copy.wait();
+      for t in 0..32 across lanes(32) {
+        out[t] = tile[7][t];
+      }
+    }
+  }
+  return;
+}
+
+// The source `x[k]` starts `k` times the size of `x[0]` from the start of `x`. The copy goes 16
+// bytes at a time if that start and the rows of `x[k]` are multiples of 4 elements.
+// CHECK-LABEL: .entry tile_of_a_row(
+// CHECK: ld.param.b32 %r[[K:[0-9]+]], [tile_of_a_row_param_14];
+// CHECK: cvt.s64.s32 %rd[[K64:[0-9]+]], %r[[K]];
+// CHECK: mul.lo.s64 %rd[[START:[0-9]+]], %rd{{[0-9]+}}, %rd[[K64]];
+// CHECK: or.b64 %rd[[BOTH:[0-9]+]], %rd[[START]], %rd{{[0-9]+}};
+// CHECK-NEXT: and.b64 %rd{{[0-9]+}}, %rd[[BOTH]], 3;
+// CHECK: cp.async.cg.shared.global
+pub fn tile_of_a_row(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?, ?], Memory::HBM>, k : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [8, 32], Memory::SMEM>::uninit() };
+      let copy = lanes::copy_async(&mut tile, &x[k], [0, 0]);
+      copy.wait();
+      for t in 0..32 across lanes(32) {
+        out[t] = tile[7][t];
+      }
+    }
+  }
+  return;
+}
+
+// Elements of 8 bytes go 2 at a time.
+// CHECK-LABEL: .entry eight_byte_tile(
+// CHECK: min.u64 %rd{{[0-9]+}}, %rd{{[0-9]+}}, 2;
+// CHECK: cp.async.cg.shared.global [%rd{{[0-9]+}}], [%rd{{[0-9]+}}], 16, %r{{[0-9]+}};
+// CHECK: cp.async.ca.shared.global [%rd{{[0-9]+}}], [%rd{{[0-9]+}}], 8,
+pub fn eight_byte_tile(out : &mut Tensor<i64, [?], Memory::HBM>, x : &Tensor<i64, [?, ?], Memory::HBM>, c : i32) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<i64, [4, 16], Memory::SMEM>::uninit() };
+      let copy = lanes::copy_async(&mut tile, x, [0, c]);
+      copy.wait();
+      for t in 0..16 across lanes(32) {
+        out[t] = tile[3][t];
+      }
+    }
+  }
+  return;
+}
+
+// A row of 6 elements of 4 bytes is not a multiple of 16 bytes, so each copy is one element.
+// CHECK-LABEL: .entry narrow_tile(
+// CHECK: cp.async.ca.shared.global
+// CHECK-NOT: cp.async.cg
+pub fn narrow_tile(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+  spawn on(Topology::Device) {
+    for b in 0..1 across blocks {
+      let mut tile = unsafe { Tensor<f32, [4, 6], Memory::SMEM>::uninit() };
+      let copy = lanes::copy_async(&mut tile, x, [0, 0]);
+      copy.wait();
+      for t in 0..6 across lanes(32) {
+        out[t] = tile[3][t];
       }
     }
   }

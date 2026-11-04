@@ -2411,45 +2411,117 @@ static Value laneCopyCount(gpu::GPUFuncOp func, Value &count) {
   return count;
 }
 
+/// Whether a lane copy can go 16 bytes at a time, `v` elements: the last
+/// dimension of the tile and of the source has a stride of 1, every other
+/// stride is a multiple of `v`, both start at a multiple of 16 bytes, and so
+/// does the place of the tile in its last dimension.
+static Value laneCopyGoesWide(OpBuilder &b, Location loc,
+                              vx::LaneCopyAsyncOp op, int64_t v,
+                              int64_t bytes) {
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  Value vValue = b.create<arith::ConstantIndexOp>(loc, v);
+  Value sixteen = b.create<arith::ConstantIndexOp>(loc, 16);
+  auto isZero = [&](Value x, Value m) {
+    return b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                   b.create<arith::RemUIOp>(loc, x, m), zero);
+  };
+  Value ok;
+  auto add = [&](Value c) {
+    ok = ok ? b.create<arith::AndIOp>(loc, ok, c) : c;
+  };
+  for (Value buffer : {op.getTile(), op.getSource()}) {
+    auto meta = b.create<memref::ExtractStridedMetadataOp>(loc, buffer);
+    Value base = b.create<memref::ExtractAlignedPointerAsIndexOp>(loc, buffer);
+    Value at = b.create<arith::AddIOp>(
+        loc, base,
+        b.create<arith::MulIOp>(loc, meta.getOffset(),
+                                b.create<arith::ConstantIndexOp>(loc, bytes)));
+    add(isZero(at, sixteen));
+    auto strides = meta.getStrides();
+    add(b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, strides.back(),
+                                one));
+    for (Value stride : strides.drop_back())
+      add(isZero(stride, vValue));
+  }
+  Value last =
+      b.create<arith::IndexCastOp>(loc, b.getIndexType(), op.getPlace().back());
+  add(isZero(last, vValue));
+  return ok;
+}
+
+/// The `cp.async`s of a lane copy, `v` elements of the last dimension at a
+/// time: each lane starts the copies of slots `lane`, `lane + lanes`, and so
+/// on. The source size is the number of the `v` elements in the source, 0 past
+/// its end, which fills the rest with zeros.
+static void laneCopyLoop(OpBuilder &b, Location loc, vx::LaneCopyAsyncOp op,
+                         Value lane, int64_t v) {
+  auto tile = cast<MemRefType>(op.getTile().getType());
+  int64_t last = tile.getRank() - 1;
+  int64_t slots = tile.getNumElements() / v;
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  b.create<scf::ForOp>(
+      loc, lane, b.create<arith::ConstantIndexOp>(loc, slots),
+      b.create<arith::ConstantIndexOp>(loc, op.getLanes()), ValueRange{},
+      [&](OpBuilder &nb, Location l, Value e, ValueRange) {
+        SmallVector<Value> to(tile.getRank()), from(tile.getRank());
+        Value in;
+        Value count = nb.create<arith::ConstantIndexOp>(l, 1);
+        Value rest = e;
+        for (int64_t d = last; d >= 0; --d) {
+          int64_t size = tile.getDimSize(d) / (d == last ? v : 1);
+          Value sizeValue = nb.create<arith::ConstantIndexOp>(l, size);
+          to[d] = nb.create<arith::RemUIOp>(l, rest, sizeValue);
+          rest = nb.create<arith::DivUIOp>(l, rest, sizeValue);
+          if (d == last && v > 1)
+            to[d] = nb.create<arith::MulIOp>(
+                l, to[d], nb.create<arith::ConstantIndexOp>(l, v));
+          auto [index, inside] = laneCopySourceIndex(nb, l, op, d, to[d]);
+          from[d] = nb.create<arith::SelectOp>(l, inside, index, zero);
+          in = in ? nb.create<arith::AndIOp>(l, in, inside) : inside;
+          if (d == last && v > 1)
+            count = nb.create<arith::MinUIOp>(
+                l,
+                nb.create<arith::SubIOp>(
+                    l, nb.create<memref::DimOp>(l, op.getSource(), d), index),
+                nb.create<arith::ConstantIndexOp>(l, v));
+        }
+        Value srcElements = nb.create<arith::SelectOp>(l, in, count, zero);
+        nb.create<nvgpu::DeviceAsyncCopyOp>(
+            l, nvgpu::DeviceAsyncTokenType::get(nb.getContext()), op.getTile(),
+            to, op.getSource(), from, nb.getIndexAttr(v), srcElements,
+            v > 1 ? nb.getUnitAttr() : UnitAttr());
+        nb.create<scf::YieldOp>(l);
+      });
+}
+
 /// A lane copy on the GPU. Each lane starts a `cp.async` for its elements of
-/// the tile, with a source size of 0 for an element past the end of the source,
-/// which fills it with zeros. The copies of the lane are one group. The token
-/// is the number of groups that the lane started before this one.
+/// the tile: 16 bytes at a time when the addresses allow it, and otherwise one
+/// element at a time. The copies of the lane are one group. The token is the
+/// number of groups that the lane started before this one.
 static void expandLaneCopyOnDevice(OpBuilder &b, vx::LaneCopyAsyncOp op,
                                    Value count) {
   Location loc = op.getLoc();
   auto tile = cast<MemRefType>(op.getTile().getType());
-  int64_t elements = tile.getNumElements();
-  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  int64_t bytes = tile.getElementTypeBitWidth() / 8;
+  int64_t v = 16 / bytes;
   Value tid =
       b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
   Value lane = op.getSubgroup()
                    ? b.create<arith::RemUIOp>(
                          loc, tid, b.create<arith::ConstantIndexOp>(loc, 32))
                    : tid;
-  b.create<scf::ForOp>(
-      loc, lane, b.create<arith::ConstantIndexOp>(loc, elements),
-      b.create<arith::ConstantIndexOp>(loc, op.getLanes()), ValueRange{},
-      [&](OpBuilder &nb, Location l, Value e, ValueRange) {
-        SmallVector<Value> to(tile.getRank()), from(tile.getRank());
-        Value in;
-        Value rest = e;
-        for (int64_t d = tile.getRank() - 1; d >= 0; --d) {
-          Value size = nb.create<arith::ConstantIndexOp>(l, tile.getDimSize(d));
-          to[d] = nb.create<arith::RemUIOp>(l, rest, size);
-          rest = nb.create<arith::DivUIOp>(l, rest, size);
-          auto [index, inside] = laneCopySourceIndex(nb, l, op, d, to[d]);
-          from[d] = nb.create<arith::SelectOp>(l, inside, index, zero);
-          in = in ? nb.create<arith::AndIOp>(l, in, inside) : inside;
-        }
-        Value srcElements = nb.create<arith::SelectOp>(
-            l, in, nb.create<arith::ConstantIndexOp>(l, 1), zero);
-        nb.create<nvgpu::DeviceAsyncCopyOp>(
-            l, nvgpu::DeviceAsyncTokenType::get(nb.getContext()), op.getTile(),
-            to, op.getSource(), from, nb.getIndexAttr(1), srcElements,
-            UnitAttr());
-        nb.create<scf::YieldOp>(l);
-      });
+  if (tile.getDimSize(tile.getRank() - 1) % v == 0) {
+    auto wide = b.create<scf::IfOp>(loc, laneCopyGoesWide(b, loc, op, v, bytes),
+                                    /*withElseRegion=*/true);
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPoint(wide.getThenRegion().front().getTerminator());
+    laneCopyLoop(b, loc, op, lane, v);
+    b.setInsertionPoint(wide.getElseRegion().front().getTerminator());
+    laneCopyLoop(b, loc, op, lane, 1);
+  } else {
+    laneCopyLoop(b, loc, op, lane, 1);
+  }
   b.create<NVVM::CpAsyncCommitGroupOp>(loc);
   Value token = b.create<memref::LoadOp>(loc, count);
   b.create<memref::StoreOp>(
