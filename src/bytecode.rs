@@ -417,6 +417,9 @@ pub const ACROSS_LANE: u64 = 0;
 /// `Opcode::AcrossId`: the step of a lane loop that shares its passes among the `imm >> 2` lanes:
 /// that number on the GPU, and 1 on the CPU copy, which has one lane.
 pub const ACROSS_STRIDE: u64 = 1;
+/// `Opcode::AcrossId`: the number of lanes in the block (`raw::lanes()`). It is the step of a
+/// lane loop that shares its passes among the most lanes an `i32` can count.
+pub const ACROSS_EVERY_LANE: u64 = ACROSS_STRIDE | (0x7fff_ffff << 2);
 /// `Opcode::AcrossId`: the index of this block on a grid axis.
 pub const ACROSS_BLOCK: u64 = 2;
 /// `Opcode::AcrossId`: the blocks on a grid axis.
@@ -424,6 +427,14 @@ pub const ACROSS_BLOCKS: u64 = 3;
 
 /// `Opcode::Barrier`'s `imm`: the lanes of one subgroup wait for each other, not the block.
 pub const BARRIER_SUBGROUP: u64 = 1;
+/// `Opcode::Barrier`'s `imm`: a `raw::barrier()` of a user transfer lowering. It is a
+/// `gpu.barrier` at once, as on the AST path.
+pub const BARRIER_GPU: u64 = 2;
+
+/// A bit of `Opcode::Transfer`'s `operand2`: a user `impl Transfer` lowering does the copy. The
+/// body follows the transfer, and the transfer only places the tile. The other bits are the
+/// string index of the arrival count, plus 1.
+pub const TRANSFER_USER_LOWERED: u32 = 1 << 31;
 
 /// `Opcode::TensorPad`'s `imm`: pad each axis (`t.pad(shape)`), not the flat row order.
 pub const TENSOR_PAD_EACH_AXIS: u64 = 1;

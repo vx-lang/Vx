@@ -21,17 +21,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // A `return` of a tensor from inside a `tasks` block: the flat path declines it ("a return
     // of a value of this type from inside a tasks block"). The file is about the AST path.
     "backend/pass/a_return_of_a_tensor_leaves_a_tasks_block.vx",
-    // A user `impl Transfer` lowering: the flat path declines its body, which the AST path
-    // copies into the caller.
-    "backend/pass/custom_topology_user_lowering.vx",
-    "frontend/pass/assert_in_a_transfer_lowering_stays_in_it.vx",
-    // A generic struct, which the flat path declines as "a struct with no GID". The file
-    // exists to pin that `>>` still closes two generics now that it is also the right
-    // shift, and that question is settled in the parser, so the decline costs it nothing.
-    // It states no directive about emitted IR, precisely because it is on the AST path.
-    "backend/pass/user_lowering_name_collisions.vx",
-    "backend/pass/user_lowering_uncountable.vx",
-    "backend/pass/user_lowering_waste.vx",
     "frontend/pass/control_flow_rigorous.vx",
     // The `vxc -j` fallback fixture: a program the flat path declines, chosen so the parallel
     // frontend has something to hand back to the sequential driver. It declines "a match in

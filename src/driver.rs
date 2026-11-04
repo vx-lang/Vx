@@ -1886,6 +1886,23 @@ impl CompilerDriver {
             .collect();
         // A BTreeSet, not a HashSet: this drives the order imported bodies are appended in
         // below, and a HashSet iterates in whatever order the process's random hash seed gives.
+        // The `impl Transfer` bodies, keyed as the checker keys a transfer site's lowering.
+        let mut transfer_lowerings = crate::session::TransferLowerings::new();
+        for m in &mods {
+            for li in &m.transfer_impls {
+                if let [body] = li.methods.as_slice() {
+                    transfer_lowerings.insert(
+                        (
+                            li.from.name(),
+                            li.to.name(),
+                            li.topology.display_name().to_string(),
+                        ),
+                        body.clone(),
+                    );
+                }
+            }
+        }
+        let transfer_lowerings = std::sync::Arc::new(transfer_lowerings);
         let mut lowered_names = std::collections::BTreeSet::new();
         let mut entries: Vec<(crate::syntax::Function, LocalWorkerState)> = Vec::new();
         while let Some(name) = worklist.pop() {
@@ -1896,6 +1913,7 @@ impl CompilerDriver {
                 continue; // an extern or a non-function name use -> not lowered here
             };
             let mut worker = LocalWorkerState::new(session.clone());
+            worker.transfer_lowerings = transfer_lowerings.clone();
             if let Err(why) = crate::hir::flatten::lower_function_to_hir(f, &mut worker) {
                 // The reason is printed unconditionally, not behind VX_FLAT_DBG: "which construct
                 // is the flat path missing" is the number that steers the backend work, and a

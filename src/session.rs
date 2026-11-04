@@ -140,7 +140,14 @@ pub struct LocalWorkerState {
     /// function per worker, so positions are 0-based into the function's stream (like the string table).
     /// (#275, §5.4)
     pub local_place_alias_stores: Vec<(usize, usize, Vec<usize>)>,
+    /// The bodies of the program's `impl Transfer` lowerings, by (from, to, topology). The flat
+    /// lowerer copies a body into each transfer site that the checker matched to it.
+    pub transfer_lowerings: Arc<TransferLowerings>,
 }
+
+/// The `impl Transfer` bodies of a program, by (from space, to space, topology name).
+pub type TransferLowerings =
+    std::collections::HashMap<(String, String, String), crate::syntax::Function>;
 
 use crate::gid::LifetimeSignature;
 
@@ -158,6 +165,7 @@ impl LocalWorkerState {
             local_inline_blocks: Vec::new(),
             local_agg_layouts: Vec::new(),
             local_place_alias_stores: Vec::new(),
+            transfer_lowerings: Arc::default(),
         }
     }
 
