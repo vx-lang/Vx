@@ -262,6 +262,12 @@ impl TypeChecker<'_> {
         self.push_scope();
         before(self);
         self.value_unused = unused;
+        // A task can free memory at any point until its join, and its body starts with no fact
+        // of its parent.
+        let outer_pointers = matches!(kind, TaskBlockKind::Spawn).then(|| {
+            self.pointer_facts_event();
+            std::mem::take(&mut self.pointer_facts)
+        });
         let mut ty = self.check_expr_block(stmts, ret.as_deref(), consume);
         if let Some(r) = ret {
             self.value_unused = unused;
@@ -275,6 +281,9 @@ impl TypeChecker<'_> {
             self.expected_type = returned.filter(|t| *t != Type::Unknown).or(outer.clone());
             ty = self.check_expr_type_flag(r, consume);
             self.expected_type = outer;
+        }
+        if let Some(outer) = outer_pointers {
+            self.pointer_facts = outer;
         }
         ty
     }

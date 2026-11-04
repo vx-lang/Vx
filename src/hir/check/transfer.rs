@@ -2452,7 +2452,10 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 self.drops_enter_spawn();
+                self.pointer_facts_event();
+                let outer_pointers = std::mem::take(&mut self.pointer_facts);
                 self.check_expr_block(stmts, ret.as_deref(), consume);
+                self.pointer_facts = outer_pointers;
                 // Checked once the region's own frame is closed, so a variable from outside that
                 // the region hands out moves in the enclosing function.
                 self.drops_exit_spawn();

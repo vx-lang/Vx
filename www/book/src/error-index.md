@@ -262,7 +262,7 @@ Raised when a `requires`, `ensures` or `invariant` clause cannot be discharged, 
 | [`E8008`](/errors/E8008/) | A loop invariant that the prover cannot show to hold when the loop starts |
 | [`E8009`](/errors/E8009/) | A loop invariant that the prover cannot show to hold after a pass through the loop body |
 | [`E8010`](/errors/E8010/) | An `mlir!` block whose `dialects` list does not match its body: the body uses an operation of a dialect that the list does not name, or the list names something that is not a dialect. The list is what the block says it uses, so it must be right. |
-| [`E8011`](/errors/E8011/) | A pointer clause that is not well formed: `requires valid(p, n)`, `requires initialized(p, n)` or `requires !overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters. The checker cannot prove one at a call yet, so only an `unsafe fn` may have one, and each clause is a `requires` of its own. |
+| [`E8011`](/errors/E8011/) | A pointer clause that is not well formed: `requires valid(p, n)`, `requires initialized(p, n)` or `requires !overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters, and each clause is a `requires` of its own. A call through a function value or a trait would not prove the clause, so a safe function with one cannot be a function value, and a safe method of a trait impl cannot have one. |
 
 ______________________________________________________________________
 

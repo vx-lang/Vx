@@ -732,8 +732,9 @@ pub enum DiagnosticCode {
     E8010,
     /// A pointer clause that is not well formed: `requires valid(p, n)`, `requires
     /// initialized(p, n)` or `requires !overlaps(p, q, n)`, where `p` and `q` are raw pointer
-    /// parameters. The checker cannot prove one at a call yet, so only an `unsafe fn` may have
-    /// one, and each clause is a `requires` of its own.
+    /// parameters, and each clause is a `requires` of its own. A call through a function value or
+    /// a trait would not prove the clause, so a safe function with one cannot be a function value,
+    /// and a safe method of a trait impl cannot have one.
     E8011,
 }
 
