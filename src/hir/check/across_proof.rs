@@ -541,10 +541,10 @@ impl Proof<'_> {
                     self.fail(why, fc.span);
                     return;
                 }
-                // A lane sort writes the tensor that it borrows: a row `t[w]`, or a tensor of
-                // this pass.
+                // A lane sort and a lane copy write the tensor that they borrow first: a row
+                // `t[w]`, or a tensor of this pass.
                 let sort = crate::hir::check::lanes::lane_routine(&fc.name)
-                    .is_some_and(|(op, _)| op.is_sort());
+                    .is_some_and(|(op, _)| op.writes_first());
                 if let (true, Some(Expr::Borrow(b))) = (sort, fc.args.first()) {
                     if let Some((name, indices)) = Self::element(&b.expr) {
                         for i in &indices {

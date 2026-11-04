@@ -18,27 +18,6 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
-    // A token of `transfer_async` that a loop gives a new value: the flat path declines it ("a
-    // tensor given a new value inside a branch or loop").
-    "backend/pass/a_transfer_async_keeps_a_copy_in_flight_in_a_loop.vx",
-    // A `return` of a tensor from inside a `tasks` block: the flat path declines it ("a return
-    // of a value of this type from inside a tasks block"). The file is about the AST path.
-    "backend/pass/a_return_of_a_tensor_leaves_a_tasks_block.vx",
-    // `c as ||->i32`: the flat path declines a cast to the built-in closure type ("a cast to a
-    // non-scalar"); the AST path compiles it.
-    "backend/pass/returning_a_closure_that_uses_nothing.vx",
-    // A user `impl Transfer` lowering: the flat path declines its body, which the AST path
-    // copies into the caller.
-    "backend/pass/custom_topology_user_lowering.vx",
-    "frontend/pass/assert_in_a_transfer_lowering_stays_in_it.vx",
-    // A generic struct, which the flat path declines as "a struct with no GID". The file
-    // exists to pin that `>>` still closes two generics now that it is also the right
-    // shift, and that question is settled in the parser, so the decline costs it nothing.
-    // It states no directive about emitted IR, precisely because it is on the AST path.
-    "backend/pass/user_lowering_name_collisions.vx",
-    "backend/pass/user_lowering_uncountable.vx",
-    "backend/pass/user_lowering_waste.vx",
-    "frontend/pass/closure_fat_ptr.vx",
     "frontend/pass/control_flow_rigorous.vx",
     // The `vxc -j` fallback fixture: a program the flat path declines, chosen so the parallel
     // frontend has something to hand back to the sequential driver. It declines "a match in
@@ -228,6 +207,8 @@ fn flat_path_coverage_of_the_backend_corpus_holds() {
             "optimizations/pass/lane_values_stay_in_registers_on_the_gpu.vx",     // needs --machine
             "optimizations/pass/lane_sorts_on_the_cpu.vx",                        // needs --machine
             "optimizations/pass/lane_sorts_on_the_gpu.vx",                        // needs --machine
+            "optimizations/pass/lane_copies_on_the_cpu.vx",                       // needs --machine
+            "optimizations/pass/lane_copies_on_the_gpu.vx",                       // needs --machine
             "optimizations/pass/lane_argmax_on_the_cpu.vx",                       // needs --machine
             "optimizations/pass/if_values_that_read_a_tensor.vx",                 // needs --machine
             "optimizations/pass/code_after_the_blocks_runs_on_the_lanes_of_one_block.vx", // needs --machine

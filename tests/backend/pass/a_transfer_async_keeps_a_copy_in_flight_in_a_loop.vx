@@ -9,9 +9,7 @@
 // the copy of the tile that it uses. The tiles start at 0, 100, 200 and 300, so the sum of their
 // first elements is 600.
 //
-// The flat code generator does not give a tensor a new value in a loop yet, so only the AST
-// code generator runs this program.
-//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}sum 600{{$}}
 

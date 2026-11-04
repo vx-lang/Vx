@@ -163,6 +163,12 @@ pub fn struct_instance_gid<'a>(
     Some(TypeId::new(0, sym, 0, 0))
 }
 
+/// The GID of the `{ env, func }` layout of a closure value (`||->i32`).
+pub fn closure_pair_gid() -> TypeId {
+    let sym = crate::hash::DefPath::Named("$closure_pair").compute_symbol_hash();
+    TypeId::new(0, sym, 0, 0)
+}
+
 /// The tensor GID of a `Type::Tensor`, or `None` if it is not a tensor, its element is generic, or a
 /// dim is not a literal or a plain name (canonicalizing an arbitrary expression would not be stable).
 pub fn tensor_gid_of(ty: &Type) -> Option<TypeId> {
@@ -494,6 +500,8 @@ struct Lowerer<'r> {
     /// `*mut i32` for a `self.data[i]` index needs `self : &mut Vec<i32>`'s type substituted into the
     /// base struct's `data : *mut T` field. See `infer_ast_type` (#242).
     ast_types: HashMap<Symbol, Type>,
+    /// The program's `impl Transfer` bodies, which a transfer site copies in.
+    transfer_lowerings: std::sync::Arc<crate::session::TransferLowerings>,
     /// One frame per block being lowered: what each name a `let` in the block shadows meant
     /// before it, put back when the block ends.
     block_frames: Vec<Vec<Shadowed>>,
@@ -637,6 +645,7 @@ impl<'r> Lowerer<'r> {
             tensor_types: Vec::new(),
             strings: Vec::new(),
             ast_types: HashMap::new(),
+            transfer_lowerings: std::sync::Arc::default(),
             block_frames: Vec::new(),
             owned_tensors: std::collections::HashSet::new(),
             started_slots: std::collections::HashSet::new(),
@@ -1570,6 +1579,11 @@ impl<'r> Lowerer<'r> {
             }
             // A scalar `as` cast: the result carries the (scalar) target type.
             Expr::AsCast(c) => {
+                // `c as ||->i32`: the closure becomes the pair `{ env, func }`.
+                if matches!(c.target_ty, Type::Closure(..)) {
+                    let pair = self.closure_pair_layout();
+                    return self.closure_value(&c.expr, pair);
+                }
                 let v = self.lower_expr(&c.expr)?;
                 // An integer cast to a pointer (`0 as *mut T`, the null-pointer idiom): the
                 // result is a bare `!llvm.ptr` value, spelled with the pointer GID so codegen
@@ -1693,15 +1707,10 @@ impl<'r> Lowerer<'r> {
             // the same element + shape, so the destination is sized to hold the source ("enough
             // storage on the receiving side").
             Expr::Transfer(t) => {
-                // A transfer sema matched to a user `impl transfer` lowering (#353)
-                // declines: the body is inlined at the site by the AST path, and the
-                // flat emitter has no raw:: opcodes yet. Decline keeps the AST path
-                // the oracle, exactly as for every other unsupported construct.
-                if t.lowering.is_some() {
-                    return Err(Decline::Unsupported {
-                        what: "a user transfer lowering body",
-                    });
-                }
+                let body = match &t.lowering {
+                    Some(key) => Some(self.transfer_body(key)?),
+                    None => None,
+                };
                 let src = self.lower_expr(&t.expr)?;
                 // A scalar transfers too: the op is an identity at lowering, and the result
                 // restates the operand's type.
@@ -1724,7 +1733,16 @@ impl<'r> Lowerer<'r> {
                     _ => 0,
                 };
                 let imm = mem_id | ((source as u64) << 32);
-                Ok(self.emit_typed(Opcode::Transfer, src.reg, Register(0), result_ty, imm))
+                let flag = Register(if body.is_some() {
+                    crate::bytecode::TRANSFER_USER_LOWERED
+                } else {
+                    0
+                });
+                let placed = self.emit_typed(Opcode::Transfer, src.reg, flag, result_ty, imm);
+                if let Some(body) = body {
+                    self.inline_transfer_body(&body, src.clone(), placed.clone())?;
+                }
+                Ok(placed)
             }
             // `Tensor<T>([..])` allocates a buffer. Any other name is an ordinary function call.
             Expr::FunctionCall(fc) if fc.name.as_ref() == crate::syntax::TASK_JOIN => {
@@ -1737,6 +1755,11 @@ impl<'r> Lowerer<'r> {
                     return self.lower_tensor_alloc(fc).ok_or(Decline::TypeNotModelled {
                         what: "a tensor allocation the flat path does not model",
                     });
+                }
+                // The `raw::` primitives of a user transfer lowering. The checker allows them
+                // only in such a body.
+                if let Some(prim) = fc.name.as_ref().strip_prefix("raw::") {
+                    return self.lower_raw_primitive(prim, &fc.args);
                 }
                 // `tensor_view_2d(ptr, rows, cols)`: a rank-2 view over memory the caller owns.
                 if fc.name.as_ref() == "tensor_view_2d" && fc.args.len() == 3 {
@@ -3959,7 +3982,10 @@ impl<'r> Lowerer<'r> {
         let zero = self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0);
         self.emit_effect(Opcode::Store, code.reg, zero.reg, 0);
         let ret = match self.ret_ty.clone() {
-            Some(ty @ (LoweredTy::Scalar(_) | LoweredTy::Ptr)) if !self.ret_void => {
+            // A tensor waits as its memref, in a tensor slot.
+            Some(ty @ (LoweredTy::Scalar(_) | LoweredTy::Ptr | LoweredTy::Tensor { .. }))
+                if !self.ret_void =>
+            {
                 Some(self.emit_alloca(ty))
             }
             _ => None,
@@ -4397,6 +4423,9 @@ impl<'r> Lowerer<'r> {
     /// call's return (`VecIter::next -> Option<i32>`), a `let` binding. Falls back to `lowered_ty`
     /// for everything else. (#242)
     fn lower_ty_synth(&mut self, ty: &Type) -> Option<LoweredTy> {
+        if matches!(ty, Type::Closure(..)) {
+            return Some(LoweredTy::Aggregate(self.closure_pair_layout()));
+        }
         let (base, args) = match ty {
             Type::GenericInstance(base, args) => (base.as_ref(), args.as_slice()),
             _ => (ty, &[][..]),
@@ -4587,6 +4616,233 @@ impl<'r> Lowerer<'r> {
             self.completed_layout_identities.insert(gid, identity);
         }
         result
+    }
+
+    /// The `impl Transfer` bodies that the transfer sites in `stmts` copy in.
+    fn transfer_bodies_in(&self, stmts: &[Statement]) -> Lowered<Vec<Function>> {
+        let mut keys = Vec::new();
+        crate::syntax::visit_exprs(stmts, &mut |e| {
+            if let Expr::Transfer(t) = e {
+                if let Some(key) = &t.lowering {
+                    keys.push(key.clone());
+                }
+            }
+        });
+        keys.iter().map(|key| self.transfer_body(key)).collect()
+    }
+
+    /// The body of the `impl Transfer` lowering that the checker matched to a transfer site.
+    fn transfer_body(
+        &self,
+        (from, to, topology): &(
+            crate::syntax::MemorySpace,
+            crate::syntax::MemorySpace,
+            String,
+        ),
+    ) -> Lowered<Function> {
+        let body = self
+            .transfer_lowerings
+            .get(&(from.name(), to.name(), topology.clone()))
+            .ok_or(Decline::Unsupported {
+                what: "a user transfer lowering whose body this compile did not supply",
+            })?;
+        if body.params.len() != 2 {
+            return Err(Decline::Unsupported {
+                what: "a user transfer lowering without two parameters",
+            });
+        }
+        Ok(body.clone())
+    }
+
+    /// Copy the body of a user transfer lowering into the transfer site, as the AST path does.
+    /// `src` is the value moved and `dst` the placed tile. The body's names do not reach the
+    /// site: the bindings are restored after it. Its `return` ends the body, so it is left out.
+    fn inline_transfer_body(&mut self, body: &Function, src: Val, dst: Val) -> Lowered<()> {
+        let saved_scope = self.scope.clone();
+        let saved_types = self.ast_types.clone();
+        for ((name, ty), val) in body.params.iter().zip([src, dst]) {
+            if !matches!(val.ty, LoweredTy::Tensor { .. }) {
+                return Err(Decline::Unsupported {
+                    what: "a user transfer lowering of something that is not a tensor",
+                });
+            }
+            self.ast_types.insert(name.clone(), ty.clone());
+            self.scope.insert(name.clone(), Binding::Reg(val));
+        }
+        for stmt in &body.body {
+            if matches!(stmt, Statement::Return(_)) {
+                continue;
+            }
+            self.lower_stmt(stmt)?;
+        }
+        self.scope = saved_scope;
+        self.ast_types = saved_types;
+        Ok(())
+    }
+
+    /// A `raw::` primitive. A tile is indexed by one flat number at the surface, and the flat
+    /// index becomes one index for each dimension, in row-major order.
+    fn lower_raw_primitive(&mut self, prim: &str, args: &[Expr]) -> Lowered<Val> {
+        let unit = |lw: &mut Self| {
+            lw.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0)
+        };
+        match (prim, args) {
+            ("extent", [tile]) => {
+                let (_, dims) = self.raw_tile(tile)?;
+                let n: u64 = dims.iter().product();
+                Ok(self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I64, n))
+            }
+            ("load", [tile, index]) => self.raw_element(tile, index, false),
+            ("store", [tile, index, value]) => {
+                let place = self.raw_element(tile, index, true)?;
+                let v = self.lower_expr(value)?;
+                self.emit_effect(Opcode::TensorStore, place.reg, v.reg, 0);
+                Ok(unit(self))
+            }
+            ("async_copy", [dst, src, index]) => {
+                let v = self.raw_element(src, index, false)?;
+                let place = self.raw_element(dst, index, true)?;
+                self.emit_effect(Opcode::TensorStore, place.reg, v.reg, 0);
+                Ok(unit(self))
+            }
+            ("async_wait", _) => Ok(unit(self)),
+            ("barrier", []) => {
+                self.emit_effect(
+                    Opcode::Barrier,
+                    Register(0),
+                    Register(0),
+                    crate::bytecode::BARRIER_GPU,
+                );
+                Ok(unit(self))
+            }
+            ("lane", []) | ("lanes", []) => {
+                let which = if prim == "lane" {
+                    crate::bytecode::ACROSS_LANE
+                } else {
+                    crate::bytecode::ACROSS_EVERY_LANE
+                };
+                let id = self.emit_value(
+                    Opcode::AcrossId,
+                    Register(0),
+                    Register(0),
+                    ElementType::I32,
+                    which,
+                );
+                Ok(self.emit_value(Opcode::Cast, id.reg, Register(0), ElementType::I64, 0))
+            }
+            _ => Err(Decline::Unsupported {
+                what: "a raw primitive the flat path does not lower",
+            }),
+        }
+    }
+
+    /// A tile of a `raw::` primitive: its value and its static dimensions.
+    fn raw_tile(&mut self, tile: &Expr) -> Lowered<(Val, Vec<u64>)> {
+        let v = self.lower_expr(tile)?;
+        let LoweredTy::Tensor { shape, .. } = &v.ty else {
+            return Err(Decline::TypeNotModelled {
+                what: "a raw primitive on something that is not a tensor",
+            });
+        };
+        let dims = shape
+            .iter()
+            .map(|d| d.parse::<u64>().ok())
+            .collect::<Option<Vec<_>>>()
+            .ok_or(Decline::TypeNotModelled {
+                what: "a raw primitive on a tile with a run-time extent",
+            })?;
+        Ok((v, dims))
+    }
+
+    /// The element `index` of `tile`, by its flat index: the scalar for a read, or the place for
+    /// a store (`place`).
+    fn raw_element(&mut self, tile: &Expr, index: &Expr, place: bool) -> Lowered<Val> {
+        let (t, dims) = self.raw_tile(tile)?;
+        let LoweredTy::Tensor { elem, shape } = t.ty.clone() else {
+            unreachable!("raw_tile gives a tensor");
+        };
+        let lin = self.lower_expr(index)?;
+        let LoweredTy::Scalar(index_ty) = lin.ty.clone() else {
+            return Err(Decline::TypeNotModelled {
+                what: "a raw primitive index that is not a scalar",
+            });
+        };
+        // idx_k = (i / stride_k) % d_k. The leading digit needs no `%`: the checker proved
+        // i < extent.
+        let mut stride: u64 = dims.iter().product();
+        let mut cur = t.reg;
+        for (k, d) in dims.iter().enumerate() {
+            stride /= d;
+            let mut digit = lin.reg;
+            if dims.len() > 1 {
+                let sv = self.emit_value(
+                    Opcode::Const,
+                    Register(0),
+                    Register(0),
+                    index_ty.clone(),
+                    stride,
+                );
+                digit = self
+                    .emit_value(Opcode::Div, lin.reg, sv.reg, index_ty.clone(), 0)
+                    .reg;
+                if k > 0 {
+                    let dv = self.emit_value(
+                        Opcode::Const,
+                        Register(0),
+                        Register(0),
+                        index_ty.clone(),
+                        *d,
+                    );
+                    digit = self
+                        .emit_value(Opcode::Rem, digit, dv.reg, index_ty.clone(), 0)
+                        .reg;
+                }
+            }
+            let last = k + 1 == dims.len();
+            let ty = if last {
+                LoweredTy::Scalar(elem.clone())
+            } else {
+                LoweredTy::Tensor {
+                    elem: elem.clone(),
+                    shape: shape[k + 1..].to_vec(),
+                }
+            };
+            cur = self
+                .emit_typed(Opcode::TensorIndex, cur, digit, ty, (last && place) as u64)
+                .reg;
+        }
+        let ty = LoweredTy::Scalar(elem);
+        Ok(Val { reg: cur, ty })
+    }
+
+    /// The layout of a closure value (`||->i32`): the pair `{ env, func }` of two pointers, as on
+    /// the AST path. A program need not declare `Closure1`, so the lowerer makes this layout.
+    fn closure_pair_layout(&mut self) -> TypeId {
+        let gid = closure_pair_gid();
+        if self.generated_layout(gid).is_none() {
+            let field = |name: &str, offset| crate::layout::GeneratedFieldLayout {
+                layout: crate::layout::FieldLayout {
+                    name: name.into(),
+                    offset,
+                    size: 8,
+                    ty: FieldTy::Opaque,
+                },
+                mlir_type: "!llvm.ptr".to_string(),
+                aggregate_id: None,
+                pointer_target_id: None,
+            };
+            let layout = crate::layout::GeneratedAggregateLayout {
+                type_id: gid,
+                name: "closure".to_string(),
+                size_bytes: 16,
+                align_bytes: 8,
+                fields: vec![field("env", 0), field("func", 8)],
+                variant_payloads: Vec::new(),
+            };
+            self.instance_layouts.insert(gid, layout.type_definition());
+            self.record_generated_layout(layout);
+        }
+        gid
     }
 
     fn generated_layout(&self, gid: TypeId) -> Option<&crate::layout::GeneratedAggregateLayout> {
@@ -5786,6 +6042,18 @@ impl<'r> Lowerer<'r> {
     /// the eventual `CallIndirect`, which rebuilds the function type from the actual arguments. Returns
     /// the adapted value (passed by value), or `None` if `arg` isn't a closure. (#242)
     fn try_adapt_closure_arg(&mut self, arg: &Expr) -> Lowered<Val> {
+        // Target `ClosureK` layout `{ env: ptr, func: ptr }` — structurally identical for every arity.
+        let ck_gid =
+            self.registry
+                .layout_gid_by_base_name("Closure1")
+                .ok_or(Decline::TypeNotModelled {
+                    what: "the Closure1 layout",
+                })?;
+        self.closure_value(arg, ck_gid)
+    }
+
+    /// The `{ env, func }` value of the closure literal `arg`, in the pair layout `ck_gid`.
+    fn closure_value(&mut self, arg: &Expr, ck_gid: TypeId) -> Lowered<Val> {
         let cn_name = match self.infer_ast_type(arg).ok_or(Decline::TypeNotModelled {
             what: "an argument whose type cannot be inferred",
         })? {
@@ -5807,13 +6075,6 @@ impl<'r> Lowerer<'r> {
             .ok_or(Decline::TypeNotModelled {
                 what: "a closure callee that is not a function constant",
             })?;
-        // Target `ClosureK` layout `{ env: ptr, func: ptr }` — structurally identical for every arity.
-        let ck_gid =
-            self.registry
-                .layout_gid_by_base_name("Closure1")
-                .ok_or(Decline::TypeNotModelled {
-                    what: "the Closure1 layout",
-                })?;
         let (env_off, func_off) = {
             let fields = &self
                 .layout_of(&ck_gid)
@@ -5881,8 +6142,21 @@ impl<'r> Lowerer<'r> {
         fc: &crate::syntax::FunctionCallExpr,
         callee: Binding,
     ) -> Lowered<Val> {
-        // Load the callee function pointer (an SSA alias, or a `SlotLoad` from its slot).
+        // A closure pair `{ env, func }` (`let f = c as ||->i32; f()`): call `func` with `env`
+        // as its first argument.
+        let mut env = None;
         let fnptr = match callee {
+            Binding::Slot {
+                reg,
+                ty: LoweredTy::Aggregate(gid),
+            } if matches!(
+                self.ast_types.get(fc.name.as_ref()),
+                Some(Type::Closure(..))
+            ) =>
+            {
+                env = Some(self.load_field(reg, &gid, "env")?.reg);
+                self.load_field(reg, &gid, "func")?
+            }
             Binding::Reg(v) => v,
             Binding::Slot { reg, ty } => self.emit_typed(Opcode::SlotLoad, reg, Register(0), ty, 0),
             // A place-bound reference is not a function pointer — decline. (#275)
@@ -5926,17 +6200,18 @@ impl<'r> Lowerer<'r> {
                 }
             },
         };
-        let mut arg_regs = Vec::with_capacity(fc.args.len());
+        let mut arg_regs: Vec<Register> = env.into_iter().collect();
         for arg in &fc.args {
             arg_regs.push(self.lower_expr(arg)?.reg);
         }
+        let argc = arg_regs.len() as u64;
         for reg in arg_regs {
             self.emit_effect(Opcode::Arg, reg, Register(0), 0);
         }
         let type_idx = TypeIdx(self.types.len() as u32);
         self.types.push(ty.gid());
         let reg = Register(self.code.len() as u32);
-        let imm = fc.args.len() as u64 | if void { CALL_INDIRECT_VOID } else { 0 };
+        let imm = argc | if void { CALL_INDIRECT_VOID } else { 0 };
         self.code.push(HirInstruction::new(
             Opcode::CallIndirect,
             fnptr.reg,
@@ -7061,11 +7336,7 @@ impl<'r> Lowerer<'r> {
             Statement::Assert(a) => {
                 let cond = self.lower_expr(&a.expr)?;
                 let imm = self.strings.len() as u64;
-                self.strings.push(
-                    a.msg
-                        .clone()
-                        .unwrap_or_else(|| "assertion failed".to_string()),
-                );
+                self.strings.push(a.failure_message());
                 self.emit_effect(Opcode::Abort, cond.reg, Register(0), imm);
                 Ok(())
             }
@@ -7107,8 +7378,9 @@ impl<'r> Lowerer<'r> {
                 // `__assertfail`. Safe to call; ending a process violates no memory-safety
                 // property.
                 //
-                // `panic(msg)` prints `panic: <msg>` and a newline to standard error first, and then
-                // aborts with an empty message, as the AST code generator does.
+                // `panic(msg)` prints `panic: <msg>`, and `  at <file>:<line>` on the next line, to
+                // standard error first. The checker added the file and the line. Then it aborts
+                // with an empty message, as the AST code generator does.
                 expr if crate::syntax::is_tasks_wait(expr) => {
                     assert!(
                         self.leaving_tasks(false),
@@ -7122,12 +7394,8 @@ impl<'r> Lowerer<'r> {
                     if fc.name.as_ref() == "panic" {
                         abort_msg = "panic";
                         if self.device_depth == 0 {
-                            let panic_label =
-                                Expr::StringLiteral(crate::syntax::StringLiteralExpr::new(
-                                    "panic: ".to_string(),
-                                    fc.span,
-                                ));
-                            self.lower_print(&[panic_label, fc.args[0].clone()], true, true)?;
+                            let print = crate::syntax::panic_message(fc);
+                            self.lower_print(&print, true, true)?;
                             abort_msg = "";
                         }
                     }
@@ -7228,7 +7496,7 @@ pub fn lower_function_to_hir(func: &Function, worker: &mut LocalWorkerState) -> 
     // Cheap `Arc` clone so the borrow of the registry doesn't collide with the later `&mut worker`
     // in `commit`; the frozen registry is immutable, so this is a pure reference bump.
     let registry = worker.global.registry.clone();
-    match try_lower(func, &registry) {
+    match try_lower(func, &registry, worker.transfer_lowerings.clone()) {
         Ok(lw) => {
             lw.commit(worker);
             Ok(())
@@ -7237,8 +7505,13 @@ pub fn lower_function_to_hir(func: &Function, worker: &mut LocalWorkerState) -> 
     }
 }
 
-fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Lowered<Lowerer<'r>> {
+fn try_lower<'r>(
+    func: &Function,
+    registry: &'r ImmutableGlobalRegistry,
+    transfer_lowerings: std::sync::Arc<crate::session::TransferLowerings>,
+) -> Lowered<Lowerer<'r>> {
     let mut lw = Lowerer::new(registry);
+    lw.transfer_lowerings = transfer_lowerings;
     // Local-usage pre-pass (#230): one syntactic walk collecting the locals whose address is taken
     // (`&x`) and those reassigned (`x = ..`), so `bind_local` can slot exactly the locals that need it.
     // Must run before params bind, since a param can be address-taken or reassigned too.
@@ -7248,11 +7521,27 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Lowe
     lw.mutated = uses.mutated;
     lw.place_bindings = uses.place_bindings;
     lw.overlap_clauses = overlap_clauses(func, &lw.mutated);
+    // A transfer site copies in the body of its `impl Transfer` lowering. That body's locals live
+    // in this function, so they need the same slots they would get here.
+    let bodies = lw.transfer_bodies_in(&func.body)?;
+    for body in &bodies {
+        let body_uses = analyze_local_uses(&body.body);
+        if !body_uses.place_bindings.is_empty() {
+            return Err(Decline::Unsupported {
+                what: "a reference local in a user transfer lowering",
+            });
+        }
+        lw.pointer_taken
+            .extend(crate::syntax::locals_with_pointer_taken(&body.body));
+        lw.materialized.extend(body_uses.materialized);
+        lw.mutated.extend(body_uses.mutated);
+    }
     // Control flow drives the block model (entry block + branch skeletons) and is the precondition for
     // slotting a *mutated* scalar (it must cross a block boundary). An aggregate param or a struct
     // construction also turns on the memory model (an aggregate must live in an addressable slot), but
     // *not* the per-scalar rule — a mutated scalar in a straight-line function stays a pure-SSA rebind.
-    lw.has_control_flow = body_has_control_flow(&func.body);
+    lw.has_control_flow =
+        body_has_control_flow(&func.body) || bodies.iter().any(|b| body_has_control_flow(&b.body));
     let has_aggregate_param = func
         .params
         .iter()
@@ -7314,8 +7603,12 @@ fn try_lower<'r>(func: &Function, registry: &'r ImmutableGlobalRegistry) -> Lowe
 /// (generic, tensor, pointer, closure) or an aggregate whose layout is the not-yet-computed 0/0 stub
 /// (`align_bytes == 0`) — the caller then aborts, keeping the lowering atomic.
 fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy> {
-    // A token of `transfer_async` is its tensor: the copy is done when it is made.
+    // A token of `transfer_async` is its tensor: the copy is done when it is made. A token of a
+    // lane copy is a number.
     if let Some(inner) = crate::syntax::types::transfer_token_inner(ty) {
+        if crate::syntax::types::is_copy_token(ty) {
+            return Some(LoweredTy::Scalar(ElementType::I32));
+        }
         return lowered_ty(inner, registry);
     }
     if let Some(elem) = scalar_of(ty) {
@@ -7343,11 +7636,11 @@ fn lowered_ty(ty: &Type, registry: &ImmutableGlobalRegistry) -> Option<LoweredTy
     // A raw pointer (`*const T`/`*mut T`, `&T`) is an opaque `!llvm.ptr` — the ABI of the string-value
     // and FFI-pointer programs (`vx_stdout_write(buffer: *const u8, …)`, an extern returning
     // `*mut i8`). Matches the AST codegen's `lower_type` for `Type::Pointer`/`Type::Borrow`. (#231/#235)
-    // A function/closure type (`fn(i32)->i32`, a `Closure1`'s `func` field) is also an opaque
+    // A function type (`fn(i32)->i32`, a `Closure1`'s `func` field) is also an opaque
     // `!llvm.ptr` — a materialized function pointer, called via `CallIndirect`. (#242)
     if matches!(
         ty,
-        Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..) | Type::Closure(..)
+        Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..)
     ) {
         return Some(LoweredTy::Ptr);
     }

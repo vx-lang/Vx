@@ -75,6 +75,10 @@ impl CancelMark {
     }
 }
 
+/// The marks that `vx_cancel_off` put aside, innermost last, each with the deadline of its
+/// `drop` on the clock of `vx_clock_ns`.
+pub(crate) type PutAside = Vec<(Option<Arc<CancelMark>>, i64)>;
+
 /// Where the task that runs now started: one line for its `spawn`, and then one line for the
 /// `spawn` of each task around it. An abort in a task prints it (F9).
 pub(crate) type Site = Arc<[u8]>;
@@ -89,23 +93,49 @@ thread_local! {
     static CANCELS: Cell<u32> = const { Cell::new(0) };
     /// The mark of the innermost block whose task or code this thread runs.
     static CURRENT: RefCell<Option<Arc<CancelMark>>> = const { RefCell::new(None) };
-    /// The marks that `vx_cancel_off` put aside, innermost last.
-    static PUT_ASIDE: RefCell<Vec<Option<Arc<CancelMark>>>> = const { RefCell::new(Vec::new()) };
+    static PUT_ASIDE: RefCell<PutAside> = const { RefCell::new(Vec::new()) };
+}
+
+/// How long the waits in a `drop` can take, in nanoseconds: `VX_DROP_WAIT_SECONDS`, or 10
+/// seconds.
+fn drop_wait_limit_ns() -> i64 {
+    static LIMIT: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        let Ok(text) = std::env::var("VX_DROP_WAIT_SECONDS") else {
+            return 10_000_000_000;
+        };
+        match text.parse::<f64>() {
+            Ok(seconds) if seconds >= 0.0 && seconds.is_finite() => (seconds * 1e9) as i64,
+            _ => {
+                eprintln!("vx: VX_DROP_WAIT_SECONDS must be a number of seconds, not '{text}'");
+                std::process::abort();
+            }
+        }
+    })
+}
+
+/// The deadline of the `drop` that this thread runs, if it runs one. After it, each wait that
+/// can be cancelled gives up, as in a cancelled block.
+pub(crate) fn drop_deadline() -> Option<i64> {
+    PUT_ASIDE.with(|p| p.borrow().last().map(|&(_, deadline)| deadline))
 }
 
 /// Before a `drop`: this thread runs with no mark until `vx_cancel_on`, so no wait gives
-/// `Cancelled` (F6). A `tasks` block in the `drop` gets a mark with no parent.
+/// `Cancelled` (F6), until the deadline of the `drop`. A `drop` in a `drop` keeps the earlier
+/// deadline. A `tasks` block in the `drop` gets a mark with no parent.
 #[no_mangle]
 pub extern "C" fn vx_cancel_off() {
     let mark = CURRENT.with(|c| c.borrow_mut().take());
-    PUT_ASIDE.with(|p| p.borrow_mut().push(mark));
+    let deadline = crate::ffi::wait::vx_clock_ns().saturating_add(drop_wait_limit_ns());
+    let deadline = drop_deadline().map_or(deadline, |outer| outer.min(deadline));
+    PUT_ASIDE.with(|p| p.borrow_mut().push((mark, deadline)));
 }
 
 /// After a `drop`: the mark that `vx_cancel_off` put aside comes back.
 #[no_mangle]
 pub extern "C" fn vx_cancel_on() {
     let mark = PUT_ASIDE.with(|p| p.borrow_mut().pop());
-    let mark = mark.expect("vx_cancel_on comes after vx_cancel_off");
+    let (mark, _) = mark.expect("vx_cancel_on comes after vx_cancel_off");
     CURRENT.with(|c| {
         assert!(c.borrow().is_none(), "a tasks block in a drop did not end");
         *c.borrow_mut() = mark;
@@ -114,10 +144,7 @@ pub extern "C" fn vx_cancel_on() {
 
 /// Swaps the current mark and the marks put aside of this thread with these. The shared runtime
 /// gives each fiber its own.
-pub(crate) fn swap_marks(
-    mark: &mut Option<Arc<CancelMark>>,
-    put_aside: &mut Vec<Option<Arc<CancelMark>>>,
-) {
+pub(crate) fn swap_marks(mark: &mut Option<Arc<CancelMark>>, put_aside: &mut PutAside) {
     CURRENT.with(|c| std::mem::swap(&mut *c.borrow_mut(), mark));
     PUT_ASIDE.with(|p| std::mem::swap(&mut *p.borrow_mut(), put_aside));
 }
@@ -239,8 +266,9 @@ pub(crate) fn tasks_begin(sched: Option<&'static Scheduler>) -> *mut VxTaskGroup
     }))
 }
 
-/// Whether the block of this thread's task or code, or a block around it, was cancelled. A wait
-/// that can be cancelled then gives `Cancelled`.
+/// Whether the block of this thread's task or code, or a block around it, was cancelled, or a
+/// `drop` that this thread runs is past its deadline. A wait that can be cancelled then gives
+/// `Cancelled`.
 ///
 /// The mark stays, so a task that sees it many times is in a loop that waits again after each
 /// `Cancelled` (F4, F9). At the `CANCELS_TO_WARN`th time, a warning says which task it is.
@@ -255,7 +283,8 @@ pub extern "C" fn vx_cancelled() -> i32 {
             site.unwrap_or_else(|| "  in the main code\n".to_string())
         );
     }
-    set as i32
+    let late = drop_deadline().is_some_and(|d| crate::ffi::wait::vx_clock_ns() >= d);
+    (set || late) as i32
 }
 
 /// See `vx_cancelled`.

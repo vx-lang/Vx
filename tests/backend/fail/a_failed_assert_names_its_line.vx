@@ -1,0 +1,31 @@
+//===- a_failed_assert_names_its_line.vx - Vx Compiler ------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A failed `assert` prints its message and its line. The count comes from a loop, so the compiler
+// cannot decide the assert before the program runs.
+//
+// RUN: not vxc %s 2>&1 | FileCheck %s
+// RUN: not vxc %s --legacy-codegen 2>&1 | FileCheck %s
+// CHECK: before the assert
+// CHECK-NEXT: assertion failed
+// CHECK-NEXT: {{^}}  at {{.*}}a_failed_assert_names_its_line.vx:19{{$}}
+// CHECK-NOT: after the assert
+
+fn check_small(n : i32) -> void {
+  assert(n < 2);
+}
+
+fn main() -> i32 {
+  let mut n = 0;
+  for i in 0..3 {
+    n = n + 1;
+  }
+  println!("before the assert");
+  check_small(n);
+  println!("after the assert");
+  return 0;
+}

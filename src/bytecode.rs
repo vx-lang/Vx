@@ -386,6 +386,13 @@ pub const LANE_REDUCE_OWN_ROW: u64 = 16;
 pub const LANE_REDUCE_SORT: u64 = 32;
 /// `Opcode::LaneReduce` with `LANE_REDUCE_SORT`: from the largest value down.
 pub const LANE_REDUCE_DESCENDING: u64 = 64;
+/// `Opcode::LaneReduce`: `lanes::copy_async`. `operand1` is the tile in shared memory and
+/// `operand2` the tensor. The `Arg`s just before are the place of the tile, one for each of the
+/// `(imm >> 16) & 0xff` dimensions. The lanes of the block are in `imm >> 32`. The result is the
+/// `i32` token.
+pub const LANE_REDUCE_COPY: u64 = 128;
+/// `Opcode::LaneReduce`: the wait for the copy of the token `operand1`, an effect with no result.
+pub const LANE_REDUCE_COPY_WAIT: u64 = 256;
 
 /// `Opcode::TensorStore`: the place is `tile[t]` in a lane loop of the code of a block, with `t`
 /// the index of the loop. The loop goes from 0 over all of its lanes, so only lane `t` writes the
@@ -410,6 +417,9 @@ pub const ACROSS_LANE: u64 = 0;
 /// `Opcode::AcrossId`: the step of a lane loop that shares its passes among the `imm >> 2` lanes:
 /// that number on the GPU, and 1 on the CPU copy, which has one lane.
 pub const ACROSS_STRIDE: u64 = 1;
+/// `Opcode::AcrossId`: the number of lanes in the block (`raw::lanes()`). It is the step of a
+/// lane loop that shares its passes among the most lanes an `i32` can count.
+pub const ACROSS_EVERY_LANE: u64 = ACROSS_STRIDE | (0x7fff_ffff << 2);
 /// `Opcode::AcrossId`: the index of this block on a grid axis.
 pub const ACROSS_BLOCK: u64 = 2;
 /// `Opcode::AcrossId`: the blocks on a grid axis.
@@ -417,6 +427,14 @@ pub const ACROSS_BLOCKS: u64 = 3;
 
 /// `Opcode::Barrier`'s `imm`: the lanes of one subgroup wait for each other, not the block.
 pub const BARRIER_SUBGROUP: u64 = 1;
+/// `Opcode::Barrier`'s `imm`: a `raw::barrier()` of a user transfer lowering. It is a
+/// `gpu.barrier` at once, as on the AST path.
+pub const BARRIER_GPU: u64 = 2;
+
+/// A bit of `Opcode::Transfer`'s `operand2`: a user `impl Transfer` lowering does the copy. The
+/// body follows the transfer, and the transfer only places the tile. The other bits are the
+/// string index of the arrival count, plus 1.
+pub const TRANSFER_USER_LOWERED: u32 = 1 << 31;
 
 /// `Opcode::TensorPad`'s `imm`: pad each axis (`t.pad(shape)`), not the flat row order.
 pub const TENSOR_PAD_EACH_AXIS: u64 = 1;

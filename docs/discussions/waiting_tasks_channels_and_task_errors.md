@@ -411,9 +411,11 @@ For example, a slot of a KV cache must go back to its pool when a task is cancel
 `pool_tx.send(slot)` gets `Cancelled`, and the slot is lost. The same `send` in the `drop` of a
 guard for the slot works.
 
-- A wait in a `drop` must have a time limit. Cancellation cannot stop it, so a wait for a peer
-  that is gone would never end. `send_for` and `recv_for` take one, and `wait_while_until` is
-  the wait under them. A task of the shared runtime parks for such a wait, and a timer thread
+- A wait in a `drop` has a time limit. Cancellation cannot stop it, so a wait for a peer that is
+  gone would never end. `send_for` and `recv_for` take one, and `wait_while_until` is the wait
+  under them. Each `drop` also has one: `VX_DROP_WAIT_SECONDS`, or 10 seconds. After it, each
+  wait in the `drop` that can be cancelled gives up, as in a cancelled block. How a program
+  sets its own limit is still open (#1893). A task of the shared runtime parks for such a wait, and a timer thread
   wakes it at the time limit. The compiler warns about a `send` or `recv` in a `drop` (W1036).
   It does not look into the functions that the `drop` calls.
 - A `tasks` block inside a `drop` does not get the cancel of the task outside it.

@@ -23,6 +23,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Utils/IndexingUtils.h"
@@ -2342,6 +2343,148 @@ static void expandLaneSortOnDevice(OpBuilder &b, vx::LaneSortOp op) {
   }
 }
 
+/// The index of the element of the source for dimension `d` of the tile, and
+/// whether it is in the source.
+static std::pair<Value, Value> laneCopySourceIndex(OpBuilder &b, Location loc,
+                                                   vx::LaneCopyAsyncOp op,
+                                                   unsigned d, Value i) {
+  Value at =
+      b.create<arith::IndexCastOp>(loc, b.getIndexType(), op.getPlace()[d]);
+  Value index = b.create<arith::AddIOp>(loc, at, i);
+  Value dim = b.create<memref::DimOp>(loc, op.getSource(), d);
+  // A place below zero is a large unsigned number, past the end too.
+  Value in =
+      b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, index, dim);
+  return {index, in};
+}
+
+/// A lane copy on the CPU: a loop over the elements of the tile. The copy ends
+/// here, so the token is 0 and the wait does nothing.
+static void expandLaneCopyOnHost(OpBuilder &b, vx::LaneCopyAsyncOp op) {
+  Location loc = op.getLoc();
+  auto tile = cast<MemRefType>(op.getTile().getType());
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+  SmallVector<Value> lower(tile.getRank(), zero), upper,
+      steps(tile.getRank(), one);
+  for (int64_t d = 0; d < tile.getRank(); ++d)
+    upper.push_back(b.create<memref::DimOp>(loc, op.getTile(), d));
+  scf::buildLoopNest(
+      b, loc, lower, upper, steps,
+      [&](OpBuilder &nb, Location l, ValueRange ivs) {
+        Value in;
+        SmallVector<Value> from;
+        for (unsigned d = 0; d < ivs.size(); ++d) {
+          auto [index, inside] = laneCopySourceIndex(nb, l, op, d, ivs[d]);
+          from.push_back(nb.create<arith::SelectOp>(l, inside, index, zero));
+          in = in ? nb.create<arith::AndIOp>(l, in, inside) : inside;
+        }
+        Type elem = tile.getElementType();
+        auto pick = nb.create<scf::IfOp>(l, TypeRange{elem}, in,
+                                         /*withElseRegion=*/true);
+        {
+          OpBuilder::InsertionGuard guard(nb);
+          nb.setInsertionPointToStart(&pick.getThenRegion().front());
+          nb.create<scf::YieldOp>(l, ValueRange{nb.create<memref::LoadOp>(
+                                         l, op.getSource(), from)});
+          nb.setInsertionPointToStart(&pick.getElseRegion().front());
+          nb.create<scf::YieldOp>(l, ValueRange{nb.create<arith::ConstantOp>(
+                                         l, nb.getZeroAttr(elem))});
+        }
+        nb.create<memref::StoreOp>(l, pick.getResult(0), op.getTile(), ivs);
+      });
+  op.getToken().replaceAllUsesWith(
+      b.create<arith::ConstantIntOp>(loc, b.getI32Type(), 0));
+}
+
+/// The number of copy groups that this lane of the kernel started: a slot at
+/// the start of the kernel, made on the first call.
+static Value laneCopyCount(gpu::GPUFuncOp func, Value &count) {
+  if (count)
+    return count;
+  Block &entry = func.getBody().front();
+  OpBuilder b(&entry, entry.begin());
+  Location loc = func.getLoc();
+  count = b.create<memref::AllocaOp>(loc, MemRefType::get({}, b.getI32Type()));
+  b.create<memref::StoreOp>(
+      loc, b.create<arith::ConstantIntOp>(loc, b.getI32Type(), 0), count);
+  return count;
+}
+
+/// A lane copy on the GPU. Each lane starts a `cp.async` for its elements of
+/// the tile, with a source size of 0 for an element past the end of the source,
+/// which fills it with zeros. The copies of the lane are one group. The token
+/// is the number of groups that the lane started before this one.
+static void expandLaneCopyOnDevice(OpBuilder &b, vx::LaneCopyAsyncOp op,
+                                   Value count) {
+  Location loc = op.getLoc();
+  auto tile = cast<MemRefType>(op.getTile().getType());
+  int64_t elements = tile.getNumElements();
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value tid =
+      b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  b.create<scf::ForOp>(
+      loc, tid, b.create<arith::ConstantIndexOp>(loc, elements),
+      b.create<arith::ConstantIndexOp>(loc, op.getLanes()), ValueRange{},
+      [&](OpBuilder &nb, Location l, Value e, ValueRange) {
+        SmallVector<Value> to(tile.getRank()), from(tile.getRank());
+        Value in;
+        Value rest = e;
+        for (int64_t d = tile.getRank() - 1; d >= 0; --d) {
+          Value size = nb.create<arith::ConstantIndexOp>(l, tile.getDimSize(d));
+          to[d] = nb.create<arith::RemUIOp>(l, rest, size);
+          rest = nb.create<arith::DivUIOp>(l, rest, size);
+          auto [index, inside] = laneCopySourceIndex(nb, l, op, d, to[d]);
+          from[d] = nb.create<arith::SelectOp>(l, inside, index, zero);
+          in = in ? nb.create<arith::AndIOp>(l, in, inside) : inside;
+        }
+        Value srcElements = nb.create<arith::SelectOp>(
+            l, in, nb.create<arith::ConstantIndexOp>(l, 1), zero);
+        nb.create<nvgpu::DeviceAsyncCopyOp>(
+            l, nvgpu::DeviceAsyncTokenType::get(nb.getContext()), op.getTile(),
+            to, op.getSource(), from, nb.getIndexAttr(1), srcElements,
+            UnitAttr());
+        nb.create<scf::YieldOp>(l);
+      });
+  b.create<NVVM::CpAsyncCommitGroupOp>(loc);
+  Value token = b.create<memref::LoadOp>(loc, count);
+  b.create<memref::StoreOp>(
+      loc,
+      b.create<arith::AddIOp>(
+          loc, token, b.create<arith::ConstantIntOp>(loc, b.getI32Type(), 1)),
+      count);
+  op.getToken().replaceAllUsesWith(token);
+}
+
+/// The wait of a lane copy on the GPU. The groups that the lane started after
+/// the one of the token may still run: `cp.async.wait_group` takes that number
+/// as a constant, so each case of a small number has its own wait, and a larger
+/// number waits for all but the last 3, which is earlier than it must. Then
+/// every lane of the block waits, so each lane sees the whole tile.
+static void expandLaneCopyWaitOnDevice(OpBuilder &b, vx::LaneCopyWaitOp op,
+                                       Value count) {
+  Location loc = op.getLoc();
+  Value started = b.create<memref::LoadOp>(loc, count);
+  Value after = b.create<arith::SubIOp>(
+      loc, b.create<arith::SubIOp>(loc, started, op.getToken()),
+      b.create<arith::ConstantIntOp>(loc, b.getI32Type(), 1));
+  constexpr int64_t most = 3;
+  auto cases = b.create<scf::IndexSwitchOp>(
+      loc, TypeRange{},
+      b.create<arith::IndexCastOp>(loc, b.getIndexType(), after),
+      ArrayRef<int64_t>{0, 1, 2}, /*caseRegionsCount=*/3);
+  auto fill = [&](Region &region, int64_t n) {
+    OpBuilder::InsertionGuard guard(b);
+    b.setInsertionPointToStart(&region.emplaceBlock());
+    b.create<NVVM::CpAsyncWaitGroupOp>(loc, static_cast<uint32_t>(n));
+    b.create<scf::YieldOp>(loc);
+  };
+  for (int64_t n = 0; n < most; ++n)
+    fill(cases.getCaseRegions()[n], n);
+  fill(cases.getDefaultRegion(), most);
+  b.create<gpu::BarrierOp>(loc);
+}
+
 /// Replaces a lane sort with its expansion: the host's loops with `serial`,
 /// and otherwise the expansion that `device` picks.
 static void expandLaneSort(OpBuilder &b, vx::LaneSortOp op, bool device) {
@@ -2513,7 +2656,8 @@ static bool isDeviceLowerableDialect(StringRef ns) {
   // per-SM load-issue bound. A function that a kernel calls can hold an
   // `affine.for`, which the device pipeline lowers.
   return ns == "affine" || ns == "arith" || ns == "cf" || ns == "gpu" ||
-         ns == "math" || ns == "memref" || ns == "scf" || ns == "vector";
+         ns == "math" || ns == "memref" || ns == "nvgpu" || ns == "scf" ||
+         ns == "vector";
 }
 
 /// Whether the device pipeline can take `op` as it is. `nvvm` ops are PTX
@@ -2725,7 +2869,8 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
   // Rewritten to `gpu.return` and `gpu.barrier` in the device clone (Vx#379).
   // A `vx.launch_dim` leaves the region when it is outlined.
   if (isa<vx::YieldOp, vx::ReturnOp, vx::BarrierOp, vx::LaunchDimOp,
-          vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp>(op))
+          vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp,
+          vx::LaneCopyAsyncOp, vx::LaneCopyWaitOp>(op))
     return true;
   // A DYNAMIC shared-memory tile cannot become a `.shared` global (those
   // need a static shape), and leaving the alloca as-is ships a kernel that
@@ -2750,6 +2895,32 @@ static bool runsOnDevice(Operation *op, ModuleOp module,
 
 /// Whether the kernel outlined from `spawn` will get a device twin, by the
 /// rules `materializeGpuKernels` applies to it later.
+/// Whether `buffer` is a tile that `spawn` makes: an alloc in the region, or a
+/// load of a slot of the region that holds only such allocs. The legacy code
+/// generator keeps a tensor in a slot.
+static bool dropsOwnBuffer(vx::SpawnOp spawn, Value buffer) {
+  Operation *def = buffer.getDefiningOp();
+  if (!def || !spawn->isProperAncestor(def))
+    return false;
+  if (isa<memref::AllocOp, memref::AllocaOp>(def))
+    return true;
+  auto load = dyn_cast<memref::LoadOp>(def);
+  auto slot = load ? load.getMemRef().getDefiningOp<memref::AllocaOp>()
+                   : memref::AllocaOp();
+  if (!slot || !spawn->isProperAncestor(slot))
+    return false;
+  return llvm::all_of(slot->getUsers(), [&](Operation *user) {
+    if (isa<memref::LoadOp>(user))
+      return true;
+    auto store = dyn_cast<memref::StoreOp>(user);
+    if (!store || store.getValue() == slot.getResult())
+      return false;
+    Operation *from = store.getValue().getDefiningOp();
+    return from && isa<memref::AllocOp, memref::AllocaOp>(from) &&
+           spawn->isProperAncestor(from);
+  });
+}
+
 static bool spawnRunsOnDevice(vx::SpawnOp spawn) {
   // No pipeline compiles the region, so it gets no device twin.
   if (pipelineOfKernel(spawn, spawn.getTopology()) == DevicePipeline::None)
@@ -2769,13 +2940,9 @@ static bool spawnRunsOnDevice(vx::SpawnOp spawn) {
       return WalkResult::skip();
     // A drop of a tensor the region made becomes a `memref.dealloc`. A drop of
     // a stack slot, such as a register or shared tensor, is erased.
-    if (auto drop = dyn_cast<vx::DropOp>(op)) {
-      Operation *def = drop.getBuffer().getDefiningOp();
-      return def && isa<memref::AllocOp, memref::AllocaOp>(def) &&
-                     spawn->isProperAncestor(def)
-                 ? WalkResult::advance()
-                 : WalkResult::interrupt();
-    }
+    if (auto drop = dyn_cast<vx::DropOp>(op))
+      return dropsOwnBuffer(spawn, drop.getBuffer()) ? WalkResult::advance()
+                                                     : WalkResult::interrupt();
     return runsOnDevice(op, module, callees) ? WalkResult::advance()
                                              : WalkResult::interrupt();
   });
@@ -2960,6 +3127,10 @@ static BufferOrigin commonOrigin(ArrayRef<Value> values,
   for (Value v : values) {
     // A value already being looked at, round a loop: the other paths decide.
     if (seen.contains(v.getAsOpaquePointer()))
+      continue;
+    // The poison that promoting a cell gives a path with no store: no buffer
+    // arrives that way, so the other paths decide.
+    if (v.getDefiningOp<ub::PoisonOp>())
       continue;
     std::optional<int32_t> here;
     BufferOrigin o = originOf(v, seen, here);
@@ -4011,7 +4182,7 @@ struct ConvertVxToStandardPass
     registry.insert<async::AsyncDialect, cf::ControlFlowDialect,
                     func::FuncDialect, LLVM::LLVMDialect, memref::MemRefDialect,
                     arith::ArithDialect, gpu::GPUDialect, math::MathDialect,
-                    scf::SCFDialect, NVVM::NVVMDialect>();
+                    scf::SCFDialect, NVVM::NVVMDialect, nvgpu::NVGPUDialect>();
   }
 
   /// Give every device kernel a `gpu.func` beside its `vx.kernel`.
@@ -4258,6 +4429,25 @@ struct ConvertVxToStandardPass
         for (vx::LaneSortOp op : sorts) {
           OpBuilder b(op);
           expandLaneSort(b, op, /*device=*/true);
+        }
+        Value copies;
+        SmallVector<Operation *> copyOps;
+        gpuFunc.walk([&](Operation *op) {
+          if (isa<vx::LaneCopyAsyncOp, vx::LaneCopyWaitOp>(op))
+            copyOps.push_back(op);
+        });
+        for (Operation *op : copyOps) {
+          OpBuilder b(op);
+          if (auto copy = dyn_cast<vx::LaneCopyAsyncOp>(op)) {
+            if (copy.getSerial())
+              expandLaneCopyOnHost(b, copy);
+            else
+              expandLaneCopyOnDevice(b, copy, laneCopyCount(gpuFunc, copies));
+          } else if (!cast<vx::LaneCopyWaitOp>(op).getSerial()) {
+            expandLaneCopyWaitOnDevice(b, cast<vx::LaneCopyWaitOp>(op),
+                                       laneCopyCount(gpuFunc, copies));
+          }
+          op->erase();
         }
         for (Operation *op : reductions) {
           OpBuilder b(op);
@@ -5641,6 +5831,27 @@ struct LaneReductionLowering : public OpRewritePattern<OpTy> {
   }
 };
 
+struct LaneCopyAsyncLowering : public OpRewritePattern<vx::LaneCopyAsyncOp> {
+  using OpRewritePattern<vx::LaneCopyAsyncOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vx::LaneCopyAsyncOp op,
+                                PatternRewriter &rewriter) const override {
+    expandLaneCopyOnHost(rewriter, op);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct LaneCopyWaitLowering : public OpRewritePattern<vx::LaneCopyWaitOp> {
+  using OpRewritePattern<vx::LaneCopyWaitOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(vx::LaneCopyWaitOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct LaneSortLowering : public OpRewritePattern<vx::LaneSortOp> {
   using OpRewritePattern<vx::LaneSortOp>::OpRewritePattern;
 
@@ -5930,6 +6141,7 @@ static std::string deviceImageOf(gpu::GPUModuleOp gpuModule,
   // ops that fail the whole compile.
   pm.nest<gpu::GPUModuleOp>().addPass(createLowerAffinePass());
   pm.nest<gpu::GPUModuleOp>().addPass(createSCFToControlFlowPass());
+  pm.nest<gpu::GPUModuleOp>().addPass(createConvertNVGPUToNVVMPass());
   pm.nest<gpu::GPUModuleOp>().addPass(createConvertGpuOpsToNVVMOps());
   pm.addPass(createArithToLLVMConversionPass());
   pm.addPass(createConvertMathToLLVMPass());
@@ -6651,7 +6863,8 @@ struct ConvertVxToLLVMPass
     // pattern rather than letting the op leak to mlir-translate, which does
     // not know the vx dialect (Vx#379).
     target.addIllegalOp<vx::BarrierOp>();
-    target.addIllegalOp<vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp>();
+    target.addIllegalOp<vx::LaneReduceOp, vx::LaneArgmaxOp, vx::LaneSortOp,
+                        vx::LaneCopyAsyncOp, vx::LaneCopyWaitOp>();
 
     LLVMTypeConverter typeConverter(&getContext());
     RewritePatternSet patterns(&getContext());
@@ -6664,8 +6877,8 @@ struct ConvertVxToLLVMPass
     patterns.add<ReturnOpLowering>(&getContext());
     patterns.add<BarrierOpLowering>(&getContext());
     patterns.add<LaneReductionLowering<vx::LaneReduceOp>,
-                 LaneReductionLowering<vx::LaneArgmaxOp>, LaneSortLowering>(
-        &getContext());
+                 LaneReductionLowering<vx::LaneArgmaxOp>, LaneSortLowering,
+                 LaneCopyAsyncLowering, LaneCopyWaitLowering>(&getContext());
 
     adoptDeclaredRuntimeFns(getOperation());
     markArrivalCounts(getOperation());

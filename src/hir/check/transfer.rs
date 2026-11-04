@@ -2591,6 +2591,7 @@ impl TypeChecker<'_> {
             _ => probe,
         };
         token_inner(&probe)?;
+        let copy = crate::syntax::types::is_copy_token(&probe);
         let Expr::MethodCall(m) = std::mem::replace(
             expr,
             Expr::Number(crate::syntax::NumberExpr::new(
@@ -2601,6 +2602,16 @@ impl TypeChecker<'_> {
         ) else {
             unreachable!("matched above")
         };
+        // The token of a lane copy waits at `lanes::copy_wait`, where the copy ends on a GPU.
+        if copy {
+            *expr = Expr::FunctionCall(crate::syntax::expr::FunctionCallExpr::new(
+                "lanes::copy_wait".into(),
+                None,
+                vec![*m.base],
+                m.span,
+            ));
+            return Some(self.check_expr_type_flag(expr, true));
+        }
         let mut base = *m.base;
         let ty = self.check_expr_type_flag(&mut base, true);
         if let Expr::Identifier(id) = &base {
@@ -2657,12 +2668,23 @@ impl TypeChecker<'_> {
         if self.speculating {
             return;
         }
-        self.errors.error_with_code(
-            crate::diagnostic::DiagnosticCode::E6036,
+        let copy = self
+            .lookup(name.as_ref())
+            .is_some_and(|(ty, _)| crate::syntax::types::is_copy_token(ty));
+        let message = if copy {
+            format!(
+                "the copy token '{name}' is dropped with no `.wait()` when {when}, so the copy \
+                 may not be done. Call `{name}.wait()`"
+            )
+        } else {
             format!(
                 "the transfer token '{name}' is dropped with no `.wait()` when {when}, so the copy \
                  may not be done. Call `{name}.wait()`, which gives the placed tensor"
-            ),
+            )
+        };
+        self.errors.error_with_code(
+            crate::diagnostic::DiagnosticCode::E6036,
+            message,
             Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
         );
     }

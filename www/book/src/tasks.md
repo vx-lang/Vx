@@ -118,9 +118,11 @@ A `join()` and a `lock()` cannot be cancelled.
 When each task waits and nothing can wake one, the program has a deadlock. The runtime then stops
 the program with the message `vx: deadlock: ...`, so that it does not hang.
 
-A `drop` runs with cancellation off, so that a cleanup can finish. So a wait in a `drop` must
+A `drop` runs with cancellation off, so that a cleanup can finish. So a wait in a `drop` should
 have a time limit: `send_for(v, seconds)` and `recv_for(seconds)` give `timed_out` and `TimedOut`
-after it. The compiler warns about a `send` or `recv` in a `drop` (W1036).
+after it. The compiler warns about a `send` or `recv` in a `drop` (W1036). A `drop` also has a
+limit of its own, 10 seconds, which `VX_DROP_WAIT_SECONDS` sets. After it, a `send` or `recv` in
+the `drop` gives up as in a cancelled block.
 
 ## `select`
 

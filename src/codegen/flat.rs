@@ -325,7 +325,7 @@ fn nrvo_candidate(hir: &[HirInstruction]) -> Option<usize> {
 fn is_ptr_ty(ty: &Type) -> bool {
     matches!(
         ty,
-        Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..) | Type::Closure(..)
+        Type::Pointer(..) | Type::Borrow { .. } | Type::Function(..)
     )
 }
 
@@ -691,6 +691,11 @@ fn resolve_agg_gid(
     agg_names: &HashMap<String, TypeId>,
     identities: &crate::layout::identity::AggregateIdentities,
 ) -> Option<TypeId> {
+    // A closure value (`||->i32`) is the `{ env, func }` pair that the lowerer made.
+    if matches!(ty, Type::Closure(..)) {
+        let gid = crate::hir::flatten::closure_pair_gid();
+        return aggs.contains_key(&gid).then_some(gid);
+    }
     // A data-carrying enum instance (`Option<i32>`) has a *synthesized* per-instance layout keyed by
     // `enum_instance_gid` (the lowerer recorded it in the side table now folded into `aggs`); try that
     // first. Its `gid` is distinct from any registry layout, so a struct instance (`Vec<i32>`) misses
@@ -1506,7 +1511,10 @@ fn static_tile_bytes(elem: &ElementType, shape: &[String]) -> Option<u64> {
 /// The single source of truth shared by the `func.func` header and a `FuncConst`'s `func.constant`
 /// signature, so a materialized function pointer's type matches its callee's header exactly. (#242)
 pub(crate) fn ty_mlir(ty: &Type, ctx: &EmitCtx) -> Lowered<String> {
-    // A token of `transfer_async` is spelled as its tensor.
+    // A token of `transfer_async` is spelled as its tensor, and a token of a lane copy as `i32`.
+    if crate::syntax::types::is_copy_token(ty) {
+        return Ok("i32".to_string());
+    }
     if let Some(inner) = crate::syntax::types::transfer_token_inner(ty) {
         return ty_mlir(inner, ctx);
     }

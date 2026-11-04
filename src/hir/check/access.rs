@@ -1881,9 +1881,24 @@ impl<'a> TypeChecker<'a> {
         if self.speculating {
             return;
         }
+        // A token of a lane copy holds its borrow with no reference that the code generators
+        // keep.
+        let copy_tokens: std::collections::HashSet<String> = self
+            .tokens
+            .iter()
+            .filter(|(t, ..)| {
+                self.lookup(t.as_ref())
+                    .is_some_and(|(ty, _)| crate::syntax::types::is_copy_token(ty))
+            })
+            .map(|(t, ..)| t.as_ref().to_string())
+            .collect();
         let other_element = self.borrow.live_borrows(name).iter().any(|b| {
             // Overlapping borrows are refused by `check_borrow_conflicts` already.
             b.is_mut
+                && !b
+                    .borrower_name
+                    .as_ref()
+                    .is_some_and(|n| copy_tokens.contains(n))
                 && !crate::hir::places::paths_may_alias(path, &b.path)
                 && path
                     .iter()

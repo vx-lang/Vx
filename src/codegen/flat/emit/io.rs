@@ -127,7 +127,10 @@ impl FnEmit<'_> {
             .get(ins.imm as usize)
             .map(|s| s.as_str())
             .unwrap_or("assertion failed");
-        let escaped = msg.replace('\\', "\\\\").replace('"', "\\\"");
+        let escaped = msg
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\0A");
         self.body += &format!("  cf.assert {cond}, \"{escaped}\"\n");
         Ok(())
     }

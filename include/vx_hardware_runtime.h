@@ -123,7 +123,7 @@ enum {
   VX_DTYPE_BF16 = 9
 };
 
-/// The largest value vx_dtype_bytes returns. vx_remote_stage_view sends one
+/// The largest value vx_dtype_bytes returns. vx_remote_stage_empty sends one
 /// zero element of this size for an empty view, so raise this when you add a
 /// larger element type.
 #define VX_DTYPE_MAX_BYTES 8
@@ -205,9 +205,62 @@ static inline void *vx_memref_data(const void *desc, int32_t dtype) {
          vx_memref_offset(desc) * (int64_t)vx_dtype_bytes(dtype);
 }
 
+/// Why vx_memref_view_span could not give the bytes of a view.
+enum {
+  VX_VIEW_OK = 0,
+  VX_VIEW_UNKNOWN_ELEMENT,   /* the element type code has no size */
+  VX_VIEW_NEGATIVE,          /* a size or a stride is negative */
+  VX_VIEW_TOO_MANY_ELEMENTS, /* the span is 2^64 elements or more */
+  VX_VIEW_TOO_MANY_BYTES     /* the span is 2^64 bytes or more */
+};
+
+/// Set `*bytes` to the bytes from a view's first element to one past the last
+/// element it can reach: `(1 + sum((sizes[d] - 1) * strides[d])) * element
+/// size`. That is 0 for an empty view.
+///
+/// Returns VX_VIEW_OK, or the reason the view has no such size. For
+/// VX_VIEW_NEGATIVE, `*dim` is the dimension. Prints nothing, so a worker can
+/// refuse a descriptor that came over the wire.
+static inline int vx_memref_view_span(const int64_t *sizes,
+                                      const int64_t *strides, int32_t rank,
+                                      int32_t elem, uint64_t *bytes,
+                                      int32_t *dim) {
+  uint64_t last = 0; /* the index of the last element the view reaches */
+  uint64_t count;
+  int empty = 0;
+  if (vx_dtype_bytes(elem) == 0) {
+    return VX_VIEW_UNKNOWN_ELEMENT;
+  }
+  for (int32_t d = 0; d < rank; ++d) {
+    if (sizes[d] < 0 || strides[d] < 0) {
+      *dim = d;
+      return VX_VIEW_NEGATIVE;
+    }
+    empty |= sizes[d] == 0;
+  }
+  if (empty) {
+    *bytes = 0;
+    return VX_VIEW_OK;
+  }
+  for (int32_t d = 0; d < rank; ++d) {
+    uint64_t step;
+    if (__builtin_mul_overflow((uint64_t)(sizes[d] - 1), (uint64_t)strides[d],
+                               &step) ||
+        __builtin_add_overflow(last, step, &last)) {
+      return VX_VIEW_TOO_MANY_ELEMENTS;
+    }
+  }
+  if (__builtin_add_overflow(last, (uint64_t)1, &count)) {
+    return VX_VIEW_TOO_MANY_ELEMENTS;
+  }
+  if (__builtin_mul_overflow(count, (uint64_t)vx_dtype_bytes(elem), bytes)) {
+    return VX_VIEW_TOO_MANY_BYTES;
+  }
+  return VX_VIEW_OK;
+}
+
 /// The bytes from a view's first element to one past the last element it can
-/// reach: `(1 + sum((sizes[d] - 1) * strides[d])) * element size`. Returns 0
-/// for an empty view.
+/// reach, as vx_memref_view_span gives them. Returns 0 for an empty view.
 ///
 /// Use this to copy a view, not `sizes[0] * strides[0]`. That product is
 /// correct only for a dense row-major view. A transposed view reaches more
@@ -223,50 +276,33 @@ static inline void *vx_memref_data(const void *desc, int32_t dtype) {
 static inline uint64_t vx_memref_view_bytes(const int64_t *sizes,
                                             const int64_t *strides,
                                             int32_t rank, int32_t elem) {
-  uint64_t last = 0; /* the index of the last element the view reaches */
-  uint64_t count, bytes;
-  int empty = 0;
-  if (vx_dtype_bytes(elem) == 0) {
+  uint64_t bytes = 0;
+  int32_t d = 0;
+  switch (vx_memref_view_span(sizes, strides, rank, elem, &bytes, &d)) {
+  case VX_VIEW_OK:
+    return bytes;
+  case VX_VIEW_UNKNOWN_ELEMENT:
     fprintf(stderr,
             "[Vx] FATAL: the runtime cannot copy a tensor with the element "
             "type code %d, because it does not know the size of the element. "
             "The compiler writes code 0 for index and pointer elements\n",
             elem);
-    abort();
-  }
-  for (int32_t d = 0; d < rank; ++d) {
-    if (sizes[d] < 0 || strides[d] < 0) {
-      fprintf(stderr,
-              "[Vx] FATAL: dimension %d of a tensor view has the negative "
-              "%s %lld\n",
-              d, sizes[d] < 0 ? "size" : "stride",
-              (long long)(sizes[d] < 0 ? sizes[d] : strides[d]));
-      abort();
-    }
-    empty |= sizes[d] == 0;
-  }
-  if (empty) {
-    return 0;
-  }
-  for (int32_t d = 0; d < rank; ++d) {
-    uint64_t step;
-    if (__builtin_mul_overflow((uint64_t)(sizes[d] - 1), (uint64_t)strides[d],
-                               &step) ||
-        __builtin_add_overflow(last, step, &last)) {
-      fprintf(stderr, "[Vx] FATAL: a tensor view spans 2^64 elements or "
-                      "more\n");
-      abort();
-    }
-  }
-  if (__builtin_add_overflow(last, (uint64_t)1, &count)) {
+    break;
+  case VX_VIEW_NEGATIVE:
+    fprintf(stderr,
+            "[Vx] FATAL: dimension %d of a tensor view has the negative "
+            "%s %lld\n",
+            d, sizes[d] < 0 ? "size" : "stride",
+            (long long)(sizes[d] < 0 ? sizes[d] : strides[d]));
+    break;
+  case VX_VIEW_TOO_MANY_ELEMENTS:
     fprintf(stderr, "[Vx] FATAL: a tensor view spans 2^64 elements or more\n");
-    abort();
-  }
-  if (__builtin_mul_overflow(count, (uint64_t)vx_dtype_bytes(elem), &bytes)) {
+    break;
+  default:
     fprintf(stderr, "[Vx] FATAL: a tensor view spans 2^64 bytes or more\n");
-    abort();
+    break;
   }
-  return bytes;
+  abort();
 }
 
 /// Write a contiguous row-major descriptor for `data` into `desc`.

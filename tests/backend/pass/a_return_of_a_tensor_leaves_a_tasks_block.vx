@@ -8,9 +8,10 @@
 // A `return` of a tensor can leave the `tasks` block of `fixed` and of `sized`. In each block,
 // the first task waits until the second task sets a flag, so the two tasks must run at the same
 // time, or the program hangs. `fixed` returns a tensor of a fixed shape, which the caller gives
-// it room for. `sized` returns a tensor whose length is known only when it runs. The flat code
-// generator declines such a `return`, so the test uses the AST code generator.
+// it room for. `sized` returns a tensor whose length is known only when it runs.
 //
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: env VX_TASK_RUNTIME=shared VX_TASK_WORKERS=1 vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK: {{^}}fixed 1 1 3 3{{$}}

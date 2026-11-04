@@ -726,13 +726,33 @@ pub fn statement_always_exits(stmt: &Statement, never: &dyn Fn(&str) -> bool) ->
     }
 }
 
-/// Whether this call is `abort()` or `panic(msg)`, the two built-ins that end the program.
+/// Whether this call is `abort()` or `panic(msg)`, the two built-ins that end the program. A
+/// `panic` can also have a `Caller`, and after the checker it has a file and a line instead.
 pub fn is_abort_or_panic(c: &FunctionCallExpr) -> bool {
     match c.name.as_ref() {
         "abort" => c.args.is_empty(),
-        "panic" => c.args.len() == 1,
+        "panic" => (1..=3).contains(&c.args.len()),
         _ => false,
     }
+}
+
+/// What a checked `panic(msg, file, line)` prints, as the arguments of an `eprintln!`:
+/// `panic: <msg>`, and `  at <file>:<line>` on the next line.
+pub fn panic_message(c: &FunctionCallExpr) -> Vec<Expr> {
+    assert_eq!(
+        c.args.len(),
+        3,
+        "the checker gives each panic its file and line"
+    );
+    let text = |s: &str| Expr::StringLiteral(StringLiteralExpr::new(s.to_string(), c.span));
+    vec![
+        text("panic: "),
+        c.args[0].clone(),
+        text("\n  at "),
+        c.args[1].clone(),
+        text(":"),
+        c.args[2].clone(),
+    ]
 }
 
 /// The callee of the statement the checker puts before the drops of an exit from a `tasks`
