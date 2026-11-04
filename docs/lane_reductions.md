@@ -145,12 +145,17 @@ for k in 0..steps / 2 {
   copy ends. Two tokens can hold two different rows of one tensor.
 - A token must be waited (E6036).
 - The copy is the whole value of a `let`, and the wait a statement of its own, in the code of a
-  loop of blocks. A copy in the code of a subgroup is not supported yet.
+  loop of blocks or subgroups. In the code of a subgroup, the lanes of the subgroup copy the
+  tile, and the tile is usually the row of the subgroup, such as `&mut tiles[w]`.
 
 On the GPU, each lane starts a `cp.async` for its elements of the tile, and the copies of one
-call are one group. The token is the number of groups that the lane started before it. The wait
+call are one group. A copy goes 16 bytes at a time when the last dimension of the tile is a
+multiple of 16 bytes, and the rows of `x`, the start of `x` and the place of the tile let each 16
+bytes start at a multiple of 16. The kernel checks that when the copy starts, and otherwise copies
+one element at a time. The token is the number of groups that the lane started before it. The wait
 lets the groups that started after the token go on (`cp.async.wait_group`), and then every lane
-of the block waits. The CPU copies the tile at the call, and the wait does nothing.
+of the block or the subgroup waits. The CPU copies the tile at the call, and the wait does
+nothing.
 
 ## Not yet
 

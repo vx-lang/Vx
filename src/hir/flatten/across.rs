@@ -423,12 +423,11 @@ impl Lowerer<'_> {
                     return Err(crate::emitter_gap!());
                 };
                 let t = self.lower_expr(t)?;
-                self.emit_effect(
-                    Opcode::LaneReduce,
-                    t.reg,
-                    Register(0),
-                    LANE_REDUCE_COPY_WAIT,
-                );
+                let mut imm = LANE_REDUCE_COPY_WAIT;
+                if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
+                    imm |= LANE_REDUCE_SUBGROUP;
+                }
+                self.emit_effect(Opcode::LaneReduce, t.reg, Register(0), imm);
                 return Ok(self.emit_value(
                     Opcode::Const,
                     Register(0),
@@ -518,8 +517,8 @@ impl Lowerer<'_> {
         Ok(self.emit_value(Opcode::Const, Register(0), Register(0), ElementType::I32, 0))
     }
 
-    /// `lanes::copy_async(&mut tile, &x, [i, j, ..])`: the place goes in `Arg`s, and the value is
-    /// the token.
+    /// `lanes::copy_async(&mut tile, &x, [i, j, ..])` in the code of a block or a subgroup: the
+    /// place goes in `Arg`s, and the value is the token.
     fn lower_lane_copy(&mut self, fc: &crate::syntax::expr::FunctionCallExpr) -> Lowered<Val> {
         let [dst, src, Expr::Array(place)] = fc.args.as_slice() else {
             return Err(crate::emitter_gap!());
@@ -545,7 +544,14 @@ impl Lowerer<'_> {
         for r in at {
             self.emit_effect(Opcode::Arg, r, Register(0), 0);
         }
-        let imm = LANE_REDUCE_COPY | (rank << 16) | (self.across.lanes << 32);
+        let mut imm = LANE_REDUCE_COPY | (rank << 16);
+        let lanes = if self.across.kinds.last() == Some(&LevelKind::Subgroups) {
+            imm |= LANE_REDUCE_SUBGROUP;
+            self.subgroup_lanes()?
+        } else {
+            self.across.lanes
+        };
+        imm |= lanes << 32;
         Ok(self.emit_value(Opcode::LaneReduce, dst.reg, src.reg, ElementType::I32, imm))
     }
 
