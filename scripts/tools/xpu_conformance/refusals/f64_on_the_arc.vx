@@ -15,8 +15,8 @@
 // names the element type.
 
 fn main() -> i32 {
-  let mut a = Tensor<f64, [8, 8]>::uninit();
-  let mut b = Tensor<f64, [8, 8]>::uninit();
+  let mut a = unsafe { Tensor<f64, [8, 8]>::uninit() };
+  let mut b = unsafe { Tensor<f64, [8, 8]>::uninit() };
   for i in 0..8 {
     for j in 0..8 {
       a[i][j] = (i + j) as f64;
@@ -24,7 +24,7 @@ fn main() -> i32 {
     }
   }
 
-  let mut c = Tensor<f64, [8, 8]>::uninit();
+  let mut c = unsafe { Tensor<f64, [8, 8]>::uninit() };
   let ga = transfer(a, Memory::HBM);
   let gb = transfer(b, Memory::HBM);
   let mut gc = transfer(c, Memory::HBM);

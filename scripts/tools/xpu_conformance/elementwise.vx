@@ -34,10 +34,10 @@ Topology Dev {
 }
 
 fn main() -> i32 {
-  let mut a0 = Tensor<f32, [32, 32]>::uninit();
-  let mut b0 = Tensor<f32, [32, 32]>::uninit();
-  let mut c0 = Tensor<f32, [32, 32]>::uninit();
-  let mut o0 = Tensor<f32, [32, 32]>::uninit();
+  let mut a0 = unsafe { Tensor<f32, [32, 32]>::uninit() };
+  let mut b0 = unsafe { Tensor<f32, [32, 32]>::uninit() };
+  let mut c0 = unsafe { Tensor<f32, [32, 32]>::uninit() };
+  let mut o0 = unsafe { Tensor<f32, [32, 32]>::uninit() };
   for i in 0..32 {
     for j in 0..32 {
       a0[i][j] = ((i + j) % 4) as f32;
@@ -74,10 +74,10 @@ fn main() -> i32 {
   print(sum0);
   print!(" ");
 
-  let mut a1 = Tensor<f16, [32, 32]>::uninit();
-  let mut b1 = Tensor<f16, [32, 32]>::uninit();
-  let mut c1 = Tensor<f16, [32, 32]>::uninit();
-  let mut o1 = Tensor<f16, [32, 32]>::uninit();
+  let mut a1 = unsafe { Tensor<f16, [32, 32]>::uninit() };
+  let mut b1 = unsafe { Tensor<f16, [32, 32]>::uninit() };
+  let mut c1 = unsafe { Tensor<f16, [32, 32]>::uninit() };
+  let mut o1 = unsafe { Tensor<f16, [32, 32]>::uninit() };
   for i in 0..32 {
     for j in 0..32 {
       a1[i][j] = ((i + j) % 4) as f16;
@@ -114,10 +114,10 @@ fn main() -> i32 {
   print(sum1);
   print!(" ");
 
-  let mut a2 = Tensor<i8, [32, 32]>::uninit();
-  let mut b2 = Tensor<i8, [32, 32]>::uninit();
-  let mut c2 = Tensor<i8, [32, 32]>::uninit();
-  let mut o2 = Tensor<i8, [32, 32]>::uninit();
+  let mut a2 = unsafe { Tensor<i8, [32, 32]>::uninit() };
+  let mut b2 = unsafe { Tensor<i8, [32, 32]>::uninit() };
+  let mut c2 = unsafe { Tensor<i8, [32, 32]>::uninit() };
+  let mut o2 = unsafe { Tensor<i8, [32, 32]>::uninit() };
   for i in 0..32 {
     for j in 0..32 {
       a2[i][j] = ((i + j) % 4) as i8;
@@ -154,10 +154,10 @@ fn main() -> i32 {
   print(sum2);
   print!(" ");
 
-  let mut a3 = Tensor<u8, [32, 32]>::uninit();
-  let mut b3 = Tensor<u8, [32, 32]>::uninit();
-  let mut c3 = Tensor<u8, [32, 32]>::uninit();
-  let mut o3 = Tensor<u8, [32, 32]>::uninit();
+  let mut a3 = unsafe { Tensor<u8, [32, 32]>::uninit() };
+  let mut b3 = unsafe { Tensor<u8, [32, 32]>::uninit() };
+  let mut c3 = unsafe { Tensor<u8, [32, 32]>::uninit() };
+  let mut o3 = unsafe { Tensor<u8, [32, 32]>::uninit() };
   for i in 0..32 {
     for j in 0..32 {
       a3[i][j] = ((i + j) % 4) as u8;
@@ -194,10 +194,10 @@ fn main() -> i32 {
   print(sum3);
   print!(" ");
 
-  let mut a4 = Tensor<i16, [32, 32]>::uninit();
-  let mut b4 = Tensor<i16, [32, 32]>::uninit();
-  let mut c4 = Tensor<i16, [32, 32]>::uninit();
-  let mut o4 = Tensor<i16, [32, 32]>::uninit();
+  let mut a4 = unsafe { Tensor<i16, [32, 32]>::uninit() };
+  let mut b4 = unsafe { Tensor<i16, [32, 32]>::uninit() };
+  let mut c4 = unsafe { Tensor<i16, [32, 32]>::uninit() };
+  let mut o4 = unsafe { Tensor<i16, [32, 32]>::uninit() };
   for i in 0..32 {
     for j in 0..32 {
       a4[i][j] = ((i + j) % 4) as i16;
@@ -234,10 +234,10 @@ fn main() -> i32 {
   print(sum4);
   print!(" ");
 
-  let mut a5 = Tensor<u16, [32, 32]>::uninit();
-  let mut b5 = Tensor<u16, [32, 32]>::uninit();
-  let mut c5 = Tensor<u16, [32, 32]>::uninit();
-  let mut o5 = Tensor<u16, [32, 32]>::uninit();
+  let mut a5 = unsafe { Tensor<u16, [32, 32]>::uninit() };
+  let mut b5 = unsafe { Tensor<u16, [32, 32]>::uninit() };
+  let mut c5 = unsafe { Tensor<u16, [32, 32]>::uninit() };
+  let mut o5 = unsafe { Tensor<u16, [32, 32]>::uninit() };
   for i in 0..32 {
     for j in 0..32 {
       a5[i][j] = ((i + j) % 4) as u16;
@@ -274,10 +274,10 @@ fn main() -> i32 {
   print(sum5);
   print!(" ");
 
-  let mut a6 = Tensor<i32, [32, 32]>::uninit();
-  let mut b6 = Tensor<i32, [32, 32]>::uninit();
-  let mut c6 = Tensor<i32, [32, 32]>::uninit();
-  let mut o6 = Tensor<i32, [32, 32]>::uninit();
+  let mut a6 = unsafe { Tensor<i32, [32, 32]>::uninit() };
+  let mut b6 = unsafe { Tensor<i32, [32, 32]>::uninit() };
+  let mut c6 = unsafe { Tensor<i32, [32, 32]>::uninit() };
+  let mut o6 = unsafe { Tensor<i32, [32, 32]>::uninit() };
   for i in 0..32 {
     for j in 0..32 {
       a6[i][j] = ((i + j) % 4) as i32;
@@ -314,10 +314,10 @@ fn main() -> i32 {
   print(sum6);
   print!(" ");
 
-  let mut a7 = Tensor<u32, [32, 32]>::uninit();
-  let mut b7 = Tensor<u32, [32, 32]>::uninit();
-  let mut c7 = Tensor<u32, [32, 32]>::uninit();
-  let mut o7 = Tensor<u32, [32, 32]>::uninit();
+  let mut a7 = unsafe { Tensor<u32, [32, 32]>::uninit() };
+  let mut b7 = unsafe { Tensor<u32, [32, 32]>::uninit() };
+  let mut c7 = unsafe { Tensor<u32, [32, 32]>::uninit() };
+  let mut o7 = unsafe { Tensor<u32, [32, 32]>::uninit() };
   for i in 0..32 {
     for j in 0..32 {
       a7[i][j] = ((i + j) % 4) as u32;
@@ -354,10 +354,10 @@ fn main() -> i32 {
   print(sum7);
   print!(" ");
 
-  let mut a8 = Tensor<i64, [32, 32]>::uninit();
-  let mut b8 = Tensor<i64, [32, 32]>::uninit();
-  let mut c8 = Tensor<i64, [32, 32]>::uninit();
-  let mut o8 = Tensor<i64, [32, 32]>::uninit();
+  let mut a8 = unsafe { Tensor<i64, [32, 32]>::uninit() };
+  let mut b8 = unsafe { Tensor<i64, [32, 32]>::uninit() };
+  let mut c8 = unsafe { Tensor<i64, [32, 32]>::uninit() };
+  let mut o8 = unsafe { Tensor<i64, [32, 32]>::uninit() };
   for i in 0..32 {
     for j in 0..32 {
       a8[i][j] = ((i + j) % 4) as i64;
@@ -394,10 +394,10 @@ fn main() -> i32 {
   print(sum8);
   print!(" ");
 
-  let mut a9 = Tensor<u64, [32, 32]>::uninit();
-  let mut b9 = Tensor<u64, [32, 32]>::uninit();
-  let mut c9 = Tensor<u64, [32, 32]>::uninit();
-  let mut o9 = Tensor<u64, [32, 32]>::uninit();
+  let mut a9 = unsafe { Tensor<u64, [32, 32]>::uninit() };
+  let mut b9 = unsafe { Tensor<u64, [32, 32]>::uninit() };
+  let mut c9 = unsafe { Tensor<u64, [32, 32]>::uninit() };
+  let mut o9 = unsafe { Tensor<u64, [32, 32]>::uninit() };
   for i in 0..32 {
     for j in 0..32 {
       a9[i][j] = ((i + j) % 4) as u64;
@@ -434,10 +434,10 @@ fn main() -> i32 {
   print(sum9);
   print!(" ");
 
-  let mut a10 = Tensor<i4, [32, 32]>::uninit();
-  let mut b10 = Tensor<i4, [32, 32]>::uninit();
-  let mut c10 = Tensor<i4, [32, 32]>::uninit();
-  let mut o10 = Tensor<i4, [32, 32]>::uninit();
+  let mut a10 = unsafe { Tensor<i4, [32, 32]>::uninit() };
+  let mut b10 = unsafe { Tensor<i4, [32, 32]>::uninit() };
+  let mut c10 = unsafe { Tensor<i4, [32, 32]>::uninit() };
+  let mut o10 = unsafe { Tensor<i4, [32, 32]>::uninit() };
   for i in 0..32 {
     for j in 0..32 {
       a10[i][j] = ((i + j) % 4) as i4;
@@ -474,10 +474,10 @@ fn main() -> i32 {
   print(sum10);
   print!(" ");
 
-  let mut a11 = Tensor<u4, [32, 32]>::uninit();
-  let mut b11 = Tensor<u4, [32, 32]>::uninit();
-  let mut c11 = Tensor<u4, [32, 32]>::uninit();
-  let mut o11 = Tensor<u4, [32, 32]>::uninit();
+  let mut a11 = unsafe { Tensor<u4, [32, 32]>::uninit() };
+  let mut b11 = unsafe { Tensor<u4, [32, 32]>::uninit() };
+  let mut c11 = unsafe { Tensor<u4, [32, 32]>::uninit() };
+  let mut o11 = unsafe { Tensor<u4, [32, 32]>::uninit() };
   for i in 0..32 {
     for j in 0..32 {
       a11[i][j] = ((i + j) % 4) as u4;
@@ -514,10 +514,10 @@ fn main() -> i32 {
   print(sum11);
   print!(" ");
 
-  let mut a12 = Tensor<bool, [32, 32]>::uninit();
-  let mut b12 = Tensor<bool, [32, 32]>::uninit();
-  let mut c12 = Tensor<bool, [32, 32]>::uninit();
-  let mut o12 = Tensor<bool, [32, 32]>::uninit();
+  let mut a12 = unsafe { Tensor<bool, [32, 32]>::uninit() };
+  let mut b12 = unsafe { Tensor<bool, [32, 32]>::uninit() };
+  let mut c12 = unsafe { Tensor<bool, [32, 32]>::uninit() };
+  let mut o12 = unsafe { Tensor<bool, [32, 32]>::uninit() };
   for i in 0..32 {
     for j in 0..32 {
       a12[i][j] = ((i + j) % 4) as bool;

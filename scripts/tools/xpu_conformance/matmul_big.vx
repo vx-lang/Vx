@@ -23,8 +23,8 @@ fn fill_b(i : i32, j : i32) -> f32 {
 }
 
 fn main() -> i32 {
-  let mut a = Tensor<f32, [8192, 8192]>::uninit();
-  let mut b = Tensor<f32, [8192, 8192]>::uninit();
+  let mut a = unsafe { Tensor<f32, [8192, 8192]>::uninit() };
+  let mut b = unsafe { Tensor<f32, [8192, 8192]>::uninit() };
   for i in 0..8192 {
     for j in 0..8192 {
       a[i][j] = fill_a(i, j);
@@ -32,7 +32,7 @@ fn main() -> i32 {
     }
   }
 
-  let mut c = Tensor<f32, [8192, 8192]>::uninit();
+  let mut c = unsafe { Tensor<f32, [8192, 8192]>::uninit() };
   spawn on(Topology::GPU) {
     c = a @b;
   }

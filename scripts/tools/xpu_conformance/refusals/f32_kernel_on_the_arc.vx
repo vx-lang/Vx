@@ -21,8 +21,8 @@
 // is, and what the runner compares against the CPU.
 
 fn main() -> i32 {
-  let mut a = Tensor<f32, [8, 8]>::uninit();
-  let mut b = Tensor<f32, [8, 8]>::uninit();
+  let mut a = unsafe { Tensor<f32, [8, 8]>::uninit() };
+  let mut b = unsafe { Tensor<f32, [8, 8]>::uninit() };
   for i in 0..8 {
     for j in 0..8 {
       a[i][j] = (i + j) as f32;
@@ -30,7 +30,7 @@ fn main() -> i32 {
     }
   }
 
-  let mut c = Tensor<f32, [8, 8]>::uninit();
+  let mut c = unsafe { Tensor<f32, [8, 8]>::uninit() };
   let ga = transfer(a, Memory::HBM);
   let gb = transfer(b, Memory::HBM);
   let mut gc = transfer(c, Memory::HBM);

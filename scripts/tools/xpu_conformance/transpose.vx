@@ -26,8 +26,8 @@ Topology Dev {
 }
 
 fn main() -> i32 {
-  let mut a = Tensor<f32, [48, 32]>::uninit();
-  let mut o = Tensor<f32, [32, 48]>::uninit();
+  let mut a = unsafe { Tensor<f32, [48, 32]>::uninit() };
+  let mut o = unsafe { Tensor<f32, [32, 48]>::uninit() };
   for i in 0..48 {
     for j in 0..32 {
       a[i][j] = (((i * 13 + j * 7) % 101) as f32);
