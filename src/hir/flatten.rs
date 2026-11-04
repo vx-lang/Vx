@@ -3521,6 +3521,11 @@ impl<'r> Lowerer<'r> {
             }
             .encode(),
         );
+        // The loop variable has the item type, so `*x` knows what it points to when the item
+        // is a reference (`Vec::iter` hands out `&T`).
+        if let [item] = args {
+            self.ast_types.insert(f.iter.as_str().into(), item.clone());
+        }
         self.bind_local(f.iter.as_str().into(), x, false);
         self.loop_stack.push((header, exit)); // continue -> header, break -> exit
         self.lower_block(&f.body)?;
