@@ -3214,7 +3214,9 @@ impl<'a> TypeChecker<'a> {
         // for independent subtrees. Replaces the old `silent = true` argument (#279 R3).
         let saved_speculating = self.speculating;
         self.speculating = true;
+        self.method_call_written = Some((generic_method.name.clone(), span));
         let ret_ty = self.check_expr_type_flag(&mut func_call, consume);
+        self.method_call_written = None;
         self.speculating = saved_speculating;
         // A call to a comptime method has to fold. The probe tried with diagnostics off, so
         // try again here, where a call that cannot fold is reported.

@@ -89,7 +89,8 @@ fn main() -> i32 {
 At a call in safe code, the compiler proves each clause from what it knows there: the clauses
 of the caller, a pointer made from `&x` for a local variable `x`, and the pointer functions
 `offset`, `add` and `sub`. For now a call that gets a raw pointer can free memory, so after it
-the compiler knows nothing about memory that the caller does not own. A call in `unsafe` code
+the compiler knows nothing about memory that the caller does not own. When such code ended a
+fact that the call needs, the error has a note with its line. A call in `unsafe` code
 needs no proof: its author keeps the promise. A safe function with a pointer clause cannot be a
 function value yet, because a call through the value would not prove the clause.
 

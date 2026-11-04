@@ -1,0 +1,107 @@
+//===- pointer_facts_that_no_event_ends.vx - Vx Compiler ---------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// Each call of `need_valid` here compiles, because the code before it cannot free memory. A call
+// can free memory only through an argument whose type holds a raw pointer or a type with a
+// drop. The receiver of a method call is an argument. Numbers, `&i64` and `&mut i64` cannot free
+// memory. A pointer to a local vector is `initialized`, because the vector holds a value.
+//
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s
+// CHECK-NOT: E8006
+// CHECK: func.func @main
+
+import core::ptr;
+import std::vec;
+
+fn need_valid(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  return n;
+}
+
+fn need_initialized(p : *const Vec<i64>, n : i64) -> i64
+requires initialized(p, n)
+{
+  return n;
+}
+
+fn twice(x : i64) -> i64 {
+  return x + x;
+}
+
+fn read(r : &i64) -> i64 {
+  return *r;
+}
+
+fn write(r : &mut i64) -> void {
+  *r = 4i64;
+}
+
+struct Counter {
+  n : i64,
+}
+
+impl Counter {
+  fn bump(self : &mut Counter) -> void {
+    self.n = self.n + 1i64;
+  }
+}
+
+fn after_calls_that_get_numbers(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let a = twice(n + 1i64);
+  let b = twice(2i64);
+  return need_valid(p, n) + a + b;
+}
+
+fn after_calls_that_get_references_to_numbers(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let x = 1i64;
+  let mut y = 2i64;
+  let a = read(&x);
+  write(&mut y);
+  return need_valid(p, n) + a + y;
+}
+
+fn after_a_method_call_on_a_struct_of_numbers(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let mut c = Counter {
+    n: 0i64
+  };
+  c.bump();
+  return need_valid(p, n) + c.n;
+}
+
+fn after_a_call_through_a_function_value_that_gets_numbers(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let g : fn(i64) -> i64 = twice;
+  let t = g(2i64);
+  return need_valid(p, n) + t;
+}
+
+fn after_an_mlir_block_that_gets_numbers(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+{
+  let z = mlir!(inputs : (%a = n : i64), returns : i64, dialects : ["arith"]) {
+    macro.yield %a : i64
+  };
+  return need_valid(p, n) + z;
+}
+
+fn a_pointer_to_a_local_vector() -> i64 {
+  let v = Vec<i64>::new();
+  let p : *const Vec<i64> = &v;
+  return need_initialized(p, 1i64);
+}
+
+fn main() -> i32 {
+  return 0;
+}
