@@ -137,7 +137,9 @@ impl crate::hir::TypeChecker<'_> {
             Some(LaneOp::CopyAsync) => {
                 return self.check_copy_async(name, args, arg_types, call_span)
             }
-            Some(LaneOp::CopyWait) => return self.check_copy_wait(name, arg_types, call_span),
+            Some(LaneOp::CopyWait) => {
+                return self.check_copy_wait(name, args, arg_types, call_span)
+            }
             _ => {}
         }
         let argmax = lane_routine(name).map(|(op, _)| op) == Some(LaneOp::ArgMax);
@@ -416,7 +418,13 @@ impl crate::hir::TypeChecker<'_> {
 
     /// The type of `lanes::copy_wait(t)`, which the checker writes for `t.wait()` on the token of
     /// a `lanes::copy_async`.
-    fn check_copy_wait(&mut self, name: &str, arg_types: &[Type], call_span: Span) -> Type {
+    fn check_copy_wait(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        arg_types: &[Type],
+        call_span: Span,
+    ) -> Type {
         let void = Type::Struct("void".into(), None);
         let is_copy_token =
             arg_types.len() == 1 && crate::syntax::types::is_copy_token(&arg_types[0]);
@@ -426,6 +434,11 @@ impl crate::hir::TypeChecker<'_> {
                 format!("`{name}` takes the token of a `lanes::copy_async`"),
                 Some(SourceSpan::from_ast_span(&call_span)),
             );
+        }
+        // The copy ends at the wait, so the borrow of its tile ends there, even when the variable
+        // of the token gets another copy later, as in a pipeline.
+        if let (Some(Expr::Identifier(token)), false) = (args.first(), self.speculating) {
+            self.borrow.forget_borrows_of(token.name.as_ref());
         }
         void
     }
