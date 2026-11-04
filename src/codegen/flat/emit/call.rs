@@ -352,6 +352,12 @@ impl FnEmit<'_> {
                     .ok_or(crate::emitter_gap!())?
                     .clone(),
             );
+            // A struct is passed by value, as in a call. It is not differentiated.
+            if let Some(agg_gid) = self.agg_val_of.get(*a as usize).copied().flatten() {
+                let agg = self.ctx.aggs.get(&agg_gid).ok_or(crate::emitter_gap!())?;
+                arg_types.push(agg.struct_ty.clone());
+                continue;
+            }
             let e = self.elem_at(*a).ok_or(Decline::TypeNotModelled {
                 what: "an autodiff argument that is not a scalar",
             })?;
