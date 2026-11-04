@@ -134,6 +134,8 @@ struct DriverApi {
   decltype(&cuCtxGetDevice) CtxGetDevice;
   decltype(&cuDevicePrimaryCtxRetain) DevicePrimaryCtxRetain;
   decltype(&cuDevicePrimaryCtxRelease) DevicePrimaryCtxRelease;
+  /// Null on a driver older than CUDA 12, which has no TMA.
+  decltype(&cuTensorMapEncodeTiled) TensorMapEncodeTiled;
 };
 
 /// Loads the driver API once. Returns null and says why if it cannot.
@@ -167,6 +169,9 @@ const DriverApi *load_driver_api() {
     find(d.DevicePrimaryCtxRetain, "cuDevicePrimaryCtxRetain");
     // cuda.h maps the name to its second version.
     find(d.DevicePrimaryCtxRelease, "cuDevicePrimaryCtxRelease_v2");
+    d.TensorMapEncodeTiled =
+        reinterpret_cast<decltype(&cuTensorMapEncodeTiled)>(
+            dlsym(lib, "cuTensorMapEncodeTiled"));
     return ok ? &d : nullptr;
   }();
   return api;
@@ -1600,6 +1605,74 @@ void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
 }
 
 void vx_plugin_release_future(uint64_t future_id) { (void)future_id; }
+
+/// A tensor map (`CUtensorMap`) in device memory for a `lanes::copy_async`
+/// that copies with TMA, or 0. With 0, the kernel copies with `cp.async`. 0
+/// comes when there is no device, when the driver has no
+/// `cuTensorMapEncodeTiled`, or when the tensor breaks one of its rules: a
+/// start at a multiple of 16 bytes, rows of a multiple of 16 bytes, and a last
+/// dimension with a stride of 1. `dims`, `strides` (in elements) and `box`
+/// start with the outermost dimension, as in the memref. This keeps each map,
+/// so a kernel in a loop makes each one once.
+int64_t vx_plugin_tensor_map(int64_t base, int64_t rank, int64_t elem_bytes,
+                             int64_t d0, int64_t d1, int64_t d2, int64_t d3,
+                             int64_t d4, int64_t s0, int64_t s1, int64_t s2,
+                             int64_t s3, int64_t s4, int64_t b0, int64_t b1,
+                             int64_t b2, int64_t b3, int64_t b4) {
+  const int64_t dims[5] = {d0, d1, d2, d3, d4};
+  const int64_t strides[5] = {s0, s1, s2, s3, s4};
+  const int64_t box[5] = {b0, b1, b2, b3, b4};
+  if (!cuda_available() || rank < 1 || rank > 5 ||
+      (elem_bytes != 4 && elem_bytes != 8) || base % 16 != 0 ||
+      strides[rank - 1] != 1 || !is_device_ptr(reinterpret_cast<void *>(base)))
+    return 0;
+  const DriverApi *api = load_driver_api();
+  if (!api || !api->TensorMapEncodeTiled)
+    return 0;
+  // cuTensorMapEncodeTiled takes the innermost dimension first, and the
+  // strides of the other dimensions in bytes.
+  cuuint64_t global_dim[5], global_strides[4];
+  cuuint32_t box_dim[5], element_strides[5];
+  for (int64_t r = 0; r < rank; ++r) {
+    const int64_t d = rank - 1 - r;
+    if (dims[d] < 1 || box[d] < 1 || box[d] > 256)
+      return 0;
+    global_dim[r] = static_cast<cuuint64_t>(dims[d]);
+    box_dim[r] = static_cast<cuuint32_t>(box[d]);
+    element_strides[r] = 1;
+    if (r > 0) {
+      const int64_t stride = strides[d] * elem_bytes;
+      if (stride % 16 != 0)
+        return 0;
+      global_strides[r - 1] = static_cast<cuuint64_t>(stride);
+    }
+  }
+  CUtensorMap map;
+  const CUresult rc = api->TensorMapEncodeTiled(
+      &map,
+      elem_bytes == 4 ? CU_TENSOR_MAP_DATA_TYPE_UINT32
+                      : CU_TENSOR_MAP_DATA_TYPE_UINT64,
+      static_cast<cuuint32_t>(rank), reinterpret_cast<void *>(base), global_dim,
+      global_strides, box_dim, element_strides, CU_TENSOR_MAP_INTERLEAVE_NONE,
+      CU_TENSOR_MAP_SWIZZLE_NONE, CU_TENSOR_MAP_L2_PROMOTION_L2_128B,
+      CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+  if (rc != CUDA_SUCCESS)
+    return 0;
+  int device = 0;
+  VX_CUDA_CHECK(cudaGetDevice(&device));
+  std::string key(reinterpret_cast<const char *>(&map), sizeof(map));
+  key.append(reinterpret_cast<const char *>(&device), sizeof(device));
+  static std::mutex maps_mutex;
+  static std::unordered_map<std::string, void *> maps;
+  std::lock_guard<std::mutex> lock(maps_mutex);
+  void *&on_device = maps[key];
+  if (!on_device) {
+    VX_CUDA_CHECK(cudaMalloc(&on_device, sizeof(map)));
+    VX_CUDA_CHECK(
+        cudaMemcpy(on_device, &map, sizeof(map), cudaMemcpyHostToDevice));
+  }
+  return reinterpret_cast<int64_t>(on_device);
+}
 
 /// Sets the CUDA stream for Vx's GPU work on the calling thread (#1986). Null
 /// gives back the legacy default stream. See docs/lang/abi.md section 3.6.
