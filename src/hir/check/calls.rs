@@ -754,18 +754,34 @@ impl<'a> TypeChecker<'a> {
     /// E8006: a call must meet the called function's `requires`. Each one, with the call's
     /// arguments in place of the parameters, must follow from what the prover knows at the call.
     /// An argument the prover cannot model, such as another call, is an unknown value.
-    fn check_call_requires(&mut self, name: &str, args: &[Expr], span: &crate::syntax::Span) {
+    /// Proves the `requires` of the call of `name`, which an error calls `shown`. A method call
+    /// reaches here as a call of the instance of the method, with the receiver as the first
+    /// argument.
+    pub(crate) fn check_call_requires(
+        &mut self,
+        name: &str,
+        shown: &str,
+        args: &[Expr],
+        span: &crate::syntax::Span,
+    ) {
         if self.speculating {
             return;
         }
-        let Some(func) = self.env.syntax_functions.get(name) else {
+        let callee = self.env.syntax_functions.get(name).copied().or_else(|| {
+            self.mono
+                .functions
+                .iter()
+                .find(|(f, _)| f.name.as_ref() == name)
+                .map(|(f, _)| f)
+        });
+        let Some((params, requires)) = callee.filter(|f| !f.requires.is_empty()).map(|f| {
+            let params: Vec<_> = f.params.iter().map(|(p, _)| p.clone()).collect();
+            (params, f.requires.clone())
+        }) else {
             return;
         };
-        if func.requires.is_empty() {
-            return;
-        }
         let mut names = HashMap::new();
-        for (i, ((param, _), arg)) in func.params.iter().zip(args).enumerate() {
+        for (i, (param, arg)) in params.iter().zip(args).enumerate() {
             let arg = crate::hir::prover::without_borrow(arg);
             let value = if crate::hir::prover::is_modelled(arg) {
                 arg.clone()
@@ -777,8 +793,7 @@ impl<'a> TypeChecker<'a> {
             };
             names.insert(param.clone(), value);
         }
-        for req in func
-            .requires
+        for req in requires
             .iter()
             .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
         {
@@ -790,7 +805,7 @@ impl<'a> TypeChecker<'a> {
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E8006,
                     format!(
-                        "this call to '{name}' may not meet its precondition{condition}: \
+                        "this call to '{shown}' may not meet its precondition{condition}: \
                          the compiler cannot prove it from what is known here"
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
@@ -1126,7 +1141,12 @@ impl<'a> TypeChecker<'a> {
                         &arg_types,
                         span,
                     );
-                    self.check_call_requires(resolved_name.as_ref(), args, span);
+                    self.check_call_requires(
+                        resolved_name.as_ref(),
+                        resolved_name.as_ref(),
+                        args,
+                        span,
+                    );
                     ret_ty.clone()
                 } else if let Some((mono_topology, param_types, mono_ret, mono_unsafe)) = self
                     .mono
@@ -3697,6 +3717,16 @@ impl<'a> TypeChecker<'a> {
                             &summary,
                             &borrowed_snapshots,
                             (Self::is_mut_ref(&ret_ty), holds_ref),
+                            &method_span,
+                        );
+                    }
+                    // The rewritten call is checked only speculatively, so its `requires` is
+                    // proved here.
+                    if let Expr::FunctionCall(fc) = &func_call {
+                        self.check_call_requires(
+                            fc.name.as_ref(),
+                            _method.as_ref(),
+                            &fc.args,
                             &method_span,
                         );
                     }
