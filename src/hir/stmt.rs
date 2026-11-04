@@ -521,6 +521,7 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::Break(b) => {
                 self.check_task_exit(&Statement::Break(b.clone()));
+                self.pointer_facts_at_break();
                 self.drops_exit("break", &b.span, crate::hir::check::drops::ExitTo::Loop)
             }
             Statement::Continue(c) => {
@@ -1188,8 +1189,10 @@ impl<'a> TypeChecker<'a> {
                 bounds,
                 used: false,
             });
+        let pointers_at_head = self.pointer_facts.clone();
+        self.pointer_facts_enter_loop();
         self.check_loop_body(body, return_type, header);
-        self.pointer_facts_after_a_loop(body);
+        self.pointer_facts_after_a_loop(Some(pointers_at_head));
         if let Some(c) = self.unroll_candidates.pop().filter(|c| c.used) {
             *unroll = c.bounds;
         }
@@ -1345,8 +1348,9 @@ impl<'a> TypeChecker<'a> {
         };
         self.cancel_loops
             .push(crate::hir::check::cancel_loops::loop_exits(body));
+        self.pointer_facts_enter_loop();
         self.check_loop_body(body, return_type, header);
-        self.pointer_facts_after_a_loop(body);
+        self.pointer_facts_after_a_loop(None);
         self.cancel_loops.pop();
         self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);

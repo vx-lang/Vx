@@ -6,17 +6,19 @@
 //
 //===----------------------------------------------------------------------===//
 // A `drop` runs with cancellation off, so a wait in it cannot give `Cancelled` at once. It has a
-// time limit: `VX_DROP_WAIT_SECONDS`, or 10 seconds. After it, a wait that can be cancelled
-// gives up as in a cancelled block. Here the `drop` of a `Waiter` waits in `recv` for a value
-// that never comes, because `main` still holds the `Sender`.
+// time limit: its type's `Drop::wait_limit`, 10 seconds by default. `VX_DROP_WAIT_SECONDS` can
+// make the limit shorter. After the limit, a wait that can be cancelled gives up as in a
+// cancelled block. Here the `drop` of a `Waiter` waits in `recv` for a value that never comes,
+// because `main` still holds the `Sender`.
 //
-// The first RUN line sets the limit to 0.2 seconds, so the `recv` gives up soon, and not after
-// the 10 seconds of the default. The second one gives
-// the limit a word, which stops the program with a message.
+// The first RUN line sets `VX_DROP_WAIT_SECONDS` to 0.2 seconds, so the `recv` gives up soon,
+// and not after the 10 seconds of the default. The second one gives the variable a word, which
+// stops the program with a message when it starts, before `main` prints anything.
 //
 // RUN: env VX_DROP_WAIT_SECONDS=0.2 vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
-// RUN: env VX_DROP_WAIT_SECONDS=soon not vxc %s 2>&1 | FileCheck %s --check-prefix=WORD
-// CHECK: {{^}}the drop gave up, cancelled true{{$}}
+// RUN: env VX_DROP_WAIT_SECONDS=soon not vxc %s 2>&1 | FileCheck %s --check-prefix=WORD --implicit-check-not="the program started"
+// CHECK: {{^}}the program started{{$}}
+// CHECK-NEXT: {{^}}the drop gave up, cancelled true{{$}}
 // CHECK-NEXT: {{^}}the drop took less than 5 seconds: true{{$}}
 // CHECK-NEXT: {{^}}after the drop, cancelled false{{$}}
 // WORD: vx: VX_DROP_WAIT_SECONDS must be a number of seconds, not 'soon'
@@ -43,6 +45,7 @@ impl Drop for Waiter {
 }
 
 fn main() -> i32 {
+  println!("the program started");
   let (tx, rx) = channel<i64>(1);
   let w = Waiter {
     rx : rx

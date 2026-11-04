@@ -1,0 +1,55 @@
+//===- thread_sanitizer_sees_the_start_and_the_end_of_a_task.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `main` writes two plain `i64`s, and each of two tasks multiplies one of them by 11 through a raw
+// pointer. `main` reads both after the `tasks` block. No atomic or lock orders these accesses.
+// Only the start and the end of each task do, so ThreadSanitizer must see both, and report no race.
+//
+// Each RUN line uses one task runtime: a thread for each task, the shared runtime, and the
+// shared runtime on one thread with a seed.
+//
+// REQUIRES: thread-sanitizer
+// RUN: vxc --sanitize=thread %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
+// RUN: env VX_TASK_RUNTIME=shared vxc --sanitize=thread %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
+// RUN: env VX_TASK_SEED=3 vxc --sanitize=thread %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
+// CHECK: {{^}}a 11 b 22{{$}}
+
+import core::marker;
+
+struct Slot {
+  p : *mut i64,
+}
+
+unsafe impl Send for Slot {}
+unsafe impl Sync for Slot {}
+
+fn multiply_by_eleven(s : &Slot) -> void {
+  let p = s.p;
+  unsafe { let start = *p; *p = start * 11; }
+}
+
+fn main() -> i32 {
+  let mut a : i64 = 0;
+  let mut b : i64 = 0;
+  let sa = Slot {
+    p : (&mut a) as *mut i64
+  };
+  let sb = Slot {
+    p : (&mut b) as *mut i64
+  };
+  unsafe { *sa.p = 1; *sb.p = 2; }
+  tasks {
+    spawn {
+      multiply_by_eleven(&sa);
+    };
+    spawn {
+      multiply_by_eleven(&sb);
+    };
+  };
+  unsafe { println!("a {} b {}", *sa.p, *sb.p); }
+  return 0;
+}

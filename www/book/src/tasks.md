@@ -120,9 +120,32 @@ the program with the message `vx: deadlock: ...`, so that it does not hang.
 
 A `drop` runs with cancellation off, so that a cleanup can finish. So a wait in a `drop` should
 have a time limit: `send_for(v, seconds)` and `recv_for(seconds)` give `timed_out` and `TimedOut`
-after it. The compiler warns about a `send` or `recv` in a `drop` (W1036). A `drop` also has a
-limit of its own, 10 seconds, which `VX_DROP_WAIT_SECONDS` sets. After it, a `send` or `recv` in
-the `drop` gives up as in a cancelled block.
+after it. The compiler warns about a `send` or `recv` in a `drop` that has no limit (W1036).
+
+A `drop` also has a limit of its own. Its type says how long its waits can take, with a method of
+`Drop` that returns 10 seconds unless the type writes its own:
+
+```rust
+impl Drop for SlotGuard {
+  fn drop(self : &mut SlotGuard) -> void {
+    // The cleanup. Its waits get the limit below.
+  }
+
+  fn wait_limit(self : &SlotGuard) -> f64 {
+    return 0.05;
+  }
+}
+```
+
+After the limit, a `send` or `recv` in the `drop` gives up as in a cancelled block.
+`VX_DROP_WAIT_SECONDS` can make the limit of each `drop` shorter, for a test or to find a `drop`
+that hangs, but never longer.
+
+`within(seconds) { .. }` gives the waits in a block one time limit, in a `drop` or anywhere else.
+A flush, a close and a send in `within(0.05) { .. }` share the 50 ms. The limit also holds in the
+functions that the block calls. After the limit, a wait gives up as in a cancelled block, and
+`cancelled()` is true until the block ends. Outside a `drop`, a cancel still stops the waits in
+the block.
 
 ## `select`
 
@@ -164,6 +187,17 @@ An `Arc<T>` can move to another task only when `T` is `Send` and `Sync`
 
 It prints `scale 10, owners 2`, and then `owners 1`. To change a shared value, put a `Mutex` in the
 `Arc`.
+
+## Finding a data race at run time
+
+The compiler cannot see a race through a raw pointer in `unsafe` code. To find one, run the program
+with `vxc --sanitize=thread program.vx`. LLVM's ThreadSanitizer then checks each memory access of
+the program. It prints `WARNING: ThreadSanitizer: data race` for each race, and the program fails.
+
+ThreadSanitizer sees the start and the end of a task, the atomics, and the waits of channels and
+`Mutex`. This is also true for the runtime that runs many tasks on a few OS threads
+(`VX_TASK_RUNTIME=shared`). It finds only the races that happen in that run. The option works only when `vxc` runs the program.
+On Ubuntu, the runtime of ThreadSanitizer is in the package `libclang-rt-22-dev`.
 
 ## Why Vx has no `async`
 

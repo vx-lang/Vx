@@ -12,6 +12,7 @@
 //
 // REQUIRES: thread-sanitizer
 // RUN: vxc --sanitize=thread %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
+// RUN: env VX_TASK_RUNTIME=shared vxc --sanitize=thread %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
 // CHECK: {{^}}sum 500500{{$}}
 
 import std::sync::channel;
