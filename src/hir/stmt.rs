@@ -1148,12 +1148,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
-        for inv in invariants.iter() {
-            if !self.prove_expr(inv) {
-                self.report_unproven_invariant(inv, false);
-            }
-            self.consteval.constraints.push(inv.clone());
-        }
+        self.assume_loop_invariants(invariants, body);
 
         // What is known before the body is walked, and where each name lives. Both are
         // needed after: the walk folds one iteration's worth of assignments into the
@@ -1296,6 +1291,23 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
+    /// Proves each invariant on entry to a loop, from the facts before it. The body then starts
+    /// from the facts that its writes cannot make false, and the invariants.
+    fn assume_loop_invariants(&mut self, invariants: &[Expr], body: &[Statement]) {
+        let facts_before = self.consteval.constraints.len();
+        for inv in invariants {
+            if !self.prove_expr(inv) {
+                self.report_unproven_invariant(inv, false);
+            }
+            self.consteval.constraints.push(inv.clone());
+        }
+        self.consteval.constraints.truncate(facts_before);
+        self.neutralize_facts_a_loop_writes(body);
+        self.consteval
+            .constraints
+            .extend(invariants.iter().cloned());
+    }
+
     fn check_loop_stmt(&mut self, lp: &mut LoopStmt, return_type: &Type) {
         let LoopStmt {
             body,
@@ -1308,12 +1320,7 @@ impl<'a> TypeChecker<'a> {
         self.push_releasing_scope();
 
         let prev_constraints_len = self.consteval.constraints.len();
-        for inv in invariants.iter() {
-            if !self.prove_expr(inv) {
-                self.report_unproven_invariant(inv, false);
-            }
-            self.consteval.constraints.push(inv.clone());
-        }
+        self.assume_loop_invariants(invariants, body);
 
         // See `check_for_loop_stmt`: the single pass the checker makes over the body is not
         // what the program does, so what it folded is settled up once the loop has been run.

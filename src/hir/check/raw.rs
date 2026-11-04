@@ -1361,6 +1361,14 @@ impl<'a> TypeChecker<'a> {
             }
         }
     }
+
+    /// Overwrite each fact that names a variable that the loop `body` writes. The checker makes
+    /// one pass over the body, so a fact may stay only when it holds at the start of each pass.
+    pub(crate) fn neutralize_facts_a_loop_writes(&mut self, body: &[Statement]) {
+        for name in names_a_body_writes(body) {
+            self.neutralize_facts_mentioning(&name);
+        }
+    }
 }
 
 /// Does the expression mention identifier `name` anywhere? Conservative: an expression
@@ -1556,6 +1564,51 @@ pub(crate) fn body_reassigns(body: &[Statement], name: &str) -> bool {
         }
     }
     walk(body, name)
+}
+
+/// The variables that `body` writes at any depth: the root of each assignment, such as `x` in
+/// `x.f[i] = ..`, and each variable that an `mlir!` block clobbers.
+pub(crate) fn names_a_body_writes(body: &[Statement]) -> std::collections::HashSet<String> {
+    fn root(e: &Expr) -> Option<String> {
+        match e {
+            Expr::Identifier(id) => Some(id.name.to_string()),
+            Expr::IndexAccess(ix) => root(&ix.base),
+            Expr::MemberAccess(m) => root(&m.base),
+            Expr::Dereference(d) => root(&d.expr),
+            _ => None,
+        }
+    }
+    // The statements of one block and of the loops in it. `visit_exprs` finds the blocks that
+    // are inside expressions.
+    fn own(stmts: &[Statement], out: &mut std::collections::HashSet<String>) {
+        for s in stmts {
+            match s {
+                Statement::Assign(a) => out.extend(root(&a.lhs)),
+                Statement::CompoundAssign(c) => out.extend(root(&c.lhs)),
+                Statement::ForLoop(l) => own(&l.body, out),
+                Statement::Loop(l) => own(&l.body, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    own(body, &mut out);
+    crate::syntax::visit_exprs(body, &mut |e| match e {
+        Expr::If(i) => {
+            own(&i.then_block, &mut out);
+            if let Some(b) = &i.else_block {
+                own(b, &mut out);
+            }
+        }
+        Expr::Match(m) => m.arms.iter().for_each(|a| own(&a.body, &mut out)),
+        Expr::UnsafeBlock(u) => own(&u.stmts, &mut out),
+        Expr::ComptimeBlock(c) => own(&c.stmts, &mut out),
+        Expr::TaskBlock(t) => own(&t.stmts, &mut out),
+        Expr::SpawnOn(s) => own(&s.stmts, &mut out),
+        Expr::InlineMlir(m) => out.extend(m.clobbers.iter().filter_map(root)),
+        _ => {}
+    });
+    out
 }
 
 /// Bytes read and written per space, while a lowering body is being counted.
