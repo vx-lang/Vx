@@ -625,7 +625,8 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
 
   if (!vx_host_call_kernel(kernel, device_args, arg_tags, num_args,
                            vx_host_worker_count_for(binary_payload,
-                                                    payload_size))) {
+                                                    payload_size, device_args,
+                                                    arg_tags, num_args))) {
     fprintf(stderr,
             "[Vx " VX_BACKEND_NAME "] FATAL: could not build a call for %s\n",
             kernel_name);

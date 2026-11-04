@@ -237,8 +237,10 @@ spawn on(Topology::Gpu) {
   group sets its count back to 0. So the program makes the count at the first launch and keeps
   it for the later launches of that `spawn` on the same stream (`lang/abi.md` §3.6). A kernel
   that `--emit-ptx` writes gets the count as its last parameter (`lang/abi.md` §3.5).
-- Delete each `across` and the program means the same. The CPU copy of the region runs one
-  block of one lane, and a loop steps over the passes of the others.
+- Delete each `across` and the program means the same. The CPU copy of the region runs each
+  block with one lane, and a loop steps over the passes of the other lanes. The host's workers
+  share the blocks of the first axis: worker w of W runs blocks w, w + W, and so on. A block
+  runs on one worker, so its lane loops still run in order. `VX_HOST_THREADS` sets W.
 - A size is not a kernel argument. The launch passes each size that is not a number after the
   kernel's arguments, and the payload names the sizes in `grid=` and `block=`.
 - `--emit-ptx` gives the shape in its `.json` file (`lang/abi.md` §3.5).

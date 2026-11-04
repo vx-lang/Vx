@@ -742,9 +742,11 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   }
 
 #ifdef VX_ENABLE_CPU_FALLBACK
+  int workers = vx_host_worker_count_for(binary_payload, payload_size,
+                                         device_args, arg_tags, num_args);
   VX_NPU_LOG("[Vx Dispatcher] Hardware backend unsupported for %s. Falling "
-             "back to CPU libffi dispatch!\n",
-             kernel_name);
+             "back to CPU libffi dispatch on %d worker%s!\n",
+             kernel_name, workers, workers == 1 ? "" : "s");
 
   // Both failures below mean the kernel did not run. Neither is recoverable:
   // the buffer the caller expected to be filled holds whatever it held before,
@@ -759,7 +761,7 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     abort();
   }
 
-  if (!vx_host_call_kernel(kernel, device_args, arg_tags, num_args)) {
+  if (!vx_host_call_kernel(kernel, device_args, arg_tags, num_args, workers)) {
     fprintf(stderr, "[Vx Dispatcher] FATAL: could not build a call for %s\n",
             kernel_name);
     abort();
