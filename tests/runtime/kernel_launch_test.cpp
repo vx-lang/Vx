@@ -32,6 +32,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -360,6 +363,115 @@ void caller_streams() {
         "a recording refuses a free that needs a wait");
 }
 
+/// A SPIR-V module built word by word: the header, one `OpName`, one
+/// `OpFunction` with `params` `OpFunctionParameter`s, and the end.
+///
+/// Written out here rather than read from a compiled `.spv`, so the test does
+/// not need the compiler: what is under test is the walk over the instruction
+/// stream, and a module whose parameter count is known by construction is a
+/// sharper statement about it than one whose count a comment claims.
+std::vector<uint32_t> make_spirv(const std::string &name, uint32_t params,
+                                 uint32_t function_id = 7) {
+  std::vector<uint32_t> w;
+  // Magic, version, generator, bound, schema.
+  w.insert(w.end(),
+           {0x07230203u, 0x00010000u, 0u, function_id + params + 4, 0u});
+
+  auto instruction = [&w](uint32_t opcode,
+                          std::initializer_list<uint32_t> words) {
+    w.push_back(((uint32_t)(words.size() + 1) << 16) | opcode);
+    w.insert(w.end(), words);
+  };
+
+  // OpName %function_id "name" -- NUL-terminated and padded to a word.
+  {
+    std::vector<uint32_t> literal;
+    std::string text = name;
+    text.push_back('\0');
+    while (text.size() % 4 != 0) {
+      text.push_back('\0');
+    }
+    for (size_t i = 0; i < text.size(); i += 4) {
+      literal.push_back((uint32_t)(unsigned char)text[i] |
+                        ((uint32_t)(unsigned char)text[i + 1] << 8) |
+                        ((uint32_t)(unsigned char)text[i + 2] << 16) |
+                        ((uint32_t)(unsigned char)text[i + 3] << 24));
+    }
+    std::vector<uint32_t> words{function_id};
+    words.insert(words.end(), literal.begin(), literal.end());
+    w.push_back(((uint32_t)(words.size() + 1) << 16) | 5u /* OpName */);
+    w.insert(w.end(), words.begin(), words.end());
+  }
+
+  // OpFunction: result type, result id, control, function type.
+  instruction(54u /* OpFunction */, {1u, function_id, 0u, 2u});
+  for (uint32_t i = 0; i < params; ++i) {
+    instruction(55u /* OpFunctionParameter */, {1u, function_id + 1 + i});
+  }
+  instruction(56u /* OpFunctionEnd */, {});
+  return w;
+}
+
+/// The SPIR-V counterpart of the PTX signature scan, which a binary image
+/// needs because there is no text to read.
+///
+/// The count it returns is compared with what the ABI produces before a launch.
+/// Getting it wrong in the *permissive* direction -- reporting fewer than the
+/// kernel takes -- is the dangerous one: it passes a check that then launches
+/// with arguments the kernel reads past.
+void spirv_parameter_counting() {
+  auto module = make_spirv("vx_npu_kernel_0", 3);
+  check(vx_launch_entry_param_count_spirv(module.data(), module.size() * 4,
+                                          "vx_npu_kernel_0") == 3,
+        "three OpFunctionParameter is three parameters");
+
+  auto twenty_eight = make_spirv("vx_npu_kernel_0", 28);
+  check(vx_launch_entry_param_count_spirv(twenty_eight.data(),
+                                          twenty_eight.size() * 4,
+                                          "vx_npu_kernel_0") == 28,
+        "the four rank-2 operands' 28, as vx_launch_build_params counts them");
+
+  auto none = make_spirv("vx_npu_kernel_0", 0);
+  check(vx_launch_entry_param_count_spirv(none.data(), none.size() * 4,
+                                          "vx_npu_kernel_0") == 0,
+        "a function that takes none is zero, not absent");
+
+  check(vx_launch_entry_param_count_spirv(module.data(), module.size() * 4,
+                                          "vx_npu_kernel_1") == -1,
+        "an entry that is not there is absent");
+
+  /* A prefix must not answer for a longer name, the same trap the PTX scan
+     has: `vx_npu_kernel_1` appears in `vx_npu_kernel_10`'s name. */
+  auto ten = make_spirv("vx_npu_kernel_10", 2);
+  check(vx_launch_entry_param_count_spirv(ten.data(), ten.size() * 4,
+                                          "vx_npu_kernel_1") == -1,
+        "`vx_npu_kernel_1` does not match `vx_npu_kernel_10`");
+  check(vx_launch_entry_param_count_spirv(ten.data(), ten.size() * 4,
+                                          "vx_npu_kernel_10") == 2,
+        "but the full name does");
+
+  /* A truncated module is refused rather than walked off the end. */
+  check(vx_launch_entry_param_count_spirv(module.data(), 12,
+                                          "vx_npu_kernel_0") == -1,
+        "a module shorter than its header is refused");
+  check(vx_launch_entry_param_count_spirv(module.data(), module.size() * 4 - 1,
+                                          "vx_npu_kernel_0") == -1,
+        "so is one whose last word is cut in half");
+
+  /* And something that is not SPIR-V at all: PTX text, which is what the other
+     counter takes. */
+  static const char kPtx[] =
+      ".version 7.6\n.visible .entry vx_npu_kernel_0()\n";
+  check(vx_launch_entry_param_count_spirv(kPtx, sizeof(kPtx) - 1,
+                                          "vx_npu_kernel_0") == -1,
+        "a module without the magic number is refused");
+  check(vx_launch_entry_param_count_spirv(nullptr, 0, "x") == -1,
+        "no image, no count");
+  check(vx_launch_entry_param_count_spirv(module.data(), module.size() * 4,
+                                          nullptr) == -1,
+        "no entry, no count");
+}
+
 int main() {
   widths();
   the_four_operand_signature();
@@ -367,6 +479,7 @@ int main() {
   scalars_pass_by_address();
   refusals();
   entry_parameter_counting();
+  spirv_parameter_counting();
   aligned_parameters();
   launch_shapes();
   caller_streams();

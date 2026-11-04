@@ -262,6 +262,54 @@ void refusals() {
         "nowhere to put the answer is not the same as no section");
 }
 
+/// The exact payload a `spirv64` region produces, read the way the dispatch
+/// library reads it: version first, then the format, then the section.
+///
+/// Pinned as one shape rather than several, because that is what the library
+/// has to agree with: it refuses an `abi=` it does not know, refuses a
+/// `format=` it cannot load, and then loads the section. The three entries are
+/// the whole contract between the compiler's payload writer and the backend.
+void a_spirv_payload_reads_as_a_version_a_format_and_a_section() {
+  // SPIR-V's magic number, then bytes that would look like an entry if the
+  // walk strayed past the section's start.
+  const std::string image =
+      std::string("\x03\x02\x23\x07", 4) + "\x00\x00\x00\x00" + "evil=1\0";
+  const std::string payload = with_section(
+      make_payload(
+          "vx_npu_kernel_3", "1",
+          {{"topo=", "979280916"}, {"launch=", "8"}, {"format=", "spirv"}}),
+      image);
+
+  check(vx_payload_abi(payload.data(), payload.size()) == 1,
+        "the version the library checks before it trusts anything else");
+  const char *format =
+      vx_payload_field(payload.data(), payload.size(), "format=");
+  check(format != nullptr && std::string(format) == "spirv",
+        "the format decides which loader the bytes go to");
+
+  // A SPIR-V image never rides in `image=`: its first word holds NUL bytes and
+  // would end the entry at the module's first word. A consumer that looked
+  // there would find nothing and refuse, and rightly -- so the section is what
+  // it must look at.
+  check(vx_payload_field(payload.data(), payload.size(), "image=") == nullptr,
+        "a SPIR-V payload carries no text image entry");
+
+  const void *out = nullptr;
+  int64_t length = vx_payload_section(payload.data(), payload.size(), &out);
+  check(length == (int64_t)image.size(), "the section is the image's length");
+  check(out != nullptr && memcmp(out, image.data(), image.size()) == 0,
+        "and the image's bytes");
+
+  // The other format a payload can name today. The library refuses it rather
+  // than guessing a loader, so it has to be readable as its own answer.
+  const std::string ptx =
+      make_payload("vx_npu_kernel_3", "1",
+                   {{"format=", "ptx"}, {"image=", ".version 7.6\n"}});
+  const char *ptx_format = vx_payload_field(ptx.data(), ptx.size(), "format=");
+  check(ptx_format != nullptr && std::string(ptx_format) == "ptx",
+        "a PTX payload says so, and carries its image as text");
+}
+
 } // namespace
 
 int main() {
@@ -270,6 +318,7 @@ int main() {
   an_empty_value_does_not_end_the_walk();
   the_section_is_read_back();
   a_text_only_payload_carries_no_section();
+  a_spirv_payload_reads_as_a_version_a_format_and_a_section();
   refusals();
 
   if (failures != 0) {

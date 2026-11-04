@@ -702,7 +702,15 @@ pub fn execute_mlir_streams(
     // resolution in `shared_library_paths` has always checked this; the link path had not.
     if !lib_npu.is_empty() && std::path::Path::new(&lib_npu).exists() {
         clang_cmd.arg(format!("-Wl,-rpath,{}", parent_of(&lib_npu)));
-        clang_cmd.args([&lib_npu]);
+        // Linked only if the program actually uses it. A program with no
+        // `spawn on` never calls the plugin, and a dispatch backend linked
+        // anyway drags its whole vendor runtime into every binary -- which is
+        // not free. libsycl's initializer calls `read`, and a Vx program that
+        // happens to define a function named `read` exports that name from the
+        // executable, interposes libc's `read` for the whole process, and the
+        // initializer then reads with garbage arguments before `main` runs.
+        // Keeping an unused backend out of the link is the backend's job.
+        clang_cmd.args(["-Wl,--as-needed", lib_npu.as_str(), "-Wl,--no-as-needed"]);
         clang_cmd.arg("-lffi");
 
         // The dispatcher resolves the outlined kernel with
