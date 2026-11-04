@@ -127,7 +127,9 @@ A `drop` also has a limit of its own. Its type says how long its waits can take,
 
 ```rust
 impl Drop for SlotGuard {
-  fn drop(self : &mut SlotGuard) -> void { .. }
+  fn drop(self : &mut SlotGuard) -> void {
+    // The cleanup. Its waits get the limit below.
+  }
 
   fn wait_limit(self : &SlotGuard) -> f64 {
     return 0.05;
