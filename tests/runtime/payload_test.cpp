@@ -287,10 +287,10 @@ void a_spirv_payload_reads_as_a_version_a_format_and_a_section() {
   check(format != nullptr && std::string(format) == "spirv",
         "the format decides which loader the bytes go to");
 
-  // A SPIR-V image never rides in `image=`: its first word holds NUL bytes and
-  // would end the entry at the module's first word. A consumer that looked
-  // there would find nothing and refuse, and rightly -- so the section is what
-  // it must look at.
+  // A SPIR-V image is never carried in `image=`: its first word holds NUL
+  // bytes and would end the entry at the module's first word. A consumer that
+  // looked there would find nothing and refuse, and rightly -- so the section
+  // is what it must look at.
   check(vx_payload_field(payload.data(), payload.size(), "image=") == nullptr,
         "a SPIR-V payload carries no text image entry");
 
