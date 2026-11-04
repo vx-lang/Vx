@@ -1,0 +1,34 @@
+//===- a_shared_transfer_edge_copies_nothing.vx - Vx Compiler ---*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A machine whose CPU can address the GPU's memory, as on a Mac with unified memory. The way to
+// the GPU copies at 64 GB/s. The way back is `: shared`, so it copies nothing: the cost report
+// gives it a cost of 0 and names `shared` as the source of that cost.
+//
+// RUN: vxc %s --action emit-mlir -o /dev/null --diagnostics-json 2>/dev/null | FileCheck %s
+// CHECK: "verdict": "admitted"
+// CHECK: "path": ["CPU_DRAM", "HBM"]{{.*}}"bytes": 4096, "derived_cost": 64000, "derived_unit": "ps", "cost_source": "link_rate"
+// CHECK: "path": ["HBM", "CPU_DRAM"]{{.*}}"bytes": 4096, "derived_cost": 0, "derived_unit": "ps", "cost_source": "shared"
+
+Memory CPU_DRAM {}
+Memory HBM {
+  capacity: 1 GiB, bandwidth: 120 GB/s, managed: explicit, scope: device
+}
+Topology Gpu {
+  arch: nvptx64,
+  memory: Memory::HBM,
+  visible: [Memory::HBM],
+  transfer Memory::CPU_DRAM -> Memory::HBM : 64 GB/s,
+  transfer Memory::HBM -> Memory::CPU_DRAM : shared
+}
+
+fn main() -> i32 {
+  let t = Tensor<f32, [1024]>::fill(1.0);
+  let on_gpu = transfer(t, Memory::HBM);
+  let _back = transfer(on_gpu, Memory::CPU_DRAM);
+  return 0;
+}

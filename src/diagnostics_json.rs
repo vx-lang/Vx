@@ -55,7 +55,7 @@ use crate::report::{ResidentSet, SpawnRegionTraffic, StagingRoute};
 ///       "bytes": 16384,                 // what moved; null for a dynamic shape
 ///       "derived_cost": 128,            // bandwidth roofline, null when not computable
 ///       "derived_unit": "cyc",          // "cyc" | "ps"; null iff derived_cost is null
-///       "cost_source": "containment",   // "link_rate" | "containment"; null iff no cost
+///       "cost_source": "containment",   // "link_rate" | "containment" | "shared"; null iff no cost
 ///       "composition": "sum",           // "sum" | "bottleneck"; null for a link-rate hop
 ///       "traffic": [                    // bytes DERIVED from code; null when uncountable
 ///         {"space": "GPU_HBM", "read_bytes": 16, "written_bytes": 0},

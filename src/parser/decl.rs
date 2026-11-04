@@ -952,12 +952,16 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// The value after `transfer A -> B :` — either a link bandwidth (`64 GB/s`) or a unitless
-    /// relative cost (`300`).
+    /// The value after `transfer A -> B :` — a link bandwidth (`64 GB/s`), a unitless relative
+    /// cost (`300`), or `shared` for a memory that both sides address.
     ///
     /// Disambiguated by whether a byte unit follows the number. The only other things that may
     /// follow are the `relaxed`/`sync` markers and a `,`, and no unit spelling collides with those.
     fn parse_edge_cost(&mut self) -> ParseResult<'a, crate::arch::EdgeCost> {
+        if matches!(&self.peek().kind, TokenType::Identifier(s) if *s == "shared") {
+            self.advance();
+            return Ok(crate::arch::EdgeCost::Shared);
+        }
         let mantissa = self.parse_number_text("a transfer cost or link bandwidth")?;
         let is_rate = matches!(
             &self.peek().kind,
