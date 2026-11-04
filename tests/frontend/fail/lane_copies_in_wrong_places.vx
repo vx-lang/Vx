@@ -10,19 +10,18 @@
 // rule.
 //
 // RUN: not vxc %s --host default --machine fleet/a100-80.vx --emit-mlir -o /dev/null 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: Error[E4002] at {{.*}}lane_copies_in_wrong_places.vx:36:{{.*}}Cannot access 'tiles' because it is mutably
-// CHECK: Error[E6036] at {{.*}}lane_copies_in_wrong_places.vx:51:{{.*}}the copy token 'copy' is dropped with no `.wait()` when its scope ends, so the copy may not be done. Call
-// CHECK: Error[E4004] at {{.*}}lane_copies_in_wrong_places.vx:68:{{.*}}Cannot borrow 'tiles' because it is already borrowed as
-// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:87:{{.*}}two passes of this lane loop may write the same element of `tiles`: an index of the write must fix
-// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:87:{{.*}}`lanes::copy_async` must be the whole value of a `let` in the code of a loop of blocks or subgroups, outside
-// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:88:{{.*}}the `.wait()` of a copy token must be a statement of its own in the code of a loop of blocks or subgroups,
-// CHECK: Error[E4001] at {{.*}}lane_copies_in_wrong_places.vx:106:{{.*}}`copy` is moved inside this loop and not given a new value before the loop goes round again, so the next pass
-// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:107:{{.*}}the `.wait()` of a copy token must be a statement of its own in the code of a loop of blocks or subgroups,
-// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:125:{{.*}}`lanes::copy_async` must be in the code of a loop of blocks: a copy in the code of a subgroup is not
-// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:126:{{.*}}the `.wait()` of a copy token must be in the code of a loop of blocks: a copy in the code of a subgroup is
-// CHECK: Error[E3003] at {{.*}}lane_copies_in_wrong_places.vx:141:{{.*}}the first argument of `lanes::copy_async` must borrow a tile in shared memory as `&mut`, with a size that is
-// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:140:{{.*}}the lanes of a block share a tensor that the code of the block makes outside its lane loops, so it goes in a
-// CHECK: Error[E3003] at {{.*}}lane_copies_in_wrong_places.vx:158:{{.*}}the third argument of `lanes::copy_async` is the place of the tile, written as a list of 2 integers such as
+// CHECK: Error[E4002] at {{.*}}lane_copies_in_wrong_places.vx:35:{{.*}}Cannot access 'tiles' because it is mutably borrowed.
+// CHECK: Error[E6036] at {{.*}}lane_copies_in_wrong_places.vx:50:{{.*}}the copy token 'copy' is dropped with no `.wait()` when its scope ends, so the copy may not be done. Call `copy.wait()`
+// CHECK: Error[E4004] at {{.*}}lane_copies_in_wrong_places.vx:67:{{.*}}Cannot borrow 'tiles' because it is already borrowed as mutable.
+// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:86:{{.*}}two passes of this lane loop may write the same element of `tiles`: an index of the write must fix `t`
+// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:86:{{.*}}`lanes::copy_async` must be the whole value of a `let` in the code of a loop of blocks or subgroups, outside its lane loops.
+// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:87:{{.*}}the `.wait()` of a copy token must be a statement of its own in the code of a loop of blocks or subgroups, outside its lane
+// CHECK: Error[E4001] at {{.*}}lane_copies_in_wrong_places.vx:105:{{.*}}`copy` is moved inside this loop and not given a new value before the loop goes round again, so the next pass uses it after
+// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:106:{{.*}}the `.wait()` of a copy token must be a statement of its own in the code of a loop of blocks or subgroups, outside its lane
+// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:124:{{.*}}two passes of this subgroup loop may write the same element of `tiles`: an index of the write must fix `w`
+// CHECK: Error[E3003] at {{.*}}lane_copies_in_wrong_places.vx:140:{{.*}}the first argument of `lanes::copy_async` must borrow a tile in shared memory as `&mut`, with a size that is a number and
+// CHECK: Error[E6032] at {{.*}}lane_copies_in_wrong_places.vx:139:{{.*}}the lanes of a block share a tensor that the code of the block makes outside its lane loops, so it goes in a memory with
+// CHECK: Error[E3003] at {{.*}}lane_copies_in_wrong_places.vx:157:{{.*}}the third argument of `lanes::copy_async` is the place of the tile, written as a list of 2 integers such as `[r, c]`
 
 // The lanes read the tile before the copy ends.
 pub fn read_before_the_wait(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
@@ -114,18 +113,18 @@ pub fn wait_in_a_lane_loop(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor
   return;
 }
 
-// A copy in the code of a subgroup.
-pub fn copy_in_a_subgroup(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
+// Two subgroups copy into the same tile.
+pub fn two_subgroups_copy_into_one_tile(out : &mut Tensor<f32, [?], Memory::HBM>, x : &Tensor<f32, [?, ?], Memory::HBM>) -> void {
   spawn on(Topology::Device) {
     for b in 0..1 across blocks {
       let mut tiles = unsafe {
         Tensor<f32, [2, 4, 32], Memory::SMEM>::uninit()
       };
       for w in 0..2 across subgroups {
-        let copy = lanes::copy_async(&mut tiles[w], x, [0, 0]);
+        let copy = lanes::copy_async(&mut tiles[0], x, [4 * w, 0]);
         copy.wait();
         for t in 0..32 across lanes(32) {
-          out[w * 32 + t] = tiles[w][0][t];
+          out[w * 32 + t] = tiles[0][0][t];
         }
       }
     }

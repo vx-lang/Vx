@@ -257,14 +257,15 @@ def Vx_LaneCopyAsyncOp : Vx_Op<"lane_copy_async", [MemoryEffects<[MemRead, MemWr
     let summary = "Start a copy of a tile into shared memory.";
     let arguments = (ins AnyMemRef:$tile, AnyMemRef:$source,
                      Variadic<AnySignlessInteger>:$place, I64Attr:$lanes,
-                     UnitAttr:$serial);
+                     UnitAttr:$serial, UnitAttr:$subgroup);
     let results = (outs I32:$token);
 }
 
-// Waits until the copy of `token` ends, and then for every lane of the block.
+// Waits until the copy of `token` ends, and then for every lane of the block,
+// or of the subgroup with `subgroup`.
 def Vx_LaneCopyWaitOp : Vx_Op<"lane_copy_wait", [MemoryEffects<[MemRead, MemWrite]>]> {
     let summary = "Wait for a copy of a tile into shared memory.";
-    let arguments = (ins I32:$token, UnitAttr:$serial);
+    let arguments = (ins I32:$token, UnitAttr:$serial, UnitAttr:$subgroup);
 }
 
 // The launch shape of a `vx.spawn` region with `across` loops (#252): the

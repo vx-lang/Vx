@@ -9,7 +9,7 @@
 // `x` is `100 * r + c + 1`. A block copies three 4x4 tiles of `x`, and the host prints the first
 // and the last element of each row of each tile. An element of a tile past the end of `x`, or
 // before its start, is zero. A loop then adds the tiles at `[0, 4 * k]` with two copies in each
-// pass.
+// pass. Last, each of two subgroups copies a tile into its own row of a tensor.
 //
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: env CUDA_VISIBLE_DEVICES= vxc %s -j 2 --host default --machine fleet/h100-sxm.vx --run 2>&1 | FileCheck %s --implicit-check-not=Error
@@ -34,6 +34,9 @@
 // last element columns 3, 7, 11 and 15. The columns from 10 on are past the end.
 // CHECK-NEXT: sum row 0: 15 12
 // CHECK-NEXT: sum row 3: 915 612
+// Subgroup `w` copies the tile at `[4 * w + 1, 2]`, and gives the first column of the tile.
+// CHECK-NEXT: subgroup 0: 103 203 303 403
+// CHECK-NEXT: subgroup 1: 503 603 703 803
 
 fn main() -> i32 {
   let mut src = Tensor<f32, [10, 10]>::fill(0.0);
@@ -45,6 +48,7 @@ fn main() -> i32 {
   let x = transfer(src, Memory::HBM);
   let mut out = transfer(Tensor<f32, [48]>::fill(-1.0), Memory::HBM);
   let mut sums = transfer(Tensor<f32, [16]>::fill(-1.0), Memory::HBM);
+  let mut columns = transfer(Tensor<f32, [8]>::fill(-1.0), Memory::HBM);
   spawn on(Topology::Device) {
     for b in 0..1 across blocks {
       let mut tiles = unsafe {
@@ -84,6 +88,14 @@ fn main() -> i32 {
       for t in 0..16 across lanes(32) {
         sums[t] = acc[t];
       }
+      let mut part = unsafe { Tensor<f32, [2, 4, 4], Memory::SMEM>::uninit() };
+      for w in 0..2 across subgroups {
+        let copy = lanes::copy_async(&mut part[w], &x, [4 * w + 1, 2]);
+        copy.wait();
+        for t in 0..4 across lanes(32) {
+          columns[w * 4 + t] = part[w][t][0];
+        }
+      }
     }
   }
   let o = transfer(out, Memory::CPU_DRAM);
@@ -96,5 +108,10 @@ fn main() -> i32 {
   let s = transfer(sums, Memory::CPU_DRAM);
   println!("sum row 0: {} {}", s[0], s[3]);
   println!("sum row 3: {} {}", s[12], s[15]);
+  let c = transfer(columns, Memory::CPU_DRAM);
+  for w in 0..2 {
+    let at = w * 4;
+    println!("subgroup {}: {} {} {} {}", w, c[at], c[at + 1], c[at + 2], c[at + 3]);
+  }
   return 0;
 }

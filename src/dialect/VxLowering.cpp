@@ -2423,8 +2423,12 @@ static void expandLaneCopyOnDevice(OpBuilder &b, vx::LaneCopyAsyncOp op,
   Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
   Value tid =
       b.create<gpu::ThreadIdOp>(loc, b.getIndexType(), gpu::Dimension::x);
+  Value lane = op.getSubgroup()
+                   ? b.create<arith::RemUIOp>(
+                         loc, tid, b.create<arith::ConstantIndexOp>(loc, 32))
+                   : tid;
   b.create<scf::ForOp>(
-      loc, tid, b.create<arith::ConstantIndexOp>(loc, elements),
+      loc, lane, b.create<arith::ConstantIndexOp>(loc, elements),
       b.create<arith::ConstantIndexOp>(loc, op.getLanes()), ValueRange{},
       [&](OpBuilder &nb, Location l, Value e, ValueRange) {
         SmallVector<Value> to(tile.getRank()), from(tile.getRank());
@@ -2460,7 +2464,8 @@ static void expandLaneCopyOnDevice(OpBuilder &b, vx::LaneCopyAsyncOp op,
 /// the one of the token may still run: `cp.async.wait_group` takes that number
 /// as a constant, so each case of a small number has its own wait, and a larger
 /// number waits for all but the last 3, which is earlier than it must. Then
-/// every lane of the block waits, so each lane sees the whole tile.
+/// every lane of the block or the subgroup waits, so each lane sees the whole
+/// tile.
 static void expandLaneCopyWaitOnDevice(OpBuilder &b, vx::LaneCopyWaitOp op,
                                        Value count) {
   Location loc = op.getLoc();
@@ -2482,7 +2487,12 @@ static void expandLaneCopyWaitOnDevice(OpBuilder &b, vx::LaneCopyWaitOp op,
   for (int64_t n = 0; n < most; ++n)
     fill(cases.getCaseRegions()[n], n);
   fill(cases.getDefaultRegion(), most);
-  b.create<gpu::BarrierOp>(loc);
+  if (op.getSubgroup()) {
+    auto bar = b.create<vx::BarrierOp>(loc);
+    bar->setAttr("subgroup", b.getUnitAttr());
+  } else {
+    b.create<gpu::BarrierOp>(loc);
+  }
 }
 
 /// Replaces a lane sort with its expansion: the host's loops with `serial`,
