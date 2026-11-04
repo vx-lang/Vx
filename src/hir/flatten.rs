@@ -2771,7 +2771,15 @@ impl<'r> Lowerer<'r> {
                 0,
             );
         }
-        if !matches!(subj.ty, LoweredTy::Scalar(ElementType::I32)) {
+        // A match whose arms only bind the subject, as the checker writes for a `match` on a
+        // string, compares nothing, so the subject can be of any type.
+        let binds_only = m.arms.iter().all(|arm| {
+            matches!(
+                arm.pattern,
+                crate::syntax::Pattern::Wildcard | crate::syntax::Pattern::Identifier(_)
+            )
+        });
+        if !binds_only && !matches!(subj.ty, LoweredTy::Scalar(ElementType::I32)) {
             return Err(Decline::Unsupported {
                 what: "a match subject that is not represented as an i32",
             });
