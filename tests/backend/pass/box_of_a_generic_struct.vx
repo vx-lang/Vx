@@ -12,7 +12,7 @@
 //
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
 // RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
-// CHECK: {{^}}sizes 16 16 32{{$}}
+// CHECK: {{^}}sizes 16 16 48{{$}}
 // CHECK: {{^}}small 3 -4{{$}}
 // CHECK: {{^}}large 5 6000000000{{$}}
 // CHECK: {{^}}mutex 42{{$}}
