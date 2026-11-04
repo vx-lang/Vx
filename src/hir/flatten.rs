@@ -584,7 +584,7 @@ struct Lowerer<'r> {
     /// codegen can attach `alias_scopes`/`noalias_scopes` — carrying the borrow checker's disjointness
     /// of simultaneously live `&mut o.field` borrows into the IR. (#275, §5.4)
     place_field_stores: Vec<(usize, Symbol, Vec<Symbol>)>,
-    /// The `requires !overlaps(p, q, n)` clauses of an `unsafe fn` whose `p`, `q` and `n` the body
+    /// The `requires !overlaps(p, q, n)` clauses of the function whose `p`, `q` and `n` the body
     /// never changes or binds again.
     overlap_clauses: Vec<(Symbol, Symbol, Symbol)>,
     /// The `for i in 0..n` loops around the statement being lowered, as `(i, n)`, where `n` is the
@@ -7922,13 +7922,11 @@ fn place_root(e: &Expr) -> Option<Symbol> {
     }
 }
 
-/// The `requires !overlaps(p, q, n)` clauses of `func`, an `unsafe fn`, whose `p` and `q` are raw
-/// pointer parameters and `n` a parameter. A name that the body changes or binds again is left out,
-/// since then `p[i]` might not read the pointer or the length that the clause is about.
+/// The `requires !overlaps(p, q, n)` clauses of `func`, whose `p` and `q` are raw pointer
+/// parameters and `n` a parameter. A call in safe code proves each one, and the author of `unsafe`
+/// code keeps the promise. A name that the body changes or binds again is left out, since then
+/// `p[i]` might not read the pointer or the length that the clause is about.
 fn overlap_clauses(func: &Function, mutated: &HashSet<Symbol>) -> Vec<(Symbol, Symbol, Symbol)> {
-    if !func.is_unsafe {
-        return Vec::new();
-    }
     let param = |e: &Expr, pointer: bool| -> Option<Symbol> {
         let Expr::Identifier(id) = e else {
             return None;

@@ -154,7 +154,7 @@ pub(crate) fn frees_clause_params(
 
 /// The length in a `valid(p, n)` clause, as far as the code generator can use it.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Length {
+pub enum Length {
     /// A parameter, by position.
     Param(usize),
     Constant(i64),
@@ -162,35 +162,57 @@ pub(crate) enum Length {
     Other,
 }
 
-/// The `valid(p, n)` clauses of `f`, well formed, as the parameter of `p` and the length `n`.
-pub(crate) fn valid_params(f: &Function) -> Vec<(usize, Length)> {
-    if !f.is_unsafe {
-        return Vec::new();
+/// The length `n` of a pointer clause, as far as the code generator can use it.
+fn length_of(params: &[(crate::symbol::Symbol, Type)], n: &Expr) -> Length {
+    match n {
+        Expr::Identifier(id) => params
+            .iter()
+            .position(|(name, _)| name == &id.name)
+            .map_or(Length::Other, Length::Param),
+        Expr::Number(num) => num.value.parse().map_or(Length::Other, Length::Constant),
+        _ => Length::Other,
     }
+}
+
+/// The `valid(p, n)` clauses of `f`, well formed, as the parameter of `p` and the length `n`. A
+/// call in safe code proves each one, and the author of `unsafe` code keeps the promise.
+pub(crate) fn valid_params(f: &Function) -> Vec<(usize, Length)> {
     f.requires
         .iter()
         .filter_map(|e| match e {
             Expr::FunctionCall(fc) if fc.name.as_ref() == "valid" => match fc.args.as_slice() {
                 [Expr::Identifier(p), n] => {
                     let ptr = pointer_param(f, p.name.as_ref())?;
-                    let len = match n {
-                        Expr::Identifier(id) => f
-                            .params
-                            .iter()
-                            .position(|(name, _)| name == &id.name)
-                            .map_or(Length::Other, Length::Param),
-                        Expr::Number(num) => {
-                            num.value.parse().map_or(Length::Other, Length::Constant)
-                        }
-                        _ => Length::Other,
-                    };
-                    Some((ptr, len))
+                    Some((ptr, length_of(&f.params, n)))
                 }
                 _ => None,
             },
             _ => None,
         })
         .collect()
+}
+
+/// The length `n` of an `ensures valid(return, n)` of a function with the parameters `params`
+/// that returns the raw pointer type `ret`, when `n` is a parameter or a number. The body proves
+/// the clause, or the compiler trusts it on an `extern` function.
+pub(crate) fn valid_result_length(
+    params: &[(crate::symbol::Symbol, Type)],
+    ret: &Type,
+    ensures: &[Expr],
+) -> Option<Length> {
+    if !matches!(ret, Type::Pointer(..)) {
+        return None;
+    }
+    ensures.iter().find_map(|e| match e {
+        Expr::FunctionCall(fc) if fc.name.as_ref() == "valid" => match fc.args.as_slice() {
+            [Expr::Identifier(r), n] if r.name.as_ref() == "return" => match length_of(params, n) {
+                Length::Other => None,
+                len => Some(len),
+            },
+            _ => None,
+        },
+        _ => None,
+    })
 }
 
 /// Whether `f` has a pointer `requires`.
