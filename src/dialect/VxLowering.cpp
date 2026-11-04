@@ -5021,16 +5021,22 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
     auto llvmI32Type = IntegerType::get(getContext(), 32);
 
     Type convertedSrc = typeConverter.convertType(srcType);
-    if (!convertedSrc)
+    Type convertedResult = typeConverter.convertType(op.getResult().getType());
+    if (!convertedSrc || !convertedResult)
       return failure();
     Value desc =
         rewriter.create<UnrealizedConversionCastOp>(loc, convertedSrc, src)
             .getResult(0);
 
     // Field 1 of {allocated, aligned, offset, sizes, strides} is where the
-    // elements are; the plugin copies from there.
+    // elements are; the plugin copies from there. A borrowed device tensor
+    // keeps its memory space, so its pointer is cast to a plain one.
+    Type fieldPtrType = cast<LLVM::LLVMStructType>(convertedSrc).getBody()[1];
     Value alignedPtr = rewriter.create<LLVM::ExtractValueOp>(
-        loc, llvmPtrType, desc, ArrayRef<int64_t>{1});
+        loc, fieldPtrType, desc, ArrayRef<int64_t>{1});
+    if (fieldPtrType != llvmPtrType)
+      alignedPtr =
+          rewriter.create<LLVM::AddrSpaceCastOp>(loc, llvmPtrType, alignedPtr);
 
     // Bytes, read off the descriptor rather than the type, so a dynamic extent
     // costs nothing extra and no shape is assumed.
@@ -5133,7 +5139,7 @@ struct TransferToPluginLowering : public OpRewritePattern<vx::TransferOp> {
     }
 
     // Rebuild a descriptor over the device pointer, keeping the source's shape.
-    Value newDesc = rewriter.create<LLVM::UndefOp>(loc, convertedSrc);
+    Value newDesc = rewriter.create<LLVM::UndefOp>(loc, convertedResult);
     newDesc = rewriter.create<LLVM::InsertValueOp>(loc, newDesc, devicePtr,
                                                    ArrayRef<int64_t>{0});
     newDesc = rewriter.create<LLVM::InsertValueOp>(loc, newDesc, devicePtr,
