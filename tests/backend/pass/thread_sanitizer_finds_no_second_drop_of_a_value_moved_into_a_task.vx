@@ -1,0 +1,34 @@
+//===- thread_sanitizer_finds_no_second_drop_of_a_value_moved_into_a_task.vx -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `rx` moves into a task of a `tasks` block that gives a value. The task drops `rx`. If `main`
+// dropped it again, after `tx` freed the channel, ThreadSanitizer would report a
+// heap-use-after-free.
+//
+// REQUIRES: thread-sanitizer
+// RUN: vxc --sanitize=thread %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
+// RUN: vxc --sanitize=thread --legacy-codegen %s 2>&1 | FileCheck %s --implicit-check-not=ThreadSanitizer
+// CHECK: {{^}}n 1{{$}}
+
+import std::sync::channel;
+
+fn take(rx : Receiver<i64>) -> i64 {
+  return 1;
+}
+
+fn main() -> i32 {
+  let (tx, rx) = channel<i64>(1);
+  let n = tasks {
+    let h = spawn {
+      take(rx)
+    };
+    h.join()
+  };
+  let _keep = tx;
+  println!("n {}", n);
+  return 0;
+}
