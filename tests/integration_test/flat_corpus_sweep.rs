@@ -70,15 +70,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // A raw pointer held in a `let` ("a place-bound reference in value position"): the flat
     // path has no pointer values yet.
     "backend/pass/raw_pointers_compare_by_address.vx",
-    // "A store to a nested nominal field": `self.inner = x` puts a struct into a struct's
-    // field, which the flat path does not model. The file is about the AST path anyway.
-    "backend/pass/assign_field_of_struct_local.vx",
-    // "A store to a nested nominal field": `out.f = f` puts a closure into a struct's field.
-    "backend/pass/closure_using_a_local_stays_in_its_function.vx",
-    // "A store to a nested nominal field": `r[0].name = x` puts a struct into a struct's field.
-    "backend/pass/assign_to_a_field_through_index_mut_drops_the_old_field.vx",
-    // `Peekable::peek` stores an `Option` into a field: "a store to a nested nominal field".
-    "backend/pass/core_iter_stateful_adapters.vx",
     // `Rev<VecIter<i64>>` reads through `&T`: "a pointer whose type cannot be inferred".
     "backend/pass/core_iter_rev.vx",
     // `Vec::iter()` hands out `&T`: the flat path has no layout for `Option<&T>` and cannot
@@ -92,7 +83,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // "A compound assignment to something other than a simple name" is not modelled.
     "backend/pass/compound_assignment_through_a_reference.vx",
     "backend/pass/core_iter_zip.vx",
-    "backend/pass/core_iter_exact_size.vx",
     // A generic struct, which the flat path declines as "a struct with no GID". The file
     // exists to pin that `>>` still closes two generics now that it is also the right
     // shift, and that question is settled in the parser, so the decline costs it nothing.
@@ -132,9 +122,6 @@ const KNOWN_DECLINES: &[&str] = &[
     // `a && b` in a `print!` argument: the flat path declines it ("a logical operator lowers only
     // in memory mode"). The file is about the AST path.
     "frontend/pass/print_argument_with_and_or.vx",
-    // `p.v = o` stores a `Vec` into a struct field: the flat path declines "a store to a nested
-    // nominal field".
-    "frontend/pass/moved_variable_given_a_new_value.vx",
     // `c = a.clone()` inside a `spawn`: the flat path declines it ("a tensor given a new value
     // inside a branch or loop"). The kernel has to write `c` for `c` to be passed as a slot,
     // which is what the file checks.
