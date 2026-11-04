@@ -879,6 +879,22 @@ bool run_gemm(const vx_gemm_plan &plan) {
 
 } // namespace
 
+/// One block of a dense copy of a strided device view, as vx_view_copy_blocks
+/// gives it: one cudaMemcpy2D, so one column of a matrix is one call.
+static void copy_block_to_host(void *ctx, uint64_t dense, uintptr_t view,
+                               uint64_t width, uint64_t pitch,
+                               uint64_t height) {
+  VX_CUDA_CHECK(cudaMemcpy2D((char *)ctx + dense, width, (const void *)view,
+                             pitch, width, height, cudaMemcpyDeviceToHost));
+}
+
+static void copy_block_to_device(void *ctx, uint64_t dense, uintptr_t view,
+                                 uint64_t width, uint64_t pitch,
+                                 uint64_t height) {
+  VX_CUDA_CHECK(cudaMemcpy2D((void *)view, pitch, (const char *)ctx + dense,
+                             width, width, height, cudaMemcpyHostToDevice));
+}
+
 extern "C" {
 
 /// The model said the host may read this space, and we are about to hand out
@@ -1467,8 +1483,12 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
               (unsigned long long)span.bytes, kernel_name);
       abort();
     }
-    VX_CUDA_CHECK(cudaMemcpy(span.copy, (const void *)span.start, span.bytes,
-                             cudaMemcpyDeviceToHost));
+    if (span.view >= 0) {
+      vx_view_copy_blocks(&views[span.view], copy_block_to_host, span.copy);
+    } else {
+      VX_CUDA_CHECK(cudaMemcpy(span.copy, (const void *)span.start,
+                               span.bytes, cudaMemcpyDeviceToHost));
+    }
     if (verbose()) {
       fprintf(stderr,
               "[Vx CUDA] %s runs on the host; %llu bytes are copied from "
@@ -1493,17 +1513,24 @@ uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     abort();
   }
   for (int64_t s = 0; s < num_spans; ++s) {
-    VX_CUDA_CHECK(cudaMemcpy((void *)spans[s].start, spans[s].copy,
-                             spans[s].bytes, cudaMemcpyHostToDevice));
+    if (spans[s].view >= 0) {
+      vx_view_copy_blocks(&views[spans[s].view], copy_block_to_device,
+                          spans[s].copy);
+    } else {
+      VX_CUDA_CHECK(cudaMemcpy((void *)spans[s].start, spans[s].copy,
+                               spans[s].bytes, cudaMemcpyHostToDevice));
+    }
   }
   // A region that ends in an operand publishes that operand's descriptor, so
   // every descriptor still pointing at a copy gets the device memory back.
   std::vector<void *> descs;
+  std::vector<int32_t> ranks;
   for (int64_t i = 0; i < num_args; ++i) {
     descs.push_back(arg_desc(i));
+    ranks.push_back((int32_t)VX_ABI_RANK(arg_tags[i]));
   }
   vx_view_copy_restore(views.data(), (int64_t)views.size(), spans.data(),
-                       descs.data(), (int64_t)descs.size());
+                       descs.data(), ranks.data(), (int64_t)descs.size());
   for (int64_t s = 0; s < num_spans; ++s) {
     free(spans[s].copy);
   }
