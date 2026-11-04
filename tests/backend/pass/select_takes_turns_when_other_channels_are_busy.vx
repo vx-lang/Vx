@@ -9,10 +9,8 @@
 // channel. `select` still takes turns between the two channels: each search starts after the
 // channel of the last value.
 //
-// REQUIRES: flat-codegen
-// Only because the older code generator cannot lower `Result<Selected<i64>, RecvError>`.
-//
 // RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
 // CHECK:      {{^}}0 1 0 1 0 1{{$}}
 
 import std::sync::channel;
