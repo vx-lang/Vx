@@ -18,9 +18,6 @@ use std::process::Command;
 /// Programs the flat path declines today, relative to `tests/backend/pass/`.
 /// A worklist, not an exemption list: shrinking it is Vx#383.
 const KNOWN_DECLINES: &[&str] = &[
-    // A token of `transfer_async` that a loop gives a new value: the flat path declines it ("a
-    // tensor given a new value inside a branch or loop").
-    "backend/pass/a_transfer_async_keeps_a_copy_in_flight_in_a_loop.vx",
     // A `return` of a tensor from inside a `tasks` block: the flat path declines it ("a return
     // of a value of this type from inside a tasks block"). The file is about the AST path.
     "backend/pass/a_return_of_a_tensor_leaves_a_tasks_block.vx",
