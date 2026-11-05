@@ -148,6 +148,7 @@ impl<'a> TypeChecker<'a> {
                 n.value.clone()
             };
             return Some(Expr::Number(NumberExpr {
+                written: None,
                 value,
                 ty: Some(elem),
                 span: *span,
@@ -177,12 +178,14 @@ impl<'a> TypeChecker<'a> {
                 span: *span,
             })),
             (Value::Int(i), false) => Some(Expr::Number(NumberExpr {
+                written: None,
                 value: i.to_string().into(),
                 ty: Some(elem),
                 span: *span,
             })),
             (Value::Number(f), false) if is_float && f.is_finite() => {
                 Some(Expr::Number(NumberExpr {
+                    written: None,
                     value: f.to_string().into(),
                     ty: Some(elem),
                     span: *span,
@@ -2657,6 +2660,7 @@ impl<'a> TypeChecker<'a> {
 pub(crate) fn extent_literal(value: i64, span: Span) -> Expr {
     let value = value.to_string();
     Expr::Number(NumberExpr {
+        written: None,
         ty: Some(crate::parser::expr::default_number_elem(&value)),
         value: value.into(),
         span,

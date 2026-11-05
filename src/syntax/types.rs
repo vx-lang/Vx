@@ -1666,6 +1666,7 @@ mod tests {
             Type::Tensor(
                 ElementType::F32,
                 vec![Dim::Static(Expr::Number(NumberExpr {
+                    written: None,
                     value: "4".into(),
                     ty: None,
                     span: Span::default(),

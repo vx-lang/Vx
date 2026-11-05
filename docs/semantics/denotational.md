@@ -23,6 +23,8 @@ Vx requires a dual-domain structure to distinguish between the Host (CPU) memory
 Values in Vx include primitive numbers, matrices (Tensors), and specialized hardware-bound states.
 
 - **$\\mathbb{N}, \\mathbb{R}$**: Standard numerical types (`i64`, `f64`, `bf16`). Let $\\mathcal{T}$ be the set of valid numeric types $\\mathcal{T} = {\\text{f32}, \\text{f64}, \\text{bf16}, \\text{i32}, \\text{i64}}$.
+  A number literal denotes one element of these sets, and its spelling is not part of the
+  denotation: $\[\\![\\text{0x2A}]\\!\] = \[\\![\\text{0b101010}]\\!\] = \[\\![\\text{0o52}]\\!\] = \[\\![\\text{4\\\_2}]\\!\] = \[\\![\\text{42}]\\!\]$.
 - **$\\mathbb{V}\_{Tensor}^{\\tau}$**: A multi-dimensional array parameterised by an element type $\\tau \\in \\mathcal{T}$, mapping indices to values of type $\\tau$.
   - $\\mathbb{V}\_{Tensor}^{\\tau} = (\\mathbb{N} \\times \\dots \\times \\mathbb{N}) \\to \\tau$
 - **$\\mathbb{V}\_{Ref}$**: A typed pointer bounding a value to a memory space.

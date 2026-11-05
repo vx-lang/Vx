@@ -500,9 +500,11 @@ impl<'a> Lexer<'a> {
                 self.advance();
             } else if c == '+' || c == '-' {
                 // Sign of a scientific exponent (`1e-15`, `2.5E+3`). Only after `e`/`E`,
-                // and only when a digit follows, so `42-1` stays two tokens.
+                // and only when a digit follows, so `42-1` stays two tokens. A literal with a
+                // base prefix has no exponent: in `0x1E-5`, `E` is a hex digit.
                 let so_far = &self.source[start_byte..self.current_byte_offset()];
-                let after_exp = so_far.ends_with('e') || so_far.ends_with('E');
+                let prefixed = ["0x", "0o", "0b"].iter().any(|p| so_far.starts_with(p));
+                let after_exp = !prefixed && (so_far.ends_with('e') || so_far.ends_with('E'));
                 if after_exp {
                     let offset = self.current_byte_offset();
                     let mut chars = self.source[offset + c.len_utf8()..].chars();
@@ -1252,6 +1254,31 @@ mod tests {
         assert_eq!(tokens[0].kind, TokenTypeBase::Number("42"));
         assert_eq!(tokens[1].kind, TokenTypeBase::Minus);
         assert_eq!(tokens[2].kind, TokenTypeBase::Number("1"));
+    }
+
+    #[test]
+    fn a_sign_after_an_e_in_a_hex_literal_is_an_operator() {
+        // In a hex literal `E` is a digit, not an exponent: `0x1E-5` is `0x1E - 5`.
+        let tokens = Lexer::new("0x1E-5").tokenize();
+        assert_eq!(tokens[0].kind, TokenTypeBase::Number("0x1E"));
+        assert_eq!(tokens[1].kind, TokenTypeBase::Minus);
+        assert_eq!(tokens[2].kind, TokenTypeBase::Number("5"));
+        let tokens = Lexer::new("0x1e+5").tokenize();
+        assert_eq!(tokens[0].kind, TokenTypeBase::Number("0x1e"));
+        assert_eq!(tokens[1].kind, TokenTypeBase::Plus);
+        assert_eq!(tokens[2].kind, TokenTypeBase::Number("5"));
+    }
+
+    #[test]
+    fn a_prefixed_or_underscored_number_is_one_token() {
+        // The lexer keeps the spelling. The parser is what turns `0x2A` into 42, so the
+        // formatter, which prints tokens, leaves the file as it was written.
+        assert_eq!(lex_first("0x2A"), TokenTypeBase::Number("0x2A"));
+        assert_eq!(
+            lex_first("0b1010_1010u8"),
+            TokenTypeBase::Number("0b1010_1010u8")
+        );
+        assert_eq!(lex_first("1_000_000"), TokenTypeBase::Number("1_000_000"));
     }
 
     #[test]
