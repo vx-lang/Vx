@@ -1342,6 +1342,12 @@ impl<'a> TypeChecker<'a> {
     /// the scope-exit truncation (`constraints.truncate(prev_len)`) keeps its meaning.
     pub(crate) fn neutralize_facts_mentioning(&mut self, name: &str) {
         self.pointer_facts.forget(name);
+        self.forget_value_facts_about(name);
+    }
+
+    /// Overwrite each prover fact that names `name`, as `neutralize_facts_mentioning` does, but
+    /// keep the pointer facts.
+    pub(crate) fn forget_value_facts_about(&mut self, name: &str) {
         for c in self.consteval.constraints.iter_mut() {
             if expr_mentions(c, name) {
                 *c = Expr::RelationalOp(RelationalOpExpr {

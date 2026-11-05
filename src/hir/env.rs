@@ -894,6 +894,10 @@ impl<'a> TypeChecker<'a> {
         let depth = self.scopes.len();
         if let Some(vars) = self.scopes.pop() {
             self.pointer_facts_end_scope(&vars);
+            // After the scope, the name is an outer variable, or no variable.
+            for name in vars.keys() {
+                self.forget_value_facts_about(name.as_ref());
+            }
         }
         self.borrow.moved_vars.pop();
         self.borrow.mutable_vars.pop();
@@ -992,6 +996,8 @@ impl<'a> TypeChecker<'a> {
         if let Some(bound) = self.borrow.bound_behind_ref.last_mut() {
             bound.remove(&name);
         }
+        // Nor do the facts about the old one, such as an outer `y == 1` under `Some(y)`.
+        self.forget_value_facts_about(&name);
         let current_top = self.active_topology.clone();
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name.into(), (ty, current_top));
