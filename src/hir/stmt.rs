@@ -881,19 +881,96 @@ impl<'a> TypeChecker<'a> {
         // must be one that the prover can model, so that no new program warns.
         let recorded = !*_is_mut || crate::hir::prover::is_modelled(&value);
         if recorded && !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
-            let id_expr = Expr::Identifier(IdentifierExpr {
+            // A call can change its arguments. Re-evaluating it in a later proof would use
+            // their new values, not the values from when the result was returned.
+            if !matches!(&value, Expr::FunctionCall(_)) {
+                let id_expr = Expr::Identifier(IdentifierExpr {
+                    name: name.clone(),
+                    span: Span::default(),
+                });
+                let eq_expr = Expr::RelationalOp(RelationalOpExpr {
+                    lhs: Box::new(id_expr),
+                    op: RelationalOp::Eq,
+                    rhs: Box::new(value),
+                    span: Span::default(),
+                    operand_ty: None,
+                });
+                self.consteval.constraints.push(eq_expr);
+            }
+            self.keep_call_result_ensures(name, expr);
+        }
+    }
+
+    /// A returned number keeps its postconditions even when a later call changes an input
+    /// buffer. Retaining only `name == call(args)` would tie that number to the old buffer.
+    fn keep_call_result_ensures(&mut self, name: &crate::symbol::Symbol, value: &Expr) {
+        let Expr::FunctionCall(call) = crate::syntax::bare_unsafe_value(value) else {
+            return;
+        };
+        let callee = self
+            .env
+            .syntax_functions
+            .get(call.name.as_ref())
+            .copied()
+            .or_else(|| {
+                self.mono
+                    .functions
+                    .iter()
+                    .find(|(f, _)| f.name == call.name)
+                    .map(|(f, _)| f)
+            });
+        let Some(callee) = callee else {
+            return;
+        };
+        let changed: Vec<_> = call
+            .args
+            .iter()
+            .filter(|arg| {
+                matches!(arg, Expr::Borrow(b) if b.is_mut)
+                    || matches!(
+                        self.check_expr_type_probe(arg),
+                        Type::Borrow { is_mut: true, .. } | Type::Pointer(..) | Type::Ref(..)
+                    )
+            })
+            .filter_map(|arg| Self::arg_reborrow_base(arg).map(|(root, _)| root))
+            .collect();
+        let mut names: HashMap<_, _> = callee
+            .params
+            .iter()
+            .map(|(p, _)| p.clone())
+            .zip(
+                call.args
+                    .iter()
+                    .map(|a| crate::hir::prover::without_borrow(a).clone()),
+            )
+            .collect();
+        names.insert(
+            "return".into(),
+            Expr::Identifier(IdentifierExpr {
                 name: name.clone(),
                 span: Span::default(),
-            });
-            let eq_expr = Expr::RelationalOp(RelationalOpExpr {
-                lhs: Box::new(id_expr),
-                op: RelationalOp::Eq,
-                rhs: Box::new(value),
-                span: Span::default(),
-                operand_ty: None,
-            });
-            self.consteval.constraints.push(eq_expr);
-        }
+            }),
+        );
+        let facts: Vec<_> = callee
+            .ensures
+            .iter()
+            .filter(|e| crate::hir::check::atomic_contracts::is_prover_clause(e))
+            .map(|e| hir::prover::substitute_names(e, &names))
+            .filter(hir::prover::is_modelled)
+            .filter(|e| {
+                !changed
+                    .iter()
+                    .any(|root| crate::hir::check::raw::expr_mentions(e, root))
+            })
+            .filter(|e| {
+                let mut calls_again = false;
+                crate::syntax::visit_expr(e, &mut |part| {
+                    calls_again |= matches!(part, Expr::FunctionCall(_) | Expr::MethodCall(_));
+                });
+                !calls_again
+            })
+            .collect();
+        self.consteval.constraints.extend(facts);
     }
 
     /// Check a `for` loop: type the iterable, bind the induction variable's element type, prove
