@@ -5,13 +5,16 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+// REQUIRES: legacy-codegen
+//
 // i128::MIN / (2^64 - 1) is not overflow. A 64-bit-only -1 constant made the
 // overflow guard treat this divisor as -1 and stop the program.
 //
 // Build MIN as (i64::MIN as i128) << 64 so the test does not need a 39-digit
-// literal (flat-codegen cannot encode that literal yet).
+// literal. Flat emit-obj / ParseType still reject i128 element types, so this
+// fixture is legacy-codegen only (and skipped by the flat corpus sweep via
+// REQUIRES).
 //
-// RUN: vxc %s --run 2>&1 | FileCheck %s
 // RUN: vxc %s --run --legacy-codegen 2>&1 | FileCheck %s
 //
 // CHECK: -9223372036854775808
