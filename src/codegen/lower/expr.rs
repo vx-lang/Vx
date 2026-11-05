@@ -1977,6 +1977,12 @@ impl<'c> LowerToMelior<'c> for StructInitExpr {
                     .add_results(&[field_ty])
                     .build()?;
                 field_val = block.append_operation(cast_op).result(0)?.into();
+            } else if expr_ty != field_ty
+                && field_ty == gen.ptr_ty
+                && melior::ir::r#type::MemRefType::try_from(expr_ty).is_ok()
+            {
+                // A reference field holds the address that `&x` gives as a scalar memref.
+                field_val = memref_data_pointer(gen, block, field_val)?;
             } else if expr_ty != field_ty {
                 // A closure literal given to a `ClosureK` field: build the `{env, func}` pair,
                 // as a function argument of that type already gets.

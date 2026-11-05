@@ -2591,7 +2591,15 @@ impl<'graph, 'bodies> ComptimeInterpreter<'graph, 'bodies> {
                 let fields = init
                     .fields
                     .iter()
-                    .map(|(name, value)| (name.clone(), self.expr(value), self.place_facts(value)))
+                    .map(|(name, value)| {
+                        // A closure holds a local that it changes or borrows as `&x`, and the
+                        // place it captured is `x`.
+                        let place = match value {
+                            Expr::Borrow(b) if init.name.starts_with("Closure_") => &*b.expr,
+                            value => value,
+                        };
+                        (name.clone(), self.expr(value), self.place_facts(place))
+                    })
                     .collect::<Vec<_>>();
                 let mut outcome = self.unknown_after(
                     fields

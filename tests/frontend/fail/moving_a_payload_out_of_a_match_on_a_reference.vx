@@ -14,9 +14,9 @@
 // CHECK-DAG: Error[E4008] at {{.*}}.vx:81:15: `n` cannot be moved out: `n` is part of a value behind a reference
 // CHECK-DAG: Error[E4008] at {{.*}}.vx:93:14: `n` cannot be moved out: `n` is part of a value behind a reference
 // CHECK-DAG: Error[E4008] at {{.*}}.vx:106:14: `n` cannot be moved out: `n` is part of a value behind a reference
-// CHECK-DAG: Error[E4008] at {{.*}}.vx:117:15: `n` cannot be moved out: `n` is part of a value behind a reference
-// CHECK-DAG: Error[E4008] at {{.*}}.vx:129:16: `p.left` cannot be moved out: `p` is part of a value behind a reference
-// CHECK-DAG: Error[E4008] at {{.*}}.vx:148:17: `n` cannot be moved out: `n` is part of a value behind a reference
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:118:17: `n` cannot be moved out: `n` is part of a value behind a reference
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:132:16: `p.left` cannot be moved out: `p` is part of a value behind a reference
+// CHECK-DAG: Error[E4008] at {{.*}}.vx:151:17: `n` cannot be moved out: `n` is part of a value behind a reference
 // CHECK: 7 error(s) emitted
 
 import core::ops;
@@ -114,7 +114,10 @@ fn call_a_method_that_takes_the_payload(h : &Holder) -> i32 {
 fn capture_the_payload_in_a_closure(h : &Holder) -> i32 {
   match h {
     Holder::Full(n) => {
-      let f = || n.id;
+      let f = || {
+        let m = n;
+        m.id
+      };
       return f();
     }
     Holder::Empty => {

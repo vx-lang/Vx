@@ -1,0 +1,97 @@
+//===- locals_that_a_closure_holds.vx - Vx Compiler ----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A closure that changes a local holds it `&mut`, and a closure that only reads a struct holds
+// it `&`, until the closure's last use. Until then, the code around the closure must not use
+// the local in a way that the borrow does not allow. A closure that moves a struct takes it.
+
+struct Log {
+  count : i64,
+}
+
+fn take(l : Log) -> i64 {
+  return l.count;
+}
+
+// CHECK: Error[E4002] at {{.*}}locals_that_a_closure_holds.vx:[[@LINE+6]]:9: Cannot access 'n' because it is mutably borrowed. The closure 'add' changes it, so it holds it until the last use of 'add'.
+fn read_before_the_last_use() -> void {
+  let mut n : i64 = 1;
+  let add = || -> void {
+    n += 1;
+  };
+  print(n);
+  add();
+}
+
+// CHECK: Error[E4002] at {{.*}}locals_that_a_closure_holds.vx:[[@LINE+6]]:3: Cannot access 'n' because it is mutably borrowed. The closure 'add' changes it, so it holds it until the last use of 'add'.
+fn write_before_the_last_use() -> void {
+  let mut n : i64 = 1;
+  let add = || -> void {
+    n += 1;
+  };
+  n = 5;
+  add();
+}
+
+// CHECK: Error[E4002] at {{.*}}locals_that_a_closure_holds.vx:[[@LINE+7]]:5: Cannot access 'n' because it is mutably borrowed. The closure 'add' changes it, so it holds it until the last use of 'add'.
+fn two_closures_change_one_local() -> void {
+  let mut n : i64 = 1;
+  let add = || -> void {
+    n += 1;
+  };
+  let add_two = || -> void {
+    n += 2;
+  };
+  add();
+  add_two();
+}
+
+// CHECK: Error[E4009] at {{.*}}locals_that_a_closure_holds.vx:[[@LINE+8]]:7: `log.count` is assigned while it is borrowed, and the borrow is used after the assignment. The closure 'peek' reads it, so it holds it until the last use of 'peek'.
+fn write_to_a_struct_that_a_closure_reads() -> void {
+  let mut log = Log {
+    count: 0
+  };
+  let peek = || -> i64 {
+    log.count
+  };
+  log.count = 3;
+  print(peek());
+}
+
+// CHECK: Error[E4001] at {{.*}}locals_that_a_closure_holds.vx:[[@LINE+9]]:9: Use of moved or consumed linear variable: log
+fn use_of_a_struct_that_a_closure_moved() -> void {
+  let log = Log {
+    count: 0
+  };
+  let eat = || -> i64 {
+    take(log)
+  };
+  print(eat());
+  print(log.count);
+}
+
+// A local that is not `mut` gets one error, at the change in the body.
+// CHECK: Error[E4010] at {{.*}}locals_that_a_closure_holds.vx:[[@LINE+4]]:5: `k` is not declared `mut`, so it cannot be assigned; declare it `let mut k`
+fn change_of_a_local_that_is_not_mut() -> void {
+  let k : i64 = 1;
+  let bump = || -> void {
+    k += 1;
+  };
+  bump();
+}
+
+fn main() -> i32 {
+  read_before_the_last_use();
+  write_before_the_last_use();
+  two_closures_change_one_local();
+  write_to_a_struct_that_a_closure_reads();
+  use_of_a_struct_that_a_closure_moved();
+  change_of_a_local_that_is_not_mut();
+  return 0;
+}

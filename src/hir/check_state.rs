@@ -705,6 +705,9 @@ pub struct MonoState {
     pub closure_depths: Vec<usize>,
     /// Variables each open closure literal captured, innermost last.
     pub closure_captures_stack: Vec<HashMap<Symbol, Type>>,
+    /// Each use, in the body of each open closure literal, of a variable that the closure
+    /// captured: its name and its span. Innermost last.
+    pub closure_capture_uses: Vec<Vec<(Symbol, crate::syntax::Span)>>,
     /// How many generic instantiations are open around the call being checked.
     ///
     /// `f<N - 1>()` whose base case is never reached instantiates a new `f` every time

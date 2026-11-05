@@ -12,12 +12,15 @@ fn apply_lambda_bad_args<F>(f : F) -> i32 {
 }
 
 fn main() -> i32 {
-  // Test 1: Move closures
+  // Test 1: A closure whose body moves a struct takes the struct.
   let i = 10;
   let cap = Captures {
     i : 10
   };
-  let cp_lambda = | x : i32 | x + cap.i + i;
+  let cp_lambda = | x : i32 | {
+    let c = cap;
+    x + c.i + i
+  };
   assert(apply_lambda_ok(cp_lambda, 32) == 52);
 
   // cap has been moved into the closure, so this should fail

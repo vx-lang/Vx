@@ -194,6 +194,23 @@ pub(crate) fn held_by_task_note(b: &crate::hir::env::BorrowRecord) -> &'static s
     }
 }
 
+impl TypeChecker<'_> {
+    /// [`held_by_task_note`], or a note that names the closure that holds the borrow.
+    pub(crate) fn held_by_note(&self, b: &crate::hir::env::BorrowRecord) -> String {
+        let task = held_by_task_note(b);
+        let Some(holder) = b.borrower_name.as_deref().filter(|_| task.is_empty()) else {
+            return task.to_string();
+        };
+        match self.lookup(holder) {
+            Some((Type::Struct(name, _), _)) if name.starts_with("Closure_") => format!(
+                " The closure '{holder}' {} it, so it holds it until the last use of '{holder}'.",
+                if b.is_mut { "changes" } else { "reads" }
+            ),
+            _ => String::new(),
+        }
+    }
+}
+
 /// Whether `e` is `spawn { .. }`.
 pub(crate) fn is_spawn(e: &Expr) -> bool {
     matches!(

@@ -484,13 +484,30 @@ o[0] = [1.0, 2.0, 3.0, 4.0];   // writes row 0
 
 ## 12. Closures
 
-A closure literal `|params| expr` captures the locals it names by value, at the point it is written:
+A closure literal `|params| expr` uses the locals it names. What the body does with a local
+decides how the closure takes it, as for a task:
+
+- A local that the body changes is borrowed `&mut` until the closure's last use, so the change is
+  to the local itself. A change is an assignment, a `&mut` of it, or a call of a `&mut self`
+  method.
+- A struct that the body only reads is borrowed `&` until the closure's last use.
+- A struct that the body moves is moved into the closure.
+- A number or another `Copy` value that the body only reads is copied when the closure is
+  written.
 
 ```rust
 let x = 10;
-let add = |y: i32| x + y;   // captures x = 10
+let add = |y: i32| x + y;   // copies x = 10
 let r = add(5);             // 15
+
+let mut count = 0;
+let tick = || { count += 1; };
+tick();
+tick();                     // count is 2
 ```
+
+Until the last use of the closure, the code around it must not use a borrowed local in a way
+that the borrow does not allow.
 
 A closure body can also be a block, `|params| { ..; v }`. A `return` in it ends the call of the closure, and the first `return` gives the type that the closure returns. `|params| -> T { .. }` writes that type, and a `?` in the body needs it: `?` passes an `Err` up to the caller of the closure. The block is a plain block, so it does not allow what needs `unsafe`.
 
