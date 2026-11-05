@@ -402,7 +402,7 @@ run on the Apple GPU through Metal (`runtime/metal_dispatch.mm`).
   the allocated pointer, the aligned pointer, the offset, the two sizes and the two strides.
 - **Memory.** A tensor can be in any memory that the program allocated, at any address. Metal
   uses the pages that the tensor touches, with no copy. A tensor that the kernel writes is
-  ready when the call returns, because each launch waits for the GPU.
+  ready when the call returns, because the function waits for the GPU before it returns.
 - **CPU or GPU.** `void vx_metal_set_enabled(int on)` sets the device for the calling thread.
   With 0, each launch runs the CPU copy of its kernel on the same memory, with the blocks
   shared among the CPU's cores (`docs/spawn_on.md`). `VX_METAL=0` turns the GPU off for every
