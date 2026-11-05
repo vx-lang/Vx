@@ -15,6 +15,8 @@
 import core::panic;
 import core::ptr;
 import core::sync::atomic;
+import core::time;
+import std::time;
 
 extern {
   /// The Rust core behind `wait_while`.
@@ -53,9 +55,6 @@ fn waiting_in_select(at : Caller) -> void {
   unsafe { vx_waiting_for(WAIT_IN_SELECT, l.file, l.line, null<i8>(), 0); }
 }
 
-/// A deadline that never comes.
-const NO_DEADLINE : i64 = 9223372036854775807;
-
 /// Block the thread while `word` holds `value`. It can also return when `word` did not change.
 /// So the caller reads `word` again, in a loop.
 fn wait_while(word : &AtomicI64, value : i64) -> void {
@@ -85,20 +84,27 @@ fn clock_ns() -> i64 {
   return unsafe { vx_clock_ns() };
 }
 
-/// The deadline `seconds` from now, for `wait_while_until` and the waits of a channel.
-fn deadline_after(seconds : f64) -> i64 {
-  return clock_ns() + (seconds * 1000000000.0) as i64;
+/// The deadline `d` from now, for `wait_while_until` and the waits of a channel.
+fn deadline_after(d : Duration) -> Instant {
+  match Instant::now().checked_add(&d) {
+    Option<Instant>::Some(at) => {
+      return at;
+    }
+    Option<Instant>::None => {
+      return Instant::never();
+    }
+  }
 }
 
 /// Whether the clock reached `deadline`.
-fn past_deadline(deadline : i64) -> bool {
-  return deadline != NO_DEADLINE && clock_ns() >= deadline;
+fn past_deadline(deadline : Instant) -> bool {
+  return deadline != Instant::never() && Instant::now() >= deadline;
 }
 
 /// As `wait_while`, and also return at `deadline`. With `can_cancel`, also return when the
 /// `tasks` block of this task was cancelled. The caller checks `past_deadline` after it.
-fn wait_while_until(word : &AtomicI64, value : i64, deadline : i64, can_cancel : bool) -> void {
-  if deadline == NO_DEADLINE {
+fn wait_while_until(word : &AtomicI64, value : i64, deadline : Instant, can_cancel : bool) -> void {
+  if deadline == Instant::never() {
     if can_cancel {
       wait_while_or_cancel(word, value);
     } else {
@@ -110,5 +116,7 @@ fn wait_while_until(word : &AtomicI64, value : i64, deadline : i64, can_cancel :
   if can_cancel {
     flag = 1;
   }
-  unsafe { vx_wait_while_until(word.as_ptr(), value, deadline, flag); }
+  unsafe {
+    vx_wait_while_until(word.as_ptr(), value, deadline.as_nanos_i64(), flag);
+  }
 }

@@ -41,8 +41,10 @@ import core::option;
 import core::panic;
 import core::result;
 import core::sync::atomic;
+import core::time;
 import std::alloc;
 import std::sync::wait;
+import std::time;
 import std::vec;
 
 extern {
@@ -186,7 +188,7 @@ fn notify(words : *mut AtomicI64) -> void {
 
 /// Sleep until an event on the channel, unless one came after `seen` was read from `WAKE`. A
 /// cancel of the `tasks` block and the clock reaching `deadline` also end the sleep.
-fn wait_for_event(words : *mut AtomicI64, seen : i64, deadline : i64, what : i32, at : Caller, made : Location) -> void {
+fn wait_for_event(words : *mut AtomicI64, seen : i64, deadline : Instant, what : i32, at : Caller, made : Location) -> void {
   word(words, SLEEPERS).fetch_add(1, AtomicOrdering::SeqCst);
   waiting_for(what, at, made);
   wait_while_until(word(words, WAKE), seen, deadline, true);
@@ -224,17 +226,17 @@ Sender<T> {
   /// A `send` that has its place in the ring and is cancelled puts the number of its place in
   /// the skip set. The `recv` of that place passes it.
   fn send(self : &Sender<T>, v : T, at : Caller) -> Result<void, SendError<T>> {
-    return self.send_until(v, NO_DEADLINE, at);
+    return self.send_until(v, Instant::never(), at);
   }
 
-  /// `send`, and give `v` back when it waited `seconds` for room. A `drop` runs with
+  /// `send`, and give `v` back when it waited `limit` for room. A `drop` runs with
   /// cancellation off, so a `send` in a `drop` uses this to wait for a limited time.
-  fn send_for(self : &Sender<T>, v : T, seconds : f64, at : Caller) -> Result<void, SendError<T>> {
-    return self.send_until(v, deadline_after(seconds), at);
+  fn send_for(self : &Sender<T>, v : T, limit : Duration, at : Caller) -> Result<void, SendError<T>> {
+    return self.send_until(v, deadline_after(limit), at);
   }
 
-  /// `send` until the deadline `deadline` of `clock_ns`.
-  fn send_until(self : &Sender<T>, v : T, deadline : i64, at : Caller) -> Result<void, SendError<T>> {
+  /// `send` until the clock reaches `deadline`.
+  fn send_until(self : &Sender<T>, v : T, deadline : Instant, at : Caller) -> Result<void, SendError<T>> {
     if cancelled() {
       return Result<void, SendError<T>>::Err(SendError<T> {
         value : v, cancelled : true, timed_out : false
@@ -294,16 +296,16 @@ Receiver<T> {
   /// A channel has one `Receiver`, so `recv` takes its receive number only when it takes a value
   /// or passes a skipped one. A cancel can then stop it at any time and leave no place empty.
   fn recv(self : &Receiver<T>, at : Caller) -> Result<T, RecvError> {
-    return self.recv_until(NO_DEADLINE, at);
+    return self.recv_until(Instant::never(), at);
   }
 
-  /// `recv`, and give `TimedOut` when it waited `seconds` for a value.
-  fn recv_for(self : &Receiver<T>, seconds : f64, at : Caller) -> Result<T, RecvError> {
-    return self.recv_until(deadline_after(seconds), at);
+  /// `recv`, and give `TimedOut` when it waited `limit` for a value.
+  fn recv_for(self : &Receiver<T>, limit : Duration, at : Caller) -> Result<T, RecvError> {
+    return self.recv_until(deadline_after(limit), at);
   }
 
-  /// `recv` until the deadline `deadline` of `clock_ns`.
-  fn recv_until(self : &Receiver<T>, deadline : i64, at : Caller) -> Result<T, RecvError> {
+  /// `recv` until the clock reaches `deadline`.
+  fn recv_until(self : &Receiver<T>, deadline : Instant, at : Caller) -> Result<T, RecvError> {
     let words = self.words;
     let mut k = word(words, RECVS).load(AtomicOrdering::SeqCst);
     let mut seen = word(words, WAKE).load(AtomicOrdering::SeqCst);

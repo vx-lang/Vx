@@ -58,7 +58,7 @@ fn run_benchmark_128() -> i32 {
     }
 
     // Benchmark Unfused
-    let t1 = now();
+    let t1 = Instant::now();
     for _iter in 0..10 {
       for i in 0..128 {
         for j in 0..128 {
@@ -84,8 +84,8 @@ fn run_benchmark_128() -> i32 {
         }
       }
     }
-    let t2 = now();
-    let time_unfused = t2 - t1;
+    let t2 = Instant::now();
+    let time_unfused = (t2 - t1).as_secs_f32();
 
     // Warmup Fused immediately before benchmark
     for i in 0..128 {
@@ -104,7 +104,7 @@ fn run_benchmark_128() -> i32 {
     }
 
     // Benchmark Fused
-    let t3 = now();
+    let t3 = Instant::now();
     for _iter in 0..10 {
       for i in 0..128 {
         for j in 0..128 {
@@ -121,8 +121,8 @@ fn run_benchmark_128() -> i32 {
         }
       }
     }
-    let t4 = now();
-    let time_fused = t4 - t3;
+    let t4 = Instant::now();
+    let time_fused = (t4 - t3).as_secs_f32();
 
     bench_report("cpu_fusion_128_unfused", "seconds", time_unfused);
     bench_report("cpu_fusion_128_fused", "seconds", time_fused);
@@ -192,7 +192,7 @@ fn run_benchmark_256() -> i32 {
     }
 
     // Benchmark Unfused
-    let t1 = now();
+    let t1 = Instant::now();
     for _iter in 0..10 {
       for i in 0..256 {
         for j in 0..256 {
@@ -218,8 +218,8 @@ fn run_benchmark_256() -> i32 {
         }
       }
     }
-    let t2 = now();
-    let time_unfused = t2 - t1;
+    let t2 = Instant::now();
+    let time_unfused = (t2 - t1).as_secs_f32();
 
     // Warmup Fused immediately before benchmark
     for i in 0..256 {
@@ -238,7 +238,7 @@ fn run_benchmark_256() -> i32 {
     }
 
     // Benchmark Fused
-    let t3 = now();
+    let t3 = Instant::now();
     for _iter in 0..10 {
       for i in 0..256 {
         for j in 0..256 {
@@ -255,8 +255,8 @@ fn run_benchmark_256() -> i32 {
         }
       }
     }
-    let t4 = now();
-    let time_fused = t4 - t3;
+    let t4 = Instant::now();
+    let time_fused = (t4 - t3).as_secs_f32();
 
     bench_report("cpu_fusion_256_unfused", "seconds", time_unfused);
     bench_report("cpu_fusion_256_fused", "seconds", time_fused);
@@ -326,7 +326,7 @@ fn run_benchmark_512() -> i32 {
     }
 
     // Benchmark Unfused
-    let t1 = now();
+    let t1 = Instant::now();
     for _iter in 0..10 {
       for i in 0..512 {
         for j in 0..512 {
@@ -352,8 +352,8 @@ fn run_benchmark_512() -> i32 {
         }
       }
     }
-    let t2 = now();
-    let time_unfused = t2 - t1;
+    let t2 = Instant::now();
+    let time_unfused = (t2 - t1).as_secs_f32();
 
     // Warmup Fused immediately before benchmark
     for i in 0..512 {
@@ -372,7 +372,7 @@ fn run_benchmark_512() -> i32 {
     }
 
     // Benchmark Fused
-    let t3 = now();
+    let t3 = Instant::now();
     for _iter in 0..10 {
       for i in 0..512 {
         for j in 0..512 {
@@ -389,8 +389,8 @@ fn run_benchmark_512() -> i32 {
         }
       }
     }
-    let t4 = now();
-    let time_fused = t4 - t3;
+    let t4 = Instant::now();
+    let time_fused = (t4 - t3).as_secs_f32();
 
     bench_report("cpu_fusion_512_unfused", "seconds", time_unfused);
     bench_report("cpu_fusion_512_fused", "seconds", time_fused);
@@ -460,7 +460,7 @@ fn run_benchmark_1024() -> i32 {
     }
 
     // Benchmark Unfused
-    let t1 = now();
+    let t1 = Instant::now();
     for _iter in 0..10 {
       for i in 0..1024 {
         for j in 0..1024 {
@@ -486,8 +486,8 @@ fn run_benchmark_1024() -> i32 {
         }
       }
     }
-    let t2 = now();
-    let time_unfused = t2 - t1;
+    let t2 = Instant::now();
+    let time_unfused = (t2 - t1).as_secs_f32();
 
     // Warmup Fused immediately before benchmark
     for i in 0..1024 {
@@ -506,7 +506,7 @@ fn run_benchmark_1024() -> i32 {
     }
 
     // Benchmark Fused
-    let t3 = now();
+    let t3 = Instant::now();
     for _iter in 0..10 {
       for i in 0..1024 {
         for j in 0..1024 {
@@ -523,8 +523,8 @@ fn run_benchmark_1024() -> i32 {
         }
       }
     }
-    let t4 = now();
-    let time_fused = t4 - t3;
+    let t4 = Instant::now();
+    let time_fused = (t4 - t3).as_secs_f32();
 
     bench_report("cpu_fusion_1024_unfused", "seconds", time_unfused);
     bench_report("cpu_fusion_1024_fused", "seconds", time_fused);
@@ -594,7 +594,7 @@ fn run_benchmark_2048() -> i32 {
     }
 
     // Benchmark Unfused
-    let t1 = now();
+    let t1 = Instant::now();
     for _iter in 0..10 {
       for i in 0..2048 {
         for j in 0..2048 {
@@ -620,8 +620,8 @@ fn run_benchmark_2048() -> i32 {
         }
       }
     }
-    let t2 = now();
-    let time_unfused = t2 - t1;
+    let t2 = Instant::now();
+    let time_unfused = (t2 - t1).as_secs_f32();
 
     // Warmup Fused immediately before benchmark
     for i in 0..2048 {
@@ -640,7 +640,7 @@ fn run_benchmark_2048() -> i32 {
     }
 
     // Benchmark Fused
-    let t3 = now();
+    let t3 = Instant::now();
     for _iter in 0..10 {
       for i in 0..2048 {
         for j in 0..2048 {
@@ -657,8 +657,8 @@ fn run_benchmark_2048() -> i32 {
         }
       }
     }
-    let t4 = now();
-    let time_fused = t4 - t3;
+    let t4 = Instant::now();
+    let time_fused = (t4 - t3).as_secs_f32();
 
     bench_report("cpu_fusion_2048_unfused", "seconds", time_unfused);
     bench_report("cpu_fusion_2048_fused", "seconds", time_fused);

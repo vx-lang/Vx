@@ -3744,14 +3744,14 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
             return cancel_call_value(gen, block);
         }
         // Around the call of a `Drop` impl's `drop` (F6, F6a), with the time limit of the
-        // drop in seconds.
+        // drop in nanoseconds.
         if name.as_ref() == crate::syntax::stmt::CANCEL_OFF {
             let (limit, _, block) = gen.generate_expr(&args[0], block)?;
             crate::codegen::lower::call_runtime_void_with(
                 gen,
                 block,
                 "vx_cancel_off",
-                &[(limit, "f64")],
+                &[(limit, "i64")],
             )?;
             return cancel_call_value(gen, block);
         }

@@ -23,6 +23,7 @@
 // CHECK-NEXT: {{^}}after the drop, cancelled false{{$}}
 // WORD: vx: VX_DROP_WAIT_SECONDS must be a number of seconds, not 'soon'
 
+import core::time;
 import std::sync::channel;
 import std::sync::wait;
 import std::time;
@@ -50,9 +51,9 @@ fn main() -> i32 {
   let w = Waiter {
     rx : rx
   };
-  let start = now();
+  let start = Instant::now();
   drop(w);
-  println!("the drop took less than 5 seconds: {}", now() - start < 5.0);
+  println!("the drop took less than 5 seconds: {}", start.elapsed() < Duration::from_secs(5));
   println!("after the drop, cancelled {}", cancelled());
   drop(tx);
   return 0;

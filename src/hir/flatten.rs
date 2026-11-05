@@ -1789,7 +1789,7 @@ impl<'r> Lowerer<'r> {
                     ));
                 }
                 // Around the call of a `Drop` impl's `drop` (F6, F6a): an effect on the
-                // runtime, with the time limit of the drop in seconds.
+                // runtime, with the time limit of the drop in nanoseconds.
                 if fc.name.as_ref() == crate::syntax::stmt::CANCEL_OFF
                     || fc.name.as_ref() == crate::syntax::stmt::CANCEL_ON
                 {
