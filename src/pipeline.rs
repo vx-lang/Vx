@@ -1598,6 +1598,12 @@ fn type_check_phase(
         .flat_map(|c| c.diagnostics.iter())
         .chain(imported_errors.iter())
         .collect();
+    // Two checks can read one body, such as a method that a call checks again.
+    let mut seen = std::collections::HashSet::new();
+    let reported: Vec<&crate::diagnostic::Diagnostic> = reported
+        .into_iter()
+        .filter(|d| d.repeat_key().is_none_or(|key| seen.insert(key)))
+        .collect();
     let mut warnings: Vec<crate::diagnostic::Diagnostic> = reported
         .iter()
         .filter(|d| d.level == DiagnosticLevel::Warning)
