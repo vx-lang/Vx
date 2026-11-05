@@ -1,0 +1,11 @@
+LISA channel_slot_reused_after_recv_relaxed_store
+(* As channel_slot_reused_after_recv, but the recv sets the slot to 2 with a relaxed store. Then
+   nothing orders the read of the old value before the write of the new one, and the two race.
+   Expect: never, a data race. *)
+{ slot = 1; value = 7; }
+ P0                  | P1                   ;
+ r[plain] r0 value   | r[acq] r1 slot       ;
+ w[rlx] slot 2       | w[plain] value 9     ;
+scopes: (system P0 P1)
+filter (1:r1 = 2)
+exists (0:r0 = 9)

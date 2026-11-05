@@ -20,11 +20,13 @@ import VxMemoryModel.Channel
 import VxMemoryModel.ChannelExample
 import VxMemoryModel.MutexExample
 import VxMemoryModel.Lock
+import VxMemoryModel.ReleaseSequence
 import VxMemoryModel.MutexOrders
 import VxMemoryModel.Fifo
 import VxMemoryModel.Recv
 import VxMemoryModel.Cancel
 import VxMemoryModel.Arc
+import VxMemoryModel.ChannelOrders
 import VxMemoryModel.Footprint
 import VxMemoryModel.FootprintExample
 import VxMemoryModel.ChanFootprint
