@@ -5484,27 +5484,45 @@ impl<'r> Lowerer<'r> {
             if matches!(el, ElementType::Generic(_)) {
                 return None;
             }
-            let dynamic = dims.iter().any(|d| matches!(d, Dim::Dyn));
+            // A dimension that names a local variable, as `n` in `[n, n]`, is a run-time extent
+            // too: its value is the extent.
+            let local_dim = |d: &Dim| match d {
+                Dim::Static(Expr::Identifier(id)) => self.scope.contains_key(&id.name),
+                _ => false,
+            };
+            let local_dims: Vec<bool> = dims.iter().map(local_dim).collect();
+            let dynamic =
+                local_dims.iter().any(|l| *l) || dims.iter().any(|d| matches!(d, Dim::Dyn));
             let mut extents: Vec<Register> = Vec::new();
+            let mut shape: Vec<String> = Vec::with_capacity(dims.len());
             let bytes = if dynamic {
-                let Some(Expr::Array(arr)) = fc.args.first() else {
-                    return None;
+                let written_shape = match fc.args.first() {
+                    Some(Expr::Array(arr)) if fc.args.len() == 1 => Some(&arr.elements),
+                    _ => None,
                 };
-                if fc.args.len() != 1 || arr.elements.len() != dims.len() {
-                    return None;
-                }
-                for (d, e) in dims.iter().zip(arr.elements.iter()) {
-                    if matches!(d, Dim::Dyn) {
-                        extents.push(self.lower_scalar_extent(e)?);
-                    }
+                for (i, d) in dims.iter().enumerate() {
+                    let extent = match d {
+                        Dim::Dyn => written_shape
+                            .filter(|s| s.len() == dims.len())
+                            .map(|s| &s[i])?,
+                        Dim::Static(e) if local_dims[i] => e,
+                        _ => {
+                            shape.push(tensor_dim_string(d)?);
+                            continue;
+                        }
+                    };
+                    extents.push(self.lower_scalar_extent(extent)?);
+                    shape.push(DYN_DIM.to_string());
                 }
                 0
-            } else if dims.is_empty() {
-                crate::hir::memory::element_bits(el)?.div_ceil(8)
             } else {
-                crate::hir::memory::static_tensor_bytes(el, dims)?
+                shape = dims.iter().map(tensor_dim_string).collect::<Option<_>>()?;
+                if dims.is_empty() {
+                    crate::hir::memory::element_bits(el)?.div_ceil(8)
+                } else {
+                    crate::hir::memory::static_tensor_bytes(el, dims)?
+                }
             };
-            let shape: Vec<String> = dims.iter().map(tensor_dim_string).collect::<Option<_>>()?;
             let ty = LoweredTy::Tensor {
                 elem: el.clone(),
                 shape,

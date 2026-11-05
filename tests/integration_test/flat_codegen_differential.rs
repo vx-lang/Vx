@@ -2963,15 +2963,14 @@ fn driver_link_interface_declines_cleanly_outside_flat_subset() {
         dir.join("reflib.vxlib"),
     );
     std::fs::write(&lib, "fn double(x : i32) -> i32 { return x * 2; }\n").unwrap();
-    // `main` allocates a tensor whose extent is a local (`Tensor<f32, [n, n]>`), which the flat
-    // path does not model and so declines, while also calling the imported `double`. The
-    // decline forces the AST path, which has no AST for the imported body, so the driver must
-    // emit a clean diagnostic rather than ICE. (A data-carrying enum from a call, the construct
-    // this test used before, now lowers on the flat path.)
+    // `main` matches on an `i64`, which the flat path declines, while also calling the imported
+    // `double`. The decline forces the AST path, which has no AST for the imported body, so the
+    // driver must emit a clean diagnostic rather than ICE. (A tensor whose extent is a local,
+    // the construct this test used before, now lowers on the flat path.)
     std::fs::write(
         &app,
-        "fn main() -> i32 { let n = 3; let mut a = unsafe { Tensor<f32, [n, n]>::uninit() }; \
-           a[0][0] = 1.0; return double(10) + (a[0][0] as i32); }\n",
+        "fn main() -> i32 { let n = 0i64; let k = match n { 0i64 => { 1 } _ => { 2 } }; \
+           return double(10) + k; }\n",
     )
     .unwrap();
 
