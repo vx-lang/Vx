@@ -1,0 +1,35 @@
+//===- book_release_and_acquire.vx - Vx Compiler -*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// A program of the book chapter on tasks (www/book/src/tasks.md): one task stores a value and
+// sets a flag with `Release`. The other waits for the flag with `Acquire`, and then reads the
+// value. With `-fweak-relaxed-atomics` the `Relaxed` accesses stay relaxed, and it still prints 42.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc %s --legacy-codegen 2>&1 | FileCheck %s --implicit-check-not=Error
+// RUN: vxc -fweak-relaxed-atomics %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: {{^}}data 42{{$}}
+
+// ANCHOR: program
+import core::sync::atomic;
+
+fn main() -> i32 {
+  let data = AtomicI64::new(0);
+  let ready = AtomicBool::new(false);
+  tasks {
+    spawn {
+      data.store(42, AtomicOrdering::Relaxed);
+      ready.store(true, AtomicOrdering::Release);
+    };
+    spawn {
+      while !ready.load(AtomicOrdering::Acquire) {}
+      println!("data {}", data.load(AtomicOrdering::Relaxed));
+    };
+  };
+  return 0;
+}
+// ANCHOR_END: program

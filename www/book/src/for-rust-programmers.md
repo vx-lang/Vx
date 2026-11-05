@@ -35,6 +35,10 @@ lists what to change. Each item shows the Rust form and the Vx form.
   `i64` when `i64`s are added to it later. Vx does not, so write `let mut total : i64 = 0;`.
 - **Arrays are tensors.** `[i32; 4]` is `Tensor<i32, [4]>`. The shape is part of the type, and a
   `?` marks a size known only at run time: `Tensor<f32, [?, ?]>`.
+- **The atomic orders are `AtomicOrdering`**, because `Ordering` is the result of a comparison.
+  A `Relaxed` read is compiled as an `Acquire` read, so no value comes out of thin air.
+  `-fweak-relaxed-atomics` gives Rust's `Relaxed`. See
+  [Memory orders](tasks.md#memory-orders).
 - **Uninitialized storage is `unsafe`.** `MaybeUninit` has no equivalent. Write
   `unsafe { Tensor<f32, [4]>::uninit() }` and set every element before reading it, or use
   `Tensor<f32, [4]>::new()`, which is zeroed.
