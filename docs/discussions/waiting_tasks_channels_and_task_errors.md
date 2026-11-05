@@ -461,12 +461,12 @@ cleanup needs longer says so with `wait_limit`.
 ```vx
 impl Drop for SlotGuard {
   fn drop(self : &mut SlotGuard) -> void {
-    within(0.05) {
+    within(Duration::from_millis(50), || -> void {
       match self.pool_tx.send(self.slot) {
         Result<void, SendError<Slot>>::Ok(_) => {}
         Result<void, SendError<Slot>>::Err(_e) => { count_lost_slot(); }
       }
-    }
+    });
   }
 }
 ```
@@ -478,10 +478,9 @@ impl Drop for SlotGuard {
   only a `drop` runs with cancellation off (decision 6).
 - After the block, `cancelled()` says whether the task itself was cancelled, so the code can tell
   a cancel from a timeout.
-- `within` is a block, as `tasks` is (decision 1 of the scoped tasks note), and not a function
-  that takes a closure. A closure captures the locals that it names by value
-  (`docs/lang/syntax.md` §12), so its body could not change `self` or the locals of the code
-  around it.
+- This note first made `within` a block, because a closure then captured its locals by value
+  and could not change `self`. `docs/discussions/closures_that_change_captured_locals.md` changed
+  that, so `within` is now a library function that takes a closure.
 - `within:` already names the parent of a `Memory` in a machine file. The two do not meet: that
   one is a key before `:`, and this one starts a statement and comes before `(`.
 
