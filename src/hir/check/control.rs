@@ -1512,10 +1512,16 @@ impl<'a> TypeChecker<'a> {
                     .let_closure
                     .take()
                     .zip(self.current_assignment_target.clone());
+                // The variable that holds the closure. A closure in another place, such as a
+                // call argument, holds its borrows until the end of its statement.
+                let holder = in_let.as_ref().map(|(_, closure)| closure.clone());
 
                 let closure_depth = self.scopes.len();
                 self.mono.closure_depths.push(closure_depth);
                 self.mono.closure_captures_stack.push(HashMap::new());
+                self.mono.closure_capture_uses.push(Vec::new());
+                // What the body changes decides which captures the closure borrows `&mut`.
+                let changed_outside = std::mem::take(&mut self.changed_vars);
 
                 let old_ret = self.current_return_type.take();
                 // `|x| -> T { .. }` returns `T`. Otherwise the first `return` gives the type.
@@ -1545,7 +1551,11 @@ impl<'a> TypeChecker<'a> {
                 self.consteval.comptime_return_is_value = matches!(*b, Expr::ComptimeBlock(_));
                 // The body runs when a call runs it, so it starts with no fact of its parent.
                 let outer_pointers = self.pointer_facts_enter_body();
+                // A borrow made in the body lasts for one call of the closure. What the closure
+                // holds between calls is the borrow of its environment, made below.
+                let outer_borrows = self.borrow.snapshot();
                 let expr_ret_ty = self.check_expr_type(&mut b);
+                self.borrow.restore(outer_borrows);
                 self.pointer_facts_leave_body(outer_pointers);
                 self.consteval.comptime_return_is_value = false;
                 self.traffic.closure_depth -= 1;
@@ -1586,16 +1596,36 @@ impl<'a> TypeChecker<'a> {
                 self.current_return_type = old_ret;
 
                 let captured_vars_map = self.mono.closure_captures_stack.pop().unwrap_or_default();
+                let capture_uses = self.mono.closure_capture_uses.pop().unwrap_or_default();
                 self.mono.closure_depths.pop();
+                let changed_in_body = std::mem::replace(&mut self.changed_vars, changed_outside);
+                self.changed_vars.extend(changed_in_body.iter().cloned());
 
                 let mut captured_vars: Vec<(crate::symbol::Symbol, Type)> =
                     captured_vars_map.into_iter().collect();
                 captured_vars.sort_by(|a, b| a.0.cmp(&b.0)); // Stable layout
 
+                // How the closure takes each capture: by value, or through `&` or `&mut` (C1 in
+                // docs/discussions/closures_that_change_captured_locals.md).
+                let borrows: HashMap<crate::symbol::Symbol, bool> = captured_vars
+                    .iter()
+                    .filter_map(|(name, ty)| {
+                        if matches!(ty, Type::Tensor(..)) || self.is_moved(name.as_ref()) {
+                            None
+                        } else if changed_in_body.contains(name.as_ref()) {
+                            Some((name.clone(), true))
+                        } else if matches!(ty, Type::Struct(..)) && !self.is_copy(ty) {
+                            Some((name.clone(), false))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
                 if !self.speculating {
-                    // Consume captured variables in the outer scope if they are linear
+                    // A tensor is moved into the closure, as before.
                     for (name, ty) in &captured_vars {
-                        if matches!(ty, Type::Struct(_, _) | Type::Tensor(_, _, _))
+                        if matches!(ty, Type::Tensor(_, _, _))
                             && (self.is_copy(ty)
                                 || !self.refuse_move_behind_ref(name, name, &e.span))
                         {
@@ -1604,7 +1634,10 @@ impl<'a> TypeChecker<'a> {
                     }
                     let copied: Vec<String> = captured_vars
                         .iter()
-                        .filter(|(_, ty)| !matches!(ty, Type::Struct(_, _) | Type::Tensor(_, _, _)))
+                        .filter(|(name, ty)| {
+                            !borrows.contains_key(name)
+                                && !matches!(ty, Type::Struct(_, _) | Type::Tensor(_, _, _))
+                        })
                         .map(|(name, _)| name.to_string())
                         .collect();
                     if let Some((at, closure)) = in_let {
@@ -1612,11 +1645,59 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                // The field of a borrowed capture holds the reference.
+                let env_fields: Vec<(crate::symbol::Symbol, Type)> = captured_vars
+                    .iter()
+                    .map(|(name, ty)| match borrows.get(name) {
+                        Some(&is_mut) => (
+                            name.clone(),
+                            Type::Borrow {
+                                inner: Box::new(ty.clone()),
+                                mem_space: None,
+                                is_mut,
+                                region_id: 0,
+                            },
+                        ),
+                        None => (name.clone(), ty.clone()),
+                    })
+                    .collect();
+                // Each use of a borrowed capture in the body reads through the reference. A field
+                // access or a method call reads through a reference by itself, as on `self`.
+                let mut through_reference: std::collections::HashSet<(
+                    crate::symbol::Symbol,
+                    crate::syntax::Span,
+                )> = capture_uses
+                    .into_iter()
+                    .filter(|(name, _)| borrows.contains_key(name))
+                    .collect();
+                crate::syntax::visit_expr(&b, &mut |e| {
+                    let base = match e {
+                        Expr::MemberAccess(m) => &*m.base,
+                        Expr::MethodCall(m) => &*m.base,
+                        _ => return,
+                    };
+                    if let Expr::Identifier(id) = base {
+                        through_reference.remove(&(id.name.clone(), id.span));
+                    }
+                });
+                crate::syntax::visit_expr_mut(&mut b, &mut |use_| {
+                    if let Expr::Identifier(id) = use_ {
+                        if through_reference.contains(&(id.name.clone(), id.span)) {
+                            let ty = captured_vars.iter().find(|(n, _)| *n == id.name);
+                            *use_ = Expr::Dereference(crate::syntax::expr::DereferenceExpr {
+                                expr: Box::new(Expr::Identifier(id.clone())),
+                                ty: ty.map(|(_, t)| t.clone()),
+                                span: id.span,
+                            });
+                        }
+                    }
+                });
+
                 // Create StructDecl for the environment
                 let struct_decl = decl::StructDecl {
                     name: struct_name.clone().into(),
                     generics: vec![],
-                    fields: captured_vars.clone(),
+                    fields: env_fields.clone(),
                     doc_comment: None,
                 };
                 self.mono.generated_structs.push(struct_decl);
@@ -1636,7 +1717,7 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 let mut body_stmts = Vec::new();
-                for (cap_name, cap_ty) in &captured_vars {
+                for (cap_name, cap_ty) in &env_fields {
                     let env_access = Expr::MemberAccess(MemberAccessExpr {
                         base: Box::new(Expr::Identifier(IdentifierExpr::new(
                             "_env".to_string().into(),
@@ -1648,7 +1729,7 @@ impl<'a> TypeChecker<'a> {
                     });
                     body_stmts.push(Statement::LetDecl(LetDeclStmt {
                         name: cap_name.clone(),
-                        is_mut: true,
+                        is_mut: !borrows.contains_key(cap_name),
                         ty_ann: Some(cap_ty.clone()),
                         expr: env_access,
                         span: e.span,
@@ -1680,12 +1761,44 @@ impl<'a> TypeChecker<'a> {
 
                 self.mono.functions.push((call_func, 0));
 
+                // The environment is built where the closure is written, and the closure holds
+                // the borrow of each borrowed capture from there. The body already reported each
+                // conflict with a borrow made before the closure.
                 let mut fields = Vec::new();
                 for (cap_name, _) in &captured_vars {
-                    fields.push((
-                        cap_name.clone(),
-                        Expr::Identifier(IdentifierExpr::new(cap_name.clone(), e.span)),
-                    ));
+                    let mut value = Expr::Identifier(IdentifierExpr::new(cap_name.clone(), e.span));
+                    if let Some(&is_mut) = borrows.get(cap_name) {
+                        value = Expr::Borrow(BorrowExpr {
+                            expr: Box::new(value),
+                            is_mut,
+                            span: e.span,
+                        });
+                        if !self.speculating {
+                            self.borrow.record(
+                                cap_name.as_ref(),
+                                crate::hir::env::BorrowRecord {
+                                    carried_from: None,
+                                    is_mut,
+                                    scope_depth: self.scopes.len(),
+                                    borrower_name: holder.clone(),
+                                    path: Vec::new(),
+                                },
+                            );
+                            if is_mut {
+                                self.consteval_forget(cap_name.as_ref());
+                            }
+                        }
+                    }
+                    // In the body of a closure around this one, the value is a use of that
+                    // closure's capture.
+                    let outer = self.mono.closure_depths.last().copied();
+                    let depth = self.lookup_with_depth(cap_name.as_ref()).map(|(_, _, d)| d);
+                    if matches!((depth, outer), (Some(d), Some(o)) if d < o) {
+                        if let Some(uses) = self.mono.closure_capture_uses.last_mut() {
+                            uses.push((cap_name.clone(), e.span));
+                        }
+                    }
+                    fields.push((cap_name.clone(), value));
                 }
 
                 *expr = Expr::StructInit(StructInitExpr {

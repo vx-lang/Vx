@@ -1426,9 +1426,8 @@ impl<'a> TypeChecker<'a> {
         let Some((root, path)) = direct.or_else(|| self.reborrow_base_and_path(lhs)) else {
             return;
         };
-        let shared = self
-            .borrow
-            .live_borrows(&root)
+        let live = self.borrow.live_borrows(&root).to_vec();
+        let shared = live
             .iter()
             // A borrow with no borrower is a temporary, `f(&x)`, over by the end of its statement.
             .find(|b| {
@@ -1440,7 +1439,7 @@ impl<'a> TypeChecker<'a> {
                     })
                     && crate::hir::places::paths_may_alias(&path, &b.path)
             })
-            .map(crate::hir::check::tasks::held_by_task_note);
+            .map(|b| self.held_by_note(b));
         if let Some(note) = shared {
             let mut place = crate::hir::places::display_place(&root, &path);
             if through_deref {
