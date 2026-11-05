@@ -1,0 +1,76 @@
+// RUN: vxc %s --action emit-mlir 2>&1 | FileCheck %s --implicit-check-not=Error
+
+fn bounded_from_buffer(_data : *const i32, k : i32) -> i32
+requires k > 0
+ensures return >= 0 && return < k {
+  return k - 1;
+}
+
+fn write_buffer(p : *mut i32) -> void
+requires valid(p, 1) {
+  unsafe { p[0] = 0; }
+}
+
+fn consume_index(k : i32, index : i32) -> i32
+requires k > 0 && index >= 0 && index < k {
+  return index;
+}
+
+fn bound_survives_a_buffer_write(p : *mut i32, k : i32) -> i32
+requires valid(p, 1)
+requires k > 0 {
+  let index = bounded_from_buffer(p as *const i32, k);
+  write_buffer(p);
+  return consume_index(k, index);
+}
+
+fn main() -> i32 {
+  let mut cell = 0;
+  let p : *mut i32 = &mut cell;
+  return bound_survives_a_buffer_write(p, 4);
+}
+
+// CHECK: module attributes {vx.drops} {
+// CHECK:   func.func private @vx_init_signals()
+// CHECK:   func.func @main() -> i32 {
+// CHECK:     call @vx_init_signals() : () -> ()
+// CHECK:     %0 = llvm.mlir.constant(1 : i32) : i32
+// CHECK:     %1 = llvm.alloca %0 x i32 : (i32) -> !llvm.ptr
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     llvm.store %c0_i32, %1 : i32, !llvm.ptr
+// CHECK:     %c4_i32 = arith.constant 4 : i32
+// CHECK:     %2 = call @bound_survives_a_buffer_write(%1, %c4_i32) : (!llvm.ptr, i32) -> i32
+// CHECK:     return %2 : i32
+// CHECK:   }
+// CHECK:   func.func @bound_survives_a_buffer_write(%arg0: !llvm.ptr {llvm.align = 4 : i64, llvm.nonnull}, %arg1: i32) -> i32 {
+// CHECK:     %c1_i64 = arith.constant 1 : i64
+// CHECK:     %true = arith.constant true
+// CHECK:     %c4_i64 = arith.constant 4 : i64
+// CHECK:     %0 = arith.muli %c1_i64, %c4_i64 : i64
+// CHECK:     llvm.intr.assume %true ["dereferenceable"(%arg0, %0 : !llvm.ptr, i64)] : i1
+// CHECK:     %1 = call @bounded_from_buffer(%arg0, %arg1) : (!llvm.ptr, i32) -> i32
+// CHECK:     call @write_buffer(%arg0) : (!llvm.ptr) -> ()
+// CHECK:     %2 = call @consume_index(%arg1, %1) : (i32, i32) -> i32
+// CHECK:     return %2 : i32
+// CHECK:   }
+// CHECK:   func.func @write_buffer(%arg0: !llvm.ptr {llvm.align = 4 : i64, llvm.nonnull}) {
+// CHECK:     %c1_i64 = arith.constant 1 : i64
+// CHECK:     %true = arith.constant true
+// CHECK:     %c4_i64 = arith.constant 4 : i64
+// CHECK:     %0 = arith.muli %c1_i64, %c4_i64 : i64
+// CHECK:     llvm.intr.assume %true ["dereferenceable"(%arg0, %0 : !llvm.ptr, i64)] : i1
+// CHECK:     %c0_i32 = arith.constant 0 : i32
+// CHECK:     %1 = llvm.getelementptr %arg0[%c0_i32] : (!llvm.ptr, i32) -> !llvm.ptr, i32
+// CHECK:     %c0_i32_0 = arith.constant 0 : i32
+// CHECK:     llvm.store %c0_i32_0, %1 : i32, !llvm.ptr
+// CHECK:     return
+// CHECK:   }
+// CHECK:   func.func @consume_index(%arg0: i32, %arg1: i32) -> i32 {
+// CHECK:     return %arg1 : i32
+// CHECK:   }
+// CHECK:   func.func @bounded_from_buffer(%arg0: !llvm.ptr, %arg1: i32) -> i32 {
+// CHECK:     %c1_i32 = arith.constant 1 : i32
+// CHECK:     %0 = arith.subi %arg1, %c1_i32 : i32
+// CHECK:     return %0 : i32
+// CHECK:   }
+// CHECK: }
