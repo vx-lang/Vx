@@ -461,6 +461,13 @@ impl Walk<'_> {
                 self.expr(&e.expr, ctx)
             }
             Statement::Assign(a) => {
+                // `t = lanes::copy_async(..)` gives a token variable its next copy, as a
+                // pipeline does when it starts the next copy before it waits for this one.
+                if let (Expr::Identifier(_), Some(fc)) = (&a.lhs, lanes::bare_lanes_call(&a.rhs)) {
+                    if lanes::calls_routine(&a.rhs, lanes::LaneOp::CopyAsync) {
+                        self.lane_call(fc, ctx);
+                    }
+                }
                 self.expr(&a.lhs, ctx);
                 self.expr(&a.rhs, ctx);
             }

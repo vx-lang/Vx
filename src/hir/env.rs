@@ -853,13 +853,30 @@ impl<'a> TypeChecker<'a> {
         declared.max(pending)
     }
 
+    /// Before an expression statement: keeps the borrow table to put back after it, for
+    /// `restore_borrows_keeping_held`. Gives the depth of the statement, which the restore
+    /// checks.
+    pub(crate) fn borrows_before_statement(&mut self) -> usize {
+        let table = self.borrow.snapshot();
+        self.borrow.before_statements.push(table);
+        self.borrow.before_statements.len()
+    }
+
     /// After an expression statement: put back the borrow table from before it, which ends
     /// the borrows its calls made, but keep each new borrow that a variable still in scope
-    /// holds, such as `outer` after `if c { outer = W { r : &x }; }`.
-    pub(crate) fn restore_borrows_keeping_held(
-        &mut self,
-        saved: std::collections::HashMap<crate::symbol::Symbol, Vec<crate::hir::env::BorrowRecord>>,
-    ) {
+    /// holds, such as `outer` after `if c { outer = W { r : &x }; }`. A borrow that a wait in
+    /// the statement ended stays ended.
+    pub(crate) fn restore_borrows_keeping_held(&mut self, depth: usize) {
+        assert_eq!(
+            self.borrow.before_statements.len(),
+            depth,
+            "the statements around this point put their borrows back innermost first"
+        );
+        let saved = self
+            .borrow
+            .before_statements
+            .pop()
+            .expect("a table per statement");
         let added = self.borrow.added_since(&saved);
         self.borrow.restore(saved);
         for (base, mut record) in added {

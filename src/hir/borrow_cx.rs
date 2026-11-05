@@ -22,6 +22,9 @@ pub(crate) struct BorrowCx {
     /// `variable -> its borrow records`. **Private**: readable for a conflict check only via
     /// [`Self::live_borrows`], which sweeps dead borrows before returning.
     active_borrows: HashMap<Symbol, Vec<BorrowRecord>>,
+    /// The borrow table from before each expression statement around this point, innermost
+    /// last. The end of each statement puts its table back.
+    pub(crate) before_statements: Vec<HashMap<Symbol, Vec<BorrowRecord>>>,
     /// What each open block names and declares (NLL). The innermost block is `.last()`.
     block_liveness: Vec<BlockUses>,
     /// The statement index currently being checked, one entry per open block. Innermost is `.last()`.
@@ -108,6 +111,7 @@ impl Default for BorrowCx {
     fn default() -> Self {
         Self {
             active_borrows: HashMap::new(),
+            before_statements: Vec::new(),
             block_liveness: Vec::new(),
             current_stmt_idx: Vec::new(),
             skip_borrow_check: false,
@@ -335,6 +339,18 @@ impl BorrowCx {
         }
         found.sort();
         found
+    }
+
+    /// Ends every borrow that `holder` holds, also in the tables that the statements around
+    /// this point put back when they end: the wait of a copy token, which ends the copy.
+    pub(crate) fn forget_borrows_of(&mut self, holder: &str) {
+        let held = |r: &BorrowRecord| r.borrower_name.as_deref() == Some(holder);
+        for table in std::iter::once(&mut self.active_borrows).chain(&mut self.before_statements) {
+            for list in table.values_mut() {
+                list.retain(|r| !held(r));
+            }
+            table.retain(|_, list| !list.is_empty());
+        }
     }
 
     /// `to = from`: `to` now holds every borrow `from` holds, so each stays alive while either

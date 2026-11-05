@@ -140,13 +140,34 @@ for k in 0..steps / 2 {
 - `tile` is a tensor in shared memory with a size that is a number, such as a row of a rank-3
   tensor. Its elements have 4 or 8 bytes. `x` has the same element type and the same number of
   dimensions. The place is a list of integers, one for each dimension.
+
 - An element of the tile past the end of `x`, or before its start, is zero.
+
 - The token holds `tile` as `&mut` until its wait, so the lanes cannot read the tile before the
   copy ends. Two tokens can hold two different rows of one tensor.
+
 - A token must be waited (E6036).
-- The copy is the whole value of a `let`, and the wait a statement of its own, in the code of a
-  loop of blocks or subgroups. In the code of a subgroup, the lanes of the subgroup copy the
+
+- The copy is the whole value of a `let`, or of an assignment to a token variable, and the wait
+  a statement of its own, in the code of a loop of blocks or subgroups. A token variable gets a
+  new copy only after the wait of its old one, or the old copy has no wait (E6036). So a pipeline
+  can start the next copy before it waits for this one:
+
+  ````vx
+  let mut even = lanes::copy_async(&mut tiles[0], x, [0, 0]);
+  for k in 0..steps / 2 {
+    let odd = lanes::copy_async(&mut tiles[1], x, [0, 128 * k + 64]);
+    even.wait();
+    // The lanes read tiles[0] here, while tiles[1] fills.
+    even = lanes::copy_async(&mut tiles[0], x, [0, 128 * k + 128]);
+    odd.wait();
+    // The lanes read tiles[1] here, while tiles[0] fills.
+  }
+  even.wait();
+  ``` In the code of a subgroup, the lanes of the subgroup copy the
   tile, and the tile is usually the row of the subgroup, such as `&mut tiles[w]`.
+
+  ````
 
 On the GPU, each lane starts a `cp.async` for its elements of the tile, and the copies of one
 call are one group. A copy goes 16 bytes at a time when the last dimension of the tile is a

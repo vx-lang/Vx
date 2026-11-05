@@ -578,7 +578,7 @@ impl<'a> TypeChecker<'a> {
                 // call against.
                 let before = self.consteval_snapshot();
                 let scopes = self.consteval_scopes();
-                let saved_borrows = self.borrow.snapshot();
+                let saved_borrows = self.borrows_before_statement();
                 self.value_unused = true;
                 // `v;` reads `v`: it does not move it.
                 let consume = consume && !matches!(expr, Expr::Identifier(_));
