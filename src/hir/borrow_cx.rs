@@ -353,6 +353,20 @@ impl BorrowCx {
         }
     }
 
+    /// Ends one borrow of `base` that no variable holds: the borrow of a closure literal whose
+    /// call ended.
+    pub(crate) fn forget_unheld_borrow(&mut self, base: &str, is_mut: bool) {
+        let list = self.active_borrows.get_mut(base);
+        let at = list.as_ref().and_then(|l| {
+            l.iter().position(|r| {
+                r.borrower_name.is_none() && r.carried_from.is_none() && r.is_mut == is_mut
+            })
+        });
+        if let (Some(list), Some(at)) = (list, at) {
+            list.remove(at);
+        }
+    }
+
     /// `to = from`: `to` now holds every borrow `from` holds, so each stays alive while either
     /// is used. A reference or a closure copied to another variable keeps what it points at
     /// borrowed.

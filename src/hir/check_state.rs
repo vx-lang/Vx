@@ -708,6 +708,8 @@ pub struct MonoState {
     /// Each use, in the body of each open closure literal, of a variable that the closure
     /// captured: its name and its span. Innermost last.
     pub closure_capture_uses: Vec<Vec<(Symbol, crate::syntax::Span)>>,
+    /// The borrows of each closure literal that is not the value of a `let`, by its struct name.
+    pub closure_literal_borrows: HashMap<Symbol, Vec<(Symbol, bool)>>,
     /// How many generic instantiations are open around the call being checked.
     ///
     /// `f<N - 1>()` whose base case is never reached instantiates a new `f` every time

@@ -1,0 +1,69 @@
+//===- closure_literals_as_arguments.vx - Vx Compiler --------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: not vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// A closure literal written as an argument takes the closure type of its parameter only when
+// the types match. Its borrows last until the call ends, so a later argument of the same call
+// must not use a local that it changes. A closure in a variable still needs `as`.
+
+fn twice(f : || -> i64) -> i64 {
+  return f() + f();
+}
+
+fn plus(f : || -> i64, n : i64) -> i64 {
+  return f() + n;
+}
+
+fn same<T>(x : T) -> T {
+  return x;
+}
+
+// CHECK: Error[E3003] at {{.*}}closure_literals_as_arguments.vx:[[@LINE+2]]:10: Type mismatch in argument 1 for function 'twice'. Expected || -> i64, got || -> i32
+fn wrong_return_type() -> i64 {
+  return twice(|| -> i32 {
+    1
+  });
+}
+
+// CHECK: Error[E4002] at {{.*}}closure_literals_as_arguments.vx:[[@LINE+6]]:6: Cannot access 'k' because it is mutably borrowed.
+fn later_argument_reads_a_changed_local() -> i64 {
+  let mut k : i64 = 0;
+  return plus(|| -> i64 {
+    k += 1;
+    k
+  }, k);
+}
+
+// `same` takes the literal as a `T`, not as a closure type, and gives it back. So the borrow of
+// `m` lasts until the last use of `c`.
+// CHECK: Error[E4002] at {{.*}}closure_literals_as_arguments.vx:[[@LINE+7]]:3: Cannot access 'm' because it is mutably borrowed.
+fn closure_that_a_call_gives_back() -> i64 {
+  let mut m : i64 = 0;
+  let c = same(|| -> i64 {
+    m += 1;
+    m
+  });
+  m = 3;
+  return c();
+}
+
+// CHECK: Error[E3003] at {{.*}}closure_literals_as_arguments.vx:[[@LINE+5]]:10: Type mismatch in argument 1 for function 'twice'. Expected || -> i64, got the closure 'v'. A closure in a variable needs `as`: `v as || -> i64`
+fn closure_in_a_variable() -> i64 {
+  let v = || -> i64 {
+    5
+  };
+  return twice(v);
+}
+
+fn main() -> i32 {
+  print(wrong_return_type());
+  print(later_argument_reads_a_changed_local());
+  print(closure_that_a_call_gives_back());
+  print(closure_in_a_variable());
+  return 0;
+}

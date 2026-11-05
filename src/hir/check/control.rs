@@ -1787,6 +1787,13 @@ impl<'a> TypeChecker<'a> {
                             if is_mut {
                                 self.consteval_forget(cap_name.as_ref());
                             }
+                            if holder.is_none() {
+                                self.mono
+                                    .closure_literal_borrows
+                                    .entry(struct_name.clone().into())
+                                    .or_default()
+                                    .push((cap_name.clone(), is_mut));
+                            }
                         }
                     }
                     // In the body of a closure around this one, the value is a use of that
