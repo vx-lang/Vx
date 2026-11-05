@@ -83,6 +83,27 @@ task here borrows the same counter and adds 1 to it 10000 times (`book_tasks_sha
 It prints `count 40000`. A plain `i64` in place of the atomic does not compile: a task cannot
 write a value that another task can read at the same time.
 
+### Memory orders
+
+Each operation on an atomic takes an `AtomicOrdering`: `Relaxed`, `Release`, `Acquire`, `AcqRel`
+or `SeqCst`. They mean what they mean in Rust and C++. The counter above uses `Relaxed`, because
+only the count matters. To pass other data from one task to another, write it, and then store a
+flag with `Release`. The task that reads the flag with `Acquire` then sees the data
+(`book_release_and_acquire.vx`):
+
+```rust
+{{#include ../../../tests/backend/pass/book_release_and_acquire.vx:program}}
+```
+
+It prints `data 42`.
+
+One difference from Rust: Vx compiles each `Relaxed` read as an `Acquire` read. This rules out
+values "out of thin air", which C++ and Rust allow on AArch64 and on GPUs. On x86 it costs
+nothing. Do not rely on it for order: ask for `Acquire` where you need it.
+`-fweak-relaxed-atomics` keeps `Relaxed` reads relaxed. Use it with `--sanitize=thread` to check
+that a program does not depend on the stronger read. The full rules are in
+[the semantics of Vx](https://github.com/vx-lang/Vx/blob/main/docs/lang/semantics.md#25-atomic-orders).
+
 ## Channels
 
 A channel moves values from tasks that send to one task that receives. `channel<T>(n)` makes a

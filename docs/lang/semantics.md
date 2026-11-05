@@ -95,6 +95,40 @@ A data race is two accesses to one place from two tasks at the same time. At lea
 
 Tasks that must write one place share an atomic, such as `AtomicI32` in `core::sync::atomic`. The rules are S5, S6 and U1 to U4 in [`cpu_tasks_send_sync_and_shared_atomics.md`](../discussions/cpu_tasks_send_sync_and_shared_atomics.md).
 
+### 2.5 Atomic orders
+
+Each operation on an atomic takes an `AtomicOrdering`. The orders are those of C++ and Rust, with one exception for `Relaxed` reads.
+
+| Order | Meaning |
+|---|---|
+| `Relaxed` | Only the operation itself is atomic. It orders no other access. The compiler makes a `Relaxed` read an `Acquire` read (see below). |
+| `Release` | For a store, or the write of a read-modify-write. The accesses before it in its task happen before the accesses after an `Acquire` read that reads its value. |
+| `Acquire` | For a load, or the read of a read-modify-write. It is the other half of `Release`. |
+| `AcqRel` | `Acquire` for the read and `Release` for the write of a read-modify-write. |
+| `SeqCst` | `AcqRel`, and all tasks see the `SeqCst` operations in one order. |
+
+**A `Relaxed` read is an `Acquire` read.** C++ and Rust allow load buffering. In it, a relaxed read takes its value from a write that comes later in its own thread, through a cycle with another thread. In such a cycle a value can come "out of thin air", and no known proof method rules it out. The Vx memory model forbids the cycle, as RC11 does. AArch64 and PTX allow it. So the compiler makes these reads `Acquire` reads, in host code and in device code:
+
+- a `Relaxed` load,
+- the read of a `Relaxed` read-modify-write (a `Release` one becomes `AcqRel`),
+- both the success and the failure read of a `Relaxed` compare-exchange.
+
+A `Relaxed` store stays relaxed. On x86 the change costs nothing, because each load there is already an acquire load. On AArch64 and on GPUs, a `Relaxed` read costs as much as an `Acquire` read.
+
+**`-fweak-relaxed-atomics`** keeps `Relaxed` reads relaxed, for the whole program. A program compiled with it may show load buffering (`formal/memory_model/tests/load_buffering_relaxed.litmus`). The default is `-fno-weak-relaxed-atomics`. When a command has both, the last one wins.
+
+**Do not rely on a `Relaxed` read for order.** The compiler adds the `Acquire` only to rule out values out of thin air. A program that needs an access to happen before another must ask for `Acquire` and `Release`. Such a program is correct with and without the flag. The proofs in `formal/memory_model` also treat `rlx` as relaxed, so they hold in both cases.
+
+**ThreadSanitizer cannot find a missing `Acquire` on a `Relaxed` read** in a default compile, because the read is an `Acquire` read in the program. To check that code does not depend on it, compile with both options: `vxc -fweak-relaxed-atomics --sanitize=thread`.
+
+Other rules:
+
+- An order that Rust panics on fails an `assert`. These are `Release` or `AcqRel` for a load, and `Acquire` or `AcqRel` for a store. They are also `Release` or `AcqRel` as the failure order of a compare-exchange, and `Relaxed` for a fence.
+- `compare_exchange` may run with a stronger order than the one asked for. `compare_exchange_weak` is `compare_exchange`, and it never fails spuriously.
+- On a GPU, an atomic has a scope. Two atomics race unless the scope of each one includes the thread of the other, as in the PTX model.
+
+The model is `formal/memory_model/vx.cat`. [`formal/memory_model/README.md`](../../formal/memory_model/README.md) has its litmus tests and Lean proofs.
+
 ______________________________________________________________________
 
 ## 3. Typestates and Hardware Fallibility
