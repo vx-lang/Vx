@@ -264,6 +264,9 @@ pub const CANCEL_ON: &str = "vx::cancel_on";
 pub const WITHIN_START: &str = "vx::within_start";
 /// The drop that ends a `within` block, on each path out of it.
 pub const WITHIN_END: &str = "vx::within_end";
+/// `assume e;`: the checker adds the fact `e` without a proof. Only an `unsafe` block can hold
+/// it, and it generates no code.
+pub const ASSUME: &str = "vx::assume";
 
 /// `Statement::Drop`: the tensor named here is freed at this point.
 #[derive(Debug, PartialEq, Clone)]

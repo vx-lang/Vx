@@ -783,6 +783,7 @@ impl<'a> TypeChecker<'a> {
         let pointer = self.pointer_value_for(name.as_ref(), expr);
         self.neutralize_facts_mentioning(name.as_ref());
         self.note_pointer_value(name.as_ref(), pointer);
+        self.pointer_facts_name_the_result(name.as_ref(), expr);
         if !*_is_mut {
             let id_expr = Expr::Identifier(IdentifierExpr {
                 name: name.clone(),
@@ -1717,7 +1718,14 @@ impl<'a> TypeChecker<'a> {
             _ => None,
         };
         if let Some(root) = assigned_root(lhs) {
-            self.note_a_change_to_variable(root.to_string());
+            // A write through a raw pointer changes the memory, but the pointer keeps its value.
+            let through_a_pointer = !matches!(lhs, Expr::Identifier(_))
+                && matches!(self.lookup(root.as_ref()), Some((Type::Pointer(..), _)));
+            if through_a_pointer {
+                self.note_a_change_behind(root.to_string());
+            } else {
+                self.note_a_change_to_variable(root.to_string());
+            }
         }
         if let Expr::Identifier(id) = lhs {
             self.note_pointer_value(id.name.as_ref(), pointer);
@@ -2002,6 +2010,7 @@ impl<'a> TypeChecker<'a> {
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
                 );
             }
+            self.prove_pointer_ensures(None, *span, "at this `return`");
             self.drops_exit("return", span, crate::hir::check::drops::ExitTo::Function);
             return false;
         };
@@ -2013,6 +2022,7 @@ impl<'a> TypeChecker<'a> {
         self.consteval.comptime_return_is_value = false;
         let ty = crate::hir::check::operators::round_narrow_arithmetic(expr, ty, Some(return_type));
         self.expected_type = prev_expected;
+        self.prove_pointer_ensures(Some(expr), *span, "at this `return`");
         self.drops_exit("return", span, crate::hir::check::drops::ExitTo::Function);
 
         let mut expected_ty = return_type.clone();

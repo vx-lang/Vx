@@ -732,6 +732,8 @@ pub struct TypeChecker<'a> {
     pub(crate) pointer_loops: Vec<crate::hir::check::pointer_facts::LoopExit>,
     /// The branches of `if` and the arms of `match` that the checker is in, for the note of E8006.
     pub(crate) pointer_branches: Vec<String>,
+    /// The function whose body the checker checks, as the raw-pointer facts need it.
+    pub(crate) pointer_function: crate::hir::check::pointer_facts::PointerFunction,
     /// The `tasks` blocks and tasks around the code being checked.
     pub(crate) tasks: crate::hir::check::tasks::TaskCx,
     /// Expected type of the expression currently being checked, from a `let x: T = …` or a
@@ -819,6 +821,7 @@ impl<'a> TypeChecker<'a> {
             method_call_written: None,
             pointer_loops: Vec::new(),
             pointer_branches: Vec::new(),
+            pointer_function: Default::default(),
             tasks: Default::default(),
             expected_type: None,
             consteval: Default::default(),
@@ -2197,6 +2200,7 @@ impl<'a> TypeChecker<'a> {
         // Each `return` checked the `ensures` where it stood. A body that can also reach its end
         // without one is checked here, from what is known at the end.
         if !exits && !self.speculating {
+            self.prove_pointer_ensures(None, func.span, "at the end of the body");
             for ens in func
                 .ensures
                 .iter()

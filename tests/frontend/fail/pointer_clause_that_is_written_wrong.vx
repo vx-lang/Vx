@@ -7,10 +7,11 @@
 //===----------------------------------------------------------------------===//
 // RUN: not vxc %s 2>&1 | FileCheck %s
 //
-// A pointer clause is a `requires` of its own: `valid(p, n)`, `initialized(p, n)` or
-// `!overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters. A safe function with one
-// cannot be a function value, and a safe method of a trait impl cannot have one, because a call
-// through the value or the trait would not prove the clause.
+// A pointer clause is a `requires` or an `ensures` of its own: `valid(p, n)`, `initialized(p, n)`
+// or `!overlaps(p, q, n)`, where `p` and `q` are raw pointer parameters. In an `ensures`, `return`
+// can be one too, when the function returns a raw pointer. A safe function with a pointer
+// `requires` cannot be a function value, and a safe method of a trait impl cannot have one,
+// because a call through the value or the trait would not prove the clause.
 
 // The checks of the whole program come before the checks of the bodies.
 trait Fills {
@@ -30,9 +31,22 @@ impl Fills for Filler {
   }
 }
 
-// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:9: a pointer clause in `ensures` is not supported yet: write it as a `requires`
-unsafe fn in_ensures(p : *mut i64) -> *mut i64
+extern "C" {
+  // CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:11: `valid` needs a raw pointer, but `return` is `i32`
+  safe fn c_count(p : *const i64) -> i32
+  ensures valid(return, 1);
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:9: `valid` needs a raw pointer, but `return` is `i64`
+unsafe fn in_ensures(p : *mut i64) -> i64
 ensures valid(return, 1)
+{
+  return 0i64;
+}
+
+// CHECK: Error[E8011] at {{.*}}.vx:[[@LINE+2]]:10: `!valid` says nothing that a caller can use
+unsafe fn not_valid_in_ensures(p : *mut i64) -> *mut i64
+ensures !valid(return, 1)
 {
   return p;
 }
@@ -101,4 +115,4 @@ fn main() -> i32 {
   return 0;
 }
 
-// CHECK: 10 error(s) emitted
+// CHECK: 12 error(s) emitted

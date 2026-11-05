@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 // A `frees` clause is an `ensures` of its own: `ensures frees(p)` or `ensures !frees(p)`, for
 // one parameter `p`. Each clause here breaks that rule and gets E8011. An `extern` function
-// can have only `frees` clauses, because the compiler trusts them. An impl of a trait method
+// can have only `frees` clauses and pointer clauses, because the compiler trusts them. An impl of a trait method
 // cannot add a `!frees` that the trait method does not have, because a call through the trait
 // reads only the clauses of the trait. The compiler checks the impls and the `extern`
 // functions before the functions, so they come first here.
@@ -32,7 +32,7 @@ impl Looks for Adds {
 }
 
 // CHECK: E8011] at {{.*}}frees_clause_that_is_written_wrong.vx:[[@LINE+4]]:12: `t` is not a parameter of `puts`
-// CHECK: E8011] at {{.*}}frees_clause_that_is_written_wrong.vx:[[@LINE+5]]:13: an `extern` function can have only a `frees` clause in its `ensures`, as in `ensures !frees(p)`
+// CHECK: E8011] at {{.*}}frees_clause_that_is_written_wrong.vx:[[@LINE+5]]:13: an `extern` function can have only a `frees` clause or a pointer clause in its `ensures`, as in `ensures !frees(p)`
 extern "C" {
   safe fn puts(s : *const i8) -> i32
   ensures !frees(t);

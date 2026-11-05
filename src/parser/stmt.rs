@@ -342,6 +342,29 @@ impl<'a> Parser<'a> {
                     let block = self.parse_within_block(token_span)?;
                     return self.parse_expr_or_assign_stmt(block, token_span);
                 }
+                // `assume e;`. `assume` is a word of its own only before a name or a `!` with a
+                // space, so a function named `assume` can still be called.
+                let spaced_bang = next_token.kind == TokenType::Bang
+                    && !(next_token.line == ident_line && next_token.column == ident_end_col);
+                if *s == "assume"
+                    && (matches!(next_token.kind, TokenType::Identifier(_)) || spaced_bang)
+                {
+                    self.advance();
+                    let fact = self.parse_expr()?;
+                    self.consume(
+                        &TokenType::Semicolon,
+                        "Expected ';' after the fact of `assume`",
+                    )?;
+                    let call = Expr::FunctionCall(FunctionCallExpr::new(
+                        crate::syntax::stmt::ASSUME.into(),
+                        None,
+                        vec![fact],
+                        token_span,
+                    ));
+                    return Ok(Statement::ExprStmt(ExprStmtStmt::new(
+                        call, true, token_span,
+                    )));
+                }
 
                 let mut is_macro = false;
                 if next_token.kind == TokenType::Bang {

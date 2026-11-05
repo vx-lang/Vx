@@ -622,6 +622,10 @@ impl FreesWalk<'_> {
     /// A call. Each argument that comes from a parameter can free memory, unless the callee says
     /// `!frees` for its parameter. The result can be a value that the callee got.
     fn call(&mut self, fc: &FunctionCallExpr) -> Value {
+        // The fact of an `assume` only names values. It runs no code.
+        if fc.name.as_ref() == crate::syntax::stmt::ASSUME {
+            return (0, None);
+        }
         let args: Vec<Value> = fc.args.iter().map(|a| self.value(a)).collect();
         let given = args.iter().fold(0, |bits, (b, _)| bits | b);
         let name = fc.name.as_ref();
