@@ -1,0 +1,102 @@
+//===- pointer_facts_from_a_vec.vx - Vx Compiler -----------------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// `Vec::as_mut_ptr` ensures that its result points at `len` elements with values, and `Vec::len`
+// ensures that it returns `len`. So safe code can give the pointer to a function that requires
+// `valid` and `initialized`. The methods that only read the vector have `!frees(self)`, so a call
+// of one keeps the facts, also in a loop. An empty vector gives an aligned pointer that is not
+// null. It allocates no memory and frees none, and neither does a vector of a type with no fields.
+//
+// RUN: vxc %s 2>&1 | FileCheck %s --implicit-check-not=Error
+// CHECK: total=6 mut=6 local=5 read=6 loop=24
+// CHECK-NEXT: empty=0 null=false grown=7 nothing=3
+// CHECK-NEXT: untouched=0
+
+import core::ptr;
+import std::vec;
+
+fn sum(p : *const i64, n : i64) -> i64
+requires valid(p, n)
+requires initialized(p, n)
+{
+  let mut total = 0i64;
+  for i in 0i64..n {
+    total = total + unsafe { p[i] };
+  }
+  return total;
+}
+
+fn total(v : &Vec<i64>) -> i64 {
+  let p = v.as_mut_ptr();
+  return sum(p as *const i64, v.len() as i64);
+}
+
+// `as_mut_ptr` takes `&Vec`, so it cannot change the vector behind a `&mut Vec`.
+fn total_through_a_mut_reference(v : &mut Vec<i64>) -> i64 {
+  let p = v.as_mut_ptr();
+  return sum(p as *const i64, v.len() as i64);
+}
+
+fn total_of_a_local() -> i64 {
+  let mut v = Vec<i64>::new();
+  v.push(2i64);
+  v.push(3i64);
+  let p = v.as_mut_ptr();
+  return sum(p as *const i64, v.len() as i64);
+}
+
+// Each call between `as_mut_ptr` and `sum` has `!frees(self)`.
+fn total_after_reads(v : &Vec<i64>) -> i64 {
+  let p = v.as_mut_ptr();
+  let first = v.get(0);
+  let second = v.get_ref(1);
+  let empty = v.is_empty();
+  let start = v.as_slice();
+  if empty || first != *second - 1i64 || *start != first {
+    return -1i64;
+  }
+  return sum(p as *const i64, v.len() as i64);
+}
+
+// The calls of `len` and `get` in the loop have `!frees(self)`, so each pass keeps the facts.
+fn total_in_a_loop(v : &Vec<i64>) -> i64 {
+  let p = v.as_mut_ptr();
+  let n = v.len() as i64;
+  let mut t = 0i64;
+  for i in 0..v.len() {
+    t = t + v.get(i) + sum(p as *const i64, n);
+  }
+  return t;
+}
+
+struct Nothing {}
+
+fn main() -> i32 {
+  let mut v = Vec<i64>::new();
+  v.push(1i64);
+  v.push(2i64);
+  v.push(3i64);
+  let all = total(&v);
+  let through = total_through_a_mut_reference(&mut v);
+  let read = total_after_reads(&v);
+  let looped = total_in_a_loop(&v);
+  let local = total_of_a_local();
+  let untouched = Vec<i64>::with_capacity(0);
+  let mut e = Vec<i64>::with_capacity(0);
+  let empty = total(&e);
+  let null = is_null_mut(e.as_mut_ptr());
+  e.push(7i64);
+  let grown = total(&e);
+  let mut w = Vec<Nothing>::new();
+  w.push(Nothing {});
+  w.push(Nothing {});
+  w.push(Nothing {});
+  println!("total={} mut={} local={} read={} loop={}", all, through, local, read, looped);
+  println!("empty={} null={} grown={} nothing={}", empty, null, grown, w.len());
+  println!("untouched={}", untouched.len());
+  return 0;
+}

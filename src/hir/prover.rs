@@ -109,6 +109,11 @@ impl SmtProver {
         self.assertions.push(smt);
     }
 
+    /// Whether `smt`, a term that the caller built from `lower_term`, is one of the facts.
+    pub fn has_fact(&self, smt: &str) -> bool {
+        self.assertions.iter().any(|a| a == smt)
+    }
+
     /// `expected` is the integer type that the context gives `expr`: in a contract, which the
     /// checker does not type, `return == p.x + p.y` adds at the width of `return`.
     fn lower_expr(

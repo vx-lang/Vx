@@ -151,6 +151,28 @@ requires valid(r, n)
   return need_valid(q, n);
 }
 
+// A write through `p` changes the memory behind it, and `p` keeps its value.
+fn after_a_loop_that_writes_through_the_pointer(p : *mut i64, n : i64) -> i64
+requires valid(p, n)
+{
+  for i in 0i64..n {
+    unsafe { p[i] = 0i64; }
+  }
+  return need_valid(p as *const i64, n);
+}
+
+// The call can write through `q`, and `q` keeps its value. That `n` is `k` stays known too.
+fn in_a_loop_that_gives_a_copy_of_the_pointer_to_a_call(p : *mut i64, k : i32) -> i64
+requires valid(p, k)
+{
+  let q = p;
+  let n = k as i64;
+  for i in 0i64..2i64 {
+    need_valid(q as *const i64, n);
+  }
+  return n;
+}
+
 fn main() -> i32 {
   return 0;
 }
