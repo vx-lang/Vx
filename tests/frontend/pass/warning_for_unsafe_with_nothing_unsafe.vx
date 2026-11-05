@@ -9,14 +9,15 @@
 //
 // An `unsafe` block with nothing inside that needs `unsafe` gets W1010, and so does one inside
 // another `unsafe` block. Reading through a raw pointer, calling an `unsafe fn` or a C function,
-// and turning an integer into a pointer all need `unsafe`, so those blocks get no warning.
+// and turning an integer into a pointer all need `unsafe`, so those blocks get no warning. So does
+// a call whose pointer `requires` the compiler cannot prove, which the block lets it trust.
 // Neither does a block that declares a variable (Vx has no plain `{ .. }` block). `vec![..]`
 // becomes an `unsafe` block the compiler writes, which never warns or counts as an outer block.
 
 // CHECK-NOT: Warning[W1010]
-// CHECK: Warning[W1010] at {{.*}}warning_for_unsafe_with_nothing_unsafe.vx:51:11: this `unsafe` block holds nothing that needs `unsafe`
+// CHECK: Warning[W1010] at {{.*}}warning_for_unsafe_with_nothing_unsafe.vx:52:11: this `unsafe` block holds nothing that needs `unsafe`
 // CHECK-NOT: Warning[W1010]
-// CHECK: Warning[W1010] at {{.*}}warning_for_unsafe_with_nothing_unsafe.vx:59:12: this `unsafe` block is inside another one
+// CHECK: Warning[W1010] at {{.*}}warning_for_unsafe_with_nothing_unsafe.vx:60:12: this `unsafe` block is inside another one
 // CHECK-NOT: Warning[W1010]
 
 import std::vec;
@@ -60,5 +61,12 @@ fn main() -> i32 {
   unsafe { let x = 5; print(x); }
   let pair = vec![b, unsafe { *p }];
   print(pair.len());
-  return a + b + c + d + first.v + second.v;
+  let e = unsafe { first_of(p as *const i32, 2i64) };
+  return a + b + c + d + e + first.v + second.v;
+}
+
+fn first_of(q : *const i32, n : i64) -> i32
+requires valid(q, n)
+{
+  return unsafe { q[0] };
 }
