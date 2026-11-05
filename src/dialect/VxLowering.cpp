@@ -7462,6 +7462,46 @@ static void declareLocalDevices(ModuleOp module) {
   }
 }
 
+// A C caller reads the tensors of a `pub fn` as soon as it returns, with no
+// call into the runtime. So in a library with Apple GPU kernels, each `pub fn`
+// waits for the GPU before each return, through `VX_CTRL_WAIT`. A program with
+// `main` has no C caller, and the runtime waits at exit.
+static void waitBeforeReturningToC(ModuleOp module,
+                                   ArrayRef<int32_t> topologies) {
+  if (topologies.empty() || module.lookupSymbol<func::FuncOp>("main"))
+    return;
+  MLIRContext *ctx = module.getContext();
+  for (auto f : module.getOps<func::FuncOp>()) {
+    if (!f->hasAttr("vx.pub") || f.isExternal())
+      continue;
+    OpBuilder b = OpBuilder::atBlockBegin(&f.front());
+    auto i32Type = b.getI32Type();
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+    getOrDeclareRuntimeFn(b, module, UnknownLoc::get(ctx), "vx_plugin_control",
+                          i32Type, {i32Type, ptrType});
+    Value one = b.create<LLVM::ConstantOp>(f.getLoc(), b.getI64Type(),
+                                           b.getI64IntegerAttr(1));
+    Value slot = b.create<LLVM::AllocaOp>(f.getLoc(), ptrType, i32Type, one);
+    SmallVector<func::ReturnOp> returns;
+    f.walk([&](func::ReturnOp r) { returns.push_back(r); });
+    for (func::ReturnOp r : returns) {
+      b.setInsertionPoint(r);
+      Value opcode = b.create<LLVM::ConstantOp>(r.getLoc(), i32Type,
+                                                b.getI32IntegerAttr(kCtrlWait));
+      for (int32_t topology : topologies) {
+        b.create<LLVM::StoreOp>(
+            r.getLoc(),
+            b.create<LLVM::ConstantOp>(r.getLoc(), i32Type,
+                                       b.getI32IntegerAttr(topology)),
+            slot);
+        b.create<LLVM::CallOp>(r.getLoc(), TypeRange{i32Type},
+                               SymbolRefAttr::get(ctx, "vx_plugin_control"),
+                               ValueRange{opcode, slot});
+      }
+    }
+  }
+}
+
 /// For `--emit-ptx` and `--emit-msl`: gives each kernel in `gpuModule` the
 /// name of the function that holds its region, and describes its parameters
 /// for a program that launches the kernel. Section 3.5 of `docs/lang/abi.md`
@@ -7731,6 +7771,7 @@ struct ConvertVxToLLVMPass
 
     llvm::StringMap<DeviceImage> deviceImages;
     llvm::StringMap<int64_t> dynamicShared;
+    llvm::SmallSetVector<int32_t, 2> appleGpuTopologies;
     for (gpu::GPUModuleOp m : deviceModules) {
       // One image per module, and every kernel in it is an entry point: a
       // loader takes the module and then asks for a function by name. So the
@@ -7741,6 +7782,7 @@ struct ConvertVxToLLVMPass
       // `vx.kernel` name, and after that rename the two no longer match.
       std::optional<DevicePipeline> pipeline;
       vx::KernelOp disagrees; // the first kernel that asks for another pipeline
+      llvm::SmallSetVector<int32_t, 2> topologies;
       WalkResult walk = m.walk([&](gpu::GPUFuncOp f) -> WalkResult {
         auto it = kernelsByName.find(f.getName());
         // A `gpu.func` here is the copy of a `vx.kernel` of the same name: the
@@ -7758,6 +7800,7 @@ struct ConvertVxToLLVMPass
         // whose kernel answers `None` means the two answers have disagreed.
         assert(p != DevicePipeline::None &&
                "a kernel with no device pipeline got a device copy");
+        topologies.insert(static_cast<int32_t>(it->second.getTopology()));
         if (!pipeline)
           pipeline = p;
         else if (*pipeline != p && !disagrees)
@@ -7896,6 +7939,8 @@ struct ConvertVxToLLVMPass
         if (auto bytes = f->getAttrOfType<IntegerAttr>("vx.dynamic_shared"))
           dynamicShared[f.getName()] = bytes.getInt();
       });
+      if (*pipeline == DevicePipeline::Metal)
+        appleGpuTopologies.insert(topologies.begin(), topologies.end());
       if (exportingText) {
         std::string target = *pipeline == DevicePipeline::Metal
                                  ? std::string("applegpu")
@@ -8167,6 +8212,7 @@ struct ConvertVxToLLVMPass
       return;
     }
     declareLocalDevices(getOperation());
+    waitBeforeReturningToC(getOperation(), appleGpuTopologies.getArrayRef());
     checkPackedTensorArguments(getOperation());
   }
 };
