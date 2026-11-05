@@ -1350,35 +1350,20 @@ impl<'a> TypeChecker<'a> {
     pub(crate) fn forget_value_facts_about(&mut self, name: &str) {
         for c in self.consteval.constraints.iter_mut() {
             if expr_mentions(c, name) {
-                *c = Expr::RelationalOp(RelationalOpExpr {
-                    lhs: Box::new(Expr::Number(NumberExpr {
-                        value: "0".to_string().into(),
-                        ty: None,
-                        span: Span::default(),
-                    })),
-                    op: RelationalOp::Eq,
-                    rhs: Box::new(Expr::Number(NumberExpr {
-                        value: "0".to_string().into(),
-                        ty: None,
-                        span: Span::default(),
-                    })),
-                    span: Span::default(),
-                    operand_ty: None,
-                });
+                *c = no_fact();
             }
         }
     }
 
-    /// The fact that `place = value` gives, such as `x == e` for `x = e`, for an integer variable.
-    /// Call it before the assignment ends the old facts. The old value gets a new name, `$old_N`,
-    /// in the facts and in the value. So the facts about it stay true, such as `y == x` after
-    /// `let y = x; x = 0;`, and in `x = x + 1` the `x` on the right is the old value.
-    pub(crate) fn fact_of_an_assignment(
+    /// Before an assignment to the integer variable `place`: gives the old value a new name,
+    /// `$old_N`, in each fact, so the facts about it stay true, such as `y == x` after
+    /// `let y = x; x = 0;`. A fact that still names `x` after the rename ends. Returns the
+    /// renaming, or `None` when the assignment must end the facts as any other change does.
+    pub(crate) fn name_the_old_value(
         &mut self,
         place: &Expr,
-        value: &Expr,
         ty: &Type,
-    ) -> Option<Expr> {
+    ) -> Option<std::collections::HashMap<crate::symbol::Symbol, Expr>> {
         let Expr::Identifier(id) = place else {
             return None;
         };
@@ -1393,17 +1378,35 @@ impl<'a> TypeChecker<'a> {
             span: Span::default(),
         });
         self.old_values += 1;
+        let x = id.name.as_ref();
         let names = std::collections::HashMap::from([(id.name.clone(), old)]);
+        // Only a fact that names `x` changes, so a long run of assignments does not copy every
+        // fact at each one.
         for c in self.consteval.constraints.iter_mut() {
-            *c = crate::hir::prover::substitute_names(c, &names);
+            if expr_mentions(c, x) {
+                *c = crate::hir::prover::substitute_names(c, &names);
+                if expr_mentions(c, x) {
+                    *c = no_fact();
+                }
+            }
         }
+        Some(names)
+    }
+
+    /// The fact `place == value` after `name_the_old_value` gave the old value its new name in
+    /// `names`. In `x = x + 1`, the `x` on the right is the old value.
+    pub(crate) fn fact_of_an_assignment(
+        place: &Expr,
+        value: &Expr,
+        names: &std::collections::HashMap<crate::symbol::Symbol, Expr>,
+    ) -> Option<Expr> {
         if !crate::hir::prover::is_modelled(value) {
             return None;
         }
         Some(Expr::RelationalOp(RelationalOpExpr {
             lhs: Box::new(place.clone()),
             op: RelationalOp::Eq,
-            rhs: Box::new(crate::hir::prover::substitute_names(value, &names)),
+            rhs: Box::new(crate::hir::prover::substitute_names(value, names)),
             span: Span::default(),
             operand_ty: None,
         }))
@@ -1619,6 +1622,24 @@ impl<'a> TypeChecker<'a> {
 /// Does the expression mention identifier `name` anywhere? Conservative: an expression
 /// shape the walk does not enumerate counts as mentioning it, so an unknown container
 /// neutralizes rather than preserves.
+/// `0 == 0`, which takes the place of a fact that ends, so the index of each later fact stays.
+fn no_fact() -> Expr {
+    let zero = || {
+        Box::new(Expr::Number(NumberExpr {
+            value: "0".to_string().into(),
+            ty: None,
+            span: Span::default(),
+        }))
+    };
+    Expr::RelationalOp(RelationalOpExpr {
+        lhs: zero(),
+        op: RelationalOp::Eq,
+        rhs: zero(),
+        span: Span::default(),
+        operand_ty: None,
+    })
+}
+
 pub(crate) fn expr_mentions(e: &Expr, name: &str) -> bool {
     match e {
         Expr::Identifier(id) => id.name.as_ref() == name,

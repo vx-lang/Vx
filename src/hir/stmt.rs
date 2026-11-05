@@ -777,11 +777,11 @@ impl<'a> TypeChecker<'a> {
 
         // Shadowing: this binding hides any earlier one with the same name, so earlier
         // facts about the name are now about a dead binding and must not participate in
-        // proofs (a stale `i == 1` beside a new `i == 9` proves anything). Neutralized
-        // for mutable bindings too.
+        // proofs (a stale `i == 1` beside a new `i == 9` proves anything). `insert` ended
+        // the prover facts, and the pointer facts end here, after the value read them.
         self.set_mutable(name.as_ref(), *_is_mut);
         let pointer = self.pointer_value_for(name.as_ref(), expr);
-        self.neutralize_facts_mentioning(name.as_ref());
+        self.pointer_facts.forget(name.as_ref());
         self.note_pointer_value(name.as_ref(), pointer);
         self.pointer_facts_name_the_result(name.as_ref(), expr);
         // `raw::extent(t)` folds to its literal element count first: the prover cannot
@@ -1118,11 +1118,10 @@ impl<'a> TypeChecker<'a> {
         // variable: the checker does not version mutated symbols, so a stale fact would
         // prove false things. The facts sit above `prev_constraints_len`, so the
         // truncation below drops them at loop exit with the invariants.
-        // The induction variable shadows any outer binding of the same name; earlier
-        // facts about that name are about the dead binding now (see
-        // neutralize_facts_mentioning -- a stale outer `i < 2` under an inner
-        // `for i in 0..8` forged an out-of-bounds proof in review).
-        self.neutralize_facts_mentioning(iter);
+        // The induction variable shadows any outer binding of the same name, so `insert`
+        // ended the prover facts about it (a stale outer `i < 2` under an inner
+        // `for i in 0..8` forged an out-of-bounds proof in review), and its pointer facts end here.
+        self.pointer_facts.forget(iter);
         if let Expr::Range(r) = &**iterable {
             if !crate::hir::check::raw::body_reassigns(body, iter) {
                 let iter_expr = Expr::Identifier(syntax::expr::IdentifierExpr {
@@ -1727,7 +1726,10 @@ impl<'a> TypeChecker<'a> {
             }),
             None => rhs.clone(),
         };
-        let new_fact = self.fact_of_an_assignment(lhs, &assigned, &lhs_ty);
+        let renamed = self.name_the_old_value(lhs, &lhs_ty);
+        let new_fact = renamed
+            .as_ref()
+            .and_then(|names| Self::fact_of_an_assignment(lhs, &assigned, names));
 
         // A fact the prover holds about the assigned variable stops being true here. A write to
         // a field, an element or through a pointer drops every fact about the variable.
@@ -1750,6 +1752,9 @@ impl<'a> TypeChecker<'a> {
                 && matches!(self.lookup(root.as_ref()), Some((Type::Pointer(..), _)));
             if through_a_pointer {
                 self.note_a_change_behind(root.to_string());
+            } else if renamed.is_some() {
+                // The rename ended each prover fact about the old value.
+                self.pointer_facts.forget(root.as_ref());
             } else {
                 self.note_a_change_to_variable(root.to_string());
             }
