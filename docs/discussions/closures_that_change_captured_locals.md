@@ -138,10 +138,11 @@ fn within<T>(limit : Duration, body : || -> T) -> T {
 1. **`Duration` and `Instant`** in the library and the runtime (section 3).
 1. **`within` as a function**, and the removal of the keyword (section 4).
 
-## Open questions
+## Decisions
 
-1. **Should a struct that the body only reads be borrowed?** C1 says yes, as K1 does for tasks. It
-   changes when the program drops such a struct: at the end of its own scope, not with the closure.
-   The other choice keeps the move, and borrows only what the body writes.
-1. **Should `now() -> f32` stay for a release, beside `Instant::now()`?** This note removes it,
-   because an `f32` loses milliseconds after a few hours.
+We chose these on 2026-11-05.
+
+1. **A closure borrows a struct that its body only reads** (C1), as K1 does for tasks. The program
+   drops it at the end of its own scope, not with the closure.
+1. **`now() -> f32` goes**, with no release beside `Instant::now()`. An `f32` loses milliseconds
+   after a few hours.
