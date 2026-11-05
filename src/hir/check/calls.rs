@@ -259,7 +259,44 @@ impl<'a> TypeChecker<'a> {
                 return Type::Scalar(elem);
             }
         }
-        arg_ty.clone()
+        self.closure_literal_as(arg, param_ty)
+            .unwrap_or_else(|| arg_ty.clone())
+    }
+
+    /// A closure literal passed for a parameter of closure type takes its closure type, as if
+    /// the call wrote `as`. A closure in a variable still needs the `as`. Gives the literal's
+    /// closure type, which may not fit the parameter, or `None` when `arg` is not a literal.
+    pub(crate) fn closure_literal_as(&mut self, arg: &mut Expr, param_ty: &Type) -> Option<Type> {
+        let Type::Closure(..) = param_ty else {
+            return None;
+        };
+        let Expr::StructInit(init) = &*arg else {
+            return None;
+        };
+        let (name, span) = (init.name.clone(), init.span);
+        let (params, ret) = self.mono.closure_signatures.get(&name)?.clone();
+        let closure_ty = Type::Closure(params, Box::new(ret));
+        let literal = std::mem::replace(
+            arg,
+            Expr::Number(NumberExpr::new("0".to_string(), None, span)),
+        );
+        *arg = Expr::AsCast(AsCastExpr {
+            expr: Box::new(literal),
+            target_ty: closure_ty.clone(),
+            source_ty: Some(Type::Struct(name.clone(), None)),
+            span,
+        });
+        // Every argument of the call is checked by now, and the callee cannot keep a closure.
+        // So the literal's borrows end with the call.
+        for (base, is_mut) in self
+            .mono
+            .closure_literal_borrows
+            .remove(&name)
+            .unwrap_or_default()
+        {
+            self.borrow.forget_unheld_borrow(&base, is_mut);
+        }
+        Some(closure_ty)
     }
 
     /// Compute, *before* the argument loop, everything the post-call reborrow revert needs (#243):
@@ -1557,6 +1594,18 @@ impl<'a> TypeChecker<'a> {
                         continue;
                     }
                 }
+                let got = match (&args[i], &arg_ty, param_ty) {
+                    (Expr::Identifier(id), Type::Struct(n, _), Type::Closure(..))
+                        if n.starts_with("Closure_") =>
+                    {
+                        format!(
+                            "the closure '{0}'. A closure in a variable needs `as`: \
+                             `{0} as {param_ty}`",
+                            id.name
+                        )
+                    }
+                    _ => arg_ty.to_string(),
+                };
                 self.errors.error_with_code(
                     crate::diagnostic::DiagnosticCode::E3003,
                     format!(
@@ -1564,7 +1613,7 @@ impl<'a> TypeChecker<'a> {
                         i + 1,
                         callee,
                         param_ty,
-                        arg_ty,
+                        got,
                         Self::rank_note(param_ty, &arg_ty)
                     ),
                     Some(crate::diagnostic::SourceSpan::from_ast_span(span)),
@@ -2322,8 +2371,10 @@ impl<'a> TypeChecker<'a> {
             let explicit: Vec<crate::symbol::Symbol> = mapping.keys().cloned().collect();
             let mut bound_by: HashMap<crate::symbol::Symbol, usize> = HashMap::new();
             for (i, arg) in args.iter_mut().enumerate() {
-                let arg_ty = arg_types[i].clone();
                 let param_ty = &generic_func.params[i].1;
+                let arg_ty = self
+                    .closure_literal_as(arg, param_ty)
+                    .unwrap_or_else(|| arg_types[i].clone());
                 if !self.unify_types(param_ty, &arg_ty, &mut mapping)
                     && !self.accepts_like_a_plain_call(param_ty, &mapping, arg, &arg_ty)
                 {

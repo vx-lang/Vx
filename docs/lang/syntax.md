@@ -513,4 +513,17 @@ A closure body can also be a block, `|params| { ..; v }`. A `return` in it ends 
 
 A call through the closure's own name is a direct call. A closure can also be cast to its closure type (`add as |i32|->i32`, or `f as ||->i32` for one without parameters): a fat pointer pairing the closure's environment with its code, which a callee taking that type can be handed any closure of that signature.
 
+A closure literal written as an argument needs no `as`. It takes the closure type of its
+parameter, as a number literal takes its type from the place that uses it. In a generic function,
+`T` in `f : || -> T` comes from the type that the literal returns. The callee cannot keep the
+closure, so the literal's borrows end when the call ends:
+
+```rust
+fn twice(f : || -> i64) -> i64 { return f() + f(); }
+
+let mut count = 0;
+let n = twice(|| -> i64 { count += 1; count });   // 1 + 2
+count = 10;                                      // the call ended, so count is free
+```
+
 **Lifetime.** A closure that uses a variable of the function that made it points into that function's stack frame, exactly as `&local` does. Neither may outlive the function: returning one, on its own or inside a struct, storing it through a reference, or passing it to a call together with a reference the call could store it through, is an error (E4005). Passing it down, to a callee that returns before the frame does, is fine, and so is a closure that uses no variable at all. A function cannot yet return a closure it creates by value (#847); pass the closure in from the caller instead. The same rule applies to a block inside a function: a variable declared outside an `if` or loop body cannot be given a reference to, or a closure that uses, a variable declared inside it.

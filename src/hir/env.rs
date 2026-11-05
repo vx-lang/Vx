@@ -1602,6 +1602,14 @@ impl<'a> TypeChecker<'a> {
                 }
                 true
             }
+            (Type::Closure(p1, r1), Type::Closure(p2, r2)) => {
+                p1.len() == p2.len()
+                    && self.unify_types_internal(r1, r2, mapping)
+                    && p1
+                        .iter()
+                        .zip(p2.iter())
+                        .all(|(a1, a2)| self.unify_types_internal(a1, a2, mapping))
+            }
             // A closure literal checks to `Struct("Closure_N")`, erasing its call signature.
             // Matching it against a `ClosureK<Args.., Ret>` parameter (e.g. `.map`'s
             // `Closure1<T, NewItem>`) recovers the args/ret from `closure_signatures` and unifies
