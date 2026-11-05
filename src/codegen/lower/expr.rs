@@ -3728,21 +3728,6 @@ impl<'c> LowerToMelior<'c> for FunctionCallExpr {
         if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(name) {
             return lower_lane_reduce(gen, block, op, ordered, args);
         }
-        // The start and the end of a `within` block (F6a).
-        if name.as_ref() == crate::syntax::stmt::WITHIN_START {
-            let (limit, _, block) = gen.generate_expr(&args[0], block)?;
-            crate::codegen::lower::call_runtime_void_with(
-                gen,
-                block,
-                "vx_within_start",
-                &[(limit, "f64")],
-            )?;
-            return cancel_call_value(gen, block);
-        }
-        if name.as_ref() == crate::syntax::stmt::WITHIN_END {
-            crate::codegen::lower::call_runtime_void(gen, block, "vx_within_end")?;
-            return cancel_call_value(gen, block);
-        }
         // Around the call of a `Drop` impl's `drop` (F6, F6a), with the time limit of the
         // drop in nanoseconds.
         if name.as_ref() == crate::syntax::stmt::CANCEL_OFF {
@@ -5746,8 +5731,10 @@ impl<'c> LowerToMelior<'c> for syntax::expr::AsCastExpr {
                 .cloned()
                 .expect("Closure call function not found");
 
-            let fn_ty =
-                melior::ir::r#type::FunctionType::new(gen.context, &orig_arg_types, &[ret_ty]);
+            // The type of the call function's address, as its definition has it: no result for a
+            // `void` closure.
+            let (ret, args) = gen.abi_signature(ret_ty, &orig_arg_types);
+            let fn_ty = melior::ir::r#type::FunctionType::new(gen.context, &args, ret.as_slice());
             let const_op = OperationBuilder::new("func.constant", gen.loc())
                 .add_attributes(&[(
                     Identifier::new(gen.context, "value"),
