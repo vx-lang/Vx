@@ -474,7 +474,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Whether control never reaches the end of `stmts`: it returns, breaks, continues, panics,
     /// aborts or calls a function declared `-> !` on every path.
-    fn branch_ends_early(&self, stmts: &[Statement]) -> bool {
+    pub(crate) fn branch_ends_early(&self, stmts: &[Statement]) -> bool {
         let functions = &self.env.functions;
         let never = |name: &str| {
             functions

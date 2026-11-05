@@ -87,8 +87,15 @@ pub(crate) struct LoopExit {
 }
 
 /// The raw-pointer state of the code around a body that starts with none of it: a closure body, a
-/// task body or the body of another function.
-pub(crate) struct OuterPointerState(PointerFacts, Vec<LoopExit>, Vec<String>, PointerFunction);
+/// task body or the body of another function. It also holds the invariants of the loops around
+/// the body, which a `continue` in the body does not reach.
+pub(crate) struct OuterPointerState(
+    PointerFacts,
+    Vec<LoopExit>,
+    Vec<String>,
+    PointerFunction,
+    Vec<crate::hir::stmt::InvariantLoop>,
+);
 
 /// The function whose body the checker checks.
 #[derive(Clone, Default)]
@@ -259,6 +266,11 @@ type Params = Vec<(crate::symbol::Symbol, Type)>;
 
 /// A `let` of a loop body: its name, its written type and its value.
 type BodyLet = (String, Option<Type>, Expr);
+
+/// Whether `body` declares a variable named `name`, at any depth.
+pub(crate) fn body_declares(body: &[Statement], name: &str) -> bool {
+    declarations_of_a_body(body).0.contains_key(name)
+}
 
 /// The variables that `body` declares at any depth, with the number of declarations of each:
 /// each `let`, the variable of each `for`, each name that a pattern binds and each parameter of a
@@ -963,16 +975,18 @@ impl<'a> TypeChecker<'a> {
                     ..Default::default()
                 },
             ),
+            std::mem::take(&mut self.invariant_loops),
         )
     }
 
     /// The end of a body that `pointer_facts_enter_body` started.
     pub(crate) fn pointer_facts_leave_body(&mut self, outer: OuterPointerState) {
-        let OuterPointerState(facts, loops, branches, function) = outer;
+        let OuterPointerState(facts, loops, branches, function, invariant_loops) = outer;
         self.pointer_facts = facts;
         self.pointer_loops = loops;
         self.pointer_branches = branches;
         self.pointer_function = function;
+        self.invariant_loops = invariant_loops;
     }
 
     /// The start of a loop body. `self.scopes` holds the scopes outside the body.

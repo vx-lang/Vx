@@ -37,6 +37,30 @@ pub(crate) struct LoopHeader<'e> {
     pub(crate) evaluates: Option<&'e Expr>,
 }
 
+/// A loop that the checker is in. Each invariant must hold at the start of each pass, so the
+/// checker proves it for the next pass at the end of the body and at each `continue`.
+pub(crate) struct InvariantLoop {
+    invariants: Vec<Expr>,
+    /// The first scope of the loop. It and the scopes above it hold the variables of the body.
+    scope: usize,
+    /// The variable of a `for` loop, and its value in the next pass when the checker knows it.
+    next: Option<(crate::symbol::Symbol, Option<Expr>)>,
+    /// Whether the body declares a variable with the name of the loop variable.
+    hides_the_variable: bool,
+}
+
+/// Where the checker proves a loop invariant, for its error.
+#[derive(Clone, Copy)]
+enum InvariantProof<'a> {
+    Start,
+    /// For the next pass: at the end of the body, or at the `continue` at the span. `var` is
+    /// the variable of a `for` loop when the invariant names it.
+    Next {
+        at_continue: Option<Span>,
+        var: Option<&'a str>,
+    },
+}
+
 /// What running a statement did to the block it sits in.
 ///
 /// The evaluator used to answer `Option<Value>`, which said "a return produced this" and
@@ -526,6 +550,7 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::Continue(c) => {
                 self.check_task_exit(&Statement::Continue(c.clone()));
+                self.prove_invariants_for_the_next_pass(Some(c.span));
                 self.drops_exit("continue", &c.span, crate::hir::check::drops::ExitTo::Loop)
             }
             Statement::Assign(AssignStmt { lhs, rhs, span }) => {
@@ -1122,21 +1147,48 @@ impl<'a> TypeChecker<'a> {
         // ended the prover facts about it (a stale outer `i < 2` under an inner
         // `for i in 0..8` forged an out-of-bounds proof in review), and its pointer facts end here.
         self.pointer_facts.forget(iter);
-        if let Expr::Range(r) = &**iterable {
+        // Only facts the prover can lower are recorded; an unlowerable bound
+        // (a call) would make every later proof in the function warn. In
+        // `for i in 0..i`, the bound names the outer `i`, so it gives no fact.
+        let usable = |bound: &Expr| {
+            crate::hir::check::raw::prover_expressible(bound)
+                && !crate::hir::check::raw::expr_mentions(bound, iter)
+        };
+        let iter_expr = Expr::Identifier(syntax::expr::IdentifierExpr {
+            name: iter.clone().into(),
+            span: Span::default(),
+        });
+        // `for i in a..b` runs as `let mut i = a; while i < b { ..; i = i + 1; }`, so each
+        // invariant holds for `i == a` when the loop starts, and for `i + 1` after a pass.
+        let range = match &**iterable {
+            Expr::Range(r) => Some((self.fold_raw_extent(&r.start), self.fold_raw_extent(&r.end))),
+            _ => None,
+        };
+        let first = range.as_ref().filter(|(lo, _)| usable(lo)).map(|(lo, _)| {
+            Expr::RelationalOp(RelationalOpExpr {
+                lhs: Box::new(iter_expr.clone()),
+                op: RelationalOp::Eq,
+                rhs: Box::new(lo.clone()),
+                span: Span::default(),
+                operand_ty: None,
+            })
+        });
+        self.prove_invariants_at_the_start(invariants, first);
+        let next = range.as_ref().map(|_| {
+            Expr::BinaryOp(syntax::expr::BinaryOpExpr {
+                lhs: Box::new(iter_expr.clone()),
+                op: syntax::expr::BinaryOp::Add,
+                rhs: Box::new(Expr::Number(syntax::expr::NumberExpr::new(
+                    "1".to_string(),
+                    None,
+                    Span::default(),
+                ))),
+                span: Span::default(),
+                operand_ty: None,
+            })
+        });
+        if let Some((lo, hi)) = range {
             if !crate::hir::check::raw::body_reassigns(body, iter) {
-                let iter_expr = Expr::Identifier(syntax::expr::IdentifierExpr {
-                    name: iter.clone().into(),
-                    span: Span::default(),
-                });
-                let lo = self.fold_raw_extent(&r.start);
-                let hi = self.fold_raw_extent(&r.end);
-                // Only facts the prover can lower are recorded; an unlowerable bound
-                // (a call) would make every later proof in the function warn. In
-                // `for i in 0..i`, the bound names the outer `i`, so it gives no fact.
-                let usable = |bound: &Expr| {
-                    crate::hir::check::raw::prover_expressible(bound)
-                        && !crate::hir::check::raw::expr_mentions(bound, iter)
-                };
                 if usable(&lo) {
                     self.consteval
                         .constraints
@@ -1201,6 +1253,13 @@ impl<'a> TypeChecker<'a> {
             });
         let pointers_at_head = self.pointer_facts.clone();
         self.pointer_facts_enter_loop();
+        let next = next.filter(|_| !crate::hir::check::raw::body_reassigns(body, iter));
+        self.invariant_loops.push(InvariantLoop {
+            invariants: invariants.clone(),
+            scope: self.scopes.len() - 1,
+            next: Some((iter.as_str().into(), next)),
+            hides_the_variable: crate::hir::check::pointer_facts::body_declares(body, iter),
+        });
         self.check_loop_body(body, return_type, header);
         self.pointer_facts_after_a_loop(Some(pointers_at_head));
         if let Some(c) = self.unroll_candidates.pop().filter(|c| c.used) {
@@ -1209,12 +1268,10 @@ impl<'a> TypeChecker<'a> {
         self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
-        // Check invariants hold after the loop iteration (we don't strictly prove induction here, just checking at end of block)
-        for inv in invariants.iter() {
-            if !self.prove_expr(inv) {
-                self.report_unproven_invariant(inv, true);
-            }
+        if !self.branch_ends_early(body) {
+            self.prove_invariants_for_the_next_pass(None);
         }
+        self.invariant_loops.pop();
 
         let mut after = before.clone();
         let ran = self.run_loop_for_consteval(&mut after, |checker, env| {
@@ -1279,23 +1336,34 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// E8008 or E8009: a loop invariant that the prover cannot show to hold when the loop
-    /// starts, or after a pass through the loop body.
-    fn report_unproven_invariant(&mut self, inv: &Expr, after_a_pass: bool) {
+    /// starts, or in the next pass.
+    fn report_unproven_invariant(&mut self, inv: &Expr, proof: InvariantProof) {
         let condition = crate::hir::prover::to_source(inv)
             .map(|c| format!(" `{c}`"))
             .unwrap_or_default();
-        let (code, when, where_known) = if after_a_pass {
-            (
-                crate::diagnostic::DiagnosticCode::E8009,
-                "after a pass through the loop body",
-                "at the end of the body",
-            )
-        } else {
-            (
+        let (code, when, where_known) = match proof {
+            InvariantProof::Start => (
                 crate::diagnostic::DiagnosticCode::E8008,
-                "when the loop starts",
+                "when the loop starts".to_string(),
                 "before the loop",
-            )
+            ),
+            InvariantProof::Next { at_continue, var } => {
+                let next = var
+                    .map(|v| format!("for the next `{v}` "))
+                    .unwrap_or_default();
+                match at_continue {
+                    Some(at) => (
+                        crate::diagnostic::DiagnosticCode::E8009,
+                        format!("{next}after the `continue` at line {}", at.line),
+                        "there",
+                    ),
+                    None => (
+                        crate::diagnostic::DiagnosticCode::E8009,
+                        format!("{next}after a pass through the loop body"),
+                        "at the end of the body",
+                    ),
+                }
+            }
         };
         self.errors.error_with_code(
             code,
@@ -1307,17 +1375,93 @@ impl<'a> TypeChecker<'a> {
         );
     }
 
-    /// Proves each invariant on entry to a loop, from the facts before it. The body then starts
-    /// from the facts that its writes cannot make false, and the invariants.
-    fn assume_loop_invariants(&mut self, invariants: &[Expr], body: &[Statement]) {
+    /// Proves each invariant on entry to a loop, from the facts before it. `first` is a fact
+    /// about the variable of a `for` loop in the first pass. An invariant can use the
+    /// invariants before it.
+    fn prove_invariants_at_the_start(&mut self, invariants: &[Expr], first: Option<Expr>) {
         let facts_before = self.consteval.constraints.len();
+        self.consteval.constraints.extend(first);
         for inv in invariants {
             if !self.prove_expr(inv) {
-                self.report_unproven_invariant(inv, false);
+                self.report_unproven_invariant(inv, InvariantProof::Start);
             }
             self.consteval.constraints.push(inv.clone());
         }
         self.consteval.constraints.truncate(facts_before);
+    }
+
+    /// Proves each invariant of the innermost loop for its next pass, from the facts here: at
+    /// the end of the body, or at the `continue` at `at_continue`. As at an assignment, each
+    /// variable of the body and the variable of a `for` loop get a new name in the facts. So a
+    /// `let` that hides a variable of an invariant cannot prove it.
+    pub(crate) fn prove_invariants_for_the_next_pass(&mut self, at_continue: Option<Span>) {
+        let Some(lp) = self.invariant_loops.last() else {
+            return;
+        };
+        if lp.invariants.is_empty() {
+            return;
+        }
+        let invariants = lp.invariants.clone();
+        // The new names live only in this proof, so no fact outside it can meet them.
+        let mut renamed = HashMap::new();
+        for scope in &self.scopes[lp.scope..] {
+            for name in scope.keys() {
+                let new_name = format!("$body_{}", renamed.len()).into();
+                renamed.insert(
+                    name.clone(),
+                    Expr::Identifier(syntax::expr::IdentifierExpr {
+                        name: new_name,
+                        span: Span::default(),
+                    }),
+                );
+            }
+        }
+        // In the next pass, the variable of `for i in a..b` is `i + 1`.
+        let next_fact = match &lp.next {
+            Some((var, Some(next))) if !lp.hides_the_variable => {
+                Some(Expr::RelationalOp(RelationalOpExpr {
+                    lhs: Box::new(Expr::Identifier(syntax::expr::IdentifierExpr {
+                        name: var.clone(),
+                        span: Span::default(),
+                    })),
+                    op: RelationalOp::Eq,
+                    rhs: Box::new(crate::hir::prover::substitute_names(next, &renamed)),
+                    span: Span::default(),
+                    operand_ty: None,
+                }))
+            }
+            _ => None,
+        };
+        let var = lp.next.as_ref().map(|(var, _)| var.to_string());
+        let facts = self.consteval.constraints.clone();
+        let mentions_renamed = |c: &Expr| {
+            renamed
+                .keys()
+                .any(|n| crate::hir::check::raw::expr_mentions(c, n.as_ref()))
+        };
+        for c in self.consteval.constraints.iter_mut() {
+            if mentions_renamed(c) {
+                *c = crate::hir::prover::substitute_names(c, &renamed);
+                if mentions_renamed(c) {
+                    *c = crate::hir::check::raw::no_fact();
+                }
+            }
+        }
+        self.consteval.constraints.extend(next_fact);
+        for inv in &invariants {
+            if !self.prove_expr(inv) {
+                let mut names = HashSet::new();
+                Self::extract_uses_expr(inv, &mut names);
+                let var = var.as_deref().filter(|v| names.contains(*v));
+                self.report_unproven_invariant(inv, InvariantProof::Next { at_continue, var });
+            }
+        }
+        self.consteval.constraints = facts;
+    }
+
+    /// The body of a loop starts from the facts that its writes cannot make false, and the
+    /// invariants.
+    fn assume_loop_invariants(&mut self, invariants: &[Expr], body: &[Statement]) {
         self.pointer_facts_events_then_changes(
             |this| this.end_pointer_facts_a_loop_can_end(body),
             |this| this.neutralize_facts_a_loop_writes(body),
@@ -1339,6 +1483,7 @@ impl<'a> TypeChecker<'a> {
         self.push_releasing_scope();
 
         let prev_constraints_len = self.consteval.constraints.len();
+        self.prove_invariants_at_the_start(invariants, None);
         self.assume_loop_invariants(invariants, body);
 
         // See `check_for_loop_stmt`: the single pass the checker makes over the body is not
@@ -1361,17 +1506,22 @@ impl<'a> TypeChecker<'a> {
         self.cancel_loops
             .push(crate::hir::check::cancel_loops::loop_exits(body));
         self.pointer_facts_enter_loop();
+        self.invariant_loops.push(InvariantLoop {
+            invariants: invariants.clone(),
+            scope: self.scopes.len() - 1,
+            next: None,
+            hides_the_variable: false,
+        });
         self.check_loop_body(body, return_type, header);
         self.pointer_facts_after_a_loop(None);
         self.cancel_loops.pop();
         self.drops_exit_loop();
         self.settle_loop_moves(marks_before, outer_depth, body, &loop_span);
 
-        for inv in invariants.iter() {
-            if !self.prove_expr(inv) {
-                self.report_unproven_invariant(inv, true);
-            }
+        if !self.branch_ends_early(body) {
+            self.prove_invariants_for_the_next_pass(None);
         }
+        self.invariant_loops.pop();
 
         let mut after = before.clone();
         let ran =
