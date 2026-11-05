@@ -41,6 +41,9 @@ struct ReborrowPlan {
     ref_args: Vec<(usize, String, Vec<String>, bool, bool)>,
     /// Pre-call borrow list of each distinct reference-argument base, for the selective revert.
     base_snapshots: HashMap<String, Option<Vec<BorrowRecord>>>,
+    /// The bases that the variable the call's value goes to, `s` in `let s = f(&a)`, borrowed
+    /// before the call.
+    borrowed_before: std::collections::HashSet<String>,
     /// (arg index, variable) for each by-value argument that can hold a reference, `s` after
     /// `let s = View { r : &x }`.
     held_args: Vec<(usize, String)>,
@@ -405,6 +408,7 @@ impl<'a> TypeChecker<'a> {
         // plus a snapshot of each distinct base's pre-call borrow list.
         let mut ref_args: Vec<(usize, String, Vec<String>, bool, bool)> = Vec::new();
         let mut base_snapshots: HashMap<String, Option<Vec<BorrowRecord>>> = HashMap::new();
+        let mut borrowed_before = std::collections::HashSet::new();
         let mut held_args = Vec::new();
         let mut ptr_args = Vec::new();
         let is_extern = self
@@ -439,6 +443,11 @@ impl<'a> TypeChecker<'a> {
                             base_snapshots
                                 .entry(base.clone())
                                 .or_insert_with(|| self.borrow.snapshot_base(base.as_str()));
+                            if let Some(target) = &self.current_assignment_target {
+                                if self.borrow.has_borrowed(&base, target) {
+                                    borrowed_before.insert(base.clone());
+                                }
+                            }
                             ref_args.push((
                                 i,
                                 base,
@@ -467,6 +476,7 @@ impl<'a> TypeChecker<'a> {
             imported_prov,
             ref_args,
             base_snapshots,
+            borrowed_before,
             held_args,
             ptr_args,
             is_extern,
@@ -785,6 +795,12 @@ impl<'a> TypeChecker<'a> {
                 prev,
                 self.current_assignment_target.as_deref(),
             );
+            // A result that cannot hold a reference does not keep `base` alive.
+            if !plan.ret_is_ref && !plan.borrowed_before.contains(base) {
+                if let Some(target) = &self.current_assignment_target {
+                    self.borrow.forget_borrower(base, target);
+                }
+            }
         }
     }
 

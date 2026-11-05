@@ -442,6 +442,20 @@ impl BorrowCx {
             .unwrap_or_default()
     }
 
+    pub(crate) fn has_borrowed(&self, base: &str, name: &str) -> bool {
+        self.borrowers_ever
+            .get(base)
+            .is_some_and(|s| s.contains(name))
+    }
+
+    /// `name` was never a borrower of `base` after all, such as `s` in `let s = f(&a)` when `f`
+    /// returns a number.
+    pub(crate) fn forget_borrower(&mut self, base: &str, name: &str) {
+        if let Some(s) = self.borrowers_ever.get_mut(base) {
+            s.remove(name);
+        }
+    }
+
     /// Start a function's list of borrowers, returning the enclosing function's.
     pub(crate) fn take_borrowers(&mut self) -> HashMap<String, HashSet<String>> {
         std::mem::take(&mut self.borrowers_ever)
