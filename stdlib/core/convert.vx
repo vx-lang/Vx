@@ -78,7 +78,14 @@ stamp_from!(i8 , i32);
 stamp_from!(i8 , i64);
 stamp_from!(i16 , i32);
 stamp_from!(i16 , i64);
-stamp_from!(i32 , i64);
+// Keep the numeric value available to contracts that check widened buffer dimensions.
+impl From<i32> for i64 {
+  fn from(v : i32) -> i64
+  ensures writes_only()
+  ensures return == v {
+    return v as i64;
+  }
+}
 
 stamp_from!(u8 , u16);
 stamp_from!(u8 , u32);
