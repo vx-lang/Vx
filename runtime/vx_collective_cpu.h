@@ -18,10 +18,10 @@
 
 static vx::OneRankCollective vx_one_rank;
 
-// A backend whose GPU can still be writing a tensor defines this to wait for
-// the GPU before a collective reads the tensor.
+// A backend whose GPU can still use a tensor defines this to wait for the GPU
+// before a collective reads `input` and writes `output`.
 #ifndef VX_COLLECTIVE_CPU_BEFORE_COPY
-#define VX_COLLECTIVE_CPU_BEFORE_COPY() ((void)0)
+#define VX_COLLECTIVE_CPU_BEFORE_COPY(input, output, bytes) ((void)0)
 #endif
 
 static void vx_collective_cpu_check(const std::string &why) {
@@ -47,28 +47,28 @@ int32_t vx_collective_ranks(void) { return vx_one_rank.ranks(); }
 
 void vx_collective_all_reduce_sum_f32(const float *input, float *output,
                                       int64_t count) {
-  VX_COLLECTIVE_CPU_BEFORE_COPY();
+  VX_COLLECTIVE_CPU_BEFORE_COPY(input, output, count * 4);
   vx_collective_cpu_check(vx_one_rank.copy(input, output, count, 4,
                                            "vx_collective_all_reduce_sum_f32"));
 }
 
 void vx_collective_all_reduce_sum_bf16(const uint16_t *input, uint16_t *output,
                                        int64_t count) {
-  VX_COLLECTIVE_CPU_BEFORE_COPY();
+  VX_COLLECTIVE_CPU_BEFORE_COPY(input, output, count * 2);
   vx_collective_cpu_check(vx_one_rank.copy(
       input, output, count, 2, "vx_collective_all_reduce_sum_bf16"));
 }
 
 void vx_collective_all_gather_f32(const float *input, float *output,
                                   int64_t count) {
-  VX_COLLECTIVE_CPU_BEFORE_COPY();
+  VX_COLLECTIVE_CPU_BEFORE_COPY(input, output, count * 4);
   vx_collective_cpu_check(vx_one_rank.copy(input, output, count, 4,
                                            "vx_collective_all_gather_f32"));
 }
 
 void vx_collective_all_gather_bf16(const uint16_t *input, uint16_t *output,
                                    int64_t count) {
-  VX_COLLECTIVE_CPU_BEFORE_COPY();
+  VX_COLLECTIVE_CPU_BEFORE_COPY(input, output, count * 2);
   vx_collective_cpu_check(vx_one_rank.copy(input, output, count, 2,
                                            "vx_collective_all_gather_bf16"));
 }

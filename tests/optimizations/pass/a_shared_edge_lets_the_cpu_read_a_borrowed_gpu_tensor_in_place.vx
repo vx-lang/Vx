@@ -37,14 +37,18 @@
 // OUT-NEXT: mut=10;
 // OUT-NEXT: local=12;
 //
-// The wait is opcode 5, VX_CTRL_WAIT. No copy is made, and nothing is freed. The AST code
-// generator keeps the GPU's memory space on a `&` parameter, so it casts the parameter's pointer
-// to a host pointer.
+// The wait is opcode 6, VX_CTRL_WAIT_FOR_TENSORS, for the 1 tensor that the function reads. No
+// copy is made, and nothing is freed. The AST code generator keeps the GPU's memory space on a
+// `&` parameter, so it casts the parameter's pointer to a host pointer.
 // IN_PLACE-LABEL: llvm.func hidden @first_in_place(
 // IN_PLACE-NOT: llvm.func
-// IN_PLACE: %[[WAIT:[0-9]+]] = llvm.mlir.constant(5 : i32) : i32
+// IN_PLACE-DAG: %[[ONE:[0-9]+]] = llvm.mlir.constant(1 : i32) : i32
+// IN_PLACE-DAG: %[[WAIT:[0-9]+]] = llvm.mlir.constant(6 : i32) : i32
 // IN_PLACE-NOT: llvm.func
-// IN_PLACE: llvm.call @vx_plugin_control(%[[WAIT]], %{{[0-9]+}})
+// IN_PLACE: %[[COUNT:[0-9]+]] = llvm.getelementptr %[[TENSORS:[0-9]+]][0, 1]
+// IN_PLACE-NEXT: llvm.store %[[ONE]], %[[COUNT]]
+// IN_PLACE-NOT: llvm.func
+// IN_PLACE: llvm.call @vx_plugin_control(%[[WAIT]], %[[TENSORS]])
 // IN_PLACE-NOT: llvm.func
 // IN_PLACE-NOT: vx_plugin_transfer_device_to_host
 // IN_PLACE-NOT: vx_plugin_free
