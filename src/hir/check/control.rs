@@ -547,6 +547,48 @@ impl<'a> TypeChecker<'a> {
         ty
     }
 
+    /// Keep facts from either continuing branch without treating one branch's writes as the
+    /// starting state of the other. Prefix positions stay stable for enclosing scopes.
+    fn join_branch_facts(
+        before: &[Expr],
+        then_facts: Vec<Expr>,
+        else_facts: Vec<Expr>,
+    ) -> Vec<Expr> {
+        let mut common = vec![false; before.len()];
+        let mut facts = Vec::with_capacity(before.len() + 1);
+        for (i, old) in before.iter().enumerate() {
+            common[i] = then_facts.get(i) == Some(old) && else_facts.get(i) == Some(old);
+            facts.push(if common[i] {
+                old.clone()
+            } else {
+                crate::hir::check::raw::no_fact()
+            });
+        }
+        let conjunction = |branch: Vec<Expr>| {
+            branch
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| !common.get(*i).copied().unwrap_or(false))
+                .map(|(_, fact)| fact)
+                .reduce(|lhs, rhs| {
+                    Expr::LogicalOp(LogicalOpExpr::new(
+                        Box::new(lhs),
+                        LogicalOp::And,
+                        Box::new(rhs),
+                        Span::default(),
+                    ))
+                })
+                .unwrap_or_else(crate::hir::check::raw::no_fact)
+        };
+        facts.push(Expr::LogicalOp(LogicalOpExpr::new(
+            Box::new(conjunction(then_facts)),
+            LogicalOp::Or,
+            Box::new(conjunction(else_facts)),
+            Span::default(),
+        )));
+        facts
+    }
+
     pub(crate) fn check_if_expr(&mut self, expr: &mut Expr, consume: bool) -> Type {
         let unused = std::mem::replace(&mut self.value_unused, false);
         let if_expr = match expr {
@@ -592,10 +634,25 @@ impl<'a> TypeChecker<'a> {
         let borrows_before = self.borrow.snapshot();
         // The prover's facts follow the paths: the `then` branch knows the condition and the
         // `else` branch its negation, and what a branch learns ends with it.
-        let facts_before = self.consteval.constraints.len();
+        let facts_before = self.consteval.constraints.clone();
         let pointers_before = self.pointer_facts.clone();
-        let cond_fact = (!if_expr.is_comptime && crate::hir::prover::is_modelled(&if_expr.cond))
-            .then(|| (*if_expr.cond).clone());
+        // Only integer predicates belong in the integer prover. Leaving other conditions
+        // out keeps both paths possible instead of building an ill-typed formula.
+        fn predicate(e: &Expr) -> bool {
+            match e {
+                Expr::RelationalOp(r) => {
+                    r.operand_ty
+                        .as_ref()
+                        .is_some_and(|t| t.int_bits().is_some() && *t != ElementType::Bool)
+                        && crate::hir::prover::is_modelled(e)
+                }
+                Expr::LogicalOp(l) => predicate(&l.lhs) && predicate(&l.rhs),
+                Expr::UnaryOp(u) if u.op == UnaryOp::Not => predicate(&u.expr),
+                _ => false,
+            }
+        }
+        let cond_fact =
+            (!if_expr.is_comptime && predicate(&if_expr.cond)).then(|| (*if_expr.cond).clone());
         if let Some(c) = &cond_fact {
             self.consteval.constraints.push(c.clone());
         }
@@ -615,7 +672,7 @@ impl<'a> TypeChecker<'a> {
         if named {
             self.pointer_branches.pop();
         }
-        let then_facts = self.consteval.constraints.split_off(facts_before);
+        let then_facts = std::mem::replace(&mut self.consteval.constraints, facts_before.clone());
         let pointers_then = std::mem::replace(&mut self.pointer_facts, pointers_before);
         if let Some(c) = &cond_fact {
             self.consteval
@@ -681,7 +738,7 @@ impl<'a> TypeChecker<'a> {
                 then_ty = Type::Struct("void".into(), None);
             }
         }
-        let else_facts = self.consteval.constraints.split_off(facts_before);
+        let else_facts = std::mem::take(&mut self.consteval.constraints);
         let pointers_else = std::mem::take(&mut self.pointer_facts);
         // When one branch ends early, the code after the `if` is reached only through the other,
         // so what that branch knew at its end still holds. When both end early, it is not reached.
@@ -701,15 +758,16 @@ impl<'a> TypeChecker<'a> {
             (false, true) => pointers_then,
             _ => pointers_then.join(&pointers_else),
         };
-        match (then_ends, else_ends) {
-            (true, false) => self.consteval.constraints.extend(else_facts),
-            (false, true) => self.consteval.constraints.extend(then_facts),
-            (true, true) => self
-                .consteval
-                .constraints
-                .push(crate::hir::prover::unreachable_fact()),
-            (false, false) => {}
-        }
+        self.consteval.constraints = match (then_ends, else_ends) {
+            (true, false) => else_facts,
+            (false, true) => then_facts,
+            (true, true) => {
+                let mut facts = facts_before;
+                facts.push(crate::hir::prover::unreachable_fact());
+                facts
+            }
+            (false, false) => Self::join_branch_facts(&facts_before, then_facts, else_facts),
+        };
         let joined = match (marks_after_then, marks_after_else) {
             (Some(a), Some(b)) => Self::union_moved(a, b),
             (Some(a), None) | (None, Some(a)) => a,

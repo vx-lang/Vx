@@ -1,0 +1,71 @@
+// RUN: not vxc %s --action emit-mlir 2>&1 | FileCheck %s
+
+fn one_branch_is_invalid(k : i32, replace : bool) -> i32
+requires k > 0
+ensures return >= 0 && return < k {
+  let mut best = 0;
+  if replace {
+    best = k;
+  }
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'one_branch_is_invalid' cannot prove postcondition
+  return best;
+}
+
+fn an_assignment_changes_the_condition(change : bool) -> i32
+ensures return == 0 {
+  let mut value = 0;
+  if change {
+    value = 5;
+  }
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'an_assignment_changes_the_condition' cannot prove postcondition
+  return value;
+}
+
+fn a_break_does_not_keep_the_bound(k : i32, stop : bool) -> i32
+requires k > 0
+ensures return >= 0 && return < k {
+  let mut best = 0;
+  for center in 1..k invariant best >= 0 && best < k {
+    if stop {
+      best = k;
+      break;
+    }
+    best = center;
+  }
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'a_break_does_not_keep_the_bound' cannot prove postcondition
+  return best;
+}
+
+fn a_shadow_at_break_is_not_the_outer_value(k : i32) -> i32
+requires k > 0
+ensures return >= 0 && return < k {
+  let mut best = 0;
+  for center in 1..k invariant best >= 0 && best < k {
+    best = k;
+    let best = 0;
+    break;
+  }
+  // CHECK: Error[E8001]
+  // CHECK-SAME: Function 'a_shadow_at_break_is_not_the_outer_value' cannot prove postcondition
+  return best;
+}
+
+fn a_later_pass_is_invalid(k : i32) -> i32
+requires k > 0
+{
+  let mut best = 0;
+  // CHECK: Error[E8009]{{.*}}this loop invariant
+  for center in 1..k invariant best >= 0 && best < k {
+    best = k;
+  }
+  return best;
+}
+
+fn main() -> i32 {
+  return one_branch_is_invalid(4, true) + an_assignment_changes_the_condition(true)
+  + a_break_does_not_keep_the_bound(4, true)
+  + a_shadow_at_break_is_not_the_outer_value(4) + a_later_pass_is_invalid(4);
+}

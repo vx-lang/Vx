@@ -47,6 +47,8 @@ pub(crate) struct InvariantLoop {
     next: Option<(crate::symbol::Symbol, Option<Expr>)>,
     /// Whether the body declares a variable with the name of the loop variable.
     hides_the_variable: bool,
+    /// An invariant can describe the loop's result only when every `break` preserves it.
+    break_invariants: Vec<bool>,
 }
 
 /// Where the checker proves a loop invariant, for its error.
@@ -546,6 +548,7 @@ impl<'a> TypeChecker<'a> {
             Statement::Break(b) => {
                 self.check_task_exit(&Statement::Break(b.clone()));
                 self.pointer_facts_at_break();
+                self.record_invariants_at_break();
                 self.drops_exit("break", &b.span, crate::hir::check::drops::ExitTo::Loop)
             }
             Statement::Continue(c) => {
@@ -1259,6 +1262,7 @@ impl<'a> TypeChecker<'a> {
             scope: self.scopes.len() - 1,
             next: Some((iter.as_str().into(), next)),
             hides_the_variable: crate::hir::check::pointer_facts::body_declares(body, iter),
+            break_invariants: vec![true; invariants.len()],
         });
         self.check_loop_body(body, return_type, header);
         self.pointer_facts_after_a_loop(Some(pointers_at_head));
@@ -1271,7 +1275,10 @@ impl<'a> TypeChecker<'a> {
         if !self.branch_ends_early(body) {
             self.prove_invariants_for_the_next_pass(None);
         }
-        self.invariant_loops.pop();
+        let checked_loop = self
+            .invariant_loops
+            .pop()
+            .expect("the loop is being checked");
 
         let mut after = before.clone();
         let ran = self.run_loop_for_consteval(&mut after, |checker, env| {
@@ -1282,6 +1289,9 @@ impl<'a> TypeChecker<'a> {
 
         self.consteval.constraints.truncate(prev_constraints_len);
         self.pop_scope();
+        if across.is_none() && matches!(&**iterable, Expr::Range(_)) {
+            self.keep_loop_result_invariants(checked_loop);
+        }
         self.borrow.forget(&iterable_borrows);
     }
 
@@ -1471,6 +1481,46 @@ impl<'a> TypeChecker<'a> {
             .extend(invariants.iter().cloned());
     }
 
+    fn record_invariants_at_break(&mut self) {
+        let Some(lp) = self.invariant_loops.last() else {
+            return;
+        };
+        let invariants = lp.invariants.clone();
+        let local_names: Vec<_> = self.scopes[lp.scope..]
+            .iter()
+            .flat_map(|scope| scope.keys().cloned())
+            .collect();
+        let proven: Vec<_> = invariants
+            .iter()
+            .map(|inv| {
+                !local_names
+                    .iter()
+                    .any(|name| crate::hir::check::raw::expr_mentions(inv, name.as_ref()))
+                    && self.prove_expr(inv)
+            })
+            .collect();
+        let lp = self
+            .invariant_loops
+            .last_mut()
+            .expect("the loop is being checked");
+        for (kept, holds) in lp.break_invariants.iter_mut().zip(proven) {
+            *kept &= holds;
+        }
+    }
+
+    /// Only outer variables remain in scope after the loop. The induction variable of a
+    /// range loop needs a separate exit rule, so its invariants are not exported here.
+    fn keep_loop_result_invariants(&mut self, lp: InvariantLoop) {
+        for (inv, holds) in lp.invariants.into_iter().zip(lp.break_invariants) {
+            let names_iterator = lp.next.as_ref().is_some_and(|(name, _)| {
+                crate::hir::check::raw::expr_mentions(&inv, name.as_ref())
+            });
+            if holds && !names_iterator && crate::hir::prover::is_modelled(&inv) {
+                self.consteval.constraints.push(inv);
+            }
+        }
+    }
+
     fn check_loop_stmt(&mut self, lp: &mut LoopStmt, return_type: &Type) {
         let LoopStmt {
             body,
@@ -1511,6 +1561,7 @@ impl<'a> TypeChecker<'a> {
             scope: self.scopes.len() - 1,
             next: None,
             hides_the_variable: false,
+            break_invariants: vec![true; invariants.len()],
         });
         self.check_loop_body(body, return_type, header);
         self.pointer_facts_after_a_loop(None);
@@ -1521,7 +1572,10 @@ impl<'a> TypeChecker<'a> {
         if !self.branch_ends_early(body) {
             self.prove_invariants_for_the_next_pass(None);
         }
-        self.invariant_loops.pop();
+        let checked_loop = self
+            .invariant_loops
+            .pop()
+            .expect("the loop is being checked");
 
         let mut after = before.clone();
         let ran =
@@ -1531,6 +1585,7 @@ impl<'a> TypeChecker<'a> {
 
         self.consteval.constraints.truncate(prev_constraints_len);
         self.pop_scope();
+        self.keep_loop_result_invariants(checked_loop);
     }
 
     /// Check an assignment / compound assignment: type the LHS, then the RHS expecting the LHS
