@@ -63,8 +63,9 @@ fn main() -> i32 {
 ```
 
 Like `requires` and `ensures`, an invariant may be written bare or in parentheses:
-`invariant limit > 0` and `invariant(limit > 0)` are equivalent. An invariant about `i` itself, such
-as `i >= 0`, cannot be proven yet: see "Not yet" below.
+`invariant limit > 0` and `invariant(limit > 0)` are equivalent. An invariant can also be about `i`,
+such as `i >= 0`. The prover knows `i == 0` when the loop starts, and the effect of `i = i + 1` at the
+end of the body.
 
 ## What checks these
 
@@ -87,8 +88,10 @@ The prover checks each function on its own, from the facts it has at each point 
 **Where facts come from:**
 
 - the function's own `requires`;
-- `let x = e;`, which gives `x == e` (a `let mut` gives nothing, since `x` may change, and nor does
-  an `e` that names an older `x`, as in `let x = x + 1;`);
+- `let x = e;` and `let mut x = e;`, which give `x == e` (but not when `e` names an older `x`, as in
+  `let x = x + 1;`);
+- an assignment `x = e` or `x += e` to an integer variable, which gives `x == e`. The facts about the
+  old value stay, with a new name for it, so after `x = x + 1` the prover knows that `x` grew by one;
 - `assert(c, ..)`, which gives `c` after the `assert`;
 - the condition of an `if`: the `then` branch knows it is true, the `else` branch knows it is false;
 - a loop's `invariant`, inside the loop, and `a <= i && i < b` inside `for i in a..b`;
@@ -161,8 +164,7 @@ ignored, and the compiler warns that it was: "the prover ignores a condition her
 - A `match` arm does not know which pattern matched
   ([Vx#1352](https://github.com/vx-lang/Vx/issues/1352)).
 - After a loop, nothing is known about what happened in it: not its `invariant`, and not the
-  condition that ended it. And since a `let mut` gives no fact, an `invariant` about a loop counter
-  cannot be proven when the loop starts ([Vx#1353](https://github.com/vx-lang/Vx/issues/1353)).
+  condition that ended it ([Vx#1353](https://github.com/vx-lang/Vx/issues/1353)).
 
 ## assert
 

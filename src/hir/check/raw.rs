@@ -1369,6 +1369,46 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// The fact that `place = value` gives, such as `x == e` for `x = e`, for an integer variable.
+    /// Call it before the assignment ends the old facts. The old value gets a new name, `$old_N`,
+    /// in the facts and in the value. So the facts about it stay true, such as `y == x` after
+    /// `let y = x; x = 0;`, and in `x = x + 1` the `x` on the right is the old value.
+    pub(crate) fn fact_of_an_assignment(
+        &mut self,
+        place: &Expr,
+        value: &Expr,
+        ty: &Type,
+    ) -> Option<Expr> {
+        let Expr::Identifier(id) = place else {
+            return None;
+        };
+        let is_int =
+            matches!(ty, Type::Scalar(e) if e.int_bits().is_some() && *e != ElementType::Bool);
+        // A change inside a call ends the facts after the call, which would end this fact too.
+        if !is_int || !self.fact_change_frames.is_empty() {
+            return None;
+        }
+        let old = Expr::Identifier(IdentifierExpr {
+            name: format!("$old_{}", self.old_values).into(),
+            span: Span::default(),
+        });
+        self.old_values += 1;
+        let names = std::collections::HashMap::from([(id.name.clone(), old)]);
+        for c in self.consteval.constraints.iter_mut() {
+            *c = crate::hir::prover::substitute_names(c, &names);
+        }
+        if !crate::hir::prover::is_modelled(value) {
+            return None;
+        }
+        Some(Expr::RelationalOp(RelationalOpExpr {
+            lhs: Box::new(place.clone()),
+            op: RelationalOp::Eq,
+            rhs: Box::new(crate::hir::prover::substitute_names(value, &names)),
+            span: Span::default(),
+            operand_ty: None,
+        }))
+    }
+
     /// Overwrite each fact that names a variable that the loop `body` can change. The checker
     /// makes one pass over the body, so a fact may stay only when it holds at the start of each
     /// pass.
