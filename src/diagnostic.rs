@@ -362,7 +362,9 @@ pub enum DiagnosticCode {
     /// read one number at a time, as `TABLE[i]`.
     E3044,
     /// An integer literal that does not fit its type, such as `300` for a `u8`. A `usize`
-    /// holds 0 up to the largest `i64`.
+    /// holds 0 up to the largest `i64`. A literal with no suffix is at most an `i64`, unless the
+    /// code around it gives it a type: write `0x8000_0000_0000_0000u64` for a `u64`. A literal
+    /// that needs more than 64 bits is not supported yet.
     E3045,
     /// A `for` loop over a tensor that is not a variable or a flat array literal, such as one a
     /// function call returns, or a nested array literal. The loop reads the tensor by index, so
