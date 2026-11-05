@@ -11,6 +11,8 @@
 //   writes. So the main thread's kernel runs first. The read of `g` then waits for the task's
 //   kernel, after the task ended.
 // - Part 4: both threads run kernels on the GPU that read `w`. Neither waits for the other.
+// - Part 5: the main thread reads `w` in place while its kernel that writes `p` is open. The read
+//   does not wait, so the next kernel goes into the same command buffer.
 //
 // `main` reads `f` after `g`, and `w` at the end. Otherwise the program frees each one after its
 // last use, and the free waits for each kernel that reads it.
@@ -28,6 +30,7 @@
 // OUT-NEXT: {{^}}part 2: 262140{{$}}
 // OUT-NEXT: {{^}}part 3: 262140 131070{{$}}
 // OUT-NEXT: {{^}}part 4: 262140 131070{{$}}
+// OUT-NEXT: {{^}}part 5: 65535 262140{{$}}
 // OUT-NEXT: {{^}}w 65535{{$}}
 //
 // GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
@@ -55,7 +58,12 @@
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
 // GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
 // GPU-NEXT: [Vx Metal] waited for 2 kernels,
-// GPU-NEXT: [Vx Metal] waited for 1 kernel,{{.*}}
+// GPU-NEXT: [Vx Metal] waited for 1 kernel,
+//
+// Part 5.
+// GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] waited for 2 kernels,{{.*}}
 // GPU-NOT: {{.}}
 
 // dst = position
@@ -152,6 +160,14 @@ fn main() -> i32 {
   twice(&mut m, &h, n);
   let m_last = last(&m);
   println!("part 4: {} {}", m_last, last(&k));
+
+  let mut p = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  let mut q = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  twice(&mut p, &w, n);
+  let w_last = last(&w);
+  twice(&mut q, &p, n);
+  let q_last = last(&q);
+  println!("part 5: {} {}", w_last, q_last);
   println!("w {}", last(&w));
   return 0;
 }

@@ -409,6 +409,20 @@ extern "C" void vx_metal_wait_for_memory(const void *start, size_t bytes,
   finishEach([&](const Batch &b) { return b.mustPrecede(a); });
 }
 
+// Waits for each launch that writes the memory of one of these tensors, before
+// the CPU reads them.
+extern "C" void vx_metal_wait_for_tensors(void **args, const int32_t *tags,
+                                          int64_t count) {
+  std::vector<Access> accesses;
+  if (!tensorsOf(args, tags, count, accesses)) {
+    vx_metal_wait();
+    return;
+  }
+  for (Access &a : accesses)
+    a.written = false;
+  finishEach([&](const Batch &b) { return anyMustPrecede(b, accesses); });
+}
+
 // Waits for each GPU launch that a launch with these arguments must follow,
 // when that launch does not run on this Mac's GPU. The `// vx.kernel` line of
 // an Apple GPU kernel says which tensors it only reads. Any other kernel can

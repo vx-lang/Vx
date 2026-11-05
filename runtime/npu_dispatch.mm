@@ -579,6 +579,8 @@ int vx_metal_dispatch(const void *payload, size_t payload_size,
 // memory it writes.
 void vx_metal_wait(void);
 void vx_metal_wait_for_memory(const void *start, size_t bytes, int written);
+void vx_metal_wait_for_tensors(void **args, const int32_t *tags, int64_t count);
+void vx_metal_wait_for_thread(void);
 void vx_metal_wait_for_launch(const void *payload, size_t payload_size,
                               void **device_args, const int32_t *arg_tags,
                               int64_t num_args);
@@ -931,6 +933,16 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload) {
   }
   if (opcode == VX_CTRL_WAIT) {
     vx_metal_wait();
+    return 1;
+  }
+  if (opcode == VX_CTRL_WAIT_FOR_TENSORS) {
+    const vx_wait_for_tensors *tensors =
+        static_cast<const vx_wait_for_tensors *>(payload);
+    vx_metal_wait_for_tensors(tensors->args, tensors->tags, tensors->count);
+    return 1;
+  }
+  if (opcode == VX_CTRL_WAIT_FOR_THREAD) {
+    vx_metal_wait_for_thread();
     return 1;
   }
   return 0;

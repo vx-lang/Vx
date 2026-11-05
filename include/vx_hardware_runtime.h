@@ -674,11 +674,30 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload);
 #define VX_CTRL_LOCAL_DEVICE 0x04
 // Wait until every launch on a topology has finished. `payload` points to the
 // int32_t topology id. A backend may wait for more than that topology. A
-// transfer over a `: shared` edge sends it before the CPU reads GPU memory in
-// place. A `pub fn` of a library for the Apple GPU sends it before it returns.
-// A backend whose launches finish before they return ignores it.
+// backend whose launches finish before they return ignores it, and the same
+// goes for the two opcodes after it. An object from an older vxc sends it where
+// vxc now sends VX_CTRL_WAIT_FOR_TENSORS or VX_CTRL_WAIT_FOR_THREAD.
 #define VX_CTRL_WAIT 0x05
+// Wait for each launch on a topology that writes the memory of some tensors.
+// `payload` points to a `vx_wait_for_tensors`. A backend may wait for more, as
+// for VX_CTRL_WAIT. A transfer over a `: shared` edge sends it before the CPU
+// reads a tensor in place. A `pub fn` of a library for the Apple GPU sends it
+// with its tensor parameters before it returns.
+#define VX_CTRL_WAIT_FOR_TENSORS 0x06
+// Wait for each launch on a topology that the calling thread made. `payload`
+// points to the int32_t topology id. A backend may wait for more. A `pub fn`
+// of a library for the Apple GPU sends it before it returns.
+#define VX_CTRL_WAIT_FOR_THREAD 0x07
 #define VX_CTRL_VENDOR_BASE 0x1000 // Vendors start their custom opcodes here
+
+// The tensors of VX_CTRL_WAIT_FOR_TENSORS. `args` and `tags` hold `count`
+// tensors, as `device_args` and `arg_tags` of vx_plugin_dispatch_async do.
+typedef struct vx_wait_for_tensors {
+  int32_t topology;
+  int32_t count;
+  void **args;
+  const int32_t *tags;
+} vx_wait_for_tensors;
 
 #ifdef __cplusplus
 }
