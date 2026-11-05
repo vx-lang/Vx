@@ -196,12 +196,11 @@ void the_section_is_read_back() {
   // escape is empty, so the NUL that separates the two never reached the image
   // and the walk saw one entry, `\x03\x02\x23\x07evil=1`, rather than a key.
   const std::string image = std::string("\x03\x02\x23\x07", 4) +
-                            std::string(1, '\0') +
-                            std::string("evil=1\0", 7);
-  std::string payload = with_section(
-      make_payload("vx_npu_kernel_7", "1",
-                   {{"format=", "spirv"}, {"topo=", "500"}}),
-      image);
+                            std::string(1, '\0') + std::string("evil=1\0", 7);
+  std::string payload =
+      with_section(make_payload("vx_npu_kernel_7", "1",
+                                {{"format=", "spirv"}, {"topo=", "500"}}),
+                   image);
 
   const char *format =
       vx_payload_field(payload.data(), payload.size(), "format=");
@@ -223,8 +222,9 @@ void a_text_only_payload_carries_no_section() {
   // What a PTX payload looks like today: entries and no empty entry, so there
   // is nothing after the text and the section reader says so rather than
   // reading the end of the blob.
-  std::string payload = make_payload(
-      "vx_npu_kernel_1", "1", {{"format=", "ptx"}, {"image=", ".version 7.6\n"}});
+  std::string payload =
+      make_payload("vx_npu_kernel_1", "1",
+                   {{"format=", "ptx"}, {"image=", ".version 7.6\n"}});
   const void *out = nullptr;
   check(vx_payload_section(payload.data(), payload.size(), &out) == -1,
         "no section in a text-only payload");
