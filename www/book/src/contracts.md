@@ -87,7 +87,8 @@ The prover checks each function on its own, from the facts it has at each point 
 **Where facts come from:**
 
 - the function's own `requires`;
-- `let x = e;`, which gives `x == e` (a `let mut` gives nothing, since `x` may change);
+- `let x = e;`, which gives `x == e` (a `let mut` gives nothing, since `x` may change, and nor does
+  an `e` that names an older `x`, as in `let x = x + 1;`);
 - `assert(c, ..)`, which gives `c` after the `assert`;
 - the condition of an `if`: the `then` branch knows it is true, the `else` branch knows it is false;
 - a loop's `invariant`, inside the loop, and `a <= i && i < b` inside `for i in a..b`;
@@ -114,6 +115,11 @@ fn main() -> i32 {
 ```
 
 At `return x`, the prover knows `x > 0`, because the only way there is past the `if`.
+
+**Facts stay with their variable.** A fact about a variable ends with the variable's block. A new
+variable with an old name starts with no facts. The new variable can come from a `let`, a pattern or
+a closure's parameter. What a closure's body learns holds only inside the body, because the body
+runs only when something calls the closure.
 
 **`ensures` is checked at each `return`,** from what is known there, with `return` standing for that
 value. An error (`E8001`) points at the `return` that fails.

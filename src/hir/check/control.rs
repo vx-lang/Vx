@@ -1554,7 +1554,10 @@ impl<'a> TypeChecker<'a> {
                 // A borrow made in the body lasts for one call of the closure. What the closure
                 // holds between calls is the borrow of its environment, made below.
                 let outer_borrows = self.borrow.snapshot();
+                // What the body learns, such as from an `assert`, holds only in a call.
+                let outer_facts = self.consteval.constraints.len();
                 let expr_ret_ty = self.check_expr_type(&mut b);
+                self.consteval.constraints.truncate(outer_facts);
                 self.borrow.restore(outer_borrows);
                 self.pointer_facts_leave_body(outer_pointers);
                 self.consteval.comptime_return_is_value = false;

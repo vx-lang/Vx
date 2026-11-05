@@ -1,0 +1,73 @@
+//===- prover_facts_that_outlive_a_scope.vx - Vx Compiler ------*- Vx -*-===//
+//
+// Part of the Vx Project, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// RUN: vxc %s --run 2>&1 | FileCheck %s --implicit-check-not=Error
+//
+// The facts that `prover_facts_end_with_their_scope.vx` ends are only those of a variable that
+// is gone or hidden. The prover proves each contract below from a fact that stays.
+
+import core::option;
+
+fn need_below(i : i64, n : i64) -> i64
+requires i < n {
+  return i;
+}
+
+// The `assert` is about `c`, which is still the same variable after the branch.
+fn after_a_branch(c : i32) -> i32
+ensures return > 0 {
+  if c > 0 {
+    return 5;
+  } else {
+    let t : i32 = c * 2;
+    assert(c > 0 - 10, "small");
+    println!("{}", t);
+  }
+  return c + 10;
+}
+
+fn a_let_from_another_variable(y : i32) -> i32
+requires y == 1
+ensures return == 2 {
+  let z : i32 = y + 1;
+  return z;
+}
+
+fn in_a_range(n : i64) -> i64 {
+  let mut s : i64 = 0;
+  for i in 0..n {
+    s = s + need_below(i, n);
+  }
+  return s;
+}
+
+// The pattern names `v`, so it hides no variable.
+fn after_a_match(o : Option<i32>) -> i32
+ensures return == 1 {
+  let y : i32 = 1;
+  match o {
+    Option<i32>::Some(v) => {
+      println!("{}", v);
+    }
+    Option<i32>::None => {
+      println!("0");
+    }
+  }
+  return y;
+}
+
+fn main() -> i32 {
+  // CHECK: -6
+  let a = after_a_branch(-3);
+  let b = a_let_from_another_variable(1);
+  let c = in_a_range(4i64);
+  // CHECK-NEXT: 7
+  let e = after_a_match(Option<i32>::Some(7));
+  // CHECK-NEXT: 7 2 6 1
+  println!("{} {} {} {}", a, b, c, e);
+  return 0;
+}

@@ -784,19 +784,22 @@ impl<'a> TypeChecker<'a> {
         self.neutralize_facts_mentioning(name.as_ref());
         self.note_pointer_value(name.as_ref(), pointer);
         self.pointer_facts_name_the_result(name.as_ref(), expr);
-        if !*_is_mut {
+        // `raw::extent(t)` folds to its literal element count first: the prover cannot
+        // lower a function call, so `let n = raw::extent(src)` would otherwise record
+        // an unlowerable fact and every bound written against `n` would be unprovable
+        // (Vx#353). An `unsafe` block holding only a value is that value.
+        let value = self.fold_raw_extent(crate::syntax::bare_unsafe_value(expr));
+        // In `let y = y + 1`, the `y` on the right is the old variable, and the fact
+        // `y == y + 1` would be false.
+        if !*_is_mut && !crate::hir::check::raw::expr_mentions(&value, name.as_ref()) {
             let id_expr = Expr::Identifier(IdentifierExpr {
                 name: name.clone(),
                 span: Span::default(),
             });
-            // `raw::extent(t)` folds to its literal element count first: the prover cannot
-            // lower a function call, so `let n = raw::extent(src)` would otherwise record
-            // an unlowerable fact and every bound written against `n` would be unprovable
-            // (Vx#353). An `unsafe` block holding only a value is that value.
             let eq_expr = Expr::RelationalOp(RelationalOpExpr {
                 lhs: Box::new(id_expr),
                 op: RelationalOp::Eq,
-                rhs: Box::new(self.fold_raw_extent(crate::syntax::bare_unsafe_value(expr))),
+                rhs: Box::new(value),
                 span: Span::default(),
                 operand_ty: None,
             });
@@ -1127,8 +1130,13 @@ impl<'a> TypeChecker<'a> {
                 let lo = self.fold_raw_extent(&r.start);
                 let hi = self.fold_raw_extent(&r.end);
                 // Only facts the prover can lower are recorded; an unlowerable bound
-                // (a call) would make every later proof in the function warn.
-                if crate::hir::check::raw::prover_expressible(&lo) {
+                // (a call) would make every later proof in the function warn. In
+                // `for i in 0..i`, the bound names the outer `i`, so it gives no fact.
+                let usable = |bound: &Expr| {
+                    crate::hir::check::raw::prover_expressible(bound)
+                        && !crate::hir::check::raw::expr_mentions(bound, iter)
+                };
+                if usable(&lo) {
                     self.consteval
                         .constraints
                         .push(Expr::RelationalOp(RelationalOpExpr {
@@ -1139,7 +1147,7 @@ impl<'a> TypeChecker<'a> {
                             operand_ty: None,
                         }));
                 }
-                if crate::hir::check::raw::prover_expressible(&hi) {
+                if usable(&hi) {
                     self.consteval
                         .constraints
                         .push(Expr::RelationalOp(RelationalOpExpr {
