@@ -1281,7 +1281,13 @@ impl<'a> TypeChecker<'a> {
                 let pointers_before = self.pointer_facts.clone();
                 let mut pointers_after: Option<crate::hir::check::pointer_facts::PointerFacts> =
                     None;
+                // Arms that are only a number with no suffix, such as `_ => { 0 }`. Their number
+                // takes the type of the other arms once those are known.
+                let mut literal_arms = Vec::new();
+                let mut literal_ty = None;
                 for (i, arm) in arms.iter_mut().enumerate() {
+                    let literal_arm = self.expected_type.is_none()
+                        && unsuffixed_number_tail(&mut arm.body).is_some_and(|n| n.ty.is_none());
                     self.consteval.env = values_before.clone();
                     self.pointer_facts = pointers_before.clone();
                     self.consteval.constraints.truncate(facts_before);
@@ -1370,9 +1376,24 @@ impl<'a> TypeChecker<'a> {
                             ..
                         }))
                     );
-                    if yields_value && match_ty.is_none() {
+                    if literal_arm {
+                        literal_arms.push(i);
+                        literal_ty.get_or_insert(arm_ty);
+                    } else if yields_value && match_ty.is_none() {
                         match_ty = Some(arm_ty);
                     }
+                }
+                match &match_ty {
+                    Some(ty) => {
+                        for i in literal_arms {
+                            let n = unsuffixed_number_tail(&mut arms[i].body)
+                                .expect("a literal arm ends in a number");
+                            if let Some(e) = crate::hir::expr::expected_numeric_elem(ty, &n.value) {
+                                n.ty = Some(e);
+                            }
+                        }
+                    }
+                    None => match_ty = literal_ty,
                 }
                 self.restore_moved(joined.unwrap_or(marks_before));
                 self.borrow.add_back(arm_borrows);
@@ -1831,5 +1852,29 @@ impl<'a> TypeChecker<'a> {
             }
             _ => panic!("Expected IndexAccess, got {:?}", expr),
         }
+    }
+}
+
+/// The number that a block's value is, as in `{ 0 }` or `{ -1 }`.
+fn unsuffixed_number_tail(body: &mut [Statement]) -> Option<&mut NumberExpr> {
+    let Some(Statement::ExprStmt(ExprStmtStmt {
+        expr,
+        has_semi: false,
+        ..
+    })) = body.last_mut()
+    else {
+        return None;
+    };
+    match expr {
+        Expr::Number(n) => Some(n),
+        Expr::UnaryOp(UnaryOpExpr {
+            op: UnaryOp::Neg,
+            expr,
+            ..
+        }) => match expr.as_mut() {
+            Expr::Number(n) => Some(n),
+            _ => None,
+        },
+        _ => None,
     }
 }

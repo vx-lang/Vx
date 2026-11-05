@@ -2285,8 +2285,14 @@ impl<'r> Lowerer<'r> {
             },
             Expr::BinaryOp(b) => {
                 // Mirror `lower_expr`: the result is the tensor side if either operand is a tensor,
-                // else the left operand's type.
-                let l = self.infer_expr_ty(&b.lhs)?;
+                // else the left operand's type. A match arm's `r * 3` reads a binding that is not
+                // in scope yet, so the checker's operand type gives the answer there.
+                let Some(l) = self.infer_expr_ty(&b.lhs) else {
+                    return match (&b.op, &b.operand_ty) {
+                        (BinaryOp::MatMul, _) | (_, None) => None,
+                        (_, Some(e)) => Some(LoweredTy::Scalar(e.clone())),
+                    };
+                };
                 if matches!(l, LoweredTy::Tensor { .. }) {
                     return Some(l);
                 }
