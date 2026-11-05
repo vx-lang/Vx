@@ -1499,14 +1499,6 @@ impl<'a> TypeChecker<'a> {
             .collect::<Vec<_>>();
         let mut changes = self.fact_change_frames.pop().unwrap_or_default();
         changes.extend(written);
-        // A method call checks the call of its function speculatively, before it proves the
-        // `requires`. So in a speculative check the changes go to the outer call.
-        if self.speculating {
-            if let Some(outer) = self.fact_change_frames.last_mut() {
-                outer.extend(changes);
-                return ty;
-            }
-        }
         for (name, behind) in changes {
             if behind {
                 self.neutralize_facts_behind(&name);
