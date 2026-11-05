@@ -1366,21 +1366,42 @@ impl<'a> TypeChecker<'a> {
     /// Overwrite each fact that names a variable that the loop `body` can change. The checker
     /// makes one pass over the body, so a fact may stay only when it holds at the start of each
     /// pass.
+    /// A write through a raw pointer, as in `p[i] = x`, changes the memory behind `p`, and `p`
+    /// keeps its value, as at a write outside a loop.
     pub(crate) fn neutralize_facts_a_loop_writes(&mut self, body: &[Statement]) {
-        let mut changed = names_a_body_writes(body);
-        changed.extend(self.names_calls_in_a_body_can_change(body));
+        let is_pointer =
+            |this: &Self, name: &str| matches!(this.lookup(name), Some((Type::Pointer(..), _)));
+        let mut changed = std::collections::HashSet::new();
+        let mut behind = std::collections::HashSet::new();
+        for (name, through) in writes_in_a_body(body) {
+            if through && is_pointer(self, &name) {
+                behind.insert(name);
+            } else {
+                changed.insert(name);
+            }
+        }
+        let (calls_change, calls_write_behind) = self.names_calls_in_a_body_can_change(body);
+        changed.extend(calls_change);
+        behind.extend(calls_write_behind);
+        for name in behind.difference(&changed) {
+            self.neutralize_facts_behind(name);
+        }
         for name in changed {
             self.neutralize_facts_mentioning(&name);
         }
     }
 
     /// The variables that a call in `body` can change, among those that a fact names: the root
-    /// of an argument that the callee can write through, and of a receiver whose method takes
-    /// `&mut self`. A method that the checker cannot find counts as one that takes `&mut self`.
+    /// of a receiver whose method takes `&mut self`. A method that the checker cannot find counts
+    /// as one that takes `&mut self`. Then the root of each argument that the callee can write
+    /// through, which keeps its value.
     fn names_calls_in_a_body_can_change(
         &mut self,
         body: &[Statement],
-    ) -> std::collections::HashSet<String> {
+    ) -> (
+        std::collections::HashSet<String>,
+        std::collections::HashSet<String>,
+    ) {
         let mut in_facts = std::collections::HashSet::new();
         for fact in &self.consteval.constraints {
             crate::syntax::visit_expr(fact, &mut |e| {
@@ -1390,6 +1411,7 @@ impl<'a> TypeChecker<'a> {
             });
         }
         let mut changed = std::collections::HashSet::new();
+        let mut behind = std::collections::HashSet::new();
         let mut receivers = Vec::new();
         crate::syntax::visit_exprs(body, &mut |e| {
             let args: &[Expr] = match e {
@@ -1400,8 +1422,8 @@ impl<'a> TypeChecker<'a> {
             };
             for arg in args {
                 if let Some((root, _)) = Self::arg_reborrow_base(arg) {
-                    if in_facts.contains(&root) && self.callee_can_write_through(arg) {
-                        changed.insert(root);
+                    if in_facts.contains(&root) && self.callee_can_write_through(arg, None) {
+                        behind.insert(root);
                     }
                 }
             }
@@ -1432,7 +1454,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
         self.speculating = speculating;
-        changed
+        (changed, behind)
     }
 
     /// Code can change `place`, so the facts about its variable end. Inside a call they end after
@@ -1494,33 +1516,47 @@ impl<'a> TypeChecker<'a> {
                 .extend(changed);
             return ty;
         }
-        self.pointer_facts_at_call(expr, written);
         let args: &[Expr] = match &*expr {
             Expr::FunctionCall(fc) => &fc.args,
             Expr::MethodCall(m) => &m.args,
             Expr::IndirectCall(ic) => &ic.args,
             _ => &[],
         };
-        let written = args
-            .iter()
-            .filter(|arg| self.callee_can_write_through(arg))
-            .filter_map(|arg| Self::arg_reborrow_base(arg).map(|(root, _)| (root, true)))
-            .collect::<Vec<_>>();
-        let mut changes = self.fact_change_frames.pop().unwrap_or_default();
-        changes.extend(written);
-        for (name, behind) in changes {
-            if behind {
-                self.neutralize_facts_behind(&name);
-            } else {
-                self.neutralize_facts_mentioning(&name);
+        let events = |this: &mut Self| this.pointer_facts_at_call(expr, written);
+        self.pointer_facts_events_then_changes(events, |this| {
+            let params = match &*expr {
+                Expr::FunctionCall(fc) => this.call_param_types(fc.name.as_ref(), expr),
+                Expr::IndirectCall(_) => this.call_param_types("", expr),
+                _ => None,
+            };
+            let written = args
+                .iter()
+                .enumerate()
+                .filter(|(i, arg)| {
+                    this.callee_can_write_through(arg, params.as_ref().and_then(|p| p.get(*i)))
+                })
+                .filter_map(|(_, arg)| Self::arg_reborrow_base(arg).map(|(root, _)| (root, true)))
+                .collect::<Vec<_>>();
+            let mut changes = this.fact_change_frames.pop().unwrap_or_default();
+            changes.extend(written);
+            for (name, behind) in changes {
+                if behind {
+                    this.neutralize_facts_behind(&name);
+                } else {
+                    this.neutralize_facts_mentioning(&name);
+                }
             }
-        }
+        });
         ty
     }
 
-    /// Can a callee write through the argument `arg`? A `&mut` borrow written in the argument is
-    /// noted where it is checked, so this answers for the other arguments.
-    fn callee_can_write_through(&self, arg: &Expr) -> bool {
+    /// Can a callee write through the argument `arg` for the parameter `param`? A `&mut` borrow
+    /// written in the argument is noted where it is checked, so this answers for the other
+    /// arguments. A `&mut` argument for a `&` parameter becomes a `&`.
+    fn callee_can_write_through(&self, arg: &Expr, param: Option<&Type>) -> bool {
+        if matches!(param, Some(Type::Borrow { is_mut: false, .. })) {
+            return false;
+        }
         let ty = match arg {
             Expr::Borrow(_) => return false,
             Expr::AsCast(cast) => cast.target_ty.clone(),
@@ -1554,6 +1590,7 @@ pub(crate) fn expr_mentions(e: &Expr, name: &str) -> bool {
         Expr::MemberAccess(m) => expr_mentions(&m.base, name),
         Expr::IndexAccess(ix) => expr_mentions(&ix.base, name) || expr_mentions(&ix.index, name),
         Expr::Range(r) => expr_mentions(&r.start, name) || expr_mentions(&r.end, name),
+        Expr::AsCast(c) => expr_mentions(&c.expr, name),
         _ => true,
     }
 }
@@ -1732,18 +1769,28 @@ pub(crate) fn body_reassigns(body: &[Statement], name: &str) -> bool {
 /// The variables that `body` writes at any depth: the root of each assignment, such as `x` in
 /// `x.f[i] = ..`, each variable that an `mlir!` block clobbers, and the root of each `&mut`.
 pub(crate) fn names_a_body_writes(body: &[Statement]) -> std::collections::HashSet<String> {
-    fn root(e: &Expr) -> Option<String> {
+    writes_in_a_body(body)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// The roots of `names_a_body_writes`, each with whether the write goes through its root first
+/// with an index or a `*`, as in `p[i] = ..` and `(*p).f = ..`.
+fn writes_in_a_body(body: &[Statement]) -> Vec<(String, bool)> {
+    fn root(e: &Expr) -> Option<(String, bool)> {
+        let through = |base: &Expr| matches!(base, Expr::Identifier(_));
         match e {
-            Expr::Identifier(id) => Some(id.name.to_string()),
-            Expr::IndexAccess(ix) => root(&ix.base),
+            Expr::Identifier(id) => Some((id.name.to_string(), false)),
+            Expr::IndexAccess(ix) => root(&ix.base).map(|(n, t)| (n, t || through(&ix.base))),
             Expr::MemberAccess(m) => root(&m.base),
-            Expr::Dereference(d) => root(&d.expr),
+            Expr::Dereference(d) => root(&d.expr).map(|(n, t)| (n, t || through(&d.expr))),
             _ => None,
         }
     }
     // The statements of one block and of the loops in it. `visit_exprs` finds the blocks that
     // are inside expressions.
-    fn own(stmts: &[Statement], out: &mut std::collections::HashSet<String>) {
+    fn own(stmts: &[Statement], out: &mut Vec<(String, bool)>) {
         for s in stmts {
             match s {
                 Statement::Assign(a) => out.extend(root(&a.lhs)),
@@ -1754,7 +1801,7 @@ pub(crate) fn names_a_body_writes(body: &[Statement]) -> std::collections::HashS
             }
         }
     }
-    let mut out = std::collections::HashSet::new();
+    let mut out = Vec::new();
     own(body, &mut out);
     crate::syntax::visit_exprs(body, &mut |e| match e {
         Expr::If(i) => {
@@ -1768,8 +1815,13 @@ pub(crate) fn names_a_body_writes(body: &[Statement]) -> std::collections::HashS
         Expr::ComptimeBlock(c) => own(&c.stmts, &mut out),
         Expr::TaskBlock(t) => own(&t.stmts, &mut out),
         Expr::SpawnOn(s) => own(&s.stmts, &mut out),
-        Expr::InlineMlir(m) => out.extend(m.clobbers.iter().filter_map(root)),
-        Expr::Borrow(b) if b.is_mut => out.extend(root(&b.expr)),
+        Expr::InlineMlir(m) => out.extend(
+            m.clobbers
+                .iter()
+                .filter_map(root)
+                .map(|(name, _)| (name, false)),
+        ),
+        Expr::Borrow(b) if b.is_mut => out.extend(root(&b.expr).map(|(name, _)| (name, false))),
         _ => {}
     });
     out

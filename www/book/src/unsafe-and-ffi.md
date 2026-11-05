@@ -179,6 +179,39 @@ fn main() -> i32 {
 }
 ```
 
+The methods of `Vec` state such clauses. `as_mut_ptr` ensures `valid` and `initialized` for the
+`len` elements of the vector, and `len` ensures that it returns that count. The methods that only
+read the vector have `!frees(self)`. So safe code can give the pointer to `sum`. A `push` can move
+the buffer, so after a `push` the pointer has no facts.
+
+```rust
+import core::ptr;
+import std::vec;
+
+fn sum(p : *const i64, n : i64) -> i64
+    requires valid(p, n)
+    requires initialized(p, n)
+{
+    let mut total = 0i64;
+    for i in 0i64..n {
+        total = total + unsafe { p[i] };
+    }
+    return total;
+}
+
+fn total(v : &Vec<i64>) -> i64 {
+    let p = v.as_mut_ptr();
+    return sum(p as *const i64, v.len() as i64);
+}
+
+fn main() -> i32 {
+    let mut v = Vec<i64>::new();
+    v.push(2i64);
+    v.push(3i64);
+    return (total(&v) - 5i64) as i32;
+}
+```
+
 From a `spawn` until its `join()` or the end of its `tasks` block, the task can free memory, so
 no fact about other memory starts in that time.
 

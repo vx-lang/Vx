@@ -40,22 +40,23 @@ enum Kind {
     Init,
 }
 
-/// `Valid` or `Init` for the elements `lo` to `hi - 1` at `base`.
+/// `Valid` or `Init` for the elements `lo` to `hi - 1` at `base`. Each end is a sum of terms, as
+/// an offset is, so that the prover adds them with no wrap.
 #[derive(Clone, Debug)]
 struct Range {
     id: usize,
     kind: Kind,
     base: usize,
-    lo: Expr,
-    hi: Expr,
+    lo: Vec<Expr>,
+    hi: Vec<Expr>,
 }
 
 /// The `len` elements from `lo` at each of two bases share no byte.
 #[derive(Clone, Debug)]
 struct Apart {
     id: usize,
-    first: (usize, Expr),
-    second: (usize, Expr),
+    first: (usize, Vec<Expr>),
+    second: (usize, Vec<Expr>),
     len: Expr,
 }
 
@@ -140,12 +141,15 @@ impl PointerFacts {
         self.entries.remove(name);
         self.entries
             .retain(|_, v| !v.offset.iter().any(|t| expr_mentions(t, name)));
-        let names = |r: &Range| expr_mentions(&r.lo, name) || expr_mentions(&r.hi, name);
+        let names = |r: &Range| r.lo.iter().chain(&r.hi).any(|t| expr_mentions(t, name));
         self.ranges.retain(|r| !names(r));
         self.ended.retain(|e| !names(&e.range));
         self.aparts.retain(|a| {
-            ![&a.first.1, &a.second.1, &a.len]
+            !a.first
+                .1
                 .iter()
+                .chain(&a.second.1)
+                .chain([&a.len])
                 .any(|e| expr_mentions(e, name))
         });
     }
@@ -338,22 +342,6 @@ fn le(a: Exact, b: Exact) -> Exact {
     Exact::Le(Box::new(a), Box::new(b))
 }
 
-/// `a + b`.
-fn plus(a: Expr, b: Expr) -> Expr {
-    Expr::BinaryOp(BinaryOpExpr {
-        lhs: Box::new(a),
-        op: BinaryOp::Add,
-        rhs: Box::new(b),
-        span: Span::default(),
-        operand_ty: None,
-    })
-}
-
-/// The sum of the terms of an offset.
-fn offset_sum(terms: &[Expr]) -> Expr {
-    terms.iter().cloned().reduce(plus).unwrap_or_else(zero)
-}
-
 /// The name of the result of the call at `at` in the facts of its `ensures`. A `let` of the
 /// result gives the facts its own name.
 fn result_name(at: Span) -> Expr {
@@ -366,6 +354,14 @@ fn result_name(at: Span) -> Expr {
 fn zero() -> Expr {
     Expr::Number(NumberExpr {
         value: "0".to_string().into(),
+        ty: None,
+        span: Span::default(),
+    })
+}
+
+fn one() -> Expr {
+    Expr::Number(NumberExpr {
+        value: "1".to_string().into(),
         ty: None,
         span: Span::default(),
     })
@@ -404,7 +400,7 @@ impl<'a> TypeChecker<'a> {
         self.pointer_fact_ids
     }
 
-    fn add_range(&mut self, kind: Kind, base: usize, lo: Expr, hi: Expr) {
+    fn add_range(&mut self, kind: Kind, base: usize, lo: Vec<Expr>, hi: Vec<Expr>) {
         self.pointer_fact_ids += 1;
         let id = self.pointer_fact_ids;
         self.pointer_facts.ranges.push(Range {
@@ -469,7 +465,7 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         Kind::Init
                     };
-                    self.add_range(kind, bases[0], zero(), len.clone());
+                    self.add_range(kind, bases[0], Vec::new(), vec![len.clone()]);
                     if kind == Kind::Valid && crate::hir::prover::is_modelled(len) {
                         self.consteval
                             .constraints
@@ -487,8 +483,8 @@ impl<'a> TypeChecker<'a> {
                     let id = self.pointer_fact_ids;
                     self.pointer_facts.aparts.push(Apart {
                         id,
-                        first: (bases[0], zero()),
-                        second: (bases[1], zero()),
+                        first: (bases[0], Vec::new()),
+                        second: (bases[1], Vec::new()),
                         len: len.clone(),
                     });
                 }
@@ -588,13 +584,8 @@ impl<'a> TypeChecker<'a> {
             drops,
         };
         let base = self.new_base(memory);
-        let one = Expr::Number(NumberExpr {
-            value: "1".to_string().into(),
-            ty: None,
-            span: Span::default(),
-        });
-        self.add_range(Kind::Valid, base, zero(), one.clone());
-        self.add_range(Kind::Init, base, zero(), one);
+        self.add_range(Kind::Valid, base, Vec::new(), vec![one()]);
+        self.add_range(Kind::Init, base, Vec::new(), vec![one()]);
         PointerValue {
             base,
             offset: Vec::new(),
@@ -922,12 +913,10 @@ impl<'a> TypeChecker<'a> {
         let names = HashMap::from([(from.name, to)]);
         let rename = |e: &mut Expr| *e = crate::hir::prover::substitute_names(e, &names);
         for r in &mut self.pointer_facts.ranges {
-            rename(&mut r.lo);
-            rename(&mut r.hi);
+            r.lo.iter_mut().chain(&mut r.hi).for_each(rename);
         }
         for a in &mut self.pointer_facts.aparts {
-            rename(&mut a.first.1);
-            rename(&mut a.second.1);
+            a.first.1.iter_mut().chain(&mut a.second.1).for_each(rename);
             rename(&mut a.len);
         }
     }
@@ -1177,9 +1166,24 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Expr::MethodCall(m) => {
+                // The receiver and an argument for a parameter with a written `!frees` free
+                // nothing.
+                let ty = self.scan_type(&m.base, declared);
+                let speculating = std::mem::replace(&mut self.speculating, true);
+                let not_freed = self
+                    .resolve_method_in_impls(&ty, &m.method_name, &mut HashMap::new())
+                    .map_or(0, |(f, _)| {
+                        crate::hir::check::pointer_clauses::not_freed_params(&f.params, &f.ensures)
+                    });
+                self.speculating = speculating;
                 let arg = std::iter::once(&*m.base)
                     .chain(&m.args)
-                    .find(|a| self.scan_can_free(a, None, declared));
+                    .enumerate()
+                    .find(|&(i, a)| {
+                        (i >= 32 || not_freed & (1 << i) == 0)
+                            && self.scan_can_free(a, None, declared)
+                    })
+                    .map(|(_, a)| a);
                 if let Some(a) = arg {
                     let why = format!(
                         "the call to '{}', which can free memory through {}",
@@ -1419,6 +1423,30 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Runs `events`, and then `changes`, the changes at the same place, as of a call or of a
+    /// loop. The changes keep the facts that the events ended, so that the note of E8006 can name
+    /// the event, as for a fact about `v.len` and `v.push(1i64)`.
+    pub(crate) fn pointer_facts_events_then_changes(
+        &mut self,
+        events: impl FnOnce(&mut Self),
+        changes: impl FnOnce(&mut Self),
+    ) {
+        let from = self.pointer_facts.ended.len();
+        events(self);
+        let ended = self.pointer_facts.ended[from..].to_vec();
+        changes(self);
+        for e in ended {
+            if !self
+                .pointer_facts
+                .ended
+                .iter()
+                .any(|x| x.range.id == e.range.id)
+            {
+                self.pointer_facts.ended.push(e);
+            }
+        }
+    }
+
     /// After the call `expr` is checked and its value `requires` is proved: prove each pointer
     /// `requires` of the callee in safe code, and then apply the events of the call.
     pub(crate) fn pointer_facts_at_call(&mut self, expr: &Expr, written: WrittenCall) {
@@ -1611,8 +1639,8 @@ impl<'a> TypeChecker<'a> {
             let id = self.pointer_fact_ids;
             self.pointer_facts.aparts.push(Apart {
                 id,
-                first: (values[0].base, offset_sum(&values[0].offset)),
-                second: (values[1].base, offset_sum(&values[1].offset)),
+                first: (values[0].base, values[0].offset.clone()),
+                second: (values[1].base, values[1].offset.clone()),
                 len: n,
             });
             return;
@@ -1639,8 +1667,8 @@ impl<'a> TypeChecker<'a> {
             .memory
             .get(&v.base)
             .is_some_and(|ms| ms.contains(&Memory::Other));
-        let lo = offset_sum(&v.offset);
-        let hi = plus(lo.clone(), n.clone());
+        let lo = v.offset.clone();
+        let hi = lo.iter().cloned().chain([n.clone()]).collect();
         if let Some(&(_, _, spawn)) = self.pointer_facts.tasks.last().filter(|_| other_memory) {
             // The fact does not start, and the note of E8006 names the `spawn`.
             self.pointer_fact_ids += 1;
@@ -1744,7 +1772,7 @@ impl<'a> TypeChecker<'a> {
 
     /// The parameter types of the function that the call `expr` to `name` calls, when the
     /// checker knows them.
-    fn call_param_types(&self, name: &str, expr: &Expr) -> Option<Vec<Type>> {
+    pub(crate) fn call_param_types(&self, name: &str, expr: &Expr) -> Option<Vec<Type>> {
         let from_type = |t: Type| match t {
             Type::Function(params, ..) | Type::Closure(params, _) => Some(params),
             _ => None,
@@ -1880,7 +1908,10 @@ impl<'a> TypeChecker<'a> {
             .collect();
         ended.into_iter().rev().find_map(|e| {
             let goal = self.pointer_goal(function, values, m, Some(&e.range));
-            self.prove_exact(&goal).then_some((e.at, e.why))
+            // The fact held, so its range was not negative. A change at its event can hide that.
+            let negative = le(sum(&e.range.hi, &[&one()]), sum(&e.range.lo, &[]));
+            self.prove_exact(&Exact::Or(vec![negative, goal]))
+                .then_some((e.at, e.why))
         })
     }
 
@@ -1906,8 +1937,8 @@ impl<'a> TypeChecker<'a> {
         let ranges = || facts.ranges.iter().chain(extra);
         let within = |r: &Range, v: &PointerValue| {
             Exact::And(vec![
-                le(term(r.lo.clone()), sum(&v.offset, &[])),
-                le(sum(&v.offset, &[m]), term(r.hi.clone())),
+                le(sum(&r.lo, &[]), sum(&v.offset, &[])),
+                le(sum(&v.offset, &[m]), sum(&r.hi, &[])),
             ])
         };
         match function {
@@ -1942,13 +1973,10 @@ impl<'a> TypeChecker<'a> {
                 for apart in &facts.aparts {
                     for (x, y) in [(a, b), (b, a)] {
                         if apart.first.0 == x.base && apart.second.0 == y.base {
-                            let window = |(_, lo): &(usize, Expr), v: &PointerValue| {
+                            let window = |(_, lo): &(usize, Vec<Expr>), v: &PointerValue| {
                                 Exact::And(vec![
-                                    le(term(lo.clone()), sum(&v.offset, &[])),
-                                    le(
-                                        sum(&v.offset, &[m]),
-                                        sum(std::slice::from_ref(lo), &[&apart.len]),
-                                    ),
+                                    le(sum(lo, &[]), sum(&v.offset, &[])),
+                                    le(sum(&v.offset, &[m]), sum(lo, &[&apart.len])),
                                 ])
                             };
                             goals.push(Exact::And(vec![

@@ -354,6 +354,7 @@ impl<T> Vec<T> {
   fn as_mut_ptr(self : &Vec<T>) -> *mut T
   ensures valid(return, self.len)
   ensures initialized(return, self.len)
+  ensures !frees(self)
   {
     let p = self.data;
     unsafe {
@@ -365,6 +366,7 @@ impl<T> Vec<T> {
 
   fn len(self : &Vec<T>) -> i32
   ensures return == self.len
+  ensures !frees(self)
   {
     return self.len;
   }
@@ -394,18 +396,22 @@ fn total_in_a_loop(v : &mut Vec<i64>) -> i64 {
 
 - `total` compiles. After `as_mut_ptr`, `p` has a new base `b`, with `Valid(b, 0, v.len)` and
   `Init(b, 0, v.len)`. The `Valid` fact gives `v.len >= 0`. The `ensures` of `len` gives its result
-  as `v.len` (#2622). So both goals hold. `len` only reads a field of `self`, so the compiler
-  infers `!frees(self)`, and the call of `len` ends no fact.
+  as `v.len` (#2622). So both goals hold. `len` has `!frees(self)`, so the call of `len` ends no
+  fact. The other methods that only read the vector have it too: `get`, `get_ref`, `is_empty`,
+  `as_slice` and `as_mut_slice`.
 - In `total_after_push`, `v.push(1i64)` gets `&mut` to a vector, which can free memory. So the
   push ends both facts, and `sum` gets E8006 with a note on the line of the push. This is the bug
-  that `as_mut_ptr` warns about in its comment today.
+  that `as_mut_ptr` warns about in its comment.
 - In `total_in_a_loop`, the call of `sum` comes before the push in the body. The loop rule finds
   the push before it checks the body. So the facts are gone at the start of the body, and the call
-  gets E8006. On the second pass, the push of the first pass can move the buffer.
+  gets E8006. On the second pass, the push of the first pass can move the buffer. The error has no
+  note, because after the push `n` is not the length. With `v.len()` in place of `n`, the note
+  gives the line of the push.
 
-The `assume` in `as_mut_ptr` is true only when `data` is not null. Today `vec_alloc` returns null
-for a buffer of 0 bytes, for example for `Vec::with_capacity(0)`. So `Vec` must first keep an
-aligned pointer that is not null for an empty buffer, as the `Vec` of Rust does.
+The `assume` in `as_mut_ptr` is true only when `data` is not null. So an empty `Vec`, as from
+`Vec::with_capacity(0)`, keeps the address 16, which is aligned and not null, as the `Vec` of Rust
+does. It allocates no memory for a buffer of 0 bytes and frees none. A type with no fields gives a
+buffer of 0 bytes too.
 
 ### A pointer to a local variable
 
@@ -695,6 +701,8 @@ needs a fact there. Open question 6 asks about a warning for it.
   region at its end, so no task of it runs after the region.
 - The inference from the syntax stops at a method call, as the inference of `!keeps` does. Only a
   method or an instance of a generic function gets `!frees` from its checked body.
+- The loop rule reads the body before the checker checks it. At a method call, it uses only a
+  `!frees` that the method states, as the methods of `Vec` do.
 
 ## 12. Open questions
 

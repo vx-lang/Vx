@@ -1309,8 +1309,10 @@ impl<'a> TypeChecker<'a> {
             self.consteval.constraints.push(inv.clone());
         }
         self.consteval.constraints.truncate(facts_before);
-        self.neutralize_facts_a_loop_writes(body);
-        self.end_pointer_facts_a_loop_can_end(body);
+        self.pointer_facts_events_then_changes(
+            |this| this.end_pointer_facts_a_loop_can_end(body),
+            |this| this.neutralize_facts_a_loop_writes(body),
+        );
         self.consteval
             .constraints
             .extend(invariants.iter().cloned());
@@ -2297,6 +2299,13 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // A goal that is one of the facts needs no solver.
+        if let Ok(smt) = prover.lower_term(&goal, &|n| self.prover_int_type(n)) {
+            if prover.has_fact(&smt) {
+                return true;
+            }
+        }
+
         // To prove `goal` holds under the facts, assert `!goal` and check for unsatisfiability.
         let negated_expr = Expr::UnaryOp(UnaryOpExpr {
             op: UnaryOp::Not,
@@ -2331,15 +2340,52 @@ impl<'a> TypeChecker<'a> {
             .iter()
             .map(|c| self.abstract_calls(c, &mut calls, &mut facts))
             .collect();
-        let goal = self.lower_exact(goal, &mut prover, &mut calls, &mut facts);
+        let smt = self.lower_exact(goal, &mut prover, &mut calls, &mut facts);
         for constraint in constraints.iter().chain(&facts) {
             let _ = prover.add_constraint(constraint, &|n| self.prover_int_type(n));
         }
-        let Some(goal) = goal else {
+        let Some(smt) = smt else {
             return false;
         };
-        prover.add_smt(format!("(not {goal})"));
+        if self.holds_by_form(goal, &mut prover, &mut calls, &mut facts) {
+            return true;
+        }
+        prover.add_smt(format!("(not {smt})"));
         matches!(prover.prove(), Ok(false))
+    }
+
+    /// Whether `goal` holds by its form, with no solver: each part of an `and`, or one part of an
+    /// `or`, holds. A comparison `a <= b` holds when `a` and `b` are the same term, or `a` is `0`
+    /// and a fact says that `b` is not negative. The pointer `ensures` of `Vec` hold in this way, so
+    /// a program that uses `Vec` needs no solver.
+    fn holds_by_form(
+        &self,
+        goal: &crate::hir::check::pointer_facts::Exact,
+        prover: &mut hir::prover::SmtProver,
+        calls: &mut usize,
+        facts: &mut Vec<Expr>,
+    ) -> bool {
+        use crate::hir::check::pointer_facts::Exact;
+        match goal {
+            Exact::And(gs) => gs
+                .iter()
+                .all(|g| self.holds_by_form(g, prover, calls, facts)),
+            Exact::Or(gs) => gs
+                .iter()
+                .any(|g| self.holds_by_form(g, prover, calls, facts)),
+            Exact::Le(a, b) => {
+                let a = self.lower_exact(a, prover, calls, facts);
+                let b = self.lower_exact(b, prover, calls, facts);
+                let (Some(a), Some(b)) = (a, b) else {
+                    return false;
+                };
+                a == b
+                    || a == "0"
+                        && (prover.has_fact(&format!("(>= {b} 0)"))
+                            || prover.has_fact(&format!("(<= 0 {b})")))
+            }
+            Exact::Term(_) | Exact::Sum(_) => false,
+        }
     }
 
     fn lower_exact(
