@@ -126,7 +126,9 @@ typedef struct {
   int32_t dtype;       /* VX_DTYPE_*, for descriptor reconstruction */
   void *remote;        /* the worker's own pointer; never leaves the plugin */
   uint64_t generation; /* bumped on free, so a stale handle is detectable */
-  int32_t live;        /* 0 once freed; the slot is not reused */
+  /* 0 once freed. A new region takes the slot only after
+     vx_remote_table_free_all empties the table. */
+  int32_t live;
 } vx_remote_region;
 
 /// Where a resolved handle points.
