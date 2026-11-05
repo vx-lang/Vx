@@ -9,6 +9,7 @@
 #include <cstring>
 #include <ffi/ffi.h>
 #include <iostream>
+#include <malloc/malloc.h>
 #include <vector>
 
 /// Whether to narrate what the dispatcher is doing.
@@ -572,10 +573,15 @@ int vx_metal_dispatch(const void *payload, size_t payload_size,
                       void **device_args, const int32_t *arg_tags,
                       int64_t num_args);
 
-// Runs the Apple GPU launches that are still open and waits for them
-// (runtime/metal_dispatch.mm). Each entry point below that can touch the
-// memory of a kernel calls it first.
+// Waits for Apple GPU launches that are still open (runtime/metal_dispatch.mm).
+// Each entry point below that can touch the memory of a kernel waits first.
+// It waits only for the launches that write the memory it reads, or use the
+// memory it writes.
 void vx_metal_wait(void);
+void vx_metal_wait_for_memory(const void *start, size_t bytes, int written);
+void vx_metal_wait_for_launch(const void *payload, size_t payload_size,
+                              void **device_args, const int32_t *arg_tags,
+                              int64_t num_args);
 
 // `space_access` is accepted and ignored: the Neural Engine's staging is host
 // memory this process can read, so a model claiming the host may read it is
@@ -620,7 +626,8 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
   // A launch that does not go to this Mac's GPU can read what an open GPU
   // launch writes.
   if (!msl || vx_routing_worker_for_payload(binary_payload, payload_size)) {
-    vx_metal_wait();
+    vx_metal_wait_for_launch(binary_payload, payload_size, device_args,
+                             arg_tags, num_args);
   }
 
   // Before anything local: does this placement name another machine?
@@ -646,7 +653,8 @@ extern "C" uint64_t vx_plugin_dispatch_async(const void *binary_payload,
     }
     // The GPU is off for this thread, so the host copy runs on memory that
     // an open GPU launch can write.
-    vx_metal_wait();
+    vx_metal_wait_for_launch(binary_payload, payload_size, device_args,
+                             arg_tags, num_args);
   }
 
   // A matmul the compiler recognised says so, and says which argument is which
@@ -823,7 +831,8 @@ void vx_plugin_await_future(uint64_t future_id) {
 
 int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
                                           size_t bytes, uint32_t topology_id) {
-  vx_metal_wait();
+  vx_metal_wait_for_memory(device_ptr, bytes, 0);
+  vx_metal_wait_for_memory(host_ptr, bytes, 1);
   if (vx_routing_try_fetch(device_ptr, host_ptr, bytes, topology_id)) {
     return 1;
   }
@@ -837,7 +846,7 @@ int32_t vx_plugin_transfer_device_to_host(void *device_ptr, void *host_ptr,
 
 void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
                               uint32_t dst_topology_id, size_t bytes) {
-  vx_metal_wait();
+  vx_metal_wait_for_memory(src_device_ptr, bytes, 0);
   void *routed = nullptr;
   if (vx_routing_try_peer(src_device_ptr, src_topology_id, dst_topology_id,
                           bytes, &routed)) {
@@ -858,7 +867,14 @@ void *vx_plugin_transfer_peer(void *src_device_ptr, uint32_t src_topology_id,
 }
 
 void vx_plugin_free(void *device_ptr, uint32_t topology_id) {
-  vx_metal_wait();
+  // A handle of another machine is not memory of this process, and has no
+  // size here.
+  const size_t bytes = device_ptr ? malloc_size(device_ptr) : 0;
+  if (bytes) {
+    vx_metal_wait_for_memory(device_ptr, bytes, 1);
+  } else if (device_ptr) {
+    vx_metal_wait();
+  }
   if (vx_routing_try_free(device_ptr, topology_id)) {
     return;
   }
@@ -921,5 +937,7 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload) {
 }
 }
 
-#define VX_COLLECTIVE_CPU_BEFORE_COPY() vx_metal_wait()
+#define VX_COLLECTIVE_CPU_BEFORE_COPY(input, output, bytes)                    \
+  (vx_metal_wait_for_memory(input, bytes, 0),                                  \
+   vx_metal_wait_for_memory(output, bytes, 1))
 #include "vx_collective_cpu.h"

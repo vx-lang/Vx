@@ -1,0 +1,157 @@
+// Each thread puts its Apple GPU kernels in a command buffer of its own. A thread waits only for
+// the kernels that write memory it reads, or that use memory it writes. In each part of `main`,
+// the main thread starts a kernel, and then a task on another thread uses some of the same memory:
+//
+// - Part 1: the task's kernel runs on the CPU and reads `w`, which the main thread's kernel also
+//   reads. Neither writes `w`, so the task does not wait. The main thread's next kernel goes into
+//   the same command buffer, and one wait runs both.
+// - Part 2: the task's kernel runs on the CPU and reads `d`, which the main thread's kernel
+//   writes. So the task waits for that kernel.
+// - Part 3: the task's kernel runs on the GPU and reads `f`, which the main thread's kernel
+//   writes. So the main thread's kernel runs first. The read of `g` then waits for the task's
+//   kernel, after the task ended.
+// - Part 4: both threads run kernels on the GPU that read `w`. Neither waits for the other.
+//
+// `main` reads `f` after `g`, and `w` at the end. Otherwise the program frees each one after its
+// last use, and the free waits for each kernel that reads it.
+//
+// The GPU run and the CPU copy of each kernel (VX_METAL=0) print the same numbers.
+//
+// REQUIRES: macos
+// RUN: env VX_DISPATCH_VERBOSE=1 vxc %s --host default --machine fleet/m4-uma.vx 2>%t.gpu | FileCheck %s --check-prefix=OUT
+// RUN: grep -e "Vx Metal" -e "Falling back" %t.gpu | FileCheck %s --check-prefix=GPU
+// RUN: env VX_METAL=0 vxc %s --host default --machine fleet/m4-uma.vx | FileCheck %s --check-prefix=OUT
+//
+// w = position, and the last position is 65535.
+// OUT: {{^}}w 65535{{$}}
+// OUT-NEXT: {{^}}part 1: 131070 131070 262140{{$}}
+// OUT-NEXT: {{^}}part 2: 262140{{$}}
+// OUT-NEXT: {{^}}part 3: 262140 131070{{$}}
+// OUT-NEXT: {{^}}part 4: 262140 131070{{$}}
+// OUT-NEXT: {{^}}w 65535{{$}}
+//
+// GPU: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] waited for 1 kernel,
+//
+// Part 1.
+// GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
+// GPU-NEXT: Falling back to CPU libffi dispatch
+// GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] waited for 2 kernels,
+//
+// Part 2.
+// GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] waited for 1 kernel,
+// GPU-NEXT: Falling back to CPU libffi dispatch
+//
+// Part 3.
+// GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] waited for 1 kernel,
+// GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] waited for 1 kernel,
+//
+// Part 4.
+// GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] {{vx_npu_kernel_[0-9]+}}: grid 256 x 1 x 1, block 256
+// GPU-NEXT: [Vx Metal] waited for 2 kernels,
+// GPU-NEXT: [Vx Metal] waited for 1 kernel,{{.*}}
+// GPU-NOT: {{.}}
+
+// dst = position
+fn fill(dst : &mut Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes(256) {
+        let i = g * 256 + l;
+        if i < n {
+          dst[i] = i as f32;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// dst = src * 2
+fn twice(dst : &mut Tensor<f32, [?], Memory::HBM>, src : &Tensor<f32, [?], Memory::HBM>, n : i32) -> void {
+  spawn on(Topology::Device) {
+    for g in 0..(n + 255) / 256 across blocks {
+      for l in 0..256 across lanes(256) {
+        let i = g * 256 + l;
+        if i < n {
+          dst[i] = src[i] * 2.0;
+        }
+      }
+    }
+  }
+  return;
+}
+
+// Reads `t` in place, after a wait.
+fn last(t : &Tensor<f32, [?], Memory::HBM>) -> f32 {
+  let host = transfer(t, Memory::CPU_DRAM);
+  return host[65535];
+}
+
+extern "C" {
+  fn vx_metal_set_enabled(enabled : i32) -> void;
+}
+
+fn main() -> i32 {
+  let n : i32 = 65536;
+  let mut w = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  fill(&mut w, n);
+  println!("w {}", last(&w));
+
+  let mut a = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  let mut b = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  let mut c = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  twice(&mut a, &w, n);
+  tasks {
+    spawn {
+      unsafe { vx_metal_set_enabled(0); }
+      twice(&mut b, &w, n);
+    };
+  };
+  twice(&mut c, &a, n);
+  let c_last = last(&c);
+  println!("part 1: {} {} {}", last(&a), last(&b), c_last);
+
+  let mut d = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  let mut e = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  twice(&mut d, &w, n);
+  tasks {
+    spawn {
+      unsafe { vx_metal_set_enabled(0); }
+      twice(&mut e, &d, n);
+    };
+  };
+  println!("part 2: {}", last(&e));
+
+  let mut f = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  let mut g = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  twice(&mut f, &w, n);
+  tasks {
+    spawn {
+      twice(&mut g, &f, n);
+    };
+  };
+  let g_last = last(&g);
+  println!("part 3: {} {}", g_last, last(&f));
+
+  let mut h = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  let mut k = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  let mut m = transfer(Tensor<f32, [65536]>::fill(0.0), Memory::HBM);
+  twice(&mut h, &w, n);
+  tasks {
+    spawn {
+      twice(&mut k, &w, n);
+    };
+  };
+  twice(&mut m, &h, n);
+  let m_last = last(&m);
+  println!("part 4: {} {}", m_last, last(&k));
+  println!("w {}", last(&w));
+  return 0;
+}
