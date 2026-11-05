@@ -675,7 +675,8 @@ int32_t vx_plugin_control(uint32_t opcode, void *payload);
 // Wait until every launch on a topology has finished. `payload` points to the
 // int32_t topology id. A backend may wait for more than that topology. A
 // transfer over a `: shared` edge sends it before the CPU reads GPU memory in
-// place. A backend whose launches finish before they return ignores it.
+// place. A `pub fn` of a library for the Apple GPU sends it before it returns.
+// A backend whose launches finish before they return ignores it.
 #define VX_CTRL_WAIT 0x05
 #define VX_CTRL_VENDOR_BASE 0x1000 // Vendors start their custom opcodes here
 
