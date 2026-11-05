@@ -341,7 +341,9 @@ exists (1:r1 = 0)
 - `w[rel] flag 1` writes 1 to `flag` with release order. `r[acq] r0 flag` reads `flag` into
   `r0` with acquire order. `plain` is an access that is not atomic. The orders are `plain`,
   `rlx`, `acq`, `rel`, `acq_rel` and `sc`.
-- `r[acq,block] r0 flag` is an atomic of block scope. An atomic without a scope has system scope.
+- `r[acq,block] r0 flag` is an atomic of block scope, and `f[rel,device]` is a fence of device
+  scope. An atomic or a fence without a scope has system scope.
+- `rmw[rlx,device] r0 (add r0 1) count` adds 1 to `count` and reads the old value into `r0`.
 - `f[barrier,block]` is a barrier of block scope. The scopes are `subgroup`, `block`, `device`
   and `system`.
 - `scopes:` puts the threads in subgroups, blocks and devices. A CPU test writes
@@ -353,7 +355,7 @@ exists (1:r1 = 0)
 
 A fork or a join is a release write and an acquire read of a flag, as in the example.
 
-## Two choices in the model
+## Three choices in the model
 
 - **No value comes out of thin air.** The model keeps the rule of RC11: no cycle of program order
   and reads, also for relaxed atomics. PTX and AArch64 allow such a cycle, so vxc makes each
@@ -363,6 +365,9 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
   `load_buffering_relaxed.litmus`.
 - **Two atomics race unless each one reaches the thread of the other.** This follows the PTX
   model. `atomic_of_block_scope_across_blocks.litmus` shows the case.
+- **A release and an acquire synchronize only when they reach each other**, and so do the write
+  and the read that link them. With fences, these are two pairs, as in PTX.
+  `last_arriver_with_fences_of_block_scope.litmus` shows the case.
 
 ## Limits
 
@@ -375,6 +380,7 @@ A fork or a join is a release write and an acquire read of a flag, as in the exa
 - The rules compare each task of an inner block with all the code of the outer block, also the
   code after the inner block joined it.
 - The Lean model has no scopes and no barriers.
+- In a release sequence, a read-modify-write continues the sequence whatever its scope.
 - The model covers only C0 to C7. The rules for sequential code, E1 to E7 and A1 to A6, are not in
   it.
 - `Consistent` does not ask that `co` orders the writes to each place. A theorem that needs it
