@@ -1,0 +1,39 @@
+// A C program reads the tensors of a `pub fn` as soon as the call returns. So in a library for
+// the Apple GPU, a `pub fn` waits for the GPU before each return. It calls `vx_plugin_control`
+// with opcode 5, VX_CTRL_WAIT. `add_one` returns in two places, so it waits in two places.
+//
+// A CUDA library does not wait there, because a CUDA launch does not wait for the GPU
+// (docs/lang/abi.md §3.6). Its two `vx_plugin_control` calls tell the backend its GPU.
+//
+// RUN: vxc %s --host default --machine fleet/m4-uma.vx --action emit-llvm -o - 2>/dev/null | FileCheck %s --check-prefix=APPLE
+// RUN: vxc %s --host default --machine fleet/a100-80.vx --action emit-llvm -o - 2>/dev/null | FileCheck %s --check-prefix=CUDA
+//
+// APPLE-LABEL: llvm.func @add_one(
+// APPLE: [[WAIT:%[0-9]+]] = llvm.mlir.constant(5 : i32) : i32
+// APPLE: llvm.call @vx_plugin_control([[WAIT]], {{%[0-9]+}})
+// APPLE-NEXT: llvm.return
+// APPLE: llvm.call @vx_plugin_dispatch_async(
+// APPLE: llvm.call @vx_plugin_control([[WAIT]], {{%[0-9]+}})
+// APPLE-NEXT: llvm.return
+//
+// CUDA-LABEL: llvm.func @add_one(
+// CUDA: llvm.call @vx_plugin_control(
+// CUDA: llvm.call @vx_plugin_control(
+// CUDA-NOT: llvm.call @vx_plugin_control(
+// CUDA: llvm.return
+// CUDA: llvm.call @vx_plugin_dispatch_async(
+// CUDA-NEXT: llvm.return
+
+pub fn add_one(dst : &mut Tensor<f32, [?, ?], Memory::HBM>, src : &Tensor<f32, [?, ?], Memory::HBM>, h : i32, w : i32) -> i32 {
+  if w > 1024 {
+    return 1;
+  }
+  spawn on(Topology::Device) {
+    for y in 0..h across blocks {
+      for x in 0..w across lanes(256) {
+        dst[y][x] = src[y][x] + 1.0;
+      }
+    }
+  }
+  return 0;
+}
