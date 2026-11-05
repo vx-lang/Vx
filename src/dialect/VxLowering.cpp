@@ -3747,6 +3747,9 @@ enum class BufferOrigin {
   // A view of another buffer, or a parameter taken by reference.
   Borrowed,
   Unknown,
+  // Only inside originOf: no path to the value brings a buffer, as for a loop
+  // value whose paths are poison or the loop itself. The other paths decide.
+  Undecided,
 };
 
 // Free a placed buffer through the plugin that allocated it. The legacy code
@@ -3891,13 +3894,15 @@ static BufferOrigin commonOrigin(ArrayRef<Value> values,
       continue;
     std::optional<int32_t> here;
     BufferOrigin o = originOf(v, seen, here);
+    if (o == BufferOrigin::Undecided)
+      continue;
     if ((common && *common != o) || (topology && here && *topology != *here))
       return BufferOrigin::Unknown;
     common = o;
     if (here)
       topology = here;
   }
-  return common.value_or(BufferOrigin::Unknown);
+  return common.value_or(BufferOrigin::Undecided);
 }
 
 static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
@@ -4018,7 +4023,8 @@ static BufferOrigin originOf(Value v, llvm::SmallPtrSetImpl<void *> &seen,
 
 static BufferOrigin originOf(Value v, std::optional<int32_t> &topology) {
   llvm::SmallPtrSet<void *, 8> seen;
-  return originOf(v, seen, topology);
+  BufferOrigin origin = originOf(v, seen, topology);
+  return origin == BufferOrigin::Undecided ? BufferOrigin::Unknown : origin;
 }
 
 static BufferOrigin originOf(Value v) {

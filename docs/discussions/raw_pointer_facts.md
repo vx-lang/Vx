@@ -290,7 +290,7 @@ the call. So in v1, a body must not assign a parameter that a pointer `ensures` 
 | Where the proof runs | When the prover cannot prove the clause |
 | --- | --- |
 | A call in safe code | E8006. The message names the clause. If an event ended the fact, the message also gives the line of the event and its reason. |
-| A call in an `unsafe` block | The checker trusts the clause. The audit lists it. |
+| A call in an `unsafe` block | The checker trusts the clause. The audit lists it, and the block gets no W1010. |
 | A `return` in a function with a pointer `ensures` | E8012 |
 
 **`assume e`** adds the fact `e`, without a proof. It is a statement, and only an `unsafe` block can
@@ -734,7 +734,8 @@ needs a fact there. Open question 6 asks about a warning for it.
    emits the `dereferenceable` assume after a call with `ensures valid`.
 1. A `Vec` with an empty buffer keeps an aligned pointer that is not null. Then the clauses of
    `Vec::as_mut_ptr` and `Vec::len` in the standard library.
-1. The audit lists each trusted pointer clause and each `assume`, with A1 of #1902.
+1. The audit lists each trusted pointer clause and each `assume`, with A1 of #1902. `vxc --audit`
+   prints one line for each: the file, the line, the column and the fact.
 
 Each step adds fixtures that pass and fail. Each test breaks one rule, for example one event or one
 term of a goal, and checks the line of the error.

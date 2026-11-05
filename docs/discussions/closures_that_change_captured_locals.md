@@ -90,14 +90,14 @@ generators see plain structs as today.
 
 `core::time::Duration` exists, with the API of Rust's. The library starts to use it:
 
-| Today | Proposed | | --- | --- | | `std::time::now() -> f32` | `Instant::now()`, with
-`elapsed() -> Duration` and `Instant - Instant`. An `Instant` holds the nanoseconds of the monotonic
-clock, `vx_clock_ns`. | | `sleep(seconds : f32)` | `sleep(d : Duration)` | |
-`send_for(v, seconds : f64)`, `recv_for(seconds : f64)` | `send_for(v, d : Duration)`,
-`recv_for(d : Duration)` | | `deadline_after(seconds : f64) -> i64` | `Instant::now() + d` | |
-`wait_while_until(word, value, deadline : i64, ..)` | `deadline : Instant` | |
-`Drop::wait_limit(&self) -> f64`, 10.0 by default | `-> Duration`, `Duration::from_secs(10)` by
-default |
+| Today | Proposed |
+| --- | --- |
+| `std::time::now() -> f32` | `Instant::now()`, with `elapsed() -> Duration` and `Instant - Instant`. An `Instant` holds the nanoseconds of the monotonic clock, `vx_clock_ns`. |
+| `sleep(seconds : f32)` | `sleep(d : Duration)` |
+| `send_for(v, seconds : f64)`, `recv_for(seconds : f64)` | `send_for(v, d : Duration)`, `recv_for(d : Duration)` |
+| `deadline_after(seconds : f64) -> i64` | `Instant::now() + d` |
+| `wait_while_until(word, value, deadline : i64, ..)` | `deadline : Instant` |
+| `Drop::wait_limit(&self) -> f64`, 10.0 by default | `-> Duration`, `Duration::from_secs(10)` by default |
 
 - `core::ops` then imports `core::time`, and `core::time` imports `core::ops`. A program that uses
   `Duration` compiles with this cycle. The PR must also pass the test that checks each

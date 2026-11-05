@@ -369,7 +369,7 @@ fn one() -> Expr {
 
 /// The clause `valid(p, n)`, `initialized(p, n)` or `!overlaps(p, q, n)`, as its function, its
 /// pointer arguments and its length.
-fn read_clause(e: &Expr) -> Option<(&str, Vec<&Expr>, &Expr)> {
+pub(crate) fn read_clause(e: &Expr) -> Option<(&str, Vec<&Expr>, &Expr)> {
     let call = match e {
         Expr::UnaryOp(u) if u.op == UnaryOp::Not => &*u.expr,
         e => e,
@@ -810,6 +810,11 @@ impl<'a> TypeChecker<'a> {
                 Some(crate::diagnostic::SourceSpan::from_ast_span(&at)),
             );
         }
+        let what = format!(
+            "an `assume` trusts `{}`",
+            crate::hir::check::audit::clause_text(fact)
+        );
+        self.note_trusted(at, what);
         let Some((function, pointers, len)) = read_clause(fact) else {
             if crate::hir::check::pointer_clauses::first_pointer_call(fact).is_some() {
                 self.errors.error_with_code(
@@ -1464,8 +1469,12 @@ impl<'a> TypeChecker<'a> {
             Expr::IndirectCall(ic) => ("", &ic.args, Some(&*ic.callee)),
             _ => return,
         };
-        if !self.speculating && !self.in_unsafe_block && !self.in_unsafe_fn {
-            self.prove_pointer_requires(name, args, &at);
+        if !self.speculating {
+            let trusted = self.in_unsafe_block || self.in_unsafe_fn;
+            // A clause that a call in `unsafe` code trusts needs the `unsafe` (W1010).
+            if self.prove_pointer_requires(name, args, &at, trusted) {
+                self.unsafe_op_seen = true;
+            }
         }
         if ADDRESS_FUNCTIONS.contains(&plain_name(name)) {
             return;
@@ -1814,8 +1823,16 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// E8006 for each pointer `requires` of the callee `name` that the facts do not prove.
-    fn prove_pointer_requires(&mut self, name: &str, args: &[Expr], span: &Span) {
+    /// E8006 for each pointer `requires` of the callee `name` that the facts do not prove. With
+    /// `trusted`, for a call in `unsafe` code, each such clause goes in the audit instead, and the
+    /// result says whether there is one.
+    fn prove_pointer_requires(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        span: &Span,
+        trusted: bool,
+    ) -> bool {
         let callee = self.env.syntax_functions.get(name).copied().or_else(|| {
             self.mono
                 .functions
@@ -1832,11 +1849,12 @@ impl<'a> TypeChecker<'a> {
                 .collect();
             (f.params.clone(), clauses)
         }) else {
-            return;
+            return false;
         };
         if clauses.is_empty() {
-            return;
+            return false;
         }
+        let mut any_trusted = false;
         let mut names = HashMap::new();
         for (i, ((param, _), arg)) in params.iter().zip(args).enumerate() {
             let value = if crate::hir::prover::is_modelled(arg) {
@@ -1872,6 +1890,16 @@ impl<'a> TypeChecker<'a> {
             if self.prove_exact(&goal) {
                 continue;
             }
+            if trusted {
+                let what = format!(
+                    "a call in `unsafe` code trusts `{}` of `{}`, which the compiler cannot prove",
+                    clause_source(clause),
+                    self.shown_callee(name)
+                );
+                self.note_trusted(*span, what);
+                any_trusted = true;
+                continue;
+            }
             let ended = self.ended_fact_that_proves(function, &values, &m);
             let error = self.errors.error_with_code(
                 crate::diagnostic::DiagnosticCode::E8006,
@@ -1890,6 +1918,7 @@ impl<'a> TypeChecker<'a> {
                 });
             }
         }
+        any_trusted
     }
 
     /// The last event that ended a fact that would prove the clause, as its place and reason.
