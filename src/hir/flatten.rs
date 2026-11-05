@@ -1771,23 +1771,6 @@ impl<'r> Lowerer<'r> {
                 if let Some((op, ordered)) = crate::hir::check::lanes::lane_routine(&fc.name) {
                     return self.lower_lane_reduce(fc, op, ordered);
                 }
-                // The start and the end of a `within` block (F6a): an effect on the runtime.
-                if fc.name.as_ref() == crate::syntax::stmt::WITHIN_START
-                    || fc.name.as_ref() == crate::syntax::stmt::WITHIN_END
-                {
-                    let (op, limit) = match fc.args.first() {
-                        Some(limit) => (Opcode::WithinStart, self.lower_expr(limit)?.reg),
-                        None => (Opcode::WithinEnd, Register(0)),
-                    };
-                    self.emit_effect(op, limit, Register(0), 0);
-                    return Ok(self.emit_value(
-                        Opcode::Const,
-                        Register(0),
-                        Register(0),
-                        ElementType::I32,
-                        0,
-                    ));
-                }
                 // Around the call of a `Drop` impl's `drop` (F6, F6a): an effect on the
                 // runtime, with the time limit of the drop in nanoseconds.
                 if fc.name.as_ref() == crate::syntax::stmt::CANCEL_OFF
@@ -2573,7 +2556,19 @@ impl<'r> Lowerer<'r> {
         let gid = self.agg_base_gid(base)?;
         let v = self.lower_expr(base)?;
         match v.ty {
-            LoweredTy::Ptr => Ok((v.reg, gid)),
+            // A reference in a local, such as a capture of `self` in a closure, does not say what
+            // it points to. The cast tells the emitter, as for `(*p).field` above.
+            LoweredTy::Ptr => Ok((
+                self.emit_typed(
+                    Opcode::Cast,
+                    v.reg,
+                    Register(0),
+                    LoweredTy::Aggregate(gid),
+                    0,
+                )
+                .reg,
+                gid,
+            )),
             // A construction (a closure literal the checker rewrote to `Closure_1 { k }`) already
             // sits in a slot, whose address this is.
             LoweredTy::Aggregate(value_gid) if construction_tail(base) => Ok((v.reg, value_gid)),
@@ -7216,6 +7211,31 @@ impl<'r> Lowerer<'r> {
                 Ok(())
             }
             Statement::Return(r) if self.leaving_task() => self.lower_task_return(r.expr.as_ref()),
+            // A `void` function that returns a block with a last expression, as the call function
+            // of a `void` closure does: the block and its last expression are statements.
+            Statement::Return(crate::syntax::ReturnStmt {
+                expr: Some(Expr::UnsafeBlock(b)),
+                ..
+            }) if self.ret_void && b.ret.is_some() => {
+                let mut b = b.clone();
+                let tail = b.ret.take().expect("checked above");
+                b.stmts
+                    .push(Statement::ExprStmt(crate::syntax::ExprStmtStmt::new(
+                        *tail, true, b.span,
+                    )));
+                let span = b.span;
+                self.lower_stmt(&Statement::ExprStmt(crate::syntax::ExprStmtStmt::new(
+                    Expr::UnsafeBlock(b),
+                    true,
+                    span,
+                )))?;
+                if !self.block_terminated() {
+                    self.run_value_drops()?;
+                    self.drop_temps_here(None);
+                    self.emit_ret(None)?;
+                }
+                Ok(())
+            }
             Statement::Return(r) => {
                 // `return <match>` (a value-position match whose arms `return` themselves, e.g.
                 // `Option::unwrap`): lower the match as a statement — each arm emits its own `Ret` — then

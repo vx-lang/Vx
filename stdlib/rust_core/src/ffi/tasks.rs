@@ -76,14 +76,14 @@ impl CancelMark {
 }
 
 /// One scope with a deadline (F6a): a `drop`, with the mark that `vx_cancel_off` put aside, or a
-/// `within` block.
+/// call of `within`.
 pub(crate) struct Deadline {
     /// The mark put aside, for a `drop`.
     mark: Option<Arc<CancelMark>>,
     /// The earliest deadline of this scope and the scopes around it, on the clock of
     /// `vx_clock_ns`.
     at: i64,
-    /// A `drop`, not a `within` block.
+    /// A `drop`, not a call of `within`.
     drop: bool,
 }
 
@@ -130,7 +130,7 @@ fn seconds_to_ns(seconds: f64) -> i64 {
     (seconds.max(0.0) * 1e9) as i64
 }
 
-/// The earliest deadline of the `drop`s and the `within` blocks that this thread runs in, if it
+/// The earliest deadline of the `drop`s and the calls of `within` that this thread runs in, if it
 /// runs in one. After it, each wait that can be cancelled gives up, as in a cancelled block.
 pub(crate) fn drop_deadline() -> Option<i64> {
     PUT_ASIDE.with(|p| p.borrow().last().map(|d| d.at))
@@ -162,27 +162,28 @@ pub extern "C" fn vx_cancel_off(limit_ns: i64) {
 pub extern "C" fn vx_cancel_on() {
     let scope = PUT_ASIDE.with(|p| p.borrow_mut().pop());
     let scope = scope.expect("vx_cancel_on comes after vx_cancel_off");
-    assert!(scope.drop, "a `within` block in a drop did not end");
+    assert!(scope.drop, "a call of `within` in a drop did not end");
     CURRENT.with(|c| {
         assert!(c.borrow().is_none(), "a tasks block in a drop did not end");
         *c.borrow_mut() = scope.mark;
     });
 }
 
-/// The start of a `within(limit) { .. }` block (F6a): each wait in it that can be cancelled gives
-/// up `limit` seconds from now, or at the deadline of a scope around it when that is earlier.
-/// Outside a `drop`, a cancel still stops the waits. `VX_DROP_WAIT_SECONDS` does not shorten it.
+/// The start of a call of `within(limit, body)`: each wait in `body` that can be cancelled gives
+/// up `limit_ns` nanoseconds from now, or at the deadline of a scope around it when that is
+/// earlier. Outside a `drop`, a cancel still stops the waits. `VX_DROP_WAIT_SECONDS` does not
+/// shorten it.
 #[no_mangle]
-pub extern "C" fn vx_within_start(limit: f64) {
-    push_deadline(None, seconds_to_ns(limit), false);
+pub extern "C" fn vx_within_start(limit_ns: i64) {
+    push_deadline(None, limit_ns.max(0), false);
 }
 
-/// The end of a `within` block, on each path out of it.
+/// The end of a call of `within`, after `body` returns.
 #[no_mangle]
 pub extern "C" fn vx_within_end() {
     let scope = PUT_ASIDE.with(|p| p.borrow_mut().pop());
     let scope = scope.expect("vx_within_end comes after vx_within_start");
-    assert!(!scope.drop, "a drop in a `within` block did not end");
+    assert!(!scope.drop, "a drop in a call of `within` did not end");
 }
 
 /// Swaps the current mark and the marks put aside of this thread with these. The shared runtime

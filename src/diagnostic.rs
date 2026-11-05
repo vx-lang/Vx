@@ -139,8 +139,8 @@ pub enum DiagnosticCode {
     /// A `match` arm in a `loop` or `while` can take `Cancelled` from a wait and stays in the
     /// loop. In a cancelled task each wait gives `Cancelled` at once, so the loop never ends (F4).
     W1035,
-    /// A `drop` calls `send` or `recv`, which wait with no time limit of their own, outside a
-    /// `within` block. A drop runs with cancellation off, so when the other end never acts, the
+    /// A `drop` calls `send` or `recv`, which wait with no time limit of their own, outside the
+    /// body of a call of `within`. A drop runs with cancellation off, so when the other end never acts, the
     /// wait holds up the drop until the limit of the drop: its type's `wait_limit`, 10 seconds by
     /// default. Then the wait gives up, as in a cancelled block. A `wait_limit` that calls them
     /// gets the warning too, because it runs before the drop and should only return a time.
